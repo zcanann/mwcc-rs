@@ -7,13 +7,72 @@ use super::VariadicBufferFrame;
 struct VariadicBufferPrint<'a> {
     buffer_bytes: i16,
     stream: &'a str,
-    prefix_callee: &'a str,
-    prefix_format: &'a [u8],
-    prefix_name: &'a [u8],
+    prefix: Option<VariadicPrefix<'a>>,
     formatter: &'a str,
     length: &'a str,
     vptr_offset: u16,
     slot_offset: u16,
+}
+
+struct VariadicPrefix<'a> {
+    callee: &'a str,
+    format: &'a [u8],
+    name: &'a [u8],
+}
+
+fn recognize_prefix<'a>(
+    statement: &'a Statement,
+    stream: &str,
+) -> Option<Option<VariadicPrefix<'a>>> {
+    let Statement::If {
+        condition,
+        then_body,
+        else_body,
+    } = statement
+    else {
+        return None;
+    };
+    let [
+        Statement::Expression(Expression::Call {
+            name: callee,
+            arguments,
+        }),
+    ] = then_body.as_slice()
+    else {
+        return None;
+    };
+    let [
+        Expression::Variable(prefix_stream),
+        Expression::StringLiteral(format),
+        argument,
+    ] = arguments.as_slice()
+    else {
+        return None;
+    };
+    if !else_body.is_empty() || prefix_stream != stream {
+        return None;
+    }
+    match condition {
+        Expression::StringLiteral(name)
+            if matches!(
+                argument,
+                Expression::StringLiteral(argument) if argument == name
+            ) =>
+        {
+            Some(Some(VariadicPrefix {
+                callee,
+                format,
+                name,
+            }))
+        }
+        condition
+            if constant_value(condition) == Some(0)
+                && constant_value(argument) == Some(0) =>
+        {
+            Some(None)
+        }
+        _ => None,
+    }
 }
 
 impl<'a> VariadicBufferPrint<'a> {
@@ -59,11 +118,7 @@ impl<'a> VariadicBufferPrint<'a> {
             return None;
         }
         let [
-            Statement::If {
-                condition: Expression::StringLiteral(prefix_name),
-                then_body: prefix_body,
-                else_body: prefix_else,
-            },
+            prefix_statement,
             Statement::Expression(Expression::Call {
                 name: formatter,
                 arguments: formatter_arguments,
@@ -81,35 +136,16 @@ impl<'a> VariadicBufferPrint<'a> {
         else {
             return None;
         };
-        let [
-            Statement::Expression(Expression::Call {
-                name: prefix_callee,
-                arguments: prefix_arguments,
-            }),
-        ] = prefix_body.as_slice()
-        else {
-            return None;
-        };
-        let [
-            Expression::Variable(prefix_stream),
-            Expression::StringLiteral(prefix_format),
-            Expression::StringLiteral(prefix_argument),
-        ] = prefix_arguments.as_slice()
-        else {
-            return None;
-        };
-        if !prefix_else.is_empty()
-            || prefix_stream != stream
-            || prefix_argument.as_slice() != prefix_name.as_slice()
-            || !matches!(
-                formatter_arguments.as_slice(),
-                [Expression::Variable(destination),
-                    Expression::Variable(format),
-                    Expression::Variable(arguments)]
-                    if destination == frame.buffer
-                        && format == frame.format_parameter
-                        && arguments == frame.va_list
-            )
+        let prefix = recognize_prefix(prefix_statement, stream)?;
+        if !matches!(
+            formatter_arguments.as_slice(),
+            [Expression::Variable(destination),
+                Expression::Variable(format),
+                Expression::Variable(arguments)]
+                if destination == frame.buffer
+                    && format == frame.format_parameter
+                    && arguments == frame.va_list
+        )
             || !matches!(
                 condition_arguments.as_slice(),
                 [Expression::Variable(buffer)] if buffer == frame.buffer
@@ -156,9 +192,7 @@ impl<'a> VariadicBufferPrint<'a> {
         Some(Self {
             buffer_bytes: frame.buffer_bytes,
             stream,
-            prefix_callee,
-            prefix_format,
-            prefix_name,
+            prefix,
             formatter,
             length: condition_length,
             vptr_offset: *vptr_offset,
@@ -187,10 +221,10 @@ impl Generator {
 
         const BUFFER_OFFSET: i16 = 108;
         const VA_LIST_BYTES: i16 = 12;
-        const CALLEE_SAVE_BYTES: i16 = 8;
+        let has_prefix = plan.prefix.is_some();
+        let callee_save_bytes = if has_prefix { 8 } else { 0 };
         let va_list_offset = (BUFFER_OFFSET + plan.buffer_bytes + 3) & !3;
-        let frame_size =
-            (va_list_offset + VA_LIST_BYTES + CALLEE_SAVE_BYTES + 7) & !7;
+        let frame_size = (va_list_offset + VA_LIST_BYTES + callee_save_bytes + 7) & !7;
         if frame_size <= 108
             || frame_size.checked_add(8).is_none()
             || plan.vptr_offset > (i16::MAX - 4) as u16
@@ -201,14 +235,15 @@ impl Generator {
 
         self.frame_size = frame_size;
         self.non_leaf = true;
-        self.callee_saved = vec![31, 30];
+        self.callee_saved = if has_prefix { vec![31, 30] } else { Vec::new() };
         self.output.pre_scheduled = true;
-        self.output.symbol_order = vec![
-            plan.stream.to_owned(),
-            plan.prefix_callee.to_owned(),
-            plan.formatter.to_owned(),
-            plan.length.to_owned(),
-        ];
+        self.output.symbol_order = vec![plan.stream.to_owned()];
+        if let Some(prefix) = &plan.prefix {
+            self.output.symbol_order.push(prefix.callee.to_owned());
+        }
+        self.output
+            .symbol_order
+            .extend([plan.formatter.to_owned(), plan.length.to_owned()]);
 
         self.output
             .instructions
@@ -256,11 +291,13 @@ impl Generator {
                 a: 0,
                 immediate: 0x100,
             });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 30,
-            a: 3,
-            immediate: 0,
-        });
+        if has_prefix {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 30,
+                a: 3,
+                immediate: 0,
+            });
+        }
         self.output.instructions.push(Instruction::StoreWord {
             s: 4,
             a: 1,
@@ -271,17 +308,26 @@ impl Generator {
             a: 1,
             immediate: frame_size + 8,
         });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 31,
-            a: 1,
-            immediate: va_list_offset,
-        });
+        if has_prefix {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 31,
+                a: 1,
+                immediate: va_list_offset,
+            });
+        }
         for register in 5..=10 {
             self.output.instructions.push(Instruction::StoreWord {
                 s: register,
                 a: 1,
                 offset: -4 + i16::from(register) * 4,
             });
+            if register == 5 && !has_prefix {
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 5,
+                    a: 1,
+                    immediate: va_list_offset,
+                });
+            }
         }
         self.output.instructions.push(Instruction::StoreWord {
             s: 0,
@@ -304,38 +350,46 @@ impl Generator {
             offset: va_list_offset + 8,
         });
 
-        self.emit_global_load_value(plan.stream, 3)?;
+        let stream_register = if has_prefix { 3 } else { 0 };
+        self.emit_global_load_value(plan.stream, stream_register)?;
         self.output
             .instructions
-            .push(Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 });
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: stream_register,
+                immediate: 0,
+            });
         let done = self.fresh_label();
         self.emit_branch_conditional_to(12, 2, done);
 
-        // Intern in source argument order so the unit-wide anonymous-symbol
-        // resolver preserves MWCC's `%s: ` before component-name ordering.
-        let _prefix_format = self.string_literal_placeholder(plan.prefix_format);
-        let prefix_name = self.string_literal_placeholder(plan.prefix_name);
-        self.emit_address_high(4, &prefix_name);
-        self.output
-            .instructions
-            .push(Instruction::ConditionRegisterClear { d: 6 });
-        self.emit_string_address_low(&prefix_name, 4, 5);
-        self.emit_string_literal(plan.prefix_format, 4)?;
-        self.record_relocation(RelocationKind::Rel24, plan.prefix_callee);
-        self.output.instructions.push(Instruction::BranchAndLink {
-            target: plan.prefix_callee.to_owned(),
-        });
+        if let Some(prefix) = &plan.prefix {
+            // Intern in source argument order so the unit-wide anonymous-symbol
+            // resolver preserves MWCC's `%s: ` before component-name ordering.
+            let _prefix_format = self.string_literal_placeholder(prefix.format);
+            let prefix_name = self.string_literal_placeholder(prefix.name);
+            self.emit_address_high(4, &prefix_name);
+            self.output
+                .instructions
+                .push(Instruction::ConditionRegisterClear { d: 6 });
+            self.emit_string_address_low(&prefix_name, 4, 5);
+            self.emit_string_literal(prefix.format, 4)?;
+            self.record_relocation(RelocationKind::Rel24, prefix.callee);
+            self.output.instructions.push(Instruction::BranchAndLink {
+                target: prefix.callee.to_owned(),
+            });
+        }
 
         self.output.instructions.push(Instruction::AddImmediate {
             d: 4,
-            a: 30,
+            a: if has_prefix { 30 } else { 3 },
             immediate: 0,
         });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 5,
-            a: 31,
-            immediate: 0,
-        });
+        if has_prefix {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 5,
+                a: 31,
+                immediate: 0,
+            });
+        }
         self.output.instructions.push(Instruction::AddImmediate {
             d: 3,
             a: 1,
@@ -403,5 +457,31 @@ impl Generator {
         // the variadic-save and guarded-print control flow.
         self.output.anonymous_label_bump += 7;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_prefix_is_a_proven_dead_optional_transaction() {
+        let statement = Statement::If {
+            condition: Expression::IntegerLiteral(0),
+            then_body: vec![Statement::Expression(Expression::Call {
+                name: "print".into(),
+                arguments: vec![
+                    Expression::Variable("stream".into()),
+                    Expression::StringLiteral(b"%s: ".to_vec()),
+                    Expression::IntegerLiteral(0),
+                ],
+            })],
+            else_body: Vec::new(),
+        };
+
+        assert!(matches!(
+            recognize_prefix(&statement, "stream"),
+            Some(None)
+        ));
     }
 }
