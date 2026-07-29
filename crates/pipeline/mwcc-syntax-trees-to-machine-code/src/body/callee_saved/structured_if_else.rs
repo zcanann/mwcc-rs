@@ -200,11 +200,10 @@ impl Generator {
                     });
                 }
             } else if !self.try_emit_structured_frame_bitfield_stores(then_body)? {
-                self.emit_structured_statements(
+                self.emit_structured_arm_with_global_pointer_cache(
                     then_body,
                     function,
                     ephemeral_locals,
-                    false,
                     return_branches,
                     label_positions,
                     pending_gotos,
@@ -246,11 +245,10 @@ impl Generator {
             if !self.try_emit_shared_float_zero_assignments(else_body)?
                 && !self.try_emit_structured_frame_bitfield_stores(else_body)?
             {
-                self.emit_structured_statements(
+                self.emit_structured_arm_with_global_pointer_cache(
                     else_body,
                     function,
                     ephemeral_locals,
-                    false,
                     return_branches,
                     label_positions,
                     pending_gotos,
