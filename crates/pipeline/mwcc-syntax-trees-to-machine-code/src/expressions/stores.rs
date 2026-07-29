@@ -143,6 +143,19 @@ impl Generator {
             )?);
             return Ok(());
         }
+        // An indexed assignment nested inside another store (`a[0] = a[1] =
+        // value`) naturally carries its result in the integer scratch. Reuse
+        // the ordinary store owner so pointer resolution, element width, and
+        // constant-index displacement stay centralized; its value placement
+        // recursively emits the inner assignment before this target.
+        if destination == GENERAL_SCRATCH
+            && matches!(
+                target,
+                Expression::Index { .. } | Expression::Dereference { .. }
+            )
+        {
+            return self.emit_store(target, value);
+        }
         Err(Diagnostic::error(
             "general assignment expression target is not supported yet (roadmap)",
         ))
