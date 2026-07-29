@@ -612,6 +612,7 @@ fn lower_function_body(
         stored_globals: HashMap::new(),
         condition_global_values: HashMap::new(),
         condition_float_cache: Default::default(),
+        wide_pair_mask_cache: Default::default(),
         const_address_bases: HashMap::new(),
         emitted_variable_index_store: false,
         packed_shift_mask_min_operations: 3,

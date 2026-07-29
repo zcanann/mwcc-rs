@@ -4,6 +4,7 @@
 use crate::analysis::*;
 use crate::condition_float_cache::ConditionFloatCache;
 use crate::condition_global_cache::ConditionGlobalValue;
+use crate::control_flow::WidePairMaskCache;
 use crate::{InlineBodySet, InlineSummaries};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{
@@ -423,6 +424,10 @@ pub(crate) struct Generator {
     /// Float memory loads retained only along a side-effect-free condition's
     /// fallthrough edge into the next guard.
     pub(crate) condition_float_cache: ConditionFloatCache,
+    /// Known-zero high mask value carried only down a nested mask test's false
+    /// edge. True arms may contain calls, so their structured owner never sees
+    /// this cache.
+    pub(crate) wide_pair_mask_cache: WidePairMaskCache,
     /// Retained constant-address base, keyed by the materialized high half.
     ///
     /// A fresh virtual lets liveness extend the base across later accesses with

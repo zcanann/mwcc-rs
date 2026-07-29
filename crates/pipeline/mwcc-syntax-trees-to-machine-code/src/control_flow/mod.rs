@@ -18,6 +18,7 @@ mod record_condition;
 mod record_mask;
 mod select;
 mod wide_pair_mask;
+pub(crate) use wide_pair_mask::WidePairMaskCache;
 
 #[allow(unused_imports)]
 pub(crate) use passes::*;

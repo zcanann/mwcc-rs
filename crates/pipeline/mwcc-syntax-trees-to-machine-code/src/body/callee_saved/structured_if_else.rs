@@ -25,6 +25,7 @@ impl Generator {
         entry_alias: &mut Option<EntryParameterAlias>,
     ) -> Compilation<()> {
         debug_assert!(!else_body.is_empty());
+        let previous_wide_mask_cache = self.begin_wide_pair_mask_condition(condition);
         let previous_cache = self.begin_condition_global_cache(condition);
         let previous_float_cache = self.begin_composed_condition_float_cache(condition);
         struct ConditionBranches {
@@ -155,10 +156,18 @@ impl Generator {
                 ],
             ))
         });
+        let else_wide_mask_cache = self.wide_pair_mask_false_edge_cache();
+        self.wide_pair_mask_cache = Default::default();
         let then_float_cache = self.condition_float_literal_edge_cache();
         self.restore_condition_global_cache(previous_cache);
         self.restore_condition_float_cache(previous_float_cache);
-        let branches = branches?;
+        let branches = match branches {
+            Ok(branches) => branches,
+            Err(diagnostic) => {
+                self.restore_wide_pair_mask_cache(previous_wide_mask_cache);
+                return Err(diagnostic);
+            }
+        };
         if let [branch] = branches.enter_else.as_slice() {
             self.schedule_frame_store_before_if_branch(*branch);
         }
@@ -211,7 +220,10 @@ impl Generator {
             Ok(())
         })();
         self.restore_condition_float_cache(arm_previous_float_cache);
-        then_result?;
+        if let Err(diagnostic) = then_result {
+            self.restore_wide_pair_mask_cache(previous_wide_mask_cache);
+            return Err(diagnostic);
+        }
         let skip_else = self.output.instructions.len();
         self.output
             .instructions
@@ -221,30 +233,48 @@ impl Generator {
         for branch in branches.enter_else {
             self.patch_forward(branch, else_start);
         }
-        if !self.try_emit_shared_float_zero_assignments(else_body)?
-            && !self.try_emit_structured_frame_bitfield_stores(else_body)?
-        {
-            self.emit_structured_statements(
-                else_body,
-                function,
-                ephemeral_locals,
-                false,
-                return_branches,
-                label_positions,
-                pending_gotos,
-                entry_alias,
-            )
-            .map_err(|mut diagnostic| {
-                diagnostic
-                    .message
-                    .push_str(&format!(" (inside structured else arm {statement_index})"));
-                diagnostic
-            })?;
+        let retained_else_wide_mask_cache = else_body
+            .first()
+            .is_some_and(|statement| matches!(statement, Statement::If { .. }))
+            .then_some(else_wide_mask_cache)
+            .unwrap_or_default();
+        let else_arm_previous_wide_mask_cache = std::mem::replace(
+            &mut self.wide_pair_mask_cache,
+            retained_else_wide_mask_cache,
+        );
+        let else_result = (|| {
+            if !self.try_emit_shared_float_zero_assignments(else_body)?
+                && !self.try_emit_structured_frame_bitfield_stores(else_body)?
+            {
+                self.emit_structured_statements(
+                    else_body,
+                    function,
+                    ephemeral_locals,
+                    false,
+                    return_branches,
+                    label_positions,
+                    pending_gotos,
+                    entry_alias,
+                )
+                .map_err(|mut diagnostic| {
+                    diagnostic
+                        .message
+                        .push_str(&format!(" (inside structured else arm {statement_index})"));
+                    diagnostic
+                })?;
+            }
+            Ok(())
+        })();
+        self.restore_wide_pair_mask_cache(else_arm_previous_wide_mask_cache);
+        if let Err(diagnostic) = else_result {
+            self.restore_wide_pair_mask_cache(previous_wide_mask_cache);
+            return Err(diagnostic);
         }
         let join = self.output.instructions.len();
         if let Instruction::Branch { target } = &mut self.output.instructions[skip_else] {
             *target = join;
         }
+        self.restore_wide_pair_mask_cache(previous_wide_mask_cache);
         Ok(())
     }
 

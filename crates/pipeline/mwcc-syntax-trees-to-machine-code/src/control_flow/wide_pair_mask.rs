@@ -16,7 +16,45 @@ struct WidePairMask<'a> {
     mask: i16,
 }
 
+#[derive(Clone)]
+struct RetainedHighMask {
+    high: String,
+    zero: String,
+    high_source: u8,
+    zero_source: u8,
+    register: u8,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct WidePairMaskCache {
+    retained_high: Option<RetainedHighMask>,
+}
+
 impl Generator {
+    pub(crate) fn begin_wide_pair_mask_condition(
+        &mut self,
+        condition: &Expression,
+    ) -> WidePairMaskCache {
+        let previous = std::mem::take(&mut self.wide_pair_mask_cache);
+        let retain_previous = recognize(condition).is_some_and(|test| {
+            previous.retained_high.as_ref().is_some_and(|retained| {
+                retained.high == test.high && retained.zero == test.zero
+            })
+        });
+        if retain_previous {
+            self.wide_pair_mask_cache = previous.clone();
+        }
+        previous
+    }
+
+    pub(crate) fn restore_wide_pair_mask_cache(&mut self, previous: WidePairMaskCache) {
+        self.wide_pair_mask_cache = previous;
+    }
+
+    pub(crate) fn wide_pair_mask_false_edge_cache(&self) -> WidePairMaskCache {
+        self.wide_pair_mask_cache.clone()
+    }
+
     pub(super) fn try_emit_wide_pair_mask_test(
         &mut self,
         condition: &Expression,
@@ -59,10 +97,17 @@ impl Generator {
         if separate_zero {
             self.prefer_virtual_general(zero, 6);
         }
+        let retained_high =
+            retained_high_register(&self.wide_pair_mask_cache, &test, high, zero);
         let low_masked = self
             .fresh_virtual_general_preferring(if separate_zero { GENERAL_SCRATCH } else { 3 });
-        let high_masked = self
-            .fresh_virtual_general_preferring(if separate_zero { 5 } else { GENERAL_SCRATCH });
+        let high_masked = retained_high.unwrap_or_else(|| {
+            self.fresh_virtual_general_preferring(if separate_zero {
+                5
+            } else {
+                GENERAL_SCRATCH
+            })
+        });
         let low_compared =
             self.fresh_virtual_general_preferring(if separate_zero { 4 } else { 3 });
         let high_compared = self.fresh_virtual_general_preferring(GENERAL_SCRATCH);
@@ -79,10 +124,21 @@ impl Generator {
             s: high,
             b: zero,
         };
-        if separate_zero {
-            self.output.instructions.extend([low_and, high_and]);
+        if retained_high.is_some() {
+            self.output.instructions.push(low_and);
         } else {
-            self.output.instructions.extend([high_and, low_and]);
+            if separate_zero {
+                self.output.instructions.extend([low_and, high_and]);
+            } else {
+                self.output.instructions.extend([high_and, low_and]);
+            }
+            self.wide_pair_mask_cache.retained_high = Some(RetainedHighMask {
+                high: test.high.into(),
+                zero: test.zero.into(),
+                high_source: high,
+                zero_source: zero,
+                register: high_masked,
+            });
         }
         self.output.instructions.push(Instruction::Xor {
             a: low_compared,
@@ -101,6 +157,21 @@ impl Generator {
         });
         Ok(true)
     }
+}
+
+fn retained_high_register(
+    cache: &WidePairMaskCache,
+    test: &WidePairMask<'_>,
+    high_source: u8,
+    zero_source: u8,
+) -> Option<u8> {
+    cache.retained_high.as_ref().and_then(|retained| {
+        (retained.high == test.high
+            && retained.zero == test.zero
+            && retained.high_source == high_source
+            && retained.zero_source == zero_source)
+            .then_some(retained.register)
+    })
 }
 
 fn recognize(condition: &Expression) -> Option<WidePairMask<'_>> {
@@ -188,5 +259,25 @@ mod tests {
             (test.low, test.high, test.zero, test.mask),
             ("low", "high", "high", 0x80)
         );
+    }
+
+    #[test]
+    fn retained_high_masks_require_the_same_value_homes() {
+        let condition =
+            crate::wide_local_scalarization::legacy_word_pair_mask_condition_for_test(
+                "low", "high", 0x40,
+            );
+        let test = recognize(&condition).expect("the lowered pair graph should be recognized");
+        let cache = WidePairMaskCache {
+            retained_high: Some(RetainedHighMask {
+                high: "high".into(),
+                zero: "high".into(),
+                high_source: 31,
+                zero_source: 6,
+                register: 5,
+            }),
+        };
+        assert_eq!(retained_high_register(&cache, &test, 31, 6), Some(5));
+        assert_eq!(retained_high_register(&cache, &test, 30, 6), None);
     }
 }
