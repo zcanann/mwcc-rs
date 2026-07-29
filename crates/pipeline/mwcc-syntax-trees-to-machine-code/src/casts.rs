@@ -138,12 +138,39 @@ impl Generator {
                 Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
                     expression_count(generator, declared_float_values, base)
                 }
-                Expression::Call { arguments, .. } => arguments
-                    .iter()
-                    .map(|argument| {
-                        expression_count(generator, declared_float_values, argument)
-                    })
-                    .sum(),
+                Expression::Call { name, arguments } => {
+                    let parameter_types =
+                        generator.call_parameter_types.get(name).map(Vec::as_slice);
+                    let returns_aggregate =
+                        matches!(generator.call_return_types.get(name), Some(Type::Struct { .. }));
+                    let contextual = arguments
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, argument)| {
+                            crate::expressions::source_parameter_type(
+                                parameter_types,
+                                returns_aggregate,
+                                arguments.len(),
+                                *index,
+                            )
+                            .is_some_and(|parameter_type| {
+                                !matches!(parameter_type, Type::Float | Type::Double)
+                                    && expression_is_float(
+                                        generator,
+                                        declared_float_values,
+                                        argument,
+                                    )
+                            })
+                        })
+                        .count();
+                    contextual
+                        + arguments
+                            .iter()
+                            .map(|argument| {
+                                expression_count(generator, declared_float_values, argument)
+                            })
+                            .sum::<usize>()
+                }
                 Expression::CallThrough { target, arguments } => {
                     expression_count(generator, declared_float_values, target)
                         + arguments

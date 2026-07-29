@@ -5,6 +5,7 @@
 mod arithmetic;
 mod aggregate_member_arithmetic;
 mod aggregate_member_copy;
+mod aggregate_member_copy_loop;
 mod biased_scaled_member_sum;
 mod bit_field_stores;
 mod bit_fields;
@@ -41,6 +42,7 @@ mod strings;
 mod xnor_feedback_update;
 
 pub(crate) use members::embedded_member_address_base;
+pub(crate) use call_argument_types::source_parameter_type;
 pub(crate) use packed_shift_mask::is_shallow_packed_shift_mask_expression;
 #[allow(unused_imports)]
 pub(crate) use passes::*;

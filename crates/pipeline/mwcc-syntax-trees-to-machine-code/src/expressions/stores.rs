@@ -252,6 +252,12 @@ impl Generator {
                 }
             }
         }
+        if self.try_emit_small_aggregate_member_copy(target, value)? {
+            return Ok(());
+        }
+        if self.try_emit_aggregate_member_copy_loop(target, value)? {
+            return Ok(());
+        }
         if self.try_emit_member_vec3_copy(target, value)? {
             return Ok(());
         }

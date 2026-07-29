@@ -1063,6 +1063,17 @@ impl Generator {
                 ));
                 diagnostic
             })?;
+            if let CallArgumentPlacement::ConvertFloatingToGeneral { parameter_type } = placement {
+                self.emit_cast_to_integer(parameter_type, argument, next_general)
+                    .map_err(|mut diagnostic| {
+                        diagnostic.message.push_str(&format!(
+                            " (while converting floating argument {index} to '{name}')"
+                        ));
+                        diagnostic
+                    })?;
+                next_general += 1;
+                continue;
+            }
             if let CallArgumentPlacement::Floating {
                 parameter_type,
                 folded_integer,

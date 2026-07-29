@@ -11,6 +11,9 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum CallArgumentPlacement {
     General,
+    ConvertFloatingToGeneral {
+        parameter_type: Type,
+    },
     Floating {
         parameter_type: Type,
         folded_integer: Option<f64>,
@@ -54,9 +57,9 @@ pub(super) fn classify_call_argument(
                 })
             }
         }
-        Some(_) if argument_is_float => Err(Diagnostic::error(
-            "a floating call argument needs float->int conversion (roadmap)",
-        )),
+        Some(parameter_type) if argument_is_float => {
+            Ok(CallArgumentPlacement::ConvertFloatingToGeneral { parameter_type })
+        }
         Some(_) => Ok(CallArgumentPlacement::General),
         None if argument_is_float => Ok(CallArgumentPlacement::Floating {
             // With no prototype, retain the expression-driven historical
@@ -75,7 +78,7 @@ pub(super) fn classify_call_argument(
 /// from the source parameter list. Keeping the shift here prevents each call
 /// schedule from independently (and inconsistently) classifying the receiver
 /// or first explicit argument against the wrong prototype slot.
-pub(super) fn source_parameter_type(
+pub(crate) fn source_parameter_type(
     parameter_types: Option<&[Type]>,
     returns_aggregate: bool,
     abi_argument_count: usize,
@@ -145,6 +148,16 @@ mod tests {
                 parameter_type: Type::Float,
                 folded_integer: None,
                 convert_integer: true,
+            }
+        );
+    }
+
+    #[test]
+    fn classifies_a_float_for_runtime_integer_conversion() {
+        assert_eq!(
+            classify_call_argument(Some(Type::Int), true, None).unwrap(),
+            CallArgumentPlacement::ConvertFloatingToGeneral {
+                parameter_type: Type::Int,
             }
         );
     }

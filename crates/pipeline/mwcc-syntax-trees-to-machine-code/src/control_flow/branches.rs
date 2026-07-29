@@ -1972,6 +1972,7 @@ impl Generator {
                 | Expression::Conditional { .. }
                 | Expression::Cast { .. }
                 | Expression::BitFieldRead { .. }
+                | Expression::Assign { .. }
                 | Expression::Binary {
                     operator: BinaryOperator::LogicalAnd
                         | BinaryOperator::LogicalOr

@@ -3306,7 +3306,7 @@ impl Generator {
                 })?,
                 _ => self.emit_statement(statement).map_err(|mut diagnostic| {
                     diagnostic.message.push_str(&format!(
-                        " (in structured body statement {statement_index})"
+                        " (in structured body statement {statement_index}: {statement:?})"
                     ));
                     diagnostic
                 })?,
