@@ -50,3 +50,51 @@ fn asm_references_register_symbols_in_declaration_and_operand_order() {
         .collect::<Vec<_>>();
     assert_eq!(order, expected);
 }
+
+#[test]
+fn gc_1_1p1_asm_registers_absolute_data_before_each_function() {
+    let source = br#"
+        extern int state;
+        extern int flags;
+
+        asm void save(void) {
+            nofralloc
+            lis r3, state@h
+            ori r3, r3, state@l
+            blr
+        }
+
+        asm void restore(void) {
+            nofralloc
+            lis r3, state@h
+            ori r3, r3, state@l
+            lis r4, flags@h
+            ori r4, r4, flags@l
+            blr
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.emit_mwcats = false;
+    flags.inline_deferred = true;
+    let object = compile(
+        source,
+        "gc-1.1p1-asm-symbols.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_1P1,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the GC/1.1p1 asm symbol-order probe should compile");
+
+    let expected = ["state", "save", "flags", "restore"];
+    let order = super::elf_object::symbols(&object)
+        .into_iter()
+        .map(|(name, _, _, _)| name)
+        .filter(|name| expected.contains(&name.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(order, expected);
+}

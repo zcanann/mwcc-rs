@@ -40,6 +40,10 @@ pub struct ObjectFormat {
     /// Whether the `.sdata2` constant pool carries ELF's `SHF_WRITE` bit.
     pub sdata2_writable: bool,
     pub function_symbol_order: FunctionSymbolOrder,
+    /// Whether hand-written asm registers absolute data operands before the
+    /// current function symbol. GC/1.1p1 does; later build-163 compilers keep
+    /// those operands in the post-entry asm event stream.
+    pub asm_absolute_references_before_function: bool,
     /// Weak vtable-owned inline functions keep forward text layout but expose
     /// reverse-slot symbol discovery after ordinary source functions.
     pub weak_vtable_function_symbol_tail: bool,

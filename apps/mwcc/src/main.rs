@@ -2642,6 +2642,7 @@ fn compile(
         } else {
             mwcc_machine_code_to_object::FunctionSymbolOrder::ReferencesFirst
         },
+        asm_absolute_references_before_function: config.build.label == "GC/1.1p1",
         weak_vtable_function_symbol_tail: behavior.weak_vtable_function_symbol_tail,
         owned_rtti_closure_relocation_order: behavior.cxx_rtti_owned_closure_schedule,
         initialized_globals_before_deferred_functions: config.flags.inline_deferred,

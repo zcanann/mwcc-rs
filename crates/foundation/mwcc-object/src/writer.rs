@@ -3042,10 +3042,26 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 _ => None,
             })
             .collect();
-        let (absolute_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) = if matches!(
-            input.object_format.function_symbol_order,
-            FunctionSymbolOrder::FunctionFirst | FunctionSymbolOrder::LegacyDeferred
-        ) && !function.is_asm
+        let absolute_references_precede_function = match input.object_format.function_symbol_order {
+            // Immediate builds register a generated ADDR16 pair before an
+            // ordinary function, while hand-written asm remains an operand
+            // event after its entry symbol.
+            FunctionSymbolOrder::FunctionFirst => {
+                !function.is_asm
+                    || input
+                        .object_format
+                        .asm_absolute_references_before_function
+            }
+            FunctionSymbolOrder::LegacyDeferred => {
+                !function.is_asm
+                    || input
+                        .object_format
+                        .asm_absolute_references_before_function
+            }
+            _ => false,
+        };
+        let (absolute_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) =
+            if absolute_references_precede_function
         {
             explicit_ordered
                 .into_iter()
