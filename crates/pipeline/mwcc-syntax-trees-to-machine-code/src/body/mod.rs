@@ -101,6 +101,7 @@ mod if_else;
 mod indirect_call;
 mod inlined_guarded_aggregate_update;
 mod inlined_callback_open;
+mod inlined_doubly_linked_list_transfer;
 mod inlined_local_select;
 mod inlined_object_make;
 mod ladders;

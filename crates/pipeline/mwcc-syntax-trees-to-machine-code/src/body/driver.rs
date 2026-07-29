@@ -1473,6 +1473,9 @@ impl Generator {
         if self.try_inlined_list_append(function)? {
             return Ok(());
         }
+        if self.try_inlined_doubly_linked_list_transfer(function)? {
+            return Ok(());
+        }
         if self.try_linked_list_remove(function)? {
             return Ok(());
         }

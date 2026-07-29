@@ -7,11 +7,11 @@
 #[allow(unused_imports)]
 use super::*;
 
-struct DoublyLinkedListExtract<'a> {
-    list: &'a str,
-    cell: &'a str,
-    previous_offset: i16,
-    next_offset: i16,
+pub(crate) struct DoublyLinkedListExtract<'a> {
+    pub(crate) list: &'a str,
+    pub(crate) cell: &'a str,
+    pub(crate) previous_offset: i16,
+    pub(crate) next_offset: i16,
 }
 
 fn variable(expression: &Expression) -> Option<&str> {
@@ -50,7 +50,7 @@ fn pointer_word(member_type: Type) -> bool {
     matches!(member_type, Type::Pointer(_) | Type::StructPointer { .. })
 }
 
-fn classify(function: &Function) -> Option<DoublyLinkedListExtract<'_>> {
+pub(crate) fn summarize(function: &Function) -> Option<DoublyLinkedListExtract<'_>> {
     let [list, cell] = function.parameters.as_slice() else {
         return None;
     };
@@ -174,7 +174,7 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        let Some(plan) = classify(function) else {
+        let Some(plan) = summarize(function) else {
             return Ok(false);
         };
         let list = self
