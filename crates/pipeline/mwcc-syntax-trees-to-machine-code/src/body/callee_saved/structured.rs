@@ -72,6 +72,7 @@ use super::structured_prologue::{
 use super::structured_value_versions::{
     has_split_value_version, reassignment_live_source, split_reassigned_local_versions,
 };
+use super::structured_variadic_output_frame::StructuredVariadicOutputFrame;
 #[allow(unused_imports)]
 use super::*;
 
@@ -494,6 +495,23 @@ impl Generator {
         else {
             decline!("deferred saved-home planning rejected the body");
         };
+        let int_to_float_conversion_count =
+            self.count_integer_to_float_conversions(function);
+        let variadic_output_frame = (self.behavior.frame_convention
+            == FrameConvention::LinkageFirst)
+            .then(|| {
+                StructuredVariadicOutputFrame::plan(
+                    function,
+                    frame_arrays,
+                    frame_array_bytes,
+                    &frame_scalar_locals,
+                    frame_scalar_parameters.len(),
+                    aggregate_frame_locals.len(),
+                    int_to_float_conversion_count,
+                    &self.variadic_callees,
+                )
+            })
+            .flatten();
         let linkage_first_scalar_local_table_bytes = if frame_arrays.is_empty()
             && frame_scalar_parameters.is_empty()
             && frame_publication.is_none()
@@ -554,6 +572,12 @@ impl Generator {
         } else {
             scalar_only_frame_bytes
         };
+        if let Some(frame) = &variadic_output_frame {
+            local_region_bytes = frame
+                .local_end
+                .checked_sub(8)
+                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+        }
         let float_to_int_conversion_count =
             self.count_float_to_integer_conversions(&function.statements);
         if float_to_int_conversion_count != 0 {
@@ -570,16 +594,18 @@ impl Generator {
                 .checked_sub(8)
                 .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
         }
-        let int_to_float_conversion_count =
-            self.count_integer_to_float_conversions(function);
         if int_to_float_conversion_count != 0 {
-            let occupied_end = 8i16
-                .checked_add(local_region_bytes)
-                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
-            let conversion_base = occupied_end
-                .checked_add(7)
-                .map(|end| end & !7)
-                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+            let conversion_base = if let Some(frame) = &variadic_output_frame {
+                frame.conversion_base
+            } else {
+                let occupied_end = 8i16
+                    .checked_add(local_region_bytes)
+                    .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+                occupied_end
+                    .checked_add(7)
+                    .map(|end| end & !7)
+                    .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?
+            };
             self.plan_int_to_float_scratch(
                 conversion_base,
                 int_to_float_conversion_count,
@@ -1026,17 +1052,21 @@ impl Generator {
                 // allocator's physical saved-register count.
                 extra_scalar_words += deferred_saved_locals.len();
             }
-            let array_offset = match self.behavior.frame_convention {
-                FrameConvention::Predecrement => 8,
-                FrameConvention::LinkageFirst => {
-                    let words = if global_member_search_entry {
-                        extra_scalar_words
-                    } else {
-                        self.entry_parameter_words + extra_scalar_words
-                    };
-                    8 + i16::try_from(words * 4).map_err(|_| {
-                        Diagnostic::error("structured legacy local table is too large")
-                    })?
+            let array_offset = if let Some(frame) = &variadic_output_frame {
+                frame.array_offset
+            } else {
+                match self.behavior.frame_convention {
+                    FrameConvention::Predecrement => 8,
+                    FrameConvention::LinkageFirst => {
+                        let words = if global_member_search_entry {
+                            extra_scalar_words
+                        } else {
+                            self.entry_parameter_words + extra_scalar_words
+                        };
+                        8 + i16::try_from(words * 4).map_err(|_| {
+                            Diagnostic::error("structured legacy local table is too large")
+                        })?
+                    }
                 }
             };
             if !aggregate_frame_locals.is_empty() {
@@ -1061,7 +1091,9 @@ impl Generator {
                 }
             }
             if self.behavior.frame_convention == FrameConvention::LinkageFirst {
-                let occupied_base = if frame_arrays.is_empty()
+                let occupied_base = if variadic_output_frame.is_some() {
+                    8
+                } else if frame_arrays.is_empty()
                     && linkage_first_scalar_local_table_bytes != 0
                 {
                     8
@@ -1074,7 +1106,8 @@ impl Generator {
                 // The legacy value graph retains the terminal pointer alias as
                 // one scalar slot but only rounds this frame to a doubleword.
                 // Ordinary structured frames retain their 16-byte rounding.
-                let alignment = if folded_terminal_pointer_alias
+                let alignment = if variadic_output_frame.is_some()
+                    || folded_terminal_pointer_alias
                     || saved_float_count != 0
                     || (unused_frame_array && !aggregate_frame_locals.is_empty())
                     || !frame_scalar_parameters.is_empty()
@@ -1132,7 +1165,9 @@ impl Generator {
                     .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
             }
             let mut scalar_offset =
-                if frame_arrays.is_empty() {
+                if let Some(frame) = &variadic_output_frame {
+                    frame.scalar_offset
+                } else if frame_arrays.is_empty() {
                     if self.behavior.frame_convention == FrameConvention::LinkageFirst
                         && !frame_scalar_parameters.is_empty()
                     {
