@@ -121,6 +121,7 @@ mod structured_guarded_effect_spawn_schedule;
 mod structured_guarded_aggregate_result_schedule;
 mod structured_guarded_inline_float_schedule;
 mod structured_guarded_float_argument_schedule;
+mod structured_guarded_float_member_update_schedule;
 mod structured_guarded_mutating_inline_linkage;
 mod structured_guarded_mutating_inline_schedule;
 mod structured_expression_visit;

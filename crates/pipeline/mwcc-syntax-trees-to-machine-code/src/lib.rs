@@ -943,6 +943,7 @@ fn lower_function_body(
     generator.schedule_assertion_float_member_return();
     generator.schedule_guarded_member_classifier_chain();
     generator.schedule_guarded_float_argument();
+    generator.schedule_guarded_float_member_updates();
     generator.schedule_shared_right_float_product_pair();
     generator.schedule_shared_float_store_literal(function);
     generator.schedule_frame_vector_accumulation();
