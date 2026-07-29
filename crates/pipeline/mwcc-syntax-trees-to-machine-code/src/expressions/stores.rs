@@ -1561,7 +1561,7 @@ impl Generator {
         // `fctiwz` stack image. Narrow destinations truncate the signed word in
         // the store; a full-width unsigned destination retains C's distinct
         // runtime-helper semantics.
-        if self.is_float_value(value) && !self.is_float_leaf(value) {
+        if self.is_float_value(value) {
             let conversion_type = if pointee == Pointee::UnsignedInt {
                 Type::UnsignedInt
             } else {
