@@ -2339,6 +2339,7 @@ impl Generator {
         self.schedule_repeated_member_address_call_guards();
         self.schedule_guarded_member_receiver_reuse();
         self.schedule_guarded_member_classifier_chain();
+        self.schedule_guarded_float_argument();
         self.schedule_structured_float_store_call_arguments();
         self.schedule_transient_condition_float_call_entry(function);
         self.schedule_entry_initialized_saved_float(function);

@@ -8,7 +8,7 @@ use crate::analysis::{constant_value, is_comparison};
 use crate::generator::{Generator, GENERAL_SCRATCH};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{ArmBody, Expression, Function, Statement, Type};
+use mwcc_syntax_trees::{ArmBody, BinaryOperator, Expression, Function, Statement, Type};
 use std::collections::HashSet;
 
 impl Generator {
@@ -178,12 +178,37 @@ impl Generator {
         ) -> usize {
             statements
                 .iter()
-                .map(|statement| match statement {
+                .enumerate()
+                .map(|(statement_index, statement)| match statement {
                     Statement::Store { target, value } => {
                         expression_count(generator, declared_float_values, target)
                             + expression_count(generator, declared_float_values, value)
                     }
-                    Statement::Assign { value, .. } | Statement::Expression(value) => {
+                    Statement::Assign { name, value } => {
+                        let retained_float_alias = declared_float_values
+                            .contains(name.as_str())
+                            && statements[statement_index + 1..].iter().any(
+                                |later| {
+                                    direct_float_call_uses_local(
+                                        generator,
+                                        later,
+                                        name,
+                                    )
+                                },
+                            );
+                        let retained_float_alias_conversion = if retained_float_alias {
+                            mixed_float_arithmetic_conversion_count(
+                                generator,
+                                declared_float_values,
+                                value,
+                            )
+                        } else {
+                            0
+                        };
+                        retained_float_alias_conversion
+                            + expression_count(generator, declared_float_values, value)
+                    }
+                    Statement::Expression(value) => {
                         expression_count(generator, declared_float_values, value)
                     }
                     Statement::If {
@@ -262,6 +287,81 @@ impl Generator {
                     | Statement::InlineAsm(_) => 0,
                 })
                 .sum()
+        }
+
+        fn mixed_float_arithmetic_conversion_count(
+            generator: &Generator,
+            declared_float_values: &HashSet<&str>,
+            expression: &Expression,
+        ) -> usize {
+            let Expression::Binary {
+                operator:
+                    BinaryOperator::Add
+                    | BinaryOperator::Subtract
+                    | BinaryOperator::Multiply
+                    | BinaryOperator::Divide,
+                left,
+                right,
+            } = expression
+            else {
+                return 0;
+            };
+            let is_float = |value: &Expression| {
+                matches!(
+                    value,
+                    Expression::Variable(name)
+                        if declared_float_values.contains(name.as_str())
+                ) || generator.is_float_value(value)
+                    || generator.is_float_operand(value)
+            };
+            if !is_float(left) && !is_float(right) {
+                return 0;
+            }
+            usize::from(needs_conversion(
+                generator,
+                declared_float_values,
+                left,
+            )) + usize::from(needs_conversion(
+                generator,
+                declared_float_values,
+                right,
+            ))
+        }
+
+        fn direct_float_call_uses_local(
+            generator: &Generator,
+            statement: &Statement,
+            local: &str,
+        ) -> bool {
+            match statement {
+                Statement::Expression(Expression::Call { name, arguments })
+                | Statement::Assign {
+                    value: Expression::Call { name, arguments },
+                    ..
+                } => arguments.iter().enumerate().any(|(index, argument)| {
+                    matches!(
+                        generator
+                            .call_parameter_types
+                            .get(name)
+                            .and_then(|types| types.get(index)),
+                        Some(Type::Float | Type::Double)
+                    ) && matches!(argument, Expression::Variable(name) if name == local)
+                }),
+                Statement::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => then_body
+                    .iter()
+                    .chain(else_body)
+                    .any(|statement| {
+                        direct_float_call_uses_local(generator, statement, local)
+                    }),
+                Statement::Loop { body, .. } => body.iter().any(|statement| {
+                    direct_float_call_uses_local(generator, statement, local)
+                }),
+                _ => false,
+            }
         }
 
         let declared_float_values = declared_float_value_names(function);

@@ -165,7 +165,7 @@ impl Generator {
         let Some(start) = self
             .output
             .instructions
-            .windows(15)
+            .windows(12)
             .position(is_guarded_member_classifier_chain)
         else {
             return;
@@ -542,18 +542,14 @@ fn is_guarded_member_classifier_chain(window: &[Instruction]) -> bool {
         Instruction::BranchAndLink { .. },
         Instruction::CompareWordImmediate { a: 3, .. },
         Instruction::BranchConditionalForward { .. },
-        Instruction::LoadWord { d: 3, a: final_base, offset: final_offset },
-        _,
-        Instruction::BranchAndLink { .. },
+        ..
     ] if saved != entry
         && tested == compared
         && *test_base == entry
         && *classifier_base == saved
         && *kind_base == saved
-        && *final_base == saved
         && test_offset == classifier_offset
-        && test_offset == kind_offset
-        && test_offset == final_offset)
+        && test_offset == kind_offset)
 }
 
 fn entry_register_copy(instruction: &Instruction) -> Option<(u8, u8)> {
