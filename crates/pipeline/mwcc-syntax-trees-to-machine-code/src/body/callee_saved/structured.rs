@@ -2323,6 +2323,7 @@ impl Generator {
         self.schedule_inline_float_pair_final_call();
         self.schedule_inlined_member_address_receiver();
         self.schedule_inlined_store_receiver();
+        self.schedule_unused_array_mutating_inline(function);
         // Each source-level `if` creates a pair of optimizer labels even when
         // both collapse to direct instruction offsets. An explicit `else`
         // contributes its additional arm label. Build 163 exposes those

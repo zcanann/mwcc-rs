@@ -35,7 +35,19 @@ pub(super) fn legacy_statement_body_frame_residue_bytes(
     function: &Function,
     substitutions: usize,
 ) -> usize {
-    if substitutions == 0 || !has_statement_body_frame_residue(&function.statements) {
+    let framed_mutating_inline = function
+        .locals
+        .iter()
+        .any(|local| local.array_length.is_some())
+        && function.statements.iter().any(statement_contains_call)
+        && function
+            .statements
+            .iter()
+            .any(statement_contains_memory_mutation);
+    if substitutions == 0
+        || (!has_statement_body_frame_residue(&function.statements)
+            && !framed_mutating_inline)
+    {
         return 0;
     }
     substitutions * 8
@@ -366,6 +378,68 @@ fn expression_contains_memory_mutation(expression: &Expression) -> bool {
     }
 }
 
+fn statement_contains_memory_mutation(statement: &Statement) -> bool {
+    match statement {
+        Statement::Store { .. } => true,
+        Statement::Assign { value, .. } | Statement::Expression(value) => {
+            expression_contains_memory_mutation(value)
+        }
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expression_contains_memory_mutation(condition)
+                || then_body.iter().any(statement_contains_memory_mutation)
+                || else_body.iter().any(statement_contains_memory_mutation)
+        }
+        Statement::Return(value) => value
+            .as_ref()
+            .is_some_and(expression_contains_memory_mutation),
+        Statement::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            expression_contains_memory_mutation(scrutinee)
+                || arms.iter().any(|arm| match &arm.body {
+                    mwcc_syntax_trees::ArmBody::Return(value) => {
+                        expression_contains_memory_mutation(value)
+                    }
+                    mwcc_syntax_trees::ArmBody::Statements(body) => {
+                        body.iter().any(statement_contains_memory_mutation)
+                    }
+                })
+                || default.as_ref().is_some_and(|arm| match arm {
+                    mwcc_syntax_trees::ArmBody::Return(value) => {
+                        expression_contains_memory_mutation(value)
+                    }
+                    mwcc_syntax_trees::ArmBody::Statements(body) => {
+                        body.iter().any(statement_contains_memory_mutation)
+                    }
+                })
+        }
+        Statement::Loop {
+            initializer,
+            condition,
+            step,
+            body,
+            ..
+        } => {
+            [initializer, condition, step]
+                .into_iter()
+                .flatten()
+                .any(expression_contains_memory_mutation)
+                || body.iter().any(statement_contains_memory_mutation)
+        }
+        Statement::InlineAsm(_)
+        | Statement::Break
+        | Statement::Continue
+        | Statement::Goto(_)
+        | Statement::Label(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,6 +590,30 @@ mod tests {
             },
         ]);
         assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 0);
+    }
+
+    #[test]
+    fn retains_a_mutating_inline_lane_in_an_existing_array_frame() {
+        let mut function = function(vec![
+            call("external"),
+            Statement::Store {
+                target: Expression::Variable("memory".into()),
+                value: Expression::IntegerLiteral(0),
+            },
+        ]);
+        function.locals.push(mwcc_syntax_trees::LocalDeclaration {
+            declared_type: Type::UnsignedChar,
+            name: "scratch".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: Some(8),
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 8);
     }
 
 }
