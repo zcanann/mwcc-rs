@@ -2822,6 +2822,9 @@ mod tests {
     #[path = "call_argument_schedules.rs"]
     mod call_argument_schedules;
 
+    #[path = "narrow_call_result_argument.rs"]
+    mod narrow_call_result_argument;
+
     #[path = "raise_family.rs"]
     mod raise_family;
 

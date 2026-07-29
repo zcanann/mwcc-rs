@@ -1183,6 +1183,15 @@ impl Generator {
                                 .dereferenced_width(base)
                                 .is_some_and(|width| width < 32),
                             Expression::Member { member_type, .. } => member_type.width() < 32,
+                            // A narrow-returning callee has already produced an
+                            // ABI-canonical narrow value in r3. Passing that
+                            // result directly to another narrow parameter does
+                            // not add a caller-side extension, even when the
+                            // signedness differs (`u8 inner(); s8 outer(s8)`).
+                            Expression::Call { name, .. } => self
+                                .call_return_types
+                                .get(name)
+                                .is_some_and(|return_type| return_type.width() < 32),
                             _ => false,
                         };
                         if !argument_is_narrow {
