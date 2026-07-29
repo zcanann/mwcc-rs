@@ -1411,6 +1411,30 @@ fn compile(
         bytes
     };
     let small_data = config.flags.global_addressing == mwcc_versions::GlobalAddressing::SmallData;
+    // Globals retain their position in the parser's complete source-function
+    // stream. Speculative deferred inline candidates can subsequently disappear
+    // from the object, so translate those positions into the emitted stream
+    // before handing them to section and symbol layout.
+    let emitted_function_names: std::collections::HashSet<&str> = machine_functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect();
+    let mut emitted_function_prefix = Vec::with_capacity(unit.functions.len() + 1);
+    let mut emitted_non_static_function_prefix =
+        Vec::with_capacity(unit.functions.len() + 1);
+    emitted_function_prefix.push(0);
+    emitted_non_static_function_prefix.push(0);
+    for function in &unit.functions {
+        let emitted = usize::from(emitted_function_names.contains(function.name.as_str()));
+        emitted_function_prefix.push(emitted_function_prefix.last().copied().unwrap_or(0) + emitted);
+        emitted_non_static_function_prefix.push(
+            emitted_non_static_function_prefix
+                .last()
+                .copied()
+                .unwrap_or(0)
+                + emitted * usize::from(!function.is_static),
+        );
+    }
     let analysis_counter_floor = cxx_analysis_residues
         .as_ref()
         .map_or(0, |capture| capture.next_anonymous_ordinal);
@@ -1460,16 +1484,17 @@ fn compile(
             && global.section.is_none()
             && global.functions_before >= source_function_count;
         let force_upfront = analysis_upfront_globals.contains(&global.name.as_str());
+        let source_position = global.functions_before.min(unit.functions.len());
         let global = &mwcc_syntax_trees::GlobalDeclaration {
             non_static_functions_before: if force_upfront {
                 0
             } else {
-                global.non_static_functions_before
+                emitted_non_static_function_prefix[source_position]
             },
             functions_before: if clamp_tail || force_upfront {
                 0
             } else {
-                global.functions_before
+                emitted_function_prefix[source_position]
             },
             ..global.clone()
         };

@@ -1151,6 +1151,18 @@ impl Generator {
         // local-pointer aliases are not later mistaken for entry parameters.
         self.known_locals
             .extend(function.locals.iter().map(|local| local.name.clone()));
+        // Dolphin's display-list base operations share cross-expression values
+        // whose measured schedules are obscured once generic stores and calls
+        // are lowered independently.
+        if self.try_display_list_base_operation(function)? {
+            return Ok(());
+        }
+        // A 32-byte display-list padding loop is fully determined after its
+        // one-byte write helper has been expanded. Claim that unrolled CTR
+        // transaction before generic local/structured-loop routing.
+        if self.try_display_list_padding_loop(function)? {
+            return Ok(());
+        }
         // A range-guarded global-array element consumed by several calls owns
         // the complete linkage and address schedule. It is already in canonical
         // AST form, so give this exact semantic owner first refusal before any
