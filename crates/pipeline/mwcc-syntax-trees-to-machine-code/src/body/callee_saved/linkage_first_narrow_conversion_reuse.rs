@@ -15,11 +15,24 @@ struct NarrowConversionPacket {
     source: u8,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PrecomputedBooleanPacket {
+    start: usize,
+    conversion: usize,
+    condition: usize,
+    source: u8,
+    reusable: u8,
+}
+
 impl Generator {
     pub(crate) fn reuse_linkage_first_narrow_conversion_value(&mut self) {
         if self.behavior.frame_convention != FrameConvention::LinkageFirst
             || !self.behavior.legacy_float_cast_schedule
         {
+            return;
+        }
+        if let Some(packet) = find_precomputed_boolean_packet(&self.output.instructions) {
+            self.rewrite_precomputed_boolean_packet(packet);
             return;
         }
         let Some(packet) = find_narrow_conversion_packet(&self.output.instructions) else {
@@ -90,6 +103,182 @@ impl Generator {
         self.move_instruction_before(start + 5, start + 2);
         self.move_instruction_before(start + 5, start + 3);
     }
+
+    fn rewrite_precomputed_boolean_packet(&mut self, packet: PrecomputedBooleanPacket) {
+        let start = packet.start;
+        self.output.instructions[start + 1] = Instruction::Negate {
+            d: 4,
+            a: 0,
+        };
+        self.output.instructions[start + 2] = Instruction::AddImmediateCarrying {
+            d: 0,
+            a: 4,
+            immediate: -1,
+        };
+        self.output.instructions[start + 3] = Instruction::SubtractFromExtended {
+            d: 0,
+            a: 0,
+            b: 4,
+        };
+        self.insert_narrow_conversion_instruction(
+            start + 4,
+            Instruction::ClearLeftImmediate {
+                a: packet.reusable,
+                s: 0,
+                clear: 24,
+            },
+        );
+        self.move_instruction_before(start + 5, start + 1);
+
+        let conversion = packet.conversion + 1;
+        let Instruction::LoadFloatDouble { d, .. } =
+            &mut self.output.instructions[conversion + 4]
+        else {
+            unreachable!("the packet recognizer selected the conversion bias load")
+        };
+        *d = 2;
+        let Instruction::FloatSubtractSingle { b, .. } =
+            &mut self.output.instructions[conversion + 7]
+        else {
+            unreachable!("the packet recognizer selected the conversion subtract")
+        };
+        *b = 2;
+        self.move_instruction_before(conversion + 3, conversion);
+        self.move_instruction_before(conversion + 3, conversion + 1);
+        self.move_instruction_before(conversion + 4, conversion + 2);
+        self.move_instruction_before(conversion + 5, conversion + 4);
+
+        self.output.instructions[packet.condition + 1] =
+            Instruction::CompareLogicalWordImmediate {
+                a: packet.reusable,
+                immediate: 0,
+            };
+    }
+
+    fn insert_narrow_conversion_instruction(
+        &mut self,
+        position: usize,
+        instruction: Instruction,
+    ) {
+        self.output.instructions.insert(position, instruction);
+        self.labels.inserted(position, 1);
+        for relocation in &mut self.output.relocations {
+            if relocation.instruction_index >= position {
+                relocation.instruction_index += 1;
+            }
+        }
+        for instruction in &mut self.output.instructions {
+            match instruction {
+                Instruction::BranchConditionalForward { target, .. }
+                | Instruction::Branch { target }
+                    if *target >= position =>
+                {
+                    *target += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn find_precomputed_boolean_packet(
+    instructions: &[Instruction],
+) -> Option<PrecomputedBooleanPacket> {
+    for (start, window) in instructions.windows(6).enumerate() {
+        let (
+            Instruction::ClearLeftImmediate {
+                a: 0,
+                s: source,
+                clear: 24,
+            },
+            Instruction::Negate {
+                d: reusable,
+                a: 0,
+            },
+            Instruction::AddImmediateCarrying {
+                d: 0,
+                a: carrying,
+                immediate: -1,
+            },
+            Instruction::SubtractFromExtended {
+                d: result,
+                a: 0,
+                b: extended,
+            },
+            Instruction::LoadWord { d: 3, a: 1, .. },
+            Instruction::BranchAndLink { .. },
+        ) = (
+            &window[0], &window[1], &window[2], &window[3], &window[4], &window[5],
+        )
+        else {
+            continue;
+        };
+        if reusable != carrying
+            || reusable != result
+            || reusable != extended
+            || !(14..=31).contains(reusable)
+            || !(14..=31).contains(source)
+        {
+            continue;
+        }
+        let conversion = start + 6;
+        let Some(conversion_window) = instructions.get(conversion..conversion + 9) else {
+            continue;
+        };
+        if !matches!(
+            conversion_window,
+            [
+                Instruction::FloatMove { d: 14..=31, b: 1 },
+                Instruction::LoadWord { d: 3, a: 1, .. },
+                Instruction::AddImmediateShifted {
+                    d: 0,
+                    a: 0,
+                    immediate: 17200,
+                },
+                Instruction::StoreWord {
+                    s,
+                    a: 1,
+                    ..
+                },
+                Instruction::LoadFloatDouble { d: 1, a: 0, offset: 0 },
+                Instruction::StoreWord { s: 0, a: 1, .. },
+                Instruction::LoadFloatDouble { d: 0, a: 1, .. },
+                Instruction::FloatSubtractSingle { d: 1, a: 0, b: 1 },
+                Instruction::BranchAndLink { .. },
+            ] if s == reusable
+        ) {
+            continue;
+        }
+        let Some(condition) = instructions[conversion + 9..]
+            .iter()
+            .position(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::ClearLeftImmediateRecord {
+                        a: 0,
+                        s,
+                        clear: 24,
+                    } if s == reusable
+                )
+            })
+            .map(|offset| conversion + 9 + offset)
+        else {
+            continue;
+        };
+        if matches!(
+            instructions.get(condition + 1),
+            Some(Instruction::BranchConditionalForward { .. })
+        ) {
+            return Some(PrecomputedBooleanPacket {
+                start,
+                conversion,
+                condition,
+                source: *source,
+                reusable: *reusable,
+            });
+        }
+    }
+    None
 }
 
 fn find_narrow_conversion_packet(instructions: &[Instruction]) -> Option<NarrowConversionPacket> {
@@ -214,6 +403,92 @@ fn reusable_saved_register(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_a_boolean_computed_before_the_conversion_call() {
+        let instructions = vec![
+            Instruction::ClearLeftImmediate {
+                a: 0,
+                s: 29,
+                clear: 24,
+            },
+            Instruction::Negate { d: 30, a: 0 },
+            Instruction::AddImmediateCarrying {
+                d: 0,
+                a: 30,
+                immediate: -1,
+            },
+            Instruction::SubtractFromExtended {
+                d: 30,
+                a: 0,
+                b: 30,
+            },
+            Instruction::LoadWord {
+                d: 3,
+                a: 1,
+                offset: 24,
+            },
+            Instruction::BranchAndLink {
+                target: "prepare".into(),
+            },
+            Instruction::FloatMove { d: 31, b: 1 },
+            Instruction::LoadWord {
+                d: 3,
+                a: 1,
+                offset: 24,
+            },
+            Instruction::AddImmediateShifted {
+                d: 0,
+                a: 0,
+                immediate: 17200,
+            },
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 36,
+            },
+            Instruction::LoadFloatDouble {
+                d: 1,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 32,
+            },
+            Instruction::LoadFloatDouble {
+                d: 0,
+                a: 1,
+                offset: 32,
+            },
+            Instruction::FloatSubtractSingle { d: 1, a: 0, b: 1 },
+            Instruction::BranchAndLink {
+                target: "animate".into(),
+            },
+            Instruction::ClearLeftImmediateRecord {
+                a: 0,
+                s: 30,
+                clear: 24,
+            },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 16,
+            },
+        ];
+
+        assert_eq!(
+            find_precomputed_boolean_packet(&instructions),
+            Some(PrecomputedBooleanPacket {
+                start: 0,
+                conversion: 6,
+                condition: 15,
+                source: 29,
+                reusable: 30,
+            })
+        );
+    }
 
     #[test]
     fn recognizes_conversion_and_later_repeated_narrow_condition() {
