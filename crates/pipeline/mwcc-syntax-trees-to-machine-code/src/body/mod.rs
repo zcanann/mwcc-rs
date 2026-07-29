@@ -12,6 +12,7 @@ mod member_acceleration_clamp;
 mod member_float_friction_select;
 mod leading_member_store_call;
 mod leading_shared_zero_bitfield_guard;
+mod linker_table_initialization;
 mod inlined_sign_store_schedule;
 mod inlined_acceleration_select_schedule;
 mod inlined_symmetric_float_clamp_schedule;

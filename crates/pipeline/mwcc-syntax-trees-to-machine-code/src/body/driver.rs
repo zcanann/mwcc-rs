@@ -1172,6 +1172,13 @@ impl Generator {
         // local-pointer aliases are not later mistaken for entry parameters.
         self.known_locals
             .extend(function.locals.iter().map(|local| local.name.clone()));
+        // EABI startup walks the ROM-copy and BSS linker tables as one
+        // allocation/scheduling transaction. Recognize the two sentinel loops
+        // and validate both inline helper bodies before generic inlining splits
+        // their shared cursor/register plan apart.
+        if self.try_linker_table_initialization(function)? {
+            return Ok(());
+        }
         // Dolphin's display-list base operations share cross-expression values
         // whose measured schedules are obscured once generic stores and calls
         // are lowered independently.
