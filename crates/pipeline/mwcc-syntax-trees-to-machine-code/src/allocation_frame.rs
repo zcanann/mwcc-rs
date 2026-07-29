@@ -53,9 +53,12 @@ impl Generator {
             i32::from(self.frame_size) - 4 * i32::try_from(required.len()).unwrap_or(i32::MAX);
         if lowest_save < local_end {
             return Err(Diagnostic::error(format!(
-                "allocation needs {} callee-saved slots but the existing frame has capacity for {} (frame growth needed)",
+                "allocation needs {} callee-saved slots but the existing frame has capacity for {} \
+                 (declared {declared:?}, required {required:?}, frame size {}, local end {local_end}; \
+                 frame growth needed)",
                 required.len(),
-                declared.len()
+                declared.len(),
+                self.frame_size,
             )));
         }
         if self.grow_dense_general_save_range(&declared, &required)? {

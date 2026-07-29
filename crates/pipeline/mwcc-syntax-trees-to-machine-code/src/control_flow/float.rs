@@ -82,15 +82,13 @@ impl Generator {
             // on its selected path.
             self.output.has_float_branch = true;
             let (false_options, condition_bit) = self.emit_condition_test(condition)?;
-            let false_arm = self.fresh_label();
-            let join = self.fresh_label();
-            self.emit_branch_conditional_to(false_options, condition_bit, false_arm);
-            self.evaluate_float(when_true, destination)?;
-            self.emit_branch_to(join);
-            self.bind_label(false_arm);
-            self.evaluate_float(when_false, destination)?;
-            self.bind_label(join);
-            return Ok(());
+            return self.emit_float_branch_arms(
+                false_options,
+                condition_bit,
+                when_true,
+                when_false,
+                destination,
+            );
         }
         let comparison_condition = matches!(
             condition,
@@ -107,15 +105,13 @@ impl Generator {
         {
             self.output.has_float_branch = true;
             let (options, condition_bit) = self.emit_condition_test(condition)?;
-            let false_arm = self.fresh_label();
-            let join = self.fresh_label();
-            self.emit_branch_conditional_to(options, condition_bit, false_arm);
-            self.evaluate_float(when_true, destination)?;
-            self.emit_branch_to(join);
-            self.bind_label(false_arm);
-            self.evaluate_float(when_false, destination)?;
-            self.bind_label(join);
-            return Ok(());
+            return self.emit_float_branch_arms(
+                options,
+                condition_bit,
+                when_true,
+                when_false,
+                destination,
+            );
         }
         let Expression::Binary {
             operator,
@@ -144,15 +140,13 @@ impl Generator {
             && self.is_float_located(when_false)
         {
             let (options, condition_bit) = self.emit_condition_test(condition)?;
-            let false_arm = self.fresh_label();
-            let join = self.fresh_label();
-            self.emit_branch_conditional_to(options, condition_bit, false_arm);
-            self.evaluate_float(when_true, destination)?;
-            self.emit_branch_to(join);
-            self.bind_label(false_arm);
-            self.evaluate_float(when_false, destination)?;
-            self.bind_label(join);
-            return Ok(());
+            return self.emit_float_branch_arms(
+                options,
+                condition_bit,
+                when_true,
+                when_false,
+                destination,
+            );
         }
         // Each arm is a float leaf (its value in a register) or the NEGATION of a leaf (the fabs
         // family `cond ? -x : x`: the base is in the register, the arm value is `fneg base`). The
@@ -316,6 +310,34 @@ impl Generator {
         } else {
             Ok((self.float_register_of_leaf(arm)?, false))
         }
+    }
+
+    /// Emit a two-arm floating value while keeping path-local load caches from
+    /// escaping their defining edge. A value materialized only in the true arm
+    /// cannot be reused by the false arm or after the join.
+    fn emit_float_branch_arms(
+        &mut self,
+        false_options: u8,
+        condition_bit: u8,
+        when_true: &Expression,
+        when_false: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
+        let incoming_globals = self.condition_global_values.clone();
+        let incoming_floats = self.condition_float_cache.clone();
+        let false_arm = self.fresh_label();
+        let join = self.fresh_label();
+        self.emit_branch_conditional_to(false_options, condition_bit, false_arm);
+        self.evaluate_float(when_true, destination)?;
+        self.emit_branch_to(join);
+        self.bind_label(false_arm);
+        self.condition_global_values = incoming_globals.clone();
+        self.condition_float_cache = incoming_floats.clone();
+        self.evaluate_float(when_false, destination)?;
+        self.bind_label(join);
+        self.condition_global_values = incoming_globals;
+        self.condition_float_cache = incoming_floats;
+        Ok(())
     }
 
     /// Emit the fall-through arm of a tail float select: `fneg` a negated arm, else `fmr` a leaf that
