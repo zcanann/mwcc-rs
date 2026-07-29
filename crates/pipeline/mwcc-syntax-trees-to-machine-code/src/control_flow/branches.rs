@@ -1813,10 +1813,26 @@ impl Generator {
                     .map(|return_type| {
                         (register, return_type.width(), self.signed_of(*return_type))
                     }),
+                Expression::VirtualCall { return_type, .. }
+                    if return_type.width() < 32
+                        && !matches!(
+                            return_type,
+                            mwcc_syntax_trees::Type::Float | mwcc_syntax_trees::Type::Double
+                        ) =>
+                {
+                    Some((
+                        register,
+                        return_type.width(),
+                        self.signed_of(*return_type),
+                    ))
+                }
                 _ => None,
             });
         if let Some((_, width, narrow_signed)) = narrow {
-            if matches!(condition, Expression::Call { .. })
+            if matches!(
+                condition,
+                Expression::Call { .. } | Expression::VirtualCall { .. }
+            )
                 && self.behavior.narrow_call_zero_test_style
                     == mwcc_versions::NarrowCallZeroTestStyle::SeparateCompare
             {
@@ -1941,7 +1957,9 @@ impl Generator {
         // other newly-supported computed values may use the scratch.
         if matches!(
             operand,
-            Expression::Call { .. } | Expression::CallThrough { .. }
+            Expression::Call { .. }
+                | Expression::CallThrough { .. }
+                | Expression::VirtualCall { .. }
         ) {
             let result = mwcc_target::Eabi::general_result().number;
             self.evaluate_general(operand, result)?;
