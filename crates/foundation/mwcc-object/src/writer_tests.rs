@@ -212,6 +212,7 @@ fn owned_rtti_closures_schedule_base_tables_then_vtable_transactions() {
         is_explicit_zero: false,
         preassigned_anonymous_ordinal: None,
         preassigned_ordinal_advances_counter: false,
+        preassigned_pool_prefix_credit: 0,
         relocations: vec![
             relocation(8, "getAge__4BaseFv"),
             relocation(12, "read__4BaseFv"),
@@ -238,6 +239,7 @@ fn owned_rtti_closures_schedule_base_tables_then_vtable_transactions() {
         is_explicit_zero: false,
         preassigned_anonymous_ordinal: Some(40),
         preassigned_ordinal_advances_counter: true,
+        preassigned_pool_prefix_credit: 0,
         relocations: vec![
             relocation(0, "__RTTI__4Base"),
             relocation(8, "__RTTI__4Core"),
@@ -291,6 +293,7 @@ fn owned_rtti_data_layout_interleaves_names_bases_and_vtables() {
         is_explicit_zero: false,
         preassigned_anonymous_ordinal: None,
         preassigned_ordinal_advances_counter: false,
+        preassigned_pool_prefix_credit: 0,
         relocations,
         non_static_functions_before: 0,
         functions_before: 0,
@@ -346,6 +349,7 @@ fn data_relocations_follow_interleaved_creation_order() {
         is_explicit_zero: false,
         preassigned_anonymous_ordinal: None,
         preassigned_ordinal_advances_counter: false,
+        preassigned_pool_prefix_credit: 0,
         relocations: vec![
             crate::DataRelocation {
                 offset: 0,
@@ -424,8 +428,30 @@ fn data_relocations_follow_interleaved_creation_order() {
 }
 
 #[test]
-fn nonadvancing_analysis_constants_trail_function_constant_pools() {
-    let residue = DataObject {
+fn analysis_constant_placement_is_independent_of_counter_advancement() {
+    let source_constant = DataObject {
+        name: "header_constant",
+        size: 8,
+        alignment: 8,
+        comment_alignment: 8,
+        initial_bytes: Some(vec![0xcc; 8]),
+        is_const: true,
+        force_full_data_section: false,
+        is_static: true,
+        force_active: false,
+        is_explicit_zero: false,
+        preassigned_anonymous_ordinal: None,
+        preassigned_ordinal_advances_counter: false,
+        preassigned_pool_prefix_credit: 0,
+        relocations: Vec::new(),
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: false,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: None,
+    };
+    let trailing = DataObject {
         name: "@190",
         size: 2,
         alignment: 2,
@@ -438,6 +464,7 @@ fn nonadvancing_analysis_constants_trail_function_constant_pools() {
         is_explicit_zero: false,
         preassigned_anonymous_ordinal: Some(190),
         preassigned_ordinal_advances_counter: false,
+        preassigned_pool_prefix_credit: 0,
         relocations: Vec::new(),
         non_static_functions_before: 0,
         functions_before: 0,
@@ -446,6 +473,13 @@ fn nonadvancing_analysis_constants_trail_function_constant_pools() {
         anonymous_adjust: 0,
         section: None,
     };
+    assert!(is_trailing_analysis_constant(&trailing));
+    let residue = DataObject {
+        preassigned_pool_prefix_credit: 4,
+        ..trailing
+    };
+    assert!(!is_trailing_analysis_constant(&residue));
+    assert!(is_interstitial_analysis_constant(&residue));
     let text = [0x4e, 0x80, 0x00, 0x20];
     let function = FunctionObject {
         name: "f",
@@ -474,7 +508,7 @@ fn nonadvancing_analysis_constants_trail_function_constant_pools() {
         weak_inline: false,
         constant_number_gaps: Vec::new(),
         constant_number_adjust: 0,
-        constant_pool_prefix_padding: 0,
+        constant_pool_prefix_padding: 4,
         phantom_externals: Vec::new(),
         post_constant_bump: 0,
         post_function_anonymous_bump: None,
@@ -521,7 +555,7 @@ fn nonadvancing_analysis_constants_trail_function_constant_pools() {
             post_framed_function_anonymous_bump: 0,
         },
         functions: vec![function],
-        data_objects: vec![residue],
+        data_objects: vec![source_constant, residue],
         small_data: true,
         emit_mwcats: false,
         inline_asm_symbols: &[],
@@ -539,10 +573,13 @@ fn nonadvancing_analysis_constants_trail_function_constant_pools() {
     let size = be_u32(&object, header + 20) as usize;
     assert_eq!(
         &object[offset..offset + size],
-        &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0xaa, 0xbb]
+        &[
+            0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xaa, 0xbb, 0, 0, 0, 0, 0, 0,
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+        ]
     );
-    assert_eq!(symbol_value_and_size(&object, "@1"), (0, 8));
     assert_eq!(symbol_value_and_size(&object, "@190"), (8, 2));
+    assert_eq!(symbol_value_and_size(&object, "@1"), (16, 8));
 }
 
 #[test]
@@ -734,6 +771,7 @@ fn leading_pure_vtable_slot_defers_defined_function_symbols() {
         is_explicit_zero: false,
         preassigned_anonymous_ordinal: None,
         preassigned_ordinal_advances_counter: false,
+        preassigned_pool_prefix_credit: 0,
         relocations: vec![crate::DataRelocation {
             offset: 12,
             target: "read__8AbstractFv".into(),
@@ -781,6 +819,7 @@ fn deferred_weak_vtable_waits_for_its_function_reference() {
         is_explicit_zero: false,
         preassigned_anonymous_ordinal: None,
         preassigned_ordinal_advances_counter: false,
+        preassigned_pool_prefix_credit: 0,
         relocations: Vec::new(),
         non_static_functions_before: 0,
         functions_before: 0,
@@ -815,6 +854,7 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             preassigned_ordinal_advances_counter: false,
+            preassigned_pool_prefix_credit: 0,
             relocations: Vec::new(),
             non_static_functions_before: 1,
             functions_before: 1,
@@ -836,6 +876,7 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             preassigned_ordinal_advances_counter: false,
+            preassigned_pool_prefix_credit: 0,
             relocations: vec![crate::DataRelocation {
                 offset: 0,
                 target: "__vt__8Inline".into(),
@@ -949,6 +990,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             preassigned_ordinal_advances_counter: false,
+            preassigned_pool_prefix_credit: 0,
             relocations: Vec::new(),
             non_static_functions_before: 0,
             functions_before: 0,
@@ -970,6 +1012,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             preassigned_ordinal_advances_counter: false,
+            preassigned_pool_prefix_credit: 0,
             relocations: Vec::new(),
             non_static_functions_before: 0,
             functions_before: 0,
@@ -991,6 +1034,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             preassigned_ordinal_advances_counter: false,
+            preassigned_pool_prefix_credit: 0,
             relocations: vec![crate::DataRelocation {
                 offset: 0,
                 target: "full".into(),
@@ -1083,6 +1127,7 @@ fn code_data_anchor_precedes_pools_when_full_data_is_declared_upfront() {
         is_explicit_zero: false,
         preassigned_anonymous_ordinal: None,
         preassigned_ordinal_advances_counter: false,
+        preassigned_pool_prefix_credit: 0,
         relocations: Vec::new(),
         non_static_functions_before: 0,
         functions_before: 0,
@@ -1156,6 +1201,7 @@ fn const_pointer_arrays_emit_reverse_rodata_relocations() {
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             preassigned_ordinal_advances_counter: false,
+            preassigned_pool_prefix_credit: 0,
             relocations: Vec::new(),
             non_static_functions_before: 0,
             functions_before: 0,
@@ -1177,6 +1223,7 @@ fn const_pointer_arrays_emit_reverse_rodata_relocations() {
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             preassigned_ordinal_advances_counter: false,
+            preassigned_pool_prefix_credit: 0,
             relocations: vec![
                 crate::DataRelocation {
                     offset: 0,

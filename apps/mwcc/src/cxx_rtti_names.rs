@@ -65,6 +65,30 @@ pub fn fragmented_debug_counter(
     is_single_fragmented_debug_class(facts).then(|| ordinary_counter.saturating_sub(2))
 }
 
+/// Owned RTTI is materialized after executable-body analysis. Each vtable
+/// ownership transaction reserves one ordinal before the closure-wide baseline
+/// consumed by [`resolve`].
+pub fn owned_closure_analysis_floor(
+    body_counter: u32,
+    globals: &[DefinedGlobal],
+    retained_const_declarators: usize,
+) -> u32 {
+    body_counter
+        .saturating_add(retained_const_declarators as u32)
+        .saturating_add(
+            globals
+                .iter()
+                .filter(|global| {
+                    global.name.starts_with("__vt__")
+                        && global
+                            .relocations
+                            .iter()
+                            .any(|relocation| relocation.target.starts_with("__RTTI__"))
+                })
+                .count() as u32,
+        )
+}
+
 /// Reuse a function-owned string object when it carries the exact bytes of an
 /// RTTI type name. Build 163 performs this pooling before assigning the
 /// remaining RTTI helper ordinals.
@@ -228,7 +252,7 @@ fn owned_closure_ordinal_order(globals: &[DefinedGlobal]) -> Vec<Option<String>>
 mod tests {
     use super::{
         analysis_counter, coalesce_name_strings, fragmented_debug_counter,
-        owned_closure_ordinal_order, AnalysisWeights,
+        owned_closure_analysis_floor, owned_closure_ordinal_order, AnalysisWeights,
     };
     use mwcc_machine_code_to_object::{DataRelocation, DefinedGlobal};
     use mwcc_syntax_trees::CxxInlineOrdinalFacts;
@@ -255,6 +279,7 @@ mod tests {
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             preassigned_ordinal_advances_counter: false,
+            preassigned_pool_prefix_credit: 0,
             relocations: target
                 .map(|target| DataRelocation {
                     offset: 0,
@@ -335,6 +360,20 @@ mod tests {
         assert_eq!(
             owned_closure_ordinal_order(&globals),
             [None, Some(boss_bases.into())]
+        );
+    }
+
+    #[test]
+    fn owned_closure_frontier_follows_bodies_and_vtable_ownership() {
+        let mut first = object("__vt__4Boss", &[0; 12], Some("__RTTI__4Boss"));
+        first.is_static = false;
+        let mut second = object("__vt__4Base", &[0; 12], Some("__RTTI__4Base"));
+        second.is_static = false;
+        let unrelated = object("@10", &[0; 4], None);
+
+        assert_eq!(
+            owned_closure_analysis_floor(452, &[first, unrelated, second], 2),
+            456
         );
     }
 

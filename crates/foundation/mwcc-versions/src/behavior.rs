@@ -819,6 +819,7 @@ pub struct Behavior {
     pub cxx_rtti_inline_definition_label_bump: u8,
     pub weak_vtable_function_symbol_tail: bool,
     pub immediate_weak_caller_scope_label_bump: u8,
+    pub retained_vtable_const_residue_ordinal: Option<u32>,
     /// Whether initialized `T a[] = ...` objects bypass small-data routing.
     pub inferred_array_uses_full_data_section: bool,
     /// Post-resolution optimization of branches written in `asm` functions.
@@ -1339,6 +1340,10 @@ impl Behavior {
                 .build
                 .profile
                 .immediate_weak_caller_scope_label_bump(),
+            retained_vtable_const_residue_ordinal: config
+                .build
+                .profile
+                .retained_vtable_const_residue_ordinal(),
             inferred_array_uses_full_data_section: config
                 .build
                 .profile
@@ -1865,6 +1870,7 @@ mod tests {
         );
         assert_eq!(behavior.frame_convention, FrameConvention::LinkageFirst);
         assert_eq!(behavior.immediate_weak_caller_scope_label_bump, 3);
+        assert_eq!(behavior.retained_vtable_const_residue_ordinal, Some(190));
         assert_eq!(behavior.cxx_inline_control_flow_label_weight, 1);
         assert_eq!(
             behavior.emitted_vtable_inline_control_flow_replay_weight,

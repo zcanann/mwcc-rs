@@ -92,6 +92,7 @@ fn discarded_inline_aggregate_image(
             image.ordinal.saturating_add(ordinal_adjustment as u32),
         ),
         preassigned_ordinal_advances_counter: true,
+        preassigned_pool_prefix_credit: 0,
         relocations: Vec::new(),
         non_static_functions_before: 0,
         functions_before: 0,
@@ -201,16 +202,15 @@ pub fn reference_binding_executable_discount(
 /// Recover Build 163's retained zero halfword from the second analysis pass
 /// which materializes a weak vtable closure.
 ///
-/// The two const automatic declarations have already advanced `base_bump`; the
-/// retained object occupies the resulting ordinal without advancing the
-/// executable function counter again.
+/// The parser samples the declaration-time inline frontier. The retained
+/// object is created before the later vtable replay and joins the ordinary
+/// read-only global frontier; its sparse ordinal remains below executable-body
+/// numbering in the measured units.
 pub fn build163_vtable_const_residue(
     unit: &TranslationUnit,
-    functions: &[MachineFunction],
     build_label: &str,
     optimization: Optimization,
-    initial_anonymous_counter: u8,
-    base_bump: usize,
+    retained_ordinal: Option<u32>,
 ) -> Option<DefinedGlobal> {
     if !matches!(build_label, "GC/1.2.5" | "GC/1.2.5n")
         || optimization == Optimization::O0
@@ -218,30 +218,21 @@ pub fn build163_vtable_const_residue(
             .cxx_inline_ordinal_facts
             .inline_definition_const_local_declarators
             != 2
-        || !functions
-            .iter()
-            .any(|function| function.name == "__ct__20BossAnimationManagerFP7BossMgr")
     {
         return None;
     }
-    let has_expected_vtable = unit.globals.iter().any(|global| {
-        global.is_weak
-            && global.name == "__vt__20BossAnimationManager"
+    let ordinal = retained_ordinal?;
+    let has_owned_vtable = unit.globals.iter().any(|global| {
+        global.name.starts_with("__vt__")
             && global
-                .data_bytes
-                .as_ref()
-                .is_some_and(|bytes| bytes.len() == 0x30)
+                .data_relocations
+                .iter()
+                .any(|(_, target, _)| target.starts_with("__RTTI__"))
     });
-    if !has_expected_vtable {
+    if !has_owned_vtable {
         return None;
     }
 
-    let ordinal = usize::from(initial_anonymous_counter)
-        .saturating_add(base_bump)
-        .saturating_add(
-            unit.cxx_inline_ordinal_facts
-                .inline_definition_const_local_declarators,
-        ) as u32;
     let mut residue = object(ordinal, 2, Some(vec![0, 0]), false);
     residue.alignment = 2;
     // Storage is only halfword-aligned, but Build 163 records the frontend
@@ -249,6 +240,7 @@ pub fn build163_vtable_const_residue(
     residue.comment_alignment = 4;
     residue.is_const = true;
     residue.preassigned_ordinal_advances_counter = false;
+    residue.preassigned_pool_prefix_credit = 4;
     Some(residue)
 }
 
@@ -399,6 +391,7 @@ fn object(
         is_explicit_zero,
         preassigned_anonymous_ordinal: Some(ordinal),
         preassigned_ordinal_advances_counter: true,
+        preassigned_pool_prefix_credit: 0,
         relocations: Vec::new(),
         non_static_functions_before: 0,
         functions_before: 0,

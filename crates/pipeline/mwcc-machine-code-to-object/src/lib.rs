@@ -70,6 +70,10 @@ pub struct DefinedGlobal {
     /// later function-owned anonymous objects. Analysis literals already
     /// participate in the dense source-accounting stream and therefore do not.
     pub preassigned_ordinal_advances_counter: bool,
+    /// Bytes of a later function-pool prefix reservation replaced by this
+    /// non-advancing analysis constant. A nonzero value places the object after
+    /// source constants and before function-owned pools.
+    pub preassigned_pool_prefix_credit: u8,
     /// `ADDR32` data relocations the global's bytes carry (a pointer to a symbol).
     pub relocations: Vec<mwcc_object::DataRelocation>,
     /// Non-static functions defined before this object (source-order symbol interleaving).
@@ -335,6 +339,7 @@ pub fn assemble_object(
             preassigned_anonymous_ordinal: global.preassigned_anonymous_ordinal,
             preassigned_ordinal_advances_counter: global
                 .preassigned_ordinal_advances_counter,
+            preassigned_pool_prefix_credit: global.preassigned_pool_prefix_credit,
             relocations: global.relocations.clone(),
             non_static_functions_before: global.non_static_functions_before,
             functions_before: global.functions_before,

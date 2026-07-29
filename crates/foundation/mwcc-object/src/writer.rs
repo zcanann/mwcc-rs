@@ -82,13 +82,24 @@ fn data_comment_flags(object: &DataObject<'_>) -> u32 {
     weak | force_active
 }
 
-/// Compiler-analysis constants have an absolute analysis ordinal but do not
-/// consume the executable counter. Their symbols are registered with other
-/// upfront analysis data while their bytes trail ordinary function constants.
-fn is_trailing_analysis_constant(object: &DataObject<'_>) -> bool {
+fn is_nonadvancing_analysis_constant(object: &DataObject<'_>) -> bool {
     object.is_const
         && object.preassigned_anonymous_ordinal.is_some()
         && !object.preassigned_ordinal_advances_counter
+}
+
+/// Compiler-analysis constants have an absolute analysis ordinal but do not
+/// consume the executable counter. Most trail ordinary function constants.
+fn is_trailing_analysis_constant(object: &DataObject<'_>) -> bool {
+    is_nonadvancing_analysis_constant(object)
+        && object.preassigned_pool_prefix_credit == 0
+}
+
+/// Some analysis passes materialize their constant after header/source
+/// constants have been retained but before emitted bodies create their pools.
+fn is_interstitial_analysis_constant(object: &DataObject<'_>) -> bool {
+    is_nonadvancing_analysis_constant(object)
+        && object.preassigned_pool_prefix_credit != 0
 }
 
 /// Return `(data-object index, relocation index)` in the compiler's transaction
@@ -622,18 +633,33 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     {
         place(object, ".dtors", &mut dtors_size);
     }
-    // Source const `.sdata2` globals occupy the FRONT of the constant pool
-    // (ahead of any function float constants), in forward declaration order.
-    // Compiler-analysis residues retain upfront symbols but trail the function
-    // pool and are placed after it below.
+    // Source const `.sdata2` globals occupy the FRONT of the constant pool in
+    // forward declaration order. Analysis residues may then occupy a distinct
+    // interstitial phase before function float constants.
     let mut sdata2_global_size = 0u32;
     for object in input
         .data_objects
         .iter()
-        .filter(|object| section_of(object) == ".sdata2" && !is_trailing_analysis_constant(object))
+        .filter(|object| {
+            section_of(object) == ".sdata2"
+                && !is_nonadvancing_analysis_constant(object)
+        })
     {
         place(object, ".sdata2", &mut sdata2_global_size);
     }
+    for object in input
+        .data_objects
+        .iter()
+        .filter(|object| is_interstitial_analysis_constant(object))
+    {
+        place(object, ".sdata2", &mut sdata2_global_size);
+    }
+    let mut interstitial_pool_prefix_credit = input
+        .data_objects
+        .iter()
+        .filter(|object| is_interstitial_analysis_constant(object))
+        .map(|object| usize::from(object.preassigned_pool_prefix_credit))
+        .sum::<usize>();
     let mut sbss2_size = 0u32;
     for object in input
         .data_objects
@@ -1033,7 +1059,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut pooled_offset: HashMap<(u64, u8, bool), u32> = HashMap::new();
     for function in functions {
         let mut offsets = Vec::new();
-        let mut sdata2_prefix_padding = function.constant_pool_prefix_padding as usize;
+        let requested_prefix_padding = function.constant_pool_prefix_padding as usize;
+        let absorbed_prefix_padding =
+            requested_prefix_padding.min(interstitial_pool_prefix_credit);
+        interstitial_pool_prefix_credit -= absorbed_prefix_padding;
+        let mut sdata2_prefix_padding =
+            requested_prefix_padding - absorbed_prefix_padding;
         for constant in &function.constants {
             let mut fresh_slot = |pool: &mut Vec<u8>| {
                 if !constant.force_full_data_section && sdata2_prefix_padding != 0 {
@@ -2984,7 +3015,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for object in input
         .data_objects
         .iter()
-        .skip_while(|object| is_trailing_analysis_constant(object))
+        .skip_while(|object| {
+            object.preassigned_anonymous_ordinal.is_some() && !object.is_weak
+        })
         .take_while(|object| {
             object.is_weak
                 && is_initialized_run_object(object)

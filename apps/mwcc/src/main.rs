@@ -1143,12 +1143,6 @@ fn compile(
             .globals
             .iter()
             .any(|global| global.is_weak && global.name.starts_with("__vt__"));
-    let replay_control_flow_bump = (cxx_inline_facts.control_flow_labels
-        + cxx_inline_facts.instantiated_template_control_flow_labels)
-        * usize::from(
-            u8::from(emits_weak_vtable_closure)
-                * behavior.emitted_vtable_inline_control_flow_replay_weight,
-        );
     let cxx_inline_bump = cxx_analysis_residues::inline_fact_ordinal_bump(
         cxx_inline_facts,
         behavior,
@@ -1170,11 +1164,9 @@ fn compile(
         .then(|| {
             cxx_analysis_residues::build163_vtable_const_residue(
                 &unit,
-                &machine_functions,
                 config.build.label,
                 config.flags.optimization,
-                config.build.initial_anonymous_counter,
-                cxx_inline_bump.saturating_sub(replay_control_flow_bump),
+                behavior.retained_vtable_const_residue_ordinal,
             )
         })
         .flatten();
@@ -1315,6 +1307,7 @@ fn compile(
                 is_explicit_zero: false,
                 preassigned_anonymous_ordinal: None,
                 preassigned_ordinal_advances_counter: false,
+                preassigned_pool_prefix_credit: 0,
                 relocations,
                 section: None,
             });
@@ -1722,6 +1715,7 @@ fn compile(
                                             leading_source_ordinal_bump + string_counter,
                                         ),
                                     preassigned_ordinal_advances_counter: true,
+                                    preassigned_pool_prefix_credit: 0,
                                     relocations: Vec::new(),
                                 });
                                 name
@@ -1773,6 +1767,7 @@ fn compile(
                 is_explicit_zero,
                 preassigned_anonymous_ordinal: None,
                 preassigned_ordinal_advances_counter: false,
+                preassigned_pool_prefix_credit: 0,
                 relocations,
                 section: global.section.clone(),
             });
@@ -1851,6 +1846,7 @@ fn compile(
                     is_explicit_zero: false,
                     preassigned_anonymous_ordinal: None,
                     preassigned_ordinal_advances_counter: false,
+                    preassigned_pool_prefix_credit: 0,
                     relocations: Vec::new(),
                 });
                 continue;
@@ -1888,6 +1884,7 @@ fn compile(
                 is_explicit_zero: false,
                 preassigned_anonymous_ordinal: None,
                 preassigned_ordinal_advances_counter: false,
+                preassigned_pool_prefix_credit: 0,
                 relocations: Vec::new(),
             });
             continue;
@@ -1956,6 +1953,7 @@ fn compile(
             is_explicit_zero,
             preassigned_anonymous_ordinal: None,
             preassigned_ordinal_advances_counter: false,
+            preassigned_pool_prefix_credit: 0,
             relocations: global
                 .data_relocations
                 .iter()
@@ -2008,6 +2006,7 @@ fn compile(
                                                 (leading_source_ordinal_bump != 0)
                                                     .then_some(ordinal),
                                             preassigned_ordinal_advances_counter: true,
+                                            preassigned_pool_prefix_credit: 0,
                                             relocations: Vec::new(),
                                         },
                                     );
@@ -2140,6 +2139,7 @@ fn compile(
                                     is_explicit_zero: false,
                                     preassigned_anonymous_ordinal: None,
                                     preassigned_ordinal_advances_counter: false,
+                                    preassigned_pool_prefix_credit: 0,
                                     relocations: Vec::new(),
                                 },
                             );
@@ -2178,6 +2178,7 @@ fn compile(
                         is_explicit_zero: false,
                         preassigned_anonymous_ordinal: None,
                         preassigned_ordinal_advances_counter: false,
+                        preassigned_pool_prefix_credit: 0,
                         relocations: Vec::new(),
                     });
                     name
@@ -2384,6 +2385,7 @@ fn compile(
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             preassigned_ordinal_advances_counter: false,
+            preassigned_pool_prefix_credit: 0,
             relocations: Vec::new(),
         });
     }
@@ -2425,7 +2427,18 @@ fn compile(
                     .cxx_rtti_inherited_virtual_destructor_label_bump,
                 initial_virtual_discount: behavior.cxx_rtti_initial_virtual_label_discount,
             },
-            analysis_counter_floor,
+            analysis_counter_floor.max(
+                behavior
+                    .cxx_rtti_owned_closure_schedule
+                    .then(|| {
+                        cxx_rtti_names::owned_closure_analysis_floor(
+                            counter,
+                            &defined_globals,
+                            cxx_inline_facts.inline_definition_const_local_declarators,
+                        )
+                    })
+                    .unwrap_or(0),
+            ),
         );
         let rtti_analysis_counter = if config.build.version.0 >= 4 && config.flags.debug_info {
             cxx_rtti_names::fragmented_debug_counter(

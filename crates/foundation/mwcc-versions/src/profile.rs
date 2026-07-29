@@ -1500,6 +1500,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    /// Sparse ordinal of the retained two-byte const-analysis residue created
+    /// by Build 163's first weak-vtable pass.
+    fn retained_vtable_const_residue_ordinal(&self) -> Option<u32> {
+        None
+    }
+
     /// Whether an initialized array whose written length was inferred from `[]`
     /// bypasses the small-data size threshold. Build 163 places writable forms
     /// in `.data` and const forms in `.rodata`; the 2.4.x mainline uses the same
@@ -2160,6 +2166,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn immediate_weak_caller_scope_label_bump(&self) -> u8 {
         3
+    }
+
+    fn retained_vtable_const_residue_ordinal(&self) -> Option<u32> {
+        Some(190)
     }
 
     fn retain_unused_c_inline_asm_symbols(&self) -> bool {
