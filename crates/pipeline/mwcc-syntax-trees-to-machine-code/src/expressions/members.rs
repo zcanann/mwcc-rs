@@ -752,7 +752,7 @@ impl Generator {
             } else {
                 (
                     self.general_register_of_leaf(array)?,
-                    self.general_register_of_leaf(index)?,
+                    self.materialize_index_operand(index)?,
                 )
             };
         if stride.is_power_of_two() {
@@ -863,7 +863,7 @@ impl Generator {
         if !stride.is_power_of_two() {
             return Err(Diagnostic::error("a global struct-array member with a non-power-of-two stride is not supported yet (roadmap)"));
         }
-        let index_register = self.general_register_of_leaf(index)?;
+        let index_register = self.materialize_index_operand(index)?;
         if destination == GENERAL_SCRATCH {
             if self.emit_legacy_global_struct_array_scratch_load(
                 name,
@@ -1789,7 +1789,7 @@ impl Generator {
                 }
             }
             let legacy_index_expression = byte_normalized.unwrap_or(index);
-            let legacy_index = self.general_register_of_leaf(legacy_index_expression)?;
+            let legacy_index = self.materialize_index_operand(legacy_index_expression)?;
             if self.emit_legacy_global_byte_array_variable_load(
                 name,
                 total_size,
@@ -1801,7 +1801,7 @@ impl Generator {
                 return Ok(());
             }
             if let Some(operand) = byte_normalized {
-                let source = self.general_register_of_leaf(operand)?;
+                let source = self.materialize_index_operand(operand)?;
                 let high = self.fresh_virtual_general();
                 self.emit_address_high(high, name);
                 self.output
@@ -1826,7 +1826,7 @@ impl Generator {
                 )?);
                 return Ok(());
             }
-            let index_register = self.general_register_of_leaf(index)?;
+            let index_register = self.materialize_index_operand(index)?;
             let base = self.fresh_virtual_general();
             self.emit_address_high(base, name);
             self.record_relocation(RelocationKind::Addr16Lo, name);
@@ -1843,7 +1843,7 @@ impl Generator {
             )?);
             return Ok(());
         }
-        let index_register = self.general_register_of_leaf(index)?;
+        let index_register = self.materialize_index_operand(index)?;
         if self.emit_legacy_global_array_variable_load(
             name,
             total_size,

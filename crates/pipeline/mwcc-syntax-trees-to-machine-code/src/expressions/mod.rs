@@ -22,6 +22,7 @@ mod global_array_decay;
 mod global_array_index;
 mod globals;
 mod implicit_narrow_store;
+mod index_operand;
 mod indexed_rmw;
 mod members;
 mod narrow_compound;
