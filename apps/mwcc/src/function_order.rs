@@ -106,10 +106,17 @@ fn emit_with_materialized_callees(
 pub(crate) fn apply_weak_vtable_emission_tail<'a>(
     functions: &mut Vec<MachineFunction>,
     vtable_targets: impl IntoIterator<Item = &'a str>,
+    immediate_weak_edges: &[(String, String)],
 ) {
+    let immediate_names: HashSet<&str> = immediate_weak_edges
+        .iter()
+        .map(|(_, body)| body.as_str())
+        .collect();
     let (mut source_functions, weak_functions): (Vec<_>, Vec<_>) = std::mem::take(functions)
         .into_iter()
-        .partition(|function| !function.weak_inline);
+        .partition(|function| {
+            !function.weak_inline || immediate_names.contains(function.name.as_str())
+        });
     if weak_functions.is_empty() {
         *functions = source_functions;
         return;
@@ -368,6 +375,7 @@ mod tests {
                 "getModel__4NodeFv",
                 "concat__4NodeFR8Matrix4f",
             ],
+            &[],
         );
 
         assert_eq!(
@@ -385,6 +393,43 @@ mod tests {
                 "read__8CoreNodeFv",
                 "getAge__5ANodeFv",
                 "orphan__6UnusedFv",
+            ]
+        );
+    }
+
+    #[test]
+    fn caller_requested_weak_body_keeps_its_immediate_position() {
+        let mut requested = function("requested__4NodeFv", false);
+        requested.weak_inline = true;
+        let mut vtable_owned = function("vtable_owned__4NodeFv", false);
+        vtable_owned.weak_inline = true;
+        let mut functions = vec![
+            function("caller", false),
+            requested,
+            function("later_source", false),
+            vtable_owned,
+        ];
+        let edges = vec![(
+            "caller".to_string(),
+            "requested__4NodeFv".to_string(),
+        )];
+
+        apply_weak_vtable_emission_tail(
+            &mut functions,
+            ["requested__4NodeFv", "vtable_owned__4NodeFv"],
+            &edges,
+        );
+
+        assert_eq!(
+            functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "caller",
+                "requested__4NodeFv",
+                "later_source",
+                "vtable_owned__4NodeFv",
             ]
         );
     }

@@ -904,6 +904,10 @@ fn compile(
             "materialized-inline-candidates {:#?}",
             unit.materialized_inline_candidates
         );
+        eprintln!(
+            "immediate-weak-materializations {:#?}",
+            unit.immediate_weak_materializations
+        );
         eprintln!("referenced-materialized-inlines {referenced_materialized_inlines:#?}");
         eprintln!("skipped-inline-names {:#?}", unit.skipped_inline_names);
         for global in unit
@@ -1356,6 +1360,7 @@ fn compile(
         function_order::apply_weak_vtable_emission_tail(
             &mut machine_functions,
             vtable_targets,
+            &unit.immediate_weak_materializations,
         );
     }
     // Deferred inlining has its own translation-unit emission schedule. Keep the
