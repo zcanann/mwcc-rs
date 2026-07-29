@@ -290,6 +290,9 @@ pub struct FunctionObject<'a> {
     /// values account for constants created by an inlined body before the
     /// enclosing function's ordinary anonymous counter position.
     pub constant_number_adjust: i32,
+    /// Zero bytes placed before this function's first newly materialized
+    /// `.sdata2` constant, before applying that constant's natural alignment.
+    pub constant_pool_prefix_padding: u8,
     /// UND externals with no relocation, emitted first among the externals.
     pub phantom_externals: Vec<String>,
     /// `@N` numbers consumed after the constants, before the extab pair.

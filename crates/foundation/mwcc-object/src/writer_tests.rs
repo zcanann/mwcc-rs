@@ -126,6 +126,7 @@ fn weak_function(name: &'static str) -> FunctionObject<'static> {
         weak_inline: true,
         constant_number_gaps: Vec::new(),
         constant_number_adjust: 0,
+        constant_pool_prefix_padding: 0,
         phantom_externals: Vec::new(),
         post_constant_bump: 0,
         post_function_anonymous_bump: None,
@@ -418,6 +419,7 @@ fn nonadvancing_analysis_constants_trail_function_constant_pools() {
         weak_inline: false,
         constant_number_gaps: Vec::new(),
         constant_number_adjust: 0,
+        constant_pool_prefix_padding: 0,
         phantom_externals: Vec::new(),
         post_constant_bump: 0,
         post_function_anonymous_bump: None,
@@ -486,6 +488,113 @@ fn nonadvancing_analysis_constants_trail_function_constant_pools() {
     );
     assert_eq!(symbol_value_and_size(&object, "@1"), (0, 8));
     assert_eq!(symbol_value_and_size(&object, "@190"), (8, 2));
+}
+
+#[test]
+fn function_pool_prefix_padding_precedes_alignment_of_its_first_fresh_slot() {
+    let mut first = weak_function("first");
+    first.constants = vec![Sdata2Constant {
+        bits: 0x1111_1111,
+        byte_width: 4,
+        static_slot: false,
+        image: false,
+        force_new: false,
+        force_full_data_section: false,
+    }];
+    let mut padded = weak_function("padded");
+    padded.constant_pool_prefix_padding = 4;
+    padded.constants = vec![
+        Sdata2Constant {
+            bits: 0x2222_2222,
+            byte_width: 4,
+            static_slot: false,
+            image: false,
+            force_new: false,
+            force_full_data_section: false,
+        },
+        Sdata2Constant {
+            bits: 0x3333_3333,
+            byte_width: 4,
+            static_slot: false,
+            image: false,
+            force_new: false,
+            force_full_data_section: false,
+        },
+        Sdata2Constant {
+            bits: 0x4444_4444,
+            byte_width: 4,
+            static_slot: false,
+            image: false,
+            force_new: false,
+            force_full_data_section: false,
+        },
+        Sdata2Constant {
+            bits: 0x5555_5555_6666_6666,
+            byte_width: 8,
+            static_slot: false,
+            image: false,
+            force_new: false,
+            force_full_data_section: false,
+        },
+    ];
+    let object = write_object(&ObjectInput {
+        source_name: "pool-padding.cpp",
+        object_format: ObjectFormat {
+            comment: CommentFormat {
+                marker: 8,
+                version: (2, 4, 7),
+                pooling_enabled: true,
+            },
+            emb_sda21_offset: 0,
+            code_alignment: 4,
+            sdata2_writable: false,
+            function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
+            asm_absolute_references_before_function: false,
+            weak_vtable_function_symbol_tail: false,
+            owned_rtti_closure_relocation_order: false,
+            initialized_globals_before_deferred_functions: false,
+            local_data_symbols_in_declaration_order: false,
+            small_zero_statics_in_declaration_order: false,
+            small_zero_data_in_declaration_order: false,
+            rodata_anchor_before_data_symbols: false,
+            rodata_anchor_comment_flags: 0,
+            data_relocations_use_section_anchors: false,
+            data_anchor_comment_flags: 0,
+            initial_anonymous_counter: 1,
+            leading_source_anonymous_bump: 0,
+            post_leaf_function_anonymous_bump: 0,
+            post_framed_function_anonymous_bump: 0,
+        },
+        functions: vec![first, padded],
+        data_objects: Vec::new(),
+        small_data: true,
+        emit_mwcats: false,
+        inline_asm_symbols: &[],
+        early_static_function_symbols: &[],
+        early_undefined_externals: &[],
+        section_function_declarations: &[],
+        section_externals: &[],
+        local_symbol_order: &[],
+        debug: None,
+    });
+
+    let sdata2 = section_index(&object, ".sdata2");
+    let header = section_header(&object, sdata2);
+    let offset = be_u32(&object, header + 16) as usize;
+    let size = be_u32(&object, header + 20) as usize;
+    assert_eq!(
+        &object[offset..offset + size],
+        &[
+            0x11, 0x11, 0x11, 0x11, 0, 0, 0, 0, 0x22, 0x22, 0x22, 0x22, 0x33, 0x33,
+            0x33, 0x33, 0x44, 0x44, 0x44, 0x44, 0, 0, 0, 0, 0x55, 0x55, 0x55, 0x55,
+            0x66, 0x66, 0x66, 0x66,
+        ]
+    );
+    assert_eq!(symbol_value_and_size(&object, "@1"), (0, 4));
+    assert_eq!(symbol_value_and_size(&object, "@2"), (8, 4));
+    assert_eq!(symbol_value_and_size(&object, "@3"), (12, 4));
+    assert_eq!(symbol_value_and_size(&object, "@4"), (16, 4));
+    assert_eq!(symbol_value_and_size(&object, "@5"), (24, 8));
 }
 
 #[test]

@@ -866,8 +866,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut pooled_offset: HashMap<(u64, u8, bool), u32> = HashMap::new();
     for function in functions {
         let mut offsets = Vec::new();
+        let mut sdata2_prefix_padding = function.constant_pool_prefix_padding as usize;
         for constant in &function.constants {
-            let fresh_slot = |pool: &mut Vec<u8>| {
+            let mut fresh_slot = |pool: &mut Vec<u8>| {
+                if !constant.force_full_data_section && sdata2_prefix_padding != 0 {
+                    pool.resize(pool.len() + sdata2_prefix_padding, 0);
+                    sdata2_prefix_padding = 0;
+                }
                 // An 8-byte STATIC-SLOT entry is a struct IMAGE (two floats/ints):
                 // it aligns 4, unlike a genuine double constant (align 8).
                 let alignment = constant_alignment(constant) as usize;
@@ -890,14 +895,21 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             // offset and leaves the first slot as the shared one.
             let offset = if constant.force_new {
                 fresh_slot(pool)
+            } else if let Some(&offset) = pooled_offset.get(&(
+                constant.bits,
+                constant.byte_width,
+                constant.force_full_data_section,
+            )) {
+                offset
             } else {
-                *pooled_offset
-                    .entry((
-                        constant.bits,
-                        constant.byte_width,
-                        constant.force_full_data_section,
-                    ))
-                    .or_insert_with(|| fresh_slot(pool))
+                let key = (
+                    constant.bits,
+                    constant.byte_width,
+                    constant.force_full_data_section,
+                );
+                let offset = fresh_slot(pool);
+                pooled_offset.insert(key, offset);
+                offset
             };
             offsets.push(offset);
         }

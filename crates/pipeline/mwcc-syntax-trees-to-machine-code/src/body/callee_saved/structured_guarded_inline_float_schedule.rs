@@ -7,6 +7,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use mwcc_machine_code::RelocationTarget;
 
 impl Generator {
     pub(super) fn schedule_guarded_inline_float_compare(&mut self) {
@@ -76,6 +77,40 @@ impl Generator {
         window[19] = Instruction::FloatMultiplySingle { d: 2, a: 2, c: 3 };
         window[20] = Instruction::FloatMultiplySingle { d: 1, a: 1, c: 2 };
         window[21] = Instruction::FloatCompareOrdered { a: 1, b: 0 };
+
+        let target_at = |instruction_index| {
+            self.output
+                .relocations
+                .iter()
+                .find(|relocation| relocation.instruction_index == instruction_index)
+                .and_then(|relocation| match relocation.target {
+                    RelocationTarget::Constant(index) => Some(index),
+                    _ => None,
+                })
+        };
+        let pool_order = [
+            target_at(plan.start + 13),
+            target_at(plan.start + 11),
+            target_at(plan.start + 15),
+            target_at(plan.start + 8),
+        ];
+        if self.output.constants.len() == 4
+            && pool_order.iter().all(Option::is_some)
+            && self.output.reorder_constants(
+                &pool_order
+                    .into_iter()
+                    .map(Option::unwrap)
+                    .collect::<Vec<_>>(),
+            )
+        {
+            // Build 163 creates the three source floats before the conversion
+            // bias. Two optimizer nodes precede that pool, and the 8-byte bias
+            // alignment consumes one anonymous slot between the float run and
+            // the final double.
+            self.output.constant_number_adjust += 2;
+            self.output.constant_number_gaps.push((3, 1));
+            self.output.constant_pool_prefix_padding = 4;
+        }
     }
 }
 

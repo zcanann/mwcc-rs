@@ -266,6 +266,7 @@ pub fn assemble_object(
             post_function_counter_rollback: function.post_function_counter_rollback,
             constant_number_gaps: function.constant_number_gaps.clone(),
             constant_number_adjust: function.constant_number_adjust,
+            constant_pool_prefix_padding: function.constant_pool_prefix_padding,
             phantom_externals: function.phantom_externals.clone(),
             // The unit's string resolver set these: the function's NEW-string count and the `@N`
             // names of those strings. The writer numbers/emits them at the front of the function's

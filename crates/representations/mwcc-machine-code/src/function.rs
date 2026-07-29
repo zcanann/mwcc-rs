@@ -2,7 +2,7 @@
 
 use crate::frame::FrameInfo;
 use crate::instruction::Instruction;
-use crate::relocation::Relocation;
+use crate::relocation::{Relocation, RelocationTarget};
 
 /// A read-only constant in the `.sdata2` pool: its big-endian bit pattern and
 /// byte width (4 for a single-precision float, 8 for the int->float bias double).
@@ -192,6 +192,10 @@ pub struct MachineFunction {
     /// A negative value represents constants materialized while lowering a
     /// skipped inline, before the ordinary body counter reaches this function.
     pub constant_number_adjust: i32,
+    /// Zero bytes emitted immediately before this function's first fresh
+    /// `.sdata2` pool slot. This models optimizer-created pool boundaries that
+    /// are independent of a constant's own alignment.
+    pub constant_pool_prefix_padding: u8,
     /// Signed adjustment applied only to the names assigned to new function
     /// strings. The counter walk still advances by the number of strings.
     pub string_number_adjust: i32,
@@ -334,6 +338,7 @@ impl MachineFunction {
             has_conversion: false,
             constant_number_gaps: Vec::new(),
             constant_number_adjust: 0,
+            constant_pool_prefix_padding: 0,
             string_number_adjust: 0,
             keep_named_const_scalars: Vec::new(),
             phantom_externals: Vec::new(),
@@ -417,6 +422,41 @@ impl MachineFunction {
         self.constants.len() - 1
     }
 
+    /// Reorder the constant pool and preserve every semantic reference to an
+    /// old slot. The supplied permutation is `new index -> old index`.
+    pub fn reorder_constants(&mut self, order: &[usize]) -> bool {
+        if order.len() != self.constants.len() {
+            return false;
+        }
+        let mut seen = vec![false; order.len()];
+        if order
+            .iter()
+            .any(|&old| old >= order.len() || std::mem::replace(&mut seen[old], true))
+        {
+            return false;
+        }
+
+        let mut new_of_old = vec![0; order.len()];
+        for (new, &old) in order.iter().enumerate() {
+            new_of_old[old] = new;
+        }
+        self.constants = order.iter().map(|&old| self.constants[old]).collect();
+        for relocation in &mut self.relocations {
+            match &mut relocation.target {
+                RelocationTarget::Constant(index)
+                | RelocationTarget::ConstantWithAddend(index, _) => {
+                    *index = new_of_old[*index];
+                }
+                _ => {}
+            }
+        }
+        for (index, _) in &mut self.constant_number_gaps {
+            *index = new_of_old[*index];
+        }
+        self.constant_number_gaps.sort_by_key(|(index, _)| *index);
+        true
+    }
+
     fn intern_constant_slotted(
         &mut self,
         bits: u64,
@@ -468,5 +508,51 @@ impl MachineFunction {
             bytes.extend_from_slice(&word.to_be_bytes());
         }
         bytes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RelocationKind;
+
+    #[test]
+    fn constant_reordering_remaps_relocations_and_number_gaps() {
+        let mut function = MachineFunction::new("probe".to_string());
+        function.intern_constant(0x11, 4);
+        function.intern_constant(0x22, 4);
+        function.intern_constant(0x33, 8);
+        function.relocations = vec![
+            Relocation {
+                instruction_index: 0,
+                kind: RelocationKind::EmbSda21,
+                target: RelocationTarget::Constant(0),
+            },
+            Relocation {
+                instruction_index: 1,
+                kind: RelocationKind::EmbSda21,
+                target: RelocationTarget::ConstantWithAddend(2, 4),
+            },
+        ];
+        function.constant_number_gaps.push((2, 1));
+
+        assert!(function.reorder_constants(&[1, 2, 0]));
+        assert_eq!(
+            function
+                .constants
+                .iter()
+                .map(|constant| constant.bits)
+                .collect::<Vec<_>>(),
+            [0x22, 0x33, 0x11]
+        );
+        assert!(matches!(
+            function.relocations[0].target,
+            RelocationTarget::Constant(2)
+        ));
+        assert!(matches!(
+            function.relocations[1].target,
+            RelocationTarget::ConstantWithAddend(1, 4)
+        ));
+        assert_eq!(function.constant_number_gaps, [(1, 1)]);
     }
 }

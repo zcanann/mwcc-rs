@@ -161,6 +161,7 @@ mod tests {
             weak_inline: false,
             constant_number_gaps: Vec::new(),
             constant_number_adjust: 0,
+            constant_pool_prefix_padding: 0,
             phantom_externals: Vec::new(),
             post_constant_bump: 0,
             post_function_anonymous_bump: None,
