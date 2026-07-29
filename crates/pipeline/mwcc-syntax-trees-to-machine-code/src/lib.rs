@@ -891,6 +891,7 @@ fn lower_function_body(
     generator.normalize_linkage_first_indirect_call_schedule();
     generator.normalize_linkage_first_conversion_frame();
     generator.hoist_normalized_linkage_first_arg_moves();
+    generator.schedule_linkage_first_variadic_frame_entry();
     generator.normalize_scratch_copy_convention();
     generator.schedule_saved_base_call_argument();
     generator.schedule_linkage_first_function_address();
