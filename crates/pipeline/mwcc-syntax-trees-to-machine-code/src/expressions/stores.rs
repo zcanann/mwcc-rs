@@ -23,6 +23,17 @@ impl Generator {
             {
                 let register = location.register;
                 self.evaluate_float(value, destination)?;
+                if matches!(value, Expression::Call { .. })
+                    && self
+                        .transient_condition_float_call_results
+                        .remove(name.as_str())
+                {
+                    self.locations
+                        .get_mut(name.as_str())
+                        .expect("transient condition result remains a float local")
+                        .register = destination;
+                    return Ok(());
+                }
                 if register != destination {
                     self.output.instructions.push(Instruction::FloatMove {
                         d: register,

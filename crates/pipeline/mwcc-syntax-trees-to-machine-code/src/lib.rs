@@ -626,6 +626,7 @@ fn lower_function_body(
         released_float_compare_literal_register: None,
         structured_float_handoff: None,
         retained_float_compare_value: None,
+        transient_condition_float_call_results: Default::default(),
         frame_slots: HashMap::new(),
         structured_aggregate_call_copy_plan: None,
         written_slots: HashSet::new(),

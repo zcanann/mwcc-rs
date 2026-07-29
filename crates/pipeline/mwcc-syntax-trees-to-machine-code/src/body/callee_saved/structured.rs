@@ -53,6 +53,7 @@ use super::structured_home_layout::{
 };
 use super::structured_liveness::{
     read_after_possible_call, read_after_possible_call_in_return,
+    transient_condition_call_result_callee,
 };
 use super::structured_loop_invariants::hoist_iterator_end_sentinels;
 use super::structured_loop_packet_invariants::hoist_repeated_packet_words;
@@ -1982,6 +1983,21 @@ impl Generator {
         // and switches subsequent body uses to the home only after declarations.
         for local in &ephemeral_locals {
             let class = class_of(local.declared_type).expect("eligibility checked");
+            let transient_float_call_result = class == ValueClass::Float
+                && transient_condition_call_result_callee(
+                    &function.statements,
+                    &local.name,
+                )
+                .is_some_and(|callee| {
+                    matches!(
+                        self.call_return_types.get(callee),
+                        Some(Type::Float | Type::Double)
+                    )
+                });
+            if transient_float_call_result {
+                self.transient_condition_float_call_results
+                    .insert(local.name.clone());
+            }
             let alias = pure_local_alias(local)
                 .and_then(|name| self.locations.get(name))
                 .filter(|location| location.class == class)
@@ -2254,6 +2270,7 @@ impl Generator {
         self.schedule_guarded_member_receiver_reuse();
         self.schedule_guarded_member_classifier_chain();
         self.schedule_structured_float_store_call_arguments();
+        self.schedule_transient_condition_float_call_entry(function);
         self.schedule_entry_initialized_saved_float(function);
         self.schedule_structured_aggregate_constructor();
         self.schedule_structured_member_scales_and_compare();

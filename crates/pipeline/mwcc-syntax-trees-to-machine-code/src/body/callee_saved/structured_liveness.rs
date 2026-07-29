@@ -78,8 +78,20 @@ fn flow(
                 then_body,
                 else_body,
             } => {
-                read_after |= expression_reads_name_across_call(condition, name, prior_call);
-                let branch_entry_call = prior_call || expression_has_call(condition);
+                let fresh_condition_call_result =
+                    condition_defines_fresh_call_result(condition, name);
+                if !fresh_condition_call_result {
+                    read_after |=
+                        expression_reads_name_across_call(condition, name, prior_call);
+                }
+                let branch_entry_call = if fresh_condition_call_result {
+                    // The assignment is defined only after its call returns.
+                    // Uses in either selected arm consume that fresh result;
+                    // the candidate's earlier lifetime does not cross the call.
+                    false
+                } else {
+                    prior_call || expression_has_call(condition)
+                };
                 let then_flow = flow(
                     then_body,
                     name,
@@ -225,6 +237,84 @@ fn flow(
     }
 }
 
+/// Whether a condition defines `name` from one final direct-call result.
+///
+/// The assignment expression itself yields the result, so the comparison does
+/// not reread the named local. With no sibling call or read, either selected arm
+/// can continue using the volatile result register without a callee-saved home.
+fn condition_defines_fresh_call_result(condition: &Expression, name: &str) -> bool {
+    condition_fresh_call_result_callee(condition, name).is_some()
+}
+
+fn condition_fresh_call_result_callee<'a>(
+    condition: &'a Expression,
+    name: &str,
+) -> Option<&'a str> {
+    fn assignment_side<'a>(
+        assigned: &'a Expression,
+        sibling: Option<&Expression>,
+        name: &str,
+    ) -> Option<&'a str> {
+        let Expression::Assign { target, value } = assigned else {
+            return None;
+        };
+        let Expression::Call { name: callee, .. } = value.as_ref() else {
+            return None;
+        };
+        (matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name)
+            && !expression_reads_name(value, name)
+            && sibling.is_none_or(|sibling| {
+                !expression_has_call(sibling)
+                    && !expression_reads_name(sibling, name)
+            }))
+        .then_some(callee.as_str())
+    }
+
+    match condition {
+        Expression::Assign { .. } => assignment_side(condition, None, name),
+        Expression::Binary {
+            operator:
+                mwcc_syntax_trees::BinaryOperator::Equal
+                | mwcc_syntax_trees::BinaryOperator::NotEqual
+                | mwcc_syntax_trees::BinaryOperator::Less
+                | mwcc_syntax_trees::BinaryOperator::LessEqual
+                | mwcc_syntax_trees::BinaryOperator::Greater
+                | mwcc_syntax_trees::BinaryOperator::GreaterEqual,
+            left,
+            right,
+        } => {
+            assignment_side(left, Some(right), name)
+                .or_else(|| assignment_side(right, Some(left), name))
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn transient_condition_call_result_callee<'a>(
+    statements: &'a [Statement],
+    name: &str,
+) -> Option<&'a str> {
+    for statement in statements {
+        let Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } = statement
+        else {
+            continue;
+        };
+        if let Some(callee) = condition_fresh_call_result_callee(condition, name) {
+            return Some(callee);
+        }
+        if let Some(callee) = transient_condition_call_result_callee(then_body, name)
+            .or_else(|| transient_condition_call_result_callee(else_body, name))
+        {
+            return Some(callee);
+        }
+    }
+    None
+}
+
 /// Advance call-state through one expression, treating a direct assignment as
 /// a new definition after its right-hand side has been evaluated. This keeps a
 /// loop counter assigned after a call from inheriting the old value's lifetime,
@@ -291,6 +381,61 @@ mod tests {
             else_body: vec![],
         }];
         assert!(read_after_possible_call(&statements, "value", false).read_after_call);
+    }
+
+    #[test]
+    fn a_condition_call_result_used_in_its_arm_stays_volatile() {
+        let statements = vec![Statement::If {
+            condition: Expression::Binary {
+                operator: mwcc_syntax_trees::BinaryOperator::Less,
+                left: Box::new(Expression::Assign {
+                    target: Box::new(Expression::Variable("value".into())),
+                    value: Box::new(Expression::Call {
+                        name: "produce".into(),
+                        arguments: vec![],
+                    }),
+                }),
+                right: Box::new(Expression::FloatLiteral(1.0)),
+            },
+            then_body: vec![Statement::Expression(Expression::Variable(
+                "value".into(),
+            ))],
+            else_body: vec![],
+        }];
+
+        assert!(
+            !read_after_possible_call(&statements, "value", false)
+                .read_after_call
+        );
+    }
+
+    #[test]
+    fn a_condition_call_result_with_a_calling_sibling_needs_a_saved_home() {
+        let statements = vec![Statement::If {
+            condition: Expression::Binary {
+                operator: mwcc_syntax_trees::BinaryOperator::Less,
+                left: Box::new(Expression::Assign {
+                    target: Box::new(Expression::Variable("value".into())),
+                    value: Box::new(Expression::Call {
+                        name: "produce".into(),
+                        arguments: vec![],
+                    }),
+                }),
+                right: Box::new(Expression::Call {
+                    name: "limit".into(),
+                    arguments: vec![],
+                }),
+            },
+            then_body: vec![Statement::Expression(Expression::Variable(
+                "value".into(),
+            ))],
+            else_body: vec![],
+        }];
+
+        assert!(
+            read_after_possible_call(&statements, "value", false)
+                .read_after_call
+        );
     }
 
     #[test]

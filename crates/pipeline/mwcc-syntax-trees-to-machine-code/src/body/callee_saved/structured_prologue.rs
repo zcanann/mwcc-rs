@@ -51,6 +51,40 @@ pub(super) fn uses_dense_saved_register_range(
 }
 
 impl Generator {
+    /// An incoming float that survives a condition call is copied before the
+    /// general saved-parameter pair. The call result itself stays volatile, so
+    /// this is the complete mixed-class entry schedule.
+    pub(super) fn schedule_transient_condition_float_call_entry(
+        &mut self,
+        function: &Function,
+    ) {
+        let has_transient_float_result = function.locals.iter().any(|local| {
+            matches!(local.declared_type, Type::Float | Type::Double)
+                && super::structured_liveness::transient_condition_call_result_callee(
+                    &function.statements,
+                    &local.name,
+                )
+                .is_some()
+        });
+        if !has_transient_float_result {
+            return;
+        }
+        let Some(call) = self
+            .output
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
+        else {
+            return;
+        };
+        let Some(start) = call.checked_sub(3) else {
+            return;
+        };
+        if is_transient_condition_float_entry(&self.output.instructions[start..=call]) {
+            self.move_instruction_before(call - 1, start);
+        }
+    }
+
     /// Establish a saved entry parameter before deriving another saved local
     /// from it. The generic emitter initially derives through the incoming
     /// register between the two save stores. MWCC completes both physical
@@ -270,6 +304,33 @@ impl Generator {
     }
 }
 
+fn is_transient_condition_float_entry(window: &[Instruction]) -> bool {
+    let [
+        Instruction::StoreWord {
+            s: saved_general,
+            a: 1,
+            ..
+        },
+        general_copy,
+        Instruction::FloatMove {
+            d: saved_float,
+            b: incoming_float,
+        },
+        Instruction::BranchAndLink { .. },
+    ] = window
+    else {
+        return false;
+    };
+    register_copy(general_copy)
+        .is_some_and(|(destination, incoming)| {
+            destination == *saved_general
+                && destination >= 14
+                && (3..=10).contains(&incoming)
+        })
+        && *saved_float >= 14
+        && *incoming_float == Eabi::FIRST_FLOAT_ARGUMENT
+}
+
 fn is_saved_parameter_derived_initializer(window: &[Instruction]) -> bool {
     let [
         Instruction::StoreWord {
@@ -374,5 +435,23 @@ mod tests {
         ];
 
         assert!(is_saved_parameter_derived_initializer(&instructions));
+    }
+
+    #[test]
+    fn recognizes_the_mixed_saved_entry_before_a_float_condition_call() {
+        let instructions = [
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::move_register(31, 3),
+            Instruction::FloatMove { d: 31, b: 1 },
+            Instruction::BranchAndLink {
+                target: "produce".into(),
+            },
+        ];
+
+        assert!(is_transient_condition_float_entry(&instructions));
     }
 }

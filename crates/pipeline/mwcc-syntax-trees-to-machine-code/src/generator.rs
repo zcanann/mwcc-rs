@@ -480,6 +480,10 @@ pub(crate) struct Generator {
     /// initializer while later mutation/call uses consume a preserved f1 copy.
     pub(crate) structured_float_handoff: Option<StructuredFloatHandoff>,
     pub(crate) retained_float_compare_value: Option<RetainedFloatCompareValue>,
+    /// Uninitialized float locals whose first definition is a direct call in a
+    /// condition. Assignment lowering binds the name to the comparison value
+    /// instead of manufacturing a second live range for the same call result.
+    pub(crate) transient_condition_float_call_results: HashSet<String>,
     /// Address-taken variables and their stack-frame slots. A name here is
     /// frame-resident: `&v` and type-punned accesses read/write its slot.
     pub(crate) frame_slots: HashMap<String, FrameSlot>,
