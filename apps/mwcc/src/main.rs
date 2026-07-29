@@ -1191,6 +1191,12 @@ fn compile(
     let literal_temporary_bump_discount = cxx_literal_temporaries
         .as_ref()
         .map_or(0, |residues| residues.declaration_bump_discount);
+    let reference_binding_executable_discount =
+        cxx_analysis_residues::reference_binding_executable_discount(
+            cxx_reference_bound_scalar_temporaries,
+            behavior.cxx_reference_binding_executable_label_discount,
+            behavior.cxx_initial_reference_binding_executable_label_discount,
+        );
     let prototype_name_bump = if config
         .build
         .profile
@@ -1207,7 +1213,9 @@ fn compile(
         0
     } else {
         cxx_inline_bump
-            .saturating_sub(literal_temporary_bump_discount)
+            .saturating_sub(
+                literal_temporary_bump_discount + reference_binding_executable_discount,
+            )
             + prototype_name_bump
     };
     if diagnose_syntax_tree {
@@ -1215,6 +1223,7 @@ fn compile(
             "cxx-unit-ordinal-accounting inline={cxx_inline_bump} \
              declaration={unit_declaration_bump} prototype={prototype_name_bump} \
              literal-discount={literal_temporary_bump_discount} \
+             reference-executable-discount={reference_binding_executable_discount} \
              emitted-vtable-replay={emits_weak_vtable_closure}"
         );
     }

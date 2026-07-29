@@ -1410,6 +1410,14 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    fn cxx_member_function_class_definition_label_bump(&self) -> u8 {
+        0
+    }
+
+    fn cxx_initial_member_function_class_definition_label_discount(&self) -> u8 {
+        0
+    }
+
     fn cxx_inline_definition_label_bump(&self) -> u8 {
         0
     }
@@ -1441,6 +1449,14 @@ pub trait CodegenProfile: core::fmt::Debug {
     }
 
     fn cxx_reference_bound_scalar_temporary_label_bump(&self) -> u8 {
+        0
+    }
+
+    fn cxx_reference_binding_executable_label_discount(&self) -> u8 {
+        0
+    }
+
+    fn cxx_initial_reference_binding_executable_label_discount(&self) -> u8 {
         0
     }
 
@@ -2054,6 +2070,22 @@ impl CodegenProfile for Gc233Build163 {
 
     fn cxx_reference_bound_scalar_temporary_label_bump(&self) -> u8 {
         2
+    }
+
+    fn cxx_reference_binding_executable_label_discount(&self) -> u8 {
+        1
+    }
+
+    fn cxx_initial_reference_binding_executable_label_discount(&self) -> u8 {
+        1
+    }
+
+    fn cxx_member_function_class_definition_label_bump(&self) -> u8 {
+        1
+    }
+
+    fn cxx_initial_member_function_class_definition_label_discount(&self) -> u8 {
+        1
     }
 
     fn cxx_inline_control_flow_label_weight(&self) -> u8 {

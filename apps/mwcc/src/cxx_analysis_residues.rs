@@ -113,7 +113,15 @@ pub fn inline_fact_ordinal_bump(
     let control_flow_weight = behavior.cxx_inline_control_flow_label_weight
         + u8::from(emitted_vtable_replay)
             * behavior.emitted_vtable_inline_control_flow_replay_weight;
+    let member_function_class_bump = facts.member_function_class_definitions
+        * usize::from(behavior.cxx_member_function_class_definition_label_bump);
+    let member_function_class_discount = if facts.member_function_class_definitions == 0 {
+        0
+    } else {
+        usize::from(behavior.cxx_initial_member_function_class_definition_label_discount)
+    };
     facts.class_definitions * usize::from(behavior.cxx_class_definition_label_bump)
+        + member_function_class_bump.saturating_sub(member_function_class_discount)
         + facts.inline_definitions * usize::from(behavior.cxx_inline_definition_label_bump)
         + facts.inline_definitions
             * usize::from(behavior.deferred_cxx_inline_definition_label_bump)
@@ -170,6 +178,24 @@ pub fn literal_float_temporaries(
             first_ordinal > u32::from(initial_anonymous_counter).saturating_sub(1),
         ),
     })
+}
+
+/// Work used to discover scalar-reference bindings can precede retained
+/// analysis objects without remaining on the later executable-body frontier.
+/// Build 163 shares the first binding's baseline with the surrounding class
+/// walk, so only subsequent bindings are discounted there.
+pub fn reference_binding_executable_discount(
+    binding_count: usize,
+    per_binding: u8,
+    initial: u8,
+) -> usize {
+    binding_count
+        .saturating_mul(usize::from(per_binding))
+        .saturating_sub(if binding_count == 0 {
+            0
+        } else {
+            usize::from(initial)
+        })
 }
 
 /// Recover Build 163's retained zero halfword from the second analysis pass
@@ -387,11 +413,38 @@ fn object(
 #[cfg(test)]
 mod tests {
     use super::{
-        discarded_inline_aggregate_image, literal_float_temporaries, word_object, zero_capture,
-        zero_object,
+        discarded_inline_aggregate_image, inline_fact_ordinal_bump, literal_float_temporaries,
+        reference_binding_executable_discount, word_object, zero_capture, zero_object,
     };
-    use mwcc_syntax_trees::DiscardedInlineAggregateImage;
-    use mwcc_versions::DiscardedInlineAggregateImageStyle;
+    use mwcc_syntax_trees::{CxxInlineOrdinalFacts, DiscardedInlineAggregateImage};
+    use mwcc_versions::{
+        Behavior, CompilerConfig, DiscardedInlineAggregateImageStyle, GC_1_2_5N,
+    };
+
+    #[test]
+    fn build_163_charges_member_function_classes_after_one_shared_baseline() {
+        let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
+        let facts = CxxInlineOrdinalFacts {
+            class_definitions: 178,
+            member_function_class_definitions: 162,
+            ..CxxInlineOrdinalFacts::default()
+        };
+
+        assert_eq!(inline_fact_ordinal_bump(facts, behavior, false), 161);
+    }
+
+    #[test]
+    fn build_163_executable_frontier_shares_the_first_reference_binding() {
+        let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
+        assert_eq!(
+            reference_binding_executable_discount(
+                25,
+                behavior.cxx_reference_binding_executable_label_discount,
+                behavior.cxx_initial_reference_binding_executable_label_discount,
+            ),
+            24
+        );
+    }
 
     #[test]
     fn residue_objects_preserve_sparse_ordinals_and_storage_class() {

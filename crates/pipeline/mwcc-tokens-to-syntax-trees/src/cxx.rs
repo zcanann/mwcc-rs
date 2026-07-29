@@ -1764,6 +1764,7 @@ impl Parser {
         let mut paren_depth = 0i32;
         let mut explicitly_inline = false;
         let mut member_name: Option<String> = None;
+        let mut has_member_function = false;
         let mut member_parameter_count: Option<usize> = None;
         let mut member_declaration_start = body_start;
         let mut inline_body = None;
@@ -1834,6 +1835,7 @@ impl Parser {
                             .unwrap_or_default();
                         member_name = Some(canonical_operator_member_name(punctuation));
                     }
+                    has_member_function |= member_name.is_some();
                 }
             }
             if begins_member {
@@ -1912,6 +1914,10 @@ impl Parser {
                 Token::BraceClose => {
                     brace_depth -= 1;
                     if brace_depth == 0 {
+                        if has_member_function {
+                            self.cxx_inline_ordinal_facts
+                                .member_function_class_definitions += 1;
+                        }
                         let class_body = self.tokens[body_start..index].to_vec();
                         self.record_dropped_inline_template_instantiations(&class_body);
                         return prototypes;
@@ -2043,6 +2049,8 @@ impl Parser {
         let _ = probe.capture_cxx_class_declarations();
         let facts = probe.cxx_inline_ordinal_facts;
         self.cxx_inline_ordinal_facts.class_definitions += facts.class_definitions;
+        self.cxx_inline_ordinal_facts
+            .member_function_class_definitions += facts.member_function_class_definitions;
         self.cxx_inline_ordinal_facts.inline_definitions += facts.inline_definitions;
         self.cxx_inline_ordinal_facts.inline_definition_parameters +=
             facts.inline_definition_parameters;

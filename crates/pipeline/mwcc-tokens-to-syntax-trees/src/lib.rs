@@ -4279,6 +4279,7 @@ blr\n\
             unit.cxx_inline_ordinal_facts,
             mwcc_syntax_trees::CxxInlineOrdinalFacts {
                 class_definitions: 1,
+                member_function_class_definitions: 1,
                 inline_definitions: 4,
                 inline_definition_parameters: 0,
                 inline_definition_local_declarators: 0,

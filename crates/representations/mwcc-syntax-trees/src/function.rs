@@ -287,6 +287,10 @@ pub enum PointerElement {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CxxInlineOrdinalFacts {
     pub class_definitions: usize,
+    /// Class definitions containing at least one member-function declaration
+    /// or definition. Some early frontends charge this semantic class frontier
+    /// instead of every aggregate definition.
+    pub member_function_class_definitions: usize,
     pub inline_definitions: usize,
     /// Explicit source parameters across in-class inline definitions. Wii 4.3
     /// charges one analysis ordinal per parameter in addition to any written name.

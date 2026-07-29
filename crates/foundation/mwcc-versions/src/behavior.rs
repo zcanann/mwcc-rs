@@ -799,6 +799,8 @@ pub struct Behavior {
     pub nested_anonymous_aggregate_definition_label_weight: u8,
     /// Version-specific weights applied to parser-recorded C++ inline facts.
     pub cxx_class_definition_label_bump: u8,
+    pub cxx_member_function_class_definition_label_bump: u8,
+    pub cxx_initial_member_function_class_definition_label_discount: u8,
     pub cxx_inline_definition_label_bump: u8,
     pub cxx_inline_control_flow_label_weight: u8,
     pub emitted_vtable_inline_control_flow_replay_weight: u8,
@@ -806,6 +808,8 @@ pub struct Behavior {
     pub cxx_trivial_class_temporary_label_bump: u8,
     pub cxx_nontrivial_class_temporary_label_bump: u8,
     pub cxx_reference_bound_scalar_temporary_label_bump: u8,
+    pub cxx_reference_binding_executable_label_discount: u8,
+    pub cxx_initial_reference_binding_executable_label_discount: u8,
     pub cxx_virtual_destructor_label_bump: u8,
     pub cxx_inline_ipa_call_label_bump: u8,
     pub cxx_rtti_virtual_method_label_weight: u8,
@@ -1245,6 +1249,14 @@ impl Behavior {
                 .profile
                 .nested_anonymous_aggregate_definition_label_weight(),
             cxx_class_definition_label_bump: config.build.profile.cxx_class_definition_label_bump(),
+            cxx_member_function_class_definition_label_bump: config
+                .build
+                .profile
+                .cxx_member_function_class_definition_label_bump(),
+            cxx_initial_member_function_class_definition_label_discount: config
+                .build
+                .profile
+                .cxx_initial_member_function_class_definition_label_discount(),
             cxx_inline_definition_label_bump: config
                 .build
                 .profile
@@ -1273,6 +1285,14 @@ impl Behavior {
                 .build
                 .profile
                 .cxx_reference_bound_scalar_temporary_label_bump(),
+            cxx_reference_binding_executable_label_discount: config
+                .build
+                .profile
+                .cxx_reference_binding_executable_label_discount(),
+            cxx_initial_reference_binding_executable_label_discount: config
+                .build
+                .profile
+                .cxx_initial_reference_binding_executable_label_discount(),
             cxx_virtual_destructor_label_bump: config
                 .build
                 .profile
@@ -1861,6 +1881,22 @@ mod tests {
         assert_eq!(
             behavior.cxx_reference_bound_scalar_temporary_label_bump,
             2
+        );
+        assert_eq!(
+            behavior.cxx_reference_binding_executable_label_discount,
+            1
+        );
+        assert_eq!(
+            behavior.cxx_initial_reference_binding_executable_label_discount,
+            1
+        );
+        assert_eq!(
+            behavior.cxx_member_function_class_definition_label_bump,
+            1
+        );
+        assert_eq!(
+            behavior.cxx_initial_member_function_class_definition_label_discount,
+            1
         );
         assert!(!behavior.emit_leaf_frame_unwind);
         assert!(behavior.constant_join_return_precedes_lr_reload);
