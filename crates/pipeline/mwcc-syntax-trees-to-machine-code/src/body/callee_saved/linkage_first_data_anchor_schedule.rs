@@ -17,6 +17,8 @@ impl Generator {
         }
         if is_four_home_anchor_prefix(&self.output.instructions, self.frame_size) {
             self.schedule_four_home_data_anchor_frame();
+        } else if is_two_home_anchor_prefix(&self.output.instructions, self.frame_size) {
+            self.schedule_two_home_data_anchor_frame();
         }
         normalize_data_anchor_array_lookup(&mut self.output.instructions);
     }
@@ -92,6 +94,251 @@ impl Generator {
 
         normalize_terminal_saved_parameter_forward(&mut self.output.instructions);
     }
+
+    fn schedule_two_home_data_anchor_frame(&mut self) {
+        // Save and derive the retained receiver before redefining r3 as the
+        // section-base staging lane.
+        self.move_instruction_before(6, 4);
+        self.move_instruction_before(7, 5);
+        let Instruction::AddImmediateShifted { d, .. } = &mut self.output.instructions[6] else {
+            unreachable!("the two-home data-anchor high half was matched")
+        };
+        *d = 3;
+        let Instruction::AddImmediate { a, .. } = &mut self.output.instructions[7] else {
+            unreachable!("the two-home data-anchor low half was matched")
+        };
+        *a = 3;
+
+        if let Some(start) = first_two_home_float_call_arguments(&self.output.instructions) {
+            self.move_instruction_before(start + 2, start);
+            self.move_instruction_before(start + 3, start + 2);
+        }
+        if let Some((from, to)) =
+            two_home_first_result_initialization(&self.output.instructions)
+        {
+            self.move_instruction_before(from, to);
+        }
+        if let Some(copy) = two_home_result_copy(&self.output.instructions) {
+            self.output.instructions[copy] = Instruction::move_register(31, 3);
+        }
+        if let Some((frame_argument, first_initializer)) =
+            two_home_frame_argument_schedule(&self.output.instructions)
+        {
+            self.move_instruction_before(frame_argument, first_initializer);
+        }
+        if let Some(start) = two_home_terminal_variadic_arguments(&self.output.instructions) {
+            self.move_instruction_before(start + 6, start + 1);
+            self.move_instruction_before(start + 6, start + 4);
+        }
+    }
+}
+
+fn is_two_home_anchor_prefix(instructions: &[Instruction], frame_size: i16) -> bool {
+    matches!(
+        instructions,
+        [
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset },
+            Instruction::StoreWord { s: 31, a: 1, .. },
+            Instruction::AddImmediateShifted {
+                d: 5,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 31,
+                a: 5,
+                immediate: 0,
+            },
+            Instruction::StoreWord { s: 30, a: 1, .. },
+            Instruction::LoadWord {
+                d: 30,
+                a: 3,
+                offset: 44,
+            },
+            ..
+        ] if *offset == -frame_size
+    )
+}
+
+fn first_two_home_float_call_arguments(instructions: &[Instruction]) -> Option<usize> {
+    instructions.windows(4).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: 0,
+                    immediate: 0,
+                },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 0,
+                    immediate: 0,
+                },
+                Instruction::LoadFloatSingle { d: 1, a: 31, .. },
+                Instruction::LoadFloatSingle { d: 2, a: 31, .. },
+            ]
+        )
+    })
+}
+
+fn two_home_first_result_initialization(instructions: &[Instruction]) -> Option<(usize, usize)> {
+    if let Some(start) = instructions.windows(7).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::StoreWord {
+                    s: 3,
+                    a: 30,
+                    offset: 20,
+                },
+                Instruction::LoadFloatSingle { d: 0, .. },
+                Instruction::StoreFloatSingle {
+                    s: 0,
+                    a: 3,
+                    offset: 36,
+                },
+                Instruction::LoadFloatSingle { d: 0, .. },
+                Instruction::StoreFloatSingle {
+                    s: 0,
+                    a: 3,
+                    offset: 40,
+                },
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 0,
+                    immediate: 2,
+                },
+                Instruction::StoreByte {
+                    s: 0,
+                    a: 3,
+                    offset: 74,
+                },
+            ]
+        )
+    }) {
+        return Some((start + 5, start + 1));
+    }
+    instructions
+        .windows(6)
+        .position(|window| {
+            matches!(
+                window,
+                [
+                    Instruction::StoreWord {
+                        s: 3,
+                        a: 30,
+                        offset: 20,
+                    },
+                    Instruction::LoadFloatSingle { d: 0, .. },
+                    Instruction::StoreFloatSingle {
+                        s: 0,
+                        a: 3,
+                        offset: 36,
+                    },
+                    Instruction::StoreFloatSingle {
+                        s: 0,
+                        a: 3,
+                        offset: 40,
+                    },
+                    Instruction::AddImmediate {
+                        d: 0,
+                        a: 0,
+                        immediate: 2,
+                    },
+                    Instruction::StoreByte {
+                        s: 0,
+                        a: 3,
+                        offset: 74,
+                    },
+                ]
+            )
+        })
+        .map(|start| (start + 4, start + 1))
+}
+
+fn two_home_frame_argument_schedule(instructions: &[Instruction]) -> Option<(usize, usize)> {
+    let result_store = instructions.iter().position(|instruction| {
+        matches!(
+            instruction,
+            Instruction::StoreWord {
+                s: 31,
+                a: 30,
+                offset: 24,
+            }
+        )
+    })?;
+    let tail = instructions.get(result_store + 1..)?;
+    let frame_argument = tail.iter().position(|instruction| {
+        matches!(
+            instruction,
+            Instruction::AddImmediate {
+                d: 3,
+                a: 1,
+                immediate: 20,
+            }
+        )
+    })? + result_store
+        + 1;
+    let first_initializer = result_store + 1;
+    matches!(
+        instructions.get(first_initializer),
+        Some(Instruction::LoadFloatSingle { d: 0, .. })
+    )
+    .then_some((frame_argument, first_initializer))
+}
+
+fn two_home_result_copy(instructions: &[Instruction]) -> Option<usize> {
+    instructions.iter().rposition(|instruction| {
+        matches!(
+            instruction,
+            Instruction::AddImmediate {
+                d: 31,
+                a: 3,
+                immediate: 0,
+            }
+        )
+    })
+}
+
+fn two_home_terminal_variadic_arguments(instructions: &[Instruction]) -> Option<usize> {
+    instructions.windows(8).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 0,
+                    immediate: 1,
+                },
+                Instruction::StoreByte {
+                    s: 0,
+                    a: 31,
+                    offset: 74,
+                },
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: 31,
+                    immediate: 0,
+                },
+                Instruction::LoadFloatSingle { d: 1, .. },
+                Instruction::FloatMove { d: 2, b: 1 },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 1,
+                    immediate: 20,
+                },
+                Instruction::ConditionRegisterSet { d: 6 },
+                Instruction::BranchAndLink { .. },
+            ]
+        )
+    })
 }
 
 fn is_four_home_anchor_prefix(instructions: &[Instruction], frame_size: i16) -> bool {
@@ -385,5 +632,53 @@ mod tests {
                 Instruction::LoadHalfwordZero { d: 4, a: 4, .. },
             ]
         ));
+    }
+
+    #[test]
+    fn selects_the_late_result_copy_after_the_anchor_low_half() {
+        let instructions = vec![
+            Instruction::AddImmediate {
+                d: 31,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::BranchAndLink {
+                target: "allocate".into(),
+            },
+            Instruction::AddImmediate {
+                d: 31,
+                a: 3,
+                immediate: 0,
+            },
+        ];
+
+        assert_eq!(two_home_result_copy(&instructions), Some(2));
+    }
+
+    #[test]
+    fn schedules_alignment_before_duplicate_literal_store_loads_are_reused() {
+        let instructions = vec![
+            Instruction::StoreWord {
+                s: 3,
+                a: 30,
+                offset: 20,
+            },
+            Instruction::LoadFloatSingle { d: 0, a: 0, offset: 0 },
+            Instruction::StoreFloatSingle { s: 0, a: 3, offset: 36 },
+            Instruction::LoadFloatSingle { d: 0, a: 0, offset: 0 },
+            Instruction::StoreFloatSingle { s: 0, a: 3, offset: 40 },
+            Instruction::AddImmediate {
+                d: 0,
+                a: 0,
+                immediate: 2,
+            },
+            Instruction::StoreByte {
+                s: 0,
+                a: 3,
+                offset: 74,
+            },
+        ];
+
+        assert_eq!(two_home_first_result_initialization(&instructions), Some((5, 1)));
     }
 }
