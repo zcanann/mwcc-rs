@@ -426,15 +426,24 @@ impl Generator {
         // aggregate. The lane therefore moves the aggregate up by one word
         // pair but grows the frame only once; treating the two provenances as
         // additive produces an oversized frame and leaves the aggregate at +8.
-        let shares_inline_aggregate_lane = entry_lane_bytes == 8
-            && inline_lane_bytes == 8
-            && physical_saved.len() == 1
-            && self.frame_slots.len() == 1
-            && self.frame_slots.values().all(|slot| {
-                slot.offset == 8
-                    && !slot.is_array
-                    && matches!(slot.value_type, Type::Struct { size: 12, .. })
-            });
+        let aggregate_slots: Vec<_> = self
+            .frame_slots
+            .values()
+            .map(|slot| {
+                (
+                    slot.offset,
+                    matches!(slot.value_type, Type::Struct { size: 12, .. }),
+                    slot.is_array,
+                )
+            })
+            .collect();
+        let shared_inline_aggregate_offset = shared_inline_aggregate_lane_offset(
+            entry_lane_bytes,
+            inline_lane_bytes,
+            physical_saved.len(),
+            &aggregate_slots,
+        );
+        let shares_inline_aggregate_lane = shared_inline_aggregate_offset.is_some();
         // A scalarized statement-body inline uses the eager local's retained
         // lane as its own optimizer residue. The provenance is recorded twice
         // (value origin and inline expansion), but represents one physical
@@ -500,7 +509,7 @@ impl Generator {
             conversion_end.saturating_add(7) & !7
         };
         let new_size = base_size.max(conversion_size);
-        if shares_inline_aggregate_lane {
+        if shared_inline_aggregate_offset == Some(8) {
             let slots: Vec<_> = self
                 .frame_slots
                 .values()
@@ -1438,6 +1447,19 @@ fn compact_linkage_first_saved_frame_size(saved_registers: usize) -> i16 {
         & !7
 }
 
+fn shared_inline_aggregate_lane_offset(
+    entry_lane_bytes: i16,
+    inline_lane_bytes: i16,
+    saved_registers: usize,
+    slots: &[(i16, bool, bool)],
+) -> Option<i16> {
+    let [(offset @ (8 | 16), true, false)] = slots else {
+        return None;
+    };
+    (entry_lane_bytes == 8 && inline_lane_bytes == 8 && saved_registers == 1)
+        .then_some(*offset)
+}
+
 fn constant_result_starts_shared_epilogue(
     instructions: &[Instruction],
     result: usize,
@@ -1543,6 +1565,22 @@ mod tests {
         );
         assert_eq!(
             shared_inline_conversion_entry_lane(true, 0, 8, 16),
+            None
+        );
+    }
+
+    #[test]
+    fn inlined_aggregate_reuses_a_prepositioned_entry_lane() {
+        assert_eq!(
+            shared_inline_aggregate_lane_offset(8, 8, 1, &[(8, true, false)]),
+            Some(8)
+        );
+        assert_eq!(
+            shared_inline_aggregate_lane_offset(8, 8, 1, &[(16, true, false)]),
+            Some(16)
+        );
+        assert_eq!(
+            shared_inline_aggregate_lane_offset(8, 16, 1, &[(16, true, false)]),
             None
         );
     }
