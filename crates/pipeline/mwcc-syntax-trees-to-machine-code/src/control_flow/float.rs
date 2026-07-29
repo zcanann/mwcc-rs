@@ -92,6 +92,31 @@ impl Generator {
             self.bind_label(join);
             return Ok(());
         }
+        let comparison_condition = matches!(
+            condition,
+            Expression::Binary { operator, .. } if is_comparison(*operator)
+        );
+        // A boolean condition or a transformed memory arm has no compact
+        // comparison/leaf select representation. Evaluate each arm only on
+        // its selected path so the arm may use the ordinary scratch while the
+        // result occupies a separate home.
+        if !tail
+            && (!comparison_condition
+                || self.float_select_arm(when_true).is_err()
+                || self.float_select_arm(when_false).is_err())
+        {
+            self.output.has_float_branch = true;
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            let false_arm = self.fresh_label();
+            let join = self.fresh_label();
+            self.emit_branch_conditional_to(options, condition_bit, false_arm);
+            self.evaluate_float(when_true, destination)?;
+            self.emit_branch_to(join);
+            self.bind_label(false_arm);
+            self.evaluate_float(when_false, destination)?;
+            self.bind_label(join);
+            return Ok(());
+        }
         let Expression::Binary {
             operator,
             left,

@@ -39,6 +39,7 @@ mod float_compare_schedules;
 mod float_call_result_promotion;
 mod float_computed_loaded_condition;
 mod float_fused_triplet;
+mod float_memory_conditional;
 mod float_negated_add;
 mod float_negated_product;
 mod float_product_condition;

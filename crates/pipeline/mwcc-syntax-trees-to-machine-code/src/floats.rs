@@ -274,6 +274,15 @@ impl Generator {
                     });
                     return Ok(());
                 }
+                if self.try_emit_float_memory_conditional_add(
+                    *operator,
+                    left,
+                    right,
+                    destination,
+                    double,
+                )? {
+                    return Ok(());
+                }
                 if !fits_single_scratch(expression, destination == FLOAT_SCRATCH) {
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }
