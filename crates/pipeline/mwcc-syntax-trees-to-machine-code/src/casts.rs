@@ -470,19 +470,6 @@ impl Generator {
                 return Ok(());
             }
         }
-        // A narrow integer (char/short) cast to float is first widened to int with
-        // extsb/extsh, and mwcc reschedules the magic-constant idiom around that extra
-        // instruction. That sequence is not modeled, so defer rather than emit the
-        // int-width idiom unextended (wrong bytes for a negative char/short).
-        if self
-            .cast_operand_width(operand)
-            .is_some_and(|width| width < 32)
-            && !self.is_narrow_unsigned_load(operand)?
-        {
-            return Err(mwcc_core::Diagnostic::error(
-                "cast-to-float of a signed narrow (char/short) value is not modeled (roadmap)",
-            ));
-        }
         // The magic bias goes in a register distinct from the assembled value's f0
         // (FLOAT_SCRATCH): the destination when it isn't f0 (a return into f1), else f1
         // for a value/store into f0 — otherwise the assembled `lfd f0` would overwrite
@@ -493,6 +480,38 @@ impl Generator {
         } else {
             FLOAT_FIRST
         };
+        // Narrow register leaves are widened before entering the ordinary
+        // signed/unsigned bias conversion. Build 163 forms that widened value
+        // in r0; the conversion image owner keeps its 0x4330 high word in an
+        // independent virtual register until the low word has been stored.
+        if self
+            .cast_operand_width(operand)
+            .is_some_and(|width| width < 32)
+            && !self.is_narrow_unsigned_load(operand)?
+        {
+            if let Ok((source, width, signed)) = self.leaf_info(operand) {
+                let widened = if self.behavior.legacy_float_cast_schedule {
+                    GENERAL_SCRATCH
+                } else {
+                    self.fresh_virtual_general()
+                };
+                self.emit_widen(widened, source, width, signed);
+                let scratch = self.claim_int_to_float_scratch()?;
+                self.emit_int_to_float_body_at(
+                    widened,
+                    destination,
+                    double,
+                    signed,
+                    bias_register,
+                    IntToFloatSchedule::LeafValue,
+                    scratch,
+                );
+                return Ok(());
+            }
+            return Err(mwcc_core::Diagnostic::error(
+                "cast-to-float of a signed narrow (char/short) value is not modeled (roadmap)",
+            ));
+        }
         if self.is_narrow_unsigned_load(operand)? {
             return self.emit_loaded_unsigned_int_to_float(
                 operand,
