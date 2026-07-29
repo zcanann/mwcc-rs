@@ -26,6 +26,7 @@ pub(crate) fn plan(
     let offsets = source_ordered_data_offsets(
         globals,
         behavior.global_addressing == GlobalAddressing::SmallData,
+        behavior.inferred_array_uses_full_data_section,
     )?;
     let mut referenced = std::collections::HashSet::new();
     for statement in &function.statements {
@@ -145,11 +146,17 @@ fn collect_last_reference_position(
 fn source_ordered_data_offsets(
     globals: &[GlobalDeclaration],
     small_data: bool,
+    inferred_array_uses_full_data_section: bool,
 ) -> Option<std::collections::HashMap<String, i16>> {
     let mut cursor = 0u32;
     let mut offsets = std::collections::HashMap::new();
     for global in globals {
-        let Some((size, alignment)) = initialized_writable_layout(global, small_data)? else {
+        let Some((size, alignment)) = initialized_writable_layout(
+            global,
+            small_data,
+            inferred_array_uses_full_data_section,
+        )?
+        else {
             continue;
         };
         cursor = cursor.div_ceil(alignment) * alignment;
@@ -162,6 +169,7 @@ fn source_ordered_data_offsets(
 fn initialized_writable_layout(
     global: &GlobalDeclaration,
     small_data: bool,
+    inferred_array_uses_full_data_section: bool,
 ) -> Option<Option<(u32, u32)>> {
     if !global.is_data_definition() || global.is_const {
         return Some(None);
@@ -180,7 +188,10 @@ fn initialized_writable_layout(
     };
     let count = u32::from(global.array_length.unwrap_or(1));
     let size = element_size.checked_mul(count)?;
-    if small_data && size <= 8 {
+    let forced_full_data = inferred_array_uses_full_data_section
+        && global.array_length_inferred
+        && !global.is_static;
+    if small_data && size <= 8 && !forced_full_data {
         return Some(None);
     }
     let alignment = natural_alignment
@@ -300,11 +311,32 @@ mod tests {
                 global("c", vec![3; 12]),
             ],
             true,
+            true,
         )
         .unwrap();
 
         assert_eq!(offsets["a"], 0);
         assert_eq!(offsets["b"], 12);
         assert_eq!(offsets["c"], 24);
+    }
+
+    #[test]
+    fn retains_small_inferred_arrays_for_full_data_layout() {
+        let mut inferred = global("inferred", vec![1; 8]);
+        inferred.declared_type = Type::Float;
+        inferred.array_length = Some(2);
+        inferred.array_length_inferred = true;
+        let offsets =
+            source_ordered_data_offsets(&[inferred.clone(), global("large", vec![2; 12])], true, true)
+                .unwrap();
+
+        assert_eq!(offsets["inferred"], 0);
+        assert_eq!(offsets["large"], 8);
+
+        let without_full_data =
+            source_ordered_data_offsets(&[inferred, global("large", vec![2; 12])], true, false)
+                .unwrap();
+        assert!(!without_full_data.contains_key("inferred"));
+        assert_eq!(without_full_data["large"], 0);
     }
 }
