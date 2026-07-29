@@ -93,6 +93,7 @@ mod structured_exclusive_arm_home_layout;
 mod structured_exclusive_arm_mask_packet;
 mod structured_exclusive_arm_object_creation;
 mod structured_exclusive_arm_wide_schedule;
+mod structured_exclusive_inline_arm_schedule;
 mod structured_early_return_schedule;
 mod structured_float_compare;
 mod structured_frame_assignment;
