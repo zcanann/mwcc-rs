@@ -557,6 +557,7 @@ fn lower_function_body(
         structured_global_index_cache: None,
         structured_global_base_cache: None,
         data_section_anchor: body::plan_linkage_first_data_anchor(function, globals, behavior),
+        data_section_anchor_reuses_deferred_home: false,
         structured_array_pool_emitted: false,
         transient_global_index_base: None,
         full_bss_globals: globals

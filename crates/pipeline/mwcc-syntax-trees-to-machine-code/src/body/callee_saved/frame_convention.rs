@@ -397,7 +397,17 @@ impl Generator {
             && entry_lane_bytes == 8
             && inline_lane_bytes == 8
             && physical_saved.len() == 2;
-        let retained_frame_bytes = if shares_inline_aggregate_lane || shares_inline_eager_lane {
+        let shifts_reused_anchor_entry_lane =
+            self.data_section_anchor_reuses_deferred_home
+                && entry_lane_bytes != 0
+                && !self.frame_slots.is_empty();
+        let retained_frame_bytes = if shifts_reused_anchor_entry_lane {
+            // The deferred home has already collapsed one saved-register lane.
+            // The retained entry table therefore occupies alignment slack in
+            // the selected frame: move explicit locals above it without
+            // charging the same lane to the frame size a second time.
+            inline_lane_bytes
+        } else if shares_inline_aggregate_lane || shares_inline_eager_lane {
             entry_lane_bytes.max(inline_lane_bytes)
         } else {
             entry_lane_bytes.saturating_add(inline_lane_bytes)
@@ -437,6 +447,21 @@ impl Generator {
             relayout_frame_slot_displacements(&mut self.output.instructions, &slots, 8);
             for slot in self.frame_slots.values_mut() {
                 slot.offset = slot.offset.saturating_add(8);
+            }
+        }
+        if shifts_reused_anchor_entry_lane {
+            let slots: Vec<_> = self
+                .frame_slots
+                .values()
+                .map(|slot| (slot.offset, i16::try_from(slot.size).unwrap_or(i16::MAX)))
+                .collect();
+            relayout_frame_slot_displacements(
+                &mut self.output.instructions,
+                &slots,
+                entry_lane_bytes,
+            );
+            for slot in self.frame_slots.values_mut() {
+                slot.offset = slot.offset.saturating_add(entry_lane_bytes);
             }
         }
         if let Instruction::StoreWordWithUpdate { offset, .. } = &mut self.output.instructions[0] {

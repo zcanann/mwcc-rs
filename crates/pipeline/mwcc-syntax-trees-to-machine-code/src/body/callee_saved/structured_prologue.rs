@@ -232,17 +232,6 @@ impl Generator {
             offset: frame_size - 4 * (home_index as i16 + 1),
         });
     }
-
-    pub(super) fn emit_structured_saved_home_store_range(
-        &mut self,
-        homes: &[u8],
-        first_home_index: usize,
-        frame_size: i16,
-    ) {
-        for (range_index, &home) in homes.iter().enumerate() {
-            self.emit_structured_saved_home_store(home, first_home_index + range_index, frame_size);
-        }
-    }
 }
 
 #[cfg(test)]

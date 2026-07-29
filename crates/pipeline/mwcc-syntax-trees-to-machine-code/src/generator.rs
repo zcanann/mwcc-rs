@@ -297,6 +297,10 @@ pub(crate) struct Generator {
     /// The virtual register's last member load ends the live range before calls.
     pub(crate) structured_global_base_cache: Option<StructuredGlobalBaseCache>,
     pub(crate) data_section_anchor: Option<DataSectionAnchorPlan>,
+    /// The `.data` anchor occupies a deferred value's home before that value is
+    /// defined. Linkage-first frame normalization shifts the retained entry
+    /// lane into existing alignment slack instead of growing the frame.
+    pub(crate) data_section_anchor_reuses_deferred_home: bool,
     /// The structured frame emitted a pooled automatic-array copy transaction.
     /// Later physical scheduling uses this provenance instead of inferring the
     /// owner from common instructions such as `stmw`.

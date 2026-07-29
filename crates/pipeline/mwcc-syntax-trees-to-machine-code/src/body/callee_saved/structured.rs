@@ -894,14 +894,20 @@ impl Generator {
         let data_section_anchor_home = reused_data_anchor_home_index
             .map(|home_index| homes[home_index])
             .or(standalone_data_anchor_home);
+        self.data_section_anchor_reuses_deferred_home =
+            reused_data_anchor_home_index.is_some();
         if let Some(register) = data_section_anchor_home {
             self.data_section_anchor
                 .as_mut()
                 .expect("the data anchor was planned above")
                 .register = Some(register);
         }
-        let reused_data_anchor_slot =
-            reused_data_anchor_home_index.map(|home_index| saved_home_slot_base + home_index);
+        let frame_slot_for_home = |home_index: usize| match reused_data_anchor_home_index {
+            Some(reused) if home_index == reused => 0,
+            Some(reused) if home_index < reused => home_index + 1,
+            _ => saved_home_slot_base + home_index,
+        };
+        let reused_data_anchor_slot = reused_data_anchor_home_index.map(frame_slot_for_home);
         if let Some(strings) = &loop_assertion_strings {
             self.loop_assertion_string_highs = vec![
                 (strings.file.clone(), homes[value_home_count]),
@@ -910,7 +916,17 @@ impl Generator {
         }
         let mut logical_saved_homes = Vec::with_capacity(total_home_count);
         logical_saved_homes.extend(standalone_data_anchor_home);
-        logical_saved_homes.extend(homes.iter().copied());
+        if let Some(reused) = reused_data_anchor_home_index {
+            logical_saved_homes.push(homes[reused]);
+            logical_saved_homes.extend(
+                homes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, home)| (index != reused).then_some(*home)),
+            );
+        } else {
+            logical_saved_homes.extend(homes.iter().copied());
+        }
         let mut frame_homes = logical_saved_homes.clone();
         frame_homes.resize(frame_saved_count, frame_first_saved as u8);
         let mut plan = mwcc_vreg::FramePlan::with_local_region(frame_homes, local_region_bytes);
@@ -1494,11 +1510,13 @@ impl Generator {
             dense_saved_range && saved_parameter_base != 0 && saved_parameter_homes.len() >= 2;
         if batched_saved_home_stores {
             if !dense_saved_range {
-                self.emit_structured_saved_home_store_range(
-                    &homes[..saved_parameter_base],
-                    saved_home_slot_base,
-                    plan.frame_size,
-                );
+                for (home_index, &home) in homes[..saved_parameter_base].iter().enumerate() {
+                    self.emit_structured_saved_home_store(
+                        home,
+                        frame_slot_for_home(home_index),
+                        plan.frame_size,
+                    );
+                }
             }
             if stagger_dense_parameter_copies {
                 let (name, home, incoming) = saved_parameter_homes
@@ -1520,7 +1538,7 @@ impl Generator {
                     if !dense_saved_range {
                         self.emit_structured_saved_home_store(
                             *home,
-                            saved_home_slot_base + saved_parameter_base + parameter_index,
+                            frame_slot_for_home(saved_parameter_base + parameter_index),
                             plan.frame_size,
                         );
                     }
@@ -1531,7 +1549,7 @@ impl Generator {
             }
             if !dense_saved_range {
                 for (home_index, &home) in homes.iter().enumerate().skip(deferred_home_base) {
-                    let slot = saved_home_slot_base + home_index;
+                    let slot = frame_slot_for_home(home_index);
                     if reused_data_anchor_slot != Some(slot) {
                         self.emit_structured_saved_home_store(home, slot, plan.frame_size);
                     }
@@ -1551,7 +1569,7 @@ impl Generator {
             if !batched_saved_home_stores && !dense_saved_range {
                 self.emit_structured_saved_home_store(
                     home,
-                    saved_home_slot_base + home_index - 1,
+                    frame_slot_for_home(home_index - 1),
                     plan.frame_size,
                 );
             }
@@ -1634,7 +1652,7 @@ impl Generator {
                 if !dense_saved_range {
                     self.emit_structured_saved_home_store(
                         *home,
-                        saved_home_slot_base + home_index - 1,
+                        frame_slot_for_home(home_index - 1),
                         plan.frame_size,
                     );
                 }
@@ -1652,7 +1670,7 @@ impl Generator {
                 continue;
             }
             let home = homes[slot_index];
-            let frame_slot = saved_home_slot_base + slot_index;
+            let frame_slot = frame_slot_for_home(slot_index);
             if !batched_saved_home_stores
                 && !dense_saved_range
                 && reused_data_anchor_slot != Some(frame_slot)
