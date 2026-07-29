@@ -367,6 +367,9 @@ impl Generator {
                 .frame_slots
                 .values()
                 .any(|slot| slot.offset >= guarded_entry_table_end);
+        let guarded_inline_conversion = recorded_saved_entry_home_before_call
+            && self.frame_slots.is_empty()
+            && self.int_to_float_scratch_end != 0;
         // Build 163 keeps dead call-initializer results in its frame-pressure
         // accounting even after eliminating the values. Only that erased-local
         // case exposes the pairwise lane count; ordinary promoted values retain
@@ -454,7 +457,7 @@ impl Generator {
             self.data_section_anchor_reuses_deferred_home
                 && entry_lane_bytes != 0
                 && !self.frame_slots.is_empty();
-        let retained_frame_bytes = if shifts_reused_anchor_entry_lane {
+        let retained_frame_bytes = (if shifts_reused_anchor_entry_lane {
             // The deferred home has already collapsed one saved-register lane.
             // The retained entry table therefore occupies alignment slack in
             // the selected frame: move explicit locals above it without
@@ -466,7 +469,11 @@ impl Generator {
             entry_lane_bytes.max(inline_lane_bytes)
         } else {
             entry_lane_bytes.saturating_add(inline_lane_bytes)
-        };
+        })
+        // A guarded nested value-inline conversion retains one additional
+        // optimizer lane beyond the ordinary entry table. Its stack image is
+        // displaced across both retained tables below.
+        .saturating_add(8 * i16::from(guarded_inline_conversion));
         // The allocator starts from the mainline 16-byte frame convention.
         // Once physical homes are known, a linkage-first frame with no
         // addressable local region owns only the caller linkage words and its
@@ -532,13 +539,16 @@ impl Generator {
             new_size,
         );
         if self.frame_slots.is_empty() && entry_lane_bytes != 0 {
+            let conversion_scratch_shift = entry_lane_bytes.saturating_add(
+                16 * i16::from(guarded_inline_conversion),
+            );
             let scratch_end = self
                 .float_to_int_scratch_end
                 .max(self.int_to_float_scratch_end);
             relayout_planned_conversion_scratch(
                 &mut self.output.instructions,
                 scratch_end,
-                entry_lane_bytes,
+                conversion_scratch_shift,
             );
             for offset in [
                 &mut self.float_to_int_scratch_next,
@@ -547,7 +557,7 @@ impl Generator {
                 &mut self.int_to_float_scratch_end,
             ] {
                 if *offset != 0 {
-                    *offset = (*offset).saturating_add(entry_lane_bytes);
+                    *offset = (*offset).saturating_add(conversion_scratch_shift);
                 }
             }
         }

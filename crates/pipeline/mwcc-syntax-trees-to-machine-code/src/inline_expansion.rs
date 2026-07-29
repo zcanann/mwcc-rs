@@ -2613,6 +2613,69 @@ mod tests {
     }
 
     #[test]
+    fn drops_a_pure_unused_value_inline_argument() {
+        let mut constant = function(
+            "constant",
+            vec![Parameter {
+                parameter_type: Type::StructPointer { element_size: 4 },
+                name: "this".into(),
+            }],
+            Vec::new(),
+        );
+        constant.return_type = Type::Int;
+        constant.return_expression = Some(Expression::IntegerLiteral(7));
+        let mut caller = function("caller", Vec::new(), Vec::new());
+        caller.return_type = Type::Int;
+        caller.return_expression = Some(Expression::Call {
+            name: "constant".into(),
+            arguments: vec![Expression::Variable("global".into())],
+        });
+
+        let expanded = InlineBodySet::analyze(&[constant])
+            .expand_calls(&caller)
+            .expect("the unused pure argument should disappear");
+        assert!(expanded.locals.is_empty());
+        assert!(matches!(
+            expanded.return_expression,
+            Some(Expression::IntegerLiteral(7))
+        ));
+    }
+
+    #[test]
+    fn evaluates_an_impure_unused_value_inline_argument_without_a_temporary() {
+        let mut constant = function(
+            "constant",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "unused".into(),
+            }],
+            Vec::new(),
+        );
+        constant.return_type = Type::Int;
+        constant.return_expression = Some(Expression::IntegerLiteral(7));
+        let mut caller = function("caller", Vec::new(), Vec::new());
+        caller.return_type = Type::Int;
+        caller.return_expression = Some(Expression::Call {
+            name: "constant".into(),
+            arguments: vec![Expression::Call {
+                name: "side_effect".into(),
+                arguments: Vec::new(),
+            }],
+        });
+
+        let expanded = InlineBodySet::analyze(&[constant])
+            .expand_calls(&caller)
+            .expect("the unused impure argument should remain sequenced");
+        assert!(expanded.locals.is_empty());
+        assert!(matches!(
+            expanded.return_expression,
+            Some(Expression::Comma { left, right })
+                if matches!(left.as_ref(), Expression::Call { name, .. } if name == "side_effect")
+                    && matches!(right.as_ref(), Expression::IntegerLiteral(7))
+        ));
+    }
+
+    #[test]
     fn expands_a_single_store_that_consumes_one_impure_argument_once() {
         let setter = function(
             "setter",

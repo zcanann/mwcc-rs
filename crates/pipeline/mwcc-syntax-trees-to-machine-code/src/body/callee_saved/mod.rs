@@ -119,6 +119,7 @@ mod structured_global_base_cache;
 mod structured_guarded_narrow_update;
 mod structured_guarded_effect_spawn_schedule;
 mod structured_guarded_aggregate_result_schedule;
+mod structured_guarded_inline_float_schedule;
 mod structured_guarded_mutating_inline_linkage;
 mod structured_guarded_mutating_inline_schedule;
 mod structured_expression_visit;

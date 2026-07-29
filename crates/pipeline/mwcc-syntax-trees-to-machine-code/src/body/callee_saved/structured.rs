@@ -2348,6 +2348,7 @@ impl Generator {
         self.schedule_guarded_effect_spawn(function);
         if guarded_structured_constant_return {
             self.schedule_guarded_aggregate_result_compare();
+            self.schedule_guarded_inline_float_compare();
         }
         // Each source-level `if` creates a pair of optimizer labels even when
         // both collapse to direct instruction offsets. An explicit `else`

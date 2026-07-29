@@ -341,6 +341,14 @@ pub(super) fn expand_expression(
             let mut argument_initializers = Vec::new();
             let forwards_once_in_order = body.arguments_forwarded_once_in_order();
             for (parameter, argument) in body.source.parameters.iter().zip(arguments) {
+                let use_count =
+                    super::safety::expression_use_count(&body.expression, &parameter.name);
+                if use_count == 0 {
+                    if crate::analysis::expression_has_side_effect(&argument) {
+                        argument_initializers.push(argument);
+                    }
+                    continue;
+                }
                 let pure_single_use = !crate::analysis::expression_has_side_effect(&argument)
                     && body.parameter_used_once_in_forwarded_call(&parameter.name);
                 if forwards_once_in_order
