@@ -262,8 +262,9 @@ fn order_owned_closure_globals(
                 rtti_symbol(class),
             ] {
                 if let Some(global) = by_name.get(&name) {
-                    ordered.push(global.clone());
-                    seen.insert(name);
+                    if seen.insert(name) {
+                        ordered.push(global.clone());
+                    }
                 }
             }
         }
@@ -729,6 +730,85 @@ mod tests {
                 .map(|global| global.name.as_str())
                 .collect::<Vec<_>>(),
             ["__vt__4Boss", "__vt__8CoreNode", "__vt__5ANode"]
+        );
+    }
+
+    #[test]
+    fn overlapping_owned_closures_schedule_shared_helpers_once() {
+        let base = class("Base", &[]);
+        let left = class("Left", &[("Base", 0)]);
+        let right = class("Right", &[("Base", 0)]);
+        let mut generated = vec![
+            data_global(
+                "@@cxx_rtti:4Base:name".into(),
+                b"Base\0".to_vec(),
+                vec![],
+                true,
+                false,
+                4,
+            ),
+            data_global("__RTTI__4Base".into(), vec![0; 8], vec![], true, false, 4),
+            data_global(
+                "@@cxx_rtti:4Left:name".into(),
+                b"Left\0".to_vec(),
+                vec![],
+                true,
+                false,
+                4,
+            ),
+            data_global(
+                "@@cxx_rtti:4Left:bases".into(),
+                vec![0; 12],
+                vec![],
+                true,
+                false,
+                4,
+            ),
+            data_global("__RTTI__4Left".into(), vec![0; 8], vec![], true, false, 4),
+            data_global(
+                "@@cxx_rtti:5Right:name".into(),
+                b"Right\0".to_vec(),
+                vec![],
+                true,
+                false,
+                4,
+            ),
+            data_global(
+                "@@cxx_rtti:5Right:bases".into(),
+                vec![0; 12],
+                vec![],
+                true,
+                false,
+                4,
+            ),
+            data_global("__RTTI__5Right".into(), vec![0; 8], vec![], true, false, 4),
+        ];
+        let classes = HashMap::from([
+            (base.source_name.as_str(), &base),
+            (left.source_name.as_str(), &left),
+            (right.source_name.as_str(), &right),
+        ]);
+
+        order_owned_closure_globals(&mut generated, &[&left, &right], &classes);
+
+        let names = generated
+            .iter()
+            .map(|global| global.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names.len(), 8);
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "@@cxx_rtti:4Base:name")
+                .count(),
+            1
+        );
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "__RTTI__4Base")
+                .count(),
+            1
         );
     }
 
