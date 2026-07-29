@@ -2825,6 +2825,7 @@ mod tests {
     #[path = "narrow_call_result_argument.rs"]
     mod narrow_call_result_argument;
     mod nested_global_index_member;
+    mod comparison_to_float_argument;
 
     #[path = "raise_family.rs"]
     mod raise_family;

@@ -1052,11 +1052,14 @@ impl Generator {
             } = placement
             {
                 if convert_integer {
-                    let source = self.general_register_of_leaf(argument).map_err(|_| {
-                        Diagnostic::error(format!(
-                            "integer argument {index} to '{name}' needs a register before float conversion: {argument:?}"
-                        ))
-                    })?;
+                    let source = self
+                        .materialize_integer_conversion_operand(argument)
+                        .map_err(|mut diagnostic| {
+                            diagnostic.message.push_str(&format!(
+                                " (while materializing integer argument {index} to '{name}' for float conversion)"
+                            ));
+                            diagnostic
+                        })?;
                     let signed = self.signedness_of(argument)?;
                     let scratch = self.claim_int_to_float_scratch()?;
                     self.emit_int_to_float_body_at(

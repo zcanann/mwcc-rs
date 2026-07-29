@@ -457,13 +457,15 @@ impl Generator {
                 } else {
                     mwcc_target::Eabi::float_result().number
                 };
-                self.emit_int_to_float_body(
+                let scratch = self.claim_int_to_float_scratch()?;
+                self.emit_int_to_float_body_at(
                     source,
                     destination,
                     double,
                     signed,
                     bias_register,
                     IntToFloatSchedule::CallResult,
+                    scratch,
                 );
                 return Ok(());
             }
@@ -498,6 +500,21 @@ impl Generator {
                 double,
                 bias_register,
             );
+        }
+        if self.non_leaf || self.int_to_float_scratch_end != 0 {
+            let signed = self.signedness_of(operand)?;
+            let source = self.materialize_integer_conversion_operand(operand)?;
+            let scratch = self.claim_int_to_float_scratch()?;
+            self.emit_int_to_float_body_at(
+                source,
+                destination,
+                double,
+                signed,
+                bias_register,
+                IntToFloatSchedule::LeafValue,
+                scratch,
+            );
+            return Ok(());
         }
         // Signed narrow loads require an additional extsb/extsh whose placement
         // varies independently from the load and bias schedules.
@@ -673,6 +690,15 @@ impl Generator {
         } else {
             0x4330_0000_0000_0000
         };
+        // A computed value may deliberately live in r0 (notably build 163's
+        // comparison-to-float schedule). Keep the 0x4330 image word in an
+        // independent virtual register so instruction scheduling cannot hoist
+        // it across and then lose it to the value computation.
+        let high_word = if source == GENERAL_SCRATCH {
+            self.fresh_virtual_general()
+        } else {
+            GENERAL_SCRATCH
+        };
         self.output.has_conversion = true;
         if self.frame_size < 16 {
             self.frame_size = 16;
@@ -698,7 +724,7 @@ impl Generator {
             });
             self.output
                 .instructions
-                .push(Instruction::load_immediate_shifted(0, 17200));
+                .push(Instruction::load_immediate_shifted(high_word, 17200));
         } else if self.behavior.legacy_float_cast_schedule {
             if signed {
                 self.output
@@ -715,11 +741,11 @@ impl Generator {
                 });
                 self.output
                     .instructions
-                    .push(Instruction::load_immediate_shifted(0, 17200));
+                    .push(Instruction::load_immediate_shifted(high_word, 17200));
             } else {
                 self.output
                     .instructions
-                    .push(Instruction::load_immediate_shifted(0, 17200));
+                    .push(Instruction::load_immediate_shifted(high_word, 17200));
                 self.output.instructions.push(Instruction::StoreWord {
                     s: source,
                     a: 1,
@@ -743,7 +769,7 @@ impl Generator {
             }
             self.output
                 .instructions
-                .push(Instruction::load_immediate_shifted(0, 17200)); // lis r0, 0x4330
+                .push(Instruction::load_immediate_shifted(high_word, 17200));
             if value_store_first {
                 self.output.instructions.push(Instruction::StoreWord {
                     s: source,
@@ -761,7 +787,7 @@ impl Generator {
             }
         }
         self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
+            s: high_word,
             a: 1,
             offset: scratch,
         });

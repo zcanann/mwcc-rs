@@ -558,7 +558,7 @@ impl Generator {
                 .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
         }
         let int_to_float_conversion_count =
-            self.count_integer_call_arguments_to_float(function);
+            self.count_integer_to_float_conversions(function);
         if int_to_float_conversion_count != 0 {
             let occupied_end = 8i16
                 .checked_add(local_region_bytes)

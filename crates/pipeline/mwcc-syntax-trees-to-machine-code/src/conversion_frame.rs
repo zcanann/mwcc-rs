@@ -4,8 +4,8 @@
 //! frame owners must reserve those images before emitting their prologue;
 //! simpler functions may discover them lazily and grow their single frame push.
 
-use crate::analysis::constant_value;
-use crate::generator::Generator;
+use crate::analysis::{constant_value, is_comparison};
+use crate::generator::{Generator, GENERAL_SCRATCH};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{ArmBody, Expression, Function, Statement, Type};
@@ -14,11 +14,10 @@ impl Generator {
     /// Count prototype-directed integer call arguments that need floating
     /// conversion images. Existing cast/store/arithmetic paths retain their
     /// established frame ownership.
-    pub(crate) fn count_integer_call_arguments_to_float(&self, function: &Function) -> usize {
+    pub(crate) fn count_integer_to_float_conversions(&self, function: &Function) -> usize {
         fn needs_conversion(generator: &Generator, expression: &Expression) -> bool {
             !(generator.is_float_value(expression) || generator.is_float_operand(expression))
                 && constant_value(expression).is_none()
-                && generator.general_register_of_leaf(expression).is_ok()
         }
 
         fn expression_count(generator: &Generator, expression: &Expression) -> usize {
@@ -29,7 +28,15 @@ impl Generator {
                 Expression::Binary { left, right, .. } | Expression::Comma { left, right } => {
                     expression_count(generator, left) + expression_count(generator, right)
                 }
-                Expression::Cast { operand, .. } => expression_count(generator, operand),
+                Expression::Cast {
+                    target_type,
+                    operand,
+                } => {
+                    usize::from(
+                        matches!(target_type, Type::Float | Type::Double)
+                            && needs_conversion(generator, operand),
+                    ) + expression_count(generator, operand)
+                }
                 Expression::Call { name, arguments } => {
                     let contextual = arguments
                         .iter()
@@ -193,6 +200,34 @@ impl Generator {
                 .return_expression
                 .as_ref()
                 .map_or(0, |value| expression_count(self, value))
+    }
+
+    /// Place an integer expression that is about to be converted to floating
+    /// point. Leaf values retain their homes; comparisons and other computed
+    /// values are evaluated into an allocator-owned virtual register before
+    /// the conversion image is assembled.
+    pub(crate) fn materialize_integer_conversion_operand(
+        &mut self,
+        expression: &Expression,
+    ) -> Compilation<u8> {
+        if let Ok(register) = self.general_register_of_leaf(expression) {
+            return Ok(register);
+        }
+        let register = if self.behavior.legacy_float_cast_schedule
+            && matches!(
+                expression,
+                Expression::Binary { operator, .. } if is_comparison(*operator)
+            )
+        {
+            // Build 163 keeps a computed boolean in r0 through the signed-bias
+            // xor/store. That dependency prevents the 0x4330 high word from
+            // being hoisted across and then clobbered by comparison lowering.
+            GENERAL_SCRATCH
+        } else {
+            self.fresh_virtual_general()
+        };
+        self.evaluate_general(expression, register)?;
+        Ok(register)
     }
 
     pub(crate) fn plan_int_to_float_scratch(&mut self, base: i16, count: usize) -> Compilation<()> {
