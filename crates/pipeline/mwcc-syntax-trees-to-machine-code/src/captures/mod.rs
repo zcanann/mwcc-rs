@@ -447,6 +447,7 @@ mod sms_os_alloc_from_heap;
 mod sms_os_check_heap;
 mod sms_os_create_heap;
 mod sms_os_destroy_heap;
+mod sms_os_dump_heap;
 mod sms_os_init_alloc;
 mod sldp_strtold;
 mod sldx;
@@ -1104,6 +1105,7 @@ impl Generator {
             || self.try_sms_os_check_heap(function)?
             || self.try_sms_os_create_heap(function)?
             || self.try_sms_os_destroy_heap(function)?
+            || self.try_sms_os_dump_heap(function)?
             || self.try_sms_os_init_alloc(function)?
             || self.try_esq_sqrt(function)?
             || self.try_ktn_tan(function)?

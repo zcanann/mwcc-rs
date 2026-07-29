@@ -37,6 +37,26 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 8;
         self.non_leaf = true;
+        // Assertion reports address these pooled writable strings through the
+        // translation unit's `...data.0` anchor rather than individual @N
+        // relocations. Captured code must retain the source strings explicitly.
+        for bytes in [
+            &b"OSCheckHeap: Failed HeapArray in %d"[..],
+            &b"OSCheckHeap: Failed 0 <= heap && heap < NumHeaps in %d"[..],
+            &b"OSCheckHeap: Failed 0 <= hd->size in %d"[..],
+            &b"OSCheckHeap: Failed hd->allocated == NULL || hd->allocated->prev == NULL in %d"[..],
+            &b"OSCheckHeap: Failed InRange(cell, ArenaStart, ArenaEnd) in %d"[..],
+            &b"OSCheckHeap: Failed OFFSET(cell, ALIGNMENT) == 0 in %d"[..],
+            &b"OSCheckHeap: Failed cell->next == NULL || cell->next->prev == cell in %d"[..],
+            &b"OSCheckHeap: Failed MINOBJSIZE <= cell->size in %d"[..],
+            &b"OSCheckHeap: Failed OFFSET(cell->size, ALIGNMENT) == 0 in %d"[..],
+            &b"OSCheckHeap: Failed 0 < total && total <= hd->size in %d"[..],
+            &b"OSCheckHeap: Failed hd->free == NULL || hd->free->prev == NULL in %d"[..],
+            &b"OSCheckHeap: Failed cell->next == NULL || (char*) cell + cell->size < (char*) cell->next in %d"[..],
+            &b"OSCheckHeap: Failed total == hd->size in %d"[..],
+        ] {
+            self.intern_string_literal(bytes);
+        }
         self.output.symbol_order = [
             "...data.0",
             "HeapArray",
