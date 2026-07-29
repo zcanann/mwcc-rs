@@ -3,7 +3,7 @@
 #[allow(unused_imports)]
 use super::*;
 
-fn pointer_member_stride(operand: &Expression) -> Option<u32> {
+pub(super) fn pointer_member_stride(operand: &Expression) -> Option<u32> {
     let Expression::Member { member_type, .. } = operand else {
         return None;
     };

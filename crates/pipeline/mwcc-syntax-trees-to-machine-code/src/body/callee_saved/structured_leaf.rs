@@ -18,7 +18,7 @@ impl Generator {
             || !function.guards.is_empty()
             || !self.frame_slots.is_empty()
             || !leaf_return_shape_is_supported(function)
-            || !contains_nested_or_else_if(&function.statements)
+            || !requires_structured_branch_graph(&function.statements)
             || !supports_leaf_structured_statements(&function.statements)
             || function.locals.iter().any(|local| {
                 local.is_static
@@ -92,17 +92,18 @@ impl Generator {
     }
 }
 
-fn contains_nested_or_else_if(statements: &[Statement]) -> bool {
+fn requires_structured_branch_graph(statements: &[Statement]) -> bool {
     statements.iter().any(|statement| match statement {
         Statement::If {
             then_body,
             else_body,
             ..
         } => {
-            !else_body.is_empty()
+            then_body.len() > 1
+                || !else_body.is_empty()
                 || then_body.iter().any(|inner| matches!(inner, Statement::If { .. }))
-                || contains_nested_or_else_if(then_body)
-                || contains_nested_or_else_if(else_body)
+                || requires_structured_branch_graph(then_body)
+                || requires_structured_branch_graph(else_body)
         }
         _ => false,
     })
@@ -162,4 +163,28 @@ fn leaf_statements_fall_through(statements: &[Statement]) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multi_statement_guard_uses_the_structured_branch_graph() {
+        let statements = vec![Statement::If {
+            condition: Expression::Variable("enabled".into()),
+            then_body: vec![
+                Statement::Store {
+                    target: Expression::Variable("first".into()),
+                    value: Expression::IntegerLiteral(1),
+                },
+                Statement::Store {
+                    target: Expression::Variable("second".into()),
+                    value: Expression::IntegerLiteral(2),
+                },
+            ],
+            else_body: Vec::new(),
+        }];
+        assert!(requires_structured_branch_graph(&statements));
+    }
 }

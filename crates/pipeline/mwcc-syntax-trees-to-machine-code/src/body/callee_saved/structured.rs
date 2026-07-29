@@ -58,13 +58,14 @@ use super::structured_loop_assertion_strings::plan_loop_assertion_strings;
 use super::structured_loop_lowering::{
     lower_structured_loops, strip_side_effect_free_empty_switches,
 };
+use super::structured_switch_lowering::lower_structured_switches;
 use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
 };
 use super::structured_preloop_alias::fold_preloop_comma_pointer_alias;
 use super::structured_locals::{
-    body_uses_local, dead_ephemeral_float_locals, is_definitely_assigned_before_reads,
-    is_frame_address_null_select, plan_deferred_saved_homes, plan_ephemeral_locals,
+    body_uses_local, dead_ephemeral_float_locals, is_frame_address_null_select,
+    plan_deferred_saved_homes, plan_ephemeral_locals,
 };
 use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 use super::structured_eager_home_reuse::StructuredEagerHomeReuse;
@@ -177,6 +178,8 @@ impl Generator {
         let function = folded_preloop_alias.as_ref().unwrap_or(function);
         let stripped_empty_switches = strip_side_effect_free_empty_switches(function);
         let function = stripped_empty_switches.as_ref().unwrap_or(function);
+        let lowered_switches = lower_structured_switches(function);
+        let function = lowered_switches.as_ref().unwrap_or(function);
         let raw_loop_assertion_strings = plan_loop_assertion_strings(function);
         let planned_loop_assertion_strings = raw_loop_assertion_strings.filter(|plan| {
             self.behavior.frame_convention == FrameConvention::Predecrement
@@ -250,7 +253,10 @@ impl Generator {
                 || parameter.parameter_type.width() > 32
         }) || frame_scalar_locals.iter().any(|local| {
             local.is_static
-                || class_of(local.declared_type).ok() != Some(ValueClass::General)
+                || !matches!(
+                    class_of(local.declared_type),
+                    Ok(ValueClass::General | ValueClass::Float)
+                )
                 || local.declared_type.width() > 32
                 || local
                     .initializer
@@ -401,8 +407,6 @@ impl Generator {
                     class_of(local.declared_type),
                     Ok(ValueClass::General | ValueClass::Float)
                 )
-                || (local.initializer.is_none()
-                    && !is_definitely_assigned_before_reads(&function.statements, &local.name))
         }) {
             decline!(format!(
                 "a saved local is unsupported: {}",
@@ -415,11 +419,6 @@ impl Generator {
                                 class_of(local.declared_type),
                                 Ok(ValueClass::General | ValueClass::Float)
                             )
-                            || (local.initializer.is_none()
-                                && !is_definitely_assigned_before_reads(
-                                    &function.statements,
-                                    &local.name,
-                                ))
                     })
                     .map(|local| format!("{}:{:?}", local.name, local.declared_type))
                     .collect::<Vec<_>>()
@@ -1350,7 +1349,8 @@ impl Generator {
                     local.name.clone(),
                     FrameSlot {
                         offset: scalar_offset,
-                        class: ValueClass::General,
+                        class: class_of(local.declared_type)
+                            .expect("address-taken scalar class was checked"),
                         size: 4,
                         value_type: local.declared_type,
                         parameter_register: None,

@@ -761,7 +761,7 @@ impl Generator {
         // register: fold `index * stride + member` into the D-form load. This
         // also keeps r0 free for the surrounding floating expression.
         if let Some(constant) = constant_value(index) {
-            let array_register = self.general_register_of_leaf(array)?;
+            let array_register = self.indexed_struct_array_register(array, stride)?;
             let displacement = constant
                 .checked_mul(i64::from(stride))
                 .and_then(|scaled| scaled.checked_add(i64::from(offset)))
@@ -787,7 +787,7 @@ impl Generator {
                 registers
             } else {
                 (
-                    self.general_register_of_leaf(array)?,
+                    self.indexed_struct_array_register(array, stride)?,
                     self.materialize_index_operand(index)?,
                 )
             };
@@ -837,6 +837,25 @@ impl Generator {
             )?);
         }
         Ok(())
+    }
+
+    /// Place the base pointer for `array[index].field`.
+    ///
+    /// A named pointer is already resident. A pointer-valued member such as
+    /// `fighter->parts` must first load that pointer; it is not a leaf and must
+    /// not be confused with inline member-array storage.
+    fn indexed_struct_array_register(
+        &mut self,
+        array: &Expression,
+        stride: u32,
+    ) -> Compilation<u8> {
+        if super::pointers::pointer_member_stride(array) == Some(stride) {
+            let register = self.fresh_virtual_general_preferring(3);
+            self.evaluate_general(array, register)?;
+            Ok(register)
+        } else {
+            self.general_register_of_leaf(array)
+        }
     }
 
     /// `arr[index].field` for a file-scope struct array `arr`: a constant index folds
