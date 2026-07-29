@@ -204,6 +204,10 @@ pub(crate) enum LegacyCalleeSavedFrameLayout {
     #[default]
     InferFromValueOrigin,
     RetainEntryParameterTable,
+    /// A source guard that records one saved entry parameter before a call and
+    /// retains another parameter across that call. Build 163 keeps both the
+    /// condition-materialization lane and its ordinary entry-value table.
+    RetainGuardedEntryParameterTable,
     RetainEagerLocalLane,
     ReserveForwardedParameterLane,
     PreserveLogicalSize,

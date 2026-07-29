@@ -338,6 +338,27 @@ impl Generator {
             == LegacyCalleeSavedFrameLayout::ReserveForwardedParameterLane;
         let retain_eager_local_lane = self.legacy_callee_saved_frame_layout
             == LegacyCalleeSavedFrameLayout::RetainEagerLocalLane;
+        let retain_guarded_entry_parameter_table = self.legacy_callee_saved_frame_layout
+            == LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable;
+        let retain_entry_parameter_table = matches!(
+            self.legacy_callee_saved_frame_layout,
+            LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
+                | LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable
+        );
+        let recorded_saved_entry_home_before_call =
+            retain_guarded_entry_parameter_table
+                && self.output.instructions[..first_call]
+                    .iter()
+                    .any(|instruction| {
+                        matches!(
+                            instruction,
+                            Instruction::OrRecord { a, s, b }
+                                if s == b
+                                    && physical_saved.contains(a)
+                                    && (3..3 + self.entry_parameter_words.min(8) as u8)
+                                        .contains(s)
+                        )
+                    });
         // Build 163 keeps dead call-initializer results in its frame-pressure
         // accounting even after eliminating the values. Only that erased-local
         // case exposes the pairwise lane count; ordinary promoted values retain
@@ -347,8 +368,7 @@ impl Generator {
         } else if self.legacy_discarded_call_locals == 0 {
             if self.entry_parameter_words != 0
                 && (materialized_home_before_call || parameter_derived_home_before_call)
-                && self.legacy_callee_saved_frame_layout
-                    == LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
+                && retain_entry_parameter_table
             {
                 // Build 163 retains the incoming parameter table in pairs of
                 // 32-bit words whenever an entry value is materialized into a
@@ -356,6 +376,7 @@ impl Generator {
                 // grows a 24-byte one-home frame to 32 bytes, and why a double
                 // has the same effect: both make the footprint three words.
                 self.entry_parameter_words.div_ceil(2).max(1)
+                    + usize::from(recorded_saved_entry_home_before_call)
             } else if materialized_home_before_call {
                 1
             } else if retain_eager_local_lane
@@ -369,10 +390,10 @@ impl Generator {
         } else {
             let retained_parameter_lanes = if self.entry_parameter_words != 0
                 && (materialized_home_before_call || parameter_derived_home_before_call)
-                && self.legacy_callee_saved_frame_layout
-                    == LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
+                && retain_entry_parameter_table
             {
                 self.entry_parameter_words.div_ceil(2).max(1)
+                    + usize::from(recorded_saved_entry_home_before_call)
             } else if materialized_home_before_call {
                 1
             } else if retain_eager_local_lane
@@ -588,6 +609,7 @@ impl Generator {
                 });
             if !addressable_parameter_frame
                 && ((promoted_parameter_count >= 2 && !guarded_before_first_call)
+                    || recorded_saved_entry_home_before_call
                     || (self.legacy_inline_expansion_frame_bytes == 0
                         && source_redefined_by_materialization))
             {
