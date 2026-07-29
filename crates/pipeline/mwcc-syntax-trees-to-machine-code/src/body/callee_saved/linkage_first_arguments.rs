@@ -116,6 +116,20 @@ fn schedule_guarded_saved_entry_copies(
         {
             continue;
         }
+        let guard_consumes_saved_home = output.instructions[start + 4..=first_branch]
+            .iter()
+            .any(|instruction| {
+                touches_general_register(instruction, *first_home)
+                    || touches_general_register(instruction, *second_home)
+            });
+        if !guard_consumes_saved_home {
+            output.instructions[start + 1] = Instruction::AddImmediate {
+                d: *first_home,
+                a: *first_incoming,
+                immediate: 0,
+            };
+            return;
+        }
         let reordered = [
             first_store.clone(),
             second_store.clone(),
@@ -547,6 +561,59 @@ mod tests {
                 Instruction::StoreWord { s: 30, .. },
                 Instruction::Or { a: 30, s: 3, b: 3 },
                 Instruction::Or { a: 31, s: 5, b: 5 },
+            ]
+        ));
+    }
+
+    #[test]
+    fn later_only_saved_parameters_keep_interleaved_materialized_entry_copies() {
+        let mut output = mwcc_machine_code::MachineFunction::new("guarded");
+        output.instructions = vec![
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -24,
+            },
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::move_register(31, 4),
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 16,
+            },
+            Instruction::move_register(30, 3),
+            Instruction::LoadWord {
+                d: 0,
+                a: 3,
+                offset: 8352,
+            },
+            Instruction::CompareLogicalWordImmediate {
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 9,
+            },
+        ];
+        schedule_guarded_saved_entry_copies(&mut output);
+
+        assert!(matches!(
+            &output.instructions[1..5],
+            [
+                Instruction::StoreWord { s: 31, .. },
+                Instruction::AddImmediate {
+                    d: 31,
+                    a: 4,
+                    immediate: 0
+                },
+                Instruction::StoreWord { s: 30, .. },
+                Instruction::Or { a: 30, s: 3, b: 3 },
             ]
         ));
     }

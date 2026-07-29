@@ -17,6 +17,12 @@ impl Generator {
         {
             return;
         }
+        if let Some((from, to)) = guarded_variadic_address_clear_move(
+            &self.output,
+            &self.variadic_callees,
+        ) {
+            self.move_instruction_before(from, to);
+        }
         let Some(first_call) =
             entry_variadic_call(&self.output.instructions, &self.variadic_callees)
         else {
@@ -194,6 +200,70 @@ fn is_saved_incoming_r4_copy(instruction: &Instruction) -> bool {
     )
 }
 
+fn guarded_variadic_address_clear_move(
+    output: &mwcc_machine_code::MachineFunction,
+    variadic_callees: &HashSet<String>,
+) -> Option<(usize, usize)> {
+    let instructions = &output.instructions;
+    for high in 0..instructions.len().saturating_sub(3) {
+        let [
+            Instruction::AddImmediateShifted {
+                d: high_register,
+                a: 0,
+                ..
+            },
+            Instruction::AddImmediate {
+                d: low_destination,
+                a: low_base,
+                ..
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink { target },
+        ] = &instructions[high..high + 4]
+        else {
+            continue;
+        };
+        let low = high + 1;
+        let clear = high + 2;
+        if high_register != low_destination
+            || high_register != low_base
+            || !variadic_callees.contains(target)
+            || instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::BranchConditionalForward { target, .. }
+                        | Instruction::Branch { target }
+                        if *target == low || *target == clear
+                )
+            })
+        {
+            continue;
+        }
+        let high_target = output.relocations.iter().find_map(|relocation| {
+            (relocation.instruction_index == high
+                && relocation.kind == RelocationKind::Addr16Ha)
+                .then(|| match &relocation.target {
+                    mwcc_machine_code::RelocationTarget::External(target) => Some(target.as_str()),
+                    _ => None,
+                })
+                .flatten()
+        });
+        let low_target = output.relocations.iter().find_map(|relocation| {
+            (relocation.instruction_index == low
+                && relocation.kind == RelocationKind::Addr16Lo)
+                .then(|| match &relocation.target {
+                    mwcc_machine_code::RelocationTarget::External(target) => Some(target.as_str()),
+                    _ => None,
+                })
+                .flatten()
+        });
+        if high_target.is_some() && high_target == low_target {
+            return Some((clear, low));
+        }
+    }
+    None
+}
+
 fn is_later_variadic_argument_packet(
     instructions: &[Instruction],
     variadic_callees: &HashSet<String>,
@@ -285,6 +355,7 @@ fn has_entry_argument_setup(instructions: &[Instruction], first_call: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mwcc_machine_code::{Relocation, RelocationKind, RelocationTarget};
 
     #[test]
     fn recognizes_only_the_complete_linkage_first_variadic_prefix() {
@@ -409,5 +480,49 @@ mod tests {
             a: 1,
             immediate: 40,
         }));
+    }
+
+    #[test]
+    fn fills_a_guarded_variadic_address_latency_slot_with_cr_clear() {
+        let variadic_callees = HashSet::from(["report".into()]);
+        let mut output = mwcc_machine_code::MachineFunction::new("guarded");
+        output.instructions = vec![
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 5,
+            },
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink {
+                target: "report".into(),
+            },
+        ];
+        output.relocations = vec![
+            Relocation {
+                instruction_index: 1,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::External("@message".into()),
+            },
+            Relocation {
+                instruction_index: 2,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::External("@message".into()),
+            },
+        ];
+
+        assert_eq!(
+            guarded_variadic_address_clear_move(&output, &variadic_callees),
+            Some((3, 2))
+        );
     }
 }
