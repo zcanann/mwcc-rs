@@ -1101,13 +1101,25 @@ impl Generator {
                         folded_float_arguments.push((bits, double, next_float));
                     }
                 } else {
-                    self.evaluate(argument, parameter_type, next_float)
-                        .map_err(|mut diagnostic| {
-                            diagnostic.message.push_str(&format!(
-                                " (while evaluating floating argument {index} to '{name}')"
-                            ));
-                            diagnostic
-                        })?;
+                    // General arguments already materialized to the left remain
+                    // live until the call. A float/global-member load still
+                    // needs a GPR for its address; make those live ABI slots
+                    // unavailable so address selection cannot silently
+                    // overwrite an earlier receiver (for example r3).
+                    let newly_reserved: Vec<_> =
+                        (Eabi::FIRST_GENERAL_ARGUMENT..next_general)
+                            .filter(|register| self.reserved.insert(*register))
+                            .collect();
+                    let evaluated = self.evaluate(argument, parameter_type, next_float);
+                    for register in newly_reserved {
+                        self.reserved.remove(&register);
+                    }
+                    evaluated.map_err(|mut diagnostic| {
+                        diagnostic.message.push_str(&format!(
+                            " (while evaluating floating argument {index} to '{name}')"
+                        ));
+                        diagnostic
+                    })?;
                 }
                 next_float += 1;
             } else {
