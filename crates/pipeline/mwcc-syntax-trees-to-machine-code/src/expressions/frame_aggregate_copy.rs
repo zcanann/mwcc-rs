@@ -3,6 +3,27 @@
 #[allow(unused_imports)]
 use super::*;
 
+enum FrameAggregateSource<'a> {
+    Memory {
+        register: u8,
+        offset: i16,
+        size: u32,
+        is_frame: bool,
+    },
+    Global {
+        name: &'a str,
+        size: u32,
+    },
+}
+
+impl FrameAggregateSource<'_> {
+    fn size(&self) -> u32 {
+        match self {
+            Self::Memory { size, .. } | Self::Global { size, .. } => *size,
+        }
+    }
+}
+
 fn frame_aggregate_array_element(slot: FrameSlot, index: i64) -> Compilation<Option<(i16, u32)>> {
     if !slot.is_array {
         return Ok(None);
@@ -44,15 +65,36 @@ impl Generator {
         let Some((target_offset, target_size)) = self.frame_aggregate_target(target)? else {
             return Ok(false);
         };
-        let (source_register, source_offset, source_size, source_is_frame) = match value {
+        let source = match value {
             Expression::Variable(source_name) => {
-                let Some(source) = self.frame_slots.get(source_name).copied() else {
-                    return Ok(false);
-                };
-                let Type::Struct { size, .. } = source.value_type else {
-                    return Ok(false);
-                };
-                (1, source.offset, size, true)
+                if let Some(source) = self.frame_slots.get(source_name).copied() {
+                    let Type::Struct { size, .. } = source.value_type else {
+                        return Ok(false);
+                    };
+                    FrameAggregateSource::Memory {
+                        register: 1,
+                        offset: source.offset,
+                        size,
+                        is_frame: true,
+                    }
+                } else {
+                    let Some(Type::Struct { size, .. }) =
+                        self.addressable_globals.get(source_name).copied()
+                    else {
+                        return Ok(false);
+                    };
+                    // Objects larger than the EABI small-data threshold have an
+                    // ordinary absolute address. Smaller aggregates need an
+                    // SDA/SDA2-specific multiword schedule, which remains a
+                    // separate source form rather than silently misaddressing it.
+                    if size <= 8 {
+                        return Ok(false);
+                    }
+                    FrameAggregateSource::Global {
+                        name: source_name,
+                        size,
+                    }
+                }
             }
             Expression::Dereference { pointer } => {
                 let Expression::Variable(source_name) = pointer.as_ref() else {
@@ -67,7 +109,12 @@ impl Generator {
                 if location.class != ValueClass::General {
                     return Ok(false);
                 }
-                (location.register, 0i16, size, false)
+                FrameAggregateSource::Memory {
+                    register: location.register,
+                    offset: 0,
+                    size,
+                    is_frame: false,
+                }
             }
             Expression::Member {
                 base,
@@ -79,7 +126,12 @@ impl Generator {
                 let source_offset = i16::try_from(*offset).map_err(|_| {
                     Diagnostic::error("frame aggregate member source is out of range")
                 })?;
-                (source_register, source_offset, *size, false)
+                FrameAggregateSource::Memory {
+                    register: source_register,
+                    offset: source_offset,
+                    size: *size,
+                    is_frame: false,
+                }
             }
             Expression::Index { base, index } => {
                 let Expression::Variable(name) = base.as_ref() else {
@@ -95,16 +147,33 @@ impl Generator {
                 else {
                     return Ok(false);
                 };
-                (1, source_offset, size, true)
+                FrameAggregateSource::Memory {
+                    register: 1,
+                    offset: source_offset,
+                    size,
+                    is_frame: true,
+                }
             }
             _ => return Ok(false),
         };
+        let source_size = source.size();
         if source_size != target_size || source_size == 0 || source_size % 4 != 0 {
             return Err(Diagnostic::error(
                 "a frame aggregate copy requires equal, word-sized objects (roadmap)",
             ));
         }
 
+        let (source_register, source_offset, source_is_frame) = match source {
+            FrameAggregateSource::Global { name, size } => {
+                return self.emit_global_to_frame_aggregate_copy(name, target_offset, size);
+            }
+            FrameAggregateSource::Memory {
+                register,
+                offset,
+                is_frame,
+                ..
+            } => (register, offset, is_frame),
+        };
         let bytes = i16::try_from(source_size)
             .map_err(|_| Diagnostic::error("frame aggregate copy is too large"))?;
         let backwards = if source_is_frame {
@@ -124,9 +193,9 @@ impl Generator {
         for word in indices {
             let displacement = i16::try_from(word * 4)
                 .map_err(|_| Diagnostic::error("frame aggregate word offset is out of range"))?;
-            let source_word_offset = source_offset.checked_add(displacement).ok_or_else(|| {
-                Diagnostic::error("frame aggregate source word is out of range")
-            })?;
+            let source_word_offset = source_offset
+                .checked_add(displacement)
+                .ok_or_else(|| Diagnostic::error("frame aggregate source word is out of range"))?;
             let destination_offset = target_offset.checked_add(displacement).ok_or_else(|| {
                 Diagnostic::error("frame aggregate destination word is out of range")
             })?;
@@ -145,10 +214,79 @@ impl Generator {
         Ok(true)
     }
 
-    fn frame_aggregate_target(
-        &self,
-        target: &Expression,
-    ) -> Compilation<Option<(i16, u32)>> {
+    /// Large file-scope aggregates use their absolute address even in a
+    /// small-data build. MWCC pipelines the first two words before their stores,
+    /// then reuses the second scratch for any remaining words.
+    fn emit_global_to_frame_aggregate_copy(
+        &mut self,
+        name: &str,
+        target_offset: i16,
+        size: u32,
+    ) -> Compilation<bool> {
+        let address_high = self.fresh_virtual_general_preferring(3);
+        let source_address = self.fresh_virtual_general_preferring(5);
+        self.emit_address_high(address_high, name);
+        self.record_relocation(RelocationKind::Addr16Lo, name);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: source_address,
+            a: address_high,
+            immediate: 0,
+        });
+
+        let first_word = self.fresh_virtual_general_preferring(4);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: first_word,
+            a: source_address,
+            offset: 0,
+        });
+        let second_word = (size >= 8).then(|| {
+            let register = self.fresh_virtual_general_preferring(GENERAL_SCRATCH);
+            self.output.instructions.push(Instruction::LoadWord {
+                d: register,
+                a: source_address,
+                offset: 4,
+            });
+            register
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: first_word,
+            a: 1,
+            offset: target_offset,
+        });
+        self.written_slots.insert(target_offset);
+        if let Some(second_word) = second_word {
+            let destination_offset = target_offset.checked_add(4).ok_or_else(|| {
+                Diagnostic::error("frame aggregate destination word is out of range")
+            })?;
+            self.output.instructions.push(Instruction::StoreWord {
+                s: second_word,
+                a: 1,
+                offset: destination_offset,
+            });
+            self.written_slots.insert(destination_offset);
+        }
+        for displacement in (8..size).step_by(4) {
+            let displacement = i16::try_from(displacement)
+                .map_err(|_| Diagnostic::error("frame aggregate word offset is out of range"))?;
+            let destination_offset = target_offset.checked_add(displacement).ok_or_else(|| {
+                Diagnostic::error("frame aggregate destination word is out of range")
+            })?;
+            self.output.instructions.push(Instruction::LoadWord {
+                d: GENERAL_SCRATCH,
+                a: source_address,
+                offset: displacement,
+            });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: GENERAL_SCRATCH,
+                a: 1,
+                offset: destination_offset,
+            });
+            self.written_slots.insert(destination_offset);
+        }
+        Ok(true)
+    }
+
+    fn frame_aggregate_target(&self, target: &Expression) -> Compilation<Option<(i16, u32)>> {
         match target {
             Expression::Variable(name) => {
                 let Some(slot) = self.frame_slots.get(name).copied() else {
