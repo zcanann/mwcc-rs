@@ -104,6 +104,32 @@ impl Generator {
                 self.emit_global_store(name, pointee, destination)?;
                 return Ok(());
             }
+            if self.known_locals.contains(name) {
+                if self.frame_slots.contains_key(name.as_str()) {
+                    return Err(Diagnostic::error(
+                        "an assignment-valued address-taken local needs a frame store",
+                    ));
+                }
+                // A declared local omitted from `locations` is dead after this
+                // expression. Preserve the assignment's yielded value without
+                // manufacturing storage; a live register local receives the
+                // same value after evaluation.
+                self.evaluate_general(value, destination)?;
+                if let Some(location) = self.locations.get(name.as_str()) {
+                    if location.class != ValueClass::General {
+                        return Err(Diagnostic::error(
+                            "general assignment has a floating local target",
+                        ));
+                    }
+                    if location.register != destination {
+                        self.output.instructions.push(Instruction::move_register(
+                            location.register,
+                            destination,
+                        ));
+                    }
+                }
+                return Ok(());
+            }
         }
         if let Expression::Member {
             base,
