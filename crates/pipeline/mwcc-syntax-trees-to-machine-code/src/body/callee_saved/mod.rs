@@ -88,6 +88,7 @@ mod entry_saved_zero_test_schedule;
 mod structured_entry_zero_store;
 mod structured_exclusive_arm_callback_schedule;
 mod structured_exclusive_arm_entry_schedule;
+mod structured_exclusive_arm_float_entry;
 mod structured_exclusive_arm_home_layout;
 mod structured_exclusive_arm_wide_schedule;
 mod structured_early_return_schedule;
