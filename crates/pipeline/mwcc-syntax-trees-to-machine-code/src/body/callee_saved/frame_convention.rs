@@ -403,12 +403,16 @@ impl Generator {
         // saved GPRs, rounded to a doubleword. Retained optimizer lanes are
         // added independently below.
         let compact_saved_size = compact_linkage_first_saved_frame_size(physical_saved.len());
-        let physical_base_size =
-            if self.frame_slots.is_empty() && self.callee_saved_conversion_bytes == 0 {
-                compact_saved_size
-            } else {
-                old_size
-            };
+        let has_planned_conversion_scratch =
+            self.float_to_int_scratch_end != 0 || self.int_to_float_scratch_end != 0;
+        let physical_base_size = if self.frame_slots.is_empty()
+            && self.callee_saved_conversion_bytes == 0
+            && !has_planned_conversion_scratch
+        {
+            compact_saved_size
+        } else {
+            old_size
+        };
         let base_size = physical_base_size.saturating_add(retained_frame_bytes);
         let conversion_size = if self.callee_saved_conversion_bytes == 0 {
             physical_base_size
