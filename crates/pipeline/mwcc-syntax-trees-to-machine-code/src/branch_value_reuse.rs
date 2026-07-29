@@ -49,7 +49,7 @@ pub(crate) fn materialize_guarded_global_member_update(
             &local_name,
         );
         rewritten.locals.push(LocalDeclaration {
-            declared_type: condition_member.member_type,
+            declared_type: register_value_type(condition_member.member_type),
             name: local_name,
             initializer: Some(condition_member.expression()),
             is_volatile: false,
@@ -63,6 +63,14 @@ pub(crate) fn materialize_guarded_global_member_update(
         return Some(rewritten);
     }
     None
+}
+
+fn register_value_type(storage_type: Type) -> Type {
+    match storage_type {
+        Type::Char | Type::Short => Type::Int,
+        Type::UnsignedChar | Type::UnsignedShort => Type::UnsignedInt,
+        _ => storage_type,
+    }
 }
 
 #[derive(Clone)]
@@ -204,12 +212,23 @@ fn replace_compared_member(
     let Expression::Binary { left, .. } = condition else {
         unreachable!("the condition was recognized as a comparison");
     };
-    let operand = match left.as_mut() {
-        Expression::Cast { operand, .. } => operand.as_mut(),
-        operand => operand,
-    };
-    debug_assert!(same_direct_member(operand, expected));
-    *operand = Expression::Variable(local_name.to_owned());
+    match left.as_mut() {
+        Expression::Cast {
+            target_type,
+            operand,
+        } => {
+            debug_assert!(same_direct_member(operand, expected));
+            if *target_type == expected.member_type {
+                *left = Box::new(Expression::Variable(local_name.to_owned()));
+            } else {
+                **operand = Expression::Variable(local_name.to_owned());
+            }
+        }
+        operand => {
+            debug_assert!(same_direct_member(operand, expected));
+            *operand = Expression::Variable(local_name.to_owned());
+        }
+    }
 }
 
 fn unique_cache_name(occupied: &HashSet<&str>) -> String {
@@ -280,7 +299,7 @@ mod tests {
             .expect("the guarded update should be materialized");
         assert_eq!(rewritten.locals.len(), 1);
         assert_eq!(rewritten.locals[0].name, "__mwcc_branch_value_1");
-        assert_eq!(rewritten.locals[0].declared_type, Type::UnsignedShort);
+        assert_eq!(rewritten.locals[0].declared_type, Type::UnsignedInt);
         assert!(matches!(
             rewritten.statements.as_slice(),
             [Statement::If {
@@ -289,11 +308,7 @@ mod tests {
                 ..
             }] if matches!(
                 left.as_ref(),
-                Expression::Cast { operand, .. }
-                    if matches!(
-                        operand.as_ref(),
-                        Expression::Variable(name) if name == "__mwcc_branch_value_1"
-                    )
+                Expression::Variable(name) if name == "__mwcc_branch_value_1"
             ) && matches!(
                 then_body.as_slice(),
                 [Statement::Store {

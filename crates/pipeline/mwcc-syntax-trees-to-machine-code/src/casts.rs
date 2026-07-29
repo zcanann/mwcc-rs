@@ -5,6 +5,16 @@ use mwcc_core::Compilation;
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{ArmBody, Expression, Pointee, Statement, Type};
 
+pub(crate) fn integer_cast_is_member_storage_identity(
+    target_type: Type,
+    operand: &Expression,
+) -> bool {
+    matches!(
+        operand,
+        Expression::Member { member_type, .. } if *member_type == target_type
+    )
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum IntToFloatSchedule {
     LeafValue,
@@ -12,6 +22,28 @@ pub(crate) enum IntToFloatSchedule {
 }
 
 impl Generator {
+    pub(crate) fn integer_cast_is_value_identity(
+        &self,
+        target_type: Type,
+        operand: &Expression,
+    ) -> bool {
+        if integer_cast_is_member_storage_identity(target_type, operand) {
+            return true;
+        }
+        let Expression::Variable(name) = operand else {
+            return false;
+        };
+        self.locations.get(name).is_some_and(|location| {
+            location.class == ValueClass::General
+                && location.width == target_type.width()
+                && location.signed == self.signed_of(target_type)
+        }) || self
+            .frame_slots
+            .get(name)
+            .is_some_and(|slot| !slot.is_array && slot.value_type == target_type)
+            || self.globals.get(name) == Some(&target_type)
+    }
+
     /// Count float-to-integer conversions in a structured body. MWCC assigns
     /// one eight-byte conversion image per syntactic conversion, so frame
     /// owners need this number before they emit their prologue.
@@ -899,6 +931,12 @@ impl Generator {
             self.emit_float_to_signed_integer(operand, destination)?;
             return Ok(());
         }
+        // A same-type cast around a resolved member is an optimizer identity:
+        // the width-correct load already produces exactly the declared value.
+        // In particular, `(u16)member` is a bare `lhz`, not `lhz; clrlwi`.
+        if self.integer_cast_is_value_identity(target_type, operand) {
+            return self.evaluate_general(operand, destination);
+        }
         // `(unsigned char)<char load>`: the byte load (`lbz`/`lbzx`) already zero-extends to
         // 0..255, which IS the unsigned-char value, so mwcc drops BOTH the signed-promotion
         // extsb and the cast's clrlwi — `(unsigned char)gc` / `(unsigned char)*p` is a bare
@@ -947,5 +985,25 @@ impl Generator {
             self.evaluate_general(operand, destination)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_type_member_cast_is_a_storage_identity() {
+        let member = Expression::Member {
+            base: Box::new(Expression::Variable("state".into())),
+            offset: 2,
+            member_type: Type::UnsignedShort,
+            index_stride: None,
+        };
+        assert!(integer_cast_is_member_storage_identity(
+            Type::UnsignedShort,
+            &member
+        ));
+        assert!(!integer_cast_is_member_storage_identity(Type::Short, &member));
     }
 }

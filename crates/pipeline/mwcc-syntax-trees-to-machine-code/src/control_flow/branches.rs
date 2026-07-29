@@ -1143,6 +1143,26 @@ impl Generator {
             right,
         } = condition
         {
+            // Normalize a same-storage-type member cast before comparison
+            // placement. Leaving the identity wrapper in place routes the
+            // member through the narrowing cast path and invents a redundant
+            // extend between its width-correct load and the compare.
+            if is_comparison(*operator) {
+                if let Expression::Cast {
+                    target_type,
+                    operand,
+                } = left.as_ref()
+                {
+                    if self.integer_cast_is_value_identity(*target_type, operand) {
+                        let normalized = Expression::Binary {
+                            operator: *operator,
+                            left: operand.clone(),
+                            right: right.clone(),
+                        };
+                        return self.emit_condition_test(&normalized);
+                    }
+                }
+            }
             // `((a & C) | b) != 0` — the sign/magnitude compound (measured:
             // clrlwi r0,a,N; or. r0,r0,b; beq — the s_floor negative test).
             if matches!(operator, BinaryOperator::NotEqual) && constant_value(right) == Some(0) {
