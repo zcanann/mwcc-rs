@@ -11,10 +11,14 @@ use super::super::assertion_expression::dense_frame_assertion_parameter;
 use super::*;
 
 pub(super) fn structured_dense_frame_entry_index(function: &Function) -> Option<usize> {
-    function
+    let assignment = function
         .statements
         .iter()
-        .position(|statement| matches!(statement, Statement::Assign { .. }))
+        .position(|statement| matches!(statement, Statement::Assign { .. }))?;
+    function.statements[..assignment]
+        .iter()
+        .all(|statement| matches!(statement, Statement::Expression(_)))
+        .then_some(assignment)
 }
 
 impl Generator {
@@ -30,12 +34,6 @@ impl Generator {
         else {
             unreachable!("entry index identifies an assignment")
         };
-        if function.statements[..assignment_index]
-            .iter()
-            .any(|statement| !matches!(statement, Statement::Expression(_)))
-        {
-            return Ok(None);
-        }
         let Some(local) = function.locals.iter().find(|local| &local.name == name) else {
             return Ok(None);
         };
@@ -281,9 +279,60 @@ fn prefixed_frame_entry_move(
 
 #[cfg(test)]
 mod tests {
-    use super::prefixed_frame_entry_move;
+    use super::{prefixed_frame_entry_move, structured_dense_frame_entry_index};
     use mwcc_machine_code::Instruction;
+    use mwcc_syntax_trees::{Expression, Function, Statement, Type};
     use mwcc_versions::FrameConvention;
+
+    fn function(statements: Vec<Statement>) -> Function {
+        Function {
+            return_type: Type::Void,
+            name: "caller".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements,
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
+
+    fn assignment() -> Statement {
+        Statement::Assign {
+            name: "entry".into(),
+            value: Expression::IntegerLiteral(0),
+        }
+    }
+
+    #[test]
+    fn dense_entry_prefix_accepts_only_expression_statements() {
+        let expression_prefix = function(vec![
+            Statement::Expression(Expression::IntegerLiteral(1)),
+            assignment(),
+        ]);
+        assert_eq!(
+            structured_dense_frame_entry_index(&expression_prefix),
+            Some(1)
+        );
+
+        let control_flow_prefix = function(vec![
+            Statement::If {
+                condition: Expression::IntegerLiteral(1),
+                then_body: Vec::new(),
+                else_body: Vec::new(),
+            },
+            assignment(),
+        ]);
+        assert_eq!(structured_dense_frame_entry_index(&control_flow_prefix), None);
+    }
 
     #[test]
     fn prefixed_entry_copy_stays_with_the_first_call() {

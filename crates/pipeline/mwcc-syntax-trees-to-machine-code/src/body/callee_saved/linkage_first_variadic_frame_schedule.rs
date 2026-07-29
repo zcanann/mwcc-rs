@@ -17,13 +17,9 @@ impl Generator {
         {
             return;
         }
-        let Some(first_call) = self.output.instructions.iter().position(|instruction| {
-            matches!(
-                instruction,
-                Instruction::BranchAndLink { target }
-                    if self.variadic_callees.contains(target)
-            )
-        }) else {
+        let Some(first_call) =
+            entry_variadic_call(&self.output.instructions, &self.variadic_callees)
+        else {
             return;
         };
         if !has_entry_argument_setup(&self.output.instructions, first_call) {
@@ -251,6 +247,20 @@ fn first_variadic_call(
     })
 }
 
+fn entry_variadic_call(
+    instructions: &[Instruction],
+    variadic_callees: &HashSet<String>,
+) -> Option<usize> {
+    let first_call = instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))?;
+    matches!(
+        &instructions[first_call],
+        Instruction::BranchAndLink { target } if variadic_callees.contains(target)
+    )
+    .then_some(first_call)
+}
+
 fn has_entry_argument_setup(instructions: &[Instruction], first_call: usize) -> bool {
     let prefix = &instructions[..first_call];
     prefix.iter().any(|instruction| {
@@ -308,6 +318,46 @@ mod tests {
 
         assert!(is_linkage_first_frame_prefix(&instructions));
         assert!(has_entry_argument_setup(&instructions, 6));
+    }
+
+    #[test]
+    fn rejects_a_variadic_call_after_an_earlier_call() {
+        let variadic_callees = HashSet::from(["format".into()]);
+        let instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -64,
+            },
+            Instruction::BranchAndLink {
+                target: "prepare".into(),
+            },
+            Instruction::AddImmediate {
+                d: 5,
+                a: 0,
+                immediate: 2,
+            },
+            Instruction::AddImmediate {
+                d: 6,
+                a: 0,
+                immediate: -1,
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink {
+                target: "format".into(),
+            },
+        ];
+
+        assert_eq!(
+            entry_variadic_call(&instructions, &variadic_callees),
+            None
+        );
     }
 
     #[test]
