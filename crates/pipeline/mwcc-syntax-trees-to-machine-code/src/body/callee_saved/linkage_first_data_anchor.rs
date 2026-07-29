@@ -5,12 +5,15 @@
 //! offsets. The base is a virtual live range, so the ordinary allocator and
 //! frame reconciler choose and save its physical register.
 
-use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, PointerElement, Type};
+use mwcc_syntax_trees::{
+    Expression, Function, GlobalDeclaration, PointerElement, Statement, Type,
+};
 use mwcc_versions::{Behavior, FrameConvention, GlobalAddressing};
 
 use crate::generator::DataSectionAnchorPlan;
 
-use super::structured_expression_visit::visit_statement;
+use super::structured_expression_visit::{visit_expression, visit_statement};
+use super::structured_locals::DeferredSavedHomePlan;
 
 pub(crate) fn plan(
     function: &Function,
@@ -50,6 +53,93 @@ pub(crate) fn plan(
             .collect(),
         register: None,
     })
+}
+
+/// Find a deferred saved-home whose first value starts after the anchor's last
+/// source use. MWCC can use that home for the section base first, then redefine
+/// it with the later call result without growing the saved-register range.
+pub(super) fn reusable_deferred_group(
+    function: &Function,
+    anchor: &DataSectionAnchorPlan,
+    deferred: &DeferredSavedHomePlan,
+) -> Option<usize> {
+    let mut cursor = 0usize;
+    let mut last_reference = None;
+    collect_last_reference_position(
+        &function.statements,
+        &anchor.offsets,
+        &mut cursor,
+        &mut last_reference,
+    )?;
+    let last_reference = last_reference?;
+    (0..deferred.group_count)
+        .filter(|group| deferred.first_assignment(*group) > last_reference)
+        .min_by_key(|group| deferred.first_assignment(*group))
+}
+
+fn collect_last_reference_position(
+    statements: &[Statement],
+    offsets: &std::collections::HashMap<String, i16>,
+    cursor: &mut usize,
+    last_reference: &mut Option<usize>,
+) -> Option<()> {
+    for statement in statements {
+        *cursor += 1;
+        let position = *cursor;
+        let mut references_anchor = false;
+        let mut inspect = |expression: &Expression| {
+            visit_expression(expression, &mut |nested| {
+                if matches!(nested, Expression::Variable(name) if offsets.contains_key(name)) {
+                    references_anchor = true;
+                }
+            });
+        };
+        match statement {
+            Statement::Store { target, value } => {
+                inspect(target);
+                inspect(value);
+            }
+            Statement::Assign { value, .. }
+            | Statement::Expression(value)
+            | Statement::Return(Some(value)) => inspect(value),
+            Statement::If { condition, .. } => inspect(condition),
+            Statement::Loop {
+                initializer,
+                condition,
+                step,
+                ..
+            } => {
+                for expression in [initializer, condition, step].into_iter().flatten() {
+                    inspect(expression);
+                }
+            }
+            Statement::Switch { .. } => return None,
+            Statement::Return(None)
+            | Statement::InlineAsm(_)
+            | Statement::Break
+            | Statement::Continue
+            | Statement::Goto(_)
+            | Statement::Label(_) => {}
+        }
+        if references_anchor {
+            *last_reference = Some(position);
+        }
+        match statement {
+            Statement::Loop { body, .. } => {
+                collect_last_reference_position(body, offsets, cursor, last_reference)?;
+            }
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_last_reference_position(then_body, offsets, cursor, last_reference)?;
+                collect_last_reference_position(else_body, offsets, cursor, last_reference)?;
+            }
+            _ => {}
+        }
+    }
+    Some(())
 }
 
 fn source_ordered_data_offsets(

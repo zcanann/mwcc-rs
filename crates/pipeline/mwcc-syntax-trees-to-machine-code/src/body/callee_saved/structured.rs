@@ -493,7 +493,6 @@ impl Generator {
         else {
             decline!("deferred saved-home planning rejected the body");
         };
-
         let linkage_first_scalar_local_table_bytes = if frame_arrays.is_empty()
             && frame_scalar_parameters.is_empty()
             && frame_publication.is_none()
@@ -664,7 +663,28 @@ impl Generator {
             deferred_home_plan.group_count,
             count,
         );
-        let first_saved = 32usize.saturating_sub(count);
+        let reused_data_anchor_home_index = self
+            .data_section_anchor
+            .as_ref()
+            .filter(|_| array_pool_plan.is_none())
+            .and_then(|anchor| {
+                super::linkage_first_data_anchor::reusable_deferred_group(
+                    function,
+                    anchor,
+                    &deferred_home_plan,
+                )
+            })
+            .map(|group| parameter_home_reuse.home_index(group))
+            .filter(|home_index| {
+                *home_index >= eager_saved_locals.len() + saved_parameters.len()
+            });
+        let standalone_data_anchor_home = (self.data_section_anchor.is_some()
+            && array_pool_plan.is_none()
+            && reused_data_anchor_home_index.is_none())
+        .then(|| self.fresh_virtual_general_preferring(31));
+        let saved_home_slot_base = usize::from(standalone_data_anchor_home.is_some());
+        let total_home_count = count + saved_home_slot_base;
+        let first_saved = 32usize.saturating_sub(total_home_count);
         let frame_first_saved = array_pool_plan
             .as_ref()
             .map_or(first_saved, |plan| {
@@ -871,13 +891,27 @@ impl Generator {
                 }
             })
             .collect();
+        let data_section_anchor_home = reused_data_anchor_home_index
+            .map(|home_index| homes[home_index])
+            .or(standalone_data_anchor_home);
+        if let Some(register) = data_section_anchor_home {
+            self.data_section_anchor
+                .as_mut()
+                .expect("the data anchor was planned above")
+                .register = Some(register);
+        }
+        let reused_data_anchor_slot =
+            reused_data_anchor_home_index.map(|home_index| saved_home_slot_base + home_index);
         if let Some(strings) = &loop_assertion_strings {
             self.loop_assertion_string_highs = vec![
                 (strings.file.clone(), homes[value_home_count]),
                 (strings.asserted.clone(), homes[value_home_count + 1]),
             ];
         }
-        let mut frame_homes = homes.clone();
+        let mut logical_saved_homes = Vec::with_capacity(total_home_count);
+        logical_saved_homes.extend(standalone_data_anchor_home);
+        logical_saved_homes.extend(homes.iter().copied());
+        let mut frame_homes = logical_saved_homes.clone();
         frame_homes.resize(frame_saved_count, frame_first_saved as u8);
         let mut plan = mwcc_vreg::FramePlan::with_local_region(frame_homes, local_region_bytes);
         if aggregate_call_copy_plan.is_some()
@@ -1189,7 +1223,7 @@ impl Generator {
         self.callee_saved = if array_pool_plan.is_some() {
             (frame_first_saved as u8..=31).rev().collect()
         } else {
-            homes.clone()
+            logical_saved_homes
         };
         self.legacy_callee_saved_frame_layout = if unused_frame_array
             || !frame_scalar_parameters.is_empty()
@@ -1320,26 +1354,24 @@ impl Generator {
                     register,
                 });
         }
-        if self.data_section_anchor.is_some() {
-            let register = self.fresh_virtual_general_preferring(4);
+        if let Some(register) = data_section_anchor_home {
+            let save_slot = reused_data_anchor_slot.unwrap_or(0);
+            self.emit_structured_saved_home_store(register, save_slot, plan.frame_size);
+            let high = self.fresh_virtual_general_preferring(5);
             self.record_relocation(RelocationKind::Addr16Ha, "...data.0");
             self.output
                 .instructions
                 .push(Instruction::AddImmediateShifted {
-                    d: register,
+                    d: high,
                     a: 0,
                     immediate: 0,
                 });
             self.record_relocation(RelocationKind::Addr16Lo, "...data.0");
             self.output.instructions.push(Instruction::AddImmediate {
                 d: register,
-                a: register,
+                a: high,
                 immediate: 0,
             });
-            self.data_section_anchor
-                .as_mut()
-                .expect("the data anchor was planned above")
-                .register = Some(register);
         }
         if dense_save_helper {
             self.output.instructions.push(Instruction::AddImmediate {
@@ -1464,7 +1496,7 @@ impl Generator {
             if !dense_saved_range {
                 self.emit_structured_saved_home_store_range(
                     &homes[..saved_parameter_base],
-                    0,
+                    saved_home_slot_base,
                     plan.frame_size,
                 );
             }
@@ -1488,7 +1520,7 @@ impl Generator {
                     if !dense_saved_range {
                         self.emit_structured_saved_home_store(
                             *home,
-                            saved_parameter_base + parameter_index,
+                            saved_home_slot_base + saved_parameter_base + parameter_index,
                             plan.frame_size,
                         );
                     }
@@ -1498,11 +1530,12 @@ impl Generator {
                 }
             }
             if !dense_saved_range {
-                self.emit_structured_saved_home_store_range(
-                    &homes[deferred_home_base..],
-                    deferred_home_base,
-                    plan.frame_size,
-                );
+                for (home_index, &home) in homes.iter().enumerate().skip(deferred_home_base) {
+                    let slot = saved_home_slot_base + home_index;
+                    if reused_data_anchor_slot != Some(slot) {
+                        self.emit_structured_saved_home_store(home, slot, plan.frame_size);
+                    }
+                }
             }
         }
 
@@ -1516,7 +1549,11 @@ impl Generator {
             let home = homes[home_index];
             home_index += 1;
             if !batched_saved_home_stores && !dense_saved_range {
-                self.emit_structured_saved_home_store(home, home_index - 1, plan.frame_size);
+                self.emit_structured_saved_home_store(
+                    home,
+                    saved_home_slot_base + home_index - 1,
+                    plan.frame_size,
+                );
             }
             let initializer = local.initializer.as_ref().expect("partitioned as eager");
             let initializer_start = self.output.instructions.len();
@@ -1595,7 +1632,11 @@ impl Generator {
             home_index += 1;
             if !batched_saved_home_stores {
                 if !dense_saved_range {
-                    self.emit_structured_saved_home_store(*home, home_index - 1, plan.frame_size);
+                    self.emit_structured_saved_home_store(
+                        *home,
+                        saved_home_slot_base + home_index - 1,
+                        plan.frame_size,
+                    );
                 }
                 if !dense_frame {
                     self.output
@@ -1611,8 +1652,16 @@ impl Generator {
                 continue;
             }
             let home = homes[slot_index];
-            if !batched_saved_home_stores && !dense_saved_range {
-                self.emit_structured_saved_home_store(home, slot_index, plan.frame_size);
+            let frame_slot = saved_home_slot_base + slot_index;
+            if !batched_saved_home_stores
+                && !dense_saved_range
+                && reused_data_anchor_slot != Some(frame_slot)
+            {
+                self.emit_structured_saved_home_store(
+                    home,
+                    frame_slot,
+                    plan.frame_size,
+                );
             }
         }
         for local in deferred_saved_locals {
