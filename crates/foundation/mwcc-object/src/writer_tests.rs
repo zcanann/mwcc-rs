@@ -291,7 +291,7 @@ fn owned_rtti_data_layout_interleaves_names_bases_and_vtables() {
         is_static: name.starts_with('@') || name.starts_with("__RTTI__"),
         force_active: false,
         is_explicit_zero: false,
-        preassigned_anonymous_ordinal: None,
+        preassigned_anonymous_ordinal: name.starts_with('@').then_some(40),
         preassigned_ordinal_advances_counter: false,
         preassigned_pool_prefix_credit: 0,
         relocations,
