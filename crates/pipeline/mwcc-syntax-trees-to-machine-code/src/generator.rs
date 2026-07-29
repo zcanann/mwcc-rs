@@ -680,6 +680,20 @@ impl Generator {
         }
     }
 
+    /// Prevent an existing general virtual from occupying any of `avoid`.
+    /// Whole-body owners use this after they discover a retained value whose
+    /// measured home must outrank otherwise independent locals.
+    pub(crate) fn avoid_virtual_general(&mut self, register: u8, avoid: &[u8]) {
+        if let Reg::Virtual(register) = Reg::from_field(register, Class::General) {
+            let existing = self.register_avoid.entry(register).or_default();
+            for avoided in avoid {
+                if !existing.contains(avoided) {
+                    existing.push(*avoided);
+                }
+            }
+        }
+    }
+
     /// A fresh general virtual register that the allocator must not place in any
     /// of `avoid` — a placement hint recorded for the allocation pass.
     pub(crate) fn fresh_virtual_general_avoiding(&mut self, avoid: Vec<u8>) -> u8 {

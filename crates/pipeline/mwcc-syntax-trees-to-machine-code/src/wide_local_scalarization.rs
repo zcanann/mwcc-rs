@@ -18,6 +18,12 @@ enum MaskLocalLowering {
     RetainWordPair,
 }
 
+#[derive(Clone, Default)]
+struct PairMaskState {
+    seen_mask: bool,
+    zero_name: Option<String>,
+}
+
 pub(crate) fn scalarize_zero_extended_mask_local(
     function: &Function,
     globals: &HashMap<String, Type>,
@@ -90,15 +96,21 @@ fn lower_zero_extended_mask_local(
 
     let high_name = matches!(lowering, MaskLocalLowering::RetainWordPair)
         .then(|| unique_high_word_name(function));
+    let zero_name = matches!(lowering, MaskLocalLowering::RetainWordPair)
+        .then(|| unique_zero_word_name(function));
     let mut assignment_count = 0usize;
-    let statements = rewrite_statements(
+    let mut pair_zero_assigned = false;
+    let (statements, _) = rewrite_statements(
         &function.statements,
         &wide_local.name,
         high_name.as_deref(),
+        zero_name.as_deref(),
         globals,
         volatile_globals,
         call_return_types,
         &mut assignment_count,
+        PairMaskState::default(),
+        &mut pair_zero_assigned,
     )?;
     if assignment_count != 1 {
         return None;
@@ -115,9 +127,19 @@ fn lower_zero_extended_mask_local(
         let mut high_local = rewritten.locals[local_index].clone();
         high_local.name = high_name.clone();
         rewritten.locals.insert(local_index + 1, high_local);
+        if pair_zero_assigned {
+            let mut zero_local = rewritten.locals[local_index].clone();
+            zero_local.name = zero_name.expect("the retained pair has a zero-word name");
+            rewritten.locals.insert(local_index + 2, zero_local);
+        }
         for guard in &mut rewritten.guards {
             guard.condition =
-                rewrite_mask_condition(&guard.condition, &wide_local.name, &high_name);
+                rewrite_mask_condition(
+                    &guard.condition,
+                    &wide_local.name,
+                    &high_name,
+                    &high_name,
+                );
         }
     }
     rewritten.statements = statements;
@@ -125,6 +147,14 @@ fn lower_zero_extended_mask_local(
 }
 
 fn unique_high_word_name(function: &Function) -> String {
+    unique_generated_word_name(function, "__mwcc_wide_mask_high_")
+}
+
+fn unique_zero_word_name(function: &Function) -> String {
+    unique_generated_word_name(function, "__mwcc_wide_mask_zero_")
+}
+
+fn unique_generated_word_name(function: &Function, prefix: &str) -> String {
     let occupied: HashSet<_> = function
         .parameters
         .iter()
@@ -132,7 +162,7 @@ fn unique_high_word_name(function: &Function) -> String {
         .chain(function.locals.iter().map(|local| local.name.as_str()))
         .collect();
     (0usize..)
-        .map(|ordinal| format!("__mwcc_wide_mask_high_{ordinal}"))
+        .map(|ordinal| format!("{prefix}{ordinal}"))
         .find(|candidate| !occupied.contains(candidate.as_str()))
         .expect("the compiler-generated local namespace is unbounded")
 }
@@ -216,7 +246,12 @@ fn low_word_mask(expression: &Expression, name: &str) -> bool {
     )
 }
 
-fn rewrite_mask_condition(expression: &Expression, low_name: &str, high_name: &str) -> Expression {
+fn rewrite_mask_condition(
+    expression: &Expression,
+    low_name: &str,
+    high_name: &str,
+    zero_name: &str,
+) -> Expression {
     let Expression::Binary {
         operator: BinaryOperator::BitAnd,
         left,
@@ -230,6 +265,7 @@ fn rewrite_mask_condition(expression: &Expression, low_name: &str, high_name: &s
     }
 
     let high = || Expression::Variable(high_name.to_owned());
+    let zero = || Expression::Variable(zero_name.to_owned());
     Expression::Binary {
         operator: BinaryOperator::BitOr,
         left: Box::new(Expression::Binary {
@@ -239,16 +275,16 @@ fn rewrite_mask_condition(expression: &Expression, low_name: &str, high_name: &s
                 left: Box::new(Expression::Variable(low_name.to_owned())),
                 right: right.clone(),
             }),
-            right: Box::new(high()),
+            right: Box::new(zero()),
         }),
         right: Box::new(Expression::Binary {
             operator: BinaryOperator::BitXor,
             left: Box::new(Expression::Binary {
                 operator: BinaryOperator::BitAnd,
                 left: Box::new(high()),
-                right: Box::new(high()),
+                right: Box::new(zero()),
             }),
-            right: Box::new(high()),
+            right: Box::new(zero()),
         }),
     }
 }
@@ -267,6 +303,7 @@ pub(crate) fn legacy_word_pair_mask_condition_for_test(
         },
         low_name,
         high_name,
+        high_name,
     )
 }
 
@@ -274,11 +311,14 @@ fn rewrite_statements(
     statements: &[Statement],
     name: &str,
     high_name: Option<&str>,
+    zero_name: Option<&str>,
     globals: &HashMap<String, Type>,
     volatile_globals: &HashSet<String>,
     call_return_types: &HashMap<String, Type>,
     assignment_count: &mut usize,
-) -> Option<Vec<Statement>> {
+    mut pair_state: PairMaskState,
+    pair_zero_assigned: &mut bool,
+) -> Option<(Vec<Statement>, PairMaskState)> {
     let mut output = Vec::new();
     for statement in statements {
         match statement {
@@ -334,29 +374,74 @@ fn rewrite_statements(
                 condition,
                 then_body,
                 else_body,
-            } => output.push(Statement::If {
-                condition: high_name
-                    .map(|high_name| rewrite_mask_condition(condition, name, high_name))
-                    .unwrap_or_else(|| condition.clone()),
-                then_body: rewrite_statements(
+            } => {
+                let mut condition_zero = high_name.map(str::to_owned);
+                if high_name.is_some() && low_word_mask(condition, name) {
+                    if pair_state.seen_mask {
+                        if pair_state.zero_name.is_none() {
+                            pair_state.zero_name =
+                                trailing_zero_assignment(&output).map(str::to_owned);
+                        }
+                        if pair_state.zero_name.is_none() {
+                            let generated_zero = zero_name?.to_owned();
+                            output.push(Statement::Assign {
+                                name: generated_zero.clone(),
+                                value: Expression::IntegerLiteral(0),
+                            });
+                            pair_state.zero_name = Some(generated_zero);
+                            *pair_zero_assigned = true;
+                        }
+                        condition_zero = pair_state.zero_name.clone();
+                    } else {
+                        pair_state.seen_mask = true;
+                    }
+                }
+                let (then_body, then_state) = rewrite_statements(
                     then_body,
                     name,
                     high_name,
+                    zero_name,
                     globals,
                     volatile_globals,
                     call_return_types,
                     assignment_count,
-                )?,
-                else_body: rewrite_statements(
+                    pair_state.clone(),
+                    pair_zero_assigned,
+                )?;
+                let (else_body, else_state) = rewrite_statements(
                     else_body,
                     name,
                     high_name,
+                    zero_name,
                     globals,
                     volatile_globals,
                     call_return_types,
                     assignment_count,
-                )?,
-            }),
+                    pair_state.clone(),
+                    pair_zero_assigned,
+                )?;
+                output.push(Statement::If {
+                    condition: match (high_name, condition_zero.as_deref()) {
+                        (Some(high_name), Some(zero_name)) => {
+                            rewrite_mask_condition(
+                                condition,
+                                name,
+                                high_name,
+                                zero_name,
+                            )
+                        }
+                        _ => condition.clone(),
+                    },
+                    then_body,
+                    else_body,
+                });
+                pair_state = PairMaskState {
+                    seen_mask: then_state.seen_mask && else_state.seen_mask,
+                    zero_name: (then_state.zero_name == else_state.zero_name)
+                        .then_some(then_state.zero_name)
+                        .flatten(),
+                };
+            }
             Statement::Loop {
                 kind,
                 initializer,
@@ -372,11 +457,15 @@ fn rewrite_statements(
                     body,
                     name,
                     high_name,
+                    zero_name,
                     globals,
                     volatile_globals,
                     call_return_types,
                     assignment_count,
-                )?,
+                    pair_state.clone(),
+                    pair_zero_assigned,
+                )?
+                .0,
             }),
             Statement::Switch {
                 scrutinee,
@@ -392,11 +481,15 @@ fn rewrite_statements(
                                 statements,
                                 name,
                                 high_name,
+                                zero_name,
                                 globals,
                                 volatile_globals,
                                 call_return_types,
                                 assignment_count,
-                            )?,
+                                pair_state.clone(),
+                                pair_zero_assigned,
+                            )?
+                            .0,
                         ),
                     };
                     rewritten_arms.push(mwcc_syntax_trees::SwitchArm {
@@ -412,11 +505,15 @@ fn rewrite_statements(
                             statements,
                             name,
                             high_name,
+                            zero_name,
                             globals,
                             volatile_globals,
                             call_return_types,
                             assignment_count,
-                        )?,
+                            pair_state.clone(),
+                            pair_zero_assigned,
+                        )?
+                        .0,
                     )),
                     None => None,
                 };
@@ -429,7 +526,17 @@ fn rewrite_statements(
             _ => output.push(statement.clone()),
         }
     }
-    Some(output)
+    Some((output, pair_state))
+}
+
+fn trailing_zero_assignment(statements: &[Statement]) -> Option<&str> {
+    match statements.last()? {
+        Statement::Assign {
+            name,
+            value: Expression::IntegerLiteral(0),
+        } => Some(name),
+        _ => None,
+    }
 }
 
 fn wide_global_target(
@@ -619,6 +726,115 @@ mod tests {
                 && high == "__mwcc_wide_mask_high_0"
                 && stored_low == "events"
                 && stored_high == "__mwcc_wide_mask_high_0"
+        ));
+    }
+
+    #[test]
+    fn retained_pair_reuses_a_dominating_zero_local_after_the_first_mask() {
+        let mask = |value| Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: Box::new(Expression::Variable("events".into())),
+            right: Box::new(Expression::IntegerLiteral(value)),
+        };
+        let local = |declared_type, name: &str| LocalDeclaration {
+            declared_type,
+            name: name.into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        };
+        let function = Function {
+            return_type: Type::Void,
+            name: "menu".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![
+                local(Type::UnsignedLongLong, "events"),
+                local(Type::UnsignedInt, "zero"),
+            ],
+            statements: vec![
+                Statement::Assign {
+                    name: "events".into(),
+                    value: Expression::Assign {
+                        target: Box::new(Expression::Variable("inputs".into())),
+                        value: Box::new(Expression::Call {
+                            name: "read_inputs".into(),
+                            arguments: Vec::new(),
+                        }),
+                    },
+                },
+                Statement::If {
+                    condition: mask(0x20),
+                    then_body: Vec::new(),
+                    else_body: Vec::new(),
+                },
+                Statement::Assign {
+                    name: "zero".into(),
+                    value: Expression::IntegerLiteral(0),
+                },
+                Statement::If {
+                    condition: mask(0x80),
+                    then_body: Vec::new(),
+                    else_body: vec![Statement::If {
+                        condition: mask(0x40),
+                        then_body: Vec::new(),
+                        else_body: Vec::new(),
+                    }],
+                },
+            ],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let retained = retain_zero_extended_mask_local_pair(
+            &function,
+            &HashMap::from([("inputs".into(), Type::UnsignedLongLong)]),
+            &HashSet::new(),
+            &HashMap::from([("read_inputs".into(), Type::UnsignedInt)]),
+        )
+        .expect("the explicit zero should serve the trailing pair tests");
+
+        assert!(!retained
+            .locals
+            .iter()
+            .any(|local| local.name.starts_with("__mwcc_wide_mask_zero_")));
+        let [
+            _assign_low,
+            _assign_high,
+            _store_low,
+            _store_high,
+            Statement::If {
+                condition: first, ..
+            },
+            Statement::Assign { name: zero, .. },
+            Statement::If {
+                condition: second,
+                else_body,
+                ..
+            },
+        ] = retained.statements.as_slice()
+        else {
+            panic!("the lowered statement order should retain the zero definition");
+        };
+        assert_eq!(zero, "zero");
+        assert!(expression_reads_name(first, "__mwcc_wide_mask_high_0"));
+        assert!(!expression_reads_name(first, "zero"));
+        assert!(expression_reads_name(second, "zero"));
+        assert!(matches!(
+            else_body.as_slice(),
+            [Statement::If { condition, .. }] if expression_reads_name(condition, "zero")
         ));
     }
 }
