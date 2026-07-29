@@ -10,6 +10,34 @@
 use super::*;
 
 impl Generator {
+    /// Keep a later narrow load out of the integer scratch while a lock value
+    /// spans a repeated floating-zero reset. MWCC materializes the lock in the
+    /// `lfs` latency slot, loads the narrow value into a fresh volatile home,
+    /// and stores the still-live lock after that load.
+    pub(super) fn schedule_post_call_jump_state_reset(&mut self) {
+        let Some(start) = post_call_jump_state_reset_start(&self.output.instructions) else {
+            return;
+        };
+        if !schedule_relocations::same_relocated_value(
+            &self.output.relocations,
+            &self.output.constants,
+            start + 2,
+            start + 4,
+        ) {
+            return;
+        }
+        self.move_instruction_before(start + 8, start + 2);
+        let narrow = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+        let Instruction::LoadWord { d, .. } = &mut self.output.instructions[start + 7] else {
+            unreachable!("jump-state reset load was recognized")
+        };
+        *d = narrow;
+        let Instruction::StoreByte { s, .. } = &mut self.output.instructions[start + 8] else {
+            unreachable!("jump-state reset store was recognized")
+        };
+        *s = narrow;
+    }
+
     /// Lead a guarded mixed integer/float call with its independent float
     /// literal load. The receiver's saved-home copy uses `addi` in this
     /// schedule, and the enclosing nested early-return graph contributes six
@@ -193,6 +221,34 @@ impl Generator {
     }
 }
 
+fn post_call_jump_state_reset_start(instructions: &[Instruction]) -> Option<usize> {
+    instructions.windows(10).position(|window| {
+        matches!(window, [
+            Instruction::AddImmediate { d: first, a: 0, immediate: 1 },
+            Instruction::StoreWord { s: first_store, a: owner, .. },
+            Instruction::LoadFloatSingle { d: loaded_first_zero, .. },
+            Instruction::StoreFloatSingle { s: stored_first_zero, a: first_float_base, .. },
+            Instruction::LoadFloatSingle { d: loaded_second_zero, .. },
+            Instruction::StoreFloatSingle { s: stored_second_zero, a: second_float_base, .. },
+            Instruction::LoadWord { d: narrow, a: attributes, .. },
+            Instruction::StoreByte { s: narrow_store, a: narrow_base, .. },
+            Instruction::AddImmediate { d: lock, a: 0, immediate: 5 },
+            Instruction::StoreWord { s: lock_store, a: lock_base, .. },
+        ] if first == first_store
+            && loaded_first_zero == stored_first_zero
+            && loaded_second_zero == stored_second_zero
+            && stored_first_zero == stored_second_zero
+            && owner == first_float_base
+            && first_float_base == second_float_base
+            && second_float_base == narrow_base
+            && narrow == narrow_store
+            && narrow == lock
+            && lock == lock_store
+            && narrow_base == lock_base
+            && attributes != owner)
+    })
+}
+
 fn guarded_saved_receiver_float_call_start(
     instructions: &[Instruction],
 ) -> Option<usize> {
@@ -295,5 +351,55 @@ mod tests {
             else_body: Vec::new(),
         };
         assert_eq!(leading_register_truth_test(&statement), None);
+    }
+
+    #[test]
+    fn recognizes_a_post_call_mixed_jump_state_reset() {
+        let instructions = [
+            Instruction::load_immediate(0, 1),
+            Instruction::StoreWord {
+                s: 0,
+                a: 30,
+                offset: 224,
+            },
+            Instruction::LoadFloatSingle {
+                d: 0,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::StoreFloatSingle {
+                s: 0,
+                a: 30,
+                offset: 236,
+            },
+            Instruction::LoadFloatSingle {
+                d: 0,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::StoreFloatSingle {
+                s: 0,
+                a: 30,
+                offset: 120,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 31,
+                offset: 88,
+            },
+            Instruction::StoreByte {
+                s: 0,
+                a: 30,
+                offset: 6504,
+            },
+            Instruction::load_immediate(0, 5),
+            Instruction::StoreWord {
+                s: 0,
+                a: 30,
+                offset: 2188,
+            },
+        ];
+
+        assert_eq!(post_call_jump_state_reset_start(&instructions), Some(0));
     }
 }

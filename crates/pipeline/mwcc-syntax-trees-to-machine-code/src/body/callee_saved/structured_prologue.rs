@@ -51,6 +51,31 @@ pub(super) fn uses_dense_saved_register_range(
 }
 
 impl Generator {
+    /// Establish a saved entry parameter before deriving another saved local
+    /// from it. The generic emitter initially derives through the incoming
+    /// register between the two save stores. MWCC completes both physical
+    /// saves, copies the entry value, then derives through that durable home.
+    pub(super) fn schedule_saved_parameter_derived_initializer(&mut self) {
+        let Some(start) = self
+            .output
+            .instructions
+            .windows(4)
+            .position(is_saved_parameter_derived_initializer)
+        else {
+            return;
+        };
+        self.move_instruction_before(start + 2, start + 1);
+        self.move_instruction_before(start + 3, start + 2);
+        let (saved, _) = register_copy(&self.output.instructions[start + 2])
+            .expect("derived initializer prefix copy was recognized");
+        let Instruction::AddImmediate { a, .. } =
+            &mut self.output.instructions[start + 3]
+        else {
+            unreachable!("derived initializer prefix was recognized")
+        };
+        *a = saved;
+    }
+
     pub(super) fn try_emit_dense_eager_global_array_initializer(
         &mut self,
         initializer: &Expression,
@@ -245,6 +270,45 @@ impl Generator {
     }
 }
 
+fn is_saved_parameter_derived_initializer(window: &[Instruction]) -> bool {
+    let [
+        Instruction::StoreWord {
+            s: derived,
+            a: 1,
+            ..
+        },
+        Instruction::AddImmediate {
+            d,
+            a: incoming,
+            ..
+        },
+        Instruction::StoreWord {
+            s: saved,
+            a: 1,
+            ..
+        },
+        copy,
+    ] = window
+    else {
+        return false;
+    };
+    *derived == *d
+        && derived != saved
+        && register_copy(copy) == Some((*saved, *incoming))
+}
+
+fn register_copy(instruction: &Instruction) -> Option<(u8, u8)> {
+    match instruction {
+        Instruction::Or { a, s, b } if s == b => Some((*a, *s)),
+        Instruction::AddImmediate {
+            d,
+            a,
+            immediate: 0,
+        } => Some((*d, *a)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +350,29 @@ mod tests {
     fn expired_parameter_reuse_enables_a_dense_eager_frame() {
         assert!(uses_dense_saved_register_range(true, 4, 12, false, true));
         assert!(!uses_dense_saved_register_range(true, 4, 12, false, false));
+    }
+
+    #[test]
+    fn recognizes_a_saved_parameter_feeding_a_derived_home() {
+        let instructions = [
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::AddImmediate {
+                d: 31,
+                a: 3,
+                immediate: 272,
+            },
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 16,
+            },
+            Instruction::move_register(30, 3),
+        ];
+
+        assert!(is_saved_parameter_derived_initializer(&instructions));
     }
 }
