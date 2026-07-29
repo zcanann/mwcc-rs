@@ -440,9 +440,11 @@ pub(crate) struct Generator {
     /// the same high half inside one call-free region. Calls invalidate the map:
     /// retaining a base across them is a frame-cost decision that belongs in a
     /// future whole-function planner, while the ordinary MWCC schedule
-    /// rematerializes it. A different high half still needs MWCC's multi-base
-    /// look-ahead schedule and therefore defers. Zero-high accesses use
-    /// r0-as-zero directly and are not recorded.
+    /// rematerializes it. A control-flow boundary after the last access likewise
+    /// ends the region, allowing a later high half to reuse the same physical
+    /// home. Overlapping high halves still need MWCC's multi-base look-ahead
+    /// schedule and therefore defer. Zero-high accesses use r0-as-zero directly
+    /// and are not recorded.
     pub(crate) const_address_bases: HashMap<i16, u8>,
     /// Set once a VARIABLE-index subscript store (`a[i] = v`, i not constant) has
     /// scaled its index through the r0 scratch. mwcc pre-scales the indices of

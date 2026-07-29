@@ -222,7 +222,13 @@ impl Generator {
             return Some((base, false));
         }
         if !self.const_address_bases.is_empty() {
-            return None;
+            if !const_address_region_ended(
+                &self.output.instructions,
+                self.const_address_bases.values().copied(),
+            ) {
+                return None;
+            }
+            self.const_address_bases.clear();
         }
         let base = self.fresh_virtual_general();
         self.const_address_bases.insert(high, base);
@@ -733,6 +739,29 @@ impl Generator {
     }
 }
 
+fn const_address_region_ended(
+    instructions: &[Instruction],
+    bases: impl Iterator<Item = u8>,
+) -> bool {
+    let bases: Vec<_> = bases.collect();
+    let Some(last_use) = instructions.iter().rposition(|instruction| {
+        mwcc_vreg::register_operands(instruction)
+            .into_iter()
+            .any(|operand| {
+                operand.class == mwcc_vreg::Class::General
+                    && bases.contains(&operand.register)
+            })
+    }) else {
+        return false;
+    };
+    instructions[last_use + 1..].iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instruction::Branch { .. } | Instruction::BranchConditionalForward { .. }
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -777,6 +806,34 @@ mod tests {
                 target_type: Type::StructPointer { element_size: 64 },
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn releases_a_fixed_address_base_after_control_flow_ends_its_region() {
+        let base = mwcc_vreg::VIRTUAL_BASE;
+        let instructions = [
+            Instruction::load_immediate_shifted(base, -32768),
+            Instruction::LoadByteZero {
+                d: 0,
+                a: base,
+                offset: 0x30e2,
+            },
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 4,
+            },
+        ];
+
+        assert!(const_address_region_ended(
+            &instructions,
+            std::iter::once(base)
+        ));
+        assert!(!const_address_region_ended(
+            &instructions[..3],
+            std::iter::once(base)
         ));
     }
 }
