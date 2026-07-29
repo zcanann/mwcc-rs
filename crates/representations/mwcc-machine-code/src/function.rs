@@ -192,6 +192,9 @@ pub struct MachineFunction {
     /// A negative value represents constants materialized while lowering a
     /// skipped inline, before the ordinary body counter reaches this function.
     pub constant_number_adjust: i32,
+    /// Signed adjustment applied only to the names assigned to new function
+    /// strings. The counter walk still advances by the number of strings.
+    pub string_number_adjust: i32,
     /// Named `static const` SCALARS this function's TU must EMIT (mwcc
     /// usually folds/elides them, but some header/source contexts keep the
     /// named .sdata2 object — measured per capture; ww's e_pow keeps `one`).
@@ -322,6 +325,7 @@ impl MachineFunction {
             has_conversion: false,
             constant_number_gaps: Vec::new(),
             constant_number_adjust: 0,
+            string_number_adjust: 0,
             keep_named_const_scalars: Vec::new(),
             phantom_externals: Vec::new(),
             has_float_branch: false,

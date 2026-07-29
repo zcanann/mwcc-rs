@@ -974,6 +974,14 @@ fn lower_function_body(
     generator.schedule_structured_variadic_output_frame();
     generator.finalize_structured_complement_product_pair();
 
+    ordinal_accounting::relocate_inline_initializer_ordinals(
+        &mut generator.output,
+        generator.inline_expansion_facts,
+        generator
+            .behavior
+            .inline_initializer_ordinals_follow_strings
+            && generator.inline_statement_body_substitutions != 0,
+    );
     ordinal_accounting::apply(
         ordinal_source_function,
         &mut generator.output,

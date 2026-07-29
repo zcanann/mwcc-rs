@@ -1658,12 +1658,17 @@ impl Generator {
                 );
             self.inline_statement_body_substitutions +=
                 expanded.statement_body_substitutions;
-            self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
-                self.inline_expansion_facts,
-                expanded.statement_body_substitutions,
-                expanded.value_body_substitutions,
-                self.behavior.inline_statement_substitution_label_weight,
-            );
+            if self
+                .behavior
+                .ordinary_inline_substitution_advances_ordinals
+            {
+                self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
+                    self.inline_expansion_facts,
+                    expanded.statement_body_substitutions,
+                    expanded.value_body_substitutions,
+                    self.behavior.inline_statement_substitution_label_weight,
+                );
+            }
             return self.evaluate_body(&expanded.function);
         }
         if calls_inline_candidate {
@@ -1675,12 +1680,17 @@ impl Generator {
                     );
                 self.inline_statement_body_substitutions +=
                     expanded.statement_body_substitutions;
-                self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
-                    self.inline_expansion_facts,
-                    expanded.statement_body_substitutions,
-                    expanded.value_body_substitutions,
-                    self.behavior.inline_statement_substitution_label_weight,
-                );
+                if self
+                    .behavior
+                    .ordinary_inline_substitution_advances_ordinals
+                {
+                    self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
+                        self.inline_expansion_facts,
+                        expanded.statement_body_substitutions,
+                        expanded.value_body_substitutions,
+                        self.behavior.inline_statement_substitution_label_weight,
+                    );
+                }
                 let branch_reuse =
                     crate::branch_value_reuse::materialize_guarded_global_member_update(
                         &expanded.function,

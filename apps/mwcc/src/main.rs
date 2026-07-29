@@ -95,6 +95,11 @@ fn anonymous_string_ordinal_count(names: &[String]) -> u32 {
         .count() as u32
 }
 
+fn adjusted_anonymous_number(base: u32, adjustment: i32) -> u32 {
+    u32::try_from(i64::from(base) + i64::from(adjustment))
+        .expect("anonymous-number adjustment must remain non-negative")
+}
+
 fn parse_invocation(arguments: &[String]) -> Invocation {
     use mwcc_versions::{CharDefault, EnumStorage, GlobalAddressing, Optimization};
     let mut invocation = Invocation {
@@ -2049,6 +2054,8 @@ fn compile(
             + unit.functions.get(function_index).map_or(0, |source| {
                 source.locals.iter().filter(|local| local.is_static).count() as u32
             });
+        let mut next_string_number =
+            adjusted_anonymous_number(number, machine_function.string_number_adjust);
         // Strings first, in the function's `@N` block. The NEW ones (a reuse points at an earlier
         // pool entry) are recorded by name so the writer emits their symbols at the FRONT of this
         // function's `@N` block, interleaved per-function with its constants/unwind entries.
@@ -2113,7 +2120,8 @@ fn compile(
                     if let Some(name) = string_pool.get(bytes) {
                         return name.clone();
                     }
-                    let name = format!("@{number}");
+                    let name = format!("@{next_string_number}");
+                    next_string_number += 1;
                     number += 1;
                     new_string_names.push(name.clone());
                     string_pool.insert(bytes.clone(), name.clone());
@@ -2772,8 +2780,8 @@ mod tests {
     mod unsigned_narrow_to_float;
 
     use super::{
-        anonymous_string_ordinal_count, compile, global_alignments, parse_invocation,
-        GlobalAlignments, SourceLanguage,
+        adjusted_anonymous_number, anonymous_string_ordinal_count, compile, global_alignments,
+        parse_invocation, GlobalAlignments, SourceLanguage,
     };
     use mwcc_versions::{EnumStorage, GlobalAddressing};
 
@@ -2807,6 +2815,12 @@ mod tests {
             "@18".to_owned(),
         ];
         assert_eq!(anonymous_string_ordinal_count(&names), 2);
+    }
+
+    #[test]
+    fn string_resolver_applies_its_name_only_adjustment() {
+        assert_eq!(adjusted_anonymous_number(252, -1), 251);
+        assert_eq!(adjusted_anonymous_number(251, 2), 253);
     }
 
     #[path = "inline_member_zero_fill.rs"]

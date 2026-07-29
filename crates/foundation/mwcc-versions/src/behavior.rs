@@ -551,6 +551,10 @@ pub struct Behavior {
     pub deferred_cxx_nonvirtual_destructor_label_bump: u8,
     /// Residue per statement-body inline substitution for the active mode.
     pub inline_statement_substitution_label_weight: u8,
+    /// Whether ordinary composed inline bodies advance anonymous ordinals.
+    pub ordinary_inline_substitution_advances_ordinals: bool,
+    /// Whether inline-initializer ordinals are assigned after owned strings.
+    pub inline_initializer_ordinals_follow_strings: bool,
     /// Optional constructor-specific inline-composition transaction.
     pub cxx_constructor_inline_ordinal_weights: Option<CxxConstructorInlineOrdinalWeights>,
     /// Inherited RTTI handles without a vtable owner remain local.
@@ -931,6 +935,14 @@ impl Behavior {
             } else {
                 2
             },
+            ordinary_inline_substitution_advances_ordinals: config
+                .build
+                .profile
+                .ordinary_inline_substitution_advances_ordinals(),
+            inline_initializer_ordinals_follow_strings: config
+                .build
+                .profile
+                .inline_initializer_ordinals_follow_strings(),
             cxx_constructor_inline_ordinal_weights: config
                 .build
                 .profile
@@ -2302,6 +2314,14 @@ mod tests {
         assert_eq!(behavior.deferred_cxx_inline_definition_label_bump, 0);
         assert_eq!(behavior.deferred_cxx_nonvirtual_destructor_label_bump, 2);
         assert_eq!(behavior.inline_statement_substitution_label_weight, 1);
+    }
+
+    #[test]
+    fn build_163_relocates_ordinary_inline_ordinal_residue() {
+        let behavior = Behavior::resolve(&CompilerConfig::new(build::GC_1_2_5N));
+
+        assert!(!behavior.ordinary_inline_substitution_advances_ordinals);
+        assert!(behavior.inline_initializer_ordinals_follow_strings);
     }
 
     #[test]

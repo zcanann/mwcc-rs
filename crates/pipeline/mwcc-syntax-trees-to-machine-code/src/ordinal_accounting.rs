@@ -11,6 +11,36 @@ use mwcc_syntax_trees::{
 };
 use mwcc_versions::FunctionOrdinalAccountingStyle;
 
+/// Build 163 assigns retained inline-initializer nodes after a function's
+/// strings. Move those ordinals out of the pool-front block and reinsert them
+/// immediately before the first constant. Functions without strings keep the
+/// front adjustment only, matching the conversion-owned pool transaction.
+pub(crate) fn relocate_inline_initializer_ordinals(
+    output: &mut MachineFunction,
+    facts: mwcc_syntax_trees::InlineExpansionFacts,
+    enabled: bool,
+) {
+    let moved = facts.leading_initializer_substitutions as u32;
+    if !enabled || moved == 0 || output.constants.is_empty() {
+        return;
+    }
+    output.constant_number_adjust -= i32::try_from(moved).unwrap_or(i32::MAX);
+    if !output.string_literals.is_empty() {
+        output.string_number_adjust -= i32::try_from(
+            moved.saturating_sub(u32::from(output.has_conversion)),
+        )
+        .unwrap_or(i32::MAX);
+        match output
+            .constant_number_gaps
+            .iter_mut()
+            .find(|(constant_index, _)| *constant_index == 0)
+        {
+            Some((_, gap)) => *gap = gap.saturating_add(moved),
+            None => output.constant_number_gaps.push((0, moved)),
+        }
+    }
+}
+
 pub(crate) fn apply(
     function: &Function,
     output: &mut MachineFunction,
@@ -350,6 +380,44 @@ mod tests {
             text_deferred: false,
             peephole_disabled: false,
         }
+    }
+
+    #[test]
+    fn build_163_moves_inline_initializer_ordinals_behind_strings() {
+        let mut output = MachineFunction::new("probe");
+        output.string_literals.push(b"assert.c".to_vec());
+        output.intern_constant(0x4330_0000_0000_0000, 8);
+        output.has_conversion = true;
+
+        relocate_inline_initializer_ordinals(
+            &mut output,
+            mwcc_syntax_trees::InlineExpansionFacts {
+                leading_initializer_substitutions: 2,
+            },
+            true,
+        );
+
+        assert_eq!(output.constant_number_adjust, -2);
+        assert_eq!(output.string_number_adjust, -1);
+        assert_eq!(output.constant_number_gaps, [(0, 2)]);
+    }
+
+    #[test]
+    fn build_163_pool_without_strings_keeps_the_initializer_discount_at_front() {
+        let mut output = MachineFunction::new("probe");
+        output.intern_constant(0x4330_0000_0000_0000, 8);
+
+        relocate_inline_initializer_ordinals(
+            &mut output,
+            mwcc_syntax_trees::InlineExpansionFacts {
+                leading_initializer_substitutions: 1,
+            },
+            true,
+        );
+
+        assert_eq!(output.constant_number_adjust, -1);
+        assert_eq!(output.string_number_adjust, 0);
+        assert!(output.constant_number_gaps.is_empty());
     }
 
     #[test]

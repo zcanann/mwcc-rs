@@ -872,6 +872,18 @@ pub trait CodegenProfile: core::fmt::Debug {
         1
     }
 
+    /// Whether ordinary composed inline bodies retain their eliminated value
+    /// nodes in the anonymous-symbol stream.
+    fn ordinary_inline_substitution_advances_ordinals(&self) -> bool {
+        true
+    }
+
+    /// Whether retained inline-initializer ordinals are assigned after
+    /// function-owned strings instead of at the pool front.
+    fn inline_initializer_ordinals_follow_strings(&self) -> bool {
+        false
+    }
+
     /// Specialized constructor composition normally shares the ordinary inline
     /// residue model. Older analyzers may retain a distinct transaction.
     fn cxx_constructor_inline_ordinal_weights(
@@ -2060,6 +2072,14 @@ impl CodegenProfile for Gc233Build163 {
             statement_body: 1,
             value_body: 3,
         })
+    }
+
+    fn ordinary_inline_substitution_advances_ordinals(&self) -> bool {
+        false
+    }
+
+    fn inline_initializer_ordinals_follow_strings(&self) -> bool {
+        true
     }
 
     fn orphaned_cxx_rtti_handle_is_local(&self) -> bool {
