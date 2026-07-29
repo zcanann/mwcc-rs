@@ -379,6 +379,7 @@ mod pfp_str2dec;
 mod pfp_timesdec;
 mod pfp_two_exp;
 mod pfp_ull2dec;
+mod pik_os_reset_system;
 mod qst_qsort;
 mod rt_va_arg;
 mod rt_va_arg_50;
@@ -801,6 +802,7 @@ impl Generator {
         }
         let fired = self.try_rt_va_arg(function)?
             || self.try_oot_rdb_put32(function)?
+            || self.try_pik_os_reset_system(function)?
             || self.try_melee_thrown_koopa(function)?
             || self.try_mp_ianim_advancement(function)?
             || self.try_mp_ianim_vsimplified(function)?
