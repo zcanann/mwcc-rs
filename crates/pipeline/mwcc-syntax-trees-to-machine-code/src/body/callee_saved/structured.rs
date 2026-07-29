@@ -2236,6 +2236,7 @@ impl Generator {
         if exclusive_arm_home_layout.is_some() {
             self.schedule_exclusive_arm_entry();
             self.schedule_exclusive_arm_wide_snapshot();
+            self.schedule_exclusive_arm_callback_setup();
         }
         if dense_entry_prefix {
             self.schedule_structured_prefixed_frame_entry();
