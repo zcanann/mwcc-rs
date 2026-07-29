@@ -1042,6 +1042,20 @@ impl Generator {
             self.emit_comma_side_effect(left)?;
             return self.emit_condition_test(right);
         }
+        // The parser can preserve a source boolean spelling as
+        // `(a REL b) != 0` or `(a REL b) == 0`. A comparison is already a
+        // canonical C int boolean, so branch directly from its CR result. This
+        // is also essential for floating comparisons: materializing the inner
+        // relation through a general register would discard its FP condition
+        // semantics and manufacture a needless integer boolean.
+        if let Some((operator, left, right)) = booleanized_comparison(condition) {
+            let normalized = Expression::Binary {
+                operator,
+                left: Box::new(left.clone()),
+                right: Box::new(right.clone()),
+            };
+            return self.emit_condition_test(&normalized);
+        }
         if self.try_emit_wide_pair_mask_test(condition)? {
             return Ok((12, 2)); // beq — skip when both masked words are zero
         }
@@ -1969,6 +1983,46 @@ fn is_scalarized_one_word_member(
     )
 }
 
+fn booleanized_comparison(
+    expression: &Expression,
+) -> Option<(BinaryOperator, &Expression, &Expression)> {
+    let Expression::Binary {
+        operator,
+        left,
+        right,
+    } = expression
+    else {
+        return None;
+    };
+    if !matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+        return None;
+    }
+    let inner = if is_zero_literal(right) {
+        left.as_ref()
+    } else if is_zero_literal(left) {
+        right.as_ref()
+    } else {
+        return None;
+    };
+    let Expression::Binary {
+        operator: inner_operator,
+        left: inner_left,
+        right: inner_right,
+    } = inner
+    else {
+        return None;
+    };
+    if !is_comparison(*inner_operator) {
+        return None;
+    }
+    let normalized_operator = if *operator == BinaryOperator::NotEqual {
+        *inner_operator
+    } else {
+        flip_comparison(*inner_operator)?
+    };
+    Some((normalized_operator, inner_left, inner_right))
+}
+
 #[cfg(test)]
 mod scalarized_member_tests {
     use super::*;
@@ -1988,6 +2042,45 @@ mod scalarized_member_tests {
         assert!(!is_scalarized_one_word_member(
             &member("unproven", 0),
             &proven
+        ));
+    }
+}
+
+#[cfg(test)]
+mod booleanized_comparison_tests {
+    use super::*;
+
+    fn comparison(operator: BinaryOperator) -> Expression {
+        Expression::Binary {
+            operator,
+            left: Box::new(Expression::Variable("left".into())),
+            right: Box::new(Expression::Variable("right".into())),
+        }
+    }
+
+    #[test]
+    fn removes_a_nonzero_test_around_a_comparison() {
+        let condition = Expression::Binary {
+            operator: BinaryOperator::NotEqual,
+            left: Box::new(comparison(BinaryOperator::Equal)),
+            right: Box::new(Expression::IntegerLiteral(0)),
+        };
+        assert!(matches!(
+            booleanized_comparison(&condition),
+            Some((BinaryOperator::Equal, _, _))
+        ));
+    }
+
+    #[test]
+    fn flips_a_comparison_tested_equal_to_zero() {
+        let condition = Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left: Box::new(Expression::IntegerLiteral(0)),
+            right: Box::new(comparison(BinaryOperator::Less)),
+        };
+        assert!(matches!(
+            booleanized_comparison(&condition),
+            Some((BinaryOperator::GreaterEqual, _, _))
         ));
     }
 }
