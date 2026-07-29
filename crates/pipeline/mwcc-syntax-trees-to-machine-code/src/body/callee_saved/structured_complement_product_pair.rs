@@ -117,6 +117,13 @@ impl Generator {
     ) -> Compilation<()> {
         const ONE: u8 = 7;
         self.load_float_constant(ONE, 1.0);
+        let shared_one = self
+            .output
+            .constants
+            .len()
+            .checked_sub(1)
+            .expect("loading one interns a pool constant");
+        self.output.constant_number_gaps.push((shared_one, 2));
         self.preloaded_float_compare_literals
             .push(PreloadedFloatCompareLiteral {
                 key: float_compare_literal_key(&Expression::FloatLiteral(1.0), false)
@@ -212,6 +219,293 @@ impl Generator {
             });
         Ok(())
     }
+
+    pub(crate) fn finalize_structured_complement_product_pair(&mut self) {
+        if !has_structured_complement_product_pair(&self.output.instructions) {
+            return;
+        }
+
+        self.fill_final_product_latency_slot();
+        self.schedule_complement_product_conversions();
+        self.schedule_complement_product_call_results();
+        self.compact_complement_product_frame();
+        self.number_complement_product_conversion_bias();
+    }
+
+    fn fill_final_product_latency_slot(&mut self) {
+        let Some(product) = self.output.instructions.windows(2).position(|window| {
+            matches!(
+                window,
+                [
+                    Instruction::FloatMultiplySingle {
+                        d: 14..=31,
+                        a: 2,
+                        c: 1
+                    },
+                    Instruction::FloatCompareOrdered { a: 14..=31, b: 0 }
+                ]
+            )
+        }) else {
+            return;
+        };
+        self.move_instruction_before(product + 1, product);
+    }
+
+    fn schedule_complement_product_conversions(&mut self) {
+        let starts: Vec<_> = self
+            .output
+            .instructions
+            .windows(10)
+            .enumerate()
+            .filter_map(|(start, window)| conversion_packet(window).then_some(start))
+            .take(2)
+            .collect();
+        let [first, second] = starts.as_slice() else {
+            return;
+        };
+        for (packet_index, start) in [*first, *second].into_iter().enumerate() {
+            self.move_instruction_before(start + 8, start + 4);
+            let (high_offset, low_offset) = if packet_index == 0 {
+                (24, 28)
+            } else {
+                (16, 20)
+            };
+            let Instruction::LoadFloatDouble { d: bias, .. } =
+                &mut self.output.instructions[start + 1]
+            else {
+                unreachable!("the conversion recognizer selected the bias load")
+            };
+            *bias = 2;
+            let Instruction::StoreWord { offset, .. } = &mut self.output.instructions[start + 2]
+            else {
+                unreachable!("the conversion recognizer selected the low-word store")
+            };
+            *offset = low_offset;
+            let Instruction::StoreWord { offset, .. } = &mut self.output.instructions[start + 5]
+            else {
+                unreachable!("the conversion recognizer selected the high-word store")
+            };
+            *offset = high_offset;
+            let Instruction::LoadFloatDouble { d, offset, .. } =
+                &mut self.output.instructions[start + 6]
+            else {
+                unreachable!("the conversion recognizer selected the image load")
+            };
+            *d = 1;
+            *offset = high_offset;
+            let Instruction::FloatSubtractSingle { d, a, b } =
+                &mut self.output.instructions[start + 7]
+            else {
+                unreachable!("the conversion recognizer selected the subtract")
+            };
+            *d = 1;
+            *a = 1;
+            *b = 2;
+            let Instruction::FloatMultiplySingle { d, c, .. } =
+                &mut self.output.instructions[start + 8]
+            else {
+                unreachable!("the conversion recognizer selected the scale")
+            };
+            *d = 1;
+            *c = 1;
+            let Instruction::FloatMultiplySingle { c, .. } =
+                &mut self.output.instructions[start + 9]
+            else {
+                unreachable!("the conversion recognizer selected the member product")
+            };
+            *c = 1;
+        }
+    }
+
+    fn schedule_complement_product_call_results(&mut self) {
+        let mut start = 0;
+        while start + 1 < self.output.instructions.len() {
+            let matches = matches!(
+                &self.output.instructions[start..start + 2],
+                [
+                    Instruction::AddImmediate {
+                        d: 14..=31,
+                        a: 3,
+                        immediate: 0
+                    },
+                    Instruction::LoadWord {
+                        d: 0,
+                        a: 0,
+                        offset: 0
+                    }
+                ]
+            ) && self
+                .output
+                .relocations
+                .iter()
+                .any(|relocation| relocation.instruction_index == start + 1);
+            if matches {
+                self.move_instruction_before(start + 1, start);
+                start += 2;
+            } else {
+                start += 1;
+            }
+        }
+    }
+
+    fn compact_complement_product_frame(&mut self) {
+        let Some(frame_push) = self.output.instructions.iter().position(|instruction| {
+            matches!(
+                instruction,
+                Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -72
+                }
+            )
+        }) else {
+            return;
+        };
+        if !matches!(
+            self.output.instructions.get(frame_push + 1..frame_push + 5),
+            Some([
+                Instruction::StoreFloatDouble {
+                    s: 31,
+                    a: 1,
+                    offset: 64
+                },
+                Instruction::StoreFloatDouble {
+                    s: 30,
+                    a: 1,
+                    offset: 56
+                },
+                Instruction::StoreWord {
+                    s: 31,
+                    a: 1,
+                    offset: 52
+                },
+                Instruction::StoreWord {
+                    s: 30,
+                    a: 1,
+                    offset: 48
+                },
+            ])
+        ) {
+            return;
+        }
+
+        let Instruction::StoreWordWithUpdate { offset, .. } =
+            &mut self.output.instructions[frame_push]
+        else {
+            unreachable!("the complement-product frame push was matched")
+        };
+        *offset = -56;
+        for instruction in &mut self.output.instructions {
+            match instruction {
+                Instruction::StoreFloatDouble { a: 1, offset, .. }
+                | Instruction::LoadFloatDouble { a: 1, offset, .. } => {
+                    *offset = match *offset {
+                        64 => 48,
+                        56 => 40,
+                        offset => offset,
+                    };
+                }
+                Instruction::StoreWord { a: 1, offset, .. }
+                | Instruction::LoadWord { a: 1, offset, .. } => {
+                    *offset = match *offset {
+                        76 => 60,
+                        52 => 36,
+                        48 => 32,
+                        offset => offset,
+                    };
+                }
+                Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: 72,
+                } => {
+                    if let Instruction::AddImmediate { immediate, .. } = instruction {
+                        *immediate = 56;
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.frame_size = 56;
+    }
+
+    fn number_complement_product_conversion_bias(&mut self) {
+        let Some(bias_load) = self.output.instructions.iter().position(|instruction| {
+            matches!(
+                instruction,
+                Instruction::LoadFloatDouble {
+                    d: 2,
+                    a: 0,
+                    offset: 0
+                }
+            )
+        }) else {
+            return;
+        };
+        let Some(constant) = self.output.relocations.iter().find_map(|relocation| {
+            if relocation.instruction_index != bias_load {
+                return None;
+            }
+            match relocation.target {
+                mwcc_machine_code::RelocationTarget::Constant(index) => Some(index),
+                _ => None,
+            }
+        }) else {
+            return;
+        };
+        self.output.constant_number_gaps.push((constant, 1));
+    }
+}
+
+fn has_structured_complement_product_pair(instructions: &[Instruction]) -> bool {
+    instructions.iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instruction::LoadFloatSingle {
+                d: 7,
+                a: 0,
+                offset: 0
+            }
+        )
+    }) && instructions
+        .iter()
+        .filter(|instruction| matches!(instruction, Instruction::FloatSubtractSingle { a: 7, .. }))
+        .count()
+        == 8
+}
+
+fn conversion_packet(instructions: &[Instruction]) -> bool {
+    matches!(
+        instructions,
+        [
+            Instruction::XorImmediateShifted {
+                a: 0,
+                s: 3,
+                immediate: 0x8000
+            },
+            Instruction::LoadFloatDouble {
+                a: 0,
+                offset: 0,
+                ..
+            },
+            Instruction::StoreWord { s: 0, a: 1, .. },
+            Instruction::AddImmediateShifted {
+                d: 0,
+                a: 0,
+                immediate: 0x4330
+            },
+            Instruction::StoreWord { s: 0, a: 1, .. },
+            Instruction::LoadFloatDouble { a: 1, .. },
+            Instruction::FloatSubtractSingle { .. },
+            Instruction::FloatMultiplySingle { a: 30..=31, .. },
+            Instruction::LoadFloatSingle {
+                d: 0,
+                a: 30,
+                offset: 8 | 12
+            },
+            Instruction::FloatMultiplySingle { d: 0, a: 0, .. },
+        ]
+    )
 }
 
 fn complement_product(expression: &Expression) -> Option<[Expression; 4]> {
