@@ -411,6 +411,16 @@ impl Generator {
             && entry_lane_bytes == 8
             && inline_lane_bytes == 8
             && physical_saved.len() == 2;
+        // An inlined body containing a numeric conversion already owns the
+        // optimizer lane that retains build 163's entry table. With no
+        // addressable locals, the two provenance counters describe the same
+        // lower-frame storage rather than adjacent regions.
+        let shared_inline_conversion_bytes = shared_inline_conversion_entry_lane(
+            self.frame_slots.is_empty(),
+            self.callee_saved_conversion_bytes,
+            entry_lane_bytes,
+            inline_lane_bytes,
+        );
         let shifts_reused_anchor_entry_lane =
             self.data_section_anchor_reuses_deferred_home
                 && entry_lane_bytes != 0
@@ -421,6 +431,8 @@ impl Generator {
             // the selected frame: move explicit locals above it without
             // charging the same lane to the frame size a second time.
             inline_lane_bytes
+        } else if let Some(shared_bytes) = shared_inline_conversion_bytes {
+            shared_bytes
         } else if shares_inline_aggregate_lane || shares_inline_eager_lane {
             entry_lane_bytes.max(inline_lane_bytes)
         } else {
@@ -1385,6 +1397,19 @@ fn compact_linkage_first_saved_frame_size(saved_registers: usize) -> i16 {
         & !7
 }
 
+fn shared_inline_conversion_entry_lane(
+    frame_slots_empty: bool,
+    conversion_bytes: i16,
+    entry_lane_bytes: i16,
+    inline_lane_bytes: i16,
+) -> Option<i16> {
+    (frame_slots_empty
+        && conversion_bytes != 0
+        && entry_lane_bytes != 0
+        && inline_lane_bytes != 0)
+        .then(|| entry_lane_bytes.max(inline_lane_bytes))
+}
+
 /// Identify a saved local loaded through an entry pointer before that incoming
 /// register is overwritten. Build 163 retains the entry-parameter table for
 /// this value origin just as it does for a parameter copied directly into a
@@ -1446,6 +1471,26 @@ fn remap_prefix_rotate_left(
 mod tests {
     use super::*;
     use mwcc_machine_code::{Relocation, RelocationKind, RelocationTarget};
+
+    #[test]
+    fn inlined_conversion_reuses_the_retained_entry_lane() {
+        assert_eq!(
+            shared_inline_conversion_entry_lane(true, 8, 8, 16),
+            Some(16)
+        );
+        assert_eq!(
+            shared_inline_conversion_entry_lane(true, 16, 8, 32),
+            Some(32)
+        );
+        assert_eq!(
+            shared_inline_conversion_entry_lane(false, 8, 8, 16),
+            None
+        );
+        assert_eq!(
+            shared_inline_conversion_entry_lane(true, 0, 8, 16),
+            None
+        );
+    }
 
     #[test]
     fn build_163_restores_link_register_before_stack_pointer() {
