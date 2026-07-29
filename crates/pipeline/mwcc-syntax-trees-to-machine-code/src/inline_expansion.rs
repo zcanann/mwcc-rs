@@ -24,8 +24,9 @@ use mwcc_syntax_trees::{
 use returns::rewrite_inline_returns;
 use safety::{
     automatic_composable_function, composable_function, materializable_arguments,
-    parameter_requires_materialization, repeatable_terminal_wrapper_callee, stable_argument,
-    stable_arguments, stable_local_values, terminal_scalar_arguments,
+    parameter_requires_materialization, repeatable_guarded_call_callee,
+    repeatable_terminal_wrapper_callee, stable_argument, stable_arguments, stable_local_values,
+    terminal_scalar_arguments,
 };
 use std::collections::{HashMap, HashSet};
 use substitution::substitute_statement;
@@ -87,6 +88,9 @@ pub struct InlineBodySet {
     /// Ordinary small definitions that MWCC may expand selectively at hot
     /// structured call sites even when the TU calls them more than once.
     repeatable_bodies: HashMap<String, Function>,
+    /// Tiny condition-plus-call transactions expanded at every visible call
+    /// site even when the helper has multiple callers.
+    repeatable_guarded_call_bodies: HashMap<String, Function>,
     /// Larger guarded transactions available only to terminal scratch wrappers.
     terminal_wrapper_bodies: HashMap<String, Function>,
     values: HashMap<String, ValueInlineBody>,
@@ -257,6 +261,18 @@ impl InlineBodySet {
             })
             .map(|function| (function.name.clone(), function.clone()))
             .collect();
+        let repeatable_guarded_call_bodies = definitions
+            .iter()
+            .filter(|function| {
+                repeatable_guarded_call_callee(function)
+                    && call_counts.get(&function.name).copied().unwrap_or(0) > 1
+                    && source_visible_call_counts
+                        .get(&function.name)
+                        .copied()
+                        == call_counts.get(&function.name).copied()
+            })
+            .map(|function| (function.name.clone(), function.clone()))
+            .collect();
         let terminal_wrapper_bodies = definitions
             .iter()
             .filter(|function| {
@@ -340,6 +356,7 @@ impl InlineBodySet {
                 .collect(),
             bodies,
             repeatable_bodies,
+            repeatable_guarded_call_bodies,
             terminal_wrapper_bodies,
             values,
             required,
@@ -410,6 +427,7 @@ impl InlineBodySet {
         self.bodies
             .get(name)
             .or_else(|| self.repeatable_bodies.get(name))
+            .or_else(|| self.repeatable_guarded_call_bodies.get(name))
     }
 
     /// An ordinary same-translation-unit definition, exposed only for
@@ -441,7 +459,11 @@ impl InlineBodySet {
         collect_function_calls(function, &mut calls);
         calls
             .keys()
-            .any(|name| self.bodies.contains_key(name) || self.values.contains_key(name))
+            .any(|name| {
+                self.bodies.contains_key(name)
+                    || self.repeatable_guarded_call_bodies.contains_key(name)
+                    || self.values.contains_key(name)
+            })
             || function
                 .statements
                 .iter()
@@ -529,6 +551,35 @@ impl InlineBodySet {
         let mut expanded = self.clone();
         expanded.bodies.extend(self.repeatable_bodies.clone());
         expanded.expand_calls_with_facts_policy(function, true)
+    }
+
+    /// Expand a small condition-plus-call helper at each ordinary call site.
+    /// Unlike the loop-only repeatable lane, this category is profitable from
+    /// the removed helper call itself and is selected for every visible use.
+    pub(crate) fn expand_repeatable_guarded_calls(
+        &self,
+        function: &Function,
+    ) -> Option<ExpandedCalls> {
+        // The early-return backend owns local initialization and its join
+        // schedule before generic inline composition. Keep those callers on
+        // their existing out-of-line path until that owner accepts composed
+        // statement bodies.
+        if statements_contain_return(&function.statements) {
+            return None;
+        }
+        let mut calls = HashMap::new();
+        collect_function_calls(function, &mut calls);
+        if !calls
+            .keys()
+            .any(|name| self.repeatable_guarded_call_bodies.contains_key(name))
+        {
+            return None;
+        }
+        let mut expanded = self.clone();
+        expanded
+            .bodies
+            .extend(self.repeatable_guarded_call_bodies.clone());
+        expanded.expand_calls_with_facts_policy(function, false)
     }
 
     /// Expand a repeatable definition at a terminal wrapper call. Source-level
@@ -1200,6 +1251,34 @@ fn is_empty_padding_loop(statement: &Statement) -> bool {
             body,
         } if body.is_empty()
     )
+}
+
+fn statements_contain_return(statements: &[Statement]) -> bool {
+    fn arm_contains_return(arm: &ArmBody) -> bool {
+        match arm {
+            ArmBody::Return(_) => true,
+            ArmBody::Statements(statements) => statements_contain_return(statements),
+        }
+    }
+
+    statements.iter().any(|statement| match statement {
+        Statement::Return(_) => true,
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => statements_contain_return(then_body) || statements_contain_return(else_body),
+        Statement::Loop { body, .. } => statements_contain_return(body),
+        Statement::Switch {
+            arms,
+            default,
+            ..
+        } => {
+            arms.iter().any(|arm| arm_contains_return(&arm.body))
+                || default.as_ref().is_some_and(arm_contains_return)
+        }
+        _ => false,
+    })
 }
 
 /// Move top-level embedded assembly blocks into the ordered statement tree used
@@ -2940,6 +3019,68 @@ mod tests {
             && name == "consume"
             && matches!(arguments.as_slice(), [Expression::Variable(argument)] if argument == captured)
             && reassigned == "value")));
+    }
+
+    #[test]
+    fn composes_a_repeated_guarded_call_transaction_at_an_ordinary_site() {
+        let helper = function(
+            "guarded",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::If {
+                condition: Expression::Call {
+                    name: "enabled".into(),
+                    arguments: vec![Expression::Variable("value".into())],
+                },
+                then_body: vec![Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: vec![Expression::Variable("value".into())],
+                })],
+                else_body: Vec::new(),
+            }],
+        );
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "guarded".into(),
+                arguments: vec![Expression::Variable("value".into())],
+            })],
+        );
+        let mut sibling = caller.clone();
+        sibling.name = "sibling".into();
+        let mut early_return = caller.clone();
+        early_return.name = "early_return".into();
+        early_return.statements.insert(
+            0,
+            Statement::If {
+                condition: Expression::Variable("value".into()),
+                then_body: vec![Statement::Return(None)],
+                else_body: Vec::new(),
+            },
+        );
+
+        let bodies = InlineBodySet::analyze_with_definitions(
+            &[helper, caller.clone(), sibling, early_return.clone()],
+            &[],
+        );
+        assert!(bodies.expand_calls(&caller).is_none());
+        let expanded = bodies
+            .expand_repeatable_guarded_calls(&caller)
+            .expect("the guarded transaction should inline at every ordinary site");
+        let mut calls = HashMap::new();
+        collect_function_calls(&expanded.function, &mut calls);
+        assert_eq!(calls.get("enabled"), Some(&1));
+        assert_eq!(calls.get("consume"), Some(&1));
+        assert!(!calls.contains_key("guarded"));
+        assert!(bodies
+            .expand_repeatable_guarded_calls(&early_return)
+            .is_none());
     }
 
     #[test]

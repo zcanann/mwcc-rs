@@ -113,6 +113,42 @@ pub(super) fn automatic_composable_function(function: &Function) -> bool {
     ordinary || parameter_select
 }
 
+/// A tiny guarded call transaction remains profitable at every source-visible
+/// call site: the inlined condition can reuse caller values and removes one
+/// otherwise unavoidable call/return boundary. Keep this distinct from plain
+/// forwarding wrappers, which MWCC may leave out of line when referenced more
+/// than once.
+pub(super) fn repeatable_guarded_call_callee(function: &Function) -> bool {
+    let [Statement::If {
+        condition,
+        then_body,
+        else_body,
+    }] = function.statements.as_slice()
+    else {
+        return false;
+    };
+    let [Statement::Expression(Expression::Call {
+        arguments: guarded_arguments,
+        ..
+    })] = then_body.as_slice()
+    else {
+        return false;
+    };
+    if !else_body.is_empty()
+        || !function.locals.is_empty()
+        || !crate::analysis::expression_has_call(condition)
+        || guarded_arguments
+            .iter()
+            .any(crate::analysis::expression_has_call)
+        || !automatic_composable_function(function)
+    {
+        return false;
+    }
+    let mut calls = std::collections::HashMap::new();
+    super::collect_function_calls(function, &mut calls);
+    calls.values().sum::<usize>() == 2
+}
+
 /// A multi-use guarded transaction may still be inlined into terminal wrappers
 /// even when it exceeds the ordinary tiny-body gate. Keep this classification
 /// separate from general repeatable inlining: the caller must provide the
