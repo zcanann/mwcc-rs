@@ -29,7 +29,8 @@ use super::structured_frame_assignment::{
     sink_low_mask_parameter_assignment, sink_single_use_parameter_assignment,
 };
 use super::structured_frame_arrays::{
-    initialized_array_placement_order, plan_structured_frame_arrays,
+    align_offset, array_stack_alignment, plan_structured_frame_arrays,
+    structured_array_placement_order,
 };
 use super::structured_array_pool::plan_structured_array_pool;
 use super::structured_frame_entry::structured_dense_frame_entry_index;
@@ -1012,9 +1013,11 @@ impl Generator {
                 let frame_size = if dense_frame && !eager_saved_locals.is_empty() {
                     // A dense legacy frame retains the caller-linkage word
                     // between the local region and its contiguous saved-GPR
-                    // range. Individually saved frames acquire the same gap
-                    // during frame normalization after allocation.
-                    occupied + 8
+                    // range. Dense linkage-first frames use the ABI's
+                    // doubleword alignment; byte-sized automatic arrays can
+                    // otherwise leave both the stack and `stmw` range
+                    // misaligned.
+                    (occupied + 8 + 7) / 8 * 8
                 } else {
                     (occupied + alignment - 1) / alignment * alignment
                 };
@@ -1022,7 +1025,12 @@ impl Generator {
                     .map_err(|_| Diagnostic::error("structured legacy frame is too large"))?;
             }
             let mut next_array_offset = array_offset;
-            for array in initialized_array_placement_order(frame_arrays) {
+            for array in structured_array_placement_order(frame_arrays) {
+                next_array_offset =
+                    align_offset(next_array_offset, array_stack_alignment(array))
+                        .ok_or_else(|| {
+                            Diagnostic::error("structured local frame is too large")
+                        })?;
                 let element_bytes = match array.declared_type {
                     Type::Struct { size, .. } => size,
                     value_type => u32::from(value_type.width() / 8),

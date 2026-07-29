@@ -52,7 +52,8 @@ pub(super) fn plan_structured_frame_arrays<'a>(
         })
         .collect();
     let mut total_bytes = 0i16;
-    for array in &arrays {
+    for array in structured_array_placement_order(&arrays) {
+        total_bytes = align_offset(total_bytes, array_stack_alignment(array))?;
         total_bytes =
             total_bytes.checked_add(i16::try_from(array_byte_size(array)?).ok()?)?;
     }
@@ -71,7 +72,7 @@ pub(super) fn plan_structured_frame_arrays<'a>(
 /// follow the smaller size class. This is observable when the pooled copy-in
 /// image remains in declaration order: each source image is stored into its
 /// independently assigned frame slot.
-pub(super) fn initialized_array_placement_order<'a>(
+pub(super) fn structured_array_placement_order<'a>(
     arrays: &[&'a LocalDeclaration],
 ) -> Vec<&'a LocalDeclaration> {
     let initialized_count = arrays
@@ -79,7 +80,7 @@ pub(super) fn initialized_array_placement_order<'a>(
         .filter(|array| array.data_bytes.is_some())
         .count();
     if initialized_count < 2 {
-        return arrays.to_vec();
+        return arrays.iter().copied().rev().collect();
     }
 
     let mut indexed: Vec<_> = arrays.iter().copied().enumerate().collect();
@@ -98,6 +99,23 @@ pub(super) fn array_byte_size(array: &LocalDeclaration) -> Option<u32> {
         value_type => u32::from(value_type.width() / 8),
     };
     element_bytes.checked_mul(u32::from(array.array_length?))
+}
+
+/// Match the general frame planner's automatic-array alignment.
+pub(super) fn array_stack_alignment(array: &LocalDeclaration) -> i16 {
+    match array.declared_type {
+        Type::Struct { align, .. } => i16::from(align.max(1)),
+        Type::Double => 8,
+        _ => 4,
+    }
+}
+
+pub(super) fn align_offset(offset: i16, alignment: i16) -> Option<i16> {
+    debug_assert!(offset >= 0);
+    debug_assert!(alignment > 0);
+    offset
+        .checked_add(alignment - 1)
+        .map(|value| value / alignment * alignment)
 }
 
 #[cfg(test)]
@@ -152,6 +170,26 @@ mod tests {
 
         assert_eq!(plan.arrays.len(), 2);
         assert_eq!(plan.total_bytes, 24);
+    }
+
+    #[test]
+    fn word_aligns_and_reverses_short_character_arrays() {
+        let locals = vec![
+            byte_array("first", Type::Char, 3),
+            byte_array("second", Type::Char, 3),
+        ];
+
+        let function = function_with_locals(locals);
+        let plan = plan_structured_frame_arrays(&function).expect("valid byte arrays");
+
+        assert_eq!(plan.total_bytes, 7);
+        assert_eq!(
+            structured_array_placement_order(&plan.arrays)
+                .iter()
+                .map(|array| array.name.as_str())
+                .collect::<Vec<_>>(),
+            ["second", "first"]
+        );
     }
 
     #[test]
@@ -245,7 +283,7 @@ mod tests {
         scratch.data_bytes = Some(vec![0]);
         let arrays = [&date, &time, &ampm, &scratch];
 
-        let ordered = initialized_array_placement_order(&arrays);
+        let ordered = structured_array_placement_order(&arrays);
 
         assert_eq!(
             ordered
@@ -262,7 +300,7 @@ mod tests {
         buffer.data_bytes = Some(vec![0]);
 
         assert_eq!(
-            initialized_array_placement_order(&[&buffer])[0].name,
+            structured_array_placement_order(&[&buffer])[0].name,
             "buffer"
         );
     }
