@@ -169,6 +169,7 @@ impl Instruction {
             Instruction::LoadMultipleWord { d, a, offset } => (46 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | (offset as u16 as u32),
             Instruction::ConditionRegisterOr { d, a, b } => (19 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (449 << 1),
             Instruction::ConditionRegisterClear { d } => 0x4C00_0182 | ((d as u32) << 21) | ((d as u32) << 16) | ((d as u32) << 11),
+            Instruction::ConditionRegisterSet { d } => 0x4C00_0242 | ((d as u32) << 21) | ((d as u32) << 16) | ((d as u32) << 11),
             Instruction::CompareWordImmediate { a, immediate } => (11 << 26) | ((a as u32) << 16) | (immediate as u16 as u32),
             Instruction::CompareWordImmediateField { crf, a, immediate } => (11 << 26) | ((crf as u32) << 23) | ((a as u32) << 16) | (immediate as u16 as u32),
             Instruction::CompareWordField { crf, a, b } => (31 << 26) | ((crf as u32) << 23) | ((a as u32) << 16) | ((b as u32) << 11),
@@ -297,6 +298,14 @@ mod tests {
         assert_eq!(
             Instruction::VerbatimWord(0x4182_0018).encode(),
             0x4182_0018
+        );
+    }
+
+    #[test]
+    fn encodes_condition_register_set() {
+        assert_eq!(
+            Instruction::ConditionRegisterSet { d: 6 }.encode(),
+            0x4cc6_3242
         );
     }
 }

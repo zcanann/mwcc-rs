@@ -278,9 +278,7 @@ impl Generator {
             offset: slot_offset,
         });
         if variadic {
-            self.output
-                .instructions
-                .push(Instruction::ConditionRegisterClear { d: 6 });
+            self.emit_variadic_condition(arguments);
         }
         self.emit_indirect_branch_and_link(12);
         if let Some(destination) = destination {
@@ -374,9 +372,7 @@ impl Generator {
         }
         self.emit_arguments(arguments, name)?;
         if self.variadic_callees.contains(name) {
-            self.output
-                .instructions
-                .push(Instruction::ConditionRegisterClear { d: 6 });
+            self.emit_variadic_condition(arguments);
         }
         self.const_address_bases.clear();
         self.record_relocation(RelocationKind::Rel24, name);
@@ -387,6 +383,18 @@ impl Generator {
             self.emit_call_result_copy(destination, float_result);
         }
         Ok(())
+    }
+
+    fn emit_variadic_condition(&mut self, arguments: &[Expression]) {
+        let instruction = if arguments
+            .iter()
+            .any(|argument| self.is_float_value(argument))
+        {
+            Instruction::ConditionRegisterSet { d: 6 }
+        } else {
+            Instruction::ConditionRegisterClear { d: 6 }
+        };
+        self.output.instructions.push(instruction);
     }
 
     /// Place call arguments in the EABI argument registers (r3.. / f1..). Each is

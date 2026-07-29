@@ -291,6 +291,8 @@ pub enum Instruction {
     LoadMultipleWord { d: u8, a: u8, offset: i16 },
     /// `crclr crbD` — clear one condition-register bit (`crxor d, d, d`).
     ConditionRegisterClear { d: u8 },
+    /// `crset crbD` — set one condition-register bit (`creqv d, d, d`).
+    ConditionRegisterSet { d: u8 },
     /// `cror crbD, crbA, crbB` — OR two condition-register bits into a third.
     /// Bit numbers are absolute (cr0 occupies bits 0..=3: lt=0, gt=1, eq=2, so=3).
     ConditionRegisterOr { d: u8, a: u8, b: u8 },
