@@ -214,6 +214,46 @@ impl Generator {
         Ok(true)
     }
 
+    /// Load a member of an object declared with `AT_ADDRESS`. Unlike an
+    /// explicit constant-pointer dereference, mwcc preserves the declared
+    /// object's address calculation as `lis; addi` and applies the member
+    /// offset only to the load. The completed address gets its own virtual:
+    /// adding the low half mutates the base, so it must not enter the cache of
+    /// reusable high-half-only bases.
+    pub(crate) fn emit_fixed_address_object_member_load(
+        &mut self,
+        pointee: Pointee,
+        address: u32,
+        offset: u32,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let (high, low) = split_address(address);
+        if high == 0 {
+            return self.emit_const_address_load(pointee, address, offset, destination);
+        }
+        let Some(displacement) = i16::try_from(offset).ok() else {
+            return Ok(false);
+        };
+        let base = self.fresh_virtual_general();
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(base, high));
+        if low != 0 {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: base,
+                a: base,
+                immediate: low,
+            });
+        }
+        self.output.instructions.push(displacement_load(
+            pointee,
+            destination,
+            base,
+            displacement,
+        )?);
+        Ok(true)
+    }
+
     /// Return the retained base for `high`, creating it when this is the first
     /// nonzero fixed-address family in the function. The boolean tells the
     /// caller to emit the defining `lis`.

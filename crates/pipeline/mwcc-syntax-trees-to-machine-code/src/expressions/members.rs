@@ -684,7 +684,21 @@ impl Generator {
         if let Some(address) = const_address_of(base) {
             if let Some(pointee) = pointee_of_type(member_type) {
                 if !matches!(pointee, Pointee::Float | Pointee::Double) {
-                    if self.emit_const_address_load(pointee, address, offset, destination)? {
+                    let declared_object = self
+                        .fixed_address_objects
+                        .values()
+                        .any(|fixed| *fixed == address);
+                    let emitted = if declared_object && offset != 0 {
+                        self.emit_fixed_address_object_member_load(
+                            pointee,
+                            address,
+                            offset,
+                            destination,
+                        )?
+                    } else {
+                        self.emit_const_address_load(pointee, address, offset, destination)?
+                    };
+                    if emitted {
                         return Ok(());
                     }
                     return Err(Diagnostic::error("a constant-address member load needing base reuse is not supported yet (roadmap)"));

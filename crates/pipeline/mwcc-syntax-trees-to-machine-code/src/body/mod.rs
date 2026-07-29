@@ -111,6 +111,7 @@ mod inlined_object_make;
 mod ladders;
 mod legacy_constant_store;
 mod leading_store_guard;
+mod leaf_shared_constant_return;
 mod leading_store_trailing_if;
 mod leading_store_guarded_call;
 mod local_select;

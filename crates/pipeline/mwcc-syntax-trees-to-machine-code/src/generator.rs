@@ -719,15 +719,22 @@ impl Generator {
         Reg::Virtual(register).to_field()
     }
 
-    /// Restore a speculative selection attempt's virtual state. Hint entries
-    /// created by the discarded attempt must go too, or a later virtual that
-    /// reuses the rolled-back ID inherits unrelated placement policy.
+    /// Restore a speculative selection attempt's virtual state. Every cache
+    /// keyed by a virtual identity created by the discarded attempt must go
+    /// too, or fallback emission can reuse the rolled-back ID without its
+    /// definition (or inherit unrelated placement policy).
     pub(crate) fn rollback_virtuals(&mut self, checkpoint: VirtualCursors) {
         self.virtual_cursors = checkpoint;
         self.register_avoid
             .retain(|register, _| checkpoint.contains(*register));
         self.register_prefer
             .retain(|register, _| checkpoint.contains(*register));
+        self.const_address_bases.retain(|_, register| {
+            match Reg::from_field(*register, Class::General) {
+                Reg::Virtual(register) => checkpoint.contains(register),
+                Reg::Physical(_) => true,
+            }
+        });
     }
 
     /// Whether `expression` is a float-valued leaf.

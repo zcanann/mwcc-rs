@@ -66,6 +66,9 @@ impl Generator {
         if self.try_emit_shifted_member_high_mask(expression, destination)? {
             return Ok(());
         }
+        if self.try_emit_fixed_address_member_clear_shift(expression, destination)? {
+            return Ok(());
+        }
         if self.try_emit_xnor_feedback_update(expression, destination) {
             return Ok(());
         }

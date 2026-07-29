@@ -8,6 +8,85 @@
 use super::*;
 
 impl Generator {
+    /// Preserve build 163's two-stage clear-and-shift on a nonzero member of an
+    /// `AT_ADDRESS` object. The general rotate-mask combiner correctly proves
+    /// the clear redundant after an equal logical shift, but this compiler
+    /// generation retains the source mask for the volatile hardware-register
+    /// access (`lwz; clrrwi; srwi`).
+    pub(crate) fn try_emit_fixed_address_member_clear_shift(
+        &mut self,
+        expression: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let Expression::Binary {
+            operator: BinaryOperator::ShiftRight,
+            left: masked,
+            right: shift,
+        } = expression
+        else {
+            return Ok(false);
+        };
+        let Some(shift) = constant_value(shift).and_then(|value| u8::try_from(value).ok()) else {
+            return Ok(false);
+        };
+        if shift == 0 || shift >= 32 {
+            return Ok(false);
+        }
+        let Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: member,
+            right: mask,
+        } = masked.as_ref()
+        else {
+            return Ok(false);
+        };
+        let Some(mask) = constant_value(mask).map(|value| value as i32 as u32) else {
+            return Ok(false);
+        };
+        let cleared_bits = mask.trailing_zeros();
+        if cleared_bits == 0 || cleared_bits >= 32 || mask != u32::MAX << cleared_bits {
+            return Ok(false);
+        }
+        let Expression::Member {
+            base,
+            offset,
+            member_type: Type::UnsignedInt,
+            index_stride: None,
+        } = member.as_ref()
+        else {
+            return Ok(false);
+        };
+        let Some(address) = const_address_of(base) else {
+            return Ok(false);
+        };
+        if *offset == 0
+            || !self
+                .fixed_address_objects
+                .values()
+                .any(|fixed| *fixed == address)
+        {
+            return Ok(false);
+        }
+
+        self.evaluate(member, Type::UnsignedInt, GENERAL_SCRATCH)?;
+        self.output
+            .instructions
+            .push(Instruction::AndContiguousMask {
+                a: GENERAL_SCRATCH,
+                s: GENERAL_SCRATCH,
+                begin: 0,
+                end: 31 - cleared_bits as u8,
+            });
+        self.output.instructions.push(Instruction::RotateAndMask {
+            a: destination,
+            s: GENERAL_SCRATCH,
+            shift: 32 - shift,
+            begin: shift,
+            end: 31,
+        });
+        Ok(true)
+    }
+
     pub(crate) fn try_emit_shifted_member_high_mask(
         &mut self,
         expression: &Expression,
