@@ -255,7 +255,7 @@ fn order_owned_closure_globals(
         let Some(chain) = primary_base_chain(root, classes) else {
             continue;
         };
-        for (index, class) in chain.iter().enumerate() {
+        for class in &chain {
             for name in [
                 anonymous_name(class, "name"),
                 anonymous_name(class, "bases"),
@@ -266,24 +266,16 @@ fn order_owned_closure_globals(
                     seen.insert(name);
                 }
             }
-
-            let has_vtable = by_name.contains_key(&vtable_symbol(class));
-            let next_has_vtable = chain
-                .get(index + 1)
-                .is_some_and(|next| by_name.contains_key(&vtable_symbol(next)));
-            if has_vtable && !next_has_vtable {
-                // A contiguous run of all-inline construction vtables is
-                // emitted as one dependency transaction at its most-derived
-                // class frontier. The transaction stack unwinds derived first.
-                for owner in chain[..=index].iter().rev() {
-                    let name = vtable_symbol(owner);
-                    if let Some(global) = by_name.get(&name) {
-                        if seen.insert(name) {
-                            ordered.push(global.clone());
-                        }
-                    } else {
-                        break;
-                    }
+        }
+        // Every owned construction vtable in this closure shares the root's
+        // source frontier. An external intermediate vtable does not split the
+        // ownership transaction: the stack still unwinds most-derived first
+        // across the gap.
+        for owner in chain.iter().rev() {
+            let name = vtable_symbol(owner);
+            if let Some(global) = by_name.get(&name) {
+                if seen.insert(name) {
+                    ordered.push(global.clone());
                 }
             }
         }
@@ -701,6 +693,42 @@ mod tests {
                 "__vt__4Boss",
                 "__vt__4Base",
             ]
+        );
+    }
+
+    #[test]
+    fn owned_vtable_transaction_crosses_an_external_intermediate_table() {
+        let a_node = class("ANode", &[]);
+        let core_node = class("CoreNode", &[("ANode", 0)]);
+        let node = class("Node", &[("CoreNode", 0)]);
+        let boss = class("Boss", &[("Node", 0)]);
+        let mut generated = vec![
+            data_global(
+                "__vt__8CoreNode".into(),
+                vec![0; 16],
+                vec![],
+                false,
+                true,
+                4,
+            ),
+            data_global("__vt__5ANode".into(), vec![0; 12], vec![], false, true, 4),
+            data_global("__vt__4Boss".into(), vec![0; 20], vec![], false, true, 4),
+        ];
+        let classes = HashMap::from([
+            (a_node.source_name.as_str(), &a_node),
+            (core_node.source_name.as_str(), &core_node),
+            (node.source_name.as_str(), &node),
+            (boss.source_name.as_str(), &boss),
+        ]);
+
+        order_owned_closure_globals(&mut generated, &[&boss], &classes);
+
+        assert_eq!(
+            generated
+                .iter()
+                .map(|global| global.name.as_str())
+                .collect::<Vec<_>>(),
+            ["__vt__4Boss", "__vt__8CoreNode", "__vt__5ANode"]
         );
     }
 
