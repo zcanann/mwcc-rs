@@ -70,6 +70,7 @@ impl Generator {
 
         self.overlap_first_frame_argument_with_receiver_load();
         self.use_linkage_first_variadic_receiver_copies();
+        self.schedule_later_variadic_argument_packets();
     }
 
     fn overlap_first_frame_argument_with_receiver_load(&mut self) {
@@ -151,6 +152,47 @@ impl Generator {
             block_start = call + 1;
         }
     }
+
+    fn schedule_later_variadic_argument_packets(&mut self) {
+        let mut start = 0;
+        while start + 5 < self.output.instructions.len() {
+            let matches_packet = is_later_variadic_argument_packet(
+                &self.output.instructions[start..start + 6],
+                &self.variadic_callees,
+            );
+            if matches_packet {
+                self.move_instruction_before(start + 4, start + 1);
+                start += 6;
+            } else {
+                start += 1;
+            }
+        }
+    }
+}
+
+fn is_later_variadic_argument_packet(
+    instructions: &[Instruction],
+    variadic_callees: &HashSet<String>,
+) -> bool {
+    matches!(
+        instructions,
+        [
+            Instruction::AddImmediate {
+                d: 3,
+                a: receiver,
+                immediate: 0
+            },
+            Instruction::AddImmediate { d: 4, .. },
+            Instruction::AddImmediate { d: 5, a: 0, .. },
+            Instruction::AddImmediate {
+                d: 6,
+                a: 0,
+                immediate: -1
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink { target },
+        ] if *receiver >= 14 && variadic_callees.contains(target)
+    )
 }
 
 fn is_linkage_first_frame_prefix(instructions: &[Instruction]) -> bool {
@@ -238,5 +280,41 @@ mod tests {
 
         assert!(is_linkage_first_frame_prefix(&instructions));
         assert!(has_entry_argument_setup(&instructions, 6));
+    }
+
+    #[test]
+    fn schedules_only_a_complete_later_variadic_argument_packet() {
+        let variadic_callees = HashSet::from(["format".into()]);
+        let instructions = vec![
+            Instruction::AddImmediate {
+                d: 3,
+                a: 31,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 1,
+                immediate: 28,
+            },
+            Instruction::AddImmediate {
+                d: 5,
+                a: 0,
+                immediate: 5,
+            },
+            Instruction::AddImmediate {
+                d: 6,
+                a: 0,
+                immediate: -1,
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink {
+                target: "format".into(),
+            },
+        ];
+
+        assert!(is_later_variadic_argument_packet(
+            &instructions,
+            &variadic_callees
+        ));
     }
 }
