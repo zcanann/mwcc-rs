@@ -91,7 +91,9 @@ impl Parser {
                     let element = self.parse_pointer_init_element()?;
                     elements.push(element);
                 } else {
-                    elements.push(PointerElement::Scalar(self.parse_integer_constant()?));
+                    elements.push(PointerElement::Scalar(
+                        self.parse_scalar_constant(*field_type)?,
+                    ));
                 }
                 if index + 1 < field_types.len() {
                     self.expect(Token::Comma)?;

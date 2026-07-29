@@ -10848,6 +10848,46 @@ blr\n\
     }
 
     #[test]
+    fn serializes_float_slots_in_word_struct_pointer_tables() {
+        let source = r#"
+            struct Entry {
+                const char* name;
+                float gain;
+                unsigned enabled;
+            };
+            struct Entry table[] = {
+                { "first", 0.5f, 1 },
+                { "second", 0.0f, 0 },
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let table = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "table")
+            .unwrap();
+
+        assert!(matches!(
+            table.address_initializer.as_deref(),
+            Some([
+                mwcc_syntax_trees::PointerElement::Str(first),
+                mwcc_syntax_trees::PointerElement::Scalar(0x3f000000),
+                mwcc_syntax_trees::PointerElement::Scalar(1),
+                mwcc_syntax_trees::PointerElement::Str(second),
+                mwcc_syntax_trees::PointerElement::Scalar(0),
+                mwcc_syntax_trees::PointerElement::Scalar(0),
+            ]) if first == b"first" && second == b"second"
+        ));
+    }
+
+    #[test]
     fn integer_struct_field_retains_cast_symbol_relocation() {
         let source = r#"
             typedef unsigned int u32;
