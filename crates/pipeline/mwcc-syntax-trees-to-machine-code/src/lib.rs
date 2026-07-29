@@ -854,6 +854,7 @@ fn lower_function_body(
     generator.prefer_structured_array_pool_parsed_hour();
     generator.schedule_leading_int_to_float_argument();
     schedule_instructions(&mut generator);
+    generator.schedule_materialized_fixed_bank_store();
     let allocated_float_saves = allocate_registers(&mut generator).map_err(|mut diagnostic| {
         let context = format!("function '{}'", function.name);
         if !diagnostic.message.contains(&context) {
