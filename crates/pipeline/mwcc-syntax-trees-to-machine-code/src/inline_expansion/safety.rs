@@ -212,7 +212,7 @@ fn parameter_select_statements(statements: &[Statement], function: &Function) ->
     })
 }
 
-fn statement_weight(statements: &[Statement]) -> usize {
+pub(super) fn statement_weight(statements: &[Statement]) -> usize {
     statements
         .iter()
         .map(|statement| match statement {
@@ -550,6 +550,12 @@ pub(super) fn materializable_arguments(
                         && matches!(argument, Expression::Variable(_)))
                     || (allow_changing_scalars
                         && matches!(argument, Expression::Variable(_))
+                        && !matches!(parameter.parameter_type, Type::Void | Type::Struct { .. }))
+                    // A scalar-producing call is already evaluated exactly
+                    // once for an ordinary call. Capturing its result in the
+                    // hygienic parameter lane preserves that sequencing while
+                    // allowing the expanded body to use the value later.
+                    || (matches!(argument, Expression::Call { .. })
                         && !matches!(parameter.parameter_type, Type::Void | Type::Struct { .. }))
                     || matches!(
                         argument,

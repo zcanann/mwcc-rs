@@ -88,6 +88,12 @@ pub struct InlineBodySet {
     /// Ordinary small definitions that MWCC may expand selectively at hot
     /// structured call sites even when the TU calls them more than once.
     repeatable_bodies: HashMap<String, Function>,
+    /// Repeated definitions available to a bounded later caller even when an
+    /// earlier call preceded the definition and therefore remains out of line.
+    bounded_caller_bodies: HashMap<String, Function>,
+    /// Source positions for enforcing that asymmetric visibility at each
+    /// bounded call site.
+    definition_positions: HashMap<String, usize>,
     /// Tiny condition-plus-call transactions expanded at every visible call
     /// site even when the helper has multiple callers.
     repeatable_guarded_call_bodies: HashMap<String, Function>,
@@ -261,6 +267,19 @@ impl InlineBodySet {
             })
             .map(|function| (function.name.clone(), function.clone()))
             .collect();
+        let bounded_caller_bodies = definitions
+            .iter()
+            .filter(|function| {
+                automatic_composable_function(function)
+                    && call_counts.get(&function.name).copied().unwrap_or(0) > 1
+                    && source_visible_call_counts
+                        .get(&function.name)
+                        .copied()
+                        .unwrap_or(0)
+                        > 0
+            })
+            .map(|function| (function.name.clone(), function.clone()))
+            .collect();
         let repeatable_guarded_call_bodies = definitions
             .iter()
             .filter(|function| {
@@ -356,6 +375,12 @@ impl InlineBodySet {
                 .collect(),
             bodies,
             repeatable_bodies,
+            bounded_caller_bodies,
+            definition_positions: definitions
+                .iter()
+                .enumerate()
+                .map(|(index, function)| (function.name.clone(), index))
+                .collect(),
             repeatable_guarded_call_bodies,
             terminal_wrapper_bodies,
             values,
@@ -551,6 +576,46 @@ impl InlineBodySet {
         let mut expanded = self.clone();
         expanded.bodies.extend(self.repeatable_bodies.clone());
         expanded.expand_calls_with_facts_policy(function, true)
+    }
+
+    /// Expand several repeatable small definitions inside one bounded caller.
+    ///
+    /// Whole-file IPA selectively duplicates ordinary helpers in compact,
+    /// call-dense transactions while leaving the same helpers out of line in
+    /// large state-copy functions. Requiring at least two profitable helper
+    /// calls prevents this lane from turning every repeated definition into an
+    /// unconditional inline, and the complete caller weight bounds code growth.
+    pub(crate) fn expand_repeatable_bounded_caller_calls(
+        &self,
+        function: &Function,
+    ) -> Option<ExpandedCalls> {
+        if safety::statement_weight(&function.statements) > 24 {
+            return None;
+        }
+        let mut calls = HashMap::new();
+        collect_function_calls(function, &mut calls);
+        let caller_position = *self.definition_positions.get(&function.name)?;
+        let visible_bodies = self
+            .bounded_caller_bodies
+            .iter()
+            .filter(|(name, _)| {
+                self.definition_positions
+                    .get(*name)
+                    .is_some_and(|callee_position| *callee_position < caller_position)
+            })
+            .map(|(name, body)| (name.clone(), body.clone()))
+            .collect::<HashMap<_, _>>();
+        let repeatable_calls = calls
+            .iter()
+            .filter(|(name, _)| visible_bodies.contains_key(*name))
+            .map(|(_, count)| *count)
+            .sum::<usize>();
+        if repeatable_calls < 2 {
+            return None;
+        }
+        let mut expanded = self.clone();
+        expanded.bodies.extend(visible_bodies);
+        expanded.expand_calls_with_facts_policy(function, false)
     }
 
     /// Expand a small condition-plus-call helper at each ordinary call site.
@@ -2079,6 +2144,62 @@ mod tests {
     }
 
     #[test]
+    fn materializes_a_scalar_call_result_before_statement_body_expansion() {
+        let helper = function(
+            "helper",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            ["first", "second"]
+                .into_iter()
+                .map(|name| {
+                    Statement::Expression(Expression::Call {
+                        name: name.into(),
+                        arguments: vec![Expression::Variable("value".into())],
+                    })
+                })
+                .collect(),
+        );
+        let caller = function(
+            "caller",
+            Vec::new(),
+            vec![Statement::Expression(Expression::Call {
+                name: "helper".into(),
+                arguments: vec![Expression::Call {
+                    name: "produce".into(),
+                    arguments: Vec::new(),
+                }],
+            })],
+        );
+
+        let expanded = InlineBodySet::analyze(&[helper])
+            .expand_calls(&caller)
+            .expect("the scalar call result should be captured exactly once");
+        let captured = &expanded.locals[0].name;
+        assert!(matches!(
+            expanded.statements.as_slice(),
+            [
+                Statement::Assign {
+                    name,
+                    value: Expression::Call { name: producer, .. },
+                },
+                Statement::Expression(Expression::Call {
+                    arguments: first,
+                    ..
+                }),
+                Statement::Expression(Expression::Call {
+                    arguments: second,
+                    ..
+                }),
+            ] if name == captured
+                && producer == "produce"
+                && matches!(first.as_slice(), [Expression::Variable(argument)] if argument == captured)
+                && matches!(second.as_slice(), [Expression::Variable(argument)] if argument == captured)
+        ));
+    }
+
+    #[test]
     fn expands_constructor_body_when_its_return_value_is_discarded() {
         let aggregate = Type::Struct { size: 12, align: 4 };
         let pointer = Type::StructPointer { element_size: 16 };
@@ -2984,6 +3105,69 @@ mod tests {
             && name == "consume"
             && matches!(arguments.as_slice(), [Expression::Variable(argument)] if argument == captured)
             && reassigned == "value")));
+    }
+
+    #[test]
+    fn bounded_caller_inlines_only_the_post_definition_repeated_calls() {
+        let helper = |name: &str| {
+            function(
+                name,
+                vec![Parameter {
+                    parameter_type: Type::Int,
+                    name: "value".into(),
+                }],
+                vec![Statement::Expression(Expression::Call {
+                    name: format!("consume_{name}"),
+                    arguments: vec![Expression::Variable("value".into())],
+                })],
+            )
+        };
+        let caller = |name: &str| {
+            function(
+                name,
+                vec![Parameter {
+                    parameter_type: Type::Int,
+                    name: "value".into(),
+                }],
+                ["first", "second"]
+                    .into_iter()
+                    .map(|callee| {
+                        Statement::Expression(Expression::Call {
+                            name: callee.into(),
+                            arguments: vec![Expression::Variable("value".into())],
+                        })
+                    })
+                    .collect(),
+            )
+        };
+        let early = caller("early");
+        let late = caller("late");
+        let bodies = InlineBodySet::analyze_with_definitions(
+            &[
+                early.clone(),
+                helper("first"),
+                helper("second"),
+                late.clone(),
+            ],
+            &[],
+        );
+
+        assert!(
+            bodies
+                .expand_repeatable_bounded_caller_calls(&early)
+                .is_none(),
+            "a later definition is unavailable to an earlier caller"
+        );
+        let expanded = bodies
+            .expand_repeatable_bounded_caller_calls(&late)
+            .expect("the bounded later caller should compose both helpers");
+        assert!(matches!(
+            expanded.function.statements.as_slice(),
+            [
+                Statement::Expression(Expression::Call { name: first, .. }),
+                Statement::Expression(Expression::Call { name: second, .. }),
+            ] if first == "consume_first" && second == "consume_second"
+        ));
     }
 
     #[test]

@@ -1658,6 +1658,10 @@ impl Generator {
         if let Some(expanded) = self
             .inline_bodies
             .expand_repeatable_guarded_calls(function)
+            .or_else(|| {
+                self.inline_bodies
+                    .expand_repeatable_bounded_caller_calls(function)
+            })
             .or_else(|| self.inline_bodies.expand_repeatable_loop_calls(function))
             .or_else(|| {
                 self.inline_bodies
