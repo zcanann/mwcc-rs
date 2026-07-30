@@ -947,6 +947,8 @@ fn lower_function_body(
     generator.schedule_linkage_first_data_anchor_frame();
     generator.reuse_guarded_call_pointer_loads();
     generator.schedule_nested_reset_callback();
+    generator.coalesce_member_equality_branch_runs();
+    generator.schedule_structured_queue_transaction();
     generator.normalize_scratch_copy_convention();
     generator.schedule_saved_base_call_argument();
     generator.finalize_exclusive_arm_copy_encodings();
