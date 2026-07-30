@@ -65,6 +65,23 @@ fn rewrite_statement_list(statements: &mut Vec<Statement>, name: &str) -> Option
         if i32::try_from(constant).is_err() {
             continue;
         }
+        if rewrite_guarded_second_store(&mut statements[first + 1..], constant, name, false) {
+            let Statement::Store {
+                value: first_value, ..
+            } = &mut statements[first]
+            else {
+                unreachable!("the first guarded constant was classified as a store")
+            };
+            *first_value = Expression::Variable(name.to_owned());
+            statements.insert(
+                first,
+                Statement::Assign {
+                    name: name.to_owned(),
+                    value: Expression::IntegerLiteral(constant),
+                },
+            );
+            return Some(constant);
+        }
         for second in first + 1..statements.len() {
             if store_integer_constant(&statements[second]) != Some(constant)
                 || !statements[first + 1..second]
@@ -100,6 +117,66 @@ fn rewrite_statement_list(statements: &mut Vec<Statement>, name: &str) -> Option
         }
     }
     None
+}
+
+fn rewrite_guarded_second_store(
+    statements: &mut [Statement],
+    constant: i64,
+    name: &str,
+    mut crossed_call: bool,
+) -> bool {
+    for statement in statements {
+        if crossed_call && store_integer_constant(statement) == Some(constant) {
+            let Statement::Store { value, .. } = statement else {
+                unreachable!("the guarded constant was classified as a store")
+            };
+            *value = Expression::Variable(name.to_owned());
+            return true;
+        }
+        match statement {
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                let branch_crossed =
+                    crossed_call || crate::analysis::expression_has_call(condition);
+                if rewrite_guarded_second_store(then_body, constant, name, branch_crossed)
+                    || rewrite_guarded_second_store(else_body, constant, name, branch_crossed)
+                {
+                    return true;
+                }
+            }
+            Statement::Loop {
+                initializer,
+                condition,
+                step,
+                body,
+                ..
+            } => {
+                let loop_crossed = crossed_call
+                    || initializer
+                        .as_ref()
+                        .is_some_and(crate::analysis::expression_has_call)
+                    || condition
+                        .as_ref()
+                        .is_some_and(crate::analysis::expression_has_call)
+                    || step
+                        .as_ref()
+                        .is_some_and(crate::analysis::expression_has_call);
+                if rewrite_guarded_second_store(body, constant, name, loop_crossed) {
+                    return true;
+                }
+            }
+            Statement::Switch { scrutinee, .. } => {
+                crossed_call |= crate::analysis::expression_has_call(scrutinee);
+            }
+            _ => {
+                crossed_call |= crate::analysis::statement_has_call(statement);
+            }
+        }
+    }
+    false
 }
 
 fn store_integer_constant(statement: &Statement) -> Option<i64> {
@@ -148,6 +225,53 @@ mod tests {
                     ..
                 },
             ] if name == "__retained" && first == name && second == name
+        ));
+    }
+
+    #[test]
+    fn versions_a_constant_reused_in_a_guarded_tail_after_calls() {
+        let mut statements = vec![
+            Statement::Store {
+                target: Expression::Variable("initialized".into()),
+                value: Expression::IntegerLiteral(1),
+            },
+            Statement::Expression(Expression::Call {
+                name: "initialize".into(),
+                arguments: Vec::new(),
+            }),
+            Statement::If {
+                condition: Expression::Variable("bootrom".into()),
+                then_body: Vec::new(),
+                else_body: vec![Statement::Store {
+                    target: Expression::Variable("first_time".into()),
+                    value: Expression::IntegerLiteral(1),
+                }],
+            },
+        ];
+
+        assert_eq!(
+            rewrite_statement_list(&mut statements, "__retained"),
+            Some(1)
+        );
+        assert!(matches!(
+            statements.as_slice(),
+            [
+                Statement::Assign { name, .. },
+                Statement::Store {
+                    value: Expression::Variable(first),
+                    ..
+                },
+                Statement::Expression(Expression::Call { .. }),
+                Statement::If { else_body, .. },
+            ] if name == "__retained"
+                && first == name
+                && matches!(
+                    else_body.as_slice(),
+                    [Statement::Store {
+                        value: Expression::Variable(second),
+                        ..
+                    }] if second == name
+                )
         ));
     }
 }

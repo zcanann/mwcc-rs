@@ -109,11 +109,16 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        if let Some(rewritten) = retain_repeated_store_constant_across_call(function) {
-            self.try_callee_saved_structured_body_impl(&rewritten, false)
-        } else {
-            self.try_callee_saved_structured_body_impl(function, false)
+        let mut rewritten = function.clone();
+        let mut retained_constant = false;
+        while let Some(next) = retain_repeated_store_constant_across_call(&rewritten) {
+            rewritten = next;
+            retained_constant = true;
         }
+        self.try_callee_saved_structured_body_impl(
+            if retained_constant { &rewritten } else { function },
+            false,
+        )
     }
 
     /// Route trailing guarded returns through the same structured statement
@@ -1039,6 +1044,13 @@ impl Generator {
                     )
                 })
                 .unwrap_or_default();
+        let retained_store_constant_homes = eager_saved_locals.is_empty()
+            && saved_parameters.is_empty()
+            && count == deferred_home_plan.group_count
+            && deferred_saved_locals.len() >= 2
+            && deferred_saved_locals
+                .iter()
+                .all(|local| local.name.starts_with("__mwcc_retained_constant_"));
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
                 if loop_assertion_strings.is_some() {
@@ -1052,6 +1064,8 @@ impl Generator {
                         _ => unreachable!("loop assertion plan has six saved homes"),
                     };
                     self.fresh_virtual_general_preferring(preferred)
+                } else if retained_store_constant_homes {
+                    self.fresh_virtual_general_preferring((first_saved + home_index) as u8)
                 } else if let Some(preferred) = loop_member_receiver_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
@@ -1679,6 +1693,17 @@ impl Generator {
             LegacyCalleeSavedFrameLayout::InferFromValueOrigin
         } else if guarded_structured_constant_return {
             LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable
+        } else if deferred_saved_locals.len() >= 2
+            && eager_saved_locals.is_empty()
+            && saved_parameters.is_empty()
+            && deferred_saved_locals
+                .iter()
+                .all(|local| local.name.starts_with("__mwcc_retained_constant_"))
+        {
+            // Compiler-created store constants are value versions, not source
+            // locals with retained stack-table identities. Multiple versions
+            // occupy only their saved homes.
+            LegacyCalleeSavedFrameLayout::InferFromValueOrigin
         } else if function
             .locals
             .iter()

@@ -80,6 +80,7 @@ mod chunked_callback_read;
 mod expression_statement;
 mod float_store_fill;
 mod forward_pointer_global_copy;
+mod linkage_first_condition_member_reuse;
 mod linkage_first_pointer_publication;
 mod formatter_buffer_copy_schedule;
 mod formatter_character_schedule;

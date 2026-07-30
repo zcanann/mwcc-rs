@@ -1017,6 +1017,7 @@ fn lower_function_body(
     generator.reuse_small_data_pooled_float_literals();
     generator.forward_adjacent_pointer_global_copy();
     generator.schedule_linkage_first_pointer_publication();
+    generator.reuse_linkage_first_condition_member();
     generator.reuse_guarded_integer_constant();
     generator.reuse_repeated_integer_constants();
     generator.finalize_structured_noncopy_conversion_lanes();
