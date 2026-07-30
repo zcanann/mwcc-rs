@@ -857,7 +857,7 @@ impl Generator {
         }
         self.output.instructions[..=link_store].rotate_left(1);
         remap_prefix_rotate_left(&mut self.output.relocations, link_store);
-        self.delay_plain_frame_update_past_condition_prefix(link_store);
+        self.schedule_plain_linkage_first_latency(link_store);
         let first_call = self
             .output
             .instructions
@@ -915,6 +915,116 @@ impl Generator {
             }
         }
         self.frame_size = 8;
+    }
+
+    /// Distribute ready scalar work across a plain build-163 prologue's two
+    /// linkage hazards.
+    ///
+    /// Selection starts from the 2.4.x `stwu; mflr; ...; stw LR` convention.
+    /// After the prefix rotation above, at most one independent instruction
+    /// belongs between `mflr` and the LR store, while up to two more can issue
+    /// before the delayed frame update. Keep this policy here with the frame
+    /// normalization that creates those slots.
+    fn schedule_plain_linkage_first_latency(&mut self, frame_update: usize) {
+        let Some(mut link_store) = self.output.instructions[..frame_update]
+            .iter()
+            .position(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::StoreWord {
+                        s: 0,
+                        a: 1,
+                        offset: 4
+                    }
+                )
+            })
+        else {
+            return;
+        };
+
+        if link_store > 2 {
+            self.move_plain_linkage_instruction_before(link_store, 2);
+            link_store = 2;
+        }
+
+        let mut frame_update = self
+            .output
+            .instructions
+            .iter()
+            .position(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::StoreWordWithUpdate {
+                        s: 1,
+                        a: 1,
+                        offset: -8
+                    }
+                )
+            })
+            .unwrap_or(frame_update);
+        self.delay_plain_frame_update_past_condition_prefix(frame_update);
+        frame_update = self
+            .output
+            .instructions
+            .iter()
+            .position(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::StoreWordWithUpdate {
+                        s: 1,
+                        a: 1,
+                        offset: -8
+                    }
+                )
+            })
+            .unwrap_or(frame_update);
+
+        if link_store == 1
+            && self
+                .output
+                .instructions
+                .get(frame_update + 1)
+                .is_some_and(|instruction| plain_linkage_latency_instruction(instruction, false))
+        {
+            self.move_plain_linkage_instruction_before(frame_update + 1, 1);
+            link_store += 1;
+            frame_update += 1;
+        }
+
+        let occupied = frame_update.saturating_sub(link_store + 1);
+        for _ in occupied..2 {
+            let candidate = frame_update + 1;
+            if !self
+                .output
+                .instructions
+                .get(candidate)
+                .is_some_and(|instruction| plain_linkage_latency_instruction(instruction, true))
+            {
+                break;
+            }
+            self.move_plain_linkage_instruction_before(candidate, frame_update);
+            frame_update += 1;
+        }
+    }
+
+    fn move_plain_linkage_instruction_before(&mut self, from: usize, to: usize) {
+        debug_assert!(to < from);
+        let old_len = self.output.instructions.len();
+        let instruction = self.output.instructions.remove(from);
+        self.output.instructions.insert(to, instruction);
+        self.labels.moved_before(from, to);
+        let permutation = (0..old_len)
+            .map(|index| {
+                if index == from {
+                    to
+                } else if (to..from).contains(&index) {
+                    index + 1
+                } else {
+                    index
+                }
+            })
+            .collect::<Vec<_>>();
+        crate::remap_instruction_indices(self, &permutation);
     }
 
     /// Move a build-163 plain frame's final stack update past a register-only
@@ -1589,6 +1699,27 @@ fn saved_home_loaded_from_entry_parameter(
         }
     }
     false
+}
+
+fn plain_linkage_latency_instruction(
+    instruction: &Instruction,
+    link_register_is_saved: bool,
+) -> bool {
+    let eligible = matches!(
+        instruction,
+        Instruction::AddImmediate { .. }
+            | Instruction::AddImmediateShifted { .. }
+            | Instruction::CompareWordImmediate { .. }
+            | Instruction::CompareWord { .. }
+            | Instruction::CompareLogicalWordImmediate { .. }
+            | Instruction::CompareLogicalWord { .. }
+    );
+    eligible
+        && mwcc_vreg::register_operands(instruction).iter().all(|operand| {
+            operand.class != mwcc_vreg::Class::General
+                || (operand.register != 1
+                    && (link_register_is_saved || operand.register != 0))
+        })
 }
 
 /// Remap instruction-index relocations after `[0..=end]` rotates left once.
