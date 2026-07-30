@@ -137,6 +137,7 @@ mod structured_home_layout;
 mod structured_if_else;
 mod structured_initializer_live_in;
 mod structured_initializer_live_in_schedule;
+mod structured_interleaved_frame_layout;
 mod structured_indexed_callback_schedule;
 mod structured_indirect_call_home;
 mod structured_inline_residue;

@@ -52,6 +52,7 @@ use super::structured_home_layout::{
     uses_rounded_pointer_dense_layout,
 };
 use super::structured_indirect_call_home::promote_cost_free_indirect_call_locals;
+use super::structured_interleaved_frame_layout::StructuredInterleavedFrameLayout;
 use super::structured_liveness::{
     read_after_possible_call, read_after_possible_call_in_return,
     transient_condition_call_result_callee,
@@ -360,6 +361,32 @@ impl Generator {
             && frame_arrays
                 .iter()
                 .all(|array| !body_uses_local(&function.statements, &array.name));
+        let interleaved_frame_layout = StructuredInterleavedFrameLayout::plan(
+            function,
+            frame_arrays,
+            &aggregate_frame_locals,
+            unused_frame_array,
+            self.behavior.frame_convention,
+        );
+        if capture {
+            eprintln!(
+                "structured interleaved frame layout: {} frame={:?} arrays={:?} aggregates={:?}",
+                interleaved_frame_layout.is_some(),
+                self.behavior.frame_convention,
+                frame_arrays
+                    .iter()
+                    .map(|local| (
+                        local.name.as_str(),
+                        local.declared_type,
+                        local.array_length,
+                    ))
+                    .collect::<Vec<_>>(),
+                aggregate_frame_locals
+                    .iter()
+                    .map(|local| local.name.as_str())
+                    .collect::<Vec<_>>(),
+            );
+        }
         // Keep source loops visible to definite-assignment and lifetime
         // planning. Their canonical label/goto graph is only the emission view.
         let lowered_structured_function =
@@ -612,7 +639,9 @@ impl Generator {
         } else {
             0
         };
-        let mut local_region_bytes = if !aggregate_frame_locals.is_empty() {
+        let mut local_region_bytes = if let Some(layout) = &interleaved_frame_layout {
+            layout.local_region_bytes()
+        } else if !aggregate_frame_locals.is_empty() {
             let mut end = 8u32
                 .checked_add(u32::try_from(aggregate_call_copy_bytes).map_err(|_| {
                     Diagnostic::error("structured aggregate copy area is out of range")
@@ -1176,7 +1205,10 @@ impl Generator {
                 let Type::Struct { size, .. } = local.declared_type else {
                     unreachable!("aggregate frame locals were filtered")
                 };
-                let slot_offset = placements[&local.name];
+                let slot_offset = interleaved_frame_layout
+                    .as_ref()
+                    .and_then(|layout| layout.offset(&local.name))
+                    .unwrap_or(placements[&local.name]);
                 self.frame_slots.insert(
                     local.name.clone(),
                     FrameSlot {
@@ -1284,7 +1316,10 @@ impl Generator {
                             "structured aggregate slot was not initialized",
                         ));
                     };
-                    slot.offset = placements[&local.name];
+                    slot.offset = interleaved_frame_layout
+                        .as_ref()
+                        .and_then(|layout| layout.offset(&local.name))
+                        .unwrap_or(placements[&local.name]);
                 }
             }
             if self.behavior.frame_convention == FrameConvention::LinkageFirst {
@@ -1360,13 +1395,27 @@ impl Generator {
                     .checked_add(path_reuse_frame_bytes)
                     .ok_or_else(|| Diagnostic::error("structured path-reuse frame is too large"))?;
             }
+            if let Some(layout) = &interleaved_frame_layout {
+                plan.frame_size = plan
+                    .frame_size
+                    .checked_add(layout.saved_area_gap_bytes())
+                    .ok_or_else(|| {
+                        Diagnostic::error("structured interleaved frame is too large")
+                    })?;
+            }
             let mut next_array_offset = array_offset;
             for array in structured_array_placement_order(frame_arrays) {
-                next_array_offset =
+                next_array_offset = if let Some(offset) = interleaved_frame_layout
+                    .as_ref()
+                    .and_then(|layout| layout.offset(&array.name))
+                {
+                    offset
+                } else {
                     align_offset(next_array_offset, array_stack_alignment(array))
                         .ok_or_else(|| {
                             Diagnostic::error("structured local frame is too large")
-                        })?;
+                        })?
+                };
                 let element_bytes = match array.declared_type {
                     Type::Struct { size, .. } => size,
                     value_type => u32::from(value_type.width() / 8),
@@ -1388,11 +1437,15 @@ impl Generator {
                     self.frame_row_bytes
                         .insert(array.name.clone(), row_bytes);
                 }
-                next_array_offset = next_array_offset
-                    .checked_add(i16::try_from(array_bytes).map_err(|_| {
-                        Diagnostic::error("structured automatic array is too large")
-                    })?)
-                    .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+                if interleaved_frame_layout.is_none() {
+                    next_array_offset = next_array_offset
+                        .checked_add(i16::try_from(array_bytes).map_err(|_| {
+                            Diagnostic::error("structured automatic array is too large")
+                        })?)
+                        .ok_or_else(|| {
+                            Diagnostic::error("structured local frame is too large")
+                        })?;
+                }
             }
             let mut scalar_offset =
                 if let Some(frame) = &variadic_output_frame {
