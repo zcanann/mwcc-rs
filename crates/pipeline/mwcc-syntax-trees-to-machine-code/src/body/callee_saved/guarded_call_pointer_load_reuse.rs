@@ -52,6 +52,7 @@ impl Generator {
             if mtlr > guarded_entry {
                 crate::move_instruction_before_retargeting(self, mtlr, guarded_entry);
             }
+            normalize_two_argument_guarded_callback(self, guarded_entry);
         }
     }
 
@@ -140,7 +141,7 @@ struct GuardedIndirectCallbackReload {
 fn guarded_indirect_callback_reload(
     instructions: &[Instruction],
 ) -> Option<GuardedIndirectCallbackReload> {
-    instructions.windows(4).enumerate().find_map(|(start, window)| {
+    instructions.windows(3).enumerate().find_map(|(start, window)| {
         let [
             Instruction::LoadWord {
                 d: tested,
@@ -156,23 +157,26 @@ fn guarded_indirect_callback_reload(
                 condition_bit: 2,
                 target,
             },
-            Instruction::LoadWord {
-                d: 12,
-                a: callback_base,
-                offset: callback_offset,
-            },
         ] = window
         else {
             return None;
         };
-        if tested != compared
-            || *tested == 12
-            || tested_base != callback_base
-            || tested_offset != callback_offset
-        {
+        if tested != compared || *tested == 12 {
             return None;
         }
-        let reload = start + 3;
+        let search_end = (*target)
+            .min(start.saturating_add(11))
+            .min(instructions.len());
+        let reload = (start + 3..search_end).find(|&index| {
+            matches!(
+                instructions[index],
+                Instruction::LoadWord {
+                    d: 12,
+                    a,
+                    offset,
+                } if a == *tested_base && offset == *tested_offset
+            )
+        })?;
         let mtlr = (reload + 1..instructions.len().saturating_sub(1))
             .take(8)
             .find(|&index| {
@@ -210,6 +214,51 @@ fn guarded_indirect_callback_reload(
             mtlr,
         })
     })
+}
+
+/// The global-pointer callback family materializes its two scalar arguments
+/// after `mtlr`, from the higher ABI register down. A saved-register copy uses
+/// `addi ...,0` here instead of the allocator's ordinary `mr` spelling.
+fn normalize_two_argument_guarded_callback(generator: &mut Generator, mtlr: usize) {
+    let Some(call) = (mtlr + 1..generator.output.instructions.len()).find(|&index| {
+        matches!(
+            generator.output.instructions[index],
+            Instruction::BranchToLinkRegisterAndLink
+        )
+    }) else {
+        return;
+    };
+    if call != mtlr + 3 {
+        return;
+    }
+
+    let destinations = [
+        callback_argument_destination(&generator.output.instructions[mtlr + 1]),
+        callback_argument_destination(&generator.output.instructions[mtlr + 2]),
+    ];
+    if destinations == [Some(3), Some(4)] {
+        crate::move_instruction_before_retargeting(generator, mtlr + 2, mtlr + 1);
+    } else if destinations != [Some(4), Some(3)] {
+        return;
+    }
+
+    if let Instruction::Or { a: 4, s, b } = generator.output.instructions[mtlr + 1] {
+        if s == b {
+            generator.output.instructions[mtlr + 1] = Instruction::AddImmediate {
+                d: 4,
+                a: s,
+                immediate: 0,
+            };
+        }
+    }
+}
+
+fn callback_argument_destination(instruction: &Instruction) -> Option<u8> {
+    match instruction {
+        Instruction::AddImmediate { d, .. } => Some(*d),
+        Instruction::Or { a, s, b } if s == b => Some(*a),
+        _ => None,
+    }
 }
 
 fn is_direct_guarded_pointer_call(instructions: &[Instruction], start: usize) -> bool {
@@ -327,6 +376,41 @@ mod tests {
                 load: 0,
                 reload: 3,
                 mtlr: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn recognizes_a_global_callback_reloaded_after_two_arguments() {
+        let instructions = vec![
+            Instruction::LoadWord {
+                d: 0,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 8,
+            },
+            Instruction::load_immediate(3, 0),
+            Instruction::move_register(4, 31),
+            Instruction::LoadWord {
+                d: 12,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::MoveToLinkRegister { s: 12 },
+            Instruction::BranchToLinkRegisterAndLink,
+        ];
+
+        assert_eq!(
+            guarded_indirect_callback_reload(&instructions),
+            Some(GuardedIndirectCallbackReload {
+                load: 0,
+                reload: 5,
+                mtlr: 6,
             })
         );
     }

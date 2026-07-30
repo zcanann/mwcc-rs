@@ -52,6 +52,7 @@ use super::structured_home_layout::{
     returned_deferred_pair_preference, saved_float_home_preference,
     uses_rounded_pointer_dense_layout,
 };
+use super::structured_guarded_local_layout::has_guarded_deferred_saved_local;
 use super::structured_indirect_call_home::promote_cost_free_indirect_call_locals;
 use super::structured_interleaved_frame_layout::StructuredInterleavedFrameLayout;
 use super::structured_liveness::{
@@ -579,6 +580,8 @@ impl Generator {
         if let Some(publication) = &frame_publication {
             saved_parameters.retain(|parameter| parameter.name != publication.parameter);
         }
+        let guarded_deferred_saved_local =
+            has_guarded_deferred_saved_local(&function.statements, &saved_locals);
         let (saved_float_locals, saved_locals): (Vec<_>, Vec<_>) = saved_locals
             .into_iter()
             .partition(|local| class_of(local.declared_type).ok() == Some(ValueClass::Float));
@@ -1648,6 +1651,7 @@ impl Generator {
             .locals
             .iter()
             .any(|local| local.name.starts_with("__mwcc_retained_constant_"))
+            || (deferred_home_plan.group_count == 1 && guarded_deferred_saved_local)
         {
             LegacyCalleeSavedFrameLayout::RetainGuardedLocalLane
         } else {
