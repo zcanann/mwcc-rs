@@ -13,6 +13,18 @@ use super::*;
 
 impl Generator {
     pub(crate) fn schedule_joystick_count_updates(&mut self) {
+        if let Some(start) = self
+            .output
+            .instructions
+            .windows(90)
+            .position(is_reused_joystick_count_updates)
+        {
+            if has_reused_relocations(self, start) {
+                self.schedule_reused_joystick_count_updates(start);
+                return;
+            }
+        }
+
         let Some(start) = self
             .output
             .instructions
@@ -62,6 +74,39 @@ impl Generator {
             .sort_by_key(|relocation| relocation.instruction_index);
     }
 
+    fn schedule_reused_joystick_count_updates(&mut self, start: usize) {
+        swap_instructions_and_relocations(self, start + 28, start + 29);
+        swap_instructions_and_relocations(self, start + 56, start + 57);
+        swap_instructions_and_relocations(self, start + 49, start + 50);
+        swap_instructions_and_relocations(self, start + 79, start + 80);
+
+        set_forward_target(&mut self.output.instructions[start + 8], start + 12);
+        set_forward_target(&mut self.output.instructions[start + 31], start + 35);
+        set_forward_target(&mut self.output.instructions[start + 59], start + 63);
+        self.output.instructions[start + 9] = Instruction::FloatNegate { d: 1, b: 1 };
+        self.output.instructions[start + 32] = Instruction::FloatNegate { d: 1, b: 1 };
+        self.output.instructions[start + 60] = Instruction::FloatNegate { d: 1, b: 1 };
+
+        set_word_load_destination(&mut self.output.instructions[start + 12], 4);
+        set_float_load(&mut self.output.instructions[start + 13], 3, 4);
+        self.output.instructions[start + 14] = Instruction::FloatCompareOrdered { a: 1, b: 3 };
+        self.output.instructions[start + 35] = Instruction::FloatCompareOrdered { a: 1, b: 3 };
+        set_float_load_base(&mut self.output.instructions[start + 22], 4);
+        set_float_load_base(&mut self.output.instructions[start + 43], 4);
+
+        set_word_load_destination(&mut self.output.instructions[start + 63], 4);
+        set_float_load(&mut self.output.instructions[start + 64], 0, 4);
+        self.output.instructions[start + 65] = Instruction::FloatCompareOrdered { a: 1, b: 0 };
+        set_float_load_base(&mut self.output.instructions[start + 73], 4);
+
+        for relative in [72, 62, 61, 42, 34, 33, 21, 11, 10] {
+            self.remove_joystick_instruction(start + relative);
+        }
+        self.output
+            .relocations
+            .sort_by_key(|relocation| relocation.instruction_index);
+    }
+
     fn remove_joystick_instruction(&mut self, at: usize) {
         self.output.instructions.remove(at);
         self.labels.removed_retargeting_to_next(at, 1);
@@ -85,6 +130,46 @@ impl Generator {
             }
         }
     }
+}
+
+fn has_reused_relocations(generator: &Generator, start: usize) -> bool {
+    let relative = generator
+        .output
+        .relocations
+        .iter()
+        .filter(|relocation| (start..start + 90).contains(&relocation.instruction_index))
+        .map(|relocation| relocation.instruction_index - start)
+        .collect::<Vec<_>>();
+    if relative != [5, 12, 19, 21, 28, 40, 42, 52, 56, 63, 70, 72, 82] {
+        return false;
+    }
+    [28, 56].into_iter().all(|index| {
+        schedule_relocations::same_relocated_value(
+            &generator.output.relocations,
+            &generator.output.constants,
+            start + 5,
+            start + index,
+        )
+    }) && [21, 42, 63, 72].into_iter().all(|index| {
+        schedule_relocations::same_relocated_value(
+            &generator.output.relocations,
+            &generator.output.constants,
+            start + 12,
+            start + index,
+        )
+    }) && [40, 70].into_iter().all(|index| {
+        schedule_relocations::same_relocated_value(
+            &generator.output.relocations,
+            &generator.output.constants,
+            start + 19,
+            start + index,
+        )
+    }) && schedule_relocations::same_relocated_value(
+        &generator.output.relocations,
+        &generator.output.constants,
+        start + 52,
+        start + 82,
+    )
 }
 
 fn has_expected_relocations(generator: &Generator, start: usize) -> bool {
@@ -244,6 +329,96 @@ fn is_call_and_reset(
     }
 }
 
+fn is_shared_call_and_reset(
+    window: &[Instruction],
+    start: usize,
+    base: u8,
+) -> Option<(i16, i16, i16)> {
+    match &window[start..start + 7] {
+        [
+            Instruction::LoadByteZero { d: 3, a: player_base, offset: player_offset },
+            Instruction::LoadByteZero { d: 4, a: flag_base, offset: flag_offset },
+            Instruction::RotateAndMask { a: 4, s: 4, shift: 29, begin: 31, end: 31 },
+            Instruction::BranchAndLink { .. },
+            Instruction::AddImmediate { d: 0, a: 0, immediate: 254 },
+            Instruction::StoreByte { s: 0, a: first_store_base, offset: first_store },
+            Instruction::StoreByte { s: 0, a: second_store_base, offset: second_store },
+        ] if *player_base == base
+            && *flag_base == base
+            && *first_store_base == base
+            && *second_store_base == base => {
+            Some((*player_offset, *flag_offset, *first_store - *second_store))
+        }
+        _ => None,
+    }
+}
+
+fn is_reused_joystick_count_updates(window: &[Instruction]) -> bool {
+    let Some(first_input) = is_absolute_value_diamond(window, 5, 31) else { return false };
+    let Some(second_input) = is_absolute_value_diamond(window, 28, 31) else { return false };
+    let Some(third_input) = is_absolute_value_diamond(window, 56, 31) else { return false };
+    let Some((first_count, first_limit)) = is_byte_limit_test(window, 17, 31, 12) else {
+        return false;
+    };
+    let Some((second_count, second_limit)) = is_byte_limit_test(window, 38, 31, 4) else {
+        return false;
+    };
+    let Some((third_count, third_limit)) = is_byte_limit_test(window, 68, 31, 4) else {
+        return false;
+    };
+    let Some((first_player, first_flag, store_delta)) =
+        is_shared_call_and_reset(window, 49, 31)
+    else {
+        return false;
+    };
+    let Some((third_player, third_flag, third_store)) = is_call_and_reset(window, 79, 31, false)
+    else {
+        return false;
+    };
+
+    matches!(window, [
+        Instruction::MoveFromLinkRegister { d: 0 },
+        Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+        Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -32 },
+        Instruction::StoreWord { s: 31, a: 1, offset: 28 },
+        Instruction::LoadWord { d: 31, a: 3, .. },
+        ..,
+        Instruction::LoadWord { d: 0, a: 1, offset: 36 },
+        Instruction::LoadWord { d: 31, a: 1, offset: 28 },
+        Instruction::AddImmediate { d: 1, a: 1, immediate: 32 },
+        Instruction::MoveToLinkRegister { s: 0 },
+        Instruction::BranchToLinkRegister,
+    ])
+        && matches!(&window[12..17], [
+            Instruction::LoadWord { d: 3, a: 0, .. },
+            Instruction::LoadFloatSingle { d: 3, a: 3, offset: first_threshold },
+            Instruction::FloatCompareOrdered { a: 0, b: 3 },
+            Instruction::ConditionRegisterOr { d: 2, a: 1, b: 2 },
+            Instruction::BranchConditionalForward { options: 4, condition_bit: 2, .. },
+        ] if matches!(&window[35..38], [
+            Instruction::FloatCompareOrdered { a: 0, b: 3 },
+            Instruction::ConditionRegisterOr { d: 2, a: 1, b: 2 },
+            Instruction::BranchConditionalForward { options: 4, condition_bit: 2, .. },
+        ]) && *first_threshold == first_limit - 8)
+        && matches!(&window[63..68], [
+            Instruction::LoadWord { d: 3, a: 0, .. },
+            Instruction::LoadFloatSingle { d: 1, a: 3, .. },
+            Instruction::FloatCompareOrdered { a: 0, b: 1 },
+            Instruction::ConditionRegisterOr { d: 2, a: 1, b: 2 },
+            Instruction::BranchConditionalForward { options: 4, condition_bit: 2, .. },
+        ])
+        && second_input == first_input + 4
+        && first_count + 1 == second_count
+        && second_count + 1 == third_count
+        && first_limit == second_limit
+        && second_limit == third_limit
+        && first_player == third_player
+        && first_flag == third_flag
+        && store_delta == 1
+        && third_store == third_count
+        && third_input != first_input
+}
+
 fn is_unscheduled_joystick_count_updates(window: &[Instruction]) -> bool {
     let Some(first_input) = is_absolute_value_diamond(window, 5, 31) else { return false };
     let Some(second_input) = is_absolute_value_diamond(window, 28, 31) else { return false };
@@ -314,6 +489,51 @@ fn is_unscheduled_joystick_count_updates(window: &[Instruction]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_two_stores_sharing_one_reset_value() {
+        let instructions = vec![
+            Instruction::LoadByteZero {
+                d: 3,
+                a: 31,
+                offset: 12,
+            },
+            Instruction::LoadByteZero {
+                d: 4,
+                a: 31,
+                offset: 0x221f,
+            },
+            Instruction::RotateAndMask {
+                a: 4,
+                s: 4,
+                shift: 29,
+                begin: 31,
+                end: 31,
+            },
+            Instruction::BranchAndLink {
+                target: "update".into(),
+            },
+            Instruction::AddImmediate {
+                d: 0,
+                a: 0,
+                immediate: 254,
+            },
+            Instruction::StoreByte {
+                s: 0,
+                a: 31,
+                offset: 0x67a,
+            },
+            Instruction::StoreByte {
+                s: 0,
+                a: 31,
+                offset: 0x679,
+            },
+        ];
+        assert_eq!(
+            is_shared_call_and_reset(&instructions, 0, 31),
+            Some((12, 0x221f, 1))
+        );
+    }
 
     #[test]
     fn rejects_a_partial_joystick_count_stream() {
