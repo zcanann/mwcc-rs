@@ -459,6 +459,11 @@ impl Generator {
             && entry_lane_bytes == 8
             && inline_lane_bytes == 8
             && physical_saved.len() == 2;
+        let has_planned_conversion_scratch =
+            self.float_to_int_scratch_end != 0 || self.int_to_float_scratch_end != 0;
+        let planned_conversion_scratch_end = self
+            .float_to_int_scratch_end
+            .max(self.int_to_float_scratch_end);
         // An inlined body containing a numeric conversion already owns the
         // optimizer lane that retains build 163's entry table. With no
         // addressable locals, the two provenance counters describe the same
@@ -496,8 +501,6 @@ impl Generator {
         // saved GPRs, rounded to a doubleword. Retained optimizer lanes are
         // added independently below.
         let compact_saved_size = compact_linkage_first_saved_frame_size(physical_saved.len());
-        let has_planned_conversion_scratch =
-            self.float_to_int_scratch_end != 0 || self.int_to_float_scratch_end != 0;
         let physical_base_size = if self.frame_slots.is_empty()
             && self.callee_saved_conversion_bytes == 0
             && !has_planned_conversion_scratch
@@ -506,7 +509,22 @@ impl Generator {
         } else {
             old_size
         };
-        let base_size = physical_base_size.saturating_add(retained_frame_bytes);
+        // Mixed-direction caller-planned conversion images are rounded before
+        // saved GPRs are assigned. That alignment gap can absorb the retained
+        // entry lane when the images move upward below, so the physical frame
+        // grows only by the portion that does not fit before the first saved
+        // register slot.
+        let retained_frame_growth = retained_lane_growth_after_conversion_slack(
+            old_size,
+            physical_saved.len(),
+            planned_conversion_scratch_end,
+            retained_frame_bytes,
+            self.frame_slots.is_empty()
+                && entry_lane_bytes != 0
+                && self.float_to_int_scratch_end != 0
+                && self.int_to_float_scratch_end != 0,
+        );
+        let base_size = physical_base_size.saturating_add(retained_frame_growth);
         let conversion_size = if self.callee_saved_conversion_bytes == 0 {
             physical_base_size
         } else {
@@ -1494,6 +1512,24 @@ fn shared_inline_conversion_entry_lane(
         .then(|| entry_lane_bytes.max(inline_lane_bytes))
 }
 
+fn retained_lane_growth_after_conversion_slack(
+    frame_size: i16,
+    saved_registers: usize,
+    conversion_scratch_end: i16,
+    retained_bytes: i16,
+    may_reuse_slack: bool,
+) -> i16 {
+    if !may_reuse_slack || conversion_scratch_end == 0 || retained_bytes == 0 {
+        return retained_bytes;
+    }
+    let saved_bytes = i16::try_from(saved_registers.saturating_mul(4)).unwrap_or(i16::MAX);
+    let saved_region_start = frame_size.saturating_sub(saved_bytes);
+    let slack = saved_region_start
+        .saturating_sub(conversion_scratch_end)
+        .max(0);
+    retained_bytes.saturating_sub(slack.min(retained_bytes))
+}
+
 /// Identify a saved local loaded through an entry pointer before that incoming
 /// register is overwritten. Build 163 retains the entry-parameter table for
 /// this value origin just as it does for a parameter copied directly into a
@@ -1554,6 +1590,26 @@ fn remap_prefix_rotate_left(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planned_conversion_alignment_absorbs_a_shared_retained_lane() {
+        assert_eq!(
+            retained_lane_growth_after_conversion_slack(48, 2, 32, 8, true),
+            0
+        );
+    }
+
+    #[test]
+    fn planned_conversion_alignment_charges_only_unabsorbed_retained_bytes() {
+        assert_eq!(
+            retained_lane_growth_after_conversion_slack(48, 2, 36, 8, true),
+            4
+        );
+        assert_eq!(
+            retained_lane_growth_after_conversion_slack(48, 2, 32, 8, false),
+            8
+        );
+    }
     use mwcc_machine_code::{Relocation, RelocationKind, RelocationTarget};
 
     #[test]

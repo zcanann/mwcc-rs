@@ -325,7 +325,15 @@ impl Generator {
                 generator,
                 declared_float_values,
                 right,
-            ))
+            )) + mixed_float_arithmetic_conversion_count(
+                generator,
+                declared_float_values,
+                left,
+            ) + mixed_float_arithmetic_conversion_count(
+                generator,
+                declared_float_values,
+                right,
+            )
         }
 
         fn direct_float_call_uses_local(
@@ -365,12 +373,30 @@ impl Generator {
         }
 
         let declared_float_values = declared_float_value_names(function);
-        statement_count(
-            self,
-            &declared_float_values,
-            &function.statements,
-            Some(function.return_type),
-        )
+        let local_initializer_count = function
+            .locals
+            .iter()
+            .filter_map(|local| {
+                let initializer = local.initializer.as_ref()?;
+                Some(
+                    usize::from(matches!(
+                        local.declared_type,
+                        Type::Float | Type::Double
+                    )) * mixed_float_arithmetic_conversion_count(
+                        self,
+                        &declared_float_values,
+                        initializer,
+                    ) + expression_count(self, &declared_float_values, initializer),
+                )
+            })
+            .sum::<usize>();
+        local_initializer_count
+            + statement_count(
+                self,
+                &declared_float_values,
+                &function.statements,
+                Some(function.return_type),
+            )
             + function
                 .return_expression
                 .as_ref()

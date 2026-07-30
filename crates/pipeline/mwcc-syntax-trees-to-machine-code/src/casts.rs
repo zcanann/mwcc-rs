@@ -953,6 +953,19 @@ impl Generator {
         // unsigned value skips the flip and subtracts `0x43300000_00000000`. Bumps the @N counter.
         let signed = self.signedness_of(operand)?;
         let source = self.general_register_of_leaf(operand)?;
+        if self.non_leaf || self.int_to_float_scratch_end != 0 {
+            let scratch = self.claim_int_to_float_scratch()?;
+            self.emit_int_to_float_body_at(
+                source,
+                destination,
+                double,
+                signed,
+                bias_register,
+                IntToFloatSchedule::LeafValue,
+                scratch,
+            );
+            return Ok(());
+        }
         self.frame_size = 16;
         self.output
             .instructions
