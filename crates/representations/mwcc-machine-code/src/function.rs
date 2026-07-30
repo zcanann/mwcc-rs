@@ -487,6 +487,16 @@ impl MachineFunction {
     pub fn encode_text(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.instructions.len() * 4);
         for (index, instruction) in self.instructions.iter().enumerate() {
+            if let Instruction::BranchConditionalForward { target, .. }
+            | Instruction::Branch { target } = instruction
+            {
+                assert!(
+                    *target <= self.instructions.len(),
+                    "{} instruction {index} has unresolved branch target {target} (function length {})",
+                    self.name,
+                    self.instructions.len(),
+                );
+            }
             let word = match *instruction {
                 Instruction::BranchConditionalForward {
                     options,

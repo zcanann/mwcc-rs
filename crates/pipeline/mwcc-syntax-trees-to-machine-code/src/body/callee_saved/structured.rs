@@ -66,7 +66,6 @@ use super::structured_loop_lowering::{
 };
 use super::structured_switch_lowering::{
     is_lowered_switch_guard, lower_structured_switches,
-    resolve_structured_switch_joins, structured_switch_join_placeholder,
 };
 use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
@@ -2580,7 +2579,6 @@ impl Generator {
             }
         }
         self.fold_structured_conditional_gotos();
-        resolve_structured_switch_joins(&mut self.output.instructions);
         thread_forward_unconditional_branch_chains(&mut self.output.instructions);
         if let Some(layout) = &loop_member_receiver_layout {
             layout.coalesce_receiver_load(self, homes[0], homes[3]);
@@ -2962,8 +2960,7 @@ impl Generator {
                         if let Instruction::Branch { target } =
                             &mut self.output.instructions[skip_body]
                         {
-                            *target =
-                                structured_switch_join_placeholder(join);
+                            *target = join;
                         }
                         continue;
                     }

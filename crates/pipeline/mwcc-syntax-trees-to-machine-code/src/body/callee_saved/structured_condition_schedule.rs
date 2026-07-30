@@ -338,12 +338,8 @@ fn conditional_goto_diamond(
     else {
         return None;
     };
-    (*skip == conditional + 2
-        && *target != conditional + 1
-        && !super::structured_switch_lowering::is_structured_switch_join_placeholder(
-            *target,
-        ))
-    .then_some((*options, *condition_bit, *target))
+    (*skip == conditional + 2 && *target != conditional + 1)
+        .then_some((*options, *condition_bit, *target))
 }
 
 fn find_entry_member_saved_home(instructions: &[Instruction]) -> Option<(usize, u8)> {
