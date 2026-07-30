@@ -2400,20 +2400,22 @@ impl Generator {
         // (a `li` for a constant, an SDA `lwz` for a global) BEFORE the global constant store; ours
         // emits the store first. A param return (already in r3) or a deref/index return is
         // byte-exact and unaffected, as is a non-constant or non-global store.
-        if let Some(return_expression) = &function.return_expression {
-            let return_is_const_or_global = constant_value(return_expression).is_some()
-                || matches!(return_expression, Expression::Variable(name) if self.globals.contains_key(name.as_str()));
-            if return_is_const_or_global {
-                for statement in &function.statements {
-                    if let Statement::Store { target, value } = statement {
-                        if constant_value(value).is_some()
-                            && matches!(target, Expression::Variable(name) if self.globals.contains_key(name.as_str()))
-                            && self.global_constant_store_return_plan(function).is_none()
-                        {
-                            return Err(Diagnostic::error(format!(
-                                "a global constant store scheduled around a const/global return is not modeled (roadmap; function '{}')",
-                                function.name
-                            )));
+        if !function_makes_call(function) {
+            if let Some(return_expression) = &function.return_expression {
+                let return_is_const_or_global = constant_value(return_expression).is_some()
+                    || matches!(return_expression, Expression::Variable(name) if self.globals.contains_key(name.as_str()));
+                if return_is_const_or_global {
+                    for statement in &function.statements {
+                        if let Statement::Store { target, value } = statement {
+                            if constant_value(value).is_some()
+                                && matches!(target, Expression::Variable(name) if self.globals.contains_key(name.as_str()))
+                                && self.global_constant_store_return_plan(function).is_none()
+                            {
+                                return Err(Diagnostic::error(format!(
+                                    "a global constant store scheduled around a const/global return is not modeled (roadmap; function '{}')",
+                                    function.name
+                                )));
+                            }
                         }
                     }
                 }
