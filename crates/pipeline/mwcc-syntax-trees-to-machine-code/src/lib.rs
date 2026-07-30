@@ -911,6 +911,7 @@ fn lower_function_body(
     // convention-aware owners already emitted their final frame and are skipped.
     generator.normalize_linkage_first_saved_register_order();
     generator.compact_exclusive_inline_conversion_frame();
+    generator.schedule_structured_conversion_following_call();
     generator.normalize_linkage_first_plain_nonleaf_frame();
     generator.normalize_linkage_first_indirect_call_schedule();
     generator.normalize_linkage_first_conversion_frame();
