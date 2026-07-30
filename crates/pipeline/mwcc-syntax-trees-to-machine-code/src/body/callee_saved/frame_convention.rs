@@ -534,6 +534,23 @@ impl Generator {
             conversion_end.saturating_add(7) & !7
         };
         let new_size = base_size.max(conversion_size);
+        if std::env::var_os("MWCC_DIAGNOSTIC_FRAME")
+            .is_some_and(|requested| requested == std::ffi::OsStr::new(&self.output.name))
+        {
+            eprintln!(
+                "frame reconciliation for {}: old={old_size} new={new_size} saved={physical_saved:?} entry_lane={entry_lane_bytes} inline_lane={inline_lane_bytes} retained={retained_frame_bytes} growth={retained_frame_growth} conversion_bytes={} float_to_int=({}, {}) int_to_float=({}, {}) frame_slots={:?}",
+                self.output.name,
+                self.callee_saved_conversion_bytes,
+                self.float_to_int_scratch_next,
+                self.float_to_int_scratch_end,
+                self.int_to_float_scratch_next,
+                self.int_to_float_scratch_end,
+                self.frame_slots
+                    .iter()
+                    .map(|(name, slot)| (name.as_str(), slot.offset, slot.size))
+                    .collect::<Vec<_>>()
+            );
+        }
         if shared_inline_aggregate_offset == Some(8) {
             let slots: Vec<_> = self
                 .frame_slots
