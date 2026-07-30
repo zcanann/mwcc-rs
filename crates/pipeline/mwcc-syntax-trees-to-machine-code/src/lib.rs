@@ -916,6 +916,7 @@ fn lower_function_body(
     generator.finalize_structured_object_collision_loop_guard();
     generator.finalize_structured_object_collision_loop_delta();
     generator.finalize_structured_state_transfer_entry(function);
+    generator.finalize_structured_state_transfer_bit_swap(function);
     generator.compact_exclusive_inline_conversion_frame();
     generator.schedule_structured_conversion_following_call();
     generator.schedule_structured_argument_load_latency();
