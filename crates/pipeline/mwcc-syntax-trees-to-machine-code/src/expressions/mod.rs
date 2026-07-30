@@ -21,6 +21,7 @@ mod frame_aggregate_copy;
 mod frame_matrix;
 mod fixed_bank_store_schedule;
 mod linkage_first_fixed_bank_region;
+mod linkage_first_fixed_bank_self_copy;
 mod function_address;
 mod global_array_decay;
 mod global_array_index;

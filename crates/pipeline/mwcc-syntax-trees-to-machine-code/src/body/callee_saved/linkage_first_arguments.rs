@@ -476,6 +476,20 @@ fn schedule_function_address_low(
     }) else {
         return;
     };
+    // A register match is not a symbol-pair proof. Another function address
+    // may already own this entry `lis`, while the candidate callback's real
+    // high half lives in a later control-flow arm. Attaching both relocations
+    // to the entry instruction would form neither address correctly.
+    if output.relocations.iter().any(|relocation| {
+        relocation.instruction_index == high
+            && relocation.kind == RelocationKind::Addr16Ha
+            && !matches!(
+                &relocation.target,
+                mwcc_machine_code::RelocationTarget::External(name) if name == &target
+            )
+    }) {
+        return;
+    }
     // Some hand-owned frame normalizers rotate this prefix before their
     // relocation remap. Re-anchor the matching @ha relocation to its lis.
     let Some(high_relocation) = output.relocations.iter_mut().find(|relocation| {
@@ -848,6 +862,79 @@ mod tests {
             ]
         ));
         assert_eq!(output.relocations[1].instruction_index, 4);
+    }
+
+    #[test]
+    fn does_not_pair_a_later_function_low_with_an_unrelated_entry_high() {
+        let mut output = mwcc_machine_code::MachineFunction::new("test");
+        output.instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -8,
+            },
+            Instruction::AddImmediate {
+                d: 0,
+                a: 4,
+                immediate: 0,
+            },
+            Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 0,
+            },
+            Instruction::BranchAndLink {
+                target: "install".to_string(),
+            },
+        ];
+        output.relocations = vec![
+            Relocation {
+                instruction_index: 1,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::External("entry".to_string()),
+            },
+            Relocation {
+                instruction_index: 4,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::External("entry".to_string()),
+            },
+            Relocation {
+                instruction_index: 5,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::External("callback".to_string()),
+            },
+            Relocation {
+                instruction_index: 6,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::External("callback".to_string()),
+            },
+        ];
+
+        schedule_function_address_low(&mut output, &|_| true);
+
+        assert!(matches!(
+            output.instructions[3],
+            Instruction::StoreWordWithUpdate { .. }
+        ));
+        assert_eq!(output.relocations[0].instruction_index, 1);
+        assert_eq!(output.relocations[2].instruction_index, 5);
+        assert_eq!(output.relocations[3].instruction_index, 6);
     }
 
     #[test]

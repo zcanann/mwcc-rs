@@ -872,6 +872,7 @@ fn lower_function_body(
     generator.schedule_materialized_fixed_bank_store();
     generator.fuse_adjacent_materialized_fixed_bank_stores();
     generator.fuse_linkage_first_fixed_bank_region();
+    generator.split_linkage_first_fixed_bank_self_copies();
     let allocated_float_saves = allocate_registers(&mut generator).map_err(|mut diagnostic| {
         let context = format!("function '{}'", function.name);
         if !diagnostic.message.contains(&context) {
