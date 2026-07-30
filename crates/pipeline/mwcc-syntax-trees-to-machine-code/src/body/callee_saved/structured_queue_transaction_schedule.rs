@@ -10,6 +10,9 @@ use super::*;
 
 impl Generator {
     pub(crate) fn schedule_structured_queue_transaction(&mut self, function: &Function) {
+        if self.schedule_recycled_entry_queue_transaction() {
+            return;
+        }
         let Some(plan) = structured_queue_transaction(&self.output.instructions) else {
             if function.return_type == Type::Void {
                 self.schedule_void_queue_transaction();

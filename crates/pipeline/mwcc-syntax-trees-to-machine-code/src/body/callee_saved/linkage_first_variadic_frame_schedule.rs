@@ -23,6 +23,7 @@ impl Generator {
         ) {
             self.move_instruction_before(from, to);
         }
+        self.schedule_variadic_constant_triplets();
         let Some(first_call) =
             entry_variadic_call(&self.output.instructions, &self.variadic_callees)
         else {
@@ -73,6 +74,21 @@ impl Generator {
         self.overlap_first_frame_argument_with_receiver_load();
         self.use_linkage_first_variadic_receiver_copies();
         self.schedule_later_variadic_argument_packets();
+    }
+
+    fn schedule_variadic_constant_triplets(&mut self) {
+        let mut start = 0;
+        while start + 4 < self.output.instructions.len() {
+            if is_variadic_constant_triplet(
+                &self.output.instructions[start..start + 5],
+                &self.variadic_callees,
+            ) {
+                self.move_instruction_before(start + 3, start);
+                start += 5;
+            } else {
+                start += 1;
+            }
+        }
     }
 
     fn overlap_first_frame_argument_with_receiver_load(&mut self) {
@@ -289,6 +305,22 @@ fn is_later_variadic_argument_packet(
     )
 }
 
+fn is_variadic_constant_triplet(
+    instructions: &[Instruction],
+    variadic_callees: &HashSet<String>,
+) -> bool {
+    matches!(
+        instructions,
+        [
+            Instruction::AddImmediate { d: 3, a: 0, .. },
+            Instruction::AddImmediate { d: 4, a: 0, .. },
+            Instruction::AddImmediate { d: 5, a: 0, .. },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink { target },
+        ] if variadic_callees.contains(target)
+    )
+}
+
 fn is_linkage_first_frame_prefix(instructions: &[Instruction]) -> bool {
     matches!(
         instructions,
@@ -462,6 +494,25 @@ mod tests {
         ];
 
         assert!(is_later_variadic_argument_packet(
+            &instructions,
+            &variadic_callees
+        ));
+    }
+
+    #[test]
+    fn recognizes_a_three_constant_variadic_argument_packet() {
+        let variadic_callees = HashSet::from(["panic".into()]);
+        let instructions = vec![
+            Instruction::load_immediate(3, 0),
+            Instruction::load_immediate(4, 2902),
+            Instruction::load_immediate(5, 0),
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink {
+                target: "panic".into(),
+            },
+        ];
+
+        assert!(is_variadic_constant_triplet(
             &instructions,
             &variadic_callees
         ));
