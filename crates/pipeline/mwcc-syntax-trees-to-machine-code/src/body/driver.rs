@@ -1538,6 +1538,9 @@ impl Generator {
         if self.try_float_list_parser(function)? {
             return Ok(());
         }
+        if self.try_counted_pointer_search(function)? {
+            return Ok(());
+        }
         if self.try_rotated_loop(function)? {
             return Ok(());
         }
