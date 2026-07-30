@@ -13,6 +13,7 @@ mod call_condition_live_in_branches;
 mod call_live_counter_loop;
 mod inlined_short_circuit_call_loop;
 mod inlined_async_stream_wait;
+mod inlined_nested_status_query;
 mod call_result_product_return;
 mod computed_between_calls;
 mod counted_resource_search;
