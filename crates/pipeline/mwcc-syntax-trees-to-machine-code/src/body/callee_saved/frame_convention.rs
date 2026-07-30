@@ -856,6 +856,7 @@ impl Generator {
             }
         }
         self.output.instructions[..=link_store].rotate_left(1);
+        remap_prefix_rotate_left(&mut self.output.relocations, link_store);
         self.delay_plain_frame_update_past_condition_prefix(link_store);
         let first_call = self
             .output
