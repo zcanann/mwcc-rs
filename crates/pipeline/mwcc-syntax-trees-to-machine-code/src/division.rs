@@ -249,8 +249,7 @@ impl Generator {
     /// post-shift (`srawi`), then rounds toward zero by adding the sign bit. The
     /// intermediate quotient lives in r0 whenever a correction or shift is present
     /// (the dividend must stay live); otherwise `mulhw` targets the result and the
-    /// sign temporary uses r0. Restricted to the shapes where the dividend is a
-    /// leaf and a scratch register is free, deferring otherwise.
+    /// sign temporary uses r0.
     fn emit_signed_magic_divide(
         &mut self,
         dividend: &Expression,
@@ -258,13 +257,7 @@ impl Generator {
         destination: u8,
     ) -> Compilation<()> {
         let (magic, shift) = signed_magic(divisor);
-        let Some(dividend_register) =
-            leaf_name(dividend).and_then(|name| self.lookup_general(name))
-        else {
-            return Err(Diagnostic::error(
-                "magic-number division needs a leaf dividend (roadmap)",
-            ));
-        };
+        let dividend_register = self.place_magic_dividend(dividend)?;
         // The lowest free general register holds the materialized magic's high
         // half. The destination counts as free here — its incoming value is dead
         // and the divide writes its result there only at the very end — but the
@@ -364,13 +357,7 @@ impl Generator {
         destination: u8,
     ) -> Compilation<()> {
         let (magic, add, shift) = unsigned_magic(divisor);
-        let Some(dividend_register) =
-            leaf_name(dividend).and_then(|name| self.lookup_general(name))
-        else {
-            return Err(Diagnostic::error(
-                "magic-number division needs a leaf dividend (roadmap)",
-            ));
-        };
+        let dividend_register = self.place_magic_dividend(dividend)?;
         let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
         else {
             return Err(Diagnostic::error(
@@ -456,13 +443,7 @@ impl Generator {
         signed: bool,
         destination: u8,
     ) -> Compilation<()> {
-        let Some(dividend_register) =
-            leaf_name(dividend).and_then(|name| self.lookup_general(name))
-        else {
-            return Err(Diagnostic::error(
-                "magic-number modulo needs a leaf dividend (roadmap)",
-            ));
-        };
+        let dividend_register = self.place_magic_dividend(dividend)?;
         let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
         else {
             return Err(Diagnostic::error(
@@ -615,6 +596,21 @@ impl Generator {
             b: dividend_register,
         });
         Ok(())
+    }
+
+    /// Keep a computed dividend live across magic materialization and the
+    /// multiply-high sequence. Leaves retain their established home; richer
+    /// expressions receive a virtual home so evaluating them may use r0
+    /// without colliding with the magic constant that subsequently occupies it.
+    fn place_magic_dividend(&mut self, dividend: &Expression) -> Compilation<u8> {
+        if let Some(register) =
+            leaf_name(dividend).and_then(|name| self.lookup_general(name))
+        {
+            return Ok(register);
+        }
+        let register = self.fresh_virtual_general();
+        self.evaluate_general(dividend, register)?;
+        Ok(register)
     }
 
     /// Emit a remainder as `left - (left / right) * right` (leaf operands only for now).
@@ -906,29 +902,39 @@ fn unsigned_magic(d: u32) -> (u32, bool, u8) {
     loop {
         p += 1;
         if r1 >= nc - r1 {
-            q1 = 2 * q1 + 1;
-            r1 = 2 * r1 - nc;
+            q1 = q1.wrapping_mul(2).wrapping_add(1);
+            r1 = r1.wrapping_mul(2).wrapping_sub(nc);
         } else {
-            q1 *= 2;
-            r1 *= 2;
+            q1 = q1.wrapping_mul(2);
+            r1 = r1.wrapping_mul(2);
         }
         if r2 + 1 >= d - r2 {
             if q2 >= 0x7FFF_FFFF {
                 add = true;
             }
-            q2 = 2 * q2 + 1;
-            r2 = 2 * r2 + 1 - d;
+            q2 = q2.wrapping_mul(2).wrapping_add(1);
+            r2 = r2.wrapping_mul(2).wrapping_add(1).wrapping_sub(d);
         } else {
             if q2 >= 0x8000_0000 {
                 add = true;
             }
-            q2 *= 2;
-            r2 = 2 * r2 + 1;
+            q2 = q2.wrapping_mul(2);
+            r2 = r2.wrapping_mul(2).wrapping_add(1);
         }
         let delta = d - 1 - r2;
         if p >= 64 || !(q1 < delta || (q1 == delta && r1 == 0)) {
             break;
         }
     }
-    (q2 + 1, add, (p - 32) as u8)
+    (q2.wrapping_add(1), add, (p - 32) as u8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unsigned_magic;
+
+    #[test]
+    fn unsigned_magic_wraps_intermediates_for_division_by_1000() {
+        assert_eq!(unsigned_magic(1000), (0x1062_4dd3, false, 6));
+    }
 }
