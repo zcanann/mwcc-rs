@@ -8,6 +8,7 @@
 //! alpha-renamed and initialized at the call site rather than caller entry.
 
 mod call_sites;
+mod discarded_result;
 mod frame_residue;
 mod ordinal_residue;
 mod returns;
@@ -1161,6 +1162,16 @@ impl InlineBodySet {
                 .iter()
                 .map(|statement| substitute_statement(statement, &replacements)),
         );
+        if destination.is_none() {
+            if let Some(result_name) = discarded_result::write_only_result_local(callee) {
+                if let Some(Expression::Variable(substituted_result)) =
+                    replacements.get(result_name)
+                {
+                    substituted =
+                        discarded_result::remove_assignments(substituted, substituted_result);
+                }
+            }
+        }
         if let Some(destination) = destination {
             let returned = substitute_expression(callee.return_expression.as_ref()?, &replacements);
             substituted.push(Statement::Assign {
@@ -4097,6 +4108,13 @@ mod tests {
         collect_function_calls(&assigned, &mut assigned_calls);
         assert!(!discarded_calls.contains_key("drain"));
         assert!(!assigned_calls.contains_key("drain"));
+        assert!(!discarded.statements.iter().any(|statement| {
+            matches!(
+                statement,
+                Statement::Assign { name, .. }
+                    if name.starts_with("__mwcc_inline_drain_") && name.ends_with("_result")
+            )
+        }));
         assert!(assigned.statements.iter().any(|statement| {
             matches!(
                 statement,

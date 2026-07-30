@@ -3238,8 +3238,19 @@ impl Generator {
                         }
                         _ => None,
                     };
+                    let guarded_value_followup =
+                        (self.inline_statement_body_substitutions != 0)
+                            .then(|| match then_body.first() {
+                                Some(Statement::Assign { value, .. }) => Some(value),
+                                Some(Statement::Store { target, .. }) => Some(target),
+                                Some(Statement::Expression(expression)) => Some(expression),
+                                _ => None,
+                            })
+                            .flatten();
                     let guarded_followup =
-                        guarded_store_value.or(nested_condition);
+                        guarded_store_value
+                            .or(nested_condition)
+                            .or(guarded_value_followup);
                     let terms = logical_and_terms(condition);
                     let (previous_cache, previous_float_cache) =
                         if let Some((previous, previous_float)) =
