@@ -9,9 +9,13 @@
 use super::*;
 
 impl Generator {
-    pub(crate) fn schedule_structured_queue_transaction(&mut self) {
+    pub(crate) fn schedule_structured_queue_transaction(&mut self, function: &Function) {
         let Some(plan) = structured_queue_transaction(&self.output.instructions) else {
-            self.schedule_compact_structured_queue_transaction();
+            if function.return_type == Type::Void {
+                self.schedule_void_queue_transaction();
+            } else {
+                self.schedule_compact_structured_queue_transaction();
+            }
             return;
         };
 
