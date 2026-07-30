@@ -42,6 +42,7 @@ mod bounded_vector_reciprocal_schedule;
 mod adjacent_fighter_nudge_schedule;
 mod guarded_item_charge_schedule;
 mod damage_vector_schedule;
+mod dual_status_switch_schedule;
 mod callee_saved;
 mod comma_operator;
 mod coalescing_free_list_insert;
