@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 #[derive(Clone, Copy)]
 pub(crate) enum ConditionGlobalValue {
     Pending,
+    PendingPreferred(u8),
     Register(u8),
 }
 
@@ -97,6 +98,18 @@ impl Generator {
         self.condition_global_values = previous;
     }
 
+    /// Keep a false-edge value distinct from the selected scalar written by
+    /// the opposite arm. Build 163's linear allocation gives the carried value
+    /// the next caller-clobbered home even though path-sensitive coalescing
+    /// could legally merge both values.
+    pub(crate) fn prefer_pending_condition_global_values(&mut self, register: u8) {
+        for value in self.condition_global_values.values_mut() {
+            if matches!(value, ConditionGlobalValue::Pending) {
+                *value = ConditionGlobalValue::PendingPreferred(register);
+            }
+        }
+    }
+
     /// Materialize cacheable bases before evaluating the first comparison.
     /// MWCC hoists these independent pointer loads in source encounter order,
     /// even when the first member access occurs on a later `&&` term.
@@ -115,7 +128,10 @@ impl Generator {
         for name in names {
             if matches!(
                 self.condition_global_values.get(&name),
-                Some(ConditionGlobalValue::Pending)
+                Some(
+                    ConditionGlobalValue::Pending
+                        | ConditionGlobalValue::PendingPreferred(_)
+                )
             ) {
                 self.condition_global_base(&name)?;
             }
@@ -129,6 +145,13 @@ impl Generator {
             Some(ConditionGlobalValue::Register(register)) => Ok(Some(register)),
             Some(ConditionGlobalValue::Pending) => {
                 let register = self.fresh_virtual_general();
+                self.emit_global_load_value(name, register)?;
+                self.condition_global_values
+                    .insert(name.to_owned(), ConditionGlobalValue::Register(register));
+                Ok(Some(register))
+            }
+            Some(ConditionGlobalValue::PendingPreferred(preferred)) => {
+                let register = self.fresh_virtual_general_preferring(preferred);
                 self.emit_global_load_value(name, register)?;
                 self.condition_global_values
                     .insert(name.to_owned(), ConditionGlobalValue::Register(register));

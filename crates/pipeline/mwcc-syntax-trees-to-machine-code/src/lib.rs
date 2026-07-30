@@ -894,7 +894,7 @@ fn lower_function_body(
     // Revisit the narrow saved-result epilogue on the physical stream. A
     // source-level return branch can hide the move from the structured
     // pre-allocation pass until generic scheduling removes that branch.
-    generator.schedule_saved_return_epilogue();
+    generator.schedule_saved_return_epilogue(function);
     // Issue the epilogue's saved-LR reload right after the last call (ahead of the
     // post-call computation), as mwcc does — a final pass on the physical stream.
     hoist_link_register_reload(&mut generator);
@@ -1540,6 +1540,22 @@ pub(crate) fn remap_instruction_indices(generator: &mut Generator, permutation: 
     }
     for displacement in &mut generator.output.data_section_displacements {
         displacement.instruction_index = permutation[displacement.instruction_index];
+    }
+    // Jump-table entries are byte offsets into the same instruction stream.
+    // They are label owners just like branch destinations; allocator
+    // coalescing and late scheduling must move them through the permutation.
+    for table in &mut generator.output.jump_tables {
+        for entry in &mut table.entries {
+            let old_index = *entry as usize / 4;
+            let new_index = if old_index == permutation.len() {
+                generator.output.instructions.len()
+            } else {
+                permutation[old_index]
+            };
+            *entry = u32::try_from(new_index)
+                .unwrap_or(u32::MAX)
+                .saturating_mul(4);
+        }
     }
     remap_branch_targets(&mut generator.output.instructions, permutation);
 }

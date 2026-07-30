@@ -109,7 +109,17 @@ impl Generator {
     /// Hoist the saved-LR load into the issue slot before a final move from a
     /// callee-saved return home. The load is independent of the result move;
     /// MWCC uses that latency schedule before restoring the saved GPR range.
-    pub(crate) fn schedule_saved_return_epilogue(&mut self) {
+    pub(crate) fn schedule_saved_return_epilogue(&mut self, function: &Function) {
+        // A switch-selected return value is already the output phi of the
+        // dispatch transaction. Build 163 publishes that value to r3 before
+        // beginning linkage teardown; moving the LR load ahead of it applies
+        // the schedule for ordinary saved locals to the wrong provenance.
+        if function.return_expression.as_ref().is_some_and(|returned| {
+            matches!(returned, Expression::Variable(name)
+                if assigned_by_source_switch(&function.statements, name))
+        }) {
+            return;
+        }
         // An owner that explicitly selected LR-before-GPR teardown has already
         // fixed the issue order: return handoff, LR reload, then GPR restores.
         if self.epilogue_lr_before_gprs {
@@ -376,6 +386,51 @@ impl Generator {
     }
 }
 
+fn assigned_by_source_switch(statements: &[Statement], name: &str) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Switch { arms, default, .. } => {
+            arms.iter().any(|arm| match &arm.body {
+                mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                    block_assigns_name(statements, name)
+                }
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+            }) || default.as_ref().is_some_and(|default| match default {
+                mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                    block_assigns_name(statements, name)
+                }
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+            })
+        }
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            assigned_by_source_switch(then_body, name)
+                || assigned_by_source_switch(else_body, name)
+        }
+        Statement::Loop { body, .. } => assigned_by_source_switch(body, name),
+        _ => false,
+    })
+}
+
+fn block_assigns_name(statements: &[Statement], name: &str) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Assign { name: assigned, .. } => assigned == name,
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => block_assigns_name(then_body, name) || block_assigns_name(else_body, name),
+        Statement::Loop { body, .. } => block_assigns_name(body, name),
+        Statement::Switch { .. } => assigned_by_source_switch(
+            std::slice::from_ref(statement),
+            name,
+        ),
+        _ => false,
+    })
+}
+
 fn leading_call_arguments(expression: &Expression) -> Option<&[Expression]> {
     match expression {
         Expression::Call { arguments, .. } => Some(arguments),
@@ -500,5 +555,25 @@ mod tests {
             ),
             None,
         );
+    }
+
+    #[test]
+    fn recognizes_a_return_local_assigned_inside_a_source_switch() {
+        let statements = vec![Statement::Switch {
+            scrutinee: Expression::Variable("state".into()),
+            arms: vec![mwcc_syntax_trees::SwitchArm {
+                value: 0,
+                body: mwcc_syntax_trees::ArmBody::Statements(vec![
+                    Statement::Assign {
+                        name: "result".into(),
+                        value: Expression::IntegerLiteral(1),
+                    },
+                ]),
+                falls_through: false,
+            }],
+            default: None,
+        }];
+        assert!(assigned_by_source_switch(&statements, "result"));
+        assert!(!assigned_by_source_switch(&statements, "other"));
     }
 }

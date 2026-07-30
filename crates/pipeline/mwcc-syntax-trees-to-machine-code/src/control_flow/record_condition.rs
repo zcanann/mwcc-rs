@@ -88,13 +88,15 @@ impl Generator {
                 return Ok(true);
             }
         }
-        if !matches!(
+        let multiply = matches!(
             condition,
             Expression::Binary {
                 operator: BinaryOperator::Multiply,
                 ..
             }
-        ) {
+        );
+        let shifted_mask = is_shifted_mask_truth_test(condition);
+        if !multiply && !shifted_mask {
             return Ok(false);
         }
 
@@ -106,6 +108,19 @@ impl Generator {
             Instruction::MultiplyLow { d, a, b } => {
                 Some(Instruction::MultiplyLowRecord { d, a, b })
             }
+            Instruction::RotateAndMask {
+                a,
+                s,
+                shift,
+                begin,
+                end,
+            } if shifted_mask => Some(Instruction::RotateAndMaskRecord {
+                a,
+                s,
+                shift,
+                begin,
+                end,
+            }),
             _ => None,
         };
         if let Some(record) = replacement {
@@ -113,8 +128,58 @@ impl Generator {
             Ok(true)
         } else {
             Err(Diagnostic::error(
-                "a computed multiply condition did not end in a recordable multiply",
+                "a computed condition did not end in its expected recordable operation",
             ))
         }
+    }
+}
+
+/// A shifted value subsequently narrowed by a constant mask lowers to one
+/// `rlwinm`. In truth position the same instruction can set CR0 directly.
+fn is_shifted_mask_truth_test(expression: &Expression) -> bool {
+    let Expression::Binary {
+        operator: BinaryOperator::BitAnd,
+        left,
+        right,
+    } = expression
+    else {
+        return false;
+    };
+    constant_value(right).is_some()
+        && matches!(
+            left.as_ref(),
+            Expression::Binary {
+                operator: BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight,
+                ..
+            }
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_a_constant_mask_of_a_shifted_value() {
+        let expression = Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: Box::new(Expression::Binary {
+                operator: BinaryOperator::ShiftRight,
+                left: Box::new(Expression::Variable("bits".into())),
+                right: Box::new(Expression::IntegerLiteral(2)),
+            }),
+            right: Box::new(Expression::IntegerLiteral(1)),
+        };
+        assert!(is_shifted_mask_truth_test(&expression));
+    }
+
+    #[test]
+    fn leaves_an_unshifted_mask_to_the_direct_mask_owner() {
+        let expression = Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: Box::new(Expression::Variable("bits".into())),
+            right: Box::new(Expression::IntegerLiteral(1)),
+        };
+        assert!(!is_shifted_mask_truth_test(&expression));
     }
 }

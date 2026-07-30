@@ -580,8 +580,13 @@ impl Generator {
         if let Some(publication) = &frame_publication {
             saved_parameters.retain(|parameter| parameter.name != publication.parameter);
         }
-        let retained_deferred_local_lane =
-            retains_deferred_saved_local_lane(&function.statements, &saved_locals);
+        // Frame provenance belongs to the source CFG. Lowering a switch into
+        // nested `if` statements is an emission detail and must not make an
+        // exhaustively selected result look like a source guarded local.
+        let retained_deferred_local_lane = retains_deferred_saved_local_lane(
+            &structured_switch_source.statements,
+            &saved_locals,
+        );
         let (saved_float_locals, saved_locals): (Vec<_>, Vec<_>) = saved_locals
             .into_iter()
             .partition(|local| class_of(local.declared_type).ok() == Some(ValueClass::Float));
@@ -2831,7 +2836,7 @@ impl Generator {
         if pooled_dense_inline_save {
             self.schedule_structured_array_pool_epilogue();
         }
-        self.schedule_saved_return_epilogue();
+        self.schedule_saved_return_epilogue(&structured_switch_source);
         self.schedule_saved_receiver_entry_epilogue();
         self.schedule_legacy_inline_expansion_residue();
         self.schedule_structured_initializer_live_in();

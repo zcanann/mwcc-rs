@@ -100,7 +100,16 @@ impl Generator {
                 a: scrutinee_register,
                 immediate: negated_base as i16,
             });
-            (GENERAL_SCRATCH, Eabi::general_result().number)
+            // Rebasing moves the live index to r0, so the source local's home
+            // is immediately reusable for the jump-table address. This is the
+            // same lifetime rule as the ordinary switch owner, generalized
+            // from its fixed r3 scrutinee to an allocator-backed local.
+            let table_register = if scrutinee_register == GENERAL_SCRATCH {
+                Eabi::general_result().number
+            } else {
+                scrutinee_register
+            };
+            (GENERAL_SCRATCH, table_register)
         } else {
             let table_register = if scrutinee_register == Eabi::general_result().number {
                 4

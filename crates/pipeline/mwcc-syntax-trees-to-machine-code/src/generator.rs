@@ -200,7 +200,7 @@ pub(crate) struct FrameSlot {
 /// allocated home alone. Most layouts follow the home's value origin. A
 /// producing call that directly consumes entry parameters reserves one extra
 /// lane even though its saved home is first defined by the call result.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum LegacyCalleeSavedFrameLayout {
     #[default]
     InferFromValueOrigin,

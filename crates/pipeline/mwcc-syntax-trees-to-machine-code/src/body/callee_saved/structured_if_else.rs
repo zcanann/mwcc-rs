@@ -40,8 +40,24 @@ impl Generator {
         {
             return Ok(());
         }
+        // An `else if` is evaluated only on the outer condition's false edge.
+        // Let a pure outer comparison and that immediately nested comparison
+        // share scalar global values. Calls and mutations remain hard lifetime
+        // barriers: they may change the global before the nested condition.
+        let nested_else_condition = (!crate::analysis::expression_has_side_effect(condition))
+            .then(|| match else_body.first() {
+                Some(Statement::If { condition, .. }) => Some(condition),
+                _ => None,
+            })
+            .flatten();
         let previous_wide_mask_cache = self.begin_wide_pair_mask_condition(condition);
-        let previous_cache = self.begin_condition_global_cache(condition);
+        let previous_cache = self.begin_condition_global_cache_with_followup(
+            condition,
+            nested_else_condition,
+        );
+        if nested_else_condition.is_some() {
+            self.prefer_pending_condition_global_values(5);
+        }
         let previous_float_cache = self.begin_composed_condition_float_cache(condition);
         let previous_member_cache = self.begin_condition_member_cache(condition);
         struct ConditionBranches {
@@ -176,6 +192,8 @@ impl Generator {
         let else_wide_mask_cache = self.wide_pair_mask_false_edge_cache();
         self.wide_pair_mask_cache = Default::default();
         let then_float_cache = self.condition_float_literal_edge_cache();
+        let else_global_cache =
+            nested_else_condition.map(|_| self.condition_global_values.clone());
         self.restore_condition_global_cache(previous_cache);
         self.restore_condition_float_cache(previous_float_cache);
         let branches = match branches {
@@ -274,6 +292,8 @@ impl Generator {
             &mut self.wide_pair_mask_cache,
             retained_else_wide_mask_cache,
         );
+        let else_arm_previous_global_cache = else_global_cache
+            .map(|cache| std::mem::replace(&mut self.condition_global_values, cache));
         let else_result = (|| {
             let reused_member = member_else_reuse.is_some_and(|(plan, source)| {
                 self.emit_member_else_reuse(plan, source)
@@ -300,6 +320,9 @@ impl Generator {
             }
             Ok(())
         })();
+        if let Some(previous) = else_arm_previous_global_cache {
+            self.restore_condition_global_cache(previous);
+        }
         self.restore_wide_pair_mask_cache(else_arm_previous_wide_mask_cache);
         if let Err(diagnostic) = else_result {
             self.restore_wide_pair_mask_cache(previous_wide_mask_cache);
