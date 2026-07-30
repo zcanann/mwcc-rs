@@ -156,6 +156,7 @@ mod structured_indexed_callback_schedule;
 mod structured_indirect_call_home;
 mod structured_inline_residue;
 mod structured_inlined_address_receiver_schedule;
+mod structured_inlined_interrupt_transaction_schedule;
 mod structured_inlined_store_receiver_schedule;
 mod structured_inline_assertion;
 mod structured_locals;
