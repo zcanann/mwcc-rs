@@ -13,21 +13,43 @@ const SCHEDULE: [usize; 37] = [
     28, 24, 22, 30, 25, 31, 32, 33, 34, 35, 36,
 ];
 
+const DEFERRED_GUARDED_SCHEDULE: [usize; 54] = [
+    0, 4, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17, 19, 18, 15, 20, 22, 16, 23, 24, 21,
+    25, 26, 27, 28, 32, 29, 30, 31, 33, 39, 36, 40, 34, 42, 41, 37, 35, 43, 38, 44, 45, 46, 47,
+    48, 49, 50, 51, 52, 53,
+];
+
 impl Generator {
     pub(crate) fn schedule_structured_global_member_address(&mut self) {
         let Some(cache) = self.structured_global_member_address_cache.as_ref() else {
             return;
         };
-        if !is_serial_member_address_body(
+        if is_serial_member_address_body(
             &self.output.instructions,
             &self.output.relocations,
             &cache.global,
         ) {
+            self.apply_structured_global_member_address_schedule(&SCHEDULE);
+            assign_mwcc_registers(&mut self.output.instructions);
             return;
         }
+        if self.legacy_callee_saved_frame_layout
+            != LegacyCalleeSavedFrameLayout::RetainDeferredGlobalMemberAddressLane
+            || !is_deferred_guarded_member_address_body(
+                &self.output.instructions,
+                &self.output.relocations,
+                &cache.global,
+            )
+        {
+            return;
+        }
+        self.apply_structured_global_member_address_schedule(&DEFERRED_GUARDED_SCHEDULE);
+        assign_deferred_guarded_mwcc_registers(&mut self.output.instructions);
+    }
 
-        let mut current: Vec<usize> = (0..SCHEDULE.len()).collect();
-        for (destination, &original) in SCHEDULE.iter().enumerate() {
+    fn apply_structured_global_member_address_schedule(&mut self, schedule: &[usize]) {
+        let mut current: Vec<usize> = (0..schedule.len()).collect();
+        for (destination, &original) in schedule.iter().enumerate() {
             let source = current
                 .iter()
                 .position(|&candidate| candidate == original)
@@ -38,8 +60,55 @@ impl Generator {
                 current.insert(destination, moved);
             }
         }
-        assign_mwcc_registers(&mut self.output.instructions);
     }
+}
+
+fn is_deferred_guarded_member_address_body(
+    instructions: &[Instruction],
+    relocations: &[mwcc_machine_code::Relocation],
+    global: &str,
+) -> bool {
+    instructions.len() == DEFERRED_GUARDED_SCHEDULE.len()
+        && external_target(relocations, 22, RelocationKind::Addr16Ha) == Some(global)
+        && external_target(relocations, 23, RelocationKind::Addr16Lo) == Some(global)
+        && external_target(relocations, 39, RelocationKind::Addr16Ha) == Some(global)
+        && external_target(relocations, 40, RelocationKind::Addr16Lo) == Some(global)
+        && matches!(
+            instructions,
+            [
+                Instruction::MoveFromLinkRegister { .. },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 4,
+                },
+                Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -24,
+                },
+                Instruction::StoreWord {
+                    s: 31,
+                    a: 1,
+                    offset: 20,
+                },
+                Instruction::CompareLogicalWordImmediate { immediate: 16, .. },
+                Instruction::BranchConditionalForward { .. },
+                ..,
+                Instruction::LoadWord {
+                    d: 31,
+                    a: 1,
+                    offset: 20,
+                },
+                Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: 24,
+                },
+                Instruction::MoveToLinkRegister { .. },
+                Instruction::BranchToLinkRegister,
+            ]
+        )
 }
 
 fn is_serial_member_address_body(
@@ -171,6 +240,31 @@ fn assign_mwcc_registers(instructions: &mut [Instruction]) {
     set_add(&mut instructions[29], 6, 4);
 }
 
+fn assign_deferred_guarded_mwcc_registers(instructions: &mut [Instruction]) {
+    let Instruction::BranchConditionalForward { target, .. } = &mut instructions[27] else {
+        unreachable!("validated guarded member-address branch changed form")
+    };
+    *target = 34;
+    set_load(&mut instructions[16], 4, 0);
+    set_add(&mut instructions[18], 5, 0);
+    set_shifted_add(&mut instructions[20], 3, 0);
+    let Instruction::StoreWord { s, .. } = &mut instructions[21] else {
+        unreachable!("validated guarded member-address store changed form")
+    };
+    *s = 5;
+    set_add(&mut instructions[22], 3, 3);
+    set_add(&mut instructions[23], 31, 3);
+    set_load(&mut instructions[24], 3, 4);
+    set_shifted_add(&mut instructions[34], 3, 0);
+    set_load(&mut instructions[35], 6, 31);
+    set_add(&mut instructions[36], 5, 3);
+    set_load(&mut instructions[37], 7, 0);
+    set_shifted_add(&mut instructions[38], 4, 0);
+    set_add(&mut instructions[40], 0, 6);
+    set_load(&mut instructions[41], 3, 7);
+    set_add(&mut instructions[42], 6, 4);
+}
+
 fn set_load(instruction: &mut Instruction, destination: u8, base: u8) {
     let Instruction::LoadWord { d, a, .. } = instruction else {
         unreachable!("validated member-address load changed form")
@@ -204,5 +298,15 @@ mod tests {
         let mut sorted = SCHEDULE.to_vec();
         sorted.sort_unstable();
         assert_eq!(sorted, (0..SCHEDULE.len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn deferred_guarded_issue_order_is_a_complete_permutation() {
+        let mut sorted = DEFERRED_GUARDED_SCHEDULE.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted,
+            (0..DEFERRED_GUARDED_SCHEDULE.len()).collect::<Vec<_>>()
+        );
     }
 }
