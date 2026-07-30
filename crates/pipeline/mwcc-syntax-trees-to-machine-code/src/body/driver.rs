@@ -4203,6 +4203,17 @@ impl Generator {
         if !self.try_float_dag_return(function)? {
             match function.locals.as_slice() {
                 [] => self.evaluate_tail(return_expression, function.return_type, result)?,
+                [local]
+                    if local.initializer.is_none()
+                        && function.statements.iter().any(|statement| {
+                            self.bounded_global_array_search_owns_local(
+                                statement,
+                                &local.name,
+                            )
+                        }) =>
+                {
+                    self.evaluate_tail(return_expression, function.return_type, result)?
+                }
                 [local] => self.evaluate_single_local(
                     local,
                     return_expression,
@@ -4465,7 +4476,9 @@ impl Generator {
             // Focused loop owners lower measured topologies; every other loop
             // still defers rather than falling through to straight-line codegen.
             Statement::Loop { .. } => {
-                if self.try_emit_global_struct_member_search_loop(statement)? {
+                if self.try_emit_bounded_global_array_return_search(statement)?
+                    || self.try_emit_global_struct_member_search_loop(statement)?
+                {
                     Ok(())
                 } else {
                     Err(Diagnostic::error(

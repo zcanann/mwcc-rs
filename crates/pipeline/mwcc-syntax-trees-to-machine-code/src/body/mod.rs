@@ -37,6 +37,7 @@ mod assertion_expression;
 mod assigned_pointer_alias;
 mod bounded_member_cursor;
 mod bounded_member_assignment;
+mod bounded_global_array_search;
 mod bounded_acceleration_schedule;
 mod bounded_vector_reciprocal_schedule;
 mod adjacent_fighter_nudge_schedule;
