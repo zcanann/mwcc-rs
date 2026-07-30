@@ -2013,6 +2013,20 @@ impl Generator {
             self.evaluate_general(operand, result)?;
             return Ok(result);
         }
+        // A bare function designator in a pointer comparison is an address
+        // value, not a register-local variable. Materialize its ADDR16 pair in
+        // r0 (with the high half in a temporary) so `old != callback` compares
+        // the call result directly against the function address.
+        if matches!(
+            operand,
+            Expression::Variable(name)
+                if self.call_return_types.contains_key(name)
+                    && !self.locations.contains_key(name)
+                    && !self.globals.contains_key(name)
+        ) {
+            self.evaluate_general(operand, GENERAL_SCRATCH)?;
+            return Ok(GENERAL_SCRATCH);
+        }
         if matches!(
             operand,
             Expression::AddressOf { .. }
