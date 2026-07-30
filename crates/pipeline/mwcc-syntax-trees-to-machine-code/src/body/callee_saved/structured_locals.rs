@@ -2,8 +2,9 @@
 //!
 //! Callee-saved homes and ephemeral values are separate lifetime classes. This
 //! module computes the latter before emission so the structured body can decline
-//! atomically when a local needs a call result, stack storage, or another
-//! unmodeled lifetime.
+//! atomically when a local needs stack storage or another unmodeled lifetime.
+//! Call results are valid ephemeral definitions: the virtual-register allocator
+//! accounts for call clobbers after structured emission.
 
 #[allow(unused_imports)]
 use super::*;
@@ -525,7 +526,6 @@ pub(super) fn plan_ephemeral_locals<'a>(
                 class_of(local.declared_type),
                 Ok(ValueClass::General | ValueClass::Float)
             )
-            || local.initializer.as_ref().is_some_and(expression_has_call)
             || (local.initializer.is_none()
                 && !is_definitely_assigned_before_reads(&function.statements, &local.name))
         })
@@ -1225,6 +1225,55 @@ mod tests {
                 .map(|local| local.name.as_str())
                 .collect::<Vec<_>>(),
             ["first", "second"]
+        );
+    }
+
+    #[test]
+    fn accepts_a_call_result_as_an_ephemeral_definition() {
+        let function = Function {
+            return_type: Type::Int,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![local(
+                "result",
+                Expression::Call {
+                    name: "produce".into(),
+                    arguments: Vec::new(),
+                },
+            )],
+            statements: vec![Statement::If {
+                condition: Expression::Variable("result".into()),
+                then_body: vec![Statement::Assign {
+                    name: "result".into(),
+                    value: Expression::IntegerLiteral(1),
+                }],
+                else_body: Vec::new(),
+            }],
+            guards: Vec::new(),
+            return_expression: Some(Expression::Variable("result".into())),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        let planned = plan_ephemeral_locals(
+            &function,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        )
+        .expect("the call result is defined before every body read");
+        assert_eq!(
+            planned
+                .iter()
+                .map(|local| local.name.as_str())
+                .collect::<Vec<_>>(),
+            ["result"]
         );
     }
 

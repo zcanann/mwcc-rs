@@ -981,6 +981,24 @@ impl Generator {
             return Ok(());
         }
 
+        // A member-valued select has no persistent register homes for its arms.
+        // Keep the ordinary source CFG: branch to the false load, materialize
+        // the true load into the common destination, then join. This covers
+        // source-level MIN/MAX expressions over object fields without weakening
+        // the leaf-only register-phi path below.
+        if as_member(when_true).is_some() && as_member(when_false).is_some() {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            let false_arm = self.fresh_label();
+            let join = self.fresh_label();
+            self.emit_branch_conditional_to(options, condition_bit, false_arm);
+            self.evaluate_general(when_true, destination)?;
+            self.emit_branch_to(join);
+            self.bind_label(false_arm);
+            self.evaluate_general(when_false, destination)?;
+            self.bind_label(join);
+            return Ok(());
+        }
+
         let true_register = self.general_register_of_leaf(when_true)?;
         let false_register = self.general_register_of_leaf(when_false)?;
 
