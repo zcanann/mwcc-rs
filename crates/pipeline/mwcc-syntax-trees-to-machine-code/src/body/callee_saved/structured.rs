@@ -15,10 +15,13 @@ use super::structured_aggregate_slots::{
     plan_terminal_one_word_aggregate_call_copies,
 };
 use super::structured_call_schedule::{
-    direct_callback_wait_home_preference, is_sequenced_callback_wait_layout,
-    sequenced_callback_wait_frame_slot, sequenced_callback_wait_home_preference,
-    sequenced_callback_wait_save_order, terminal_offset_call_argument_register,
+    direct_callback_wait_home_preference, terminal_offset_call_argument_register,
     transient_call_argument_register,
+};
+use super::structured_sequenced_callback_wait::{
+    is_sequenced_callback_wait_layout, sequenced_callback_wait_frame_slot,
+    sequenced_callback_wait_home_preference, sequenced_callback_wait_save_order,
+    sequenced_callback_wait_starter,
 };
 use super::structured_constant_versions::retain_repeated_store_constant_across_call;
 use super::structured_condition_schedule::thread_forward_unconditional_branch_chains;
@@ -1062,6 +1065,10 @@ impl Generator {
             &deferred_saved_locals,
             first_saved,
         );
+        if sequenced_callback_wait_layout {
+            self.structured_sequenced_callback_wait_starter =
+                sequenced_callback_wait_starter(function).map(str::to_owned);
+        }
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
                 if loop_assertion_strings.is_some() {

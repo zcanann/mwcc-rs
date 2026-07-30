@@ -345,6 +345,10 @@ pub(crate) struct Generator {
     /// Structured lowering recognized the pairwise object-collision loop whose
     /// entry is finalized after allocated FPR frame materialization.
     pub(crate) structured_object_collision_loop_entry: bool,
+    /// Queueing callee from a semantically recognized inlined callback-wait
+    /// transaction. The final physical pass uses this provenance instead of
+    /// trying to rediscover the expanded body from the original source AST.
+    pub(crate) structured_sequenced_callback_wait_starter: Option<String>,
     /// Conditional edges owned by a retained source switch dispatcher. They
     /// can have the same local shape as a structured `if (...) goto`, but MWCC
     /// preserves the switch's two-edge leaf rather than folding it.

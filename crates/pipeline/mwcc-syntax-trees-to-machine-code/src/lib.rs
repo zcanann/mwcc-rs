@@ -572,6 +572,7 @@ fn lower_function_body(
         data_section_anchor_reuses_deferred_home: false,
         structured_array_pool_emitted: false,
         structured_object_collision_loop_entry: false,
+        structured_sequenced_callback_wait_starter: None,
         structured_switch_dispatch_conditionals: HashSet::new(),
         structured_shared_switch_global_value: None,
         transient_global_index_base: None,
@@ -959,6 +960,7 @@ fn lower_function_body(
     generator.finalize_exclusive_arm_copy_encodings();
     generator.schedule_linkage_first_function_address();
     generator.schedule_direct_callback_wait_entry(function);
+    generator.schedule_sequenced_callback_wait();
     generator.schedule_callback_publication_call();
     generator.schedule_retained_eager_entry_argument();
     generator.schedule_retained_split_member_guard();
