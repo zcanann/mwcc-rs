@@ -923,6 +923,7 @@ fn lower_function_body(
     generator.finalize_structured_state_transfer_scale_schedule(function);
     generator.finalize_structured_state_transfer_status_schedule(function);
     generator.finalize_structured_state_transfer_pointer_schedule(function);
+    generator.finalize_structured_state_transfer_conversion_schedule(function);
     generator.compact_exclusive_inline_conversion_frame();
     generator.schedule_structured_conversion_following_call();
     generator.schedule_structured_argument_load_latency();
