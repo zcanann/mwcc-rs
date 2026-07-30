@@ -944,6 +944,7 @@ fn lower_function_body(
     generator.schedule_pod_constructor_initialization();
     generator.schedule_saved_receiver_array_release_frame();
     generator.schedule_structured_saved_member_entry();
+    generator.schedule_structured_entry_member_guard_home();
     generator.schedule_structured_indexed_callback_lookup();
     generator.schedule_assertion_float_member_return();
     generator.schedule_guarded_member_classifier_chain();
