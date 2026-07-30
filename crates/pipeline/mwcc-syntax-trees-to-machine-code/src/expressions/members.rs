@@ -278,7 +278,38 @@ impl Generator {
             })?;
             return self.emit_member_address(inner, combined, destination);
         }
-        let base_register = if let Expression::Member {
+        let global_pointer_base = match base {
+            Expression::Variable(name)
+                if !self.locations.contains_key(name.as_str())
+                    && matches!(
+                        self.globals.get(name.as_str()),
+                        Some(Type::StructPointer { .. })
+                    ) =>
+            {
+                if let Some(register) = self.condition_global_base(name)? {
+                    Some(register)
+                } else if let Some(register) =
+                    self.live_global_register(name, offset != 0)
+                {
+                    Some(register)
+                } else {
+                    // r0 can hold the complete offset-zero address, but it
+                    // cannot be the base of `addi`: an r0 base denotes literal
+                    // zero. Use a virtual base when a displacement remains.
+                    let register = if destination == GENERAL_SCRATCH && offset != 0 {
+                        self.fresh_virtual_general()
+                    } else {
+                        destination
+                    };
+                    self.emit_global_load_value(name, register)?;
+                    Some(register)
+                }
+            }
+            _ => None,
+        };
+        let base_register = if let Some(register) = global_pointer_base {
+            register
+        } else if let Expression::Member {
             base: inner,
             offset: member_offset,
             member_type: member_type @ (Type::Pointer(_) | Type::StructPointer { .. }),
