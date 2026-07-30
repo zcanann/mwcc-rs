@@ -4,6 +4,32 @@
 use super::*;
 
 impl Generator {
+    /// Address a full-data string through an already-retained translation-unit
+    /// `.data` base. The string's final symbol and section displacement are
+    /// assigned after unit-wide pooling, so this emits one D-form instruction
+    /// with a late symbolic fixup.
+    pub(crate) fn emit_data_anchor_string_literal(
+        &mut self,
+        bytes: &[u8],
+        destination: u8,
+    ) -> bool {
+        let Some(base) = self
+            .data_section_anchor
+            .as_ref()
+            .and_then(|anchor| anchor.register)
+        else {
+            return false;
+        };
+        let placeholder = self.string_literal_placeholder(bytes);
+        self.record_data_section_symbol_displacement(&placeholder);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: destination,
+            a: base,
+            immediate: 0,
+        });
+        true
+    }
+
     pub(crate) fn loop_assertion_string_high_home(&self, bytes: &[u8]) -> Option<u8> {
         self.loop_assertion_string_highs
             .iter()

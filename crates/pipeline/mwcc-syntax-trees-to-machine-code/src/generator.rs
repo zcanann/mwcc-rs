@@ -255,7 +255,10 @@ pub(crate) struct StructuredGlobalBaseCache {
 
 #[derive(Debug, Clone)]
 pub(crate) struct DataSectionAnchorPlan {
-    pub(crate) offsets: HashMap<String, i16>,
+    /// Full `.data` objects addressed through the translation-unit anchor.
+    /// Their exact section offsets are assigned after every function-created
+    /// string and table is known, so each D-form use carries a late fixup.
+    pub(crate) symbols: HashSet<String>,
     pub(crate) register: Option<u8>,
 }
 
@@ -603,6 +606,17 @@ pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {
 }
 
 impl Generator {
+    pub(crate) fn record_data_section_symbol_displacement(&mut self, symbol: &str) {
+        self.output.data_section_displacements.push(
+            mwcc_machine_code::DataSectionDisplacement {
+                instruction_index: self.output.instructions.len(),
+                target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+                    symbol.to_owned(),
+                ),
+            },
+        );
+    }
+
     pub(crate) fn is_global_array(&self, name: &str) -> bool {
         self.global_arrays.contains(name)
     }

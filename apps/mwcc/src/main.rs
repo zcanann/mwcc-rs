@@ -2352,6 +2352,23 @@ fn compile(
                 _ => {}
             }
         }
+        for displacement in &mut machine_function.data_section_displacements {
+            let mwcc_machine_code::DataSectionDisplacementTarget::Symbol(name) =
+                &mut displacement.target
+            else {
+                continue;
+            };
+            if let Some(index) = name
+                .strip_prefix("@@str")
+                .and_then(|rest| rest.parse::<usize>().ok())
+            {
+                assert_eq!(
+                    resolved_addends[index], 0,
+                    "a data-anchor string displacement cannot target a packed-string addend"
+                );
+                *name = resolved[index].clone();
+            }
+        }
         packed_strings::materialize_function_offsets(machine_function, "@stringBase0");
         for local in static_local_globals
             .iter_mut()

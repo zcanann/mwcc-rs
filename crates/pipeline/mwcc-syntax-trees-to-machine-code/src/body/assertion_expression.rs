@@ -125,6 +125,24 @@ impl Generator {
         let Some(line) = constant_value(line).and_then(|value| i16::try_from(value).ok()) else {
             return Ok(false);
         };
+        if !self.behavior.string_literals_packed
+            && file.len() + 1 > 8
+            && asserted.len() + 1 > 8
+            && self.emit_data_anchor_string_literal(file, 3)
+        {
+            assert!(
+                self.emit_data_anchor_string_literal(asserted, 5),
+                "the retained data anchor must remain available for both assertion strings"
+            );
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(4, line));
+            self.record_relocation(RelocationKind::Rel24, name);
+            self.output.instructions.push(Instruction::BranchAndLink {
+                target: name.to_string(),
+            });
+            return Ok(true);
+        }
         if !self.variadic_callees.contains(name)
             || self.behavior.global_addressing != GlobalAddressing::SmallData
             || file.len() + 1 <= 8
@@ -375,6 +393,24 @@ impl Generator {
         let Some(line) = constant_value(line).and_then(|value| i16::try_from(value).ok()) else {
             return Ok(false);
         };
+        if !self.behavior.string_literals_packed
+            && file.len() + 1 > 8
+            && asserted.len() + 1 > 8
+            && self.emit_data_anchor_string_literal(file, 3)
+        {
+            assert!(
+                self.emit_data_anchor_string_literal(asserted, 5),
+                "the retained data anchor must remain available for both assertion strings"
+            );
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(4, line));
+            self.record_relocation(RelocationKind::Rel24, name);
+            self.output.instructions.push(Instruction::BranchAndLink {
+                target: name.to_string(),
+            });
+            return Ok(true);
+        }
         if !self.variadic_callees.contains(name)
             || self.behavior.global_addressing != GlobalAddressing::SmallData
             || file.len() + 1 > 8

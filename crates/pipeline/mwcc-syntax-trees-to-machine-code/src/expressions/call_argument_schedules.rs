@@ -832,6 +832,23 @@ impl Generator {
             return Ok(false);
         }
 
+        if !self.behavior.string_literals_packed
+            && self.emit_data_anchor_string_literal(first, Eabi::FIRST_GENERAL_ARGUMENT)
+        {
+            assert!(
+                self.emit_data_anchor_string_literal(
+                    third,
+                    Eabi::FIRST_GENERAL_ARGUMENT + 2,
+                ),
+                "the retained data anchor must remain available for both call arguments"
+            );
+            self.output.instructions.push(Instruction::load_immediate(
+                Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                *line as i16,
+            ));
+            return Ok(true);
+        }
+
         let first = self.string_literal_placeholder(first);
         let third = self.string_literal_placeholder(third);
         self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT, &first);

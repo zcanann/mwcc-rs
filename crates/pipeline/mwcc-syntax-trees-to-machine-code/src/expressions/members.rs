@@ -572,34 +572,18 @@ impl Generator {
                         )?);
                         return Ok(());
                     }
-                    if let Some((base, global_offset)) = self
+                    if let Some(base) = self
                         .data_section_anchor
                         .as_ref()
-                        .and_then(|anchor| {
-                            anchor
-                                .register
-                                .zip(anchor.offsets.get(name.as_str()).copied())
-                        })
+                        .filter(|anchor| anchor.symbols.contains(name.as_str()))
+                        .and_then(|anchor| anchor.register)
                     {
-                        let member_offset = i32::try_from(offset).map_err(|_| {
+                        let displacement = i16::try_from(offset).map_err(|_| {
                             Diagnostic::error(
                                 "data-anchor global member displacement is out of range",
                             )
                         })?;
-                        let displacement = i16::try_from(
-                            i32::from(global_offset)
-                                .checked_add(member_offset)
-                                .ok_or_else(|| {
-                                    Diagnostic::error(
-                                        "data-anchor global member displacement is out of range",
-                                    )
-                                })?,
-                        )
-                        .map_err(|_| {
-                            Diagnostic::error(
-                                "data-anchor global member displacement is out of range",
-                            )
-                        })?;
+                        self.record_data_section_symbol_displacement(name);
                         self.output.instructions.push(displacement_load(
                             pointee,
                             destination,
@@ -956,6 +940,7 @@ impl Generator {
             offset,
             destination,
         )? {
+            self.record_data_section_symbol_displacement(name);
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
@@ -1112,6 +1097,7 @@ impl Generator {
             } else {
                 self.general_register_of_leaf(value)?
             };
+            self.record_data_section_symbol_displacement(name);
             self.output.instructions.push(displacement_store(
                 pointee,
                 source,

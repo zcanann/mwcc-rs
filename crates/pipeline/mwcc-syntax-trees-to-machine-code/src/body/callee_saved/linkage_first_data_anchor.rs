@@ -36,35 +36,29 @@ pub(crate) fn plan(
     } else {
         function
     };
-    let offsets = source_ordered_data_offsets(
+    let symbols = full_data_symbols(
         globals,
         behavior.global_addressing == GlobalAddressing::SmallData,
         behavior.inferred_array_uses_full_data_section,
-    )?;
+    );
     let mut referenced = std::collections::HashSet::new();
     for statement in &function.statements {
         visit_statement(statement, &mut |expression| {
             if let Expression::Variable(name) = expression {
-                if offsets.contains_key(name) {
+                if symbols.contains(name) {
                     referenced.insert(name.clone());
                 }
             }
         });
     }
     if let Some(expression) = &function.return_expression {
-        collect_expression_variables(expression, &offsets, &mut referenced);
+        collect_expression_variables(expression, &symbols, &mut referenced);
     }
     if referenced.len() < 3 {
         return None;
     }
     Some(DataSectionAnchorPlan {
-        offsets: referenced
-            .into_iter()
-            .map(|name| {
-                let offset = offsets[&name];
-                (name, offset)
-            })
-            .collect(),
+        symbols: referenced,
         register: None,
     })
 }
@@ -81,7 +75,7 @@ pub(super) fn reusable_deferred_group(
     let mut last_reference = None;
     collect_last_reference_position(
         &function.statements,
-        &anchor.offsets,
+        &anchor.symbols,
         &mut cursor,
         &mut last_reference,
     )?;
@@ -93,7 +87,7 @@ pub(super) fn reusable_deferred_group(
 
 fn collect_last_reference_position(
     statements: &[Statement],
-    offsets: &std::collections::HashMap<String, i16>,
+    symbols: &std::collections::HashSet<String>,
     cursor: &mut usize,
     last_reference: &mut Option<usize>,
 ) -> Option<()> {
@@ -103,7 +97,7 @@ fn collect_last_reference_position(
         let mut references_anchor = false;
         let mut inspect = |expression: &Expression| {
             visit_expression(expression, &mut |nested| {
-                if matches!(nested, Expression::Variable(name) if offsets.contains_key(name)) {
+                if matches!(nested, Expression::Variable(name) if symbols.contains(name)) {
                     references_anchor = true;
                 }
             });
@@ -140,15 +134,15 @@ fn collect_last_reference_position(
         }
         match statement {
             Statement::Loop { body, .. } => {
-                collect_last_reference_position(body, offsets, cursor, last_reference)?;
+                collect_last_reference_position(body, symbols, cursor, last_reference)?;
             }
             Statement::If {
                 then_body,
                 else_body,
                 ..
             } => {
-                collect_last_reference_position(then_body, offsets, cursor, last_reference)?;
-                collect_last_reference_position(else_body, offsets, cursor, last_reference)?;
+                collect_last_reference_position(then_body, symbols, cursor, last_reference)?;
+                collect_last_reference_position(else_body, symbols, cursor, last_reference)?;
             }
             _ => {}
         }
@@ -156,61 +150,50 @@ fn collect_last_reference_position(
     Some(())
 }
 
-fn source_ordered_data_offsets(
+fn full_data_symbols(
     globals: &[GlobalDeclaration],
     small_data: bool,
     inferred_array_uses_full_data_section: bool,
-) -> Option<std::collections::HashMap<String, i16>> {
-    let mut cursor = 0u32;
-    let mut offsets = std::collections::HashMap::new();
+) -> std::collections::HashSet<String> {
+    let mut symbols = std::collections::HashSet::new();
     for global in globals {
-        let Some((size, alignment)) = initialized_writable_layout(
+        if is_initialized_full_data(
             global,
             small_data,
             inferred_array_uses_full_data_section,
-        )?
-        else {
-            continue;
-        };
-        cursor = cursor.div_ceil(alignment) * alignment;
-        offsets.insert(global.name.clone(), i16::try_from(cursor).ok()?);
-        cursor = cursor.checked_add(size)?;
+        ) {
+            symbols.insert(global.name.clone());
+        }
     }
-    Some(offsets)
+    symbols
 }
 
-fn initialized_writable_layout(
+fn is_initialized_full_data(
     global: &GlobalDeclaration,
     small_data: bool,
     inferred_array_uses_full_data_section: bool,
-) -> Option<Option<(u32, u32)>> {
+) -> bool {
     if !global.is_data_definition() || global.is_const {
-        return Some(None);
+        return false;
     }
-    if global.functions_before != 0
-        || global.section.as_deref().is_some_and(|section| section != ".data")
-    {
-        return None;
+    if global.section.as_deref().is_some_and(|section| section != ".data") {
+        return false;
     }
-    let (element_size, natural_alignment) = match global.declared_type {
-        Type::Struct { size, align } => (u32::from(size), u32::from(align)),
-        other => {
-            let size = u32::from(other.width()) / 8;
-            (size, size)
-        }
+    let element_size = match global.declared_type {
+        Type::Struct { size, .. } => u32::from(size),
+        other => u32::from(other.width()) / 8,
     };
     let count = u32::from(global.array_length.unwrap_or(1));
-    let size = element_size.checked_mul(count)?;
+    let Some(size) = element_size.checked_mul(count) else {
+        return false;
+    };
     let forced_full_data = inferred_array_uses_full_data_section
         && global.array_length_inferred
         && !global.is_static;
     if small_data && size <= 8 && !forced_full_data {
-        return Some(None);
+        return false;
     }
-    let alignment = natural_alignment
-        .max(if global.array_length.is_some() { 4 } else { 1 })
-        .max(u32::from(global.attribute_alignment.unwrap_or(1)));
-    let initialized = if let Some(bytes) = &global.data_bytes {
+    if let Some(bytes) = &global.data_bytes {
         bytes.iter().any(|byte| *byte != 0)
             || !global.data_relocations.is_empty()
             || global.array_length.is_some()
@@ -223,18 +206,17 @@ fn initialized_writable_layout(
         })
     } else {
         false
-    };
-    Some(initialized.then_some((size, alignment)))
+    }
 }
 
 fn collect_expression_variables(
     expression: &Expression,
-    offsets: &std::collections::HashMap<String, i16>,
+    symbols: &std::collections::HashSet<String>,
     referenced: &mut std::collections::HashSet<String>,
 ) {
     match expression {
         Expression::Variable(name) => {
-            if offsets.contains_key(name) {
+            if symbols.contains(name) {
                 referenced.insert(name.clone());
             }
         }
@@ -252,8 +234,8 @@ fn collect_expression_variables(
             base: target,
             index: value,
         } => {
-            collect_expression_variables(target, offsets, referenced);
-            collect_expression_variables(value, offsets, referenced);
+            collect_expression_variables(target, symbols, referenced);
+            collect_expression_variables(value, symbols, referenced);
         }
         Expression::Unary { operand, .. }
         | Expression::Cast { operand, .. }
@@ -265,7 +247,7 @@ fn collect_expression_variables(
             target: operand, ..
         }
         | Expression::IndexedUpdateValue { value: operand } => {
-            collect_expression_variables(operand, offsets, referenced);
+            collect_expression_variables(operand, symbols, referenced);
         }
         Expression::Conditional {
             condition,
@@ -273,13 +255,13 @@ fn collect_expression_variables(
             when_false,
             ..
         } => {
-            collect_expression_variables(condition, offsets, referenced);
-            collect_expression_variables(when_true, offsets, referenced);
-            collect_expression_variables(when_false, offsets, referenced);
+            collect_expression_variables(condition, symbols, referenced);
+            collect_expression_variables(when_true, symbols, referenced);
+            collect_expression_variables(when_false, symbols, referenced);
         }
         Expression::Call { arguments, .. } => {
             for argument in arguments {
-                collect_expression_variables(argument, offsets, referenced);
+                collect_expression_variables(argument, symbols, referenced);
             }
         }
         _ => {}
@@ -345,8 +327,8 @@ mod tests {
     }
 
     #[test]
-    fn lays_out_source_ordered_initialized_structs() {
-        let offsets = source_ordered_data_offsets(
+    fn identifies_initialized_full_data_structs() {
+        let symbols = full_data_symbols(
             &[
                 global("a", vec![1; 12]),
                 global("b", vec![2; 12]),
@@ -354,12 +336,12 @@ mod tests {
             ],
             true,
             true,
-        )
-        .unwrap();
+        );
 
-        assert_eq!(offsets["a"], 0);
-        assert_eq!(offsets["b"], 12);
-        assert_eq!(offsets["c"], 24);
+        assert_eq!(symbols.len(), 3);
+        assert!(symbols.contains("a"));
+        assert!(symbols.contains("b"));
+        assert!(symbols.contains("c"));
     }
 
     #[test]
@@ -368,18 +350,28 @@ mod tests {
         inferred.declared_type = Type::Float;
         inferred.array_length = Some(2);
         inferred.array_length_inferred = true;
-        let offsets =
-            source_ordered_data_offsets(&[inferred.clone(), global("large", vec![2; 12])], true, true)
-                .unwrap();
+        let symbols =
+            full_data_symbols(&[inferred.clone(), global("large", vec![2; 12])], true, true);
 
-        assert_eq!(offsets["inferred"], 0);
-        assert_eq!(offsets["large"], 8);
+        assert!(symbols.contains("inferred"));
+        assert!(symbols.contains("large"));
 
         let without_full_data =
-            source_ordered_data_offsets(&[inferred, global("large", vec![2; 12])], true, false)
-                .unwrap();
-        assert!(!without_full_data.contains_key("inferred"));
-        assert_eq!(without_full_data["large"], 0);
+            full_data_symbols(&[inferred, global("large", vec![2; 12])], true, false);
+        assert!(!without_full_data.contains("inferred"));
+        assert!(without_full_data.contains("large"));
+    }
+
+    #[test]
+    fn lays_out_initialized_globals_declared_after_functions() {
+        let mut late = global("late", vec![2; 12]);
+        late.non_static_functions_before = 1;
+        late.functions_before = 2;
+        let symbols =
+            full_data_symbols(&[global("early", vec![1; 12]), late], true, true);
+
+        assert!(symbols.contains("early"));
+        assert!(symbols.contains("late"));
     }
 
     #[test]
@@ -415,9 +407,9 @@ mod tests {
         let anchor = plan(&caller, &globals, behavior, &inline_bodies)
             .expect("the expanded body references three writable data globals");
 
-        assert_eq!(anchor.offsets.len(), 3);
-        assert_eq!(anchor.offsets["direct_a"], 0);
-        assert_eq!(anchor.offsets["direct_b"], 12);
-        assert_eq!(anchor.offsets["inline_global"], 24);
+        assert_eq!(anchor.symbols.len(), 3);
+        assert!(anchor.symbols.contains("direct_a"));
+        assert!(anchor.symbols.contains("direct_b"));
+        assert!(anchor.symbols.contains("inline_global"));
     }
 }

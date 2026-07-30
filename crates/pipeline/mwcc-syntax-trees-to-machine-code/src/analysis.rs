@@ -1065,8 +1065,6 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
                 || (expression_has_call(condition)
                     && (reads_register(when_true, registers)
                         || reads_register(when_false, registers)))
-                || ((expression_has_call(when_true) || expression_has_call(when_false))
-                    && reads_register(condition, registers))
         }
         // A nested call in a later argument is scheduled before cheaper earlier
         // arguments so its result can be marshaled without being clobbered.
@@ -2405,6 +2403,25 @@ mod tests {
         assert!(!expression_reads_name_across_call(
             &expanded_inline_body,
             "unrelated",
+            false
+        ));
+    }
+
+    #[test]
+    fn a_condition_read_precedes_calls_in_its_selected_arm() {
+        let assertion = Expression::Conditional {
+            condition: Box::new(var("object")),
+            when_true: Box::new(Expression::IntegerLiteral(0)),
+            when_false: Box::new(Expression::Call {
+                name: "__assert".into(),
+                arguments: Vec::new(),
+            }),
+            origin: mwcc_syntax_trees::ConditionalOrigin::Ternary,
+        };
+
+        assert!(!expression_reads_name_across_call(
+            &assertion,
+            "object",
             false
         ));
     }

@@ -78,19 +78,17 @@ impl Generator {
             .get(name)
             .ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
         if global_type == Type::Float {
-            if let Some((base, offset)) = self
+            if let Some(base) = self
                 .data_section_anchor
                 .as_ref()
-                .and_then(|anchor| {
-                    anchor
-                        .register
-                        .zip(anchor.offsets.get(name).copied())
-                })
+                .filter(|anchor| anchor.symbols.contains(name))
+                .and_then(|anchor| anchor.register)
             {
+                self.record_data_section_symbol_displacement(name);
                 self.output.instructions.push(Instruction::LoadFloatSingle {
                     d: destination,
                     a: base,
-                    offset,
+                    offset: 0,
                 });
                 return Ok(());
             }

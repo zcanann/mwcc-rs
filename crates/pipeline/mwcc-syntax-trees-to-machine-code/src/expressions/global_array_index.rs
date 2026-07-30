@@ -467,10 +467,11 @@ impl Generator {
         {
             return Ok(false);
         }
-        if let Some((base, displacement)) = self
+        if let Some(base) = self
             .data_section_anchor
             .as_ref()
-            .and_then(|anchor| anchor.register.zip(anchor.offsets.get(name).copied()))
+            .filter(|anchor| anchor.symbols.contains(name))
+            .and_then(|anchor| anchor.register)
         {
             if normalize_unsigned_byte {
                 self.output
@@ -491,12 +492,10 @@ impl Generator {
                 a: base,
                 b: index,
             });
-            self.output.instructions.push(displacement_load(
-                pointee,
-                destination,
-                address,
-                displacement,
-            )?);
+            self.record_data_section_symbol_displacement(name);
+            self.output
+                .instructions
+                .push(displacement_load(pointee, destination, address, 0)?);
             return Ok(true);
         }
         let high = self.fresh_virtual_general();
@@ -546,10 +545,11 @@ impl Generator {
         {
             return Ok(false);
         }
-        if let Some((base, displacement)) = self
+        if let Some(base) = self
             .data_section_anchor
             .as_ref()
-            .and_then(|anchor| anchor.register.zip(anchor.offsets.get(name).copied()))
+            .filter(|anchor| anchor.symbols.contains(name))
+            .and_then(|anchor| anchor.register)
         {
             let address = if matches!(pointee, Pointee::Float | Pointee::Double) {
                 self.free_general_excluding(GENERAL_SCRATCH)?
@@ -568,12 +568,10 @@ impl Generator {
                 a: base,
                 b: address,
             });
-            self.output.instructions.push(displacement_load(
-                pointee,
-                destination,
-                address,
-                displacement,
-            )?);
+            self.record_data_section_symbol_displacement(name);
+            self.output
+                .instructions
+                .push(displacement_load(pointee, destination, address, 0)?);
             return Ok(true);
         }
         let address = if matches!(pointee, Pointee::Float | Pointee::Double) {
@@ -608,16 +606,15 @@ impl Generator {
         {
             return Ok(None);
         }
-        let Some((base, anchor_offset)) = self
+        let Some(base) = self
             .data_section_anchor
             .as_ref()
-            .and_then(|anchor| anchor.register.zip(anchor.offsets.get(name).copied()))
+            .filter(|anchor| anchor.symbols.contains(name))
+            .and_then(|anchor| anchor.register)
         else {
             return Ok(None);
         };
-        let Some(displacement) =
-            combined_data_anchor_member_displacement(anchor_offset, member_offset)
-        else {
+        let Ok(displacement) = i16::try_from(member_offset) else {
             return Ok(None);
         };
         self.output
@@ -830,26 +827,5 @@ impl Generator {
             b: index,
         });
         Ok(())
-    }
-}
-
-fn combined_data_anchor_member_displacement(anchor: i16, member: u32) -> Option<i16> {
-    i16::try_from(i64::from(anchor) + i64::from(member)).ok()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn combines_anchor_and_struct_member_displacements() {
-        assert_eq!(
-            combined_data_anchor_member_displacement(184, 4),
-            Some(188)
-        );
-        assert_eq!(
-            combined_data_anchor_member_displacement(i16::MAX, 1),
-            None
-        );
     }
 }
