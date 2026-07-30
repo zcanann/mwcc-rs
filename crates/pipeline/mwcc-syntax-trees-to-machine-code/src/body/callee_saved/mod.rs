@@ -30,6 +30,7 @@ mod fixed_rmw_split_word;
 mod fixed_rmw_word;
 mod fixed_rmw_legacy;
 mod fixed_rmw_recognize;
+mod float_list_parser;
 mod frame_call_then_branch;
 mod frame_convention;
 mod later_call_arguments;

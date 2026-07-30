@@ -1535,6 +1535,9 @@ impl Generator {
         if self.try_dual_index_call_compare_loop(function)? {
             return Ok(());
         }
+        if self.try_float_list_parser(function)? {
+            return Ok(());
+        }
         if self.try_rotated_loop(function)? {
             return Ok(());
         }
