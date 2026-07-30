@@ -17,6 +17,7 @@ impl Generator {
         if self.callee_saved.len() == 2 && self.callee_saved_float == 2 {
             normalize_saved_frame_call_arguments(&mut self.output.instructions);
         }
+        normalize_saved_literal_call_arguments(&mut self.output.instructions);
         let Some(start) = self.output.instructions.windows(3).position(|window| {
             matches!(window, [
                 Instruction::AddImmediate { d: alias, a: base, immediate },
@@ -119,6 +120,33 @@ fn normalize_saved_frame_call_arguments(instructions: &mut [Instruction]) {
     }
 }
 
+/// A retained value forwarded beside three literal arguments is likewise a
+/// materialization. The complete ABI argument packet distinguishes it from an
+/// address-preservation copy or a control-flow merge.
+fn normalize_saved_literal_call_arguments(instructions: &mut [Instruction]) {
+    for index in 0..instructions.len().saturating_sub(4) {
+        let source = match &instructions[index..index + 5] {
+            [
+                Instruction::Or {
+                    a: 3,
+                    s: source,
+                    b: duplicate,
+                },
+                Instruction::AddImmediate { d: 4, a: 0, .. },
+                Instruction::AddImmediate { d: 5, a: 0, .. },
+                Instruction::AddImmediate { d: 6, a: 0, .. },
+                Instruction::BranchAndLink { .. },
+            ] if source == duplicate && (14..=31).contains(source) => *source,
+            _ => continue,
+        };
+        instructions[index] = Instruction::AddImmediate {
+            d: 3,
+            a: source,
+            immediate: 0,
+        };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +166,42 @@ mod tests {
         ];
 
         normalize_saved_frame_call_arguments(&mut instructions);
+
+        assert!(matches!(
+            instructions[0],
+            Instruction::AddImmediate {
+                d: 3,
+                a: 31,
+                immediate: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn materializes_a_saved_object_beside_three_literals() {
+        let mut instructions = [
+            Instruction::move_register(3, 31),
+            Instruction::AddImmediate {
+                d: 4,
+                a: 0,
+                immediate: 279,
+            },
+            Instruction::AddImmediate {
+                d: 5,
+                a: 0,
+                immediate: 127,
+            },
+            Instruction::AddImmediate {
+                d: 6,
+                a: 0,
+                immediate: 64,
+            },
+            Instruction::BranchAndLink {
+                target: "consume".into(),
+            },
+        ];
+
+        normalize_saved_literal_call_arguments(&mut instructions);
 
         assert!(matches!(
             instructions[0],
