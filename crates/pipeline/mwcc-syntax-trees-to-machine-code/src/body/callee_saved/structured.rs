@@ -1809,6 +1809,14 @@ impl Generator {
         if let Some(plan) = initializer_live_in {
             self.emit_initializer_live_in(plan);
         }
+        // Saved locals are partitioned by register class for home allocation,
+        // but their initializers still obey source declaration order. Prime an
+        // earlier float local before an eager GPR local whose initializer reads
+        // it (`float f = ...; int i = f;`). Without this bridge the GPR pass
+        // mistakes `f` for a global because the FPR pass has not installed its
+        // location yet.
+        let mut early_saved_float_homes = std::collections::HashMap::new();
+        let mut early_ephemeral_float_homes = std::collections::HashMap::new();
         let mut home_index = 0;
         let mut deferred_round_up_base = None;
         let mut dense_eager_consumed_statements = 0usize;
@@ -1823,6 +1831,94 @@ impl Generator {
                 );
             }
             let initializer = local.initializer.as_ref().expect("partitioned as eager");
+            if complement_product_pair.is_none() {
+                for dependency in &saved_float_locals {
+                    if self.locations.contains_key(&dependency.name)
+                        || !crate::analysis::expression_reads_name(
+                            initializer,
+                            &dependency.name,
+                        )
+                    {
+                        continue;
+                    }
+                    let dependency_initializer = dependency
+                        .initializer
+                        .as_ref()
+                        .ok_or_else(|| {
+                            Diagnostic::error("a saved float dependency has no initializer")
+                        })?;
+                    let group = saved_float_plan.group(&dependency.name);
+                    let preferred = if saved_float_parameters.is_empty() {
+                        saved_float_home_preference(
+                            group,
+                            saved_float_plan.group_count,
+                            compact_aggregate_scratch_pair,
+                        )
+                    } else {
+                        31u8.saturating_sub(
+                            u8::try_from(saved_float_parameters.len() + group)
+                                .unwrap_or(17)
+                                .min(17),
+                        )
+                    };
+                    let home = self.fresh_virtual_float_preferring(preferred);
+                    self.evaluate(
+                        dependency_initializer,
+                        dependency.declared_type,
+                        home,
+                    )?;
+                    self.locations.insert(
+                        dependency.name.clone(),
+                        Location {
+                            class: ValueClass::Float,
+                            register: home,
+                            signed: true,
+                            width: dependency.declared_type.width(),
+                            pointee: None,
+                            stride: None,
+                        },
+                    );
+                    early_saved_float_homes.insert(dependency.name.clone(), home);
+                }
+                for dependency in &ephemeral_locals {
+                    if class_of(dependency.declared_type).ok() != Some(ValueClass::Float)
+                        || self.locations.contains_key(&dependency.name)
+                        || !crate::analysis::expression_reads_name(
+                            initializer,
+                            &dependency.name,
+                        )
+                    {
+                        continue;
+                    }
+                    let dependency_initializer = dependency
+                        .initializer
+                        .as_ref()
+                        .ok_or_else(|| {
+                            Diagnostic::error(
+                                "an ephemeral float dependency has no initializer",
+                            )
+                        })?;
+                    let home = self.fresh_virtual_float();
+                    self.evaluate(
+                        dependency_initializer,
+                        dependency.declared_type,
+                        home,
+                    )?;
+                    self.locations.insert(
+                        dependency.name.clone(),
+                        Location {
+                            class: ValueClass::Float,
+                            register: home,
+                            signed: true,
+                            width: dependency.declared_type.width(),
+                            pointee: None,
+                            stride: None,
+                        },
+                    );
+                    early_ephemeral_float_homes
+                        .insert(dependency.name.clone(), home);
+                }
+            }
             let initializer_start = self.output.instructions.len();
             let mut location_register = home;
             let is_round_up_base = dense_eager_round_up
@@ -1994,6 +2090,9 @@ impl Generator {
         let saved_float_homes: Vec<_> = saved_float_locals
             .iter()
             .map(|local| {
+                if let Some(&home) = early_saved_float_homes.get(&local.name) {
+                    return home;
+                }
                 let group = saved_float_plan.group(&local.name);
                 let preferred = if saved_float_parameters.is_empty() {
                     saved_float_home_preference(
@@ -2022,8 +2121,10 @@ impl Generator {
             self.emit_structured_complement_product_pair(pair, destinations)?;
         } else {
             for (local, &home) in saved_float_locals.iter().zip(&saved_float_homes) {
-                if let Some(initializer) = &local.initializer {
-                    self.evaluate(initializer, local.declared_type, home)?;
+                if !early_saved_float_homes.contains_key(&local.name) {
+                    if let Some(initializer) = &local.initializer {
+                        self.evaluate(initializer, local.declared_type, home)?;
+                    }
                 }
             }
         }
@@ -2049,6 +2150,9 @@ impl Generator {
         // alias after copying the value to a saved home (`mr r31,r3; lwz ...,r3`)
         // and switches subsequent body uses to the home only after declarations.
         for local in &ephemeral_locals {
+            if early_ephemeral_float_homes.contains_key(&local.name) {
+                continue;
+            }
             let class = class_of(local.declared_type).expect("eligibility checked");
             let transient_float_call_result = class == ValueClass::Float
                 && transient_condition_call_result_callee(

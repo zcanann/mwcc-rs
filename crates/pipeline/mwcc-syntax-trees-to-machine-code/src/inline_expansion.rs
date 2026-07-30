@@ -560,13 +560,6 @@ impl InlineBodySet {
         &self,
         function: &Function,
     ) -> Option<ExpandedCalls> {
-        // The early-return backend owns local initialization and its join
-        // schedule before generic inline composition. Keep those callers on
-        // their existing out-of-line path until that owner accepts composed
-        // statement bodies.
-        if statements_contain_return(&function.statements) {
-            return None;
-        }
         let mut calls = HashMap::new();
         collect_function_calls(function, &mut calls);
         if !calls
@@ -1251,34 +1244,6 @@ fn is_empty_padding_loop(statement: &Statement) -> bool {
             body,
         } if body.is_empty()
     )
-}
-
-fn statements_contain_return(statements: &[Statement]) -> bool {
-    fn arm_contains_return(arm: &ArmBody) -> bool {
-        match arm {
-            ArmBody::Return(_) => true,
-            ArmBody::Statements(statements) => statements_contain_return(statements),
-        }
-    }
-
-    statements.iter().any(|statement| match statement {
-        Statement::Return(_) => true,
-        Statement::If {
-            then_body,
-            else_body,
-            ..
-        } => statements_contain_return(then_body) || statements_contain_return(else_body),
-        Statement::Loop { body, .. } => statements_contain_return(body),
-        Statement::Switch {
-            arms,
-            default,
-            ..
-        } => {
-            arms.iter().any(|arm| arm_contains_return(&arm.body))
-                || default.as_ref().is_some_and(arm_contains_return)
-        }
-        _ => false,
-    })
 }
 
 /// Move top-level embedded assembly blocks into the ordered statement tree used
@@ -3080,7 +3045,7 @@ mod tests {
         assert!(!calls.contains_key("guarded"));
         assert!(bodies
             .expand_repeatable_guarded_calls(&early_return)
-            .is_none());
+            .is_some());
     }
 
     #[test]
