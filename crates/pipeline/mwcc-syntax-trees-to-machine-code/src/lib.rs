@@ -751,6 +751,7 @@ fn lower_function_body(
             );
         }
         branch_cleanup::collapse_forwarding_branch_blocks(&mut generator);
+        branch_cleanup::remove_fallthrough_branches(&mut generator);
     }
     collapse_conditional_skip_to_backward_branch(&mut generator);
     // Peephole: a conditional forward branch whose target is the function's TERMINAL

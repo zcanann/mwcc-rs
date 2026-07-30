@@ -69,6 +69,26 @@ pub(crate) fn collapse_forwarding_branch_blocks(generator: &mut Generator) {
     }
 }
 
+/// Remove an unconditional branch to the instruction that already follows it.
+///
+/// Labels and incoming branches are retargeted to that same successor by the
+/// common removal helper, so the instruction has no control-flow effect.
+pub(crate) fn remove_fallthrough_branches(generator: &mut Generator) {
+    while let Some(index) = fallthrough_branch(&generator.output.instructions) {
+        remove_instruction_retargeting_to_next(generator, index);
+    }
+}
+
+fn fallthrough_branch(instructions: &[Instruction]) -> Option<usize> {
+    instructions
+        .iter()
+        .enumerate()
+        .find_map(|(index, instruction)| {
+            matches!(instruction, Instruction::Branch { target } if *target == index + 1)
+                .then_some(index)
+        })
+}
+
 fn forwarding_branch_block(instructions: &[Instruction]) -> Option<(usize, usize)> {
     (1..instructions.len()).find_map(|index| {
         let Instruction::Branch { target: landing } = instructions[index] else {
@@ -85,7 +105,9 @@ fn forwarding_branch_block(instructions: &[Instruction]) -> Option<(usize, usize
 
 #[cfg(test)]
 mod tests {
-    use super::{forwarding_branch_block, thread_conditional_branch_targets};
+    use super::{
+        fallthrough_branch, forwarding_branch_block, thread_conditional_branch_targets,
+    };
     use mwcc_machine_code::Instruction;
 
     #[test]
@@ -117,6 +139,17 @@ mod tests {
         ];
 
         assert_eq!(forwarding_branch_block(&instructions), Some((2, 3)));
+    }
+
+    #[test]
+    fn recognizes_an_unconditional_branch_to_fallthrough() {
+        let instructions = [
+            Instruction::load_immediate(3, 0),
+            Instruction::Branch { target: 2 },
+            Instruction::Branch { target: 0 },
+        ];
+
+        assert_eq!(fallthrough_branch(&instructions), Some(1));
     }
 
     #[test]
