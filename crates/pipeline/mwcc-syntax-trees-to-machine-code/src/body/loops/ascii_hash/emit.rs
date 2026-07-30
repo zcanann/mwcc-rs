@@ -5,6 +5,7 @@ impl Generator {
         &mut self,
         byte: u8,
         accumulator: u8,
+        folded_byte: u8,
         after_shift: Option<Instruction>,
         after_and: Option<Instruction>,
     ) {
@@ -48,13 +49,13 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::ClearLeftImmediate {
-                a: byte,
+                a: folded_byte,
                 s: byte,
                 clear: 24,
             });
         self.output.instructions.push(Instruction::Add {
             d: accumulator,
-            a: byte,
+            a: folded_byte,
             b: 0,
         });
     }
@@ -93,6 +94,7 @@ impl Generator {
                 self.emit_ascii_hash_iteration(
                     byte,
                     accumulator,
+                    byte,
                     Some(Instruction::AddImmediate {
                         d: pointer,
                         a: pointer,
@@ -146,6 +148,7 @@ impl Generator {
                 self.emit_ascii_hash_iteration(
                     byte,
                     accumulator,
+                    byte,
                     Some(Instruction::AddImmediate {
                         d: index,
                         a: index,
@@ -201,6 +204,7 @@ impl Generator {
                 self.bind_label(iteration);
                 self.emit_ascii_hash_iteration(
                     byte,
+                    seed,
                     seed,
                     Some(Instruction::AddImmediate {
                         d: pointer,
