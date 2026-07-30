@@ -64,7 +64,7 @@ fn nested_queue_result_plan(
     instructions: &[Instruction],
     relocations: &[mwcc_machine_code::Relocation],
 ) -> Option<NestedQueueResultPlan> {
-    for queue_call in 1..instructions.len().saturating_sub(10) {
+    for queue_call in 1..instructions.len().saturating_sub(8) {
         if !matches!(
             &instructions[queue_call],
             Instruction::BranchAndLink { target } if target == "__DVDPopWaitingQueue"
@@ -79,19 +79,13 @@ fn nested_queue_result_plan(
                 d: 0,
                 a: 3,
                 immediate: 0,
-            }, Instruction::Or { a: 3, s: 0, b: 0 }, Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 }, Instruction::BranchConditionalForward { .. }, Instruction::LoadWord { d: 0, .. }, Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 }, Instruction::BranchConditionalForward { .. }, Instruction::LoadWord { d: 3, .. }, Instruction::Or {
-                a: 4,
-                s: callback,
-                b: callback_copy,
-            }, Instruction::BranchAndLink { target }],
-        ) = instructions.get(queue_call + 1..queue_call + 11)
+            }, Instruction::Or { a: 3, s: 0, b: 0 }, Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 }, Instruction::BranchConditionalForward { .. }, Instruction::LoadWord { d: 0, .. }, Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 }, Instruction::BranchConditionalForward { .. }, Instruction::LoadWord { d: 3, .. }],
+        ) = instructions.get(queue_call + 1..queue_call + 9)
         else {
             continue;
         };
-        if callback != callback_copy
-            || target != "DVDCancelAsync"
-            || relocation_target(relocations, queue_call + 5, RelocationKind::EmbSda21)
-                != Some("executing")
+        if relocation_target(relocations, queue_call + 5, RelocationKind::EmbSda21)
+            != Some("executing")
             || relocation_target(relocations, queue_call + 8, RelocationKind::EmbSda21)
                 != Some("executing")
         {

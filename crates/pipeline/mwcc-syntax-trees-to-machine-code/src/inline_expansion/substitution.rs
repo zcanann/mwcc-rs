@@ -298,13 +298,26 @@ pub(super) fn substitute_expression(
                 .map(|argument| substitute_expression(argument, replacements))
                 .collect(),
         },
-        Expression::Call { name, arguments } => Expression::Call {
-            name: name.clone(),
-            arguments: arguments
+        Expression::Call { name, arguments } => {
+            let arguments = arguments
                 .iter()
                 .map(|argument| substitute_expression(argument, replacements))
-                .collect(),
-        },
+                .collect();
+            match replacements.get(name) {
+                Some(Expression::Variable(replacement)) => Expression::Call {
+                    name: replacement.clone(),
+                    arguments,
+                },
+                Some(replacement) => Expression::CallThrough {
+                    target: Box::new(replacement.clone()),
+                    arguments,
+                },
+                None => Expression::Call {
+                    name: name.clone(),
+                    arguments,
+                },
+            }
+        }
         Expression::ConstructedNew {
             allocation,
             allocation_size,
@@ -403,6 +416,28 @@ mod tests {
         assert!(matches!(
             substitute_expression(&expression, &replacements),
             Expression::IntegerLiteral(0)
+        ));
+    }
+
+    #[test]
+    fn substitutes_an_inlined_call_designator() {
+        let expression = Expression::Call {
+            name: "callback".into(),
+            arguments: vec![Expression::Variable("value".into())],
+        };
+        let replacements = HashMap::from([
+            (
+                "callback".into(),
+                Expression::Variable("concrete_callback".into()),
+            ),
+            ("value".into(), Expression::IntegerLiteral(7)),
+        ]);
+
+        assert!(matches!(
+            substitute_expression(&expression, &replacements),
+            Expression::Call { name, arguments }
+                if name == "concrete_callback"
+                    && matches!(arguments.as_slice(), [Expression::IntegerLiteral(7)])
         ));
     }
 
