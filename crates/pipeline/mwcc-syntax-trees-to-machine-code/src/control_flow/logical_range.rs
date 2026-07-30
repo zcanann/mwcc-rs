@@ -11,6 +11,130 @@ struct EqualityRange<'a> {
 }
 
 impl Generator {
+    /// Emit a structured OR of equalities as ordered singleton/range tests.
+    ///
+    /// The returned vectors contain branches that enter the guarded body and
+    /// skip it, respectively.  The caller owns their final targets because it
+    /// also owns the structured body.  Keeping this here lets every structured
+    /// CFG owner share the same equality grouping policy as early returns.
+    pub(crate) fn try_emit_logical_equality_alternative_branches(
+        &mut self,
+        condition: &Expression,
+    ) -> Compilation<Option<(Vec<usize>, Vec<usize>)>> {
+        if self.behavior.logical_or_value_style != mwcc_versions::LogicalOrValueStyle::TrueFirst {
+            return Ok(None);
+        }
+        let Some((name, groups)) = equality_alternative_groups(condition) else {
+            return Ok(None);
+        };
+        // A run of unrelated singleton comparisons is already represented
+        // faithfully by the ordinary short-circuit CFG.  Take ownership only
+        // when grouping removes at least one comparison.
+        if groups.iter().all(|(minimum, maximum)| minimum == maximum) {
+            return Ok(None);
+        }
+        let Some(location) = self.locations.get(name) else {
+            return Ok(None);
+        };
+        if location.class != crate::generator::ValueClass::General || location.width != 32 {
+            return Ok(None);
+        }
+        let register = location.register;
+        let signed = location.signed;
+
+        enum Test {
+            SignedSingleton(i16),
+            UnsignedSingleton(u16),
+            Range { immediate: i16, span: u16 },
+        }
+        let mut tests = Vec::with_capacity(groups.len());
+        for (minimum, maximum) in groups {
+            let span = maximum - minimum;
+            if span == 0 {
+                if signed {
+                    let Ok(immediate) = i16::try_from(minimum) else {
+                        return Ok(None);
+                    };
+                    tests.push(Test::SignedSingleton(immediate));
+                } else {
+                    let Ok(immediate) = u16::try_from(minimum) else {
+                        return Ok(None);
+                    };
+                    tests.push(Test::UnsignedSingleton(immediate));
+                }
+            } else {
+                let Some(immediate) = minimum
+                    .checked_neg()
+                    .and_then(|value| i16::try_from(value).ok())
+                else {
+                    return Ok(None);
+                };
+                let Ok(span) = u16::try_from(span) else {
+                    return Ok(None);
+                };
+                tests.push(Test::Range { immediate, span });
+            }
+        }
+
+        let mut enter_body = Vec::new();
+        let mut skip_body = Vec::new();
+        let last = tests.len() - 1;
+        for (index, test) in tests.into_iter().enumerate() {
+            let (true_options, false_options, condition_bit) = match test {
+                Test::SignedSingleton(immediate) => {
+                    self.output
+                        .instructions
+                        .push(Instruction::CompareWordImmediate {
+                            a: register,
+                            immediate,
+                        });
+                    (12, 4, 2)
+                }
+                Test::UnsignedSingleton(immediate) => {
+                    self.output
+                        .instructions
+                        .push(Instruction::CompareLogicalWordImmediate {
+                            a: register,
+                            immediate,
+                        });
+                    (12, 4, 2)
+                }
+                Test::Range { immediate, span } => {
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: GENERAL_SCRATCH,
+                        a: register,
+                        immediate,
+                    });
+                    self.output
+                        .instructions
+                        .push(Instruction::CompareLogicalWordImmediate {
+                            a: GENERAL_SCRATCH,
+                            immediate: span,
+                        });
+                    (4, 12, 1)
+                }
+            };
+            let branch = self.output.instructions.len();
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options: if index == last {
+                        false_options
+                    } else {
+                        true_options
+                    },
+                    condition_bit,
+                    target: 0,
+                });
+            if index == last {
+                skip_body.push(branch);
+            } else {
+                enter_body.push(branch);
+            }
+        }
+        Ok(Some((enter_body, skip_body)))
+    }
+
     /// Emit an equality-alternative chain whose true path immediately returns
     /// one integer value. Adjacent alternatives are coalesced into unsigned
     /// ranges; earlier groups branch to one shared return block and the final
@@ -265,7 +389,15 @@ fn equality_alternatives(condition: &Expression) -> Option<(&str, Vec<i64>)> {
         .then_some((name?, constants))
 }
 
+fn equality_alternative_groups(condition: &Expression) -> Option<(&str, Vec<(i64, i64)>)> {
+    let (name, constants) = equality_alternatives(condition)?;
+    Some((name, consecutive_groups(&constants)?))
+}
+
 fn consecutive_groups(constants: &[i64]) -> Option<Vec<(i64, i64)>> {
+    let mut constants = constants.to_vec();
+    constants.sort_unstable();
+    constants.dedup();
     let (&first, rest) = constants.split_first()?;
     let mut groups = vec![(first, first)];
     for &value in rest {
@@ -327,6 +459,14 @@ mod tests {
         assert_eq!(
             consecutive_groups(&[1, 4, 5, 14]),
             Some(vec![(1, 1), (4, 5), (14, 14)])
+        );
+    }
+
+    #[test]
+    fn sorts_source_alternatives_before_grouping_adjacent_values() {
+        assert_eq!(
+            consecutive_groups(&[0, -1, 10]),
+            Some(vec![(-1, 0), (10, 10)])
         );
     }
 }

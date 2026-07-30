@@ -200,8 +200,24 @@ fn flow(
             Statement::Goto(label) => {
                 if seen_labels.contains(label) {
                     // A backward edge can revisit earlier reads after this call.
-                    // Conservatively preserve the candidate rather than under-save.
-                    read_after |= prior_call;
+                    // Preserve the candidate only when the revisited region
+                    // actually reads it.  Lowered loops otherwise make every
+                    // already-consumed local appear live across their calls.
+                    let revisited_reads = statements[..statement_index]
+                        .iter()
+                        .rposition(
+                            |statement| matches!(statement, Statement::Label(name) if name == label),
+                        )
+                        .map(|label_index| {
+                            statements[label_index + 1..statement_index]
+                                .iter()
+                                .any(|statement| statement_reads_name(statement, name))
+                        })
+                        // A label owned by an enclosing block cannot be
+                        // inspected from this recursive slice; retain the old
+                        // conservative answer in that case.
+                        .unwrap_or(true);
+                    read_after |= prior_call && revisited_reads;
                 } else {
                     pending_gotos
                         .entry(label.clone())
@@ -288,6 +304,74 @@ fn flow(
         read_after_call: read_after,
         call_on_fallthrough: prior_call,
         falls_through,
+    }
+}
+
+fn statement_reads_name(statement: &Statement, name: &str) -> bool {
+    fn arm_reads_name(body: &mwcc_syntax_trees::ArmBody, name: &str) -> bool {
+        match body {
+            mwcc_syntax_trees::ArmBody::Return(expression) => {
+                expression_reads_name(expression, name)
+            }
+            mwcc_syntax_trees::ArmBody::Statements(statements) => statements
+                .iter()
+                .any(|statement| statement_reads_name(statement, name)),
+        }
+    }
+
+    match statement {
+        // Embedded assembly can consume compiler locals without an ordinary
+        // expression node. Keep backward-edge liveness conservative around it.
+        Statement::InlineAsm(_) => true,
+        Statement::Break
+        | Statement::Continue
+        | Statement::Goto(_)
+        | Statement::Label(_)
+        | Statement::Return(None) => false,
+        Statement::Store { target, value } => {
+            expression_reads_name(target, name) || expression_reads_name(value, name)
+        }
+        Statement::Assign { value, .. }
+        | Statement::Expression(value)
+        | Statement::Return(Some(value)) => expression_reads_name(value, name),
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expression_reads_name(condition, name)
+                || then_body
+                    .iter()
+                    .chain(else_body)
+                    .any(|statement| statement_reads_name(statement, name))
+        }
+        Statement::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            expression_reads_name(scrutinee, name)
+                || arms.iter().any(|arm| arm_reads_name(&arm.body, name))
+                || default
+                    .as_ref()
+                    .is_some_and(|body| arm_reads_name(body, name))
+        }
+        Statement::Loop {
+            initializer,
+            condition,
+            step,
+            body,
+            ..
+        } => {
+            initializer
+                .iter()
+                .chain(condition)
+                .chain(step)
+                .any(|expression| expression_reads_name(expression, name))
+                || body
+                    .iter()
+                    .any(|statement| statement_reads_name(statement, name))
+        }
     }
 }
 
@@ -452,6 +536,30 @@ mod tests {
             Statement::Expression(Expression::Variable("value".into())),
         ];
         assert!(!read_after_possible_call(&statements, "value", false).read_after_call);
+    }
+
+    #[test]
+    fn a_backward_edge_does_not_resurrect_an_unread_consumed_local() {
+        let statements = vec![
+            Statement::Expression(Expression::Variable("result".into())),
+            Statement::Label("loop".into()),
+            call("sleep"),
+            Statement::Goto("loop".into()),
+        ];
+
+        assert!(!read_after_possible_call(&statements, "result", false).read_after_call);
+    }
+
+    #[test]
+    fn a_backward_edge_preserves_a_value_read_on_the_next_iteration() {
+        let statements = vec![
+            Statement::Label("loop".into()),
+            Statement::Expression(Expression::Variable("value".into())),
+            call("sleep"),
+            Statement::Goto("loop".into()),
+        ];
+
+        assert!(read_after_possible_call(&statements, "value", false).read_after_call);
     }
 
     #[test]

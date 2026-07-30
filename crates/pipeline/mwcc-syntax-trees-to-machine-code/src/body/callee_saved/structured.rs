@@ -15,7 +15,8 @@ use super::structured_aggregate_slots::{
     plan_terminal_one_word_aggregate_call_copies,
 };
 use super::structured_call_schedule::{
-    terminal_offset_call_argument_register, transient_call_argument_register,
+    direct_callback_wait_home_preference, terminal_offset_call_argument_register,
+    transient_call_argument_register,
 };
 use super::structured_constant_versions::retain_repeated_store_constant_across_call;
 use super::structured_condition_schedule::thread_forward_unconditional_branch_chains;
@@ -1153,6 +1154,14 @@ impl Generator {
                     // value node. The retained values keep source creation
                     // order from the bottom of the saved-register range.
                     self.fresh_virtual_general_preferring((first_saved + home_index) as u8)
+                } else if let Some(preferred) = direct_callback_wait_home_preference(
+                    function,
+                    &saved_parameters,
+                    &deferred_saved_locals,
+                    first_saved,
+                    home_index,
+                ) {
+                    self.fresh_virtual_general_preferring(preferred)
                 } else if with_frame_array && eager_saved_locals.is_empty() && count <= 18 {
                     let preferred = if dense_entry_prefix && deferred_home_plan.group_count == 1 {
                         if home_index < saved_parameters.len() {
@@ -3087,6 +3096,16 @@ impl Generator {
                     self.preload_condition_literal_reused_in_body(condition, then_body);
                     let condition_result = (|| {
                         self.preload_condition_global_cache(condition)?;
+                        if entry_alias.is_none() {
+                            if let Some((enter_body, skip_body)) = self
+                                .try_emit_logical_equality_alternative_branches(condition)?
+                            {
+                                return Ok(ConditionBranches {
+                                    skip_body,
+                                    enter_body,
+                                });
+                            }
+                        }
                         let or_plan = logical_or_plan(condition);
                         if let Some(or_plan) = or_plan {
                             let mut skip_body = Vec::new();

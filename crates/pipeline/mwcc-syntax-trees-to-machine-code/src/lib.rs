@@ -748,7 +748,7 @@ fn lower_function_body(
         }
         branch_cleanup::collapse_forwarding_branch_blocks(&mut generator);
     }
-    collapse_conditional_skip_to_backward_branch(&mut generator);
+    collapse_conditional_skip_to_branch(&mut generator);
     // Peephole: a conditional forward branch whose target is the function's TERMINAL
     // `blr` is byte-identical to `b<cc>lr` — mwcc always emits the branch-to-link form
     // (`if(c) *p=x; return a;` -> `cmpwi;blelr;stw;blr`, never `ble .Lend`). Collapse it
@@ -953,6 +953,7 @@ fn lower_function_body(
     generator.schedule_saved_base_call_argument();
     generator.finalize_exclusive_arm_copy_encodings();
     generator.schedule_linkage_first_function_address();
+    generator.schedule_direct_callback_wait_entry(function);
     generator.schedule_callback_publication_call();
     generator.schedule_retained_eager_entry_argument();
     generator.schedule_retained_split_member_guard();
@@ -1706,18 +1707,19 @@ fn collapse_forward_branch_to_terminal_blr(instructions: &mut [Instruction]) {
     }
 }
 
-/// `b<cc> next; b loop; next:` is the unoptimized spelling of an inverted
-/// conditional backedge. MWCC emits the single `b<!cc> loop`; collapse only
-/// the exact one-instruction skip shape and remap all instruction-index owners.
-fn collapse_conditional_skip_to_backward_branch(generator: &mut Generator) {
+/// `b<cc> next; b target; next:` is the unoptimized spelling of one inverted
+/// conditional branch. MWCC emits the single `b<!cc> target` for both backward
+/// loop edges and forward structured exits. Collapse only the exact
+/// one-instruction skip shape and remap all instruction-index owners.
+fn collapse_conditional_skip_to_branch(generator: &mut Generator) {
     while let Some(permutation) =
-        collapse_conditional_skip_to_backward_branch_once(&mut generator.output.instructions)
+        collapse_conditional_skip_to_branch_once(&mut generator.output.instructions)
     {
         remap_instruction_indices(generator, &permutation);
     }
 }
 
-fn collapse_conditional_skip_to_backward_branch_once(
+fn collapse_conditional_skip_to_branch_once(
     instructions: &mut Vec<Instruction>,
 ) -> Option<Vec<usize>> {
         let index = (0..instructions.len().saturating_sub(1)).find(
@@ -1729,9 +1731,8 @@ fn collapse_conditional_skip_to_backward_branch_once(
                     ),
                     (
                         Instruction::BranchConditionalForward { target, .. },
-                        Instruction::Branch { target: backward },
+                        Instruction::Branch { .. },
                     ) if *target == index + 2
-                        && *backward < index
                         && !instructions.iter().enumerate().any(
                             |(owner, instruction)| owner != index
                                 && matches!(
@@ -1892,7 +1893,7 @@ mod instruction_index_tests {
             Instruction::BranchToLinkRegister,
         ];
 
-        let permutation = collapse_conditional_skip_to_backward_branch_once(&mut instructions)
+        let permutation = collapse_conditional_skip_to_branch_once(&mut instructions)
             .expect("skip around a backward branch should collapse");
         remap_branch_targets(&mut instructions, &permutation);
 
@@ -1903,6 +1904,39 @@ mod instruction_index_tests {
                 options: 4,
                 condition_bit: 2,
                 target: 1,
+            }
+        ));
+    }
+
+    #[test]
+    fn a_conditional_skip_and_forward_exit_collapse_to_one_inverted_branch() {
+        let mut instructions = vec![
+            Instruction::CompareWordImmediate {
+                a: 3,
+                immediate: 10,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 3,
+            },
+            Instruction::Branch { target: 5 },
+            Instruction::load_immediate(3, 0),
+            Instruction::Branch { target: 0 },
+            Instruction::BranchToLinkRegister,
+        ];
+
+        let permutation = collapse_conditional_skip_to_branch_once(&mut instructions)
+            .expect("skip around a forward exit should collapse");
+        remap_branch_targets(&mut instructions, &permutation);
+
+        assert_eq!(instructions.len(), 5);
+        assert!(matches!(
+            instructions[1],
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 4,
             }
         ));
     }

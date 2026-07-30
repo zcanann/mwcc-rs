@@ -1,8 +1,75 @@
 //! Final-use call-argument encodings in allocator-owned structured bodies.
 
 use super::structured_locals::body_uses_local;
+use mwcc_syntax_trees::Parameter;
 #[allow(unused_imports)]
 use super::*;
+
+fn direct_callback_wait_entry(function: &Function) -> Option<(&str, &str, &str)> {
+    let [parameter] = function.parameters.as_slice() else {
+        return None;
+    };
+    if !matches!(parameter.parameter_type, Type::StructPointer { .. })
+        || constant_value(function.return_expression.as_ref()?) != Some(0)
+    {
+        return None;
+    }
+    let Statement::Assign {
+        name: result,
+        value:
+            Expression::Call {
+                name: starter,
+                arguments,
+            },
+    } = function.statements.first()?
+    else {
+        return None;
+    };
+    let [receiver, Expression::Variable(callback)] = arguments.as_slice() else {
+        return None;
+    };
+    fn receiver_name(expression: &Expression) -> Option<&str> {
+        match expression {
+            Expression::Variable(name) => Some(name),
+            Expression::Cast { operand, .. } => receiver_name(operand),
+            _ => None,
+        }
+    }
+    if receiver_name(receiver) != Some(parameter.name.as_str()) {
+        return None;
+    }
+    let rejects_zero = function.statements.get(1).is_some_and(|statement| {
+        matches!(statement, Statement::If {
+            condition: Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left,
+                right,
+            },
+            then_body,
+            else_body,
+        } if else_body.is_empty()
+            && matches!(left.as_ref(), Expression::Variable(name) if name == result)
+            && constant_value(right) == Some(0)
+            && matches!(then_body.as_slice(), [Statement::Return(Some(value))]
+                if constant_value(value) == Some(-1)))
+    });
+    rejects_zero.then_some((parameter.name.as_str(), callback.as_str(), starter.as_str()))
+}
+
+pub(super) fn direct_callback_wait_home_preference(
+    function: &Function,
+    saved_parameters: &[&Parameter],
+    deferred_saved_locals: &[&LocalDeclaration],
+    first_saved: usize,
+    home_index: usize,
+) -> Option<u8> {
+    (saved_parameters.len() == 1
+        && deferred_saved_locals.len() == 1
+        && direct_callback_wait_entry(function)
+            .is_some_and(|(receiver, _, _)| receiver == saved_parameters[0].name))
+    .then(|| u8::try_from(first_saved + home_index).ok())
+    .flatten()
+}
 
 pub(super) fn transient_call_argument_register(
     statements: &[Statement],
@@ -106,6 +173,77 @@ fn expression_call_argument_index(expression: &Expression, candidate: &str) -> O
 }
 
 impl Generator {
+    /// Schedule a direct async starter's receiver and callback address through
+    /// the linkage latency slots. The receiver remains live in its lower saved
+    /// home while the interrupt token introduced after the call takes the next
+    /// home; r3 still contains the entry receiver, so its reload is dead.
+    pub(crate) fn schedule_direct_callback_wait_entry(&mut self, function: &Function) {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst
+            || direct_callback_wait_entry(function).is_none()
+        {
+            return;
+        }
+        if !matches!(
+            self.output.instructions.get(0..10),
+            Some([
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 4,
+                },
+                Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -24,
+                },
+                Instruction::StoreWord {
+                    s: 31,
+                    a: 1,
+                    offset: 20,
+                },
+                Instruction::StoreWord {
+                    s: 30,
+                    a: 1,
+                    offset: 16,
+                },
+                Instruction::AddImmediate {
+                    d: 30,
+                    a: 3,
+                    immediate: 0,
+                },
+                Instruction::Or { a: 3, s: 30, b: 30 },
+                Instruction::AddImmediateShifted {
+                    d: 4,
+                    a: 0,
+                    immediate: 0,
+                },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: 0,
+                },
+                Instruction::BranchAndLink { .. },
+            ])
+        ) {
+            return;
+        }
+
+        crate::remove_instruction_retargeting_to_next(self, 6);
+        crate::move_instruction_before_retargeting(self, 6, 1);
+        crate::move_instruction_before_retargeting(self, 7, 3);
+        if matches!(
+            self.output.instructions.get(14),
+            Some(Instruction::AddImmediate {
+                d: 31,
+                a: 3,
+                immediate: 0,
+            })
+        ) {
+            self.output.instructions[14] = Instruction::move_register(31, 3);
+        }
+    }
+
     /// Hoist the saved-LR load into the issue slot before a final move from a
     /// callee-saved return home. The load is independent of the result move;
     /// MWCC uses that latency schedule before restoring the saved GPR range.
