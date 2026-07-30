@@ -215,6 +215,10 @@ pub(crate) enum LegacyCalleeSavedFrameLayout {
     /// Build 163 reserves one optimizer lane even when the value stays in a
     /// saved register.
     RetainDeferredLocalLane,
+    /// A global-member address first materialized inside a guarded arm remains
+    /// live across a later call. Build 163 keeps the same optimizer lane as a
+    /// deferred local, without enabling deferred-local issue-order schedules.
+    RetainDeferredGlobalMemberAddressLane,
     ReserveForwardedParameterLane,
     /// Source-owned stack storage already represents all retained optimizer
     /// values, including eliminated inline bindings. Do not append inferred
@@ -261,8 +265,10 @@ pub(crate) struct StructuredGlobalBaseCache {
 #[derive(Debug, Clone)]
 pub(crate) struct StructuredGlobalMemberAddressCache {
     pub(crate) global: String,
+    pub(crate) total_size: u32,
     pub(crate) offset: i16,
     pub(crate) register: u8,
+    pub(crate) initialized: bool,
 }
 
 #[derive(Debug, Clone)]

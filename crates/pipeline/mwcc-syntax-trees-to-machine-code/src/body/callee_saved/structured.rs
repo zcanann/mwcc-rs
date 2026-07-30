@@ -1665,7 +1665,12 @@ impl Generator {
         } else {
             logical_saved_homes
         };
-        self.legacy_callee_saved_frame_layout = if global_member_address_cache_plan.is_some()
+        self.legacy_callee_saved_frame_layout = if global_member_address_cache_plan
+            .as_ref()
+            .is_some_and(|plan| plan.defer_until_first_use)
+        {
+            LegacyCalleeSavedFrameLayout::RetainDeferredGlobalMemberAddressLane
+        } else if global_member_address_cache_plan.is_some()
             || unused_frame_array
             || !frame_scalar_parameters.is_empty()
             || !frame_scalar_locals.is_empty()
@@ -1821,18 +1826,23 @@ impl Generator {
             global_member_address_cache_plan,
             standalone_global_member_address_home,
         ) {
-            let base = self.fresh_virtual_general_preferring(3);
-            self.emit_global_array_base(&cache.global, cache.total_size, base)?;
-            self.output.instructions.push(Instruction::AddImmediate {
-                d: register,
-                a: base,
-                immediate: cache.offset,
-            });
+            let initialized = !cache.defer_until_first_use;
+            if initialized {
+                let base = self.fresh_virtual_general_preferring(3);
+                self.emit_global_array_base(&cache.global, cache.total_size, base)?;
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: register,
+                    a: base,
+                    immediate: cache.offset,
+                });
+            }
             self.structured_global_member_address_cache =
                 Some(crate::generator::StructuredGlobalMemberAddressCache {
                     global: cache.global,
+                    total_size: cache.total_size,
                     offset: cache.offset,
                     register,
+                    initialized,
                 });
             self.emit_structured_saved_home_store(
                 register,

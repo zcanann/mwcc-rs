@@ -585,18 +585,40 @@ impl Generator {
                             "unsupported global-value member load type {member_type:?} at +{offset}"
                         ))
                     })?;
-                    if let Some(cache) = self
+                    if let Some((register, total_size, cache_offset, initialized)) = self
                         .structured_global_member_address_cache
                         .as_ref()
                         .filter(|cache| {
                             cache.global == *name
                                 && i16::try_from(offset).ok() == Some(cache.offset)
                         })
+                        .map(|cache| {
+                            (
+                                cache.register,
+                                cache.total_size,
+                                cache.offset,
+                                cache.initialized,
+                            )
+                        })
                     {
+                        if !initialized {
+                            let base = self.fresh_virtual_general_preferring(3);
+                            self.emit_global_array_base(name, total_size, base)?;
+                            self.output.instructions.push(Instruction::AddImmediate {
+                                d: register,
+                                a: base,
+                                immediate: cache_offset,
+                            });
+                            if let Some(cache) =
+                                self.structured_global_member_address_cache.as_mut()
+                            {
+                                cache.initialized = true;
+                            }
+                        }
                         self.output.instructions.push(displacement_load(
                             pointee,
                             destination,
-                            cache.register,
+                            register,
                             0,
                         )?);
                         return Ok(());

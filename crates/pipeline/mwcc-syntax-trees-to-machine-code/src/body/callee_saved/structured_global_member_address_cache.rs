@@ -5,15 +5,22 @@
 //! materialize their own base, so this is deliberately separate from the
 //! call-free whole-aggregate base cache.
 
-use mwcc_syntax_trees::{Expression, Function, Type};
+use mwcc_syntax_trees::{ArmBody, Expression, Function, Statement, Type};
 
-use super::structured_expression_visit::{visit_expression, visit_statement};
+use super::structured_expression_visit::visit_expression;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct StructuredGlobalMemberAddressPlan {
     pub(super) global: String,
     pub(super) total_size: u32,
     pub(super) offset: i16,
+    pub(super) defer_until_first_use: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Event {
+    Member(String, u32),
+    Call,
 }
 
 pub(super) fn plan(
@@ -30,28 +37,16 @@ pub(super) fn plan(
             _ => None,
         })
         .collect::<std::collections::HashMap<_, _>>();
+    let mut events = Vec::new();
+    collect_statement_events(&function.statements, &struct_sizes, &mut events);
     let mut positions = std::collections::HashMap::<(String, u32), Vec<usize>>::new();
-    for (statement_index, statement) in function.statements.iter().enumerate() {
-        visit_statement(statement, &mut |expression| {
-            let Expression::Member {
-                base,
-                offset,
-                index_stride: None,
-                ..
-            } = expression
-            else {
-                return;
-            };
-            let Expression::Variable(global) = base.as_ref() else {
-                return;
-            };
-            if struct_sizes.contains_key(global) {
-                positions
-                    .entry((global.clone(), *offset))
-                    .or_default()
-                    .push(statement_index);
-            }
-        });
+    for (position, event) in events.iter().enumerate() {
+        if let Event::Member(global, offset) = event {
+            positions
+                .entry((global.clone(), *offset))
+                .or_default()
+                .push(position);
+        }
     }
 
     positions
@@ -62,10 +57,9 @@ pub(super) fn plan(
             if positions.len() < 2 || first >= last {
                 return None;
             }
-            let call_between = function.statements[first + 1..last]
+            let call_between = events[first + 1..last]
                 .iter()
-                .any(crate::analysis::statement_has_call)
-                || member_precedes_nested_call(&function.statements[first], &global, offset);
+                .any(|event| matches!(event, Event::Call));
             call_between
                 .then(|| {
                     Some((
@@ -74,6 +68,9 @@ pub(super) fn plan(
                             total_size: struct_sizes[&global],
                             global,
                             offset: i16::try_from(offset).ok()?,
+                            defer_until_first_use: events[..first]
+                                .iter()
+                                .any(|event| matches!(event, Event::Call)),
                         },
                     ))
                 })
@@ -88,37 +85,106 @@ pub(super) fn plan(
         .map(|(_, plan)| plan)
 }
 
-fn member_precedes_nested_call(
-    statement: &mwcc_syntax_trees::Statement,
-    global: &str,
-    offset: u32,
-) -> bool {
-    let mwcc_syntax_trees::Statement::If {
-        condition,
-        then_body,
-        else_body,
-    } = statement
-    else {
-        return false;
-    };
-    if crate::analysis::expression_has_call(condition) {
-        return false;
+fn collect_statement_events(
+    statements: &[Statement],
+    struct_sizes: &std::collections::HashMap<String, u32>,
+    events: &mut Vec<Event>,
+) {
+    for statement in statements {
+        match statement {
+            Statement::Store { target, value } => {
+                collect_expression_events(target, struct_sizes, events);
+                collect_expression_events(value, struct_sizes, events);
+            }
+            Statement::Assign { value, .. } | Statement::Expression(value) => {
+                collect_expression_events(value, struct_sizes, events);
+            }
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                collect_expression_events(condition, struct_sizes, events);
+                collect_statement_events(then_body, struct_sizes, events);
+                collect_statement_events(else_body, struct_sizes, events);
+            }
+            Statement::Return(value) => {
+                if let Some(value) = value {
+                    collect_expression_events(value, struct_sizes, events);
+                }
+            }
+            Statement::Switch {
+                scrutinee,
+                arms,
+                default,
+            } => {
+                collect_expression_events(scrutinee, struct_sizes, events);
+                for arm in arms {
+                    collect_arm_events(&arm.body, struct_sizes, events);
+                }
+                if let Some(default) = default {
+                    collect_arm_events(default, struct_sizes, events);
+                }
+            }
+            Statement::Loop {
+                initializer,
+                condition,
+                step,
+                body,
+                ..
+            } => {
+                for expression in [initializer, condition, step].into_iter().flatten() {
+                    collect_expression_events(expression, struct_sizes, events);
+                }
+                collect_statement_events(body, struct_sizes, events);
+            }
+            Statement::InlineAsm(_)
+            | Statement::Break
+            | Statement::Continue
+            | Statement::Goto(_)
+            | Statement::Label(_) => {}
+        }
     }
-    let mut contains_member = false;
-    visit_expression(condition, &mut |expression| {
-        contains_member |= matches!(expression, Expression::Member {
+}
+
+fn collect_expression_events(
+    expression: &Expression,
+    struct_sizes: &std::collections::HashMap<String, u32>,
+    events: &mut Vec<Event>,
+) {
+    visit_expression(expression, &mut |expression| {
+        let Expression::Member {
             base,
-            offset: found,
+            offset,
             index_stride: None,
             ..
-        } if *found == offset
-            && matches!(base.as_ref(), Expression::Variable(found) if found == global));
+        } = expression
+        else {
+            return;
+        };
+        let Expression::Variable(global) = base.as_ref() else {
+            return;
+        };
+        if struct_sizes.contains_key(global) {
+            events.push(Event::Member(global.clone(), *offset));
+        }
     });
-    contains_member
-        && then_body
-            .iter()
-            .chain(else_body)
-            .any(crate::analysis::statement_has_call)
+    if crate::analysis::expression_has_call(expression) {
+        events.push(Event::Call);
+    }
+}
+
+fn collect_arm_events(
+    body: &ArmBody,
+    struct_sizes: &std::collections::HashMap<String, u32>,
+    events: &mut Vec<Event>,
+) {
+    match body {
+        ArmBody::Return(expression) => collect_expression_events(expression, struct_sizes, events),
+        ArmBody::Statements(statements) => {
+            collect_statement_events(statements, struct_sizes, events)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -190,6 +256,7 @@ mod tests {
                 global: "record".into(),
                 total_size: 12,
                 offset: 8,
+                defer_until_first_use: false,
             })
         );
     }
@@ -215,6 +282,55 @@ mod tests {
                 &std::collections::HashMap::new(),
             ),
             None
+        );
+    }
+
+    #[test]
+    fn retains_a_member_across_a_nested_optional_call() {
+        let function = function(vec![
+            Statement::Expression(Expression::Call {
+                name: "prepare".into(),
+                arguments: Vec::new(),
+            }),
+            Statement::If {
+                condition: Expression::Variable("enabled".into()),
+                then_body: vec![
+                    Statement::If {
+                        condition: Expression::Binary {
+                            operator: BinaryOperator::Equal,
+                            left: Box::new(Expression::Variable("limit".into())),
+                            right: Box::new(member(8)),
+                        },
+                        then_body: vec![Statement::Expression(Expression::Call {
+                            name: "panic".into(),
+                            arguments: Vec::new(),
+                        })],
+                        else_body: Vec::new(),
+                    },
+                    Statement::Expression(Expression::Call {
+                        name: "consume".into(),
+                        arguments: vec![member(8), member(4)],
+                    }),
+                ],
+                else_body: Vec::new(),
+            },
+        ]);
+
+        assert_eq!(
+            plan(
+                &function,
+                &std::collections::HashMap::from([(
+                    "record".into(),
+                    Type::Struct { size: 12, align: 4 },
+                )]),
+                &std::collections::HashMap::new(),
+            ),
+            Some(StructuredGlobalMemberAddressPlan {
+                global: "record".into(),
+                total_size: 12,
+                offset: 8,
+                defer_until_first_use: true,
+            })
         );
     }
 }
