@@ -242,6 +242,9 @@ impl Generator {
             Expression::IndexedUpdateValue { value } => (value.as_ref(), true),
             value => (value, false),
         };
+        if self.try_emit_retained_global_pointer_member_store(target, value)? {
+            return Ok(());
+        }
         // `aggregate = *&aggregate` is an exact self-copy. Inlined setters can
         // expose this when their source argument aliases the destination (for
         // example `jobj->scale = *&jobj->scale`); mwcc removes it entirely.
