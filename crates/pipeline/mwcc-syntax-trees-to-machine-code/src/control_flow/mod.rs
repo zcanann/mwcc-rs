@@ -3,6 +3,7 @@
 //! Split by family (fire 539); behavior-identical.
 
 mod absolute_value;
+mod bounded_array_value;
 mod branch_preserving_select;
 mod branches;
 mod callback_fallback_select;

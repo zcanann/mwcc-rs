@@ -20,6 +20,9 @@ impl Generator {
         {
             return Ok(false);
         }
+        if self.try_emit_bounded_array_alternative_value(expression, destination)? {
+            return Ok(true);
+        }
         let Some(terms) = logical_or_terms(expression) else {
             return Ok(false);
         };
@@ -64,7 +67,7 @@ impl Generator {
     }
 }
 
-fn logical_or_terms(expression: &Expression) -> Option<Vec<&Expression>> {
+pub(super) fn logical_or_terms(expression: &Expression) -> Option<Vec<&Expression>> {
     fn collect<'a>(expression: &'a Expression, terms: &mut Vec<&'a Expression>) -> bool {
         match expression {
             Expression::Binary {
