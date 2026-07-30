@@ -40,6 +40,7 @@ mod linkage_first_arguments;
 mod linkage_first_data_anchor;
 mod linkage_first_anchor_only_schedule;
 mod linkage_first_data_anchor_schedule;
+mod linkage_first_inlined_switch_schedule;
 mod linkage_first_float_result_schedule;
 mod linkage_first_global_float_argument_schedule;
 mod linkage_first_narrow_conversion_reuse;
@@ -79,6 +80,7 @@ mod scaled_two_call_add;
 mod shared_global_float_pair_schedule;
 mod structured;
 pub(super) use structured::structured_hidden_label_count;
+pub(super) use structured_switch_lowering::hidden_label_count_with_switches;
 #[cfg(test)]
 mod structured_guard_tests;
 mod structured_allocator_cursor_schedule;

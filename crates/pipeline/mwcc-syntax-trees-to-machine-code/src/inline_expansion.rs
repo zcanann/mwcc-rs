@@ -23,8 +23,8 @@ use mwcc_syntax_trees::{
 };
 use returns::rewrite_inline_returns;
 use safety::{
-    automatic_composable_function, composable_function, materializable_arguments,
-    multi_call_transaction_callee, parameter_requires_materialization,
+    automatic_composable_function, bounded_switch_transaction_callee, composable_function,
+    materializable_arguments, multi_call_transaction_callee, parameter_requires_materialization,
     repeatable_guarded_call_callee, repeatable_terminal_wrapper_callee, stable_argument,
     stable_arguments, stable_local_values, terminal_scalar_arguments,
 };
@@ -173,9 +173,15 @@ pub(crate) struct ExpandedCalls {
     pub(crate) statement_frame_residue_substitutions: usize,
     pub(crate) statement_mutating_body_substitutions: usize,
     pub(crate) value_body_substitutions: usize,
-    /// Whether ordinary inline-analysis frame and anonymous-symbol residue
-    /// accounting applies to this expansion lane.
+    /// Whether ordinary inline-analysis frame residue applies to this lane.
     pub(crate) retains_ordinary_residue: bool,
+    /// Whether this lane consumes ordinary inline-analysis anonymous-symbol
+    /// ordinals. Whole-file switch duplication retains an allocator lane but
+    /// is selected after the ordinary anonymous-symbol pass.
+    pub(crate) advances_ordinary_ordinals: bool,
+    /// Whether structured labels introduced by this late-selected lane are
+    /// absent from the translation unit's anonymous-symbol stream.
+    pub(crate) discounts_structured_hidden_labels: bool,
 }
 
 impl InlineBodySet {
@@ -277,7 +283,8 @@ impl InlineBodySet {
         let bounded_caller_bodies = definitions
             .iter()
             .filter(|function| {
-                automatic_composable_function(function)
+                (automatic_composable_function(function)
+                    || bounded_switch_transaction_callee(function))
                     && call_counts.get(&function.name).copied().unwrap_or(0) > 1
                     && source_visible_call_counts
                         .get(&function.name)
@@ -646,9 +653,24 @@ impl InlineBodySet {
         if repeatable_calls < 2 && !has_multi_call_transaction {
             return None;
         }
+        let switch_transaction_calls = calls
+            .iter()
+            .filter(|(name, _)| {
+                visible_bodies
+                    .get(*name)
+                    .is_some_and(bounded_switch_transaction_callee)
+            })
+            .map(|(_, count)| *count)
+            .sum::<usize>();
         let mut expanded = self.clone();
         expanded.bodies.extend(visible_bodies);
-        expanded.expand_calls_with_facts_policy(function, false)
+        let mut result = expanded.expand_calls_with_facts_policy(function, false)?;
+        if switch_transaction_calls != 0 {
+            result.statement_frame_residue_substitutions = switch_transaction_calls;
+            result.advances_ordinary_ordinals = false;
+            result.discounts_structured_hidden_labels = true;
+        }
+        Some(result)
     }
 
     /// Expand a small condition-plus-call helper at each ordinary call site.
@@ -704,6 +726,8 @@ impl InlineBodySet {
         // residue budget. Its alpha-renamed survivor is planned directly by
         // structured callee-saved lowering.
         result.retains_ordinary_residue = false;
+        result.advances_ordinary_ordinals = false;
+        result.discounts_structured_hidden_labels = true;
         Some(result)
     }
 
@@ -746,6 +770,25 @@ impl InlineBodySet {
         result.statement_frame_residue_substitutions = 0;
         result.statement_mutating_body_substitutions = 0;
         Some(result)
+    }
+
+    /// Select the context-sensitive repeated-body lane used by body lowering.
+    ///
+    /// Frame and section-anchor planning call this same owner before emission,
+    /// so they analyze the exact AST that the lowering driver will later use.
+    pub(crate) fn expand_selective_calls(&self, function: &Function) -> Option<ExpandedCalls> {
+        self.expand_bounded_guarded_value_transactions(function)
+            .or_else(|| self.expand_repeatable_guarded_calls(function))
+            .or_else(|| self.expand_repeatable_bounded_caller_calls(function))
+            .or_else(|| self.expand_repeatable_loop_calls(function))
+            .or_else(|| self.expand_repeatable_terminal_wrapper_call(function))
+    }
+
+    /// Effective expanded source for read-only planning passes.
+    pub(crate) fn expanded_function_for_planning(&self, function: &Function) -> Option<Function> {
+        self.expand_selective_calls(function)
+            .map(|expanded| expanded.function)
+            .or_else(|| self.expand_calls(function))
     }
 
     pub(crate) fn expand_calls_with_facts(&self, function: &Function) -> Option<ExpandedCalls> {
@@ -907,6 +950,8 @@ impl InlineBodySet {
             statement_mutating_body_substitutions,
             value_body_substitutions,
             retains_ordinary_residue: true,
+            advances_ordinary_ordinals: true,
+            discounts_structured_hidden_labels: false,
         })
     }
 

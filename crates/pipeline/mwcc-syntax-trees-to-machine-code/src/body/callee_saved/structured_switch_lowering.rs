@@ -14,6 +14,17 @@ pub(super) fn lower_structured_switches(function: &Function) -> Option<Function>
     lower_structured_switches_with_mode(function, false)
 }
 
+pub(crate) fn hidden_label_count_with_switches(function: &Function) -> u32 {
+    let lowered;
+    let statements = if let Some(function) = lower_structured_switches(function) {
+        lowered = function;
+        &lowered.statements
+    } else {
+        &function.statements
+    };
+    super::structured::structured_hidden_label_count(statements)
+}
+
 /// Build the structured emitter's control-flow view.
 ///
 /// Analysis still consumes the fully canonicalized if-tree returned by

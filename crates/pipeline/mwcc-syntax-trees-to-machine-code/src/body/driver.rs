@@ -1664,20 +1664,7 @@ impl Generator {
         if self.try_call_result_product_return(function)? {
             return Ok(());
         }
-        if let Some(expanded) = self
-            .inline_bodies
-            .expand_bounded_guarded_value_transactions(function)
-            .or_else(|| self.inline_bodies.expand_repeatable_guarded_calls(function))
-            .or_else(|| {
-                self.inline_bodies
-                    .expand_repeatable_bounded_caller_calls(function)
-            })
-            .or_else(|| self.inline_bodies.expand_repeatable_loop_calls(function))
-            .or_else(|| {
-                self.inline_bodies
-                    .expand_repeatable_terminal_wrapper_call(function)
-            })
-        {
+        if let Some(expanded) = self.inline_bodies.expand_selective_calls(function) {
             if expanded.retains_ordinary_residue {
                 self.legacy_inline_expansion_frame_bytes +=
                     crate::inline_expansion::legacy_statement_body_frame_residue_bytes(
@@ -1690,29 +1677,30 @@ impl Generator {
                         &expanded.function,
                         expanded.value_body_substitutions,
                     );
-                self.inline_statement_body_substitutions +=
-                    expanded.statement_body_substitutions;
-                if self
-                    .behavior
-                    .ordinary_inline_substitution_advances_ordinals
-                {
-                    self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
-                        self.inline_expansion_facts,
-                        expanded.statement_body_substitutions,
-                        expanded.value_body_substitutions,
-                        self.behavior.inline_statement_substitution_label_weight,
-                    );
+                if expanded.advances_ordinary_ordinals {
+                    self.inline_statement_body_substitutions +=
+                        expanded.statement_body_substitutions;
+                    if self
+                        .behavior
+                        .ordinary_inline_substitution_advances_ordinals
+                    {
+                        self.output.anonymous_label_bump +=
+                            crate::inline_expansion::ordinal_residue(
+                                self.inline_expansion_facts,
+                                expanded.statement_body_substitutions,
+                                expanded.value_body_substitutions,
+                                self.behavior.inline_statement_substitution_label_weight,
+                            );
+                    }
                 }
             }
-            let hidden_label_discount = if expanded.retains_ordinary_residue {
-                0
+            let hidden_label_discount = if expanded.discounts_structured_hidden_labels {
+                super::callee_saved::hidden_label_count_with_switches(&expanded.function)
+                    .saturating_sub(super::callee_saved::hidden_label_count_with_switches(
+                        function,
+                    ))
             } else {
-                super::callee_saved::structured_hidden_label_count(
-                    &expanded.function.statements,
-                )
-                .saturating_sub(super::callee_saved::structured_hidden_label_count(
-                    &function.statements,
-                ))
+                0
             };
             let result = self.evaluate_body(&expanded.function);
             if result.is_ok() {

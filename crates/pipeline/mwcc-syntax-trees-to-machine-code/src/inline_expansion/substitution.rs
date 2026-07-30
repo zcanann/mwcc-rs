@@ -1,6 +1,6 @@
 //! Hygienic expression substitution for the inline subset.
 
-use mwcc_syntax_trees::{Expression, Statement};
+use mwcc_syntax_trees::{ArmBody, Expression, Statement, SwitchArm};
 use std::collections::HashMap;
 
 pub(super) fn substitute_statement(
@@ -62,6 +62,35 @@ pub(super) fn substitute_statement(
                 .map(|statement| substitute_statement(statement, replacements))
                 .collect(),
         },
+        Statement::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            let substitute_arm = |body: &ArmBody| match body {
+                ArmBody::Return(expression) => {
+                    ArmBody::Return(substitute_expression(expression, replacements))
+                }
+                ArmBody::Statements(statements) => ArmBody::Statements(
+                    statements
+                        .iter()
+                        .map(|statement| substitute_statement(statement, replacements))
+                        .collect(),
+                ),
+            };
+            Statement::Switch {
+                scrutinee: substitute_expression(scrutinee, replacements),
+                arms: arms
+                    .iter()
+                    .map(|arm| SwitchArm {
+                        value: arm.value,
+                        body: substitute_arm(&arm.body),
+                        falls_through: arm.falls_through,
+                    })
+                    .collect(),
+                default: default.as_ref().map(substitute_arm),
+            }
+        }
         _ => statement.clone(),
     }
 }
@@ -317,7 +346,7 @@ pub(super) fn substitute_expression(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::Type;
+    use mwcc_syntax_trees::{SwitchArm, Type};
 
     #[test]
     fn folds_a_substituted_reference_back_into_its_member_lvalue() {
@@ -374,6 +403,64 @@ mod tests {
         assert!(matches!(
             substitute_expression(&expression, &replacements),
             Expression::IntegerLiteral(0)
+        ));
+    }
+
+    #[test]
+    fn renames_assignments_and_reads_inside_switch_arms() {
+        let statement = Statement::Switch {
+            scrutinee: Expression::Variable("command".into()),
+            arms: vec![SwitchArm {
+                value: 1,
+                body: ArmBody::Statements(vec![
+                    Statement::Assign {
+                        name: "saved".into(),
+                        value: Expression::Variable("current".into()),
+                    },
+                    Statement::Expression(Expression::Call {
+                        name: "publish".into(),
+                        arguments: vec![Expression::Variable("saved".into())],
+                    }),
+                ]),
+                falls_through: false,
+            }],
+            default: None,
+        };
+        let replacements = HashMap::from([
+            (
+                "saved".into(),
+                Expression::Variable("__mwcc_inline_saved".into()),
+            ),
+            ("command".into(), Expression::Variable("active_command".into())),
+        ]);
+
+        let substituted = substitute_statement(&statement, &replacements);
+        assert!(matches!(
+            substituted,
+            Statement::Switch {
+                scrutinee: Expression::Variable(command),
+                arms,
+                ..
+            } if command == "active_command"
+                && matches!(
+                    arms[0].body,
+                    ArmBody::Statements(ref body)
+                        if matches!(
+                            body.as_slice(),
+                            [
+                                Statement::Assign { name, .. },
+                                Statement::Expression(Expression::Call {
+                                    arguments,
+                                    ..
+                                }),
+                            ] if name == "__mwcc_inline_saved"
+                                && matches!(
+                                    arguments.as_slice(),
+                                    [Expression::Variable(argument)]
+                                        if argument == "__mwcc_inline_saved"
+                                )
+                        )
+                )
         ));
     }
 }

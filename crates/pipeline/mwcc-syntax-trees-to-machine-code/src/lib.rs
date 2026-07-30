@@ -948,6 +948,7 @@ fn lower_function_body(
     generator.schedule_linkage_first_global_float_arguments();
     generator.reuse_linkage_first_narrow_conversion_value();
     generator.schedule_linkage_first_data_anchor_frame();
+    generator.schedule_linkage_first_inlined_switch_entry();
     generator.reuse_guarded_call_pointer_loads();
     generator.schedule_nested_reset_callback();
     generator.coalesce_member_equality_branch_runs();

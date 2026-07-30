@@ -97,6 +97,10 @@ fn automatic_local_has_composable_storage(
 /// initialized-local bodies also retain their established behavior.
 pub(super) fn automatic_composable_function(function: &Function) -> bool {
     let ordinary = composable_function(function)
+        && !function
+            .statements
+            .iter()
+            .any(|statement| matches!(statement, Statement::Switch { .. }))
         && (function
             .locals
             .iter()
@@ -111,6 +115,20 @@ pub(super) fn automatic_composable_function(function: &Function) -> bool {
         && automatic_parameter_select_store_body(function)
         && composable_function_with_assignable_parameters(function, true);
     ordinary || parameter_select
+}
+
+/// A larger switch transaction is available only to the bounded-caller IPA
+/// lane. Keeping it out of ordinary one-call composition prevents unrelated
+/// state dispatchers from being duplicated merely because their top-level AST
+/// is represented by one `Switch` statement.
+pub(super) fn bounded_switch_transaction_callee(function: &Function) -> bool {
+    function.is_static
+        && function.return_type == Type::Void
+        && function.parameters.is_empty()
+        && function.locals.len() <= 1
+        && matches!(function.statements.as_slice(), [Statement::Switch { .. }])
+        && composable_function(function)
+        && multi_call_transaction_callee(function)
 }
 
 /// A tiny guarded call transaction remains profitable at every source-visible
@@ -333,8 +351,42 @@ fn reads_are_dominated<'a>(
                     return false;
                 }
             }
-            Statement::Switch { .. }
-            | Statement::Break
+            Statement::Switch {
+                scrutinee,
+                arms,
+                default,
+            } => {
+                if reads_unassigned(scrutinee, tracked, assigned) {
+                    return false;
+                }
+                let mut exits = Vec::with_capacity(arms.len() + usize::from(default.is_some()));
+                for arm in arms {
+                    let mwcc_syntax_trees::ArmBody::Statements(body) = &arm.body else {
+                        return false;
+                    };
+                    let mut arm_assigned = assigned.clone();
+                    if !reads_are_dominated(body, tracked, &mut arm_assigned) {
+                        return false;
+                    }
+                    exits.push(arm_assigned);
+                }
+                if let Some(default) = default {
+                    let mwcc_syntax_trees::ArmBody::Statements(body) = default else {
+                        return false;
+                    };
+                    let mut default_assigned = assigned.clone();
+                    if !reads_are_dominated(body, tracked, &mut default_assigned) {
+                        return false;
+                    }
+                    exits.push(default_assigned);
+                } else {
+                    // The scrutinee can miss every case, preserving only values
+                    // already assigned before the switch.
+                    exits.push(assigned.clone());
+                }
+                assigned.retain(|name| exits.iter().all(|exit| exit.contains(name)));
+            }
+            Statement::Break
             | Statement::Continue
             | Statement::Goto(_)
             | Statement::Label(_) => return false,
@@ -406,12 +458,24 @@ fn composable_statements(statements: &[Statement], local_names: &HashSet<&str>) 
             step: None,
             body,
         } => body.is_empty(),
+        Statement::Switch { arms, default, .. } => {
+            arms.iter().all(|arm| match &arm.body {
+                mwcc_syntax_trees::ArmBody::Statements(body) => {
+                    composable_statements(body, local_names)
+                }
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+            }) && default.as_ref().is_none_or(|arm| match arm {
+                mwcc_syntax_trees::ArmBody::Statements(body) => {
+                    composable_statements(body, local_names)
+                }
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+            })
+        }
         // A void return is local control flow, not an escape from the caller.
         // Expansion rewrites it to a forward jump to the end of this particular
         // inline instance before the body enters instruction selection.
         Statement::Return(None) => true,
         Statement::Return(Some(_))
-        | Statement::Switch { .. }
         | Statement::Break
         | Statement::Continue
         | Statement::Goto(_)
@@ -974,7 +1038,9 @@ fn expression_mentions(expression: &Expression, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{BinaryOperator, LocalDeclaration, Parameter};
+    use mwcc_syntax_trees::{
+        ArmBody, BinaryOperator, LocalDeclaration, Parameter, SwitchArm,
+    };
 
     fn scalar_parameter_function() -> Function {
         Function {
@@ -1151,5 +1217,54 @@ mod tests {
         }];
 
         assert!(repeatable_terminal_wrapper_callee(&function));
+    }
+
+    #[test]
+    fn reserves_a_multi_call_switch_for_bounded_caller_ipa() {
+        let mut function = scalar_parameter_function();
+        function.name = "switch_transaction".into();
+        function.is_static = true;
+        function.parameters.clear();
+        function.locals.push(LocalDeclaration {
+            declared_type: Type::Int,
+            name: "saved".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        function.statements = vec![Statement::Switch {
+            scrutinee: Expression::Variable("command".into()),
+            arms: vec![SwitchArm {
+                value: 1,
+                body: ArmBody::Statements(vec![
+                    Statement::Assign {
+                        name: "saved".into(),
+                        value: Expression::Variable("current".into()),
+                    },
+                    Statement::Expression(Expression::Call {
+                        name: "first".into(),
+                        arguments: Vec::new(),
+                    }),
+                    Statement::Expression(Expression::Call {
+                        name: "second".into(),
+                        arguments: Vec::new(),
+                    }),
+                    Statement::Expression(Expression::Call {
+                        name: "publish".into(),
+                        arguments: vec![Expression::Variable("saved".into())],
+                    }),
+                ]),
+                falls_through: false,
+            }],
+            default: None,
+        }];
+
+        assert!(bounded_switch_transaction_callee(&function));
+        assert!(!automatic_composable_function(&function));
     }
 }

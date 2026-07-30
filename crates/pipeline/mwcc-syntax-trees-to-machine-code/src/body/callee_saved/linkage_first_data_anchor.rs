@@ -30,7 +30,7 @@ pub(crate) fn plan(
     // here so globals referenced only by a retained helper still participate
     // in the caller's shared `.data` anchor.
     let expanded;
-    let function = if let Some(body) = inline_bodies.expand_calls(function) {
+    let function = if let Some(body) = inline_bodies.expanded_function_for_planning(function) {
         expanded = body;
         &expanded
     } else {
