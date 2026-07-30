@@ -881,10 +881,16 @@ impl Generator {
                             )?);
                             return Ok(());
                         }
-                        // struct POINTER base: load the pointer, then the value, then store.
-                        let base_reg = self.fresh_virtual_general();
+                        // A scoped structured cache may already own this pointer
+                        // value across sibling branch edges. Otherwise load it
+                        // before the stored value, as the ordinary path does.
+                        let cached_base = self.condition_global_base(name)?;
+                        let base_reg =
+                            cached_base.unwrap_or_else(|| self.fresh_virtual_general());
                         let restore = self.reserved.insert(base_reg);
-                        self.emit_global_load_value(name, base_reg)?;
+                        if cached_base.is_none() {
+                            self.emit_global_load_value(name, base_reg)?;
+                        }
                         let source = self.place_store_value(value, pointee)?;
                         if restore {
                             self.reserved.remove(&base_reg);

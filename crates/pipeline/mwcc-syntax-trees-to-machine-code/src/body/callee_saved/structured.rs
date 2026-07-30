@@ -74,6 +74,8 @@ use super::structured_switch_lowering::{
     lower_structured_switches_for_emission,
 };
 use super::structured_sparse_switch::is_sparse_shared_body_switch;
+use super::structured_shared_switch_global_value::
+    plan as plan_structured_shared_switch_global_value;
 use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
 };
@@ -2979,9 +2981,35 @@ impl Generator {
         // An early-return guard has no join from its call-making arm. Preserve
         // condition values only along that guard's fallthrough edge, then let
         // the next condition retain the intersection it also reads.
+        let shared_switch_global_plan = plan_structured_shared_switch_global_value(
+            statements,
+            &self.globals,
+            &self.volatile_globals,
+        );
+        let mut shared_switch_global_restore = None;
         let mut carried_condition_cache_restore = None;
         let mut scheduled_float_store = None;
         for (statement_index, statement) in statements.iter().enumerate() {
+            if shared_switch_global_plan
+                .as_ref()
+                .is_some_and(|plan| plan.activation_index == statement_index)
+            {
+                let plan = shared_switch_global_plan
+                    .as_ref()
+                    .expect("activation index came from a plan");
+                let previous_cache = std::mem::take(
+                    &mut self.condition_global_values,
+                );
+                self.condition_global_values.insert(
+                    plan.global.clone(),
+                    crate::condition_global_cache::ConditionGlobalValue::
+                        PendingPreferred(4),
+                );
+                let previous_shared =
+                    self.structured_shared_switch_global_value.take();
+                shared_switch_global_restore =
+                    Some((previous_cache, previous_shared));
+            }
             let repeats_previous_scratch_constant = statement_index
                 .checked_sub(1)
                 .and_then(|start| statements.get(start..=statement_index))
@@ -4001,6 +4029,36 @@ impl Generator {
                     ephemeral_locals,
                     &statements[statement_index + 1..],
                 );
+            }
+            if shared_switch_global_plan
+                .as_ref()
+                .is_some_and(|plan| plan.activation_index == statement_index)
+            {
+                let plan = shared_switch_global_plan
+                    .as_ref()
+                    .expect("activation index came from a plan");
+                let Some(
+                    crate::condition_global_cache::ConditionGlobalValue::
+                        Register(register),
+                ) = self.condition_global_values.get(&plan.global).copied()
+                else {
+                    return Err(Diagnostic::error(
+                        "planned shared switch global was not materialized",
+                    ));
+                };
+                self.structured_shared_switch_global_value =
+                    Some((plan.global.clone(), register));
+            }
+            if shared_switch_global_plan
+                .as_ref()
+                .is_some_and(|plan| plan.completion_index == statement_index)
+            {
+                let (previous_cache, previous_shared) =
+                    shared_switch_global_restore.take().expect(
+                        "shared switch global scope must have been activated",
+                    );
+                self.restore_condition_global_cache(previous_cache);
+                self.structured_shared_switch_global_value = previous_shared;
             }
         }
         self.reuse_scratch_constant = false;

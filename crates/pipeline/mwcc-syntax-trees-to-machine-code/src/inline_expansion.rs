@@ -668,7 +668,7 @@ impl InlineBodySet {
         }
         let mut expanded = self.clone();
         expanded.bodies.extend(visible_bodies);
-        let mut result = expanded.expand_calls_with_facts_policy(function, false)?;
+        let mut result = expanded.expand_calls_with_facts_policy(function, true)?;
         if switch_transaction_calls != 0 {
             result.statement_frame_residue_substitutions =
                 usize::from(switch_transaction_calls == 1);
@@ -3359,6 +3359,97 @@ mod tests {
         assert_eq!(calls.get("first"), Some(&1));
         assert_eq!(calls.get("second"), Some(&1));
         assert_eq!(calls.get("third"), Some(&1));
+    }
+
+    #[test]
+    fn bounded_caller_materializes_a_changing_scalar_helper_argument() {
+        let error = function(
+            "error",
+            vec![Parameter {
+                parameter_type: Type::UnsignedInt,
+                name: "code".into(),
+            }],
+            vec![
+                Statement::Expression(Expression::Call {
+                    name: "record".into(),
+                    arguments: vec![Expression::Variable("code".into())],
+                }),
+                Statement::Expression(Expression::Call {
+                    name: "stop".into(),
+                    arguments: Vec::new(),
+                }),
+            ],
+        );
+        let transaction = function(
+            "transaction",
+            Vec::new(),
+            ["first", "second", "third"]
+                .into_iter()
+                .map(|name| {
+                    Statement::Expression(Expression::Call {
+                        name: name.into(),
+                        arguments: Vec::new(),
+                    })
+                })
+                .collect(),
+        );
+        let caller = function(
+            "caller",
+            Vec::new(),
+            vec![
+                Statement::Expression(Expression::Call {
+                    name: "transaction".into(),
+                    arguments: Vec::new(),
+                }),
+                Statement::Expression(Expression::Call {
+                    name: "error".into(),
+                    arguments: vec![Expression::Variable(
+                        "changing_global".into(),
+                    )],
+                }),
+                Statement::Expression(Expression::Call {
+                    name: "transaction".into(),
+                    arguments: Vec::new(),
+                }),
+            ],
+        );
+        let second_error_caller = function(
+            "second_error_caller",
+            Vec::new(),
+            vec![Statement::Expression(Expression::Call {
+                name: "error".into(),
+                arguments: vec![Expression::IntegerLiteral(4)],
+            })],
+        );
+        let bodies = InlineBodySet::analyze_with_definitions(
+            &[
+                error,
+                transaction,
+                caller.clone(),
+                second_error_caller,
+            ],
+            &[],
+        );
+
+        let expanded = bodies
+            .expand_repeatable_bounded_caller_calls(&caller)
+            .expect("the bounded caller should capture the changing argument");
+        let mut calls = HashMap::new();
+        collect_function_calls(&expanded.function, &mut calls);
+
+        assert!(!calls.contains_key("error"));
+        assert!(!calls.contains_key("transaction"));
+        assert_eq!(calls.get("record"), Some(&1));
+        assert!(expanded.function.statements.iter().any(|statement| {
+            matches!(
+                statement,
+                Statement::Assign {
+                    name,
+                    value: Expression::Variable(source),
+                } if name.starts_with("__mwcc_inline_error_")
+                    && source == "changing_global"
+            )
+        }));
     }
 
     #[test]

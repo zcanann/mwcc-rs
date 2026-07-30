@@ -354,6 +354,16 @@ impl Generator {
 
     pub(super) fn reset_structured_switch_edge_caches(&mut self) {
         self.condition_global_values.clear();
+        if let Some((name, register)) =
+            self.structured_shared_switch_global_value.as_ref()
+        {
+            self.condition_global_values.insert(
+                name.clone(),
+                crate::condition_global_cache::ConditionGlobalValue::Register(
+                    *register,
+                ),
+            );
+        }
         self.condition_float_cache = Default::default();
         self.condition_member_cache = Default::default();
         self.wide_pair_mask_cache = Default::default();

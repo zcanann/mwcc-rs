@@ -63,7 +63,8 @@ impl Generator {
         entry_alias: &mut Option<EntryParameterAlias>,
     ) -> Compilation<()> {
         let Some(plan) = plan(statements, &self.globals, &self.volatile_globals) else {
-            return self.emit_structured_statements(
+            let start = self.output.instructions.len();
+            let result = self.emit_structured_statements(
                 statements,
                 function,
                 ephemeral_locals,
@@ -73,6 +74,12 @@ impl Generator {
                 pending_gotos,
                 entry_alias,
             );
+            if result.is_ok() {
+                self.schedule_shared_switch_member_callback_prefix(
+                    statements, start,
+                );
+            }
+            return result;
         };
         let (prefix, remainder) = statements.split_at(plan.prefix_len);
         let previous = std::mem::take(&mut self.condition_global_values);

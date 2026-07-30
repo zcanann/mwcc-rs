@@ -349,6 +349,9 @@ pub(crate) struct Generator {
     /// can have the same local shape as a structured `if (...) goto`, but MWCC
     /// preserves the switch's two-edge leaf rather than folding it.
     pub(crate) structured_switch_dispatch_conditionals: HashSet<usize>,
+    /// A nonvolatile global pointer loaded immediately before a guarded switch
+    /// and consumed at the start of several mutually exclusive arms.
+    pub(crate) structured_shared_switch_global_value: Option<(String, u8)>,
     /// Complete global element base shared only within the current call's
     /// argument transaction. It is reset before every argument list.
     pub(crate) transient_global_index_base: Option<TransientGlobalIndexBase>,

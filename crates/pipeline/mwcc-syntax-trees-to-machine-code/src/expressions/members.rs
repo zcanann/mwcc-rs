@@ -1270,6 +1270,19 @@ impl Generator {
                 self.emit_address_of(base, register)?;
                 Ok(register)
             }
+            Expression::Variable(name)
+                if !self.locations.contains_key(name.as_str())
+                    && matches!(
+                        self.globals.get(name.as_str()),
+                        Some(Type::StructPointer { .. })
+                    ) =>
+            {
+                if let Some(register) = self.condition_global_base(name)? {
+                    Ok(register)
+                } else {
+                    self.general_register_of(name)
+                }
+            }
             Expression::Variable(name) => self.general_register_of(name),
             // A source-proven one-word wrapper member denotes the wrapper's
             // complete pointer value. When that member becomes the base of a
