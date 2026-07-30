@@ -17,6 +17,7 @@ use super::structured_aggregate_slots::{
 use super::structured_call_schedule::{
     terminal_offset_call_argument_register, transient_call_argument_register,
 };
+use super::structured_constant_versions::retain_repeated_store_constant_across_call;
 use super::structured_condition_schedule::thread_forward_unconditional_branch_chains;
 use super::structured_entry_alias::{
     fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
@@ -104,7 +105,11 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        self.try_callee_saved_structured_body_impl(function, false)
+        if let Some(rewritten) = retain_repeated_store_constant_across_call(function) {
+            self.try_callee_saved_structured_body_impl(&rewritten, false)
+        } else {
+            self.try_callee_saved_structured_body_impl(function, false)
+        }
     }
 
     /// Route trailing guarded returns through the same structured statement
@@ -1639,6 +1644,12 @@ impl Generator {
             LegacyCalleeSavedFrameLayout::InferFromValueOrigin
         } else if guarded_structured_constant_return {
             LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable
+        } else if function
+            .locals
+            .iter()
+            .any(|local| local.name.starts_with("__mwcc_retained_constant_"))
+        {
+            LegacyCalleeSavedFrameLayout::RetainGuardedLocalLane
         } else {
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
         };

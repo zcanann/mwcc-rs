@@ -340,6 +340,8 @@ impl Generator {
             == LegacyCalleeSavedFrameLayout::RetainEagerLocalLane;
         let retain_guarded_entry_parameter_table = self.legacy_callee_saved_frame_layout
             == LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable;
+        let retain_guarded_local_lane = self.legacy_callee_saved_frame_layout
+            == LegacyCalleeSavedFrameLayout::RetainGuardedLocalLane;
         let retain_entry_parameter_table = matches!(
             self.legacy_callee_saved_frame_layout,
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
@@ -376,6 +378,8 @@ impl Generator {
         // the established single inferred lane regardless of their count.
         let extra_lane_count = if preserve_logical_size || guarded_entry_table_is_frame_resident {
             0
+        } else if retain_guarded_local_lane {
+            1
         } else if self.legacy_discarded_call_locals == 0 {
             if self.entry_parameter_words != 0
                 && (materialized_home_before_call || parameter_derived_home_before_call)

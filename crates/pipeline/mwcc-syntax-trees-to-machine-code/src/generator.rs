@@ -210,6 +210,9 @@ pub(crate) enum LegacyCalleeSavedFrameLayout {
     /// condition-materialization lane and its ordinary entry-value table.
     RetainGuardedEntryParameterTable,
     RetainEagerLocalLane,
+    /// A constant first materialized inside a guarded arm remains live across
+    /// a later call. Build 163 reserves one optimizer lane for that value.
+    RetainGuardedLocalLane,
     ReserveForwardedParameterLane,
     /// Source-owned stack storage already represents all retained optimizer
     /// values, including eliminated inline bindings. Do not append inferred
