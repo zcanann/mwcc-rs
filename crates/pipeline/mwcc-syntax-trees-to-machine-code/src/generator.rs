@@ -319,6 +319,9 @@ pub(crate) struct Generator {
     /// Later physical scheduling uses this provenance instead of inferring the
     /// owner from common instructions such as `stmw`.
     pub(crate) structured_array_pool_emitted: bool,
+    /// Structured lowering recognized the pairwise object-collision loop whose
+    /// entry is finalized after allocated FPR frame materialization.
+    pub(crate) structured_object_collision_loop_entry: bool,
     /// Complete global element base shared only within the current call's
     /// argument transaction. It is reset before every argument list.
     pub(crate) transient_global_index_base: Option<TransientGlobalIndexBase>,

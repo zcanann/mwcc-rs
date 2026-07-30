@@ -13,6 +13,20 @@ use mwcc_syntax_trees::Parameter;
 
 pub(super) struct StructuredObjectCollisionLoopLayout {
     preference_by_home: [u8; 9],
+    entry_home_indices: [usize; 6],
+    entry_incoming: [u8; 2],
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct StructuredObjectCollisionEntryHomes {
+    pub(super) owner_parameter: u8,
+    pub(super) other_parameter: u8,
+    pub(super) owner: u8,
+    pub(super) flag: u8,
+    pub(super) cursor: u8,
+    pub(super) receiver: u8,
+    pub(super) owner_incoming: u8,
+    pub(super) other_incoming: u8,
 }
 
 impl StructuredObjectCollisionLoopLayout {
@@ -155,24 +169,76 @@ impl StructuredObjectCollisionLoopLayout {
                 .group_if_present(name)
                 .map(|group| parameter_reuse.home_index(group))
         };
+        let owner_home = home(owner)?;
+        let flag_home = home(flag)?;
+        let cursor_home = home(cursor)?;
+        let receiver_home = home(&receiver)?;
+        let peer_home = home(&peer)?;
+        let owner_index_home = home(&owner_index)?;
+        let peer_index_home = home(&peer_index)?;
+        let owner_parameter_name = &saved_parameters[*owner_parameter].name;
+        let other_parameter = 1 - *owner_parameter;
+        let other_parameter_name = &saved_parameters[other_parameter].name;
+        let incoming = |name: &str| {
+            function
+                .parameters
+                .iter()
+                .position(|parameter| parameter.name == name)
+                .and_then(|index| u8::try_from(index).ok())
+                .and_then(|index| 3u8.checked_add(index))
+        };
+        let owner_incoming = incoming(owner_parameter_name)?;
+        let other_incoming = incoming(other_parameter_name)?;
         if !set(*owner_parameter, 26)
-            || !set(1 - *owner_parameter, 27)
-            || !set(home(owner)?, 30)
-            || !set(home(flag)?, 28)
-            || !set(home(cursor)?, 29)
-            || !set(home(&receiver)?, 31)
-            || !set(home(&peer)?, 24)
-            || !set(home(&owner_index)?, 23)
-            || !set(home(&peer_index)?, 25)
+            || !set(other_parameter, 27)
+            || !set(owner_home, 30)
+            || !set(flag_home, 28)
+            || !set(cursor_home, 29)
+            || !set(receiver_home, 31)
+            || !set(peer_home, 24)
+            || !set(owner_index_home, 23)
+            || !set(peer_index_home, 25)
             || occupied.iter().any(|occupied| !occupied)
         {
             return None;
         }
-        Some(Self { preference_by_home })
+        Some(Self {
+            preference_by_home,
+            entry_home_indices: [
+                *owner_parameter,
+                other_parameter,
+                owner_home,
+                flag_home,
+                cursor_home,
+                receiver_home,
+            ],
+            entry_incoming: [owner_incoming, other_incoming],
+        })
     }
 
     pub(super) fn preference(&self, home_index: usize) -> Option<u8> {
         self.preference_by_home.get(home_index).copied()
+    }
+
+    pub(super) fn entry_homes(&self, homes: &[u8]) -> StructuredObjectCollisionEntryHomes {
+        let [
+            owner_parameter,
+            other_parameter,
+            owner,
+            flag,
+            cursor,
+            receiver,
+        ] = self.entry_home_indices.map(|index| homes[index]);
+        StructuredObjectCollisionEntryHomes {
+            owner_parameter,
+            other_parameter,
+            owner,
+            flag,
+            cursor,
+            receiver,
+            owner_incoming: self.entry_incoming[0],
+            other_incoming: self.entry_incoming[1],
+        }
     }
 }
 

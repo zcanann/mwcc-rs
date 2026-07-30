@@ -569,6 +569,7 @@ fn lower_function_body(
         ),
         data_section_anchor_reuses_deferred_home: false,
         structured_array_pool_emitted: false,
+        structured_object_collision_loop_entry: false,
         transient_global_index_base: None,
         full_bss_globals: globals
             .iter()
@@ -911,6 +912,7 @@ fn lower_function_body(
     // larger linkage-first frame. Normalize only the verified allocator shape;
     // convention-aware owners already emitted their final frame and are skipped.
     generator.normalize_linkage_first_saved_register_order();
+    generator.finalize_structured_object_collision_loop_entry();
     generator.compact_exclusive_inline_conversion_frame();
     generator.schedule_structured_conversion_following_call();
     generator.schedule_structured_argument_load_latency();

@@ -70,6 +70,7 @@ use super::structured_loop_register_pressure::{
 };
 use super::structured_loop_member_receiver_layout::StructuredLoopMemberReceiverLayout;
 use super::structured_object_collision_loop_layout::StructuredObjectCollisionLoopLayout;
+use super::structured_object_collision_loop_schedule::schedule_object_collision_loop_entry;
 use super::structured_preloop_alias::fold_preloop_comma_pointer_alias;
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_frame_address_null_select,
@@ -2549,6 +2550,14 @@ impl Generator {
         thread_forward_unconditional_branch_chains(&mut self.output.instructions);
         if let Some(layout) = &loop_member_receiver_layout {
             layout.coalesce_receiver_load(self, homes[0], homes[3]);
+        }
+        if let Some(layout) = &object_collision_loop_layout {
+            let scheduled =
+                schedule_object_collision_loop_entry(self, layout.entry_homes(&homes));
+            self.structured_object_collision_loop_entry = scheduled;
+            if capture {
+                eprintln!("structured object collision entry scheduled: {scheduled}");
+            }
         }
         let forwardable_frame_scalar_offsets = frame_scalar_locals
             .iter()
