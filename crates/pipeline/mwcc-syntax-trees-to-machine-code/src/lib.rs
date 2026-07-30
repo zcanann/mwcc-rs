@@ -662,7 +662,9 @@ fn lower_function_body(
             inline_expansion_facts,
         ),
         inline_statement_body_substitutions: 0,
+        late_inline_statement_body_substitutions: 0,
         inline_source_call_survivors: HashSet::new(),
+        forced_general_callee_saved: HashSet::new(),
         inline_expansion_facts,
         epilogue_lr_first: false,
         epilogue_lr_before_gprs: false,
@@ -1051,6 +1053,7 @@ fn lower_function_body(
     generator.finalize_structured_member_bound_call_epilogue();
     generator.schedule_structured_inlined_interrupt_transaction();
     generator.schedule_structured_inlined_guarded_value_transaction();
+    generator.schedule_structured_inlined_dynamic_guarded_value_diamond();
     generator.schedule_structured_inlined_guarded_value_diamond();
 
     ordinal_accounting::relocate_inline_initializer_ordinals(
@@ -1178,6 +1181,16 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
     for interval in &mut liveness.intervals {
         if let Some(avoid) = generator.register_avoid.get(&interval.vreg) {
             interval.avoid = avoid.clone();
+        }
+        if generator
+            .forced_general_callee_saved
+            .contains(&interval.vreg)
+        {
+            interval
+                .avoid
+                .extend(generator.constraints.general_pool.iter().copied());
+            interval.avoid.sort_unstable();
+            interval.avoid.dedup();
         }
         if let Some(&prefer) = generator.register_prefer.get(&interval.vreg) {
             interval.prefer = Some(prefer);

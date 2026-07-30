@@ -21,7 +21,9 @@ struct GuardedValueDiamond {
 
 impl Generator {
     pub(crate) fn schedule_structured_inlined_guarded_value_diamond(&mut self) {
-        if self.inline_statement_body_substitutions == 0 {
+        if self.inline_statement_body_substitutions == 0
+            && self.late_inline_statement_body_substitutions == 0
+        {
             return;
         }
         let Some(plan) = guarded_value_diamond(&self.output.instructions, &self.output.relocations)

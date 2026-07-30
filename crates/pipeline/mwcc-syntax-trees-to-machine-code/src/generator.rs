@@ -600,11 +600,18 @@ pub(crate) struct Generator {
     /// inline residue is charged at expansion time; structured frames retain
     /// an additional binding block for each substitution.
     pub(crate) inline_statement_body_substitutions: usize,
+    /// Late whole-file substitutions that affect final structured schedules
+    /// without participating in the ordinary anonymous-symbol stream.
+    pub(crate) late_inline_statement_body_substitutions: usize,
     /// Source-level values that MWCC's pre-composition allocator keeps live
     /// across a guarded inline-call diamond. Semantic composition may prove
     /// the call edge cannot reach the later read, but allocation precedes that
     /// simplification in MWCC.
     pub(crate) inline_source_call_survivors: HashSet<String>,
+    /// Virtual homes corresponding to those pre-composition survivors. Their
+    /// selected CFG may no longer cross a call, so allocation must exclude the
+    /// volatile bank explicitly.
+    pub(crate) forced_general_callee_saved: HashSet<VirtualRegister>,
     /// Frontend substitutions whose eliminated optimizer nodes still advance
     /// the anonymous ordinal stream when body expansion occurs.
     pub(crate) inline_expansion_facts: mwcc_syntax_trees::InlineExpansionFacts,

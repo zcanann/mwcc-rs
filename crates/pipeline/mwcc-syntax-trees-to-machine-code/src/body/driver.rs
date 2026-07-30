@@ -1692,6 +1692,9 @@ impl Generator {
                                 self.behavior.inline_statement_substitution_label_weight,
                             );
                     }
+                } else {
+                    self.late_inline_statement_body_substitutions +=
+                        expanded.statement_body_substitutions;
                 }
             }
             let hidden_label_discount = if expanded.discounts_structured_hidden_labels {
@@ -1708,8 +1711,6 @@ impl Generator {
             } else {
                 0
             };
-            let prior_source_call_survivors =
-                std::mem::take(&mut self.inline_source_call_survivors);
             if expanded.retains_source_call_survivors {
                 self.inline_source_call_survivors.extend(
                     function
@@ -1731,7 +1732,6 @@ impl Generator {
                 );
             }
             let result = self.evaluate_body(&expanded.function);
-            self.inline_source_call_survivors = prior_source_call_survivors;
             if result.is_ok() {
                 self.output.anonymous_label_bump = self
                     .output

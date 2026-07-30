@@ -74,6 +74,24 @@ pub(super) fn plan_deferred_saved_homes(
     function: &Function,
     locals: &[&LocalDeclaration],
 ) -> Option<DeferredSavedHomePlan> {
+    plan_deferred_saved_homes_with_reuse(function, locals, true)
+}
+
+/// Retain one home per source value when allocation preceded a later semantic
+/// composition. Values on mutually exclusive selected edges may still
+/// interfere in MWCC's pre-composition value graph.
+pub(super) fn plan_distinct_deferred_saved_homes(
+    function: &Function,
+    locals: &[&LocalDeclaration],
+) -> Option<DeferredSavedHomePlan> {
+    plan_deferred_saved_homes_with_reuse(function, locals, false)
+}
+
+fn plan_deferred_saved_homes_with_reuse(
+    function: &Function,
+    locals: &[&LocalDeclaration],
+    allow_reuse: bool,
+) -> Option<DeferredSavedHomePlan> {
     let mut intervals = Vec::with_capacity(locals.len());
     for local in locals {
         let interval = collect_function_deferred_interval(function, &local.name)?;
@@ -114,7 +132,8 @@ pub(super) fn plan_deferred_saved_homes(
         let preserves_pre_frame_home = load_batch_position.is_some()
             && declared_before_automatic_array(function, name);
         let existing_group_count = group_last_reads.len();
-        let group = (!name.starts_with("__mwcc_value_")
+        let group = (allow_reuse
+            && !name.starts_with("__mwcc_value_")
             && load_batch_position != Some(0)
             && !preserves_pre_frame_home)
             .then(|| {
@@ -2051,6 +2070,10 @@ mod tests {
         assert_eq!(plan.group_count, 1);
         assert_eq!(plan.path_reuse_count, 1);
         assert_eq!(plan.group("first"), plan.group("second"));
+        let distinct =
+            plan_distinct_deferred_saved_homes(&function, &locals).unwrap();
+        assert_eq!(distinct.group_count, 2);
+        assert_ne!(distinct.group("first"), distinct.group("second"));
     }
 
     #[test]

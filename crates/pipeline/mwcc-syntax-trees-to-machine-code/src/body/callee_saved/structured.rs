@@ -92,9 +92,11 @@ use super::structured_loop_member_receiver_layout::StructuredLoopMemberReceiverL
 use super::structured_object_collision_loop_layout::StructuredObjectCollisionLoopLayout;
 use super::structured_object_collision_loop_schedule::schedule_object_collision_loop_entry;
 use super::structured_preloop_alias::fold_preloop_comma_pointer_alias;
+use super::structured_precomposition_home_layout::StructuredPrecompositionHomeLayout;
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_frame_address_null_select,
-    is_unobserved_local_assignment, plan_deferred_saved_homes, plan_ephemeral_locals,
+    is_unobserved_local_assignment, plan_deferred_saved_homes,
+    plan_distinct_deferred_saved_homes, plan_ephemeral_locals,
 };
 use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 use super::structured_eager_home_reuse::StructuredEagerHomeReuse;
@@ -565,6 +567,19 @@ impl Generator {
                 })
                 .collect();
         }
+        let source_saved_local_count = saved_locals
+            .iter()
+            .filter(|local| self.inline_source_call_survivors.contains(&local.name))
+            .count();
+        if source_saved_local_count < 2 {
+            self.inline_source_call_survivors.clear();
+        } else {
+            // The original guarded value diamond owns one eliminated
+            // optimizer binding lane even though late semantic composition
+            // leaves no ordinary statement-body residue.
+            self.legacy_inline_expansion_frame_bytes =
+                self.legacy_inline_expansion_frame_bytes.max(8);
+        }
         if capture {
             let mut survivor_names: Vec<_> = survivors.iter().copied().collect();
             survivor_names.sort_unstable();
@@ -638,6 +653,10 @@ impl Generator {
         let (eager_saved_locals, deferred_saved_locals): (Vec<_>, Vec<_>) = saved_locals
             .into_iter()
             .partition(|local| local.initializer.is_some());
+        let precomposition_home_layout = StructuredPrecompositionHomeLayout::plan(
+            &deferred_saved_locals,
+            &self.inline_source_call_survivors,
+        );
         let complement_product_pair = StructuredComplementProductPair::plan(
             function,
             &saved_float_locals,
@@ -654,8 +673,12 @@ impl Generator {
             &eager_saved_locals,
             &saved_parameter_names,
         );
-        let Some(deferred_home_plan) = plan_deferred_saved_homes(function, &deferred_saved_locals)
-        else {
+        let deferred_home_plan = if self.inline_source_call_survivors.is_empty() {
+            plan_deferred_saved_homes(function, &deferred_saved_locals)
+        } else {
+            plan_distinct_deferred_saved_homes(function, &deferred_saved_locals)
+        };
+        let Some(deferred_home_plan) = deferred_home_plan else {
             decline!("deferred saved-home planning rejected the body");
         };
         let unused_array_state_transfer = unused_frame_array
@@ -1265,6 +1288,16 @@ impl Generator {
                 }
             })
             .collect();
+        if let Some(layout) = &precomposition_home_layout {
+            for local in &deferred_saved_locals {
+                let Some(preferred) = layout.preference(&local.name) else {
+                    continue;
+                };
+                let group = deferred_home_plan.group(&local.name);
+                let home = homes[parameter_home_reuse.home_index(group)];
+                self.prefer_virtual_general(home, preferred);
+            }
+        }
         let data_section_anchor_home = reused_data_anchor_home_index
             .map(|home_index| homes[home_index])
             .or(standalone_data_anchor_home);
@@ -1308,6 +1341,11 @@ impl Generator {
                     .enumerate()
                     .filter_map(|(index, home)| (index != reused).then_some(*home)),
             );
+        } else if let Some(layout) = &precomposition_home_layout {
+            logical_saved_homes.extend(layout.save_order().map(|name| {
+                let group = deferred_home_plan.group(name);
+                homes[parameter_home_reuse.home_index(group)]
+            }));
         } else if let Some(layout) = &loop_member_receiver_layout {
             logical_saved_homes.extend(
                 layout
@@ -2390,6 +2428,13 @@ impl Generator {
         for local in deferred_saved_locals {
             let group = deferred_home_plan.group(&local.name);
             let home = homes[parameter_home_reuse.home_index(group)];
+            if self.inline_source_call_survivors.contains(&local.name) {
+                if let mwcc_vreg::Reg::Virtual(register) =
+                    mwcc_vreg::Reg::from_field(home, mwcc_vreg::Class::General)
+                {
+                    self.forced_general_callee_saved.insert(register);
+                }
+            }
             self.locations.insert(
                 local.name.clone(),
                 Location {
@@ -3726,7 +3771,8 @@ impl Generator {
                     let terminal_volatile = matches!(declared_type, Type::Int | Type::UnsignedInt)
                         && value_read_before_redefinition(remaining, name)
                         && !read_after_possible_call(remaining, name, false).read_after_call
-                        && !returned_after_later_call;
+                        && !returned_after_later_call
+                        && !self.inline_source_call_survivors.contains(name);
                     if terminal_volatile && matches!(value, Expression::Call { .. }) {
                         self.evaluate(value, declared_type, Eabi::general_result().number)?;
                         self.locations
