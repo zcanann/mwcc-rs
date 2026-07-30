@@ -11,7 +11,7 @@ use super::*;
 
 mod completion;
 
-use completion::{constant_terminal_cases, CompletionPlan};
+use completion::{constant_terminal_cases, mixed_terminal_cases, CompletionPlan};
 
 #[derive(Clone)]
 struct StreamWaitPlan {
@@ -27,6 +27,15 @@ struct StreamWaitPlan {
     queue: String,
     sleep: String,
     restore: String,
+    extended_setup: Option<ExtendedSetup>,
+}
+
+#[derive(Clone)]
+struct ExtendedSetup {
+    info_offset: i16,
+    length_offset: i16,
+    length: i16,
+    transferred_offset: i16,
 }
 
 fn variable(expression: &Expression, expected: &str) -> bool {
@@ -142,8 +151,10 @@ fn classify(function: &Function) -> Option<StreamWaitPlan> {
     {
         return None;
     }
-    let [block] = function.parameters.as_slice() else {
-        return None;
+    let (block, info_parameter) = match function.parameters.as_slice() {
+        [block] => (block, None),
+        [block, info] => (block, Some(info)),
+        _ => return None,
     };
     if !matches!(block.parameter_type, Type::StructPointer { .. }) {
         return None;
@@ -192,18 +203,71 @@ fn classify(function: &Function) -> Option<StreamWaitPlan> {
 
     let mut sequence = Vec::new();
     flatten_comma(starter, &mut sequence);
-    let [callback_assignment, command_store, callback_store, issue_assignment, issue_result] =
-        sequence.as_slice()
-    else {
-        return None;
+    let (
+        callback_assignment,
+        command_store,
+        callback_store,
+        issue_assignment,
+        issue_result,
+        extended_setup,
+    ) = match sequence.as_slice() {
+        [callback_assignment, command_store, callback_store, issue_assignment, issue_result] => (
+            *callback_assignment,
+            *command_store,
+            *callback_store,
+            *issue_assignment,
+            *issue_result,
+            None,
+        ),
+        [callback_assignment, command_store, info_store, length_store, transferred_store, callback_store, issue_assignment, issue_result] => {
+            let info_parameter = info_parameter?;
+            let Expression::Assign {
+                target: info_target,
+                value: info_value,
+            } = info_store
+            else {
+                return None;
+            };
+            let (info_offset, _) = member(info_target, &block.name)?;
+            if !variable(info_value, &info_parameter.name) {
+                return None;
+            }
+            let Expression::Assign {
+                target: length_target,
+                value: length_value,
+            } = length_store
+            else {
+                return None;
+            };
+            let (length_offset, _) = member(length_target, &block.name)?;
+            let length = i16::try_from(constant_value(length_value)?).ok()?;
+            let Expression::Assign {
+                target: transferred_target,
+                value: transferred_value,
+            } = transferred_store
+            else {
+                return None;
+            };
+            let (transferred_offset, _) = member(transferred_target, &block.name)?;
+            if constant_value(transferred_value) != Some(0) {
+                return None;
+            }
+            (
+                *callback_assignment,
+                *command_store,
+                *callback_store,
+                *issue_assignment,
+                *issue_result,
+                Some(ExtendedSetup {
+                    info_offset,
+                    length_offset,
+                    length,
+                    transferred_offset,
+                }),
+            )
+        }
+        _ => return None,
     };
-    let (callback_assignment, command_store, callback_store, issue_assignment, issue_result) = (
-        *callback_assignment,
-        *command_store,
-        *callback_store,
-        *issue_assignment,
-        *issue_result,
-    );
     let Expression::Assign {
         target: callback_local,
         value: callback_value,
@@ -276,7 +340,20 @@ fn classify(function: &Function) -> Option<StreamWaitPlan> {
     if state_type != Type::Int {
         return None;
     }
-    let completion = match terminal_statement {
+    let completion = if let Some((return_name, result_offset, cases)) =
+        mixed_terminal_cases(terminal_statement, state_name, &block.name)
+    {
+        if !matches!(function.return_expression.as_ref(), Some(value)
+            if variable(value, &return_name))
+        {
+            return None;
+        }
+        CompletionPlan::Mixed {
+            result_offset,
+            cases,
+        }
+    } else {
+        match terminal_statement {
         Statement::If {
             condition: terminal_test,
             then_body: terminal_body,
@@ -309,6 +386,7 @@ fn classify(function: &Function) -> Option<StreamWaitPlan> {
             }
             CompletionPlan::Constants { cases }
         }
+        }
     };
     let [Expression::AddressOf { operand }] = sleep_arguments.as_slice() else {
         return None;
@@ -330,6 +408,7 @@ fn classify(function: &Function) -> Option<StreamWaitPlan> {
         queue: queue.clone(),
         sleep: sleep.clone(),
         restore: restore.clone(),
+        extended_setup,
     })
 }
 
@@ -351,72 +430,154 @@ impl Generator {
         };
         const INTERRUPT: u8 = 31;
         const BLOCK_OR_RESULT: u8 = 30;
+        let frame_size = if plan.extended_setup.is_some() { 40 } else { 32 };
 
         self.non_leaf = true;
-        self.frame_size = 32;
+        self.frame_size = frame_size;
         self.callee_saved = vec![INTERRUPT, BLOCK_OR_RESULT];
         self.output.pre_scheduled = true;
-        self.output.instructions.extend([
-            Instruction::MoveFromLinkRegister { d: 0 },
-            Instruction::StoreWord {
+        if let Some(setup) = &plan.extended_setup {
+            self.output.instructions.extend([
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::load_immediate(6, setup.length),
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 4,
+                },
+                Instruction::load_immediate(0, plan.command),
+                Instruction::load_immediate(5, 0),
+                Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -frame_size,
+                },
+                Instruction::StoreWord {
+                    s: INTERRUPT,
+                    a: 1,
+                    offset: frame_size - 4,
+                },
+                Instruction::StoreWord {
+                    s: BLOCK_OR_RESULT,
+                    a: 1,
+                    offset: frame_size - 8,
+                },
+                Instruction::AddImmediate {
+                    d: BLOCK_OR_RESULT,
+                    a: 3,
+                    immediate: 0,
+                },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 3,
+                    offset: plan.command_offset,
+                },
+            ]);
+            self.record_relocation(RelocationKind::Addr16Ha, &plan.callback);
+            self.output
+                .instructions
+                .push(Instruction::AddImmediateShifted {
+                    d: 3,
+                    a: 0,
+                    immediate: 0,
+                });
+            self.record_relocation(RelocationKind::Addr16Lo, &plan.callback);
+            self.output.instructions.extend([
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 3,
+                    immediate: 0,
+                },
+                Instruction::StoreWord {
+                    s: 4,
+                    a: BLOCK_OR_RESULT,
+                    offset: setup.info_offset,
+                },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: BLOCK_OR_RESULT,
+                    immediate: 0,
+                },
+                Instruction::load_immediate(3, plan.priority),
+                Instruction::StoreWord {
+                    s: 6,
+                    a: BLOCK_OR_RESULT,
+                    offset: setup.length_offset,
+                },
+                Instruction::StoreWord {
+                    s: 5,
+                    a: BLOCK_OR_RESULT,
+                    offset: setup.transferred_offset,
+                },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: BLOCK_OR_RESULT,
+                    offset: plan.callback_offset,
+                },
+            ]);
+        } else {
+            self.output.instructions.extend([
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 4,
+                },
+                Instruction::load_immediate(0, plan.command),
+                Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -frame_size,
+                },
+                Instruction::StoreWord {
+                    s: INTERRUPT,
+                    a: 1,
+                    offset: frame_size - 4,
+                },
+                Instruction::StoreWord {
+                    s: BLOCK_OR_RESULT,
+                    a: 1,
+                    offset: frame_size - 8,
+                },
+                Instruction::AddImmediate {
+                    d: BLOCK_OR_RESULT,
+                    a: 3,
+                    immediate: 0,
+                },
+            ]);
+            self.record_relocation(RelocationKind::Addr16Ha, &plan.callback);
+            self.output
+                .instructions
+                .push(Instruction::AddImmediateShifted {
+                    d: 3,
+                    a: 0,
+                    immediate: 0,
+                });
+            self.output.instructions.push(Instruction::StoreWord {
                 s: 0,
-                a: 1,
-                offset: 4,
-            },
-            Instruction::load_immediate(0, plan.command),
-            Instruction::StoreWordWithUpdate {
-                s: 1,
-                a: 1,
-                offset: -32,
-            },
-            Instruction::StoreWord {
-                s: INTERRUPT,
-                a: 1,
-                offset: 28,
-            },
-            Instruction::StoreWord {
-                s: BLOCK_OR_RESULT,
-                a: 1,
-                offset: 24,
-            },
-            Instruction::AddImmediate {
-                d: BLOCK_OR_RESULT,
-                a: 3,
-                immediate: 0,
-            },
-        ]);
-        self.record_relocation(RelocationKind::Addr16Ha, &plan.callback);
-        self.output
-            .instructions
-            .push(Instruction::AddImmediateShifted {
-                d: 3,
-                a: 0,
-                immediate: 0,
+                a: BLOCK_OR_RESULT,
+                offset: plan.command_offset,
             });
-        self.output.instructions.extend([Instruction::StoreWord {
-            s: 0,
-            a: BLOCK_OR_RESULT,
-            offset: plan.command_offset,
-        }]);
-        self.record_relocation(RelocationKind::Addr16Lo, &plan.callback);
-        self.output.instructions.extend([
-            Instruction::AddImmediate {
-                d: 0,
-                a: 3,
-                immediate: 0,
-            },
-            Instruction::AddImmediate {
-                d: 4,
-                a: BLOCK_OR_RESULT,
-                immediate: 0,
-            },
-            Instruction::StoreWord {
-                s: 0,
-                a: BLOCK_OR_RESULT,
-                offset: plan.callback_offset,
-            },
-            Instruction::load_immediate(3, plan.priority),
-        ]);
+            self.record_relocation(RelocationKind::Addr16Lo, &plan.callback);
+            self.output.instructions.extend([
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 3,
+                    immediate: 0,
+                },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: BLOCK_OR_RESULT,
+                    immediate: 0,
+                },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: BLOCK_OR_RESULT,
+                    offset: plan.callback_offset,
+                },
+                Instruction::load_immediate(3, plan.priority),
+            ]);
+        }
         self.record_relocation(RelocationKind::Rel24, &plan.issue);
         self.output.instructions.push(Instruction::BranchAndLink {
             target: plan.issue.clone(),
@@ -540,6 +701,70 @@ impl Generator {
                 }
                 to_sleep.push(previous_nonmatch.expect("constant completion has cases"));
             }
+            CompletionPlan::Mixed {
+                result_offset,
+                cases,
+            } => {
+                self.output.instructions.extend([
+                    Instruction::LoadWord {
+                        d: 0,
+                        a: BLOCK_OR_RESULT,
+                        offset: plan.state_offset,
+                    },
+                    Instruction::CompareWordImmediate { a: 0, immediate: 0 },
+                ]);
+                let first_nonmatch = self.output.instructions.len();
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalForward {
+                        options: 4,
+                        condition_bit: 2,
+                        target: 0,
+                    });
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: BLOCK_OR_RESULT,
+                    a: BLOCK_OR_RESULT,
+                    offset: *result_offset,
+                });
+                to_restore.push(self.output.instructions.len());
+                self.output
+                    .instructions
+                    .push(Instruction::Branch { target: 0 });
+
+                let mut previous_nonmatch = Some(first_nonmatch);
+                for &(state, result) in cases {
+                    let comparison = self.output.instructions.len();
+                    patch_branch(
+                        &mut self.output.instructions,
+                        previous_nonmatch
+                            .take()
+                            .expect("mixed completion has a preceding branch"),
+                        comparison,
+                    );
+                    self.output
+                        .instructions
+                        .push(Instruction::CompareWordImmediate {
+                            a: 0,
+                            immediate: state,
+                        });
+                    previous_nonmatch = Some(self.output.instructions.len());
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalForward {
+                            options: 4,
+                            condition_bit: 2,
+                            target: 0,
+                        });
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate(BLOCK_OR_RESULT, result));
+                    to_restore.push(self.output.instructions.len());
+                    self.output
+                        .instructions
+                        .push(Instruction::Branch { target: 0 });
+                }
+                to_sleep.push(previous_nonmatch.expect("mixed completion has cases"));
+            }
         }
         let sleep_target = self.output.instructions.len();
         for branch in to_sleep {
@@ -578,22 +803,22 @@ impl Generator {
             Instruction::LoadWord {
                 d: 0,
                 a: 1,
-                offset: 36,
+                offset: frame_size + 4,
             },
             Instruction::LoadWord {
                 d: INTERRUPT,
                 a: 1,
-                offset: 28,
+                offset: frame_size - 4,
             },
             Instruction::LoadWord {
                 d: BLOCK_OR_RESULT,
                 a: 1,
-                offset: 24,
+                offset: frame_size - 8,
             },
             Instruction::AddImmediate {
                 d: 1,
                 a: 1,
-                immediate: 32,
+                immediate: frame_size,
             },
             Instruction::MoveToLinkRegister { s: 0 },
             Instruction::BranchToLinkRegister,

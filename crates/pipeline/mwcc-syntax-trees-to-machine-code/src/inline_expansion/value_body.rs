@@ -398,6 +398,10 @@ fn statement_count(statements: &[Statement]) -> usize {
     statements
         .iter()
         .map(|statement| match statement {
+            Statement::Expression(Expression::Cast {
+                target_type: Type::Void,
+                operand,
+            }) if matches!(operand.as_ref(), Expression::IntegerLiteral(_)) => 0,
             Statement::If {
                 then_body,
                 else_body,
@@ -704,6 +708,60 @@ mod tests {
             summarize_automatic_transaction(&function).expect("bounded value transaction");
         assert!(summary.automatic_transaction);
         assert!(matches!(summary.expression, Expression::Comma { .. }));
+    }
+
+    #[test]
+    fn ignores_compiled_out_assertion_remnants_in_the_transaction_budget() {
+        let mut function = empty_function("start_async", Type::Int);
+        function.parameters.push(Parameter {
+            parameter_type: Type::StructPointer { element_size: 48 },
+            name: "block".into(),
+        });
+        function.locals.push(LocalDeclaration {
+            declared_type: Type::Int,
+            name: "result".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        let inert = Statement::Expression(Expression::Cast {
+            target_type: Type::Void,
+            operand: Box::new(Expression::IntegerLiteral(0)),
+        });
+        function.statements = vec![
+            inert.clone(),
+            inert.clone(),
+            inert.clone(),
+            inert.clone(),
+            inert.clone(),
+            inert.clone(),
+            inert,
+            Statement::Store {
+                target: Expression::Member {
+                    base: Box::new(Expression::Variable("block".into())),
+                    offset: 8,
+                    member_type: Type::UnsignedInt,
+                    index_stride: None,
+                },
+                value: Expression::IntegerLiteral(14),
+            },
+            Statement::Assign {
+                name: "result".into(),
+                value: Expression::Call {
+                    name: "issue".into(),
+                    arguments: vec![Expression::Variable("block".into())],
+                },
+            },
+        ];
+        function.return_expression = Some(Expression::Variable("result".into()));
+
+        assert_eq!(statement_count(&function.statements), 2);
+        assert!(summarize_automatic_transaction(&function).is_some());
     }
 
     #[test]
