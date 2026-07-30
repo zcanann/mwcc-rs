@@ -50,7 +50,112 @@ fn global_word_member(expression: &Expression) -> Option<(&str, u32)> {
     Some((global, *offset))
 }
 
+#[derive(Debug, PartialEq)]
+struct SharedGlobalPointerMembers<'a> {
+    global: &'a str,
+    first_offset: u32,
+    first_type: Type,
+    second_offset: u32,
+    second_type: Type,
+}
+
+fn shared_global_pointer_members(
+    arguments: &[Expression],
+) -> Option<SharedGlobalPointerMembers<'_>> {
+    let [
+        Expression::Member {
+            base: first_base,
+            offset: first_offset,
+            member_type: first_type,
+            index_stride: None,
+        },
+        Expression::Member {
+            base: second_base,
+            offset: second_offset,
+            member_type: second_type,
+            index_stride: None,
+        },
+    ] = arguments
+    else {
+        return None;
+    };
+    let (Expression::Variable(first_global), Expression::Variable(second_global)) =
+        (first_base.as_ref(), second_base.as_ref())
+    else {
+        return None;
+    };
+    if first_global != second_global
+        || first_type.width() != 32
+        || second_type.width() != 32
+        || matches!(first_type, Type::Float)
+        || matches!(second_type, Type::Float)
+    {
+        return None;
+    }
+    Some(SharedGlobalPointerMembers {
+        global: first_global,
+        first_offset: *first_offset,
+        first_type: *first_type,
+        second_offset: *second_offset,
+        second_type: *second_type,
+    })
+}
+
 impl Generator {
+    /// Marshal two word-sized members through one global struct pointer.
+    ///
+    /// Loading each argument independently reloads the global pointer. MWCC
+    /// keeps that pointer in r4, loads the first member into r3, and consumes
+    /// the same r4 base while replacing it with the second argument:
+    /// `lwz r4,g@sda21(r0); lwz r3,a(r4); lwz r4,b(r4)`.
+    pub(crate) fn try_emit_shared_global_pointer_member_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<bool> {
+        let Some(plan) = shared_global_pointer_members(arguments) else {
+            return Ok(false);
+        };
+        let direct_call = !self.globals.contains_key(name)
+            && !self.locations.contains_key(name)
+            && !self.known_locals.contains(name);
+        if !direct_call
+            || self.volatile_globals.contains(plan.global)
+            || !matches!(
+                self.globals.get(plan.global),
+                Some(Type::StructPointer { .. })
+            )
+        {
+            return Ok(false);
+        }
+        let (Ok(first_offset), Ok(second_offset)) = (
+            i16::try_from(plan.first_offset),
+            i16::try_from(plan.second_offset),
+        ) else {
+            return Ok(false);
+        };
+        let first_pointee = pointee_of_type(plan.first_type)
+            .ok_or_else(|| Diagnostic::error("shared pointer member has no load width"))?;
+        let second_pointee = pointee_of_type(plan.second_type)
+            .ok_or_else(|| Diagnostic::error("shared pointer member has no load width"))?;
+        let first_argument = Eabi::FIRST_GENERAL_ARGUMENT;
+        let shared_base = first_argument + 1;
+        self.emit_global_load_value(plan.global, shared_base)?;
+        self.output.instructions.push(displacement_load(
+            first_pointee,
+            first_argument,
+            shared_base,
+            first_offset,
+        )?);
+        self.output.instructions.push(displacement_load(
+            second_pointee,
+            shared_base,
+            shared_base,
+            second_offset,
+        )?);
+        Ok(true)
+    }
+
     /// Marshal `(global_array, packed_string, global.word)` using r4 first as
     /// the aggregate address and then as the final format-string argument.
     ///
@@ -195,7 +300,10 @@ impl Generator {
 
 #[cfg(test)]
 mod tests {
-    use super::{global_byte_member_offset, global_word_member};
+    use super::{
+        global_byte_member_offset, global_word_member, shared_global_pointer_members,
+        SharedGlobalPointerMembers,
+    };
     use mwcc_syntax_trees::{BinaryOperator, Expression, Type};
 
     #[test]
@@ -227,5 +335,30 @@ mod tests {
         };
 
         assert_eq!(global_word_member(&expression), Some(("globals", 7104)));
+    }
+
+    #[test]
+    fn recognizes_two_members_of_one_global_pointer() {
+        let member = |offset, member_type| Expression::Member {
+            base: Box::new(Expression::Variable("boot_info".into())),
+            offset,
+            member_type,
+            index_stride: None,
+        };
+        let arguments = vec![
+            member(56, Type::Pointer(mwcc_syntax_trees::Pointee::Int)),
+            member(60, Type::UnsignedInt),
+        ];
+
+        assert_eq!(
+            shared_global_pointer_members(&arguments),
+            Some(SharedGlobalPointerMembers {
+                global: "boot_info",
+                first_offset: 56,
+                first_type: Type::Pointer(mwcc_syntax_trees::Pointee::Int),
+                second_offset: 60,
+                second_type: Type::UnsignedInt,
+            })
+        );
     }
 }
