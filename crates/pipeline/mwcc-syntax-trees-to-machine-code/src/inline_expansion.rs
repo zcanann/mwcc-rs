@@ -325,9 +325,20 @@ impl InlineBodySet {
         {
             if let Some(body) = value_body::summarize_automatic(function) {
                 values.entry(function.name.clone()).or_insert(body);
-            } else if call_counts.get(&function.name).copied() == Some(1) {
-                if let Some(body) = value_body::summarize_automatic_void_forward(function) {
-                    values.entry(function.name.clone()).or_insert(body);
+            } else {
+                let call_count = call_counts.get(&function.name).copied();
+                let transaction = (function.is_static || call_count == Some(1))
+                    .then(|| value_body::summarize_automatic_transaction(function))
+                    .flatten();
+                if let Some(body) = transaction {
+                    values
+                        .entry(function.name.clone())
+                        .and_modify(|existing| existing.automatic_transaction = true)
+                        .or_insert(body);
+                } else if call_count == Some(1) {
+                    if let Some(body) = value_body::summarize_automatic_void_forward(function) {
+                        values.entry(function.name.clone()).or_insert(body);
+                    }
                 }
             }
         }
@@ -696,6 +707,23 @@ impl InlineBodySet {
         function: &Function,
         allow_changing_scalar_arguments: bool,
     ) -> Option<ExpandedCalls> {
+        let has_inline_residue = function
+            .locals
+            .iter()
+            .any(|local| local.name.starts_with("__mwcc_inline_"));
+        let mut source_calls = HashMap::new();
+        collect_function_calls(function, &mut source_calls);
+        let values = self
+            .values
+            .iter()
+            .filter(|(name, body)| {
+                let automatic_transaction = body.automatic_transaction
+                    || value_body::summarize_automatic_transaction(&body.source).is_some();
+                !automatic_transaction
+                    || (!has_inline_residue && source_calls.contains_key(name.as_str()))
+            })
+            .map(|(name, body)| (name.clone(), body.clone()))
+            .collect::<HashMap<_, _>>();
         let mut changed = false;
         let mut statement_body_substitutions = 0;
         let mut statement_frame_residue_substitutions = 0;
@@ -740,7 +768,7 @@ impl InlineBodySet {
             .map(|statement| {
                 value_calls::expand_statement(
                     statement,
-                    &self.values,
+                    &values,
                     &stable_variables,
                     &mut active,
                     &mut changed,
@@ -752,7 +780,7 @@ impl InlineBodySet {
         for (index, initializer) in initializers {
             let initializer = value_calls::expand_expression(
                 &initializer,
-                &self.values,
+                &values,
                 &stable_variables,
                 &mut active,
                 &mut changed,
@@ -765,7 +793,7 @@ impl InlineBodySet {
         for guard in &mut expanded.guards {
             guard.condition = value_calls::expand_expression(
                 &guard.condition,
-                &self.values,
+                &values,
                 &stable_variables,
                 &mut active,
                 &mut changed,
@@ -774,7 +802,7 @@ impl InlineBodySet {
             );
             guard.value = value_calls::expand_expression(
                 &guard.value,
-                &self.values,
+                &values,
                 &stable_variables,
                 &mut active,
                 &mut changed,
@@ -785,7 +813,7 @@ impl InlineBodySet {
         if let Some(return_expression) = &expanded.return_expression {
             expanded.return_expression = Some(value_calls::expand_expression(
                 return_expression,
-                &self.values,
+                &values,
                 &stable_variables,
                 &mut active,
                 &mut changed,
@@ -800,7 +828,9 @@ impl InlineBodySet {
         } else {
             statements
         };
-        let calls_remain = self.calls_required(&expanded);
+        let mut required_scope = self.clone();
+        required_scope.values = values;
+        let calls_remain = required_scope.calls_required(&expanded);
         if calls_remain
             && std::env::var_os("MWCC_CAPTURE_FUNCTION")
                 .is_some_and(|name| name == std::ffi::OsStr::new(&function.name))
@@ -809,7 +839,10 @@ impl InlineBodySet {
             collect_function_calls(&expanded, &mut calls);
             let mut retained = calls
                 .into_keys()
-                .filter(|name| self.bodies.contains_key(name) || self.values.contains_key(name))
+                .filter(|name| {
+                    required_scope.bodies.contains_key(name)
+                        || required_scope.values.contains_key(name)
+                })
                 .collect::<Vec<_>>();
             retained.sort();
             eprintln!("unexpanded retained inline calls: {}", retained.join(", "));

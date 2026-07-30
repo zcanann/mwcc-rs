@@ -14,6 +14,7 @@ use mwcc_syntax_trees::{
 pub(super) struct ValueInlineBody {
     pub(super) source: Function,
     pub(super) expression: Expression,
+    pub(super) automatic_transaction: bool,
 }
 
 impl ValueInlineBody {
@@ -80,6 +81,7 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
             |expression| ValueInlineBody {
                 source: function.clone(),
                 expression,
+                automatic_transaction: false,
             },
         );
     }
@@ -87,12 +89,14 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
         return Some(ValueInlineBody {
             source: function.clone(),
             expression,
+            automatic_transaction: false,
         });
     }
     if let Some(expression) = summarize_conditional_return(function) {
         return Some(ValueInlineBody {
             source: function.clone(),
             expression,
+            automatic_transaction: false,
         });
     }
     // A direct scalar/member return is the smallest value-inline body. Keep it
@@ -106,12 +110,14 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
                 function.return_type,
                 function.return_expression.clone()?,
             ),
+            automatic_transaction: false,
         });
     }
     if let Some(expression) = summarize_result_selection(function) {
         return Some(ValueInlineBody {
             source: function.clone(),
             expression,
+            automatic_transaction: false,
         });
     }
     summarize_sequenced_body(
@@ -125,6 +131,7 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
         ValueInlineBody {
             source: function.clone(),
             expression,
+            automatic_transaction: false,
         }
     })
 }
@@ -464,12 +471,52 @@ pub(super) fn summarize_automatic(function: &Function) -> Option<ValueInlineBody
         return Some(ValueInlineBody {
             source: function.clone(),
             expression,
+            automatic_transaction: false,
         });
     }
     if !function.statements.is_empty() {
         return None;
     }
     summarize(function)
+}
+
+/// Summarize a bounded scalar transaction selected by the automatic inliner.
+///
+/// SDK-facing wrappers commonly publish a few fields, call a shared queue
+/// helper into a scalar local, and return that local. The ordinary direct-value
+/// gate above intentionally rejects locals, but the value composer already
+/// alpha-renames them and preserves each effect in a comma sequence. Keep this
+/// eligibility class narrow: no local storage with identity, no non-local
+/// control flow, and a small statement budget.
+pub(super) fn summarize_automatic_transaction(function: &Function) -> Option<ValueInlineBody> {
+    if function.return_type == Type::Void
+        || function.locals.is_empty()
+        || function.locals.len() > 4
+        || !function.guards.is_empty()
+        || function.asm_body.is_some()
+        || statement_count(&function.statements) > 8
+        || function.locals.iter().any(|local| {
+            local.is_static
+                || local.is_volatile
+                || local.array_length.is_some()
+                || matches!(local.declared_type, Type::Void | Type::Struct { .. })
+        })
+        || !matches!(
+            function.return_expression.as_ref(),
+            Some(Expression::Variable(name))
+                if function.locals.iter().any(|local| local.name == *name)
+        )
+        || !function
+            .statements
+            .iter()
+            .any(crate::analysis::statement_has_call)
+    {
+        return None;
+    }
+    summarize(function).map(|mut body| {
+        body.automatic_transaction = true;
+        body
+    })
 }
 
 /// Summarize a same-TU scalar helper whose only control flow is a chain of
@@ -540,6 +587,7 @@ pub(super) fn summarize_automatic_void_forward(function: &Function) -> Option<Va
             left: Box::new(expression.clone()),
             right: Box::new(Expression::IntegerLiteral(0)),
         },
+        automatic_transaction: false,
     })
 }
 
@@ -611,6 +659,51 @@ mod tests {
             summary.expression,
             Expression::Member { offset: 4, .. }
         ));
+    }
+
+    #[test]
+    fn summarizes_a_bounded_automatic_value_transaction() {
+        let mut function = empty_function("start_async", Type::Int);
+        function.parameters.push(Parameter {
+            parameter_type: Type::StructPointer { element_size: 48 },
+            name: "block".into(),
+        });
+        function.locals.push(LocalDeclaration {
+            declared_type: Type::Int,
+            name: "result".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        function.statements = vec![
+            Statement::Store {
+                target: Expression::Member {
+                    base: Box::new(Expression::Variable("block".into())),
+                    offset: 8,
+                    member_type: Type::UnsignedInt,
+                    index_stride: None,
+                },
+                value: Expression::IntegerLiteral(7),
+            },
+            Statement::Assign {
+                name: "result".into(),
+                value: Expression::Call {
+                    name: "issue".into(),
+                    arguments: vec![Expression::Variable("block".into())],
+                },
+            },
+        ];
+        function.return_expression = Some(Expression::Variable("result".into()));
+
+        let summary =
+            summarize_automatic_transaction(&function).expect("bounded value transaction");
+        assert!(summary.automatic_transaction);
+        assert!(matches!(summary.expression, Expression::Comma { .. }));
     }
 
     #[test]

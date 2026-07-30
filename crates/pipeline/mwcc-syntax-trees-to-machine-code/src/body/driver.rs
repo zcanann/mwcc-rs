@@ -3646,6 +3646,12 @@ impl Generator {
             if self.try_async_state_callback(function)? {
                 return Ok(());
             }
+            // A one-use asynchronous starter expanded into its synchronous
+            // wait wrapper has a two-home transaction schedule: block/result
+            // and interrupt token.
+            if self.try_inlined_async_stream_wait(function)? {
+                return Ok(());
+            }
             // A small multi-use helper expanded at its sole loop call site can
             // leave the iterator, selected object, and entry arguments live
             // across calls in the loop body.

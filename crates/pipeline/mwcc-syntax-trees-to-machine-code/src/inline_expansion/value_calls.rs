@@ -337,6 +337,20 @@ pub(super) fn expand_expression(
                     arguments,
                 };
             }
+            // Automatic transaction selection is a unit-front decision. A
+            // caller may inline a wrapper's source body while that wrapper's
+            // separately emitted definition expands its own transaction, but
+            // MWCC does not recursively re-run transaction selection inside
+            // the newly substituted wrapper body.
+            if !active.is_empty()
+                && (body.automatic_transaction
+                    || super::value_body::summarize_automatic_transaction(&body.source).is_some())
+            {
+                return Expression::Call {
+                    name: name.clone(),
+                    arguments,
+                };
+            }
             let mut replacements = HashMap::new();
             let mut argument_initializers = Vec::new();
             let forwards_once_in_order = body.arguments_forwarded_once_in_order();
