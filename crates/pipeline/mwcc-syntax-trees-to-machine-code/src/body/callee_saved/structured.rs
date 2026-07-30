@@ -2710,6 +2710,7 @@ impl Generator {
             !call_accumulators.is_empty() && self.lower_structured_call_accumulator_return();
         let epilogue = self.output.instructions.len();
         resolve_structured_epilogue_branches(&mut self.output.instructions, epilogue);
+        self.fold_branch_into_adjacent_structured_epilogue(epilogue);
         self.fold_adjacent_structured_epilogue_branches();
         // This pass can insert a delayed saved-home copy into the entry
         // prefix. Run it after the durable epilogue placeholders have been

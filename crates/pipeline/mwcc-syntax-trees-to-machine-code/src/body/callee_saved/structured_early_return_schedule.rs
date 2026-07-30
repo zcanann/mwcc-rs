@@ -36,6 +36,18 @@ pub(super) fn resolve_structured_epilogue_branches(
     }
 }
 
+fn adjacent_structured_epilogue_branch(
+    instructions: &[Instruction],
+    epilogue: usize,
+) -> Option<usize> {
+    let branch = epilogue.checked_sub(1)?;
+    matches!(
+        instructions.get(branch),
+        Some(Instruction::Branch { target }) if *target == epilogue
+    )
+    .then_some(branch)
+}
+
 impl Generator {
     pub(super) fn fold_structured_void_early_return_branches(&mut self) {
         let mut conditional = 0;
@@ -184,6 +196,22 @@ impl Generator {
             }
         }
     }
+
+    /// Remove an unconditional branch when the shared epilogue is already the
+    /// next instruction.
+    ///
+    /// This must run after return placeholders resolve and before other folds
+    /// can change the numeric epilogue index. Restricting the fold to the
+    /// structured epilogue boundary avoids erasing intentional source-level
+    /// branch identities elsewhere in the body.
+    pub(super) fn fold_branch_into_adjacent_structured_epilogue(&mut self, epilogue: usize) {
+        let Some(branch) =
+            adjacent_structured_epilogue_branch(&self.output.instructions, epilogue)
+        else {
+            return;
+        };
+        crate::remove_instruction_retargeting_to_next(self, branch);
+    }
 }
 
 #[cfg(test)]
@@ -219,5 +247,39 @@ mod tests {
             instructions[2],
             Instruction::BranchConditionalForward { target: 3, .. }
         ));
+    }
+
+    #[test]
+    fn identifies_only_an_unconditional_branch_into_the_adjacent_epilogue() {
+        let adjacent = vec![
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::Branch { target: 2 },
+        ];
+        assert_eq!(adjacent_structured_epilogue_branch(&adjacent, 2), Some(1));
+
+        let nonadjacent = vec![
+            Instruction::Branch { target: 2 },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 0,
+            },
+        ];
+        assert_eq!(adjacent_structured_epilogue_branch(&nonadjacent, 2), None);
+
+        let conditional = vec![Instruction::BranchConditionalForward {
+            options: 4,
+            condition_bit: 2,
+            target: 1,
+        }];
+        assert_eq!(
+            adjacent_structured_epilogue_branch(&conditional, 1),
+            None
+        );
+        assert_eq!(adjacent_structured_epilogue_branch(&[], 0), None);
     }
 }
