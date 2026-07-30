@@ -1,9 +1,9 @@
-//! Scoped reuse of integer member loads inside logical-AND conditions.
+//! Scoped reuse of integer member loads inside short-circuit conditions.
 //!
 //! Each later term is reached only through the previous term's fallthrough, so
 //! a repeated direct member load remains available when no store, call, or
-//! register definition intervenes. OR conditions need selected-edge dominance
-//! and deliberately remain outside this cache.
+//! register definition intervenes. This is true for the false edge of OR and
+//! the true edge of AND; both edges are dominated by the earlier member load.
 
 use crate::generator::Generator;
 use mwcc_machine_code::Instruction;
@@ -28,7 +28,7 @@ impl Generator {
         condition: &Expression,
     ) -> ConditionMemberCache {
         let previous = std::mem::take(&mut self.condition_member_cache);
-        self.condition_member_cache.active = is_logical_and(condition);
+        self.condition_member_cache.active = is_short_circuit_chain(condition);
         previous
     }
 
@@ -93,11 +93,11 @@ impl Generator {
     }
 }
 
-fn is_logical_and(expression: &Expression) -> bool {
+fn is_short_circuit_chain(expression: &Expression) -> bool {
     matches!(
         expression,
         Expression::Binary {
-            operator: BinaryOperator::LogicalAnd,
+            operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr,
             ..
         }
     )
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn only_logical_and_opens_the_fallthrough_cache() {
+    fn short_circuit_chains_open_the_dominated_edge_cache() {
         let value = member("fp", 12);
         let and = Expression::Binary {
             operator: BinaryOperator::LogicalAnd,
@@ -216,7 +216,8 @@ mod tests {
             left: Box::new(value.clone()),
             right: Box::new(value),
         };
-        assert!(is_logical_and(&and));
-        assert!(!is_logical_and(&or));
+        assert!(is_short_circuit_chain(&and));
+        assert!(is_short_circuit_chain(&or));
+        assert!(!is_short_circuit_chain(&member("fp", 12)));
     }
 }
