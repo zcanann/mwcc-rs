@@ -4,10 +4,14 @@
 //! routine. Its synchronous caller rejects a zero result and waits under an
 //! interrupt token until one of three terminal states is observed. Build 163
 //! colors the command block and interrupt token into two homes, then reuses the
-//! block home for the returned member.
+//! block home for the returned value.
 
 #[allow(unused_imports)]
 use super::*;
+
+mod completion;
+
+use completion::{constant_terminal_cases, CompletionPlan};
 
 #[derive(Clone)]
 struct StreamWaitPlan {
@@ -19,7 +23,7 @@ struct StreamWaitPlan {
     issue: String,
     disable: String,
     state_offset: i16,
-    result_offset: i16,
+    completion: CompletionPlan,
     queue: String,
     sleep: String,
     restore: String,
@@ -35,6 +39,10 @@ fn flatten_comma<'a>(expression: &'a Expression, output: &mut Vec<&'a Expression
             flatten_comma(left, output);
             flatten_comma(right, output);
         }
+        Expression::Cast {
+            target_type: Type::Void,
+            operand,
+        } if constant_value(operand).is_some() => {}
         expression => output.push(expression),
     }
 }
@@ -257,11 +265,7 @@ fn classify(function: &Function) -> Option<StreamWaitPlan> {
     let [Statement::Assign {
         name: state_name,
         value: state_member,
-    }, Statement::If {
-        condition: terminal_test,
-        then_body: terminal_body,
-        else_body: terminal_else,
-    }, Statement::Expression(Expression::Call {
+    }, terminal_statement, Statement::Expression(Expression::Call {
         name: sleep,
         arguments: sleep_arguments,
     })] = loop_body.as_slice()
@@ -269,25 +273,43 @@ fn classify(function: &Function) -> Option<StreamWaitPlan> {
         return None;
     };
     let (state_offset, state_type) = member(state_member, &block.name)?;
-    if state_type != Type::Int
-        || !terminal_else.is_empty()
-        || !recognizes_terminal_state_test(terminal_test, state_name)
-    {
+    if state_type != Type::Int {
         return None;
     }
-    let [Statement::Assign {
-        name: return_name,
-        value: return_member,
-    }, Statement::Break] = terminal_body.as_slice()
-    else {
-        return None;
+    let completion = match terminal_statement {
+        Statement::If {
+            condition: terminal_test,
+            then_body: terminal_body,
+            else_body: terminal_else,
+        } if terminal_else.is_empty()
+            && recognizes_terminal_state_test(terminal_test, state_name) =>
+        {
+            let [Statement::Assign {
+                name: return_name,
+                value: return_member,
+            }, Statement::Break] = terminal_body.as_slice()
+            else {
+                return None;
+            };
+            let (result_offset, result_type) = member(return_member, &block.name)?;
+            if !matches!(result_type, Type::Int | Type::UnsignedInt)
+                || !matches!(function.return_expression.as_ref(), Some(value)
+                    if variable(value, return_name))
+            {
+                return None;
+            }
+            CompletionPlan::Member { result_offset }
+        }
+        statement => {
+            let (return_name, cases) = constant_terminal_cases(statement, state_name)?;
+            if !matches!(function.return_expression.as_ref(), Some(value)
+                if variable(value, &return_name))
+            {
+                return None;
+            }
+            CompletionPlan::Constants { cases }
+        }
     };
-    let (result_offset, result_type) = member(return_member, &block.name)?;
-    if !matches!(result_type, Type::Int | Type::UnsignedInt)
-        || !matches!(function.return_expression.as_ref(), Some(value) if variable(value, return_name))
-    {
-        return None;
-    }
     let [Expression::AddressOf { operand }] = sleep_arguments.as_slice() else {
         return None;
     };
@@ -304,11 +326,19 @@ fn classify(function: &Function) -> Option<StreamWaitPlan> {
         issue: issue.clone(),
         disable: disable.clone(),
         state_offset,
-        result_offset,
+        completion,
         queue: queue.clone(),
         sleep: sleep.clone(),
         restore: restore.clone(),
     })
+}
+
+fn patch_branch(instructions: &mut [Instruction], index: usize, target: usize) {
+    match &mut instructions[index] {
+        Instruction::Branch { target: found }
+        | Instruction::BranchConditionalForward { target: found, .. } => *found = target,
+        _ => unreachable!("stream wait branch placeholder changed form"),
+    }
 }
 
 impl Generator {
@@ -419,52 +449,102 @@ impl Generator {
             .instructions
             .push(Instruction::move_register(INTERRUPT, 3));
         let loop_head = self.output.instructions.len();
-        self.output.instructions.extend([
-            Instruction::LoadWord {
-                d: 3,
-                a: BLOCK_OR_RESULT,
-                offset: plan.state_offset,
-            },
-            Instruction::AddImmediate {
-                d: 0,
-                a: 3,
-                immediate: 1,
-            },
-            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 1 },
-        ]);
-        let adjacent_terminal = self.output.instructions.len();
-        self.output
-            .instructions
-            .push(Instruction::BranchConditionalForward {
-                options: 4,
-                condition_bit: 1,
-                target: 0,
-            });
-        self.output
-            .instructions
-            .push(Instruction::CompareWordImmediate {
-                a: 3,
-                immediate: 10,
-            });
-        let nonterminal = self.output.instructions.len();
-        self.output
-            .instructions
-            .push(Instruction::BranchConditionalForward {
-                options: 4,
-                condition_bit: 2,
-                target: 0,
-            });
-        let terminal = self.output.instructions.len();
-        self.output.instructions.push(Instruction::LoadWord {
-            d: BLOCK_OR_RESULT,
-            a: BLOCK_OR_RESULT,
-            offset: plan.result_offset,
-        });
-        let to_restore = self.output.instructions.len();
-        self.output
-            .instructions
-            .push(Instruction::Branch { target: 0 });
+        let mut to_sleep = Vec::new();
+        let mut to_restore = Vec::new();
+        match &plan.completion {
+            CompletionPlan::Member { result_offset } => {
+                self.output.instructions.extend([
+                    Instruction::LoadWord {
+                        d: 3,
+                        a: BLOCK_OR_RESULT,
+                        offset: plan.state_offset,
+                    },
+                    Instruction::AddImmediate {
+                        d: 0,
+                        a: 3,
+                        immediate: 1,
+                    },
+                    Instruction::CompareLogicalWordImmediate { a: 0, immediate: 1 },
+                ]);
+                let adjacent_terminal = self.output.instructions.len();
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalForward {
+                        options: 4,
+                        condition_bit: 1,
+                        target: 0,
+                    });
+                self.output
+                    .instructions
+                    .push(Instruction::CompareWordImmediate {
+                        a: 3,
+                        immediate: 10,
+                    });
+                to_sleep.push(self.output.instructions.len());
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalForward {
+                        options: 4,
+                        condition_bit: 2,
+                        target: 0,
+                    });
+                let terminal = self.output.instructions.len();
+                patch_branch(
+                    &mut self.output.instructions,
+                    adjacent_terminal,
+                    terminal,
+                );
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: BLOCK_OR_RESULT,
+                    a: BLOCK_OR_RESULT,
+                    offset: *result_offset,
+                });
+                to_restore.push(self.output.instructions.len());
+                self.output
+                    .instructions
+                    .push(Instruction::Branch { target: 0 });
+            }
+            CompletionPlan::Constants { cases } => {
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: 0,
+                    a: BLOCK_OR_RESULT,
+                    offset: plan.state_offset,
+                });
+                let mut previous_nonmatch = None;
+                for &(state, result) in cases {
+                    let comparison = self.output.instructions.len();
+                    if let Some(branch) = previous_nonmatch.take() {
+                        patch_branch(&mut self.output.instructions, branch, comparison);
+                    }
+                    self.output
+                        .instructions
+                        .push(Instruction::CompareWordImmediate {
+                            a: 0,
+                            immediate: state,
+                        });
+                    previous_nonmatch = Some(self.output.instructions.len());
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalForward {
+                            options: 4,
+                            condition_bit: 2,
+                            target: 0,
+                        });
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate(BLOCK_OR_RESULT, result));
+                    to_restore.push(self.output.instructions.len());
+                    self.output
+                        .instructions
+                        .push(Instruction::Branch { target: 0 });
+                }
+                to_sleep.push(previous_nonmatch.expect("constant completion has cases"));
+            }
+        }
         let sleep_target = self.output.instructions.len();
+        for branch in to_sleep {
+            patch_branch(&mut self.output.instructions, branch, sleep_target);
+        }
         self.record_relocation(RelocationKind::EmbSda21, &plan.queue);
         self.output
             .instructions
@@ -477,6 +557,9 @@ impl Generator {
             .instructions
             .push(Instruction::Branch { target: loop_head });
         let restore_target = self.output.instructions.len();
+        for branch in to_restore {
+            patch_branch(&mut self.output.instructions, branch, restore_target);
+        }
         self.output
             .instructions
             .push(Instruction::move_register(3, INTERRUPT));
@@ -516,19 +599,8 @@ impl Generator {
             Instruction::BranchToLinkRegister,
         ]);
 
-        for (index, target) in [
-            (accepted, accepted_target),
-            (early_return, epilogue),
-            (adjacent_terminal, terminal),
-            (nonterminal, sleep_target),
-            (to_restore, restore_target),
-        ] {
-            match &mut self.output.instructions[index] {
-                Instruction::Branch { target: found }
-                | Instruction::BranchConditionalForward { target: found, .. } => *found = target,
-                _ => unreachable!("stream wait branch placeholder changed form"),
-            }
-        }
+        patch_branch(&mut self.output.instructions, accepted, accepted_target);
+        patch_branch(&mut self.output.instructions, early_return, epilogue);
         Ok(true)
     }
 }
