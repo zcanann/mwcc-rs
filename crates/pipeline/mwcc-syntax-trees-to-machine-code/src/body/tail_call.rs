@@ -225,7 +225,14 @@ impl Generator {
                 || self.locations.contains_key(name)
                 || self.globals.contains_key(name)
                 || self.variadic_callees.contains(name)
-                || self.call_return_types.get(name) != Some(&Type::Void)
+                // A scalar result may be discarded by the void caller.  Its
+                // EABI result register does not participate in a sibling
+                // transfer, so requiring an exactly-void callee needlessly
+                // blocks wrappers such as `memcpy(dst, src, n * 2);`.
+                // Aggregate results are different: they carry a hidden result
+                // address and therefore are not ABI-compatible with this
+                // frameless path.
+                || !discarded_return_is_sibling_compatible(self.call_return_types.get(name))
             {
                 return Ok(false);
             }
@@ -267,4 +274,34 @@ impl Generator {
 fn allocator_pointer_return_is_compatible(name: &str, return_type: Type) -> bool {
     crate::allocation_operator_returns_pointer(name)
         && matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. })
+}
+
+fn discarded_return_is_sibling_compatible(return_type: Option<&Type>) -> bool {
+    return_type.is_some_and(|return_type| !matches!(return_type, Type::Struct { .. }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discarded_scalar_results_are_sibling_call_compatible() {
+        for return_type in [
+            Type::Void,
+            Type::Int,
+            Type::UnsignedInt,
+            Type::Float,
+            Type::Double,
+            Type::Pointer(Pointee::UnsignedChar),
+        ] {
+            assert!(discarded_return_is_sibling_compatible(Some(&return_type)));
+        }
+    }
+
+    #[test]
+    fn discarded_aggregate_results_are_not_sibling_call_compatible() {
+        let aggregate = Type::Struct { size: 8, align: 4 };
+        assert!(!discarded_return_is_sibling_compatible(Some(&aggregate)));
+        assert!(!discarded_return_is_sibling_compatible(None));
+    }
 }
