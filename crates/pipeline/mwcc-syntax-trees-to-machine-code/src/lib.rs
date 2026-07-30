@@ -873,6 +873,7 @@ fn lower_function_body(
     generator.fuse_adjacent_materialized_fixed_bank_stores();
     generator.fuse_linkage_first_fixed_bank_region();
     generator.split_linkage_first_fixed_bank_self_copies();
+    generator.schedule_linkage_first_callback_state_arms();
     let allocated_float_saves = allocate_registers(&mut generator).map_err(|mut diagnostic| {
         let context = format!("function '{}'", function.name);
         if !diagnostic.message.contains(&context) {
@@ -1065,6 +1066,8 @@ fn lower_function_body(
         &generator.behavior,
     );
     generator.schedule_structured_global_member_address();
+    generator.schedule_linkage_first_state_switch_layout();
+    generator.schedule_linkage_first_global_indirect_callback_tail();
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for
