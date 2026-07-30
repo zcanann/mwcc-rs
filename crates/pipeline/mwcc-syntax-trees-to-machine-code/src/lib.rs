@@ -944,6 +944,7 @@ fn lower_function_body(
     generator.schedule_guarded_member_classifier_chain();
     generator.schedule_guarded_float_argument();
     generator.schedule_guarded_float_member_updates();
+    generator.schedule_guarded_item_attach(function);
     generator.schedule_guarded_scaled_item_calls(function);
     generator.schedule_shared_right_float_product_pair();
     generator.schedule_shared_float_store_literal(function);
