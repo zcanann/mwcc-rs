@@ -18,6 +18,13 @@ struct Region {
     element_offset: i16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CallbackAddress {
+    high: usize,
+    low: usize,
+    argument: u8,
+}
+
 fn recognize_at(instructions: &[Instruction], start: usize) -> Option<Region> {
     let [Instruction::AddImmediateShifted {
         d: high_base,
@@ -60,26 +67,61 @@ fn recognize_at(instructions: &[Instruction], start: usize) -> Option<Region> {
     })
 }
 
-fn callback_argument_register(
+fn callback_address(
     instructions: &[Instruction],
     relocations: &[mwcc_machine_code::Relocation],
     after: usize,
-) -> Option<u8> {
+) -> Option<CallbackAddress> {
     let call = instructions[after..]
         .iter()
         .position(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
         .map(|relative| after + relative)?;
-    let relocation = relocations
+    if instructions[after..call].iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instruction::Branch { .. } | Instruction::BranchConditionalForward { .. }
+        )
+    }) {
+        return None;
+    }
+    let low_relocation = relocations
         .iter()
         .filter(|relocation| {
             (after..call).contains(&relocation.instruction_index)
                 && relocation.kind == RelocationKind::Addr16Lo
         })
         .last()?;
-    match instructions.get(relocation.instruction_index)? {
-        Instruction::AddImmediate { d, .. } => Some(*d),
-        _ => None,
+    let Instruction::AddImmediate {
+        d: argument,
+        a: high_base,
+        ..
+    } = instructions.get(low_relocation.instruction_index)?
+    else {
+        return None;
+    };
+    let mwcc_machine_code::RelocationTarget::External(low_target) = &low_relocation.target else {
+        return None;
+    };
+    let high_relocation = relocations.iter().find(|relocation| {
+        (after..low_relocation.instruction_index).contains(&relocation.instruction_index)
+            && relocation.kind == RelocationKind::Addr16Ha
+            && matches!(
+                &relocation.target,
+                mwcc_machine_code::RelocationTarget::External(high_target)
+                    if high_target == low_target
+            )
+    })?;
+    if !matches!(
+        instructions.get(high_relocation.instruction_index),
+        Some(Instruction::AddImmediateShifted { d, a: 0, .. }) if d == high_base
+    ) {
+        return None;
     }
+    Some(CallbackAddress {
+        high: high_relocation.instruction_index,
+        low: low_relocation.instruction_index,
+        argument: *argument,
+    })
 }
 
 fn has_interior_branch_target(instructions: &[Instruction], start: usize) -> bool {
@@ -118,6 +160,20 @@ fn rewrite(instructions: &mut [Instruction], region: Region, full_base: u8) {
     ]);
 }
 
+fn scratch_store_fills_second_address_slot(instructions: &[Instruction], after: usize) -> bool {
+    matches!(
+        instructions.get(after..after + 2),
+        Some([
+            Instruction::AddImmediate {
+                d: scratch,
+                a: 0,
+                ..
+            },
+            Instruction::StoreWord { s, .. },
+        ]) if scratch == s
+    )
+}
+
 impl Generator {
     pub(crate) fn split_linkage_first_fixed_bank_self_copies(&mut self) {
         if self.behavior.frame_convention != mwcc_versions::FrameConvention::LinkageFirst
@@ -149,7 +205,7 @@ impl Generator {
                 start += 4;
                 continue;
             }
-            let Some(callback) = callback_argument_register(
+            let Some(callback) = callback_address(
                 &self.output.instructions,
                 &self.output.relocations,
                 start + 4,
@@ -159,9 +215,20 @@ impl Generator {
             };
             // r4 is MWCC's first disposable argument lane. When the callback
             // itself occupies r4, the independent bank base takes r5 instead.
-            let preferred = if callback == 4 { 5 } else { 4 };
+            let preferred = if callback.argument == 4 { 5 } else { 4 };
             let full_base = self.fresh_virtual_general_preferring(preferred);
+            let delay_low =
+                scratch_store_fills_second_address_slot(&self.output.instructions, start + 4);
             rewrite(&mut self.output.instructions, region, full_base);
+
+            // The completed bank base ends the page value's lifetime. Reuse its
+            // home for the callback high half, then fill the address latency
+            // with the volatile store and (when present) its independent value.
+            crate::move_instruction_before_retargeting(self, callback.high, start + 3);
+            let low_insertion = start + if delay_low { 6 } else { 5 };
+            if callback.low > low_insertion {
+                crate::move_instruction_before_retargeting(self, callback.low, low_insertion);
+            }
             start += 4;
         }
     }
@@ -267,8 +334,48 @@ mod tests {
         ];
 
         assert_eq!(
-            callback_argument_register(&instructions, &relocations, 4),
-            Some(4)
+            callback_address(&instructions, &relocations, 4),
+            Some(CallbackAddress {
+                high: 4,
+                low: 5,
+                argument: 4,
+            })
         );
+    }
+
+    #[test]
+    fn rejects_a_self_copy_whose_call_is_control_flow_dependent() {
+        let mut instructions = self_copy();
+        instructions.extend([
+            Instruction::CompareWordImmediate { a: 3, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 8,
+            },
+            Instruction::load_immediate_shifted(34, 0),
+            Instruction::AddImmediate {
+                d: 4,
+                a: 34,
+                immediate: 0,
+            },
+            Instruction::BranchAndLink {
+                target: "start".to_string(),
+            },
+        ]);
+        let relocations = vec![
+            Relocation {
+                instruction_index: 6,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::External("callback".to_string()),
+            },
+            Relocation {
+                instruction_index: 7,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::External("callback".to_string()),
+            },
+        ];
+
+        assert_eq!(callback_address(&instructions, &relocations, 4), None);
     }
 }
