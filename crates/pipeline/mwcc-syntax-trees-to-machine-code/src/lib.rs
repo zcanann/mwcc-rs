@@ -49,6 +49,7 @@ mod floats;
 mod frame;
 mod frexp_family;
 mod generator;
+mod global_memory_schedule;
 mod inline_expansion;
 mod inline_source_order;
 mod inline_summaries;
@@ -1197,9 +1198,9 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
 /// scheduler's identity policy this is a no-op; it becomes active as the policy
 /// is tuned against the oracle.
 fn schedule_instructions(generator: &mut Generator) {
-    let permutation: Vec<usize> = if generator.output.pre_scheduled
-        || !generator.behavior.schedule_latency_slots
-    {
+    let scheduling_enabled =
+        !generator.output.pre_scheduled && generator.behavior.schedule_latency_slots;
+    let permutation: Vec<usize> = if !scheduling_enabled {
         (0..generator.output.instructions.len()).collect()
     } else {
         // Call arguments are arranged while their values still have distinct
@@ -1215,6 +1216,13 @@ fn schedule_instructions(generator: &mut Generator) {
             .collect()
     };
     remap_instruction_indices(generator, &permutation);
+    if scheduling_enabled {
+        let memory = global_memory_schedule::hoist_independent_sda_loads(
+            &mut generator.output.instructions,
+            &generator.output.relocations,
+        );
+        remap_instruction_indices(generator, &memory);
+    }
 }
 
 /// Move the epilogue's saved-LR reload up to right after the last call, remapping
