@@ -1548,7 +1548,7 @@ impl Generator {
                 // in place with `extsb`. (A `short`/`ushort`/`uchar` member comes back
                 // width-correct from its lha/lhz/lbz load.) `emit_widen` sources from
                 // `left_register`, which is the leaf's home register or the member's scratch.
-                let left_extend: Option<(u8, bool)> = self
+                let mut left_extend: Option<(u8, bool)> = self
                     .leaf_info(left)
                     .ok()
                     .filter(|&(register, width, _)| register == left_register && width < 32)
@@ -1590,31 +1590,14 @@ impl Generator {
                         matches!(as_member(left), Some((_, _, mwcc_syntax_trees::Type::Char)))
                             .then_some((8, true))
                     });
+                if left_extend.is_none() && self.is_signed_byte_load(left)? {
+                    left_extend = Some((8, true));
+                }
                 match (as_small_integer(right), constant_value(right) == Some(0)) {
-                    (Some(constant), _) => {
-                        let register = if let Some((width, narrow_signed)) = left_extend {
-                            self.emit_widen(GENERAL_SCRATCH, left_register, width, narrow_signed);
-                            GENERAL_SCRATCH
-                        } else {
-                            left_register
-                        };
-                        if signed || (constant == 0 && scalarized_one_word_member) {
-                            self.output
-                                .instructions
-                                .push(Instruction::CompareWordImmediate {
-                                    a: register,
-                                    immediate: constant,
-                                });
-                        } else {
-                            self.output.instructions.push(
-                                Instruction::CompareLogicalWordImmediate {
-                                    a: register,
-                                    immediate: constant as u16,
-                                },
-                            );
-                        }
-                    }
-                    (None, true) => {
+                    // A literal zero is also a small integer, so the zero-test
+                    // arm must precede the general immediate arm. Its record-form
+                    // extension both restores the narrow value and sets CR0.
+                    (_, true) => {
                         if let Some((width, narrow_signed)) = left_extend {
                             if matches!(
                                 left.as_ref(),
@@ -1663,6 +1646,29 @@ impl Generator {
                                 Instruction::CompareLogicalWordImmediate {
                                     a: left_register,
                                     immediate: 0,
+                                },
+                            );
+                        }
+                    }
+                    (Some(constant), false) => {
+                        let register = if let Some((width, narrow_signed)) = left_extend {
+                            self.emit_widen(GENERAL_SCRATCH, left_register, width, narrow_signed);
+                            GENERAL_SCRATCH
+                        } else {
+                            left_register
+                        };
+                        if signed || (constant == 0 && scalarized_one_word_member) {
+                            self.output
+                                .instructions
+                                .push(Instruction::CompareWordImmediate {
+                                    a: register,
+                                    immediate: constant,
+                                });
+                        } else {
+                            self.output.instructions.push(
+                                Instruction::CompareLogicalWordImmediate {
+                                    a: register,
+                                    immediate: constant as u16,
                                 },
                             );
                         }
