@@ -3,6 +3,7 @@
 //! Split by family (fire 525); behavior-identical to the former single body.rs.
 
 mod call_prologue;
+mod callback_publication_schedule;
 mod call_result_if_else;
 mod call_result_member_callback_guard;
 mod leading_bitfield_clear_call;
@@ -13,6 +14,7 @@ mod member_float_friction_select;
 mod leading_member_store_call;
 mod leading_shared_zero_bitfield_guard;
 mod linker_table_initialization;
+mod linkage_first_address_argument_schedule;
 mod inlined_sign_store_schedule;
 mod inlined_acceleration_select_schedule;
 mod inlined_symmetric_float_clamp_schedule;

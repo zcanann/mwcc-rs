@@ -931,6 +931,7 @@ fn lower_function_body(
     generator.schedule_structured_argument_load_latency();
     generator.schedule_structured_conversion_member_stores();
     generator.normalize_linkage_first_plain_nonleaf_frame();
+    generator.schedule_linkage_first_address_constant_arguments();
     generator.normalize_linkage_first_indirect_call_schedule();
     generator.normalize_linkage_first_conversion_frame();
     generator.hoist_normalized_linkage_first_arg_moves();
@@ -944,6 +945,7 @@ fn lower_function_body(
     generator.schedule_saved_base_call_argument();
     generator.finalize_exclusive_arm_copy_encodings();
     generator.schedule_linkage_first_function_address();
+    generator.schedule_callback_publication_call();
     generator.schedule_retained_eager_entry_argument();
     generator.schedule_retained_split_member_guard();
     generator.schedule_linkage_first_inline_zero();
