@@ -29,7 +29,7 @@ use safety::{
     stable_arguments, stable_local_values, terminal_scalar_arguments,
 };
 use std::collections::{HashMap, HashSet};
-use substitution::substitute_statement;
+use substitution::{substitute_expression, substitute_statement};
 use value_body::ValueInlineBody;
 
 /// Independent recursion budgets used by MWCC's constructor and ordinary
@@ -97,6 +97,9 @@ pub struct InlineBodySet {
     /// Tiny condition-plus-call transactions expanded at every visible call
     /// site even when the helper has multiple callers.
     repeatable_guarded_call_bodies: HashMap<String, Function>,
+    /// Bounded scalar transactions whose loops and final local result require
+    /// statement-level rather than expression-summary composition.
+    statement_value_bodies: HashMap<String, Function>,
     /// Larger guarded transactions available only to terminal scratch wrappers.
     terminal_wrapper_bodies: HashMap<String, Function>,
     values: HashMap<String, ValueInlineBody>,
@@ -306,6 +309,18 @@ impl InlineBodySet {
             })
             .map(|function| (function.name.clone(), function.clone()))
             .collect();
+        let statement_value_bodies: HashMap<String, Function> = definitions
+            .iter()
+            .filter(|function| {
+                safety::automatic_statement_value_function(function)
+                    && source_visible_call_counts
+                        .get(&function.name)
+                        .copied()
+                        .unwrap_or(0)
+                        == call_counts.get(&function.name).copied().unwrap_or(0)
+            })
+            .map(|function| (function.name.clone(), function.clone()))
+            .collect();
         let terminal_wrapper_bodies = definitions
             .iter()
             .filter(|function| {
@@ -370,9 +385,10 @@ impl InlineBodySet {
                 .filter(|function| function.name.contains(needle.as_ref()))
             {
                 eprintln!(
-                    "automatic inline summary {}: eligible={} terminal_wrapper={} calls={:?} parameters={} locals={} statements={}",
+                    "automatic inline summary {}: eligible={} statement_value={} terminal_wrapper={} calls={:?} parameters={} locals={} statements={}",
                     function.name,
                     automatic_composable_function(function),
+                    statement_value_bodies.contains_key(&function.name),
                     repeatable_terminal_wrapper_callee(function),
                     call_counts.get(&function.name),
                     function.parameters.len(),
@@ -414,6 +430,7 @@ impl InlineBodySet {
                 .map(|(index, function)| (function.name.clone(), index))
                 .collect(),
             repeatable_guarded_call_bodies,
+            statement_value_bodies,
             terminal_wrapper_bodies,
             values,
             guarded_transaction_values,
@@ -520,6 +537,7 @@ impl InlineBodySet {
             .any(|name| {
                 self.bodies.contains_key(name)
                     || self.repeatable_guarded_call_bodies.contains_key(name)
+                    || self.statement_value_bodies.contains_key(name)
                     || self.guarded_transaction_values.contains_key(name)
                     || self.values.contains_key(name)
             })
@@ -959,6 +977,7 @@ impl InlineBodySet {
                 .into_keys()
                 .filter(|name| {
                     required_scope.bodies.contains_key(name)
+                        || required_scope.statement_value_bodies.contains_key(name)
                         || required_scope.values.contains_key(name)
                 })
                 .collect::<Vec<_>>();
@@ -980,6 +999,216 @@ impl InlineBodySet {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn expand_statement_call(
+        &self,
+        statement: &Statement,
+        statement_index: usize,
+        statement_count: usize,
+        stable_variables: &HashSet<String>,
+        active: &mut HashSet<String>,
+        changed: &mut bool,
+        locals: &mut Vec<mwcc_syntax_trees::LocalDeclaration>,
+        occupied_names: &mut HashSet<String>,
+        next_local_id: &mut usize,
+        statement_body_substitutions: &mut usize,
+        statement_frame_residue_substitutions: &mut usize,
+        statement_mutating_body_substitutions: &mut usize,
+        allow_terminal_local_reuse: bool,
+        allow_changing_scalar_arguments: bool,
+    ) -> Option<Vec<Statement>> {
+        let (destination, callee_name, arguments, callee) = match statement {
+            Statement::Expression(Expression::Call { name, arguments }) => (
+                None,
+                name,
+                arguments,
+                self.bodies
+                    .get(name)
+                    .or_else(|| self.statement_value_bodies.get(name))?,
+            ),
+            Statement::Assign {
+                name: destination,
+                value: Expression::Call { name, arguments },
+            } => (
+                Some(destination.as_str()),
+                name,
+                arguments,
+                self.statement_value_bodies.get(name)?,
+            ),
+            _ => return None,
+        };
+        if active.contains(callee_name)
+            || !self.nesting_budget.permits(active, callee_name)
+            || callee.parameters.len() != arguments.len()
+        {
+            return None;
+        }
+        let terminal_direct = destination.is_none()
+            && allow_terminal_local_reuse
+            && statement_index + 1 == statement_count
+            && terminal_scalar_arguments(callee, arguments, stable_variables);
+        let known_function_designator = |argument: &Expression| {
+            matches!(
+                argument,
+                Expression::Variable(name)
+                    if self.definitions.contains_key(name)
+                        || self.retained_definitions.contains_key(name)
+            )
+        };
+        let direct_arguments = arguments.iter().all(|argument| {
+            stable_argument(argument, stable_variables)
+                || known_function_designator(argument)
+        });
+        if !stable_arguments(callee, arguments, stable_variables)
+            && !materializable_arguments(
+                callee,
+                arguments,
+                stable_variables,
+                allow_changing_scalar_arguments,
+            )
+            && !terminal_direct
+            && !direct_arguments
+        {
+            return None;
+        }
+
+        let callee_stable = stable_local_values(callee);
+        let mut nested_stable_variables = stable_variables.clone();
+        let materialize =
+            !terminal_direct && !stable_arguments(callee, arguments, stable_variables);
+        let mut replacements = HashMap::new();
+        let mut substituted = Vec::new();
+        for (parameter, argument) in callee.parameters.iter().zip(arguments) {
+            let parameter_is_mutable =
+                parameter_requires_materialization(callee, &parameter.name);
+            if (!parameter_is_mutable || terminal_direct)
+                && (!materialize
+                    || stable_argument(argument, stable_variables)
+                    || known_function_designator(argument))
+            {
+                replacements.insert(parameter.name.clone(), argument.clone());
+                continue;
+            }
+            let unique_name = loop {
+                let candidate = format!(
+                    "__mwcc_inline_{}_{}_{}",
+                    callee_name, *next_local_id, parameter.name
+                );
+                *next_local_id += 1;
+                if occupied_names.insert(candidate.clone()) {
+                    break candidate;
+                }
+            };
+            replacements.insert(
+                parameter.name.clone(),
+                Expression::Variable(unique_name.clone()),
+            );
+            nested_stable_variables.insert(unique_name.clone());
+            locals.push(mwcc_syntax_trees::LocalDeclaration {
+                declared_type: parameter.parameter_type,
+                name: unique_name.clone(),
+                initializer: None,
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                row_bytes: None,
+            });
+            substituted.push(Statement::Assign {
+                name: unique_name,
+                value: argument.clone(),
+            });
+        }
+        for local in &callee.locals {
+            let unique_name = loop {
+                let candidate = format!(
+                    "__mwcc_inline_{}_{}_{}",
+                    callee_name, *next_local_id, local.name
+                );
+                *next_local_id += 1;
+                if occupied_names.insert(candidate.clone()) {
+                    break candidate;
+                }
+            };
+            replacements.insert(
+                local.name.clone(),
+                Expression::Variable(unique_name.clone()),
+            );
+            if callee_stable.contains(&local.name) {
+                nested_stable_variables.insert(unique_name.clone());
+            }
+            let mut declaration = local.clone();
+            declaration.name = unique_name;
+            declaration.initializer = None;
+            locals.push(declaration);
+        }
+        substituted.extend(callee.locals.iter().filter_map(|local| {
+            local.initializer.as_ref().map(|initializer| {
+                substitute_statement(
+                    &Statement::Assign {
+                        name: local.name.clone(),
+                        value: initializer.clone(),
+                    },
+                    &replacements,
+                )
+            })
+        }));
+        substituted.extend(
+            callee
+                .statements
+                .iter()
+                .map(|statement| substitute_statement(statement, &replacements)),
+        );
+        if let Some(destination) = destination {
+            let returned = substitute_expression(callee.return_expression.as_ref()?, &replacements);
+            substituted.push(Statement::Assign {
+                name: destination.to_owned(),
+                value: returned,
+            });
+        }
+        substituted = fold_constant_inline_branches(substituted);
+        // A return exits the callee instance, not its caller. Give every
+        // expansion a private forward boundary before recursive composition.
+        let return_boundary =
+            format!("__mwcc_inline_return_{}_{}", callee_name, *next_local_id);
+        *next_local_id += 1;
+        if rewrite_inline_returns(&mut substituted, &return_boundary) {
+            substituted.push(Statement::Label(return_boundary));
+        }
+        *changed = true;
+        *statement_body_substitutions += 1;
+        let mutates_memory = statements_mutate_memory(&callee.statements);
+        if mutates_memory {
+            *statement_mutating_body_substitutions += 1;
+        }
+        let mut callee_calls = HashMap::new();
+        collect_function_calls(callee, &mut callee_calls);
+        if self.required.contains(callee_name)
+            && (!callee_calls.is_empty() || mutates_memory)
+        {
+            *statement_frame_residue_substitutions += 1;
+        }
+        active.insert(callee_name.clone());
+        let output = self.expand_statements(
+            &substituted,
+            &nested_stable_variables,
+            active,
+            changed,
+            locals,
+            occupied_names,
+            next_local_id,
+            statement_body_substitutions,
+            statement_frame_residue_substitutions,
+            statement_mutating_body_substitutions,
+            false,
+            allow_changing_scalar_arguments,
+        );
+        active.remove(callee_name);
+        Some(output)
+    }
+
     fn expand_statements(
         &self,
         statements: &[Statement],
@@ -997,162 +1226,26 @@ impl InlineBodySet {
     ) -> Vec<Statement> {
         let mut output = Vec::new();
         for (statement_index, statement) in statements.iter().enumerate() {
+            if let Some(expanded) = self.expand_statement_call(
+                statement,
+                statement_index,
+                statements.len(),
+                stable_variables,
+                active,
+                changed,
+                locals,
+                occupied_names,
+                next_local_id,
+                statement_body_substitutions,
+                statement_frame_residue_substitutions,
+                statement_mutating_body_substitutions,
+                allow_terminal_local_reuse,
+                allow_changing_scalar_arguments,
+            ) {
+                output.extend(expanded);
+                continue;
+            }
             match statement {
-                Statement::Expression(Expression::Call { name, arguments })
-                    if self.bodies.contains_key(name)
-                        && !active.contains(name)
-                        && self.nesting_budget.permits(active, name)
-                        && (stable_arguments(
-                            &self.bodies[name],
-                            arguments,
-                            stable_variables,
-                        ) || materializable_arguments(
-                            &self.bodies[name],
-                            arguments,
-                            stable_variables,
-                            allow_changing_scalar_arguments,
-                        ) || (allow_terminal_local_reuse
-                            && statement_index + 1 == statements.len()
-                            && terminal_scalar_arguments(
-                                &self.bodies[name],
-                                arguments,
-                                stable_variables,
-                            ))) =>
-                {
-                    let callee = &self.bodies[name];
-                    if callee.parameters.len() != arguments.len() {
-                        output.push(statement.clone());
-                        continue;
-                    }
-                    let callee_stable = stable_local_values(callee);
-                    let mut nested_stable_variables = stable_variables.clone();
-                    let terminal_direct = allow_terminal_local_reuse
-                        && statement_index + 1 == statements.len()
-                        && terminal_scalar_arguments(callee, arguments, stable_variables);
-                    let materialize = !terminal_direct
-                        && !stable_arguments(callee, arguments, stable_variables);
-                    let mut replacements = HashMap::new();
-                    let mut substituted = Vec::new();
-                    for (parameter, argument) in callee.parameters.iter().zip(arguments) {
-                        let parameter_is_mutable =
-                            parameter_requires_materialization(callee, &parameter.name);
-                        if (!parameter_is_mutable || terminal_direct)
-                            && (!materialize || stable_argument(argument, stable_variables))
-                        {
-                            replacements.insert(parameter.name.clone(), argument.clone());
-                            continue;
-                        }
-                        let unique_name = loop {
-                            let candidate = format!(
-                                "__mwcc_inline_{}_{}_{}",
-                                name, *next_local_id, parameter.name
-                            );
-                            *next_local_id += 1;
-                            if occupied_names.insert(candidate.clone()) {
-                                break candidate;
-                            }
-                        };
-                        replacements.insert(
-                            parameter.name.clone(),
-                            Expression::Variable(unique_name.clone()),
-                        );
-                        nested_stable_variables.insert(unique_name.clone());
-                        locals.push(mwcc_syntax_trees::LocalDeclaration {
-                            declared_type: parameter.parameter_type,
-                            name: unique_name.clone(),
-                            initializer: None,
-                            is_volatile: false,
-                            array_length: None,
-                            is_static: false,
-                            data_bytes: None,
-                            data_relocations: Vec::new(),
-                            is_const: false,
-                            row_bytes: None,
-                        });
-                        substituted.push(Statement::Assign {
-                            name: unique_name,
-                            value: argument.clone(),
-                        });
-                    }
-                    for local in &callee.locals {
-                        let unique_name = loop {
-                            let candidate =
-                                format!("__mwcc_inline_{}_{}_{}", name, *next_local_id, local.name);
-                            *next_local_id += 1;
-                            if occupied_names.insert(candidate.clone()) {
-                                break candidate;
-                            }
-                        };
-                        replacements.insert(
-                            local.name.clone(),
-                            Expression::Variable(unique_name.clone()),
-                        );
-                        if callee_stable.contains(&local.name) {
-                            nested_stable_variables.insert(unique_name.clone());
-                        }
-                        let mut declaration = local.clone();
-                        declaration.name = unique_name;
-                        declaration.initializer = None;
-                        locals.push(declaration);
-                    }
-                    substituted.extend(callee.locals.iter().filter_map(|local| {
-                        local.initializer.as_ref().map(|initializer| {
-                            substitute_statement(
-                                &Statement::Assign {
-                                    name: local.name.clone(),
-                                    value: initializer.clone(),
-                                },
-                                &replacements,
-                            )
-                        })
-                    }));
-                    substituted.extend(
-                        callee
-                            .statements
-                            .iter()
-                            .map(|statement| substitute_statement(statement, &replacements)),
-                    );
-                    substituted = fold_constant_inline_branches(substituted);
-                    // A return exits the callee instance, not its caller.  Give
-                    // every expansion a private forward boundary so nested
-                    // control flow preserves that distinction through the
-                    // shared structured-body lowering path.
-                    let return_boundary =
-                        format!("__mwcc_inline_return_{}_{}", name, *next_local_id);
-                    *next_local_id += 1;
-                    if rewrite_inline_returns(&mut substituted, &return_boundary) {
-                        substituted.push(Statement::Label(return_boundary));
-                    }
-                    *changed = true;
-                    *statement_body_substitutions += 1;
-                    let mutates_memory = statements_mutate_memory(&callee.statements);
-                    if mutates_memory {
-                        *statement_mutating_body_substitutions += 1;
-                    }
-                    let mut callee_calls = HashMap::new();
-                    collect_function_calls(callee, &mut callee_calls);
-                    if self.required.contains(name)
-                        && (!callee_calls.is_empty() || mutates_memory)
-                    {
-                        *statement_frame_residue_substitutions += 1;
-                    }
-                    active.insert(name.clone());
-                    output.extend(self.expand_statements(
-                        &substituted,
-                        &nested_stable_variables,
-                        active,
-                        changed,
-                        locals,
-                        occupied_names,
-                        next_local_id,
-                        statement_body_substitutions,
-                        statement_frame_residue_substitutions,
-                        statement_mutating_body_substitutions,
-                        false,
-                        allow_changing_scalar_arguments,
-                    ));
-                    active.remove(name);
-                }
                 Statement::If {
                     condition,
                     then_body,
@@ -1353,6 +1446,7 @@ impl InlineBodySet {
         match expression {
             Expression::Call { name, arguments } => {
                 self.bodies.contains_key(name)
+                    || self.statement_value_bodies.contains_key(name)
                     || self.values.contains_key(name)
                     || arguments
                         .iter()
@@ -3907,5 +4001,110 @@ mod tests {
                     if matches!(target.as_ref(), Expression::Variable(name) if name == temporary))
                 && matches!(right.as_ref(), Expression::Comma { .. })
         ));
+    }
+
+    #[test]
+    fn composes_a_queue_draining_value_body_at_discarded_and_assigned_calls() {
+        let callback = Parameter {
+            parameter_type: Type::Pointer(Pointee::Pointer),
+            name: "callback".into(),
+        };
+        let mut transaction = function(
+            "drain",
+            vec![callback.clone()],
+            vec![
+                Statement::Assign {
+                    name: "enabled".into(),
+                    value: Expression::Call {
+                        name: "disable".into(),
+                        arguments: Vec::new(),
+                    },
+                },
+                Statement::Loop {
+                    kind: LoopKind::While,
+                    initializer: None,
+                    condition: Some(Expression::Assign {
+                        target: Box::new(Expression::Variable("item".into())),
+                        value: Box::new(Expression::Call {
+                            name: "pop".into(),
+                            arguments: Vec::new(),
+                        }),
+                    }),
+                    step: None,
+                    body: vec![Statement::Expression(Expression::Call {
+                        name: "cancel".into(),
+                        arguments: vec![Expression::Variable("item".into())],
+                    })],
+                },
+                Statement::Assign {
+                    name: "result".into(),
+                    value: Expression::IntegerLiteral(1),
+                },
+            ],
+        );
+        transaction.return_type = Type::Int;
+        transaction.locals = ["enabled", "item", "result"]
+            .into_iter()
+            .map(|name| {
+                let mut declaration =
+                    local(name, Type::Int, Expression::IntegerLiteral(0));
+                declaration.initializer = None;
+                declaration
+            })
+            .collect();
+        transaction.return_expression = Some(Expression::Variable("result".into()));
+
+        let discarded = function(
+            "discarded",
+            vec![callback.clone()],
+            vec![Statement::Expression(Expression::Call {
+                name: "drain".into(),
+                arguments: vec![Expression::Variable("callback".into())],
+            })],
+        );
+        let mut assigned = function(
+            "assigned",
+            vec![callback],
+            vec![Statement::Assign {
+                name: "outer".into(),
+                value: Expression::Call {
+                    name: "drain".into(),
+                    arguments: vec![Expression::Variable("callback".into())],
+                },
+            }],
+        );
+        assigned.return_type = Type::Int;
+        assigned.locals = vec![local(
+            "outer",
+            Type::Int,
+            Expression::IntegerLiteral(0),
+        )];
+        assigned.return_expression = Some(Expression::Variable("outer".into()));
+
+        let bodies = InlineBodySet::analyze_with_definitions(
+            &[transaction, discarded.clone(), assigned.clone()],
+            &[],
+        );
+        let discarded = bodies
+            .expand_calls(&discarded)
+            .expect("the discarded statement-valued call should compose");
+        let assigned = bodies
+            .expand_calls(&assigned)
+            .expect("the assigned statement-valued call should compose");
+        let mut discarded_calls = HashMap::new();
+        collect_function_calls(&discarded, &mut discarded_calls);
+        let mut assigned_calls = HashMap::new();
+        collect_function_calls(&assigned, &mut assigned_calls);
+        assert!(!discarded_calls.contains_key("drain"));
+        assert!(!assigned_calls.contains_key("drain"));
+        assert!(assigned.statements.iter().any(|statement| {
+            matches!(
+                statement,
+                Statement::Assign {
+                    name,
+                    value: Expression::Variable(value),
+                } if name == "outer" && value.starts_with("__mwcc_inline_drain_")
+            )
+        }));
     }
 }

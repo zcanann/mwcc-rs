@@ -117,6 +117,124 @@ pub(super) fn automatic_composable_function(function: &Function) -> bool {
     ordinary || parameter_select
 }
 
+/// A bounded scalar transaction whose result is a local may be expanded as
+/// statements at a call site even when its control flow cannot be represented
+/// by the expression-summary lane. This admits a canonical queue-draining
+/// `while ((item = pop())) consume(item);` loop while retaining the same
+/// storage, dominance, parameter-alias, and control-flow safety proofs used by
+/// ordinary statement-body composition.
+pub(super) fn automatic_statement_value_function(function: &Function) -> bool {
+    if matches!(function.return_type, Type::Void | Type::Struct { .. })
+        || function.locals.is_empty()
+        || function.locals.len() > 4
+        || !function.guards.is_empty()
+        || function.asm_body.is_some()
+        || statement_weight(&function.statements) > 16
+        || !matches!(
+            function.return_expression.as_ref(),
+            Some(Expression::Variable(name))
+                if function.locals.iter().any(|local| local.name == *name)
+        )
+        || function.locals.iter().any(|local| {
+            local.is_static
+                || local.is_volatile
+                || !automatic_local_has_composable_storage(local)
+                || matches!(local.declared_type, Type::Void | Type::Struct { .. })
+        })
+        || function
+            .parameters
+            .iter()
+            .any(|parameter| variable_is_modified_or_escaped(function, &parameter.name))
+        || !uninitialized_local_reads_are_dominated(function)
+        || function
+            .statements
+            .iter()
+            .filter(|statement| is_queue_draining_loop(statement))
+            .count()
+            != 1
+    {
+        return false;
+    }
+    let local_names = function
+        .locals
+        .iter()
+        .map(|local| local.name.as_str())
+        .collect();
+    statement_value_statements_are_composable(&function.statements, &local_names)
+        && multi_call_transaction_callee(function)
+}
+
+fn is_queue_draining_loop(statement: &Statement) -> bool {
+    matches!(
+        statement,
+        Statement::Loop {
+            kind: mwcc_syntax_trees::LoopKind::While,
+            initializer: None,
+            condition:
+                Some(Expression::Assign {
+                    target,
+                    value,
+                }),
+            step: None,
+            body,
+        } if matches!(target.as_ref(), Expression::Variable(_))
+            && matches!(value.as_ref(), Expression::Call { .. })
+            && !body.is_empty()
+    )
+}
+
+fn statement_value_statements_are_composable(
+    statements: &[Statement],
+    local_names: &HashSet<&str>,
+) -> bool {
+    statements.iter().all(|statement| match statement {
+        Statement::Store { .. } | Statement::Expression(_) | Statement::InlineAsm(_) => true,
+        Statement::Assign { name, .. } => local_names.contains(name.as_str()),
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            statement_value_statements_are_composable(then_body, local_names)
+                && statement_value_statements_are_composable(else_body, local_names)
+        }
+        Statement::Loop {
+            kind: mwcc_syntax_trees::LoopKind::While,
+            initializer: None,
+            condition:
+                Some(Expression::Assign {
+                    target,
+                    value: _,
+                }),
+            step: None,
+            body,
+        } => {
+            matches!(target.as_ref(), Expression::Variable(name)
+                if local_names.contains(name.as_str()))
+                && statement_value_statements_are_composable(body, local_names)
+        }
+        Statement::Switch { arms, default, .. } => {
+            arms.iter().all(|arm| match &arm.body {
+                mwcc_syntax_trees::ArmBody::Statements(body) => {
+                    statement_value_statements_are_composable(body, local_names)
+                }
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+            }) && default.as_ref().is_none_or(|arm| match arm {
+                mwcc_syntax_trees::ArmBody::Statements(body) => {
+                    statement_value_statements_are_composable(body, local_names)
+                }
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+            })
+        }
+        Statement::Return(_)
+        | Statement::Break
+        | Statement::Continue
+        | Statement::Goto(_)
+        | Statement::Label(_)
+        | Statement::Loop { .. } => false,
+    })
+}
+
 /// A larger switch transaction is available only to the bounded-caller IPA
 /// lane. Keeping it out of ordinary one-call composition prevents unrelated
 /// state dispatchers from being duplicated merely because their top-level AST
@@ -336,11 +454,10 @@ fn reads_are_dominated<'a>(
                         return false;
                     }
                 }
-                if condition
-                    .as_ref()
-                    .is_some_and(|condition| reads_unassigned(condition, tracked, assigned))
-                {
-                    return false;
+                if let Some(condition) = condition {
+                    if !record_dominating_assignment(condition, tracked, assigned) {
+                        return false;
+                    }
                 }
                 let mut loop_assigned = assigned.clone();
                 if !reads_are_dominated(body, tracked, &mut loop_assigned)
@@ -1265,6 +1382,59 @@ mod tests {
         }];
 
         assert!(bounded_switch_transaction_callee(&function));
+        assert!(!automatic_composable_function(&function));
+    }
+
+    #[test]
+    fn admits_a_loop_bearing_statement_value_transaction() {
+        let mut function = scalar_parameter_function();
+        function.name = "drain".into();
+        function.return_type = Type::Int;
+        let local = |name: &str| LocalDeclaration {
+            declared_type: Type::Int,
+            name: name.into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        };
+        function.locals = vec![local("enabled"), local("item"), local("result")];
+        function.statements = vec![
+            Statement::Assign {
+                name: "enabled".into(),
+                value: Expression::Call {
+                    name: "disable".into(),
+                    arguments: Vec::new(),
+                },
+            },
+            Statement::Loop {
+                kind: mwcc_syntax_trees::LoopKind::While,
+                initializer: None,
+                condition: Some(Expression::Assign {
+                    target: Box::new(Expression::Variable("item".into())),
+                    value: Box::new(Expression::Call {
+                        name: "pop".into(),
+                        arguments: Vec::new(),
+                    }),
+                }),
+                step: None,
+                body: vec![Statement::Expression(Expression::Call {
+                    name: "cancel".into(),
+                    arguments: vec![Expression::Variable("item".into())],
+                })],
+            },
+            Statement::Assign {
+                name: "result".into(),
+                value: Expression::IntegerLiteral(1),
+            },
+        ];
+        function.return_expression = Some(Expression::Variable("result".into()));
+
+        assert!(automatic_statement_value_function(&function));
         assert!(!automatic_composable_function(&function));
     }
 }

@@ -1837,6 +1837,30 @@ impl Generator {
                 });
             return Ok((12, 2)); // beq — skip when the original value is zero
         }
+        // A known function designator used directly as a condition is an
+        // address truth test. Build 163 materializes the high half and records
+        // the low-half add so CR0 can branch without a separate compare.
+        if let Expression::Variable(name) = condition {
+            if self.call_return_types.contains_key(name)
+                && !self.locations.contains_key(name)
+                && !self.frame_slots.contains_key(name)
+                && !self.globals.contains_key(name)
+            {
+                let high = self.fresh_virtual_general_preferring(
+                    mwcc_target::Eabi::general_result().number,
+                );
+                self.emit_address_high(high, name);
+                self.record_relocation(mwcc_machine_code::RelocationKind::Addr16Lo, name);
+                self.output
+                    .instructions
+                    .push(Instruction::AddImmediateCarryingRecord {
+                        d: GENERAL_SCRATCH,
+                        a: high,
+                        immediate: 0,
+                    });
+                return Ok((12, 2)); // beq — skip when the address is zero
+            }
+        }
         // Plain truth test: compare against zero, skip when equal. A pointer/unsigned
         // operand uses cmplwi (mwcc), a signed one cmpwi.
         let register = self.condition_operand_register(condition)?;
