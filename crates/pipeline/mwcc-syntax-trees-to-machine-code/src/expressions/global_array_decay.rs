@@ -111,7 +111,16 @@ impl Generator {
         total_size: u32,
         destination: u8,
     ) -> Compilation<()> {
-        if destination != GENERAL_SCRATCH {
+        let anchored = self
+            .data_section_anchor
+            .as_ref()
+            .is_some_and(|anchor| {
+                anchor.register.is_some() && anchor.symbols.contains(name)
+            });
+        // r0 cannot be the base of an absolute `addi`, but it is a valid
+        // destination when a distinct section-anchor register supplies the
+        // base. Keep that one-instruction address form available to stores.
+        if destination != GENERAL_SCRATCH || anchored {
             return self.emit_global_array_base(name, total_size, destination);
         }
 
