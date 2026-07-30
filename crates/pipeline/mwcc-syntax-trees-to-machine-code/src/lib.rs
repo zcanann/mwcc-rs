@@ -974,6 +974,7 @@ fn lower_function_body(
     generator.schedule_reciprocal_frame_fill();
     generator.schedule_bounded_vector_reciprocal();
     generator.schedule_adjacent_fighter_nudge();
+    generator.schedule_guarded_item_charge();
     generator.reuse_absolute_pooled_float_literals();
     generator.reuse_repeated_integer_constants();
     generator.finalize_structured_noncopy_conversion_lanes();
