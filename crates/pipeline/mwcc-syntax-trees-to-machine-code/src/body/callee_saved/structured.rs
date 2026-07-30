@@ -2622,11 +2622,15 @@ impl Generator {
                     "structured forward branch targets an unknown label '{label}'"
                 ))
             })?;
-            if let Instruction::Branch {
-                target: branch_target,
-            } = &mut self.output.instructions[branch]
-            {
-                *branch_target = target;
+            match &mut self.output.instructions[branch] {
+                Instruction::Branch {
+                    target: branch_target,
+                }
+                | Instruction::BranchConditionalForward {
+                    target: branch_target,
+                    ..
+                } => *branch_target = target,
+                _ => {}
             }
         }
         self.fold_structured_conditional_gotos();
@@ -3092,6 +3096,7 @@ impl Generator {
                     struct ConditionBranches {
                         skip_body: Vec<usize>,
                         enter_body: Vec<usize>,
+                        grouped_equality: bool,
                     }
                     self.preload_condition_literal_reused_in_body(condition, then_body);
                     let condition_result = (|| {
@@ -3103,6 +3108,7 @@ impl Generator {
                                 return Ok(ConditionBranches {
                                     skip_body,
                                     enter_body,
+                                    grouped_equality: true,
                                 });
                             }
                         }
@@ -3229,6 +3235,7 @@ impl Generator {
                             return Ok(ConditionBranches {
                                 skip_body,
                                 enter_body,
+                                grouped_equality: false,
                             });
                         }
                         let mut branches = Vec::with_capacity(terms.len());
@@ -3279,6 +3286,7 @@ impl Generator {
                         Ok(ConditionBranches {
                             skip_body: branches,
                             enter_body: Vec::new(),
+                            grouped_equality: false,
                         })
                     })();
                     self.restore_condition_member_cache(previous_member_cache);
@@ -3311,9 +3319,14 @@ impl Generator {
                             return Err(diagnostic);
                         }
                     };
+                    let ConditionBranches {
+                        mut skip_body,
+                        enter_body,
+                        grouped_equality,
+                    } = branches;
                     self.commit_structured_float_handoff();
                     let body_start = self.output.instructions.len();
-                    for branch in branches.enter_body {
+                    for &branch in &enter_body {
                         self.patch_forward(branch, body_start);
                     }
                     // Only the proven first guarded statement may consume
@@ -3368,8 +3381,17 @@ impl Generator {
                     });
                     self.restore_wide_pair_mask_cache(previous_wide_mask_cache);
                     body_result?;
+                    if grouped_equality {
+                        self.fold_logical_equality_alternative_goto(
+                            then_body,
+                            body_start,
+                            &enter_body,
+                            &mut skip_body,
+                            pending_gotos,
+                        );
+                    }
                     let target = self.output.instructions.len();
-                    for branch in branches.skip_body {
+                    for branch in skip_body {
                         if let Instruction::BranchConditionalForward {
                             target: branch_target,
                             ..

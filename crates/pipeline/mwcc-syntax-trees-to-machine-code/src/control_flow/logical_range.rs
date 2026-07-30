@@ -2,7 +2,7 @@
 
 #[allow(unused_imports)]
 use super::*;
-use mwcc_syntax_trees::Type;
+use mwcc_syntax_trees::{Statement, Type};
 
 struct EqualityRange<'a> {
     name: &'a str,
@@ -11,6 +11,28 @@ struct EqualityRange<'a> {
 }
 
 impl Generator {
+    /// Replace a grouped equality body's one-instruction goto with direct
+    /// conditional edges to the same label. This is the structured form MWCC
+    /// uses for `if (x == A || ...) break`, and unlike a global forward-branch
+    /// peephole it does not rewrite unrelated conditional diamonds.
+    pub(crate) fn fold_logical_equality_alternative_goto(
+        &mut self,
+        then_body: &[Statement],
+        body_start: usize,
+        enter_body: &[usize],
+        skip_body: &mut Vec<usize>,
+        pending_gotos: &mut Vec<(usize, String)>,
+    ) {
+        fold_equality_alternative_goto(
+            &mut self.output.instructions,
+            then_body,
+            body_start,
+            enter_body,
+            skip_body,
+            pending_gotos,
+        );
+    }
+
     /// Emit a structured OR of equalities as ordered singleton/range tests.
     ///
     /// The returned vectors contain branches that enter the guarded body and
@@ -279,6 +301,55 @@ impl Generator {
     }
 }
 
+fn fold_equality_alternative_goto(
+    instructions: &mut Vec<Instruction>,
+    then_body: &[Statement],
+    body_start: usize,
+    enter_body: &[usize],
+    skip_body: &mut Vec<usize>,
+    pending_gotos: &mut Vec<(usize, String)>,
+) {
+    let [Statement::Goto(label)] = then_body else {
+        return;
+    };
+    let Some(&terminal) = skip_body.first() else {
+        return;
+    };
+    if instructions.len() != body_start + 1
+        || !matches!(
+            instructions[body_start],
+            Instruction::Branch { target: 0 }
+        )
+        || !matches!(
+            instructions.get(terminal),
+            Some(Instruction::BranchConditionalForward { .. })
+        )
+        || !matches!(
+            pending_gotos.last(),
+            Some((branch, pending_label))
+                if *branch == body_start && pending_label == label
+        )
+        || skip_body.len() != 1
+    {
+        return;
+    }
+
+    pending_gotos.pop();
+    instructions.pop();
+    for &branch in enter_body {
+        pending_gotos.push((branch, label.clone()));
+    }
+    skip_body.pop();
+    if let Instruction::BranchConditionalForward {
+        options, target, ..
+    } = &mut instructions[terminal]
+    {
+        *options ^= 8;
+        *target = 0;
+        pending_gotos.push((terminal, label.clone()));
+    }
+}
+
 fn equality_range(condition: &Expression) -> Option<EqualityRange<'_>> {
     fn collect<'e>(
         expression: &'e Expression,
@@ -468,5 +539,49 @@ mod tests {
             consecutive_groups(&[0, -1, 10]),
             Some(vec![(-1, 0), (10, 10)])
         );
+    }
+
+    #[test]
+    fn grouped_equality_goto_becomes_direct_conditional_edges() {
+        let mut instructions = vec![
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 1,
+                target: 2,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 3,
+            },
+            Instruction::Branch { target: 0 },
+        ];
+        let then_body = vec![Statement::Goto("exit".into())];
+        let mut skip_body = vec![1];
+        let mut pending_gotos = vec![(2, "exit".into())];
+
+        fold_equality_alternative_goto(
+            &mut instructions,
+            &then_body,
+            2,
+            &[0],
+            &mut skip_body,
+            &mut pending_gotos,
+        );
+
+        assert_eq!(instructions.len(), 2);
+        assert!(skip_body.is_empty());
+        assert_eq!(
+            pending_gotos,
+            vec![(0, "exit".into()), (1, "exit".into())]
+        );
+        assert!(matches!(
+            instructions[1],
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 0,
+            }
+        ));
     }
 }
