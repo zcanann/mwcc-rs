@@ -35,6 +35,9 @@ impl Generator {
         while let Some(packet) = allocated_guarded_pointer_store(&self.output.instructions) {
             crate::remove_instruction_retargeting_to_next(self, packet.reload);
         }
+
+        schedule_guarded_pointer_call_arguments(&mut self.output.instructions);
+        schedule_primary_pointer_followup_calls(&mut self.output.instructions);
     }
 }
 
@@ -124,6 +127,102 @@ fn allocated_guarded_pointer_store(instructions: &[Instruction]) -> Option<Guard
         })
 }
 
+fn schedule_guarded_pointer_call_arguments(instructions: &mut [Instruction]) {
+    let mut start = 0;
+    while let Some(relative) = instructions[start..]
+        .windows(7)
+        .position(is_allocated_guarded_pointer_call)
+    {
+        let packet = start + relative;
+        instructions.swap(packet + 3, packet + 4);
+        instructions[packet + 4] = Instruction::move_register(4, 30);
+        start = packet + 7;
+    }
+}
+
+fn is_allocated_guarded_pointer_call(window: &[Instruction]) -> bool {
+    matches!(
+        window,
+        [
+            Instruction::LoadWord { d: 3, a: 31, .. },
+            Instruction::CompareLogicalWordImmediate {
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                ..
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 30,
+                immediate: 0,
+            },
+            Instruction::LoadWord { d: 5, a: 29, .. },
+            Instruction::LoadWord {
+                d: 5,
+                a: 5,
+                offset: 8,
+            },
+            Instruction::LoadByteZero { d: 5, a: 5, .. },
+        ]
+    )
+}
+
+fn schedule_primary_pointer_followup_calls(instructions: &mut [Instruction]) {
+    let Some(start) = instructions.windows(9).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 0,
+                    immediate: 0,
+                },
+                Instruction::LoadWord {
+                    d: 3,
+                    a: 31,
+                    offset: first_pointer_offset,
+                },
+                Instruction::BranchAndLink { .. },
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: 30,
+                    immediate: 0,
+                },
+                Instruction::LoadWord {
+                    d: 4,
+                    a: 31,
+                    offset: second_pointer_offset,
+                },
+                Instruction::LoadWord { d: 5, a: 31, .. },
+                Instruction::BranchAndLink { .. },
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: 27,
+                    immediate: 0,
+                },
+                Instruction::BranchAndLink { .. },
+            ] if first_pointer_offset == second_pointer_offset
+        )
+    }) else {
+        return;
+    };
+    let original = instructions[start..start + 9].to_vec();
+    instructions[start..start + 9].clone_from_slice(&[
+        original[1].clone(),
+        original[0].clone(),
+        original[2].clone(),
+        original[4].clone(),
+        Instruction::move_register(3, 30),
+        original[5].clone(),
+        original[6].clone(),
+        Instruction::move_register(3, 27),
+        original[8].clone(),
+    ]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +310,40 @@ mod tests {
             offset: 6524,
         };
         assert_eq!(allocated_guarded_pointer_argument(&instructions), None);
+    }
+
+    #[test]
+    fn recognizes_only_the_guarded_pointer_call_argument_packet() {
+        let instructions = [
+            Instruction::LoadWord {
+                d: 3,
+                a: 31,
+                offset: 6524,
+            },
+            Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 },
+            branch(12),
+            Instruction::AddImmediate {
+                d: 4,
+                a: 30,
+                immediate: 0,
+            },
+            Instruction::LoadWord {
+                d: 5,
+                a: 29,
+                offset: 268,
+            },
+            Instruction::LoadWord {
+                d: 5,
+                a: 5,
+                offset: 8,
+            },
+            Instruction::LoadByteZero {
+                d: 5,
+                a: 5,
+                offset: 18,
+            },
+        ];
+
+        assert!(is_allocated_guarded_pointer_call(&instructions));
     }
 }
