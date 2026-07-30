@@ -1743,7 +1743,19 @@ impl Generator {
                                     ));
                                     left_register = preserved;
                                 }
-                                let right_register = self.condition_operand_register(right)?;
+                                // A constant outside cmpwi/cmplwi range is a
+                                // register operand. Keep a computed left value
+                                // (often in r0) live while materializing the
+                                // constant into its own virtual home.
+                                let right_register =
+                                    if let Some(constant) = constant_value(right) {
+                                        let register = self
+                                            .fresh_virtual_general_avoiding(vec![left_register]);
+                                        self.load_integer_constant(register, constant);
+                                        register
+                                    } else {
+                                        self.condition_operand_register(right)?
+                                    };
                                 if signed {
                                     self.output.instructions.push(Instruction::CompareWord {
                                         a: left_register,
