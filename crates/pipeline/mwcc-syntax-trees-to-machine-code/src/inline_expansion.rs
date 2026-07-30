@@ -24,9 +24,9 @@ use mwcc_syntax_trees::{
 use returns::rewrite_inline_returns;
 use safety::{
     automatic_composable_function, composable_function, materializable_arguments,
-    parameter_requires_materialization, repeatable_guarded_call_callee,
-    repeatable_terminal_wrapper_callee, stable_argument, stable_arguments, stable_local_values,
-    terminal_scalar_arguments,
+    multi_call_transaction_callee, parameter_requires_materialization,
+    repeatable_guarded_call_callee, repeatable_terminal_wrapper_callee, stable_argument,
+    stable_arguments, stable_local_values, terminal_scalar_arguments,
 };
 use std::collections::{HashMap, HashSet};
 use substitution::substitute_statement;
@@ -582,9 +582,10 @@ impl InlineBodySet {
     ///
     /// Whole-file IPA selectively duplicates ordinary helpers in compact,
     /// call-dense transactions while leaving the same helpers out of line in
-    /// large state-copy functions. Requiring at least two profitable helper
-    /// calls prevents this lane from turning every repeated definition into an
-    /// unconditional inline, and the complete caller weight bounds code growth.
+    /// large state-copy functions. Two ordinary helper calls justify
+    /// composition. A single helper also qualifies when its body is a
+    /// multi-call transaction: MWCC duplicates those compact sequences in small
+    /// callers while retaining their callable definition for larger sites.
     pub(crate) fn expand_repeatable_bounded_caller_calls(
         &self,
         function: &Function,
@@ -610,7 +611,12 @@ impl InlineBodySet {
             .filter(|(name, _)| visible_bodies.contains_key(*name))
             .map(|(_, count)| *count)
             .sum::<usize>();
-        if repeatable_calls < 2 {
+        let has_multi_call_transaction = calls.keys().any(|name| {
+            visible_bodies
+                .get(name)
+                .is_some_and(multi_call_transaction_callee)
+        });
+        if repeatable_calls < 2 && !has_multi_call_transaction {
             return None;
         }
         let mut expanded = self.clone();
@@ -3168,6 +3174,57 @@ mod tests {
                 Statement::Expression(Expression::Call { name: second, .. }),
             ] if first == "consume_first" && second == "consume_second"
         ));
+    }
+
+    #[test]
+    fn bounded_caller_inlines_one_repeated_multi_call_transaction() {
+        let transaction = function(
+            "transaction",
+            Vec::new(),
+            ["first", "second", "third"]
+                .into_iter()
+                .map(|name| {
+                    Statement::Expression(Expression::Call {
+                        name: name.into(),
+                        arguments: Vec::new(),
+                    })
+                })
+                .collect(),
+        );
+        let caller = |name: &str| {
+            function(
+                name,
+                Vec::new(),
+                vec![
+                    Statement::Expression(Expression::Call {
+                        name: "observe_before".into(),
+                        arguments: Vec::new(),
+                    }),
+                    Statement::Expression(Expression::Call {
+                        name: "transaction".into(),
+                        arguments: Vec::new(),
+                    }),
+                    Statement::Expression(Expression::Call {
+                        name: "observe_after".into(),
+                        arguments: Vec::new(),
+                    }),
+                ],
+            )
+        };
+        let first = caller("first_caller");
+        let second = caller("second_caller");
+        let bodies =
+            InlineBodySet::analyze_with_definitions(&[transaction, first.clone(), second], &[]);
+
+        let expanded = bodies
+            .expand_repeatable_bounded_caller_calls(&first)
+            .expect("a repeated multi-call transaction should compose in a bounded caller");
+        let mut calls = HashMap::new();
+        collect_function_calls(&expanded.function, &mut calls);
+        assert!(!calls.contains_key("transaction"));
+        assert_eq!(calls.get("first"), Some(&1));
+        assert_eq!(calls.get("second"), Some(&1));
+        assert_eq!(calls.get("third"), Some(&1));
     }
 
     #[test]

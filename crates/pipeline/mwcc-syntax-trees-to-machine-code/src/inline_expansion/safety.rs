@@ -179,6 +179,16 @@ pub(super) fn repeatable_terminal_wrapper_callee(function: &Function) -> bool {
     calls.values().sum::<usize>() >= 3
 }
 
+/// A compact repeated helper that sequences several calls is a transaction
+/// worth duplicating even when a bounded caller contains only one invocation.
+/// Keep this as a callee property so caller selection can remain concerned
+/// solely with visibility and growth limits.
+pub(super) fn multi_call_transaction_callee(function: &Function) -> bool {
+    let mut calls = std::collections::HashMap::new();
+    super::collect_function_calls(function, &mut calls);
+    calls.values().sum::<usize>() >= 3
+}
+
 /// A one-use helper may treat scalar parameters as mutable local value lanes,
 /// select among them through nested branches, and commit one final store. MWCC
 /// expands this shape even when its branch weight exceeds the ordinary tiny-
