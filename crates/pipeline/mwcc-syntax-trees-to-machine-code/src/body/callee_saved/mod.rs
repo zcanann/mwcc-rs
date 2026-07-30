@@ -162,6 +162,7 @@ mod structured_loop_lowering;
 mod structured_loop_member_receiver_layout;
 mod structured_loop_member_cache;
 mod structured_loop_invariants;
+mod structured_loop_float_zero;
 mod structured_loop_packet_algebra;
 mod structured_loop_packet_immediates;
 mod structured_loop_packet_invariant_rewrite;

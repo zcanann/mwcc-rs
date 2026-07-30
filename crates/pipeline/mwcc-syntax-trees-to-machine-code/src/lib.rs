@@ -860,6 +860,7 @@ fn lower_function_body(
     generator.schedule_structured_array_pool_zero_terminated_format_call();
     generator.prefer_structured_array_pool_parsed_hour();
     generator.schedule_leading_int_to_float_argument();
+    generator.hoist_structured_loop_float_zero();
     schedule_instructions(&mut generator);
     generator.schedule_materialized_fixed_bank_store();
     let allocated_float_saves = allocate_registers(&mut generator).map_err(|mut diagnostic| {
