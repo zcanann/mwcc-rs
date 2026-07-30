@@ -3839,6 +3839,22 @@ impl Generator {
                 // and the multi-statement case defer.
                 let has_continuation =
                     index + 1 < statement_count || function.return_expression.is_some();
+                if !function_makes_call(function)
+                    && else_body.is_empty()
+                    && has_continuation
+                    && matches!(then_body.as_slice(), [Statement::Return(Some(_))])
+                {
+                    let [Statement::Return(Some(value))] = then_body.as_slice() else {
+                        unreachable!("return shape was checked")
+                    };
+                    if self.try_emit_logical_alternative_early_return(
+                        condition,
+                        value,
+                        function.return_type,
+                    )? {
+                        continue;
+                    }
+                }
                 // A trailing void `if (c) { stmt; return; }` (nothing after): the
                 // `return;` coincides with the function exit, so drop it and use
                 // the conditional-return (`beqlr`) form of a plain trailing if.
