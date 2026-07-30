@@ -991,6 +991,7 @@ fn lower_function_body(
     generator.schedule_dual_status_switches();
     generator.schedule_retained_item_ratio();
     generator.reuse_absolute_pooled_float_literals();
+    generator.reuse_small_data_pooled_float_literals();
     generator.reuse_repeated_integer_constants();
     generator.finalize_structured_noncopy_conversion_lanes();
     generator.schedule_mixed_conversion_entry();

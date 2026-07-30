@@ -19,9 +19,78 @@ impl Generator {
         }
     }
 
+    pub(crate) fn reuse_small_data_pooled_float_literals(&mut self) {
+        if self.behavior.read_only_global_addressing != GlobalAddressing::SmallData {
+            return;
+        }
+        while let Some(reload) = redundant_small_data_pool_load(&self.output) {
+            crate::remove_instruction_retargeting_to_next(self, reload);
+        }
+    }
+
     fn remove_redundant_pool_load_instruction(&mut self, index: usize) {
         crate::remove_instruction_retargeting_to_next(self, index);
     }
+}
+
+fn redundant_small_data_pool_load(
+    output: &mwcc_machine_code::MachineFunction,
+) -> Option<usize> {
+    let loads: Vec<_> = output
+        .instructions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, instruction)| {
+            let (destination, width) = match instruction {
+                Instruction::LoadFloatSingle {
+                    d,
+                    a: 0,
+                    offset: 0,
+                } => (*d, PoolFloatWidth::Single),
+                Instruction::LoadFloatDouble {
+                    d,
+                    a: 0,
+                    offset: 0,
+                } => (*d, PoolFloatWidth::Double),
+                _ => return None,
+            };
+            output
+                .relocations
+                .iter()
+                .any(|relocation| {
+                    relocation.instruction_index == index
+                        && relocation.kind == RelocationKind::EmbSda21
+                })
+                .then_some((index, destination, width))
+        })
+        .collect();
+    for (position, &(first, destination, width)) in loads.iter().enumerate() {
+        for &(second, second_destination, second_width) in &loads[position + 1..] {
+            if destination != second_destination
+                || width != second_width
+                || !schedule_relocations::same_relocated_value(
+                    &output.relocations,
+                    &output.constants,
+                    first,
+                    second,
+                )
+            {
+                continue;
+            }
+            if output.instructions[first + 1..second]
+                .iter()
+                .any(|instruction| {
+                    instruction.float_destination() == Some(destination)
+                        || is_control_flow(instruction)
+                })
+                || has_alternate_entry(&output.instructions, first + 1..second + 1)
+            {
+                continue;
+            }
+            return Some(second);
+        }
+    }
+    None
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -246,6 +315,48 @@ mod tests {
         }
     }
 
+    fn repeated_small_data_loads() -> mwcc_machine_code::MachineFunction {
+        mwcc_machine_code::MachineFunction {
+            instructions: vec![
+                Instruction::LoadFloatSingle {
+                    d: 0,
+                    a: 0,
+                    offset: 0,
+                },
+                Instruction::StoreFloatSingle {
+                    s: 0,
+                    a: 3,
+                    offset: 228,
+                },
+                Instruction::LoadFloatSingle {
+                    d: 0,
+                    a: 0,
+                    offset: 0,
+                },
+            ],
+            relocations: vec![
+                Relocation {
+                    instruction_index: 0,
+                    kind: RelocationKind::EmbSda21,
+                    target: RelocationTarget::Constant(0),
+                },
+                Relocation {
+                    instruction_index: 2,
+                    kind: RelocationKind::EmbSda21,
+                    target: RelocationTarget::Constant(0),
+                },
+            ],
+            constants: vec![PoolConstant {
+                bits: 0.0f32.to_bits().into(),
+                byte_width: 4,
+                static_slot: false,
+                image: false,
+                force_new: false,
+            }],
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn recognizes_a_live_literal_reloaded_in_one_straight_line_region() {
         let output = repeated_loads(Instruction::LoadFloatSingle {
@@ -254,6 +365,14 @@ mod tests {
             offset: 20,
         });
         assert_eq!(redundant_absolute_pool_load(&output), Some((3, 4)));
+    }
+
+    #[test]
+    fn recognizes_a_small_data_literal_reloaded_between_stores() {
+        assert_eq!(
+            redundant_small_data_pool_load(&repeated_small_data_loads()),
+            Some(2)
+        );
     }
 
     #[test]
