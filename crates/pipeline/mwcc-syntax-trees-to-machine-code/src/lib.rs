@@ -975,6 +975,7 @@ fn lower_function_body(
     generator.reuse_absolute_pooled_float_literals();
     generator.reuse_repeated_integer_constants();
     generator.finalize_structured_noncopy_conversion_lanes();
+    generator.schedule_mixed_conversion_entry();
     generator.finalize_structured_guarded_ucode_packet_registers();
     generator.finalize_structured_noncopy_packet_registers();
     generator.finalize_structured_noncopy_tail_packet_registers();

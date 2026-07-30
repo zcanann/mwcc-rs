@@ -38,6 +38,7 @@ mod linkage_first_data_anchor_schedule;
 mod linkage_first_float_result_schedule;
 mod linkage_first_global_float_argument_schedule;
 mod linkage_first_narrow_conversion_reuse;
+mod mixed_conversion_entry_schedule;
 mod linkage_first_variadic_frame_schedule;
 mod linkage_first_addressable_parameters;
 mod global_swap;
