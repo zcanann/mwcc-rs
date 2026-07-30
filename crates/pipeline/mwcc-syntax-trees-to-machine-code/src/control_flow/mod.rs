@@ -7,6 +7,7 @@ mod branch_preserving_select;
 mod branches;
 mod callback_fallback_select;
 mod common_offset_select;
+mod compared_value_store_select;
 mod float;
 mod large_equality_compare;
 mod logical_call_select;

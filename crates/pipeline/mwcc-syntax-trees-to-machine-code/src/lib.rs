@@ -1537,6 +1537,23 @@ pub(crate) fn remap_instruction_indices(generator: &mut Generator, permutation: 
     remap_branch_targets(&mut generator.output.instructions, permutation);
 }
 
+/// Move one instruction earlier after labels have been resolved, preserving
+/// every instruction-index owner and branch destination.
+pub(crate) fn move_instruction_before_retargeting(
+    generator: &mut Generator,
+    from: usize,
+    to: usize,
+) {
+    let old_len = generator.output.instructions.len();
+    debug_assert!(to < from);
+    debug_assert!(from < old_len);
+    let instruction = generator.output.instructions.remove(from);
+    generator.output.instructions.insert(to, instruction);
+    generator.labels.moved_before(from, to);
+    let permutation = instruction_move_before_permutation(old_len, from, to);
+    remap_instruction_indices(generator, &permutation);
+}
+
 /// Remove one instruction after labels have been resolved, preserving every
 /// instruction-index owner. A branch to the erased instruction denotes the
 /// continuation that followed it, so it must target the survivor now occupying
@@ -1594,6 +1611,22 @@ fn instruction_removal_permutation(old_len: usize, index: usize) -> Vec<usize> {
     debug_assert!(index < old_len);
     (0..old_len)
         .map(|old| if old <= index { old } else { old - 1 })
+        .collect()
+}
+
+fn instruction_move_before_permutation(old_len: usize, from: usize, to: usize) -> Vec<usize> {
+    debug_assert!(to < from);
+    debug_assert!(from < old_len);
+    (0..old_len)
+        .map(|old| {
+            if old == from {
+                to
+            } else if (to..from).contains(&old) {
+                old + 1
+            } else {
+                old
+            }
+        })
         .collect()
 }
 
@@ -1740,6 +1773,23 @@ mod instruction_index_tests {
 
         assert_eq!(instructions[0], Instruction::Branch { target: 2 });
         assert_eq!(instructions[2], Instruction::load_immediate(5, 3));
+    }
+
+    #[test]
+    fn moving_an_instruction_preserves_branch_destinations() {
+        let mut instructions = vec![
+            Instruction::Branch { target: 3 },
+            Instruction::load_immediate(3, 1),
+            Instruction::Branch { target: 1 },
+            Instruction::load_immediate(4, 2),
+        ];
+        let moved = instructions.remove(3);
+        instructions.insert(1, moved);
+        let permutation = instruction_move_before_permutation(4, 3, 1);
+        remap_branch_targets(&mut instructions, &permutation);
+
+        assert_eq!(instructions[0], Instruction::Branch { target: 1 });
+        assert_eq!(instructions[3], Instruction::Branch { target: 2 });
     }
 
     #[test]

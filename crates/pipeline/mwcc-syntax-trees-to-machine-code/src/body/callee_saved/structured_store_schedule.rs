@@ -139,19 +139,7 @@ impl Generator {
     }
 
     pub(super) fn move_instruction_before(&mut self, from: usize, to: usize) {
-        debug_assert!(to < from);
-        let instruction = self.output.instructions.remove(from);
-        self.output.instructions.insert(to, instruction);
-        self.labels.moved_before(from, to);
-        for relocation in &mut self.output.relocations {
-            relocation.instruction_index = if relocation.instruction_index == from {
-                to
-            } else if (to..from).contains(&relocation.instruction_index) {
-                relocation.instruction_index + 1
-            } else {
-                relocation.instruction_index
-            };
-        }
+        crate::move_instruction_before_retargeting(self, from, to);
     }
 
     pub(super) fn plans_structured_float_store_guard_swap(

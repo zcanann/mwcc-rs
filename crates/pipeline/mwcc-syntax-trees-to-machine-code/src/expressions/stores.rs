@@ -1773,6 +1773,14 @@ impl Generator {
             origin,
         } = value
         {
+            if let Some(source) = self.try_emit_compared_value_store_select(
+                condition,
+                when_true,
+                when_false,
+                *origin,
+            )? {
+                return Ok(source);
+            }
             if let Some(source) = self.try_emit_function_address_null_store_select(
                 condition,
                 when_true,
