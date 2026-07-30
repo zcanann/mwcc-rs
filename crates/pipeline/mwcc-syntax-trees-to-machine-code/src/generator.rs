@@ -259,6 +259,13 @@ pub(crate) struct StructuredGlobalBaseCache {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct StructuredGlobalMemberAddressCache {
+    pub(crate) global: String,
+    pub(crate) offset: i16,
+    pub(crate) register: u8,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct DataSectionAnchorPlan {
     /// Full `.data` objects addressed through the translation-unit anchor.
     /// Their exact section offsets are assigned after every function-created
@@ -315,6 +322,9 @@ pub(crate) struct Generator {
     /// A call-free leading member cluster shares one global aggregate address.
     /// The virtual register's last member load ends the live range before calls.
     pub(crate) structured_global_base_cache: Option<StructuredGlobalBaseCache>,
+    /// Exact scalar-global member address retained across a possible call.
+    pub(crate) structured_global_member_address_cache:
+        Option<StructuredGlobalMemberAddressCache>,
     pub(crate) data_section_anchor: Option<DataSectionAnchorPlan>,
     /// The `.data` anchor occupies a deferred value's home before that value is
     /// defined. Linkage-first frame normalization shifts the retained entry

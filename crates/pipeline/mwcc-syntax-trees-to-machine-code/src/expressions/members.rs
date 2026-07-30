@@ -585,6 +585,22 @@ impl Generator {
                             "unsupported global-value member load type {member_type:?} at +{offset}"
                         ))
                     })?;
+                    if let Some(cache) = self
+                        .structured_global_member_address_cache
+                        .as_ref()
+                        .filter(|cache| {
+                            cache.global == *name
+                                && i16::try_from(offset).ok() == Some(cache.offset)
+                        })
+                    {
+                        self.output.instructions.push(displacement_load(
+                            pointee,
+                            destination,
+                            cache.register,
+                            0,
+                        )?);
+                        return Ok(());
+                    }
                     if let Some(base) = self
                         .structured_global_base_cache
                         .as_ref()

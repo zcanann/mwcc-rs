@@ -562,6 +562,7 @@ fn lower_function_body(
             .collect(),
         structured_global_index_cache: None,
         structured_global_base_cache: None,
+        structured_global_member_address_cache: None,
         data_section_anchor: body::plan_linkage_first_data_anchor(
             function,
             globals,
@@ -1049,6 +1050,7 @@ fn lower_function_body(
         &mut generator.output,
         &generator.behavior,
     );
+    generator.schedule_structured_global_member_address();
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for

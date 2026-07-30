@@ -128,6 +128,8 @@ mod structured_frame_publication;
 mod structured_frame_value_forwarding;
 mod structured_global_index_cache;
 mod structured_global_base_cache;
+mod structured_global_member_address_cache;
+mod structured_global_member_address_schedule;
 mod structured_guarded_narrow_update;
 mod structured_guarded_effect_spawn_schedule;
 mod structured_guarded_aggregate_result_schedule;

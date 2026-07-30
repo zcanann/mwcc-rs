@@ -43,6 +43,8 @@ use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_frame_ordinals::pre_constant_label_count;
 use super::structured_global_index_cache::plan as plan_structured_global_index_cache;
 use super::structured_global_base_cache::plan as plan_structured_global_base_cache;
+use super::structured_global_member_address_cache::
+    plan as plan_structured_global_member_address_cache;
 use super::structured_frame_publication::{
     StructuredFramePublication, CURSOR_OFFSET, LOCAL_REGION_BYTES, OWNER_OFFSET,
 };
@@ -355,6 +357,11 @@ impl Generator {
         });
         let global_base_cache_plan =
             plan_structured_global_base_cache(function, &self.global_array_sizes);
+        let global_member_address_cache_plan = plan_structured_global_member_address_cache(
+            function,
+            &self.addressable_globals,
+            &self.global_array_sizes,
+        );
         let aggregate_call_copy_plan =
             (frame_arrays.is_empty()
                 && frame_scalar_parameters.is_empty()
@@ -903,7 +910,16 @@ impl Generator {
                     .map_or(31, ExclusiveArmHomeLayout::data_anchor_preference),
             )
         });
-        let saved_home_slot_base = usize::from(standalone_data_anchor_home.is_some());
+        let standalone_global_member_address_home =
+            global_member_address_cache_plan.as_ref().map(|_| {
+                self.fresh_virtual_general_preferring(if standalone_data_anchor_home.is_some() {
+                    30
+                } else {
+                    31
+                })
+            });
+        let saved_home_slot_base = usize::from(standalone_data_anchor_home.is_some())
+            + usize::from(standalone_global_member_address_home.is_some());
         let total_home_count = count + saved_home_slot_base;
         let first_saved = 32usize.saturating_sub(total_home_count);
         let frame_first_saved = array_pool_plan
@@ -1212,6 +1228,7 @@ impl Generator {
         }
         let mut logical_saved_homes = Vec::with_capacity(total_home_count);
         logical_saved_homes.extend(standalone_data_anchor_home);
+        logical_saved_homes.extend(standalone_global_member_address_home);
         if let Some(reused) = reused_data_anchor_home_index {
             logical_saved_homes.push(homes[reused]);
             logical_saved_homes.extend(
@@ -1634,7 +1651,8 @@ impl Generator {
         } else {
             logical_saved_homes
         };
-        self.legacy_callee_saved_frame_layout = if unused_frame_array
+        self.legacy_callee_saved_frame_layout = if global_member_address_cache_plan.is_some()
+            || unused_frame_array
             || !frame_scalar_parameters.is_empty()
             || !frame_scalar_locals.is_empty()
         {
@@ -1773,6 +1791,29 @@ impl Generator {
                     global: cache.global,
                     register,
                 });
+        }
+        if let (Some(cache), Some(register)) = (
+            global_member_address_cache_plan,
+            standalone_global_member_address_home,
+        ) {
+            let base = self.fresh_virtual_general_preferring(3);
+            self.emit_global_array_base(&cache.global, cache.total_size, base)?;
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: register,
+                a: base,
+                immediate: cache.offset,
+            });
+            self.structured_global_member_address_cache =
+                Some(crate::generator::StructuredGlobalMemberAddressCache {
+                    global: cache.global,
+                    offset: cache.offset,
+                    register,
+                });
+            self.emit_structured_saved_home_store(
+                register,
+                usize::from(standalone_data_anchor_home.is_some()),
+                plan.frame_size,
+            );
         }
         if let Some(register) = data_section_anchor_home {
             if !dense_saved_range {
