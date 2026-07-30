@@ -25,6 +25,15 @@ impl Generator {
         entry_alias: &mut Option<EntryParameterAlias>,
     ) -> Compilation<()> {
         debug_assert!(!else_body.is_empty());
+        if entry_alias.is_none()
+            && self.try_emit_structured_if_else_cr_reuse(
+                condition,
+                then_body,
+                else_body,
+            )?
+        {
+            return Ok(());
+        }
         let previous_wide_mask_cache = self.begin_wide_pair_mask_condition(condition);
         let previous_cache = self.begin_condition_global_cache(condition);
         let previous_float_cache = self.begin_composed_condition_float_cache(condition);

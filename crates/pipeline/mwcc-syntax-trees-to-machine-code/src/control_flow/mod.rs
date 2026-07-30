@@ -10,6 +10,7 @@ mod common_offset_select;
 mod float;
 mod large_equality_compare;
 mod logical_call_select;
+mod member_bound_select;
 mod nested_phi_select;
 mod narrow_member_compare;
 mod negated_short_circuit;

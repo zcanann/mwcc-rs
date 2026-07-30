@@ -40,6 +40,14 @@ impl Generator {
         )? {
             return Ok(());
         }
+        if self.try_emit_member_bound_select(
+            condition,
+            when_true,
+            when_false,
+            destination,
+        )? {
+            return Ok(());
+        }
 
         // A string-valued ternary is a pointer diamond. Each arm materializes
         // its literal address into the same result register and joins before

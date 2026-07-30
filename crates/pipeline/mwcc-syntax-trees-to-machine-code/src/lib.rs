@@ -1021,6 +1021,7 @@ fn lower_function_body(
     generator.schedule_allocated_structured_array_pool_first_image();
     generator.schedule_structured_variadic_output_frame();
     generator.finalize_structured_complement_product_pair();
+    generator.finalize_structured_member_bound_call_epilogue();
 
     ordinal_accounting::relocate_inline_initializer_ordinals(
         &mut generator.output,

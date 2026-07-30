@@ -64,7 +64,10 @@ use super::structured_loop_assertion_strings::plan_loop_assertion_strings;
 use super::structured_loop_lowering::{
     lower_structured_loops, strip_side_effect_free_empty_switches,
 };
-use super::structured_switch_lowering::lower_structured_switches;
+use super::structured_switch_lowering::{
+    is_lowered_switch_guard, lower_structured_switches,
+    resolve_structured_switch_joins, structured_switch_join_placeholder,
+};
 use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
 };
@@ -2333,6 +2336,22 @@ impl Generator {
                         .expect("aggregate-call companion preference was checked"),
                     )
                 }
+                ValueClass::General
+                    if matches!(
+                        local.initializer,
+                        Some(
+                            Expression::Call { .. }
+                                | Expression::CallThrough { .. }
+                                | Expression::VirtualCall { .. }
+                        )
+                    ) =>
+                {
+                    // The initializer defines this local only after the call
+                    // returns. Ephemeral planning also proves that its value
+                    // crosses no later call, so it can remain in the fixed EABI
+                    // result home without a copy out and back.
+                    mwcc_target::Eabi::general_result().number
+                }
                 ValueClass::General => {
                     if self.canonical_boolean_locals.contains(&local.name) {
                         self.fresh_virtual_general_preferring(GENERAL_SCRATCH)
@@ -2561,6 +2580,7 @@ impl Generator {
             }
         }
         self.fold_structured_conditional_gotos();
+        resolve_structured_switch_joins(&mut self.output.instructions);
         thread_forward_unconditional_branch_chains(&mut self.output.instructions);
         if let Some(layout) = &loop_member_receiver_layout {
             layout.coalesce_receiver_load(self, homes[0], homes[3]);
@@ -2779,6 +2799,7 @@ impl Generator {
         self.schedule_saved_receiver_entry_epilogue();
         self.schedule_legacy_inline_expansion_residue();
         self.schedule_structured_initializer_live_in();
+        self.schedule_structured_member_bound_call();
         if rounded_pointer_dense_layout {
             self.schedule_power_pc_7400_rounded_pointer_entry();
         }
@@ -2877,6 +2898,54 @@ impl Generator {
                     then_body,
                     else_body,
                 } if else_body.is_empty() => {
+                    if is_lowered_switch_guard(condition) {
+                        // A source switch retains its dispatch edge even for a
+                        // single case. Branch into the matching arm and use an
+                        // explicit fallthrough jump around it; this preserves
+                        // switch CFG identity after normalization to an if tree.
+                        let (options, condition_bit) =
+                            self.emit_condition_test(condition)?;
+                        let enter_body = self.output.instructions.len();
+                        self.output.instructions.push(
+                            Instruction::BranchConditionalForward {
+                                options: options ^ 8,
+                                condition_bit,
+                                target: 0,
+                            },
+                        );
+                        let skip_body = self.output.instructions.len();
+                        self.output
+                            .instructions
+                            .push(Instruction::Branch { target: 0 });
+                        self.patch_forward(
+                            enter_body,
+                            self.output.instructions.len(),
+                        );
+                        self.emit_structured_statements(
+                            then_body,
+                            function,
+                            ephemeral_locals,
+                            false,
+                            return_branches,
+                            label_positions,
+                            pending_gotos,
+                            entry_alias,
+                        )
+                        .map_err(|mut diagnostic| {
+                            diagnostic.message.push_str(&format!(
+                                " (inside structured switch arm {statement_index})"
+                            ));
+                            diagnostic
+                        })?;
+                        let join = self.output.instructions.len();
+                        if let Instruction::Branch { target } =
+                            &mut self.output.instructions[skip_body]
+                        {
+                            *target =
+                                structured_switch_join_placeholder(join);
+                        }
+                        continue;
+                    }
                     if self.try_emit_guarded_indexed_indirect_call(
                         condition,
                         then_body,
