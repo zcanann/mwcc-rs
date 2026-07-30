@@ -912,6 +912,7 @@ fn lower_function_body(
     generator.normalize_linkage_first_saved_register_order();
     generator.compact_exclusive_inline_conversion_frame();
     generator.schedule_structured_conversion_following_call();
+    generator.schedule_structured_argument_load_latency();
     generator.normalize_linkage_first_plain_nonleaf_frame();
     generator.normalize_linkage_first_indirect_call_schedule();
     generator.normalize_linkage_first_conversion_frame();

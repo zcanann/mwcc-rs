@@ -104,6 +104,7 @@ mod structured_frame_assignment;
 mod structured_frame_arrays;
 mod structured_array_pool;
 mod structured_array_pool_schedule;
+mod structured_argument_latency_schedule;
 mod structured_arm_global_pointer_cache;
 mod structured_frame_initializers;
 mod structured_frame_bitfield_stores;

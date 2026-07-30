@@ -70,7 +70,7 @@ fn conversion_following_call(window: &[Instruction]) -> bool {
     )
 }
 
-fn permute_region(
+pub(super) fn permute_region(
     output: &mut mwcc_machine_code::MachineFunction,
     start: usize,
     schedule: &[usize],
