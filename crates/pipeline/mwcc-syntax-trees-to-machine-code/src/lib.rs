@@ -913,6 +913,7 @@ fn lower_function_body(
     // convention-aware owners already emitted their final frame and are skipped.
     generator.normalize_linkage_first_saved_register_order();
     generator.finalize_structured_object_collision_loop_entry();
+    generator.finalize_structured_object_collision_loop_guard();
     generator.compact_exclusive_inline_conversion_frame();
     generator.schedule_structured_conversion_following_call();
     generator.schedule_structured_argument_load_latency();

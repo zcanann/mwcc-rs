@@ -162,6 +162,7 @@ mod structured_bitset_hint_schedule;
 mod structured_loop_lowering;
 mod structured_loop_member_receiver_layout;
 mod structured_object_collision_loop_layout;
+mod structured_object_collision_loop_guard;
 mod structured_object_collision_loop_schedule;
 mod structured_loop_member_cache;
 mod structured_loop_invariants;
