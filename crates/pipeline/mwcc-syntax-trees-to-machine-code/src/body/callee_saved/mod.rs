@@ -193,6 +193,7 @@ mod structured_state_transfer_copy_schedule;
 mod structured_state_transfer_guard_schedule;
 mod structured_state_transfer_hp_call;
 mod structured_state_transfer_layout;
+mod structured_state_transfer_pointer_schedule;
 mod structured_state_transfer_scale_schedule;
 mod structured_state_transfer_status_schedule;
 mod structured_switch_lowering;
