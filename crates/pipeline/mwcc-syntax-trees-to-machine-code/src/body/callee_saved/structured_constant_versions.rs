@@ -7,7 +7,20 @@
 
 use super::*;
 
+const MAX_RETAINED_CONSTANT_HOME_PRESSURE: usize = 4;
+
+pub(super) fn repeated_store_constant_exceeds_home_capacity(function: &Function) -> bool {
+    if existing_call_live_value_count(function) < MAX_RETAINED_CONSTANT_HOME_PRESSURE {
+        return false;
+    }
+    let mut statements = function.statements.clone();
+    rewrite_statement_list(&mut statements, "__mwcc_retained_constant_probe").is_some()
+}
+
 pub(super) fn retain_repeated_store_constant_across_call(function: &Function) -> Option<Function> {
+    if existing_call_live_value_count(function) >= MAX_RETAINED_CONSTANT_HOME_PRESSURE {
+        return None;
+    }
     let occupied = function
         .parameters
         .iter()
@@ -39,6 +52,18 @@ pub(super) fn retain_repeated_store_constant_across_call(function: &Function) ->
     });
     debug_assert!(i32::try_from(constant).is_ok());
     Some(rewritten)
+}
+
+fn existing_call_live_value_count(function: &Function) -> usize {
+    function
+        .locals
+        .iter()
+        .map(|local| local.name.as_str())
+        .chain(function.parameters.iter().map(|parameter| parameter.name.as_str()))
+        .filter(|name| {
+            super::structured_liveness::read_after_possible_call_in_function(function, name)
+        })
+        .count()
 }
 
 fn rewrite_statement_list(statements: &mut Vec<Statement>, name: &str) -> Option<i64> {
@@ -189,6 +214,55 @@ fn store_integer_constant(statement: &Statement) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mwcc_syntax_trees::Parameter;
+
+    fn pressure_function(parameter_count: usize) -> Function {
+        let parameters: Vec<_> = (0..parameter_count)
+            .map(|index| Parameter {
+                parameter_type: Type::Int,
+                name: format!("value{index}"),
+            })
+            .collect();
+        let mut statements = vec![
+            Statement::Store {
+                target: Expression::Variable("first".into()),
+                value: Expression::IntegerLiteral(0),
+            },
+            Statement::Expression(Expression::Call {
+                name: "initialize".into(),
+                arguments: Vec::new(),
+            }),
+            Statement::Store {
+                target: Expression::Variable("second".into()),
+                value: Expression::IntegerLiteral(0),
+            },
+        ];
+        statements.extend(
+            parameters
+                .iter()
+                .map(|parameter| {
+                    Statement::Expression(Expression::Variable(parameter.name.clone()))
+                }),
+        );
+        Function {
+            return_type: Type::Void,
+            name: "pressure".into(),
+            is_static: false,
+            is_weak: false,
+            parameters,
+            locals: Vec::new(),
+            statements,
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
 
     #[test]
     fn versions_two_store_constants_separated_by_a_call() {
@@ -273,5 +347,17 @@ mod tests {
                     }] if second == name
                 )
         ));
+    }
+
+    #[test]
+    fn preserves_the_constant_lane_without_allocating_a_fifth_saved_home() {
+        let pressured = pressure_function(MAX_RETAINED_CONSTANT_HOME_PRESSURE);
+
+        assert!(repeated_store_constant_exceeds_home_capacity(&pressured));
+        assert!(retain_repeated_store_constant_across_call(&pressured).is_none());
+
+        let available = pressure_function(MAX_RETAINED_CONSTANT_HOME_PRESSURE - 1);
+        assert!(!repeated_store_constant_exceeds_home_capacity(&available));
+        assert!(retain_repeated_store_constant_across_call(&available).is_some());
     }
 }

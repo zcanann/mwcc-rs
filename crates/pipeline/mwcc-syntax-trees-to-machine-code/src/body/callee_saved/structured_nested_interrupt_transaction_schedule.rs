@@ -20,6 +20,11 @@ impl Generator {
             &self.output.relocations,
             plan,
         );
+        let cancel_all_layout = is_nested_cancel_all_layout(
+            &self.output.instructions,
+            &self.output.relocations,
+            plan,
+        );
 
         let Instruction::CompareLogicalWordImmediate { a, .. } =
             &mut self.output.instructions[plan.queue_compare]
@@ -46,6 +51,8 @@ impl Generator {
             crate::move_instruction_before_retargeting(self, 5, 4);
             rewrite_nested_prepare_registers(&mut self.output.instructions);
             crate::move_instruction_before_retargeting(self, 47, 45);
+        } else if cancel_all_layout {
+            schedule_nested_cancel_all(self);
         }
     }
 }
@@ -148,6 +155,75 @@ fn is_nested_prepare_reset_layout(
                 Instruction::MoveToLinkRegister { s: 0 },
             ])
         )
+}
+
+fn is_nested_cancel_all_layout(
+    instructions: &[Instruction],
+    relocations: &[mwcc_machine_code::Relocation],
+    plan: NestedQueueResultPlan,
+) -> bool {
+    instructions.len() == 81
+        && plan.queue_copy == 25
+        && call_target(relocations, 7) == Some("OSDisableInterrupts")
+        && call_target(relocations, 11) == Some("OSDisableInterrupts")
+        && call_target(relocations, 13) == Some("OSDisableInterrupts")
+        && call_target(relocations, 20) == Some("OSRestoreInterrupts")
+        && call_target(relocations, 23) == Some("DVDCancelAsync")
+        && call_target(relocations, 24) == Some("__DVDPopWaitingQueue")
+        && call_target(relocations, 35) == Some("DVDCancelAsync")
+        && call_target(relocations, 44) == Some("cbForCancelAllSync")
+        && call_target(relocations, 45) == Some("OSDisableInterrupts")
+        && call_target(relocations, 53) == Some("stateReady")
+        && call_target(relocations, 55) == Some("OSRestoreInterrupts")
+        && call_target(relocations, 57) == Some("OSRestoreInterrupts")
+        && call_target(relocations, 61) == Some("OSRestoreInterrupts")
+        && call_target(relocations, 68) == Some("OSSleepThread")
+        && call_target(relocations, 71) == Some("OSRestoreInterrupts")
+        && relocation_target(relocations, 10, RelocationKind::EmbSda21)
+            == Some("CancelAllSyncComplete")
+        && matches!(
+            instructions.get(7..14),
+            Some([
+                Instruction::BranchAndLink { .. },
+                Instruction::AddImmediate { d: 31, a: 3, immediate: 0 },
+                Instruction::AddImmediate { d: 0, a: 0, immediate: 0 },
+                Instruction::StoreWord { s: 0, .. },
+                Instruction::BranchAndLink { .. },
+                Instruction::AddImmediate { d: 30, a: 3, immediate: 0 },
+                Instruction::BranchAndLink { .. },
+            ])
+        )
+}
+
+fn schedule_nested_cancel_all(generator: &mut Generator) {
+    // The outer interrupt token is recorded after the synchronizing store,
+    // while the nested token and cancel result take the lower and higher
+    // members respectively of the remaining saved-home pair.
+    crate::move_instruction_before_retargeting(generator, 9, 8);
+    crate::move_instruction_before_retargeting(generator, 10, 9);
+    generator.output.instructions[10] = Instruction::Or { a: 31, s: 3, b: 3 };
+    generator.output.instructions[12] = Instruction::Or { a: 29, s: 3, b: 3 };
+    generator.output.instructions[33] = Instruction::Or { a: 30, s: 3, b: 3 };
+
+    // Materialize the fallback callback address before defining the success
+    // result; this preserves both the home assignment and MWCC's issue order.
+    crate::move_instruction_before_retargeting(generator, 36, 35);
+    crate::move_instruction_before_retargeting(generator, 37, 36);
+    let Instruction::BranchConditionalForward { target, .. } =
+        &mut generator.output.instructions[29]
+    else {
+        unreachable!("validated nested cancel-all fallback branch changed form")
+    };
+    *target = 35;
+    generator.output.instructions[37] =
+        Instruction::AddImmediate { d: 30, a: 0, immediate: 1 };
+    generator.output.instructions[53] = Instruction::Or { a: 3, s: 29, b: 29 };
+    let Instruction::CompareWordImmediate { a, .. } =
+        &mut generator.output.instructions[55]
+    else {
+        unreachable!("validated nested cancel-all result compare changed form")
+    };
+    *a = 30;
 }
 
 fn rewrite_nested_prepare_registers(instructions: &mut [Instruction]) {

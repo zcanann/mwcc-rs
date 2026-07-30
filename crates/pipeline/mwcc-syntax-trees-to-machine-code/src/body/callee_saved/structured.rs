@@ -23,7 +23,10 @@ use super::structured_sequenced_callback_wait::{
     sequenced_callback_wait_home_preference, sequenced_callback_wait_save_order,
     sequenced_callback_wait_starter,
 };
-use super::structured_constant_versions::retain_repeated_store_constant_across_call;
+use super::structured_constant_versions::{
+    repeated_store_constant_exceeds_home_capacity,
+    retain_repeated_store_constant_across_call,
+};
 use super::structured_condition_schedule::thread_forward_unconditional_branch_chains;
 use super::structured_entry_alias::{
     fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
@@ -117,6 +120,8 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
+        let suppressed_constant =
+            repeated_store_constant_exceeds_home_capacity(function);
         let mut rewritten = function.clone();
         let mut retained_constant = false;
         while let Some(next) = retain_repeated_store_constant_across_call(&rewritten) {
@@ -126,6 +131,7 @@ impl Generator {
         self.try_callee_saved_structured_body_impl(
             if retained_constant { &rewritten } else { function },
             false,
+            suppressed_constant,
         )
     }
 
@@ -196,9 +202,9 @@ impl Generator {
             changed = true;
         }
         if changed {
-            self.try_callee_saved_structured_body_impl(&normalized, true)
+            self.try_callee_saved_structured_body_impl(&normalized, true, false)
         } else {
-            self.try_callee_saved_structured_body_impl(function, true)
+            self.try_callee_saved_structured_body_impl(function, true, false)
         }
     }
 
@@ -206,6 +212,7 @@ impl Generator {
         &mut self,
         function: &Function,
         with_frame_array: bool,
+        suppressed_constant_lane: bool,
     ) -> Compilation<bool> {
         // Macro-expanded display-list packets are an input normalization for
         // this general structured path. More exact semantic owners run before
@@ -1723,6 +1730,11 @@ impl Generator {
             && self.legacy_inline_expansion_frame_bytes != 0
         {
             LegacyCalleeSavedFrameLayout::RetainEagerLocalLane
+        } else if suppressed_constant_lane {
+            // The store constant lost its saved home at the four-home pressure
+            // limit, but build 163 still accounts for the optimizer value lane
+            // which the promotion would otherwise have represented.
+            LegacyCalleeSavedFrameLayout::RetainDeferredLocalLane
         } else if is_plain_short_circuit_call_if(function)
             && self.entry_parameter_words <= 2
         {
