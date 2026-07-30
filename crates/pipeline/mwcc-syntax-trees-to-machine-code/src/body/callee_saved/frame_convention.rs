@@ -979,6 +979,18 @@ impl Generator {
             })
             .unwrap_or(frame_update);
 
+        if link_store == 1 {
+            if let Some(candidate) = plain_linkage_relocated_call_argument(
+                &self.output.instructions,
+                &self.output.relocations,
+                frame_update,
+            ) {
+                self.move_plain_linkage_instruction_before(candidate, 1);
+                link_store += 1;
+                frame_update += 1;
+            }
+        }
+
         if link_store == 1
             && self
                 .output
@@ -1722,6 +1734,68 @@ fn plain_linkage_latency_instruction(
         })
 }
 
+/// Find a small-data call argument that can fill the first linkage hazard.
+///
+/// The candidate is a pure address materialization in the straight-line
+/// prefix before the first call. It may cross stores, but no instruction may
+/// read or redefine its destination. This captures the scheduler dependency
+/// MWCC exploits for `store state; call(&queue)` without attaching policy to a
+/// source-level helper or symbol name.
+fn plain_linkage_relocated_call_argument(
+    instructions: &[Instruction],
+    relocations: &[mwcc_machine_code::Relocation],
+    frame_update: usize,
+) -> Option<usize> {
+    let first_control = instructions
+        .iter()
+        .enumerate()
+        .skip(frame_update + 1)
+        .find_map(|(index, instruction)| {
+            plain_linkage_control_transfer(instruction).then_some(index)
+        })?;
+    if !matches!(
+        instructions[first_control],
+        Instruction::BranchAndLink { .. }
+    ) {
+        return None;
+    }
+
+    (frame_update + 1..first_control).rev().find(|&candidate| {
+        let destination = match instructions[candidate] {
+            Instruction::AddImmediate { d, a: 0, .. } if (3..=10).contains(&d) => d,
+            _ => return false,
+        };
+        let is_small_data_address = relocations.iter().any(|relocation| {
+            relocation.instruction_index == candidate
+                && relocation.kind == RelocationKind::EmbSda21
+        });
+        is_small_data_address
+            && instructions[1..candidate].iter().all(|instruction| {
+                mwcc_vreg::register_operands(instruction)
+                    .iter()
+                    .all(|operand| {
+                        operand.class != mwcc_vreg::Class::General
+                            || operand.register != destination
+                    })
+            })
+    })
+}
+
+fn plain_linkage_control_transfer(instruction: &Instruction) -> bool {
+    matches!(
+        instruction,
+        Instruction::BranchConditionalForward { .. }
+            | Instruction::Branch { .. }
+            | Instruction::BranchConditionalToLinkRegister { .. }
+            | Instruction::BranchToLinkRegister
+            | Instruction::BranchToLinkRegisterAndLink
+            | Instruction::BranchAndLink { .. }
+            | Instruction::BranchExternal { .. }
+            | Instruction::BranchToCountRegister
+            | Instruction::BranchToCountRegisterAndLink
+    )
+}
+
 /// Remap instruction-index relocations after `[0..=end]` rotates left once.
 fn remap_prefix_rotate_left(
     relocations: &mut [mwcc_machine_code::Relocation],
@@ -1996,6 +2070,91 @@ mod tests {
                 .map(|relocation| relocation.instruction_index)
                 .collect::<Vec<_>>(),
             [3, 0, 1, 2, 4]
+        );
+    }
+
+    #[test]
+    fn relocated_call_argument_can_cross_an_independent_store_into_linkage_slot() {
+        let instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+            Instruction::AddImmediate {
+                d: 0,
+                a: 0,
+                immediate: 1,
+            },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -8,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::BranchAndLink {
+                target: "OSWakeupThread".into(),
+            },
+        ];
+        let relocations = vec![Relocation {
+            instruction_index: 5,
+            kind: RelocationKind::EmbSda21,
+            target: RelocationTarget::External("__DVDThreadQueue".into()),
+        }];
+
+        assert_eq!(
+            plain_linkage_relocated_call_argument(&instructions, &relocations, 3),
+            Some(5),
+        );
+    }
+
+    #[test]
+    fn relocated_call_argument_does_not_cross_a_destination_dependency() {
+        let instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -8,
+            },
+            Instruction::StoreWord {
+                s: 3,
+                a: 4,
+                offset: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::BranchAndLink {
+                target: "consume".into(),
+            },
+        ];
+        let relocations = vec![Relocation {
+            instruction_index: 4,
+            kind: RelocationKind::EmbSda21,
+            target: RelocationTarget::External("argument".into()),
+        }];
+
+        assert_eq!(
+            plain_linkage_relocated_call_argument(&instructions, &relocations, 2),
+            None,
         );
     }
 
