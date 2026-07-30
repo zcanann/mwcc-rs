@@ -1068,6 +1068,9 @@ impl Generator {
             self.emit_comma_side_effect(left)?;
             return self.emit_condition_test(right);
         }
+        if let Some(branch) = self.try_emit_logical_equality_range_condition(condition)? {
+            return Ok(branch);
+        }
         // The parser can preserve a source boolean spelling as
         // `(a REL b) != 0` or `(a REL b) == 0`. A comparison is already a
         // canonical C int boolean, so branch directly from its CR result. This
