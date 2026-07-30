@@ -8,8 +8,10 @@ impl Generator {
     /// Allocator-owned callee-saved bodies cannot use the ordinary pre-allocation
     /// call-prologue scheduler, so their final machine stream is normalized here.
     pub(crate) fn schedule_linkage_first_entry_arguments(&mut self) {
+        let function_symbols = &self.call_return_types;
+        let is_function_symbol = |name: &str| function_symbols.contains_key(name);
         schedule_guarded_saved_entry_copies(&mut self.output);
-        schedule_entry_arguments(&mut self.output);
+        schedule_entry_arguments(&mut self.output, &is_function_symbol);
         if let Some((from, to)) = schedule_entry_zero_store(&mut self.output) {
             self.labels.moved_before(from, to);
         }
@@ -20,7 +22,10 @@ impl Generator {
     /// This narrow pass is safe even when the body has control flow because it
     /// only swaps the stack update with the immediately following address low.
     pub(crate) fn schedule_linkage_first_function_address(&mut self) {
-        schedule_function_address_low(&mut self.output);
+        let function_symbols = &self.call_return_types;
+        schedule_function_address_low(&mut self.output, &|name| {
+            function_symbols.contains_key(name)
+        });
     }
 
     /// Fill the first linkage slot for the compact eager/deferred inline
@@ -314,7 +319,10 @@ fn schedule_entry_zero_store(
     Some((zero, stack_update))
 }
 
-fn schedule_entry_arguments(output: &mut mwcc_machine_code::MachineFunction) {
+fn schedule_entry_arguments(
+    output: &mut mwcc_machine_code::MachineFunction,
+    is_function_symbol: &dyn Fn(&str) -> bool,
+) {
     // Moving instructions changes instruction-index branch targets. Structured
     // control flow is deliberately left to its semantic owner until this pass
     // also has a branch-target remapper.
@@ -327,7 +335,7 @@ fn schedule_entry_arguments(output: &mut mwcc_machine_code::MachineFunction) {
         return;
     }
 
-    schedule_function_address_low(output);
+    schedule_function_address_low(output, is_function_symbol);
 
     for slot in 0..3 {
         let Some(link_read) = output.instructions.iter().position(|instruction| {
@@ -399,7 +407,10 @@ fn schedule_entry_arguments(output: &mut mwcc_machine_code::MachineFunction) {
 /// A function address is a dependent `lis @ha; addi @l` pair. Frame
 /// normalization already leaves the `lis` in the first linkage slot; move its
 /// `addi` from after `stwu` into the second slot, preserving both relocations.
-fn schedule_function_address_low(output: &mut mwcc_machine_code::MachineFunction) {
+fn schedule_function_address_low(
+    output: &mut mwcc_machine_code::MachineFunction,
+    is_function_symbol: &dyn Fn(&str) -> bool,
+) {
     let Some(link_read) = output
         .instructions
         .iter()
@@ -451,6 +462,9 @@ fn schedule_function_address_low(output: &mut mwcc_machine_code::MachineFunction
         let mwcc_machine_code::RelocationTarget::External(target) = &relocation.target else {
             return None;
         };
+        if !is_function_symbol(target) {
+            return None;
+        }
         Some((index, d, target.clone()))
     });
     let Some((low, register, target)) = low else {
@@ -670,7 +684,7 @@ mod tests {
             target: RelocationTarget::External("@2".to_string()),
         });
 
-        schedule_entry_arguments(&mut output);
+        schedule_entry_arguments(&mut output, &|_| true);
 
         assert!(matches!(
             output.instructions.as_slice(),
@@ -757,7 +771,7 @@ mod tests {
             },
         ];
 
-        schedule_entry_arguments(&mut output);
+        schedule_entry_arguments(&mut output, &|_| true);
 
         assert!(matches!(
             output.instructions.as_slice(),
@@ -776,6 +790,64 @@ mod tests {
         ));
         assert_eq!(output.relocations[0].instruction_index, 1);
         assert_eq!(output.relocations[1].instruction_index, 3);
+    }
+
+    #[test]
+    fn leaves_a_non_function_address_low_after_the_stack_update() {
+        let mut output = mwcc_machine_code::MachineFunction::new("test");
+        output.instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -8,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::BranchAndLink {
+                target: "consume".to_string(),
+            },
+        ];
+        output.relocations = vec![
+            Relocation {
+                instruction_index: 1,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::External("buffer".to_string()),
+            },
+            Relocation {
+                instruction_index: 4,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::External("buffer".to_string()),
+            },
+        ];
+
+        schedule_entry_arguments(&mut output, &|name| name == "callback");
+
+        assert!(matches!(
+            output.instructions.as_slice(),
+            [
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::AddImmediateShifted { d: 3, a: 0, .. },
+                Instruction::StoreWord { s: 0, a: 1, .. },
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
+                Instruction::AddImmediate { d: 3, a: 3, .. },
+                Instruction::BranchAndLink { .. },
+            ]
+        ));
+        assert_eq!(output.relocations[1].instruction_index, 4);
     }
 
     #[test]
