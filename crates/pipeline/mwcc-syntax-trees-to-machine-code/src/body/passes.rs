@@ -1387,16 +1387,44 @@ pub(crate) fn coalesce_terminal_global_store_return(
     let Expression::Variable(name) = target else {
         return None;
     };
+    let has_established_nonleaf_frame = function.statements[..function.statements.len() - 1]
+        .iter()
+        .any(statement_has_call);
+    // A frameless setter returning its sole general-register parameter is the
+    // leaf counterpart.  The value already occupies r3, so assignment-return
+    // lowering needs only the global store and `blr`; no address or value has
+    // to survive another operation.
+    let leaf_result_parameter = matches!(
+        (
+            function.parameters.as_slice(),
+            function.statements.as_slice(),
+            value,
+            globals.get(name),
+        ),
+        (
+            [parameter],
+            [Statement::Store { .. }],
+            Expression::Variable(value_name),
+            Some(global_type),
+        ) if function.locals.is_empty()
+            && function.guards.is_empty()
+            && parameter.name == *value_name
+            && parameter.parameter_type == function.return_type
+            && *global_type == function.return_type
+            && matches!(
+                function.return_type,
+                Type::Int
+                    | Type::UnsignedInt
+                    | Type::Pointer(_)
+                    | Type::StructPointer { .. }
+            )
+    );
     if !globals.contains_key(name)
         || volatile_globals.contains(name)
         || !structurally_equal(target, return_expression)
-        // The existing assignment-return path is verified when an earlier
-        // call has already established the non-leaf frame. A terminal call as
-        // the function's only call has a distinct prologue schedule and stays
-        // deferred until that owner exists.
-        || !function.statements[..function.statements.len() - 1]
-            .iter()
-            .any(statement_has_call)
+        // A terminal call as the function's only call has a distinct prologue
+        // schedule and stays deferred until that owner exists.
+        || (!has_established_nonleaf_frame && !leaf_result_parameter)
     {
         return None;
     }
@@ -2449,5 +2477,94 @@ mod tests {
         };
 
         assert!(inline_store_bearing_locals(&function).is_none());
+    }
+
+    #[test]
+    fn coalesces_a_leaf_global_setter_returning_its_parameter() {
+        let pointer = Type::Pointer(Pointee::Int);
+        let function = Function {
+            return_type: pointer,
+            name: "set_callback".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![Parameter {
+                parameter_type: pointer,
+                name: "replacement".into(),
+            }],
+            locals: Vec::new(),
+            statements: vec![Statement::Store {
+                target: Expression::Variable("callback".into()),
+                value: Expression::Variable("replacement".into()),
+            }],
+            guards: Vec::new(),
+            return_expression: Some(Expression::Variable("callback".into())),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let globals = std::collections::HashMap::from([("callback".into(), pointer)]);
+
+        let coalesced = coalesce_terminal_global_store_return(
+            &function,
+            &globals,
+            &std::collections::HashSet::new(),
+        )
+        .expect("the parameter value already lives in the result register");
+
+        assert!(coalesced.statements.is_empty());
+        assert!(matches!(
+            coalesced.return_expression,
+            Some(Expression::Assign { target, value })
+                if matches!(target.as_ref(), Expression::Variable(name) if name == "callback")
+                    && matches!(value.as_ref(), Expression::Variable(name) if name == "replacement")
+        ));
+    }
+
+    #[test]
+    fn does_not_coalesce_a_volatile_leaf_global_setter() {
+        let mut function = Function {
+            return_type: Type::Int,
+            name: "set_status".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![Parameter {
+                parameter_type: Type::Int,
+                name: "replacement".into(),
+            }],
+            locals: Vec::new(),
+            statements: vec![Statement::Store {
+                target: Expression::Variable("status".into()),
+                value: Expression::Variable("replacement".into()),
+            }],
+            guards: Vec::new(),
+            return_expression: Some(Expression::Variable("status".into())),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let globals = std::collections::HashMap::from([("status".into(), Type::Int)]);
+        let volatile = std::collections::HashSet::from(["status".into()]);
+
+        assert!(coalesce_terminal_global_store_return(&function, &globals, &volatile).is_none());
+
+        // A second source statement also invalidates the frameless proof.
+        function.statements.insert(
+            0,
+            Statement::Expression(Expression::IntegerLiteral(0)),
+        );
+        assert!(coalesce_terminal_global_store_return(
+            &function,
+            &globals,
+            &std::collections::HashSet::new(),
+        )
+        .is_none());
     }
 }
