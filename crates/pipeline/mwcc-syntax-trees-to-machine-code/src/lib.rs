@@ -972,6 +972,7 @@ fn lower_function_body(
     generator.schedule_entry_saved_zero_test();
     generator.schedule_saved_pointer_zero_test();
     generator.schedule_reciprocal_frame_fill();
+    generator.schedule_bounded_vector_reciprocal();
     generator.reuse_absolute_pooled_float_literals();
     generator.reuse_repeated_integer_constants();
     generator.finalize_structured_noncopy_conversion_lanes();

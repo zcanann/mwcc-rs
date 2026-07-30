@@ -38,6 +38,7 @@ mod assigned_pointer_alias;
 mod bounded_member_cursor;
 mod bounded_member_assignment;
 mod bounded_acceleration_schedule;
+mod bounded_vector_reciprocal_schedule;
 mod callee_saved;
 mod comma_operator;
 mod coalescing_free_list_insert;
