@@ -101,7 +101,7 @@ pub(super) fn automatic_composable_function(function: &Function) -> bool {
             .locals
             .iter()
             .all(|local| local.initializer.is_some())
-            || statement_weight(&function.statements) <= 4);
+            || statement_weight(&function.statements) <= 6);
     let parameter_select = function.locals.is_empty()
         && function.return_type == Type::Void
         && function.return_expression.is_none()
@@ -974,7 +974,7 @@ fn expression_mentions(expression: &Expression, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{LocalDeclaration, Parameter};
+    use mwcc_syntax_trees::{BinaryOperator, LocalDeclaration, Parameter};
 
     fn scalar_parameter_function() -> Function {
         Function {
@@ -1050,6 +1050,62 @@ mod tests {
             &HashSet::new(),
             false,
         ));
+    }
+
+    #[test]
+    fn admits_a_one_use_interrupt_guarded_flag_transaction() {
+        let mut function = scalar_parameter_function();
+        function.parameters.clear();
+        function.locals.push(LocalDeclaration {
+            declared_type: Type::Int,
+            name: "level".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        function.statements = vec![
+            Statement::Assign {
+                name: "level".into(),
+                value: Expression::Call {
+                    name: "disable".into(),
+                    arguments: Vec::new(),
+                },
+            },
+            Statement::Store {
+                target: Expression::Variable("pause".into()),
+                value: Expression::IntegerLiteral(1),
+            },
+            Statement::If {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::Equal,
+                    left: Box::new(Expression::Variable("executing".into())),
+                    right: Box::new(Expression::IntegerLiteral(0)),
+                },
+                then_body: vec![
+                    Statement::Store {
+                        target: Expression::Variable("pausing".into()),
+                        value: Expression::IntegerLiteral(1),
+                    },
+                    Statement::Expression(Expression::Call {
+                        name: "resume".into(),
+                        arguments: Vec::new(),
+                    }),
+                ],
+                else_body: Vec::new(),
+            },
+            Statement::Expression(Expression::Call {
+                name: "restore".into(),
+                arguments: vec![Expression::Variable("level".into())],
+            }),
+        ];
+
+        assert_eq!(statement_weight(&function.statements), 6);
+        assert!(automatic_composable_function(&function));
     }
 
     #[test]

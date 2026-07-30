@@ -51,10 +51,7 @@ impl DeferredSavedHomePlan {
 }
 
 pub(super) fn structured_name_last_read(function: &Function, name: &str) -> Option<usize> {
-    let mut cursor = 0;
-    let mut interval = DeferredInterval::default();
-    collect_deferred_interval(&function.statements, name, &mut cursor, &mut interval)?;
-    interval.last_read
+    collect_function_deferred_interval(function, name)?.last_read
 }
 
 /// Textual expiration is not a lifetime proof for a value referenced in a
@@ -79,14 +76,7 @@ pub(super) fn plan_deferred_saved_homes(
 ) -> Option<DeferredSavedHomePlan> {
     let mut intervals = Vec::with_capacity(locals.len());
     for local in locals {
-        let mut cursor = 0usize;
-        let mut interval = DeferredInterval::default();
-        collect_deferred_interval(
-            &function.statements,
-            &local.name,
-            &mut cursor,
-            &mut interval,
-        )?;
+        let interval = collect_function_deferred_interval(function, &local.name)?;
         let first_assignment = if interval.assignment_count == 0
             && local.initializer.is_some()
         {
@@ -294,6 +284,20 @@ struct DeferredInterval {
     first_assignment: Option<usize>,
     last_read: Option<usize>,
     assignment_count: usize,
+}
+
+fn collect_function_deferred_interval(
+    function: &Function,
+    name: &str,
+) -> Option<DeferredInterval> {
+    let mut cursor = 0usize;
+    let mut interval = DeferredInterval::default();
+    collect_deferred_interval(&function.statements, name, &mut cursor, &mut interval)?;
+    if let Some(return_expression) = &function.return_expression {
+        cursor += 1;
+        collect_expression_interval(return_expression, name, cursor, &mut interval);
+    }
+    Some(interval)
 }
 
 fn collect_deferred_interval(
@@ -1419,6 +1423,57 @@ mod tests {
         assert!(structured_name_occurs_in_loop(&function, "cursor"));
         assert!(structured_name_occurs_in_loop(&function, "temporary"));
         assert_eq!(plan.group_count, 2);
+    }
+
+    #[test]
+    fn keeps_a_returned_local_live_across_a_later_definition() {
+        let mut result = local("result", Expression::IntegerLiteral(0));
+        result.initializer = None;
+        let mut late = local("late", Expression::IntegerLiteral(0));
+        late.initializer = None;
+        let function = Function {
+            return_type: Type::Int,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![result, late],
+            statements: vec![
+                Statement::Assign {
+                    name: "result".into(),
+                    value: Expression::Call {
+                        name: "produce".into(),
+                        arguments: Vec::new(),
+                    },
+                },
+                Statement::Assign {
+                    name: "late".into(),
+                    value: Expression::Call {
+                        name: "later".into(),
+                        arguments: Vec::new(),
+                    },
+                },
+                Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: vec![Expression::Variable("late".into())],
+                }),
+            ],
+            guards: Vec::new(),
+            return_expression: Some(Expression::Variable("result".into())),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let locals = function.locals.iter().collect::<Vec<_>>();
+
+        let plan = plan_deferred_saved_homes(&function, &locals).unwrap();
+
+        assert_eq!(plan.group_count, 2);
+        assert_ne!(plan.group("result"), plan.group("late"));
     }
 
     #[test]
