@@ -1043,10 +1043,10 @@ fn lower_function_body(
             .inline_initializer_ordinals_follow_strings
             && generator.inline_statement_body_substitutions != 0,
     );
-    ordinal_accounting::apply(
+    ordinal_accounting::apply_with_behavior(
         ordinal_source_function,
         &mut generator.output,
-        generator.behavior.function_ordinal_accounting_style,
+        &generator.behavior,
     );
 
     // Debug lowering consumes final physical allocation, not the frontend's

@@ -276,9 +276,65 @@ impl Generator {
                     .map_or(default_offset, |source_index| body_offsets[*source_index])
             })
             .collect();
+        let body_hidden_labels = arms
+            .iter()
+            .map(|arm| match &arm.body {
+                ArmBody::Statements(statements) => {
+                    super::structured::structured_hidden_label_count(statements)
+                }
+                ArmBody::Return(_) => 0,
+            })
+            .sum::<u32>()
+            + default.map_or(0, |body| match body {
+                ArmBody::Statements(statements) => {
+                    super::structured::structured_hidden_label_count(statements)
+                }
+                ArmBody::Return(_) => 0,
+            });
+        let simple_terminal_calls = arms
+            .iter()
+            .map(|arm| &arm.body)
+            .chain(default)
+            .all(|body| {
+                matches!(
+                    body,
+                    ArmBody::Statements(statements)
+                        if matches!(
+                            statements.as_slice(),
+                            [Statement::Expression(
+                                Expression::Call { .. } | Expression::CallThrough { .. }
+                            )]
+                                | [
+                                    Statement::Expression(
+                                        Expression::Call { .. } | Expression::CallThrough { .. }
+                                    ),
+                                    Statement::Return(None),
+                                ]
+                        )
+                )
+            });
+        let labels_per_arm = if simple_terminal_calls {
+            1
+        } else {
+            u32::from(
+                self.behavior
+                    .complex_structured_dense_switch_labels_per_arm,
+            )
+        };
+        let base_labels = if simple_terminal_calls {
+            1
+        } else {
+            u32::from(
+                self.behavior
+                    .complex_structured_dense_switch_base_labels,
+            )
+        };
         self.output.jump_tables.push(JumpTable {
             entries,
-            anonymous_offset: arms.len() as u32 + 1 + u32::from(default.is_some()),
+            anonymous_offset: arms.len() as u32 * labels_per_arm
+                + base_labels
+                + u32::from(default.is_some())
+                + body_hidden_labels,
         });
         // The table occupies its assigned `@N` slot. The writer's jump-table
         // walk lands on N rather than advancing past it, so retain the one

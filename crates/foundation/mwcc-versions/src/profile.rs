@@ -830,6 +830,31 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    /// Anonymous labels retained per source arm by a complex allocator-backed
+    /// dense switch. The legacy 2.3.3 optimizer keeps four nodes per arm;
+    /// later generations collapse that transaction to the visible case label.
+    fn complex_structured_dense_switch_labels_per_arm(&self) -> u8 {
+        1
+    }
+
+    /// Fixed dispatch labels retained ahead of a complex allocator-backed
+    /// dense switch's jump table, excluding an explicit default label.
+    fn complex_structured_dense_switch_base_labels(&self) -> u8 {
+        1
+    }
+
+    /// Anonymous-label residue retained for an explicitly empty conditional
+    /// then-body. Most generations discard the body completely.
+    fn empty_conditional_then_label_bump(&self) -> u8 {
+        0
+    }
+
+    /// Pool-front analysis residue retained when one function introduces more
+    /// than one string literal.
+    fn multiple_function_strings_label_bump(&self) -> u8 {
+        0
+    }
+
     /// Lowering family for dense call-dispatch switches.
     fn call_dispatcher_style(&self) -> CallDispatcherStyle {
         CallDispatcherStyle::Legacy24x
@@ -2073,6 +2098,22 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn complex_structured_dense_switch_labels_per_arm(&self) -> u8 {
+        4
+    }
+
+    fn complex_structured_dense_switch_base_labels(&self) -> u8 {
+        2
+    }
+
+    fn empty_conditional_then_label_bump(&self) -> u8 {
+        1
+    }
+
+    fn multiple_function_strings_label_bump(&self) -> u8 {
+        1
+    }
+
     fn mem_copy_remainder_mask_style(&self) -> MemCopyRemainderMaskStyle {
         MemCopyRemainderMaskStyle::MaterializedThree
     }

@@ -14,6 +14,7 @@ mod inline_fallbacks;
 mod inline_ordinal_positions;
 mod packed_strings;
 mod reference_analysis;
+mod string_ordinal_positions;
 
 use mwcc_core::{Compilation, Diagnostic};
 use std::path::PathBuf;
@@ -1263,6 +1264,10 @@ fn compile(
     // Prototype-name provenance is unit-wide but not yet sampled at each local
     // declaration, so do not fold it into this separate adjustment channel.
     let total_inline_bump = unit.skipped_inline_functions as i64;
+    string_ordinal_positions::apply_multiple_new_string_residue(
+        &mut machine_functions,
+        behavior.multiple_function_strings_label_bump,
+    );
     for (function_index, function) in machine_functions.iter().enumerate() {
         for local in &function.static_locals {
             // A static numbers at the counter AS OF ITS DECLARATION (the parser's
@@ -1347,7 +1352,8 @@ fn compile(
         for function in &machine_functions {
             eprintln!(
                 "machine-ordinal-facts {}: front={}, source_prefix={}, post_constant={}, \
-                 post={:?}, framed={}, constants={}, constant_adjust={}, string_adjust={}",
+                 post={:?}, framed={}, constants={}, strings={}, constant_adjust={}, \
+                 string_adjust={}",
                 function.name,
                 function.anonymous_label_bump,
                 function.deferred_source_prefix_bump,
@@ -1355,6 +1361,7 @@ fn compile(
                 function.post_function_anonymous_bump,
                 function.frame.is_some(),
                 function.constants.len(),
+                function.string_literals.len(),
                 function.constant_number_adjust,
                 function.string_number_adjust,
             );

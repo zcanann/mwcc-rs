@@ -9,7 +9,7 @@ use mwcc_machine_code::MachineFunction;
 use mwcc_syntax_trees::{
     BinaryOperator, Expression, Function, Statement, Type, UnaryOperator,
 };
-use mwcc_versions::FunctionOrdinalAccountingStyle;
+use mwcc_versions::{Behavior, FunctionOrdinalAccountingStyle};
 use std::collections::HashSet;
 
 /// Build 163 assigns retained inline-initializer nodes after a function's
@@ -58,6 +58,56 @@ pub(crate) fn apply(
         FunctionOrdinalAccountingStyle::Gc41Ipa => gc41_hidden_labels(function, true),
     };
     output.post_constant_label_bump += hidden;
+}
+
+pub(crate) fn apply_with_behavior(
+    function: &Function,
+    output: &mut MachineFunction,
+    behavior: &Behavior,
+) {
+    let empty_then_residue = empty_conditional_then_count(&function.statements)
+        * u32::from(behavior.empty_conditional_then_label_bump);
+    output.anonymous_label_bump += empty_then_residue;
+    apply(
+        function,
+        output,
+        behavior.function_ordinal_accounting_style,
+    );
+}
+
+fn empty_conditional_then_count(statements: &[Statement]) -> u32 {
+    statements
+        .iter()
+        .map(|statement| match statement {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                u32::from(then_body.is_empty())
+                    + empty_conditional_then_count(then_body)
+                    + empty_conditional_then_count(else_body)
+            }
+            Statement::Loop { body, .. } => empty_conditional_then_count(body),
+            Statement::Switch { arms, default, .. } => {
+                arms.iter()
+                    .map(|arm| match &arm.body {
+                        mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                            empty_conditional_then_count(statements)
+                        }
+                        mwcc_syntax_trees::ArmBody::Return(_) => 0,
+                    })
+                    .sum::<u32>()
+                    + default.as_ref().map_or(0, |body| match body {
+                        mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                            empty_conditional_then_count(statements)
+                        }
+                        mwcc_syntax_trees::ArmBody::Return(_) => 0,
+                    })
+            }
+            _ => 0,
+        })
+        .sum()
 }
 
 /// The mainline optimizer turns a run of zero-initialized automatic arrays
@@ -387,6 +437,7 @@ mod tests {
     use mwcc_syntax_trees::{
         BinaryOperator, GuardedReturn, LocalDataRelocation, LocalDataRelocationTarget,
     };
+    use mwcc_versions::{CompilerConfig, GC_1_2_5N};
 
     fn function() -> Function {
         Function {
@@ -447,6 +498,22 @@ mod tests {
         assert_eq!(output.constant_number_adjust, -1);
         assert_eq!(output.string_number_adjust, 0);
         assert!(output.constant_number_gaps.is_empty());
+    }
+
+    #[test]
+    fn build_163_retains_an_empty_then_residue_at_pool_front() {
+        let mut function = function();
+        function.statements.push(Statement::If {
+            condition: Expression::Variable("condition".to_owned()),
+            then_body: Vec::new(),
+            else_body: vec![Statement::Return(Some(Expression::IntegerLiteral(1)))],
+        });
+        let mut output = MachineFunction::new("probe");
+        let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
+
+        apply_with_behavior(&function, &mut output, &behavior);
+
+        assert_eq!(output.anonymous_label_bump, 1);
     }
 
     #[test]

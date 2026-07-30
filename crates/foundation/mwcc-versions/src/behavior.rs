@@ -572,6 +572,17 @@ pub struct Behavior {
     /// Fixed hidden-label block between a packed dispatcher's string base and
     /// jump table. The GC 4.1 and Wii optimizers retain different residues.
     pub call_dispatcher_table_base_labels: u8,
+    /// Anonymous labels retained per source arm in a complex allocator-backed
+    /// dense switch.
+    pub complex_structured_dense_switch_labels_per_arm: u8,
+    /// Fixed dispatch labels retained by a complex allocator-backed dense switch.
+    pub complex_structured_dense_switch_base_labels: u8,
+    /// Anonymous-label residue retained for each explicitly empty conditional
+    /// then-body.
+    pub empty_conditional_then_label_bump: u8,
+    /// Pool-front residue retained when one function introduces multiple
+    /// string literals.
+    pub multiple_function_strings_label_bump: u8,
     /// Whether plain `char` is signed. Cascades through read/operand extension,
     /// `>>`/`/`/`%` strength reduction, comparison folding, and the int->float bias.
     pub char_is_signed: bool,
@@ -981,6 +992,22 @@ impl Behavior {
                 .build
                 .profile
                 .call_dispatcher_table_base_labels(),
+            complex_structured_dense_switch_labels_per_arm: config
+                .build
+                .profile
+                .complex_structured_dense_switch_labels_per_arm(),
+            complex_structured_dense_switch_base_labels: config
+                .build
+                .profile
+                .complex_structured_dense_switch_base_labels(),
+            empty_conditional_then_label_bump: config
+                .build
+                .profile
+                .empty_conditional_then_label_bump(),
+            multiple_function_strings_label_bump: config
+                .build
+                .profile
+                .multiple_function_strings_label_bump(),
             char_is_signed: config.char_is_signed(),
             float_cast_value_store_first: config.build.profile.float_cast_value_store_first(),
             legacy_float_cast_schedule: config.build.profile.legacy_float_cast_schedule(),
@@ -2320,6 +2347,21 @@ mod tests {
             ipa.function_ordinal_accounting_style,
             FunctionOrdinalAccountingStyle::Gc41Ipa
         );
+    }
+
+    #[test]
+    fn legacy_dense_structured_switches_retain_the_wider_label_transaction() {
+        let legacy = Behavior::resolve(&CompilerConfig::new(build::GC_1_2_5N));
+        let mainline = Behavior::resolve(&CompilerConfig::new(build::GC_2_7));
+
+        assert_eq!(legacy.complex_structured_dense_switch_labels_per_arm, 4);
+        assert_eq!(legacy.complex_structured_dense_switch_base_labels, 2);
+        assert_eq!(legacy.empty_conditional_then_label_bump, 1);
+        assert_eq!(legacy.multiple_function_strings_label_bump, 1);
+        assert_eq!(mainline.complex_structured_dense_switch_labels_per_arm, 1);
+        assert_eq!(mainline.complex_structured_dense_switch_base_labels, 1);
+        assert_eq!(mainline.empty_conditional_then_label_bump, 0);
+        assert_eq!(mainline.multiple_function_strings_label_bump, 0);
     }
 
     #[test]
