@@ -163,6 +163,7 @@ mod switch_call_dispatcher;
 mod switch_call_return;
 mod tail_call;
 mod tokenizer;
+mod toggled_guarded_global_callback;
 mod trig_quadrant_dispatch;
 mod unoptimized_integer_round_up;
 mod variadic;
