@@ -1712,24 +1712,31 @@ impl Generator {
                 0
             };
             if expanded.retains_source_call_survivors {
-                self.inline_source_call_survivors.extend(
-                    function
-                        .locals
-                        .iter()
-                        .map(|local| local.name.as_str())
-                        .chain(
-                            function
-                                .parameters
-                                .iter()
-                                .map(|parameter| parameter.name.as_str()),
+                let liveness_projection = self
+                    .inline_bodies
+                    .expand_call_free_values_for_liveness(function);
+                let liveness_function =
+                    liveness_projection.as_ref().unwrap_or(function);
+                let source_call_survivors = function
+                    .locals
+                    .iter()
+                    .map(|local| local.name.as_str())
+                    .chain(
+                        function
+                            .parameters
+                            .iter()
+                            .map(|parameter| parameter.name.as_str()),
+                    )
+                    .filter(|name| {
+                        super::callee_saved::read_after_possible_call_in_function(
+                            liveness_function,
+                            name,
                         )
-                        .filter(|name| {
-                            super::callee_saved::read_after_possible_call_in_function(
-                                function, name,
-                            )
-                        })
-                        .map(str::to_owned),
-                );
+                    })
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                self.inline_source_call_survivors
+                    .extend(source_call_survivors);
             }
             let result = self.evaluate_body(&expanded.function);
             if result.is_ok() {

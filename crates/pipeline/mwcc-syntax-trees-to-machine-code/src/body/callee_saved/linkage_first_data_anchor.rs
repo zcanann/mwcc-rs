@@ -41,7 +41,7 @@ pub(crate) fn plan(
         behavior.global_addressing == GlobalAddressing::SmallData,
         behavior.inferred_array_uses_full_data_section,
     );
-    let data_references = referenced_symbols(function, &data_symbols);
+    let (data_references, _) = referenced_symbols(function, &data_symbols);
     if data_references.len() >= 3 {
         return Some(DataSectionAnchorPlan {
             symbols: data_references,
@@ -54,32 +54,38 @@ pub(crate) fn plan(
         globals,
         behavior.global_addressing == GlobalAddressing::SmallData,
     );
-    let bss_references = referenced_symbols(function, &bss_symbols);
-    (bss_references.len() >= 2).then(|| DataSectionAnchorPlan {
-        symbols: bss_references,
-        anchor_symbol: "...bss.0".into(),
-        register: None,
+    let (bss_references, bss_reference_count) =
+        referenced_symbols(function, &bss_symbols);
+    (bss_references.len() >= 2 || bss_reference_count >= 4).then(|| {
+        DataSectionAnchorPlan {
+            symbols: bss_references,
+            anchor_symbol: "...bss.0".into(),
+            register: None,
+        }
     })
 }
 
 fn referenced_symbols(
     function: &Function,
     symbols: &std::collections::HashSet<String>,
-) -> std::collections::HashSet<String> {
+) -> (std::collections::HashSet<String>, usize) {
     let mut referenced = std::collections::HashSet::new();
-    for statement in &function.statements {
-        visit_statement(statement, &mut |expression| {
-            if let Expression::Variable(name) = expression {
-                if symbols.contains(name) {
-                    referenced.insert(name.clone());
-                }
+    let mut reference_count = 0;
+    let mut collect = |expression: &Expression| {
+        if let Expression::Variable(name) = expression {
+            if symbols.contains(name) {
+                referenced.insert(name.clone());
+                reference_count += 1;
             }
-        });
+        }
+    };
+    for statement in &function.statements {
+        visit_statement(statement, &mut collect);
     }
     if let Some(expression) = &function.return_expression {
-        collect_expression_variables(expression, symbols, &mut referenced);
+        visit_expression(expression, &mut collect);
     }
-    referenced
+    (referenced, reference_count)
 }
 
 /// Find a deferred saved-home whose first value starts after the anchor's last
@@ -257,65 +263,6 @@ fn is_initialized_full_data(
         })
     } else {
         false
-    }
-}
-
-fn collect_expression_variables(
-    expression: &Expression,
-    symbols: &std::collections::HashSet<String>,
-    referenced: &mut std::collections::HashSet<String>,
-) {
-    match expression {
-        Expression::Variable(name) => {
-            if symbols.contains(name) {
-                referenced.insert(name.clone());
-            }
-        }
-        Expression::Assign { target, value }
-        | Expression::Binary {
-            left: target,
-            right: value,
-            ..
-        }
-        | Expression::Comma {
-            left: target,
-            right: value,
-        }
-        | Expression::Index {
-            base: target,
-            index: value,
-        } => {
-            collect_expression_variables(target, symbols, referenced);
-            collect_expression_variables(value, symbols, referenced);
-        }
-        Expression::Unary { operand, .. }
-        | Expression::Cast { operand, .. }
-        | Expression::Dereference { pointer: operand }
-        | Expression::AddressOf { operand }
-        | Expression::Member { base: operand, .. }
-        | Expression::MemberAddress { base: operand, .. }
-        | Expression::PostStep {
-            target: operand, ..
-        }
-        | Expression::IndexedUpdateValue { value: operand } => {
-            collect_expression_variables(operand, symbols, referenced);
-        }
-        Expression::Conditional {
-            condition,
-            when_true,
-            when_false,
-            ..
-        } => {
-            collect_expression_variables(condition, symbols, referenced);
-            collect_expression_variables(when_true, symbols, referenced);
-            collect_expression_variables(when_false, symbols, referenced);
-        }
-        Expression::Call { arguments, .. } => {
-            for argument in arguments {
-                collect_expression_variables(argument, symbols, referenced);
-            }
-        }
-        _ => {}
     }
 }
 
@@ -507,5 +454,37 @@ mod tests {
         assert_eq!(anchor.symbols.len(), 2);
         assert!(anchor.symbols.contains("BB2"));
         assert!(anchor.symbols.contains("CurrDiskID"));
+    }
+
+    #[test]
+    fn retains_one_repeated_full_bss_struct() {
+        let mut command = global("Command", Vec::new());
+        command.data_bytes = None;
+        command.declared_type = Type::Struct { size: 64, align: 4 };
+        let address = || Expression::AddressOf {
+            operand: Box::new(Expression::Variable("Command".into())),
+        };
+        let caller = function(
+            "caller",
+            vec![
+                call("first", vec![address()]),
+                call("second", vec![address()]),
+                call("third", vec![address()]),
+                call("fourth", vec![address()]),
+            ],
+        );
+        let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
+
+        let anchor = plan(
+            &caller,
+            &[command],
+            behavior,
+            &InlineBodySet::default(),
+        )
+        .expect("four full-BSS address materializations amortize one anchor");
+
+        assert_eq!(anchor.anchor_symbol, "...bss.0");
+        assert_eq!(anchor.symbols.len(), 1);
+        assert!(anchor.symbols.contains("Command"));
     }
 }

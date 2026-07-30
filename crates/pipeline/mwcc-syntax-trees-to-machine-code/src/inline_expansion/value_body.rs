@@ -650,6 +650,9 @@ fn sequence(expressions: Vec<Expression>) -> Expression {
 /// they are a direct expression body. More involved selection summaries remain
 /// limited to definitions the frontend identified as explicitly/skipped inline.
 pub(super) fn summarize_automatic(function: &Function) -> Option<ValueInlineBody> {
+    if let Some(body) = summarize_automatic_bounded_predicate(function) {
+        return Some(body);
+    }
     if !function.locals.is_empty() {
         return None;
     }
@@ -664,6 +667,172 @@ pub(super) fn summarize_automatic(function: &Function) -> Option<ValueInlineBody
         return None;
     }
     summarize(function)
+}
+
+/// Unroll a small fixed-count predicate search selected by automatic IPA.
+///
+/// SDK command classifiers commonly test a short explicit set, then scan a
+/// one- or two-element configuration array and return one on the first match.
+/// The loop induction object has no identity outside that scan, so MWCC folds
+/// the body into the caller's short-circuit predicate instead of retaining a
+/// call or an inlined local.
+fn summarize_automatic_bounded_predicate(function: &Function) -> Option<ValueInlineBody> {
+    if !function.is_static
+        || function.return_type == Type::Void
+        || function.parameters.len() != 1
+        || function.locals.len() != 1
+        || !function.guards.is_empty()
+        || function.asm_body.is_some()
+        || !matches!(
+            function.return_expression,
+            Some(Expression::IntegerLiteral(0))
+        )
+    {
+        return None;
+    }
+    let index_local = &function.locals[0];
+    if index_local.is_static
+        || index_local.is_volatile
+        || index_local.array_length.is_some()
+        || index_local.initializer.is_some()
+        || matches!(index_local.declared_type, Type::Void | Type::Struct { .. })
+    {
+        return None;
+    }
+    let [
+        Statement::If {
+            condition: leading,
+            then_body: leading_true,
+            else_body: leading_false,
+        },
+        Statement::Loop {
+            kind: mwcc_syntax_trees::LoopKind::For,
+            initializer: Some(initializer),
+            condition: Some(loop_condition),
+            step: Some(step),
+            body,
+        },
+    ] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    if !leading_false.is_empty()
+        || !returns_integer(leading_true, 1)
+        || crate::analysis::expression_has_side_effect(leading)
+    {
+        return None;
+    }
+    let Expression::Assign {
+        target: initial_target,
+        value: initial_value,
+    } = initializer
+    else {
+        return None;
+    };
+    let Expression::Variable(initial_name) = initial_target.as_ref() else {
+        return None;
+    };
+    let Expression::IntegerLiteral(0) = initial_value.as_ref() else {
+        return None;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::Less,
+        left: limit_left,
+        right: limit_right,
+    } = loop_condition
+    else {
+        return None;
+    };
+    let Expression::Variable(limit_name) = limit_left.as_ref() else {
+        return None;
+    };
+    let Expression::IntegerLiteral(limit) = limit_right.as_ref() else {
+        return None;
+    };
+    if initial_name != &index_local.name
+        || limit_name != &index_local.name
+        || !(1..=8).contains(limit)
+    {
+        return None;
+    }
+    let Expression::Assign {
+        target: step_target,
+        value: step_value,
+    } = step
+    else {
+        return None;
+    };
+    let Expression::Variable(step_target_name) = step_target.as_ref() else {
+        return None;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left: step_left,
+        right: step_right,
+    } = step_value.as_ref()
+    else {
+        return None;
+    };
+    if step_target_name != &index_local.name
+        || !matches!(
+            step_left.as_ref(),
+            Expression::Variable(name) if name == &index_local.name
+        )
+        || !matches!(step_right.as_ref(), Expression::IntegerLiteral(1))
+    {
+        return None;
+    }
+    let [Statement::If {
+        condition: repeated,
+        then_body: repeated_true,
+        else_body: repeated_false,
+    }] = body.as_slice()
+    else {
+        return None;
+    };
+    if !repeated_false.is_empty()
+        || !returns_integer(repeated_true, 1)
+        || crate::analysis::expression_has_side_effect(repeated)
+        || super::safety::expression_use_count(repeated, &index_local.name) == 0
+    {
+        return None;
+    }
+
+    let mut predicates = vec![leading.clone()];
+    for index in 0..*limit {
+        let replacements = std::iter::once((
+            index_local.name.clone(),
+            Expression::IntegerLiteral(index),
+        ))
+        .collect();
+        predicates.push(super::substitution::substitute_expression(
+            repeated,
+            &replacements,
+        ));
+    }
+    let expression = predicates
+        .into_iter()
+        .reduce(|left, right| Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left: Box::new(left),
+            right: Box::new(right),
+        })?;
+    let mut source = function.clone();
+    source.locals.clear();
+    source.statements.clear();
+    source.return_expression = Some(expression.clone());
+    Some(ValueInlineBody {
+        source,
+        expression,
+        automatic_transaction: false,
+    })
+}
+
+fn returns_integer(statements: &[Statement], expected: i64) -> bool {
+    matches!(
+        statements,
+        [Statement::Return(Some(Expression::IntegerLiteral(value)))] if *value == expected
+    )
 }
 
 /// Summarize a bounded scalar transaction selected by the automatic inliner.
@@ -968,6 +1137,84 @@ mod tests {
             summary.expression,
             Expression::Member { offset: 4, .. }
         ));
+    }
+
+    #[test]
+    fn unrolls_a_fixed_count_predicate_search_for_automatic_inlining() {
+        let mut function = empty_function("contains_command", Type::Int);
+        function.is_static = true;
+        function.parameters.push(Parameter {
+            parameter_type: Type::UnsignedInt,
+            name: "command".into(),
+        });
+        function.locals.push(LocalDeclaration {
+            declared_type: Type::UnsignedInt,
+            name: "index".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        function.statements = vec![
+            Statement::If {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::Equal,
+                    left: Box::new(Expression::Variable("command".into())),
+                    right: Box::new(Expression::IntegerLiteral(4)),
+                },
+                then_body: vec![Statement::Return(Some(Expression::IntegerLiteral(1)))],
+                else_body: Vec::new(),
+            },
+            Statement::Loop {
+                kind: mwcc_syntax_trees::LoopKind::For,
+                initializer: Some(Expression::Assign {
+                    target: Box::new(Expression::Variable("index".into())),
+                    value: Box::new(Expression::IntegerLiteral(0)),
+                }),
+                condition: Some(Expression::Binary {
+                    operator: BinaryOperator::Less,
+                    left: Box::new(Expression::Variable("index".into())),
+                    right: Box::new(Expression::IntegerLiteral(2)),
+                }),
+                step: Some(Expression::Assign {
+                    target: Box::new(Expression::Variable("index".into())),
+                    value: Box::new(Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left: Box::new(Expression::Variable("index".into())),
+                        right: Box::new(Expression::IntegerLiteral(1)),
+                    }),
+                }),
+                body: vec![Statement::If {
+                    condition: Expression::Binary {
+                        operator: BinaryOperator::Equal,
+                        left: Box::new(Expression::Variable("command".into())),
+                        right: Box::new(Expression::Index {
+                            base: Box::new(Expression::Variable("commands".into())),
+                            index: Box::new(Expression::Variable("index".into())),
+                        }),
+                    },
+                    then_body: vec![Statement::Return(Some(Expression::IntegerLiteral(1)))],
+                    else_body: Vec::new(),
+                }],
+            },
+        ];
+        function.return_expression = Some(Expression::IntegerLiteral(0));
+
+        let summary = summarize_automatic(&function).expect("bounded predicate search");
+
+        assert!(summary.source.locals.is_empty());
+        assert_eq!(
+            super::super::safety::expression_use_count(&summary.expression, "index"),
+            0
+        );
+        assert_eq!(
+            super::super::safety::expression_use_count(&summary.expression, "commands"),
+            2
+        );
     }
 
     #[test]

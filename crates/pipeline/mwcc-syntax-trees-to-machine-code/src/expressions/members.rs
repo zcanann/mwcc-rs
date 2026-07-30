@@ -1813,15 +1813,6 @@ impl Generator {
         let pointee = pointee_of_type(element_type).ok_or_else(|| {
             Diagnostic::error("a global array of this element type is not supported yet (roadmap)")
         })?;
-        // The base materializes into `destination` and is then its own load base, so
-        // `destination` cannot be the scratch r0 (an `addi`/load based on r0 reads
-        // literal zero, not the register). A BYTE element's base is a separate
-        // (virtual) register, so its variable-index path below tolerates r0.
-        if destination == GENERAL_SCRATCH && constant_value(index).is_some() {
-            return Err(Diagnostic::error(
-                "a global-array subscript into the scratch register is not supported yet (roadmap)",
-            ));
-        }
         // A constant index folds into the load displacement.
         if let Some(constant) = constant_value(index) {
             let offset = constant * pointee.size() as i64;
@@ -1867,6 +1858,28 @@ impl Generator {
                         offset,
                     )?);
                 }
+                return Ok(());
+            }
+            // The remaining integer path normally materializes the base into
+            // the destination and then uses it as rA. Physical r0 cannot own
+            // that address because rA=0 denotes literal zero, so retain the
+            // address in a short-lived virtual instead. For the first element
+            // of an ADDR16 array, fold the low relocation directly into the
+            // load just as the floating path does.
+            if destination == GENERAL_SCRATCH {
+                let base = self.fresh_virtual_general_preferring(3);
+                if offset == 0 {
+                    self.emit_address_high(base, name);
+                    self.record_relocation(RelocationKind::Addr16Lo, name);
+                } else {
+                    self.emit_global_array_base(name, total_size, base)?;
+                }
+                self.output.instructions.push(displacement_load(
+                    pointee,
+                    destination,
+                    base,
+                    offset,
+                )?);
                 return Ok(());
             }
             self.emit_global_array_base(name, total_size, destination)?;

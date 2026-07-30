@@ -894,6 +894,29 @@ impl InlineBodySet {
             .or_else(|| self.expand_calls(function))
     }
 
+    /// Expand only call-free expression helpers for source-liveness planning.
+    ///
+    /// Mixed late-composition lanes deliberately retain the source allocator's
+    /// view of guarded transactions. Ordinary predicate helpers are different:
+    /// their calls disappear before allocation and must not make unrelated
+    /// caller values look live across a call. Keeping this projection here
+    /// gives allocation the same value-body ownership as actual composition
+    /// without exposing statement helpers or call-bearing transactions.
+    pub(crate) fn expand_call_free_values_for_liveness(
+        &self,
+        function: &Function,
+    ) -> Option<Function> {
+        let mut values_only = self.clone();
+        values_only.bodies.clear();
+        values_only.statement_value_bodies.clear();
+        values_only.values.retain(|_, body| {
+            !crate::analysis::expression_has_call(&body.expression)
+        });
+        values_only
+            .expand_calls_with_facts_policy(function, false)
+            .map(|expanded| expanded.function)
+    }
+
     pub(crate) fn expand_calls_with_facts(&self, function: &Function) -> Option<ExpandedCalls> {
         self.expand_calls_with_facts_policy(function, false)
     }
@@ -3797,6 +3820,81 @@ mod tests {
         assert!(expanded.retains_source_call_survivors);
         assert!(!expanded.advances_ordinary_ordinals);
         assert!(expanded.discounts_structured_hidden_labels);
+    }
+
+    #[test]
+    fn source_liveness_expands_only_call_free_value_helpers() {
+        let mut predicate = function("predicate", Vec::new(), Vec::new());
+        predicate.return_type = Type::Int;
+        predicate.return_expression =
+            Some(Expression::Variable("predicate_value".into()));
+        let mut guarded = function("guarded", Vec::new(), Vec::new());
+        guarded.return_type = Type::Int;
+        guarded.return_expression = Some(Expression::Call {
+            name: "read_guard".into(),
+            arguments: Vec::new(),
+        });
+        let mut bodies = InlineBodySet::default();
+        bodies.values.insert(
+            predicate.name.clone(),
+            value_body::ValueInlineBody {
+                source: predicate,
+                expression: Expression::Variable("predicate_value".into()),
+                automatic_transaction: false,
+            },
+        );
+        bodies.values.insert(
+            guarded.name.clone(),
+            value_body::ValueInlineBody {
+                source: guarded,
+                expression: Expression::Call {
+                    name: "read_guard".into(),
+                    arguments: Vec::new(),
+                },
+                automatic_transaction: false,
+            },
+        );
+        let caller = function(
+            "caller",
+            Vec::new(),
+            vec![
+                Statement::If {
+                    condition: Expression::Call {
+                        name: "predicate".into(),
+                        arguments: Vec::new(),
+                    },
+                    then_body: Vec::new(),
+                    else_body: Vec::new(),
+                },
+                Statement::If {
+                    condition: Expression::Call {
+                        name: "guarded".into(),
+                        arguments: Vec::new(),
+                    },
+                    then_body: Vec::new(),
+                    else_body: Vec::new(),
+                },
+            ],
+        );
+
+        let projected = bodies
+            .expand_call_free_values_for_liveness(&caller)
+            .expect("the call-free predicate should expand");
+
+        assert!(matches!(
+            &projected.statements[0],
+            Statement::If {
+                condition: Expression::Variable(name),
+                ..
+            } if name == "predicate_value"
+        ));
+        assert!(matches!(
+            &projected.statements[1],
+            Statement::If {
+                condition: Expression::Call { name, .. },
+                ..
+            } if name == "guarded"
+        ));
     }
 
     #[test]
