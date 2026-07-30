@@ -647,6 +647,9 @@ impl Generator {
         if self.try_emit_saved_global_constant_arguments(arguments, name, direct_call)? {
             return Ok(());
         }
+        if self.try_emit_dependency_ordered_general_arguments(arguments, name, direct_call)? {
+            return Ok(());
+        }
         if self.try_emit_global_pointer_address_constant_arguments(
             arguments,
             name,

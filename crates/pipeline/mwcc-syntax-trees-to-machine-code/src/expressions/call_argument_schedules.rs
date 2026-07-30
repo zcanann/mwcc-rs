@@ -1,5 +1,6 @@
 //! Measured multi-instruction schedules for direct-call arguments.
 
+mod dependencies;
 mod global_address;
 mod members;
 mod nested;
