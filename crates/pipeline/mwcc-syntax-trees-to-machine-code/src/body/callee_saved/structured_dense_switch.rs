@@ -280,6 +280,10 @@ impl Generator {
             entries,
             anonymous_offset: arms.len() as u32 + 1 + u32::from(default.is_some()),
         });
+        // The table occupies its assigned `@N` slot. The writer's jump-table
+        // walk lands on N rather than advancing past it, so retain the one
+        // post-table ordinal needed by the next function-local static.
+        self.output.post_constant_label_bump += 1;
         Ok(())
     }
 
