@@ -1713,6 +1713,18 @@ impl Generator {
             operand,
         } = value
         {
+            // A word-sized integer cast around an already-word-sized register
+            // leaf changes only the value's signed interpretation. When the
+            // result is immediately stored to an integer object no code is
+            // needed: the store writes the same 32 bits. Keep narrow leaves out
+            // of this fold because their integer promotion may still require a
+            // sign/zero extension before a word store.
+            if self.leaf_info(operand).is_ok_and(|(_, width, _)| {
+                word_cast_of_word_leaf_is_store_identity(*target_type, pointee, width)
+            })
+            {
+                return self.place_store_value(operand, pointee);
+            }
             if target_type.width() < 32 && pointee.element().width() <= target_type.width() {
                 let legacy_preserves_cast = self.behavior.narrow_store_conversion_style
                     == mwcc_versions::NarrowStoreConversionStyle::PreserveOutsideBinaryAlu
@@ -1925,5 +1937,69 @@ fn collect_logical_and_terms<'a>(expression: &'a Expression, into: &mut Vec<&'a 
         collect_logical_and_terms(right, into);
     } else {
         into.push(expression);
+    }
+}
+
+fn word_cast_of_word_leaf_is_store_identity(
+    target_type: Type,
+    pointee: Pointee,
+    source_width: u8,
+) -> bool {
+    source_width == 32
+        && matches!(
+            target_type,
+            Type::Int
+                | Type::UnsignedInt
+                | Type::Pointer(_)
+                | Type::StructPointer { .. }
+        )
+        && matches!(
+            pointee,
+            Pointee::Int
+                | Pointee::UnsignedInt
+                | Pointee::Char
+                | Pointee::UnsignedChar
+                | Pointee::Short
+                | Pointee::UnsignedShort
+                | Pointee::Pointer
+                | Pointee::WordPointer
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_signedness_cast_is_an_integer_store_identity() {
+        assert!(word_cast_of_word_leaf_is_store_identity(
+            Type::UnsignedInt,
+            Pointee::UnsignedInt,
+            32,
+        ));
+        assert!(word_cast_of_word_leaf_is_store_identity(
+            Type::UnsignedInt,
+            Pointee::UnsignedChar,
+            32,
+        ));
+    }
+
+    #[test]
+    fn word_store_identity_preserves_narrow_promotions_and_float_conversions() {
+        assert!(!word_cast_of_word_leaf_is_store_identity(
+            Type::UnsignedInt,
+            Pointee::UnsignedInt,
+            8,
+        ));
+        assert!(!word_cast_of_word_leaf_is_store_identity(
+            Type::Float,
+            Pointee::UnsignedInt,
+            32,
+        ));
+        assert!(!word_cast_of_word_leaf_is_store_identity(
+            Type::UnsignedInt,
+            Pointee::Float,
+            32,
+        ));
     }
 }
