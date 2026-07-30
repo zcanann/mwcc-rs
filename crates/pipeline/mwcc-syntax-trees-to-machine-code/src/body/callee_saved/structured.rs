@@ -84,6 +84,7 @@ use super::structured_prologue::{
     uses_dense_saved_register_range,
 };
 use super::structured_register_width::assigned_register_width;
+use super::structured_state_transfer_layout::is_unused_array_state_transfer;
 use super::structured_value_versions::{
     has_split_value_version, reassignment_live_source, split_reassigned_local_versions,
 };
@@ -598,6 +599,11 @@ impl Generator {
         else {
             decline!("deferred saved-home planning rejected the body");
         };
+        let unused_array_state_transfer = unused_frame_array
+            && is_unused_array_state_transfer(function)
+            && eager_saved_locals.len() == 3
+            && saved_parameters.len() == 2
+            && deferred_home_plan.group_count == 0;
         let path_reuse_frame_bytes = i16::try_from(4 * deferred_home_plan.path_reuse_count)
             .map_err(|_| Diagnostic::error("structured path-reuse frame is too large"))?;
         let variadic_output_frame = (self.behavior.frame_convention
@@ -673,7 +679,11 @@ impl Generator {
             i16::try_from(end.saturating_sub(8))
                 .map_err(|_| Diagnostic::error("structured aggregate frame is too large"))?
         } else if !frame_arrays.is_empty() {
-            frame_array_bytes
+            if unused_array_state_transfer {
+                0
+            } else {
+                frame_array_bytes
+            }
         } else {
             scalar_only_frame_bytes
         };
@@ -872,6 +882,8 @@ impl Generator {
             });
         let frame_saved_count = 32usize.saturating_sub(frame_first_saved);
         let loop_assertion_saved_range = loop_assertion_strings.is_some();
+        let dense_unused_array_state_transfer =
+            unused_array_state_transfer && count == 5;
         let dense_frame = uses_dense_saved_register_range(
             with_frame_array,
             eager_saved_locals.len(),
@@ -879,7 +891,7 @@ impl Generator {
             global_member_search_entry,
             parameter_home_reuse
                 .reuses_parameter_home(eager_saved_locals.len(), saved_parameters.len()),
-        );
+        ) || dense_unused_array_state_transfer;
         let dense_retained_local_table = (dense_frame
             && self.behavior.frame_convention == FrameConvention::LinkageFirst
             && !frame_arrays.is_empty()
@@ -911,6 +923,7 @@ impl Generator {
             .then(|| plan_dense_eager_pointer_round_up(function))
             .flatten();
         let dense_entry_prefix = with_frame_array
+            && !dense_unused_array_state_transfer
             && !global_member_search_entry
             && structured_dense_frame_entry_index(function).is_some_and(|index| index != 0);
         let search_result = function.statements.first().and_then(|statement| {
@@ -1077,6 +1090,10 @@ impl Generator {
                     } else {
                         self.fresh_virtual_general()
                     }
+                } else if dense_unused_array_state_transfer {
+                    self.fresh_virtual_general_preferring(
+                        31u8.saturating_sub(u8::try_from(home_index).unwrap_or(4).min(4)),
+                    )
                 } else if dense_frame && !eager_saved_locals.is_empty() {
                     let preferred = dense_deferred_preferences
                         .get(&home_index)
