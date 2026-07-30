@@ -93,7 +93,7 @@ use super::structured_object_collision_loop_schedule::schedule_object_collision_
 use super::structured_preloop_alias::fold_preloop_comma_pointer_alias;
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_frame_address_null_select,
-    plan_deferred_saved_homes, plan_ephemeral_locals,
+    is_unobserved_local_assignment, plan_deferred_saved_homes, plan_ephemeral_locals,
 };
 use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 use super::structured_eager_home_reuse::StructuredEagerHomeReuse;
@@ -234,6 +234,10 @@ impl Generator {
         let structured_switch_source = function.clone();
         let lowered_switches = lower_structured_switches(function);
         let function = lowered_switches.as_ref().unwrap_or(function);
+        let retains_unobserved_local_lane = function
+            .locals
+            .iter()
+            .any(|local| is_unobserved_local_assignment(function, &local.name));
         let raw_loop_assertion_strings = plan_loop_assertion_strings(function);
         let planned_loop_assertion_strings = raw_loop_assertion_strings.filter(|plan| {
             self.behavior.frame_convention == FrameConvention::Predecrement
@@ -1731,10 +1735,11 @@ impl Generator {
         {
             LegacyCalleeSavedFrameLayout::RetainEagerLocalLane
         } else if suppressed_constant_lane {
-            // The store constant lost its saved home at the four-home pressure
-            // limit, but build 163 still accounts for the optimizer value lane
-            // which the promotion would otherwise have represented.
+            // A store constant which lost its fifth saved home still retains
+            // its optimizer value lane in build 163's logical frame.
             LegacyCalleeSavedFrameLayout::RetainDeferredLocalLane
+        } else if retains_unobserved_local_lane {
+            LegacyCalleeSavedFrameLayout::RetainEntryParameterTableAndDeferredLocalLane
         } else if is_plain_short_circuit_call_if(function)
             && self.entry_parameter_words <= 2
         {
@@ -3647,6 +3652,14 @@ impl Generator {
                 Statement::Assign { name, value } => {
                     if name.starts_with("__mwcc_iterator_end_") {
                         self.emit_loop_assertion_string_highs();
+                    }
+                    if is_unobserved_local_assignment(function, name)
+                        && !crate::analysis::expression_has_side_effect(value)
+                        && self.volatile_globals.iter().all(|global| {
+                            !crate::analysis::expression_reads_name(value, global)
+                        })
+                    {
+                        continue;
                     }
                     if is_folded_terminal_pointer_load_alias(function, statement_index) {
                         continue;

@@ -1072,7 +1072,25 @@ pub(super) fn body_uses_local(statements: &[Statement], name: &str) -> bool {
                 .any(|expression| expression_reads_name(expression, name))
                 || body_uses_local(body, name)
         }
-        Statement::Switch { .. } => true,
+        Statement::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            expression_reads_name(scrutinee, name)
+                || arms
+                    .iter()
+                    .map(|arm| &arm.body)
+                    .chain(default)
+                    .any(|body| match body {
+                        mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                            body_uses_local(statements, name)
+                        }
+                        mwcc_syntax_trees::ArmBody::Return(value) => {
+                            expression_reads_name(value, name)
+                        }
+                    })
+        }
         Statement::Return(None)
         | Statement::Break
         | Statement::Continue
@@ -1118,13 +1136,93 @@ pub(super) fn body_reads_local(statements: &[Statement], name: &str) -> bool {
                 .any(|expression| expression_reads_name(expression, name))
                 || body_reads_local(body, name)
         }
-        Statement::Switch { .. } => true,
+        Statement::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            expression_reads_name(scrutinee, name)
+                || arms
+                    .iter()
+                    .map(|arm| &arm.body)
+                    .chain(default)
+                    .any(|body| match body {
+                        mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                            body_reads_local(statements, name)
+                        }
+                        mwcc_syntax_trees::ArmBody::Return(value) => {
+                            expression_reads_name(value, name)
+                        }
+                    })
+        }
         Statement::Return(None)
         | Statement::Break
         | Statement::Continue
         | Statement::Goto(_)
         | Statement::Label(_) => false,
     })
+}
+
+pub(super) fn is_unobserved_local_assignment(function: &Function, name: &str) -> bool {
+    function.locals.iter().any(|local| {
+        local.name == name
+            && !local.is_volatile
+            && body_uses_local(&function.statements, name)
+            && !body_reads_local(&function.statements, name)
+            && has_only_side_effect_free_assignments(&function.statements, name)
+            && function
+                .return_expression
+                .as_ref()
+                .is_none_or(|value| !expression_reads_name(value, name))
+    })
+}
+
+fn has_only_side_effect_free_assignments(statements: &[Statement], name: &str) -> bool {
+    fn inspect(statements: &[Statement], name: &str, found: &mut bool) -> bool {
+        for statement in statements {
+            match statement {
+                Statement::Assign {
+                    name: assigned,
+                    value,
+                } if assigned == name => {
+                    *found = true;
+                    if crate::analysis::expression_has_side_effect(value) {
+                        return false;
+                    }
+                }
+                Statement::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    if !inspect(then_body, name, found)
+                        || !inspect(else_body, name, found)
+                    {
+                        return false;
+                    }
+                }
+                Statement::Loop { body, .. } => {
+                    if !inspect(body, name, found) {
+                        return false;
+                    }
+                }
+                Statement::Switch { arms, default, .. } => {
+                    for body in arms.iter().map(|arm| &arm.body).chain(default) {
+                        if let mwcc_syntax_trees::ArmBody::Statements(statements) = body {
+                            if !inspect(statements, name, found) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
+    }
+
+    let mut found = false;
+    inspect(statements, name, &mut found) && found
 }
 
 /// Recognize a pointer phi whose true arm selects a frame aggregate and whose
@@ -1191,6 +1289,68 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
         }
+    }
+
+    fn function_with_local(local: LocalDeclaration, statements: Vec<Statement>) -> Function {
+        Function {
+            return_type: Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![local],
+            statements,
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
+
+    #[test]
+    fn distinguishes_an_unobserved_pure_assignment_inside_a_switch() {
+        let mut temporary = local("finished", Expression::IntegerLiteral(0));
+        temporary.initializer = None;
+        let assignment = Statement::Assign {
+            name: "finished".into(),
+            value: Expression::Variable("executing".into()),
+        };
+        let function = function_with_local(
+            temporary.clone(),
+            vec![Statement::Switch {
+                scrutinee: Expression::Variable("state".into()),
+                arms: vec![mwcc_syntax_trees::SwitchArm {
+                    value: 0,
+                    body: mwcc_syntax_trees::ArmBody::Statements(vec![assignment.clone()]),
+                    falls_through: false,
+                }],
+                default: None,
+            }],
+        );
+
+        assert!(body_uses_local(&function.statements, "finished"));
+        assert!(!body_reads_local(&function.statements, "finished"));
+        assert!(is_unobserved_local_assignment(&function, "finished"));
+
+        let side_effecting = function_with_local(
+            temporary,
+            vec![Statement::Assign {
+                name: "finished".into(),
+                value: Expression::Call {
+                    name: "observe".into(),
+                    arguments: Vec::new(),
+                },
+            }],
+        );
+        assert!(!is_unobserved_local_assignment(
+            &side_effecting,
+            "finished"
+        ));
     }
 
     #[test]

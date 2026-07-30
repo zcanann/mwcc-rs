@@ -345,10 +345,13 @@ impl Generator {
             LegacyCalleeSavedFrameLayout::RetainDeferredLocalLane
                 | LegacyCalleeSavedFrameLayout::RetainDeferredGlobalMemberAddressLane
         );
+        let retain_entry_and_deferred_local_lane = self.legacy_callee_saved_frame_layout
+            == LegacyCalleeSavedFrameLayout::RetainEntryParameterTableAndDeferredLocalLane;
         let retain_entry_parameter_table = matches!(
             self.legacy_callee_saved_frame_layout,
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
                 | LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable
+                | LegacyCalleeSavedFrameLayout::RetainEntryParameterTableAndDeferredLocalLane
         );
         let recorded_saved_entry_home_before_call =
             retain_guarded_entry_parameter_table
@@ -379,11 +382,7 @@ impl Generator {
         // accounting even after eliminating the values. Only that erased-local
         // case exposes the pairwise lane count; ordinary promoted values retain
         // the established single inferred lane regardless of their count.
-        let extra_lane_count = if preserve_logical_size || guarded_entry_table_is_frame_resident {
-            0
-        } else if retain_guarded_local_lane {
-            1
-        } else if self.legacy_discarded_call_locals == 0 {
+        let inferred_entry_lane_count = || {
             if self.entry_parameter_words != 0
                 && (materialized_home_before_call || parameter_derived_home_before_call)
                 && retain_entry_parameter_table
@@ -405,23 +404,17 @@ impl Generator {
             } else {
                 usize::from(reserve_forwarded_parameter_lane)
             }
+        };
+        let extra_lane_count = if preserve_logical_size || guarded_entry_table_is_frame_resident {
+            0
+        } else if retain_entry_and_deferred_local_lane {
+            inferred_entry_lane_count() + 1
+        } else if retain_guarded_local_lane {
+            1
+        } else if self.legacy_discarded_call_locals == 0 {
+            inferred_entry_lane_count()
         } else {
-            let retained_parameter_lanes = if self.entry_parameter_words != 0
-                && (materialized_home_before_call || parameter_derived_home_before_call)
-                && retain_entry_parameter_table
-            {
-                self.entry_parameter_words.div_ceil(2).max(1)
-                    + usize::from(recorded_saved_entry_home_before_call)
-            } else if materialized_home_before_call {
-                1
-            } else if retain_eager_local_lane
-                && physical_saved.len() == 2
-                && loaded_home_before_call
-            {
-                1
-            } else {
-                usize::from(reserve_forwarded_parameter_lane)
-            };
+            let retained_parameter_lanes = inferred_entry_lane_count();
             let promoted_values = promoted_parameter_count.max(retained_parameter_lanes);
             (promoted_values + self.legacy_discarded_call_locals).div_ceil(2)
         };
