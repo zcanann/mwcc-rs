@@ -624,9 +624,7 @@ impl InlineBodySet {
         &self,
         function: &Function,
     ) -> Option<ExpandedCalls> {
-        if safety::statement_weight(&function.statements) > 24 {
-            return None;
-        }
+        let caller_weight = safety::statement_weight(&function.statements);
         let mut calls = HashMap::new();
         collect_function_calls(function, &mut calls);
         let caller_position = *self.definition_positions.get(&function.name)?;
@@ -662,11 +660,18 @@ impl InlineBodySet {
             })
             .map(|(_, count)| *count)
             .sum::<usize>();
+        // A pair of source sites amortizes the larger transaction even in a
+        // substantial dispatcher. A single site remains bounded so large
+        // state-copy/error handlers keep the callable helper.
+        if caller_weight > 24 && switch_transaction_calls < 2 {
+            return None;
+        }
         let mut expanded = self.clone();
         expanded.bodies.extend(visible_bodies);
         let mut result = expanded.expand_calls_with_facts_policy(function, false)?;
         if switch_transaction_calls != 0 {
-            result.statement_frame_residue_substitutions = switch_transaction_calls;
+            result.statement_frame_residue_substitutions =
+                usize::from(switch_transaction_calls == 1);
             result.advances_ordinary_ordinals = false;
             result.discounts_structured_hidden_labels = true;
         }

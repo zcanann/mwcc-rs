@@ -25,6 +25,61 @@ pub(crate) fn hidden_label_count_with_switches(function: &Function) -> u32 {
     super::structured::structured_hidden_label_count(statements)
 }
 
+pub(crate) fn nested_retained_switch_hidden_label_count(function: &Function) -> u32 {
+    fn statements(function: &Function, body: &[Statement], inside_switch: bool) -> u32 {
+        body.iter()
+            .map(|statement| match statement {
+                Statement::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    statements(function, then_body, inside_switch)
+                        + statements(function, else_body, inside_switch)
+                }
+                Statement::Loop { body, .. } => {
+                    statements(function, body, inside_switch)
+                }
+                Statement::Switch {
+                    scrutinee,
+                    arms,
+                    default,
+                } => {
+                    let retained = u32::from(
+                        inside_switch
+                            && super::structured_sparse_switch::
+                                is_sparse_shared_body_switch(arms),
+                    ) * canonical_switch_hidden_label_count(
+                        function,
+                        scrutinee,
+                        arms,
+                        default.as_ref(),
+                    );
+                    retained
+                        + arms
+                            .iter()
+                            .map(|arm| match &arm.body {
+                                ArmBody::Statements(body) => {
+                                    statements(function, body, true)
+                                }
+                                ArmBody::Return(_) => 0,
+                            })
+                            .sum::<u32>()
+                        + default.as_ref().map_or(0, |body| match body {
+                            ArmBody::Statements(body) => {
+                                statements(function, body, true)
+                            }
+                            ArmBody::Return(_) => 0,
+                        })
+                }
+                _ => 0,
+            })
+            .sum()
+    }
+
+    statements(function, &function.statements, false)
+}
+
 /// Build the structured emitter's control-flow view.
 ///
 /// Analysis still consumes the fully canonicalized if-tree returned by
@@ -140,8 +195,8 @@ impl SwitchLowering {
                     default,
                 } => {
                     if self.preserve_dense
-                        && self.control_depth == 0
-                        && (is_dense_structured_switch(arms)
+                        && ((self.control_depth == 0
+                            && is_dense_structured_switch(arms))
                             || super::structured_sparse_switch::is_sparse_shared_body_switch(arms))
                     {
                         let arms = arms
@@ -532,5 +587,35 @@ mod tests {
                     [Statement::Assign { .. }, Statement::If { .. }]
                 )
         ));
+    }
+
+    #[test]
+    fn emission_retains_a_nested_shared_body_switch() {
+        let switch = Statement::Switch {
+            scrutinee: Expression::Variable("kind".into()),
+            arms: vec![
+                SwitchArm {
+                    value: 4,
+                    body: ArmBody::Statements(Vec::new()),
+                    falls_through: true,
+                },
+                SwitchArm {
+                    value: 5,
+                    body: ArmBody::Statements(vec![Statement::Return(None)]),
+                    falls_through: false,
+                },
+            ],
+            default: None,
+        };
+        let nested = Statement::If {
+            condition: Expression::Variable("enabled".into()),
+            then_body: vec![switch],
+            else_body: Vec::new(),
+        };
+
+        assert!(
+            lower_structured_switches_for_emission(&function(vec![nested])).is_none(),
+            "the emission view must not clone a nested shared body"
+        );
     }
 }

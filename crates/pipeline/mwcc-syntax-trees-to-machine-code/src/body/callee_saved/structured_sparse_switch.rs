@@ -20,7 +20,6 @@ struct CaseRange {
 
 pub(super) fn is_sparse_shared_body_switch(arms: &[mwcc_syntax_trees::SwitchArm]) -> bool {
     if arms.is_empty()
-        || arms.len() > 6
         || !arms.iter().any(|arm| arm.falls_through)
         || arms
             .iter()
@@ -33,7 +32,8 @@ pub(super) fn is_sparse_shared_body_switch(arms: &[mwcc_syntax_trees::SwitchArm]
         return false;
     }
     let ranges = shared_case_ranges(arms);
-    dispatch_range_is_supported(&ranges, 0, ranges.len() - 1, None)
+    ranges.len() <= 6
+        && dispatch_range_is_supported(&ranges, 0, ranges.len() - 1, None)
 }
 
 fn shared_case_ranges(arms: &[mwcc_syntax_trees::SwitchArm]) -> Vec<CaseRange> {
@@ -96,19 +96,39 @@ fn dispatch_range_is_supported(
     hi: usize,
     upper_bound: Option<i64>,
 ) -> bool {
-    if lo == hi {
-        return true;
-    }
+    lo == hi || shared_case_pivot(ranges, lo, hi, upper_bound).is_some()
+}
+
+fn shared_case_pivot(
+    ranges: &[CaseRange],
+    lo: usize,
+    hi: usize,
+    upper_bound: Option<i64>,
+) -> Option<usize> {
     let count = hi - lo + 1;
-    let mid = if upper_bound.is_none() {
+    let preferred = if upper_bound.is_none() {
         lo + count / 2
     } else {
         lo + (count - 1) / 2
     };
-    ranges[mid].low == ranges[mid].high
-        && (mid == lo
-            || dispatch_range_is_supported(ranges, lo, mid - 1, Some(ranges[mid].low - 1)))
-        && (mid == hi || dispatch_range_is_supported(ranges, mid + 1, hi, upper_bound))
+    (lo..=hi)
+        .map(|index| (index.abs_diff(preferred), usize::from(index > preferred), index))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|(_, _, index)| index)
+        .find(|index| {
+            let pivot = ranges[*index];
+            pivot.low == pivot.high
+                && (*index == lo
+                    || dispatch_range_is_supported(
+                        ranges,
+                        lo,
+                        *index - 1,
+                        Some(pivot.low - 1),
+                    ))
+                && (*index == hi
+                    || dispatch_range_is_supported(ranges, *index + 1, hi, upper_bound))
+        })
 }
 
 impl Generator {
@@ -279,13 +299,33 @@ impl Generator {
             self.emit_shared_case_leaf(register, ranges[lo], lower_bound, upper_bound, patches);
             return;
         }
+        if hi == lo + 1
+            && lower_bound == Some(ranges[lo].low)
+            && upper_bound.is_none()
+            && ranges[lo].high.checked_add(1) == Some(ranges[hi].low)
+            && ranges[hi].low != ranges[hi].high
+        {
+            self.push_sparse_compare(register, ranges[hi].high + 1);
+            self.push_sparse_conditional(
+                patches,
+                (4, 0),
+                crate::switch::Target::Default,
+            );
+            self.push_sparse_compare(register, ranges[hi].low);
+            self.push_sparse_conditional(
+                patches,
+                (4, 0),
+                crate::switch::Target::Body(ranges[hi].body),
+            );
+            self.push_sparse_branch(
+                patches,
+                crate::switch::Target::Body(ranges[lo].body),
+            );
+            return;
+        }
 
-        let count = hi - lo + 1;
-        let mid = if upper_bound.is_none() {
-            lo + count / 2
-        } else {
-            lo + (count - 1) / 2
-        };
+        let mid = shared_case_pivot(ranges, lo, hi, upper_bound)
+            .expect("a retained shared-body range has a supported pivot");
         let pivot = ranges[mid];
         debug_assert_eq!(pivot.low, pivot.high);
         self.output
@@ -319,6 +359,15 @@ impl Generator {
         }
         if mid == hi {
             patches.push((right_branch, crate::switch::Target::Default));
+        } else if mid + 1 == hi
+            && upper_bound == Some(ranges[hi].high)
+            && ranges[hi].low == ranges[hi].high
+            && pivot.high.checked_add(1) == Some(ranges[hi].low)
+        {
+            patches.push((
+                right_branch,
+                crate::switch::Target::Body(ranges[hi].body),
+            ));
         } else {
             let right_entry = self.output.instructions.len();
             if let Instruction::BranchConditionalForward { target, .. } =
@@ -439,6 +488,45 @@ mod tests {
         ];
 
         assert!(is_sparse_shared_body_switch(&arms));
+    }
+
+    #[test]
+    fn recognizes_seven_labels_when_shared_ranges_fit_the_tree() {
+        let mut arms = [2, 3, 4]
+            .into_iter()
+            .map(|value| SwitchArm {
+                value,
+                body: ArmBody::Statements(vec![Statement::Return(None)]),
+                falls_through: false,
+            })
+            .collect::<Vec<_>>();
+        arms.extend([
+            SwitchArm {
+                value: 1,
+                body: ArmBody::Statements(Vec::new()),
+                falls_through: true,
+            },
+            SwitchArm {
+                value: 6,
+                body: ArmBody::Statements(Vec::new()),
+                falls_through: true,
+            },
+            SwitchArm {
+                value: 7,
+                body: ArmBody::Statements(vec![Statement::Return(None)]),
+                falls_through: false,
+            },
+            SwitchArm {
+                value: 5,
+                body: ArmBody::Statements(vec![Statement::Return(None)]),
+                falls_through: false,
+            },
+        ]);
+
+        assert!(is_sparse_shared_body_switch(&arms));
+        let ranges = shared_case_ranges(&arms);
+        assert_eq!(ranges.len(), 6);
+        assert_eq!(shared_case_pivot(&ranges, 4, 5, None), Some(4));
     }
 
     #[test]

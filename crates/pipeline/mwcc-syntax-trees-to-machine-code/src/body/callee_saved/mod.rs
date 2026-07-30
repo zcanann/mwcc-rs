@@ -80,7 +80,9 @@ mod scaled_two_call_add;
 mod shared_global_float_pair_schedule;
 mod structured;
 pub(super) use structured::structured_hidden_label_count;
-pub(super) use structured_switch_lowering::hidden_label_count_with_switches;
+pub(super) use structured_switch_lowering::{
+    hidden_label_count_with_switches, nested_retained_switch_hidden_label_count,
+};
 #[cfg(test)]
 mod structured_guard_tests;
 mod structured_allocator_cursor_schedule;

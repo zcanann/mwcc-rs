@@ -1699,6 +1699,12 @@ impl Generator {
                     .saturating_sub(super::callee_saved::hidden_label_count_with_switches(
                         function,
                     ))
+                    + super::callee_saved::nested_retained_switch_hidden_label_count(
+                        &expanded.function,
+                    )
+                    .saturating_sub(
+                        super::callee_saved::nested_retained_switch_hidden_label_count(function),
+                    )
             } else {
                 0
             };
