@@ -204,6 +204,7 @@ mod structured_state_transfer_scale_schedule;
 mod structured_state_transfer_status_schedule;
 mod structured_state_transfer_tail_schedule;
 mod structured_switch_lowering;
+mod structured_dense_switch;
 mod structured_tail_result_guard;
 mod structured_terminal_wrapper_inline_schedule;
 mod structured_tlut_packet_schedule;

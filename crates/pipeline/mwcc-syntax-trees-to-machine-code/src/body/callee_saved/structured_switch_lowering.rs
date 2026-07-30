@@ -11,6 +11,27 @@ use mwcc_syntax_trees::{
 use std::collections::HashSet;
 
 pub(super) fn lower_structured_switches(function: &Function) -> Option<Function> {
+    lower_structured_switches_with_mode(function, false)
+}
+
+/// Build the structured emitter's control-flow view.
+///
+/// Analysis still consumes the fully canonicalized if-tree returned by
+/// [`lower_structured_switches`].  Dense switches need to retain their source
+/// arms for code emission, however: cloning a fallthrough continuation into an
+/// if-tree destroys shared case bodies and makes a real jump table impossible.
+/// Keeping the two views separate lets liveness remain single-representation
+/// while the dispatch owner sees the source topology it must materialize.
+pub(super) fn lower_structured_switches_for_emission(
+    function: &Function,
+) -> Option<Function> {
+    lower_structured_switches_with_mode(function, true)
+}
+
+fn lower_structured_switches_with_mode(
+    function: &Function,
+    preserve_dense: bool,
+) -> Option<Function> {
     let occupied = function
         .parameters
         .iter()
@@ -22,6 +43,8 @@ pub(super) fn lower_structured_switches(function: &Function) -> Option<Function>
         next_switch: 0,
         locals: function.locals.clone(),
         changed: false,
+        preserve_dense,
+        control_depth: 0,
     };
     let statements = lowering.lower_statements(&function.statements);
     lowering.changed.then(|| {
@@ -50,6 +73,8 @@ struct SwitchLowering {
     next_switch: usize,
     locals: Vec<LocalDeclaration>,
     changed: bool,
+    preserve_dense: bool,
+    control_depth: usize,
 }
 
 impl SwitchLowering {
@@ -63,8 +88,8 @@ impl SwitchLowering {
                     else_body,
                 } => lowered.push(Statement::If {
                     condition: condition.clone(),
-                    then_body: self.lower_statements(then_body),
-                    else_body: self.lower_statements(else_body),
+                    then_body: self.lower_nested_statements(then_body),
+                    else_body: self.lower_nested_statements(else_body),
                 }),
                 Statement::Loop {
                     kind,
@@ -77,13 +102,37 @@ impl SwitchLowering {
                     initializer: initializer.clone(),
                     condition: condition.clone(),
                     step: step.clone(),
-                    body: self.lower_statements(body),
+                    body: self.lower_nested_statements(body),
                 }),
                 Statement::Switch {
                     scrutinee,
                     arms,
                     default,
                 } => {
+                    if self.preserve_dense
+                        && self.control_depth == 0
+                        && is_dense_structured_switch(arms)
+                    {
+                        let arms = arms
+                            .iter()
+                            .map(|arm| mwcc_syntax_trees::SwitchArm {
+                                value: arm.value,
+                                body: ArmBody::Statements(
+                                    self.lower_arm(&arm.body),
+                                ),
+                                falls_through: arm.falls_through,
+                            })
+                            .collect();
+                        let default = default
+                            .as_ref()
+                            .map(|body| self.lower_arm(body));
+                        lowered.push(Statement::Switch {
+                            scrutinee: scrutinee.clone(),
+                            arms,
+                            default: default.map(ArmBody::Statements),
+                        });
+                        continue;
+                    }
                     let mut seen = HashSet::new();
                     if !arms.iter().all(|arm| seen.insert(arm.value)) {
                         lowered.push(statement.clone());
@@ -146,9 +195,21 @@ impl SwitchLowering {
 
     fn lower_arm(&mut self, body: &ArmBody) -> Vec<Statement> {
         match body {
-            ArmBody::Statements(statements) => self.lower_statements(statements),
+            ArmBody::Statements(statements) => {
+                self.lower_nested_statements(statements)
+            }
             ArmBody::Return(value) => vec![Statement::Return(Some(value.clone()))],
         }
+    }
+
+    fn lower_nested_statements(
+        &mut self,
+        statements: &[Statement],
+    ) -> Vec<Statement> {
+        self.control_depth += 1;
+        let lowered = self.lower_statements(statements);
+        self.control_depth -= 1;
+        lowered
     }
 
     fn fresh_name(&mut self) -> String {
@@ -160,6 +221,37 @@ impl SwitchLowering {
             }
         }
     }
+}
+
+pub(super) fn is_dense_structured_switch(
+    arms: &[mwcc_syntax_trees::SwitchArm],
+) -> bool {
+    if arms.len() < 7 {
+        return false;
+    }
+    let mut values = HashSet::with_capacity(arms.len());
+    let Some((minimum, maximum)) = arms.iter().try_fold(
+        (i64::MAX, i64::MIN),
+        |(minimum, maximum), arm| {
+            values
+                .insert(arm.value)
+                .then_some((minimum.min(arm.value), maximum.max(arm.value)))
+        },
+    ) else {
+        return false;
+    };
+    let Some(span) = maximum
+        .checked_sub(minimum)
+        .and_then(|difference| difference.checked_add(1))
+    else {
+        return false;
+    };
+    let contiguous = span == arms.len() as i64;
+    span > 6
+        && span <= i64::from(u16::MAX) + 1
+        && (contiguous
+            || (arms.len() >= 8
+                && span <= (arms.len() as i64).saturating_mul(2)))
 }
 
 #[cfg(test)]
@@ -334,6 +426,80 @@ mod tests {
                 else_body.as_slice(),
                 [Statement::Return(Some(Expression::IntegerLiteral(2)))]
             )
+        ));
+    }
+
+    #[test]
+    fn emission_retains_a_dense_eight_case_switch() {
+        let switch = Statement::Switch {
+            scrutinee: Expression::Variable("kind".into()),
+            arms: (0..8)
+                .map(|value| SwitchArm {
+                    value,
+                    body: ArmBody::Statements(vec![Statement::Return(None)]),
+                    falls_through: false,
+                })
+                .collect(),
+            default: None,
+        };
+        let source = function(vec![switch]);
+        assert!(
+            lower_structured_switches_for_emission(&source).is_none(),
+            "a retained source switch needs no rewritten emission function"
+        );
+        assert!(lower_structured_switches(&source).is_some());
+    }
+
+    #[test]
+    fn emission_lowers_a_sparse_seven_case_switch() {
+        let switch = Statement::Switch {
+            scrutinee: Expression::Variable("kind".into()),
+            arms: [0, 1, 2, 3, 4, 5, 7]
+                .into_iter()
+                .map(|value| SwitchArm {
+                    value,
+                    body: ArmBody::Statements(vec![Statement::Return(None)]),
+                    falls_through: false,
+                })
+                .collect(),
+            default: None,
+        };
+        let lowered = lower_structured_switches_for_emission(&function(vec![switch]))
+            .expect("a non-table switch should use the analysis lowering");
+        assert!(matches!(
+            lowered.statements.as_slice(),
+            [Statement::Assign { .. }, Statement::If { .. }]
+        ));
+    }
+
+    #[test]
+    fn emission_lowers_a_dense_switch_nested_in_an_if() {
+        let switch = Statement::Switch {
+            scrutinee: Expression::Variable("kind".into()),
+            arms: (0..8)
+                .map(|value| SwitchArm {
+                    value,
+                    body: ArmBody::Statements(vec![Statement::Return(None)]),
+                    falls_through: false,
+                })
+                .collect(),
+            default: None,
+        };
+        let nested = Statement::If {
+            condition: Expression::Variable("enabled".into()),
+            then_body: vec![switch],
+            else_body: Vec::new(),
+        };
+        let lowered =
+            lower_structured_switches_for_emission(&function(vec![nested]))
+                .expect("nested switches use the comparison-tree view");
+        assert!(matches!(
+            lowered.statements.as_slice(),
+            [Statement::If { then_body, .. }]
+                if matches!(
+                    then_body.as_slice(),
+                    [Statement::Assign { .. }, Statement::If { .. }]
+                )
         ));
     }
 }

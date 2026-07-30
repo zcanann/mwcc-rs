@@ -66,6 +66,7 @@ use super::structured_loop_lowering::{
 };
 use super::structured_switch_lowering::{
     is_lowered_switch_guard, lower_structured_switches,
+    lower_structured_switches_for_emission,
 };
 use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
@@ -200,6 +201,7 @@ impl Generator {
         let function = folded_preloop_alias.as_ref().unwrap_or(function);
         let stripped_empty_switches = strip_side_effect_free_empty_switches(function);
         let function = stripped_empty_switches.as_ref().unwrap_or(function);
+        let structured_switch_source = function.clone();
         let lowered_switches = lower_structured_switches(function);
         let function = lowered_switches.as_ref().unwrap_or(function);
         let raw_loop_assertion_strings = plan_loop_assertion_strings(function);
@@ -396,6 +398,16 @@ impl Generator {
         let lowered_structured_function =
             lower_structured_loops(function, &self.global_array_sizes);
         let structured_function = lowered_structured_function.as_ref().unwrap_or(function);
+        let emission_switches =
+            lower_structured_switches_for_emission(&structured_switch_source);
+        let emission_switch_function = emission_switches
+            .as_ref()
+            .unwrap_or(&structured_switch_source);
+        let lowered_emission_function =
+            lower_structured_loops(emission_switch_function, &self.global_array_sizes);
+        let emission_function = lowered_emission_function
+            .as_ref()
+            .unwrap_or(emission_switch_function);
         let supported_plain_return = structured_return_is_supported(function);
         if (!with_frame_array && !supported_plain_return)
             || !supports_statements(
@@ -2477,6 +2489,10 @@ impl Generator {
         } else {
             0
         };
+        // Analysis uses the fully canonicalized switch tree above. Emission
+        // instead retains proven-dense source switches so their dedicated
+        // owner can share fallthrough bodies and materialize a jump table.
+        let structured_function = emission_function;
         let alias_statements = if dense_frame {
             &structured_function.statements[dense_statement_start..]
         } else {
@@ -2880,6 +2896,21 @@ impl Generator {
             }
             let emitted_start = self.output.instructions.len();
             match statement {
+                Statement::Switch {
+                    scrutinee,
+                    arms,
+                    default,
+                } => self.emit_structured_dense_switch(
+                    scrutinee,
+                    arms,
+                    default.as_ref(),
+                    function,
+                    ephemeral_locals,
+                    return_branches,
+                    label_positions,
+                    pending_gotos,
+                    entry_alias,
+                )?,
                 Statement::If {
                     condition,
                     then_body,
