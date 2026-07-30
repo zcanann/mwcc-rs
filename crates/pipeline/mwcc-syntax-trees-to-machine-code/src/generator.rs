@@ -273,10 +273,12 @@ pub(crate) struct StructuredGlobalMemberAddressCache {
 
 #[derive(Debug, Clone)]
 pub(crate) struct DataSectionAnchorPlan {
-    /// Full `.data` objects addressed through the translation-unit anchor.
+    /// Full `.data` or `.bss` objects addressed through one translation-unit
+    /// section anchor.
     /// Their exact section offsets are assigned after every function-created
     /// string and table is known, so each D-form use carries a late fixup.
     pub(crate) symbols: HashSet<String>,
+    pub(crate) anchor_symbol: String,
     pub(crate) register: Option<u8>,
 }
 

@@ -1856,7 +1856,12 @@ impl Generator {
                 self.emit_structured_saved_home_store(register, save_slot, plan.frame_size);
             }
             let high = self.fresh_virtual_general_preferring(5);
-            self.record_relocation(RelocationKind::Addr16Ha, "...data.0");
+            let anchor_symbol = self
+                .data_section_anchor
+                .as_ref()
+                .map(|anchor| anchor.anchor_symbol.clone())
+                .expect("a data-section anchor home requires an anchor plan");
+            self.record_relocation(RelocationKind::Addr16Ha, &anchor_symbol);
             self.output
                 .instructions
                 .push(Instruction::AddImmediateShifted {
@@ -1864,7 +1869,7 @@ impl Generator {
                     a: 0,
                     immediate: 0,
                 });
-            self.record_relocation(RelocationKind::Addr16Lo, "...data.0");
+            self.record_relocation(RelocationKind::Addr16Lo, &anchor_symbol);
             self.output.instructions.push(Instruction::AddImmediate {
                 d: register,
                 a: high,

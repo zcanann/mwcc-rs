@@ -1,9 +1,9 @@
-//! A callee-saved `.data` anchor for several global reads across calls.
+//! A callee-saved writable-section anchor for several globals across calls.
 //!
 //! Under absolute addressing build 163 can materialize the writable data
-//! section once and address several source globals by their proven section
-//! offsets. The base is a virtual live range, so the ordinary allocator and
-//! frame reconciler choose and save its physical register.
+//! or BSS section once and address several source globals by their proven
+//! section offsets. The base is a virtual live range, so the ordinary allocator
+//! and frame reconciler choose and save its physical register.
 
 use mwcc_syntax_trees::{
     Expression, Function, GlobalDeclaration, PointerElement, Statement, Type,
@@ -36,11 +36,36 @@ pub(crate) fn plan(
     } else {
         function
     };
-    let symbols = full_data_symbols(
+    let data_symbols = full_data_symbols(
         globals,
         behavior.global_addressing == GlobalAddressing::SmallData,
         behavior.inferred_array_uses_full_data_section,
     );
+    let data_references = referenced_symbols(function, &data_symbols);
+    if data_references.len() >= 3 {
+        return Some(DataSectionAnchorPlan {
+            symbols: data_references,
+            anchor_symbol: "...data.0".into(),
+            register: None,
+        });
+    }
+
+    let bss_symbols = full_bss_symbols(
+        globals,
+        behavior.global_addressing == GlobalAddressing::SmallData,
+    );
+    let bss_references = referenced_symbols(function, &bss_symbols);
+    (bss_references.len() >= 2).then(|| DataSectionAnchorPlan {
+        symbols: bss_references,
+        anchor_symbol: "...bss.0".into(),
+        register: None,
+    })
+}
+
+fn referenced_symbols(
+    function: &Function,
+    symbols: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
     let mut referenced = std::collections::HashSet::new();
     for statement in &function.statements {
         visit_statement(statement, &mut |expression| {
@@ -52,15 +77,9 @@ pub(crate) fn plan(
         });
     }
     if let Some(expression) = &function.return_expression {
-        collect_expression_variables(expression, &symbols, &mut referenced);
+        collect_expression_variables(expression, symbols, &mut referenced);
     }
-    if referenced.len() < 3 {
-        return None;
-    }
-    Some(DataSectionAnchorPlan {
-        symbols: referenced,
-        register: None,
-    })
+    referenced
 }
 
 /// Find a deferred saved-home whose first value starts after the anchor's last
@@ -166,6 +185,38 @@ fn full_data_symbols(
         }
     }
     symbols
+}
+
+fn full_bss_symbols(
+    globals: &[GlobalDeclaration],
+    small_data: bool,
+) -> std::collections::HashSet<String> {
+    globals
+        .iter()
+        .filter(|global| {
+            if !global.is_data_definition()
+                || global.is_const
+                || global
+                    .section
+                    .as_deref()
+                    .is_some_and(|section| section != ".bss")
+                || global.initializer.is_some()
+                || global.data_bytes.is_some()
+                || global.address_initializer.is_some()
+            {
+                return false;
+            }
+            let element_size = match global.declared_type {
+                Type::Struct { size, .. } => u32::from(size),
+                other => u32::from(other.width()) / 8,
+            };
+            let count = u32::from(global.array_length.unwrap_or(1));
+            element_size
+                .checked_mul(count)
+                .is_some_and(|size| size != 0 && (!small_data || size > 8))
+        })
+        .map(|global| global.name.clone())
+        .collect()
 }
 
 fn is_initialized_full_data(
@@ -407,9 +458,54 @@ mod tests {
         let anchor = plan(&caller, &globals, behavior, &inline_bodies)
             .expect("the expanded body references three writable data globals");
 
+        assert_eq!(anchor.anchor_symbol, "...data.0");
         assert_eq!(anchor.symbols.len(), 3);
         assert!(anchor.symbols.contains("direct_a"));
         assert!(anchor.symbols.contains("direct_b"));
         assert!(anchor.symbols.contains("inline_global"));
+    }
+
+    #[test]
+    fn retains_two_adjacent_full_bss_structs() {
+        let mut bb2 = global("BB2", Vec::new());
+        bb2.data_bytes = None;
+        bb2.declared_type = Type::Struct { size: 32, align: 4 };
+        let mut disk_id = global("CurrDiskID", Vec::new());
+        disk_id.data_bytes = None;
+        disk_id.declared_type = Type::Struct { size: 32, align: 4 };
+        let caller = function(
+            "caller",
+            vec![
+                call(
+                    "compare",
+                    vec![Expression::AddressOf {
+                        operand: Box::new(Expression::Variable("CurrDiskID".into())),
+                    }],
+                ),
+                call(
+                    "invalidate",
+                    vec![Expression::MemberAddress {
+                        base: Box::new(Expression::Variable("BB2".into())),
+                        offset: 0,
+                        element: mwcc_syntax_trees::Pointee::UnsignedInt,
+                        index_stride: None,
+                    }],
+                ),
+            ],
+        );
+        let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
+
+        let anchor = plan(
+            &caller,
+            &[bb2, disk_id],
+            behavior,
+            &InlineBodySet::default(),
+        )
+        .expect("two adjacent full-BSS structs share the section anchor");
+
+        assert_eq!(anchor.anchor_symbol, "...bss.0");
+        assert_eq!(anchor.symbols.len(), 2);
+        assert!(anchor.symbols.contains("BB2"));
+        assert!(anchor.symbols.contains("CurrDiskID"));
     }
 }

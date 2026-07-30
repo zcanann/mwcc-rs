@@ -895,13 +895,24 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .functions
         .iter()
         .any(|function| !function.jump_tables.is_empty());
-    // Large zero `.bss` lays out in SYMBOL-EMISSION order, not declaration order:
-    // referenced objects first (in the order functions reference them — their
-    // `symbol_order`, across functions in source order), then any unreferenced ones
-    // in REVERSE declaration order. (This matches both mwcc's `.bss` offsets and the
-    // symbol table. The small-data `.sbss` instead reverses unconditionally, below.)
+    // Large zero `.bss` follows the build's LOCAL-symbol convention first. Later
+    // builds keep file-scope statics in declaration order; other objects follow
+    // SYMBOL-EMISSION order: referenced objects first (including named objects
+    // reached through a section-anchor displacement), then unreferenced objects
+    // in reverse declaration order. Small-data `.sbss` has its own rules below.
     let mut bss_size = 0u32;
     let mut placed_bss: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
+    if input.object_format.local_data_symbols_in_declaration_order {
+        for object in input
+            .data_objects
+            .iter()
+            .filter(|object| object.is_static && section_of(object) == ".bss")
+        {
+            if placed_bss.insert(object.name) {
+                place(object, ".bss", &mut bss_size);
+            }
+        }
+    }
     for function in &input.functions {
         // A capture-emitted function has an EMPTY symbol_order — its `.text`
         // relocations carry the reference order instead (measured: wind_waker
@@ -915,11 +926,20 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
                     _ => None,
                 });
+        let displaced_names =
+            function
+                .data_section_displacements
+                .iter()
+                .filter_map(|(_, target)| match target {
+                    DataSectionDisplacementTarget::Symbol(name) => Some(name.as_str()),
+                    DataSectionDisplacementTarget::AnonymousRodata(_) => None,
+                });
         for name in function
             .symbol_order
             .iter()
             .map(|name| name.as_str())
             .chain(relocation_names)
+            .chain(displaced_names)
         {
             if let Some(object) = input
                 .data_objects

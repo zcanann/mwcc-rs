@@ -2219,6 +2219,20 @@ impl Generator {
         total_size: u32,
         dest: u8,
     ) -> Compilation<()> {
+        if let Some(base) = self
+            .data_section_anchor
+            .as_ref()
+            .filter(|anchor| anchor.symbols.contains(name))
+            .and_then(|anchor| anchor.register)
+        {
+            self.record_data_section_symbol_displacement(name);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: dest,
+                a: base,
+                immediate: 0,
+            });
+            return Ok(());
+        }
         let small =
             self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
         if small {
