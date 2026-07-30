@@ -35,6 +35,24 @@ impl Generator {
         if self.preserve_guarded_named_local_values {
             self.expand_guarded_named_local_calls();
         }
+        while let Some(plan) = guarded_indirect_callback_reload(&self.output.instructions) {
+            let Instruction::LoadWord { d, .. } = &mut self.output.instructions[plan.load] else {
+                unreachable!("the guarded callback load was matched")
+            };
+            *d = 12;
+            let Instruction::CompareLogicalWordImmediate { a, .. } =
+                &mut self.output.instructions[plan.load + 1]
+            else {
+                unreachable!("the guarded callback comparison was matched")
+            };
+            *a = 12;
+            crate::remove_instruction_retargeting_to_next(self, plan.reload);
+            let mtlr = plan.mtlr - 1;
+            let guarded_entry = plan.load + 3;
+            if mtlr > guarded_entry {
+                crate::move_instruction_before_retargeting(self, mtlr, guarded_entry);
+            }
+        }
     }
 
     fn expand_guarded_named_local_calls(&mut self) {
@@ -109,6 +127,88 @@ fn guarded_call_pointer_reload(instructions: &[Instruction]) -> Option<(usize, u
             }
             _ => None,
         }
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GuardedIndirectCallbackReload {
+    load: usize,
+    reload: usize,
+    mtlr: usize,
+}
+
+fn guarded_indirect_callback_reload(
+    instructions: &[Instruction],
+) -> Option<GuardedIndirectCallbackReload> {
+    instructions.windows(4).enumerate().find_map(|(start, window)| {
+        let [
+            Instruction::LoadWord {
+                d: tested,
+                a: tested_base,
+                offset: tested_offset,
+            },
+            Instruction::CompareLogicalWordImmediate {
+                a: compared,
+                immediate: 0,
+            },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target,
+            },
+            Instruction::LoadWord {
+                d: 12,
+                a: callback_base,
+                offset: callback_offset,
+            },
+        ] = window
+        else {
+            return None;
+        };
+        if tested != compared
+            || *tested == 12
+            || tested_base != callback_base
+            || tested_offset != callback_offset
+        {
+            return None;
+        }
+        let reload = start + 3;
+        let mtlr = (reload + 1..instructions.len().saturating_sub(1))
+            .take(8)
+            .find(|&index| {
+                matches!(
+                    instructions[index..index + 2],
+                    [
+                        Instruction::MoveToLinkRegister { s: 12 },
+                        Instruction::BranchToLinkRegisterAndLink,
+                    ]
+                )
+            })?;
+        if *target != mtlr + 2
+            || instructions[reload + 1..mtlr].iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::BranchAndLink { .. }
+                        | Instruction::BranchToLinkRegisterAndLink
+                        | Instruction::BranchToCountRegisterAndLink
+                        | Instruction::BranchConditionalForward { .. }
+                        | Instruction::Branch { .. }
+                ) || mwcc_vreg::register_operands(instruction)
+                    .iter()
+                    .any(|operand| {
+                        operand.class == mwcc_vreg::Class::General
+                            && operand.role == mwcc_vreg::RegisterRole::Define
+                            && operand.register == 12
+                    })
+            })
+        {
+            return None;
+        }
+        Some(GuardedIndirectCallbackReload {
+            load: start,
+            reload,
+            mtlr,
+        })
     })
 }
 
@@ -195,5 +295,39 @@ mod tests {
         ];
 
         assert!(is_direct_guarded_pointer_call(&instructions, 0));
+    }
+
+    #[test]
+    fn recognizes_a_reloaded_member_callback_with_argument_setup() {
+        let instructions = vec![
+            Instruction::LoadWord {
+                d: 0,
+                a: 4,
+                offset: 40,
+            },
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 7,
+            },
+            Instruction::LoadWord {
+                d: 12,
+                a: 4,
+                offset: 40,
+            },
+            Instruction::load_immediate(3, 0),
+            Instruction::MoveToLinkRegister { s: 12 },
+            Instruction::BranchToLinkRegisterAndLink,
+        ];
+
+        assert_eq!(
+            guarded_indirect_callback_reload(&instructions),
+            Some(GuardedIndirectCallbackReload {
+                load: 0,
+                reload: 3,
+                mtlr: 5,
+            })
+        );
     }
 }

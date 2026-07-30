@@ -5,6 +5,7 @@ mod dependencies;
 mod global_address;
 mod members;
 mod nested;
+mod repeated_member;
 
 #[allow(unused_imports)]
 use super::*;

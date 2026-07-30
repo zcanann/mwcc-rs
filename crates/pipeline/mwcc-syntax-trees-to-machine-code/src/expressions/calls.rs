@@ -583,6 +583,9 @@ impl Generator {
             }
         }
         let direct_call = !self.globals.contains_key(name) && !self.locations.contains_key(name);
+        if self.try_emit_repeated_member_add_arguments(arguments, direct_call)? {
+            return Ok(());
+        }
         if self.try_emit_split_callback_tail_arguments(arguments, name, direct_call)? {
             return Ok(());
         }

@@ -36,6 +36,51 @@ fn placement_overwrites_later_source(placements: &[ArgumentPlacement]) -> bool {
 }
 
 impl Generator {
+    /// `object->callback(constant, object)`: preserve the shared base in the
+    /// second ABI argument before the first argument overwrites r3. The callee
+    /// is staged first so a guarded callback can later reuse its null-test load.
+    fn try_emit_shared_base_constant_indirect_call(
+        &mut self,
+        target: &Expression,
+        arguments: &[Expression],
+    ) -> Compilation<bool> {
+        let Expression::Member {
+            base: target_base,
+            ..
+        } = target
+        else {
+            return Ok(false);
+        };
+        let Expression::Variable(base_name) = target_base.as_ref() else {
+            return Ok(false);
+        };
+        let [Expression::IntegerLiteral(constant), Expression::Variable(second)] = arguments else {
+            return Ok(false);
+        };
+        if second != base_name {
+            return Ok(false);
+        }
+        let base = self.general_register_of(base_name)?;
+        if base == 12 {
+            return Ok(false);
+        }
+
+        // A short-lived local used as the second argument can live in r4 from
+        // its definition. The explicit copy below then coalesces as a self
+        // move; a fixed r3 call result still retains the required copy.
+        self.prefer_virtual_general(base, Eabi::FIRST_GENERAL_ARGUMENT + 1);
+        self.evaluate(target, Type::UnsignedInt, 12)?;
+        if base != Eabi::FIRST_GENERAL_ARGUMENT + 1 {
+            self.emit_integer_materialization_copy(
+                Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                base,
+            );
+        }
+        self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT, *constant);
+        self.emit_indirect_branch_and_link(12);
+        Ok(true)
+    }
+
     /// `object->callback(object->value, object)`: preserve the shared base in
     /// the second ABI argument before the first argument overwrites r3. The
     /// callee load remains ahead of the computed member argument, matching the
@@ -170,6 +215,9 @@ impl Generator {
         target: &Expression,
         arguments: &[Expression],
     ) -> Compilation<()> {
+        if self.try_emit_shared_base_constant_indirect_call(target, arguments)? {
+            return Ok(());
+        }
         if self.try_emit_shared_base_member_indirect_call(target, arguments)? {
             return Ok(());
         }
