@@ -537,12 +537,41 @@ pub(super) fn lower(
 
     if shape == MeasuredShape::General {
         let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
-        let data = data::records(unit, &globals, first_global_id, true)?;
         let source_function_refs = source_functions
             .iter()
             .map(|(function, _)| *function)
             .collect::<Vec<_>>();
-        let variables = general::variables(&source_functions, machine_functions);
+        let mut aggregate_keys = Vec::new();
+        for function in &source_function_refs {
+            if let Some(tag) = unit.function_return_aggregate_tags.get(&function.name) {
+                if !aggregate_keys.contains(tag) {
+                    aggregate_keys.push(tag.clone());
+                }
+            }
+            for parameter in &function.parameters {
+                if let Some(tag) = unit
+                    .function_parameter_aggregate_tags
+                    .get(&(function.name.clone(), parameter.name.clone()))
+                {
+                    if !aggregate_keys.contains(tag) {
+                        aggregate_keys.push(tag.clone());
+                    }
+                }
+            }
+            for local in &function.locals {
+                if let Some(tag) = unit
+                    .function_local_aggregate_tags
+                    .get(&(function.name.clone(), local.name.clone()))
+                {
+                    if !aggregate_keys.contains(tag) {
+                        aggregate_keys.push(tag.clone());
+                    }
+                }
+            }
+        }
+        let data =
+            data::general_records(unit, &globals, first_global_id, &aggregate_keys)?;
+        let variables = general::variables(unit, &source_functions, machine_functions);
         let function_plan =
             functions::selected_plan_with_variables(&source_function_refs, data.next_id, &variables)?;
         records.extend(data.records);

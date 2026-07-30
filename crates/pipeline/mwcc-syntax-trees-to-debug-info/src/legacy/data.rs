@@ -394,6 +394,7 @@ enum PlanKind<'a> {
     Aggregate {
         root_type_id: DebugEntryId,
         array_type_id: Option<DebugEntryId>,
+        is_pointer: bool,
         types: Vec<AggregatePlan<'a>>,
     },
 }
@@ -452,6 +453,28 @@ pub(super) fn records<'a>(
             Continuation::Standalone
         },
         &[],
+        false,
+    )
+}
+
+/// Emit the conservative data graph used by the general legacy-unit fallback.
+///
+/// Callable objects retain pointer identity even when their full signature is
+/// outside the measured exact-DWARF corpus. Exact shape owners keep using
+/// [`records`] and therefore continue to reject unmeasured signatures.
+pub(super) fn general_records<'a>(
+    unit: &'a TranslationUnit,
+    globals: &[&'a GlobalDeclaration],
+    first_id: DebugEntryId,
+    aggregate_keys: &[String],
+) -> Compilation<DataRecords> {
+    records_with_continuation(
+        unit,
+        globals,
+        first_id,
+        Continuation::FunctionsAfterDataEnd,
+        aggregate_keys,
+        true,
     )
 }
 
@@ -469,6 +492,7 @@ pub(super) fn records_directly_followed_by_functions<'a>(
         first_id,
         Continuation::FunctionsDirectly,
         &[],
+        false,
     )
 }
 
@@ -488,6 +512,7 @@ pub(super) fn records_with_local_aggregates_directly_followed_by_functions<'a>(
         first_id,
         Continuation::FunctionsDirectly,
         aggregate_keys,
+        false,
     )
 }
 
@@ -497,6 +522,7 @@ fn records_with_continuation<'a>(
     first_id: DebugEntryId,
     continuation: Continuation,
     trailing_aggregate_keys: &[String],
+    allow_opaque_callable_signatures: bool,
 ) -> Compilation<DataRecords> {
     let mut next_id = first_id.0;
     let mut plans = Vec::with_capacity(globals.len());
@@ -510,7 +536,9 @@ fn records_with_continuation<'a>(
                     "debug-info: function-pointer arrays need a measured legacy type graph",
                 ));
             }
-            validate_void_callable(function_type)?;
+            if !allow_opaque_callable_signatures {
+                validate_void_callable(function_type)?;
+            }
             let type_id = allocate(&mut next_id);
             let global_id = allocate(&mut next_id);
             (
@@ -521,7 +549,11 @@ fn records_with_continuation<'a>(
                     function_type,
                 },
             )
-        } else if matches!(global.declared_type, Type::Struct { .. }) {
+        } else if matches!(global.declared_type, Type::Struct { .. })
+            || (allow_opaque_callable_signatures
+                && matches!(global.declared_type, Type::StructPointer { .. })
+                && global.array_length.is_none())
+        {
             let tag = unit
                 .global_aggregate_tags
                 .get(&global.name)
@@ -561,6 +593,7 @@ fn records_with_continuation<'a>(
                 PlanKind::Aggregate {
                     root_type_id,
                     array_type_id,
+                    is_pointer: matches!(global.declared_type, Type::StructPointer { .. }),
                     types,
                 },
             )
@@ -626,9 +659,8 @@ fn records_with_continuation<'a>(
             ))),
             PlanKind::FunctionPointer {
                 type_id,
-                function_type,
+                ..
             } => {
-                validate_void_callable(function_type)?;
                 records.push(DebugRecord::Entry(DebugEntry {
                     id: *type_id,
                     tag: Tag::ModifiedType,
@@ -686,6 +718,7 @@ fn records_with_continuation<'a>(
             PlanKind::Aggregate {
                 root_type_id,
                 array_type_id,
+                is_pointer,
                 types,
             } => {
                 append_aggregate_types(
@@ -716,10 +749,14 @@ fn records_with_continuation<'a>(
                     plan.global,
                     plan.global_id,
                     next,
-                    attribute(
-                        AttributeName::UserDefinedType,
-                        AttributeValue::Reference(array_type_id.unwrap_or(*root_type_id)),
-                    ),
+                    if *is_pointer {
+                        modified_user_defined_type(*root_type_id)
+                    } else {
+                        attribute(
+                            AttributeName::UserDefinedType,
+                            AttributeValue::Reference(array_type_id.unwrap_or(*root_type_id)),
+                        )
+                    },
                 )));
             }
         }

@@ -9,7 +9,7 @@ use super::functions::{FunctionVariables, VariableLocation};
 use mwcc_dwarf1::LineRecord;
 use mwcc_machine_code::{DebugVariableLocation, MachineFunction};
 use mwcc_object::FunctionLayout;
-use mwcc_syntax_trees::{Function, FunctionSource};
+use mwcc_syntax_trees::{Function, FunctionSource, TranslationUnit, Type};
 
 pub(super) fn line_records(
     functions: &[(&Function, FunctionSource)],
@@ -28,6 +28,7 @@ pub(super) fn line_records(
 }
 
 pub(super) fn variables(
+    unit: &TranslationUnit,
     functions: &[(&Function, FunctionSource)],
     machine_functions: &[MachineFunction],
 ) -> Vec<FunctionVariables> {
@@ -37,6 +38,16 @@ pub(super) fn variables(
         .map(|((function, _), machine)| {
             let mut variables = FunctionVariables::default();
             for (index, parameter) in function.parameters.iter().enumerate() {
+                if parameter.name.is_empty()
+                    || (matches!(
+                        parameter.parameter_type,
+                        Type::Struct { .. } | Type::StructPointer { .. }
+                    ) && !unit
+                        .function_parameter_aggregate_tags
+                        .contains_key(&(function.name.clone(), parameter.name.clone())))
+                {
+                    continue;
+                }
                 if let Some(location) = machine
                     .debug_variables
                     .iter()
@@ -47,6 +58,15 @@ pub(super) fn variables(
                 }
             }
             for (index, local) in function.locals.iter().enumerate() {
+                if matches!(
+                    local.declared_type,
+                    Type::Struct { .. } | Type::StructPointer { .. }
+                ) && !unit
+                    .function_local_aggregate_tags
+                    .contains_key(&(function.name.clone(), local.name.clone()))
+                {
+                    continue;
+                }
                 if let Some(location) = machine
                     .debug_variables
                     .iter()

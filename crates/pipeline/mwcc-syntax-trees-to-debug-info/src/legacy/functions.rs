@@ -224,11 +224,33 @@ impl SelectedFunctionPlan<'_> {
                 ),
             ];
             if plan.function.return_type != Type::Void {
-                attributes.push(data::member_type_attribute(
-                    plan.function.return_type,
-                    None,
-                    None,
-                )?);
+                let aggregate_id = unit
+                    .function_return_aggregate_tags
+                    .get(&plan.function.name)
+                    .map(|tag| {
+                        aggregate_ids.get(tag).copied().ok_or_else(|| {
+                            Diagnostic::error(format!(
+                                "debug-info: return type for '{}' references aggregate '{}' without an emitted type DIE",
+                                plan.function.name, tag
+                            ))
+                        })
+                    })
+                    .transpose()?;
+                attributes.push(
+                    data::member_type_attribute(
+                        plan.function.return_type,
+                        aggregate_id,
+                        unit.function_return_fundamentals
+                            .get(&plan.function.name)
+                            .copied(),
+                    )
+                    .map_err(|mut diagnostic| {
+                        diagnostic
+                            .message
+                            .push_str(&format!(" (return type of '{}')", plan.function.name));
+                        diagnostic
+                    })?,
+                );
             }
             attributes.extend([
                 attribute(
@@ -297,7 +319,14 @@ impl SelectedFunctionPlan<'_> {
                             AttributeName::Name,
                             AttributeValue::String(parameter.name.clone()),
                         ),
-                        data::member_type_attribute(parameter.parameter_type, aggregate_id, None)?,
+                        data::member_type_attribute(parameter.parameter_type, aggregate_id, None)
+                            .map_err(|mut diagnostic| {
+                                diagnostic.message.push_str(&format!(
+                                    " (parameter '{}.{}')",
+                                    plan.function.name, parameter.name
+                                ));
+                                diagnostic
+                            })?,
                         location_attribute(location),
                     ],
                 }));
@@ -343,7 +372,14 @@ impl SelectedFunctionPlan<'_> {
                                 local.declared_type,
                                 aggregate_id,
                                 None,
-                            )?,
+                            )
+                            .map_err(|mut diagnostic| {
+                                diagnostic.message.push_str(&format!(
+                                    " (local '{}.{}')",
+                                    plan.function.name, local.name
+                                ));
+                                diagnostic
+                            })?,
                         },
                         location_attribute(location),
                     ],
