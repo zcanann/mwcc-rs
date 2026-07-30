@@ -18,6 +18,7 @@ pub(super) fn expand_statement(
     statement: &Statement,
     bodies: &HashMap<String, ValueInlineBody>,
     stable_variables: &HashSet<String>,
+    function_symbols: &HashSet<String>,
     active: &mut HashSet<String>,
     changed: &mut bool,
     value_body_substitutions: &mut usize,
@@ -31,6 +32,7 @@ pub(super) fn expand_statement(
             value,
             bodies,
             stable_variables,
+            function_symbols,
             active,
             changed,
             value_body_substitutions,
@@ -63,6 +65,7 @@ pub(super) fn expand_statement(
                         statement,
                         bodies,
                         stable_variables,
+                        function_symbols,
                         active,
                         changed,
                         value_body_substitutions,
@@ -77,6 +80,7 @@ pub(super) fn expand_statement(
                         statement,
                         bodies,
                         stable_variables,
+                        function_symbols,
                         active,
                         changed,
                         value_body_substitutions,
@@ -105,6 +109,7 @@ pub(super) fn expand_statement(
                         &arm.body,
                         bodies,
                         stable_variables,
+                        function_symbols,
                         active,
                         changed,
                         value_body_substitutions,
@@ -118,6 +123,7 @@ pub(super) fn expand_statement(
                     body,
                     bodies,
                     stable_variables,
+                    function_symbols,
                     active,
                     changed,
                     value_body_substitutions,
@@ -148,6 +154,7 @@ pub(super) fn expand_statement(
                         statement,
                         bodies,
                         stable_variables,
+                        function_symbols,
                         active,
                         changed,
                         value_body_substitutions,
@@ -343,6 +350,7 @@ fn expand_arm(
     body: &ArmBody,
     bodies: &HashMap<String, ValueInlineBody>,
     stable_variables: &HashSet<String>,
+    function_symbols: &HashSet<String>,
     active: &mut HashSet<String>,
     changed: &mut bool,
     value_body_substitutions: &mut usize,
@@ -353,6 +361,7 @@ fn expand_arm(
             value,
             bodies,
             stable_variables,
+            function_symbols,
             active,
             changed,
             value_body_substitutions,
@@ -366,6 +375,7 @@ fn expand_arm(
                         statement,
                         bodies,
                         stable_variables,
+                        function_symbols,
                         active,
                         changed,
                         value_body_substitutions,
@@ -381,6 +391,7 @@ pub(super) fn expand_expression(
     expression: &Expression,
     bodies: &HashMap<String, ValueInlineBody>,
     stable_variables: &HashSet<String>,
+    function_symbols: &HashSet<String>,
     active: &mut HashSet<String>,
     changed: &mut bool,
     value_body_substitutions: &mut usize,
@@ -394,6 +405,7 @@ pub(super) fn expand_expression(
             value,
             bodies,
             stable_variables,
+            function_symbols,
             active,
             changed,
             value_body_substitutions,
@@ -456,9 +468,15 @@ pub(super) fn expand_expression(
                                 | Expression::IntegerLiteral(_)
                                 | Expression::FloatLiteral(_)
                         );
+                let known_function_designator = body.forwards_known_function_designators()
+                    && matches!(
+                        &argument,
+                        Expression::Variable(name) if function_symbols.contains(name)
+                    );
                 if forwards_once_in_order
                     || pure_single_use
                     || guarded_transaction_single_use
+                    || known_function_designator
                     || stable_argument(&argument, stable_variables)
                 {
                     replacements.insert(parameter.name.clone(), argument);
@@ -516,6 +534,7 @@ pub(super) fn expand_expression(
                 &substituted,
                 bodies,
                 &nested_stable_variables,
+                function_symbols,
                 active,
                 changed,
                 value_body_substitutions,

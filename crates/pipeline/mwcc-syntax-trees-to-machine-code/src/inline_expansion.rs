@@ -561,12 +561,20 @@ impl InlineBodySet {
         };
         let mut active = HashSet::new();
         let stable_variables = HashSet::from([result_name.to_owned()]);
+        let function_symbols = self
+            .definitions
+            .keys()
+            .chain(self.retained_definitions.keys())
+            .filter(|name| name.as_str() != result_name)
+            .cloned()
+            .collect();
         let mut changed = false;
         let mut substitutions = 0;
         let expanded = value_calls::expand_expression(
             &call,
             &self.values,
             &stable_variables,
+            &function_symbols,
             &mut active,
             &mut changed,
             &mut substitutions,
@@ -836,6 +844,13 @@ impl InlineBodySet {
             .map(|parameter| parameter.name.clone())
             .chain(function.locals.iter().map(|local| local.name.clone()))
             .collect();
+        let function_symbols: HashSet<String> = self
+            .definitions
+            .keys()
+            .chain(self.retained_definitions.keys())
+            .filter(|name| !occupied_names.contains(name.as_str()))
+            .cloned()
+            .collect();
         let mut next_local_id = 0usize;
         let statements = self.expand_statements(
             &function.statements,
@@ -868,6 +883,7 @@ impl InlineBodySet {
                     statement,
                     &values,
                     &stable_variables,
+                    &function_symbols,
                     &mut active,
                     &mut changed,
                     &mut value_body_substitutions,
@@ -880,6 +896,7 @@ impl InlineBodySet {
                 &initializer,
                 &values,
                 &stable_variables,
+                &function_symbols,
                 &mut active,
                 &mut changed,
                 &mut value_body_substitutions,
@@ -893,6 +910,7 @@ impl InlineBodySet {
                 &guard.condition,
                 &values,
                 &stable_variables,
+                &function_symbols,
                 &mut active,
                 &mut changed,
                 &mut value_body_substitutions,
@@ -902,6 +920,7 @@ impl InlineBodySet {
                 &guard.value,
                 &values,
                 &stable_variables,
+                &function_symbols,
                 &mut active,
                 &mut changed,
                 &mut value_body_substitutions,
@@ -913,6 +932,7 @@ impl InlineBodySet {
                 return_expression,
                 &values,
                 &stable_variables,
+                &function_symbols,
                 &mut active,
                 &mut changed,
                 &mut value_body_substitutions,
@@ -2915,6 +2935,77 @@ mod tests {
             Some(Expression::Comma { left, .. })
         if matches!(left.as_ref(), Expression::Assign { value, .. }
             if matches!(value.as_ref(), Expression::Call { name, .. } if name == "side_effect"))));
+    }
+
+    #[test]
+    fn keeps_a_known_function_designator_symbolic_in_a_diagnostic_transaction() {
+        let callback = function("callback", Vec::new(), Vec::new());
+        let mut transaction = function(
+            "transaction",
+            vec![Parameter {
+                parameter_type: Type::Pointer(Pointee::Int),
+                name: "callback_argument".into(),
+            }],
+            (0..5)
+                .map(|index| Statement::Store {
+                    target: Expression::Variable(format!("published_{index}")),
+                    value: Expression::IntegerLiteral(index),
+                })
+                .chain([
+                    Statement::Store {
+                        target: Expression::Variable("published_callback".into()),
+                        value: Expression::Variable("callback_argument".into()),
+                    },
+                    Statement::If {
+                        condition: Expression::IntegerLiteral(1),
+                        then_body: vec![Statement::Expression(Expression::Call {
+                            name: "diagnose".into(),
+                            arguments: Vec::new(),
+                        })],
+                        else_body: Vec::new(),
+                    },
+                    Statement::Assign {
+                        name: "idle".into(),
+                        value: Expression::Call {
+                            name: "issue".into(),
+                            arguments: Vec::new(),
+                        },
+                    },
+                ])
+                .collect(),
+        );
+        transaction.return_type = Type::Int;
+        transaction.locals.push(LocalDeclaration {
+            declared_type: Type::Int,
+            name: "idle".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        transaction.return_expression = Some(Expression::Variable("idle".into()));
+        let mut caller = function("caller", Vec::new(), Vec::new());
+        caller.return_type = Type::Int;
+        caller.return_expression = Some(Expression::Call {
+            name: "transaction".into(),
+            arguments: vec![Expression::Variable("callback".into())],
+        });
+
+        let expanded = InlineBodySet::analyze_with_definitions(
+            &[callback, transaction, caller.clone()],
+            &[],
+        )
+        .expand_calls(&caller)
+        .expect("the visible bounded transaction should compose");
+
+        assert!(!expanded
+            .locals
+            .iter()
+            .any(|local| local.name.ends_with("_callback_argument")));
     }
 
     #[test]

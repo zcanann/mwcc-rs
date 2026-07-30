@@ -67,6 +67,13 @@ impl ValueInlineBody {
                 == 1
         })
     }
+
+    /// Whether this larger transaction uses the diagnostic-bearing automatic
+    /// inline lane. MWCC keeps a known function designator symbolic in this
+    /// lane instead of extending its lifetime through an argument temporary.
+    pub(super) fn forwards_known_function_designators(&self) -> bool {
+        self.automatic_transaction && extended_diagnostic_transaction(&self.source)
+    }
 }
 
 fn statements_store_global_name(statements: &[Statement], name: &str) -> bool {
@@ -380,6 +387,14 @@ fn summarize_result_selection(function: &Function) -> Option<Expression> {
 /// locals are allocated when this summary is substituted, so initializers and
 /// side effects still execute exactly where the original call appeared.
 fn summarize_sequenced_body(function: &Function, result: Expression) -> Option<Expression> {
+    summarize_sequenced_body_with_policy(function, result, false)
+}
+
+fn summarize_sequenced_body_with_policy(
+    function: &Function,
+    result: Expression,
+    forward_terminal_result: bool,
+) -> Option<Expression> {
     if function.locals.len() > 8
         || statement_count(&function.statements) > 12
         || function.locals.iter().any(|local| {
@@ -399,11 +414,121 @@ fn summarize_sequenced_body(function: &Function, result: Expression) -> Option<E
             });
         }
     }
-    for statement in &function.statements {
+    let forwarded = forward_terminal_result
+        .then(|| forwarded_terminal_local_result(function, &result))
+        .flatten();
+    let (statements, result) = forwarded.unwrap_or((&function.statements, result));
+    for statement in statements {
         expressions.push(statement_expression(statement)?);
     }
     expressions.push(result);
     Some(sequence(expressions))
+}
+
+/// Forward a single terminal local assignment into the value summary.
+///
+/// Macro-expanded SDK sources commonly leave `(void)0;` between
+/// `result = call();` and `return result;`. The local has no source-level
+/// lifetime beyond carrying the call result, so retaining it after inlining
+/// invents an extra value lane and move. Forward only an uninitialized local
+/// whose terminal assignment is its sole mention in the statement prefix.
+fn forwarded_terminal_local_result<'a>(
+    function: &'a Function,
+    result: &Expression,
+) -> Option<(&'a [Statement], Expression)> {
+    let Expression::Variable(result_name) = result else {
+        return None;
+    };
+    let local = function
+        .locals
+        .iter()
+        .find(|local| local.name == *result_name)?;
+    if local.initializer.is_some() {
+        return None;
+    }
+    let mut assignment_end = function.statements.len();
+    while assignment_end > 0
+        && inert_integer_void_statement(&function.statements[assignment_end - 1])
+    {
+        assignment_end -= 1;
+    }
+    let assignment_index = assignment_end.checked_sub(1)?;
+    let Statement::Assign { name, value } = &function.statements[assignment_index] else {
+        return None;
+    };
+    if name != result_name
+        || super::safety::expression_use_count(value, result_name) != 0
+        || function.statements[..assignment_index]
+            .iter()
+            .any(|statement| statement_mentions_name(statement, result_name))
+    {
+        return None;
+    }
+    Some((&function.statements[..assignment_index], value.clone()))
+}
+
+fn statement_mentions_name(statement: &Statement, name: &str) -> bool {
+    let expression_mentions =
+        |expression: &Expression| super::safety::expression_use_count(expression, name) != 0;
+    match statement {
+        Statement::InlineAsm(_) => false,
+        Statement::Store { target, value } => {
+            expression_mentions(target) || expression_mentions(value)
+        }
+        Statement::Assign {
+            name: target,
+            value,
+        } => target == name || expression_mentions(value),
+        Statement::Expression(value) => expression_mentions(value),
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expression_mentions(condition)
+                || then_body
+                    .iter()
+                    .any(|statement| statement_mentions_name(statement, name))
+                || else_body
+                    .iter()
+                    .any(|statement| statement_mentions_name(statement, name))
+        }
+        Statement::Return(value) => value.as_ref().is_some_and(expression_mentions),
+        Statement::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            expression_mentions(scrutinee)
+                || arms.iter().any(|arm| match &arm.body {
+                    mwcc_syntax_trees::ArmBody::Return(value) => expression_mentions(value),
+                    mwcc_syntax_trees::ArmBody::Statements(statements) => statements
+                        .iter()
+                        .any(|statement| statement_mentions_name(statement, name)),
+                })
+                || default.as_ref().is_some_and(|body| match body {
+                    mwcc_syntax_trees::ArmBody::Return(value) => expression_mentions(value),
+                    mwcc_syntax_trees::ArmBody::Statements(statements) => statements
+                        .iter()
+                        .any(|statement| statement_mentions_name(statement, name)),
+                })
+        }
+        Statement::Loop {
+            initializer,
+            condition,
+            step,
+            body,
+            ..
+        } => {
+            initializer.as_ref().is_some_and(expression_mentions)
+                || condition.as_ref().is_some_and(expression_mentions)
+                || step.as_ref().is_some_and(expression_mentions)
+                || body
+                    .iter()
+                    .any(|statement| statement_mentions_name(statement, name))
+        }
+        Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => false,
+    }
 }
 
 fn void_expression_statement(statement: &Statement) -> bool {
@@ -450,6 +575,16 @@ fn statement_count(statements: &[Statement]) -> usize {
         .sum()
 }
 
+fn inert_integer_void_statement(statement: &Statement) -> bool {
+    matches!(
+        statement,
+        Statement::Expression(Expression::Cast {
+            target_type: Type::Void,
+            operand,
+        }) if matches!(operand.as_ref(), Expression::IntegerLiteral(_))
+    )
+}
+
 fn statement_expression(statement: &Statement) -> Option<Expression> {
     match statement {
         Statement::Expression(expression) => Some(expression.clone()),
@@ -465,12 +600,21 @@ fn statement_expression(statement: &Statement) -> Option<Expression> {
             condition,
             then_body,
             else_body,
-        } => Some(Expression::Conditional {
-            condition: Box::new(condition.clone()),
-            when_true: Box::new(statement_sequence(then_body)?),
-            when_false: Box::new(statement_sequence(else_body)?),
-            origin: ConditionalOrigin::IfAssignments,
-        }),
+        } => {
+            if let Some(value) = crate::analysis::constant_value(condition) {
+                return statement_sequence(if value != 0 {
+                    then_body
+                } else {
+                    else_body
+                });
+            }
+            Some(Expression::Conditional {
+                condition: Box::new(condition.clone()),
+                when_true: Box::new(statement_sequence(then_body)?),
+                when_false: Box::new(statement_sequence(else_body)?),
+                origin: ConditionalOrigin::IfAssignments,
+            })
+        }
         Statement::InlineAsm(_)
         | Statement::Return(_)
         | Statement::Switch { .. }
@@ -536,7 +680,7 @@ pub(super) fn summarize_automatic_transaction(function: &Function) -> Option<Val
         || function.locals.len() > 4
         || !function.guards.is_empty()
         || function.asm_body.is_some()
-        || statement_count(&function.statements) > 8
+        || statement_count(&function.statements) > 9
         || function.locals.iter().any(|local| {
             local.is_static
                 || local.is_volatile
@@ -556,8 +700,58 @@ pub(super) fn summarize_automatic_transaction(function: &Function) -> Option<Val
         return None;
     }
     summarize(function).map(|mut body| {
+        if extended_diagnostic_transaction(function) {
+            body.expression = summarize_sequenced_body_with_policy(
+                function,
+                normalize_reference_result(
+                    function.return_type,
+                    function
+                        .return_expression
+                        .clone()
+                        .expect("transaction eligibility checked its return expression"),
+                ),
+                true,
+            )
+            .expect("a summarized transaction remains a sequenced body");
+        }
         body.automatic_transaction = true;
         body
+    })
+}
+
+fn extended_diagnostic_transaction(function: &Function) -> bool {
+    statement_count(&function.statements) > 8
+        && statements_contain_compile_time_branch(&function.statements)
+}
+
+fn statements_contain_compile_time_branch(statements: &[Statement]) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            crate::analysis::constant_value(condition).is_some()
+                || statements_contain_compile_time_branch(then_body)
+                || statements_contain_compile_time_branch(else_body)
+        }
+        Statement::Loop { body, .. } => statements_contain_compile_time_branch(body),
+        Statement::Switch {
+            arms, default, ..
+        } => {
+            arms.iter().any(|arm| match &arm.body {
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+                mwcc_syntax_trees::ArmBody::Statements(body) => {
+                    statements_contain_compile_time_branch(body)
+                }
+            }) || default.as_ref().is_some_and(|body| match body {
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+                mwcc_syntax_trees::ArmBody::Statements(body) => {
+                    statements_contain_compile_time_branch(body)
+                }
+            })
+        }
+        _ => false,
     })
 }
 
@@ -819,6 +1013,64 @@ mod tests {
             summarize_automatic_transaction(&function).expect("bounded value transaction");
         assert!(summary.automatic_transaction);
         assert!(matches!(summary.expression, Expression::Comma { .. }));
+    }
+
+    #[test]
+    fn forwards_a_diagnostic_transactions_terminal_call_result() {
+        let mut function = empty_function("start_checked_async", Type::Int);
+        function.locals.push(LocalDeclaration {
+            declared_type: Type::Int,
+            name: "idle".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        function.statements = (0..6)
+            .map(|index| Statement::Store {
+                target: Expression::Variable(format!("published_{index}")),
+                value: Expression::IntegerLiteral(index),
+            })
+            .chain([
+                Statement::If {
+                    condition: Expression::IntegerLiteral(1),
+                    then_body: vec![Statement::Expression(Expression::Call {
+                        name: "diagnose".into(),
+                        arguments: Vec::new(),
+                    })],
+                    else_body: Vec::new(),
+                },
+                Statement::Assign {
+                    name: "idle".into(),
+                    value: Expression::Call {
+                        name: "issue".into(),
+                        arguments: Vec::new(),
+                    },
+                },
+            ])
+            .collect();
+        function.return_expression = Some(Expression::Variable("idle".into()));
+
+        assert_eq!(statement_count(&function.statements), 9);
+        let summary = summarize_automatic_transaction(&function)
+            .expect("a bounded diagnostic transaction should be retained");
+        assert!(summary.forwards_known_function_designators());
+        assert_eq!(
+            super::super::safety::expression_use_count(&summary.expression, "idle"),
+            0
+        );
+        let mut tail = &summary.expression;
+        while let Expression::Comma { right, .. } = tail {
+            tail = right;
+        }
+        assert!(matches!(
+            tail,
+            Expression::Call { name, .. } if name == "issue"
+        ));
     }
 
     #[test]
