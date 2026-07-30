@@ -210,10 +210,11 @@ pub(crate) enum LegacyCalleeSavedFrameLayout {
     /// condition-materialization lane and its ordinary entry-value table.
     RetainGuardedEntryParameterTable,
     RetainEagerLocalLane,
-    /// A deferred local first materialized inside a guarded arm remains live
-    /// across a later call. Build 163 reserves one optimizer lane for that
-    /// value even when allocation keeps it entirely in a saved register.
-    RetainGuardedLocalLane,
+    /// A deferred local first materialized inside a guarded arm, or a deferred
+    /// pointer first materialized after a call, remains live across later calls.
+    /// Build 163 reserves one optimizer lane even when the value stays in a
+    /// saved register.
+    RetainDeferredLocalLane,
     ReserveForwardedParameterLane,
     /// Source-owned stack storage already represents all retained optimizer
     /// values, including eliminated inline bindings. Do not append inferred

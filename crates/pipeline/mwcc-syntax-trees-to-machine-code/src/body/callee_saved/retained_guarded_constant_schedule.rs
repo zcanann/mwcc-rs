@@ -9,7 +9,7 @@ use super::*;
 impl Generator {
     pub(crate) fn schedule_retained_guarded_constant(&mut self) {
         if self.legacy_callee_saved_frame_layout
-            != LegacyCalleeSavedFrameLayout::RetainGuardedLocalLane
+            != LegacyCalleeSavedFrameLayout::RetainDeferredLocalLane
         {
             return;
         }

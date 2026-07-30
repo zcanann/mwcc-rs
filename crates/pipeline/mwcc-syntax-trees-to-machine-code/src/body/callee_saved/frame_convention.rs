@@ -341,7 +341,7 @@ impl Generator {
         let retain_guarded_entry_parameter_table = self.legacy_callee_saved_frame_layout
             == LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable;
         let retain_guarded_local_lane = self.legacy_callee_saved_frame_layout
-            == LegacyCalleeSavedFrameLayout::RetainGuardedLocalLane;
+            == LegacyCalleeSavedFrameLayout::RetainDeferredLocalLane;
         let retain_entry_parameter_table = matches!(
             self.legacy_callee_saved_frame_layout,
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable

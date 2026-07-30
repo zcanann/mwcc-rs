@@ -24,6 +24,27 @@ pub(super) fn same_relocated_value(
                 || same_constant_target(&first.target, &second.target, constants)))
 }
 
+/// Compare two otherwise-identical loads after relocation ownership is known.
+/// Member loads carry no relocation and are identical by their instruction
+/// fields; global loads must name the same patched value.
+pub(super) fn same_relocated_or_unpatched_value(
+    relocations: &[Relocation],
+    constants: &[PoolConstant],
+    first_index: usize,
+    second_index: usize,
+) -> bool {
+    let first_relocated = relocations
+        .iter()
+        .any(|relocation| relocation.instruction_index == first_index);
+    let second_relocated = relocations
+        .iter()
+        .any(|relocation| relocation.instruction_index == second_index);
+    if !first_relocated && !second_relocated {
+        return true;
+    }
+    same_relocated_value(relocations, constants, first_index, second_index)
+}
+
 pub(super) fn same_target_value(
     relocations: &[Relocation],
     constants: &[PoolConstant],

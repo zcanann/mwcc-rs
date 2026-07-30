@@ -933,7 +933,9 @@ fn lower_function_body(
     generator.schedule_structured_conversion_member_stores();
     generator.normalize_linkage_first_plain_nonleaf_frame();
     generator.schedule_retained_guarded_constant();
+    generator.schedule_retained_deferred_local_entry();
     generator.schedule_retained_guarded_local_publication();
+    generator.schedule_retained_deferred_local_post_call();
     generator.schedule_linkage_first_address_constant_arguments();
     generator.normalize_linkage_first_indirect_call_schedule();
     generator.normalize_linkage_first_conversion_frame();
@@ -944,6 +946,7 @@ fn lower_function_body(
     generator.reuse_linkage_first_narrow_conversion_value();
     generator.schedule_linkage_first_data_anchor_frame();
     generator.reuse_guarded_call_pointer_loads();
+    generator.schedule_nested_reset_callback();
     generator.normalize_scratch_copy_convention();
     generator.schedule_saved_base_call_argument();
     generator.finalize_exclusive_arm_copy_encodings();

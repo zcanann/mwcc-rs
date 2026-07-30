@@ -35,7 +35,7 @@ impl Generator {
         if self.preserve_guarded_named_local_values {
             self.expand_guarded_named_local_calls();
         }
-        while let Some(plan) = guarded_indirect_callback_reload(&self.output.instructions) {
+        while let Some(plan) = guarded_indirect_callback_reload(&self.output) {
             let Instruction::LoadWord { d, .. } = &mut self.output.instructions[plan.load] else {
                 unreachable!("the guarded callback load was matched")
             };
@@ -139,8 +139,9 @@ struct GuardedIndirectCallbackReload {
 }
 
 fn guarded_indirect_callback_reload(
-    instructions: &[Instruction],
+    output: &mwcc_machine_code::MachineFunction,
 ) -> Option<GuardedIndirectCallbackReload> {
+    let instructions = &output.instructions;
     instructions.windows(3).enumerate().find_map(|(start, window)| {
         let [
             Instruction::LoadWord {
@@ -174,7 +175,9 @@ fn guarded_indirect_callback_reload(
                     d: 12,
                     a,
                     offset,
-                } if a == *tested_base && offset == *tested_offset
+                } if a == *tested_base
+                    && offset == *tested_offset
+                    && same_load_identity(output, start, index)
             )
         })?;
         let mtlr = (reload + 1..instructions.len().saturating_sub(1))
@@ -214,6 +217,19 @@ fn guarded_indirect_callback_reload(
             mtlr,
         })
     })
+}
+
+fn same_load_identity(
+    output: &mwcc_machine_code::MachineFunction,
+    left: usize,
+    right: usize,
+) -> bool {
+    super::super::schedule_relocations::same_relocated_or_unpatched_value(
+        &output.relocations,
+        &output.constants,
+        left,
+        right,
+    )
 }
 
 /// The global-pointer callback family materializes its two scalar arguments
@@ -348,7 +364,8 @@ mod tests {
 
     #[test]
     fn recognizes_a_reloaded_member_callback_with_argument_setup() {
-        let instructions = vec![
+        let mut output = mwcc_machine_code::MachineFunction::new("callback");
+        output.instructions = vec![
             Instruction::LoadWord {
                 d: 0,
                 a: 4,
@@ -371,7 +388,7 @@ mod tests {
         ];
 
         assert_eq!(
-            guarded_indirect_callback_reload(&instructions),
+            guarded_indirect_callback_reload(&output),
             Some(GuardedIndirectCallbackReload {
                 load: 0,
                 reload: 3,
@@ -382,7 +399,8 @@ mod tests {
 
     #[test]
     fn recognizes_a_global_callback_reloaded_after_two_arguments() {
-        let instructions = vec![
+        let mut output = mwcc_machine_code::MachineFunction::new("callback");
+        output.instructions = vec![
             Instruction::LoadWord {
                 d: 0,
                 a: 0,
@@ -406,12 +424,48 @@ mod tests {
         ];
 
         assert_eq!(
-            guarded_indirect_callback_reload(&instructions),
+            guarded_indirect_callback_reload(&output),
             Some(GuardedIndirectCallbackReload {
                 load: 0,
                 reload: 5,
                 mtlr: 6,
             })
         );
+    }
+
+    #[test]
+    fn does_not_reuse_a_different_relocated_global_with_the_same_encoding() {
+        let mut output = mwcc_machine_code::MachineFunction::new("callback");
+        output.instructions = vec![
+            Instruction::LoadWord {
+                d: 0,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 8,
+            },
+            Instruction::load_immediate(3, 0),
+            Instruction::move_register(4, 31),
+            Instruction::LoadWord {
+                d: 12,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::MoveToLinkRegister { s: 12 },
+            Instruction::BranchToLinkRegisterAndLink,
+        ];
+        for (instruction_index, target) in [(0, "enabled"), (5, "callback")] {
+            output.relocations.push(mwcc_machine_code::Relocation {
+                instruction_index,
+                kind: RelocationKind::EmbSda21,
+                target: mwcc_machine_code::RelocationTarget::External(target.into()),
+            });
+        }
+
+        assert_eq!(guarded_indirect_callback_reload(&output), None);
     }
 }

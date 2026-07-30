@@ -1,19 +1,23 @@
-//! Provenance for deferred saved homes first materialized inside a guard.
+//! Provenance for deferred saved homes that retain an optimizer frame lane.
 //!
 //! A physical saved register does not reveal whether its source value existed
-//! at function entry or was created only on a guarded path. Build 163 retains
-//! one optimizer lane for the latter family, even though the value itself never
-//! spills. Keep that source-level fact separate from frame reconciliation.
+//! at function entry or was created on a guarded path or after a call. Build
+//! 163 retains one optimizer lane for those deferred families, even though the
+//! value itself never spills. Keep that fact separate from frame reconciliation.
 
-use mwcc_syntax_trees::{LocalDeclaration, Statement};
+use mwcc_syntax_trees::{LocalDeclaration, Statement, Type};
 
-pub(super) fn has_guarded_deferred_saved_local(
+pub(super) fn retains_deferred_saved_local_lane(
     statements: &[Statement],
     saved_locals: &[&LocalDeclaration],
 ) -> bool {
     saved_locals.len() == 1
         && saved_locals[0].initializer.is_none()
-        && block_assigns_inside_guard(statements, &saved_locals[0].name, false)
+        && (block_assigns_inside_guard(statements, &saved_locals[0].name, false)
+            || (matches!(
+                saved_locals[0].declared_type,
+                Type::Pointer(_) | Type::StructPointer { .. }
+            ) && assignment_follows_call(statements, &saved_locals[0].name)))
 }
 
 fn block_assigns_inside_guard(statements: &[Statement], name: &str, guarded: bool) -> bool {
@@ -30,6 +34,25 @@ fn block_assigns_inside_guard(statements: &[Statement], name: &str, guarded: boo
         Statement::Loop { body, .. } => block_assigns_inside_guard(body, name, guarded),
         _ => false,
     })
+}
+
+fn assignment_follows_call(statements: &[Statement], name: &str) -> bool {
+    let mut call_seen = false;
+    for statement in statements {
+        if call_seen
+            && matches!(
+                statement,
+                Statement::Assign {
+                    name: assigned,
+                    ..
+                } if assigned == name
+            )
+        {
+            return true;
+        }
+        call_seen |= crate::analysis::statement_has_call(statement);
+    }
+    false
 }
 
 #[cfg(test)]
@@ -68,16 +91,30 @@ mod tests {
             else_body: Vec::new(),
         }];
 
-        assert!(has_guarded_deferred_saved_local(&statements, &[&local]));
+        assert!(retains_deferred_saved_local_lane(&statements, &[&local]));
     }
 
     #[test]
     fn excludes_an_unguarded_assignment() {
         let local = deferred("finished");
 
-        assert!(!has_guarded_deferred_saved_local(
+        assert!(!retains_deferred_saved_local_lane(
             &[assignment("finished")],
             &[&local]
         ));
+    }
+
+    #[test]
+    fn recognizes_a_deferred_saved_local_created_after_a_call() {
+        let local = deferred("finished");
+        let statements = vec![
+            Statement::Expression(Expression::Call {
+                name: "prepare".into(),
+                arguments: Vec::new(),
+            }),
+            assignment("finished"),
+        ];
+
+        assert!(retains_deferred_saved_local_lane(&statements, &[&local]));
     }
 }
