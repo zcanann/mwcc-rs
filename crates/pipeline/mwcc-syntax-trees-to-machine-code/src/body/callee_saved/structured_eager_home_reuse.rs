@@ -11,6 +11,7 @@ use super::*;
 
 pub(super) struct StructuredEagerHomeReuse {
     home_index_by_group: Vec<Option<usize>>,
+    expired_read_by_group: Vec<Option<usize>>,
 }
 
 impl StructuredEagerHomeReuse {
@@ -20,51 +21,74 @@ impl StructuredEagerHomeReuse {
         deferred: &DeferredSavedHomePlan,
     ) -> Self {
         let mut home_index_by_group = vec![None; deferred.group_count];
+        let mut expired_read_by_group = vec![None; deferred.group_count];
         let mut occupied_eager_homes = std::collections::HashSet::new();
         for group in 0..deferred.group_count {
             let members: Vec<_> = deferred.members(group).collect();
-            let reusable = eager_locals
+            let branch_reuse = eager_locals
                 .iter()
                 .enumerate()
                 .find_map(|(home, eager)| {
                     (!occupied_eager_homes.contains(&home)
                         && branch_exclusive(function, &eager.name, &members))
                         .then_some(home)
-                })
-                .or_else(|| {
-                    eager_locals.iter().enumerate().find_map(|(home, eager)| {
-                        (!occupied_eager_homes.contains(&home)
-                            && expires_before_group(
-                                function,
-                                &eager.name,
-                                deferred.first_assignment(group),
-                            ))
-                        .then_some(home)
-                    })
                 });
-            if let Some(home) = reusable {
+            let expired_reuse = if branch_reuse.is_none() {
+                eager_locals.iter().enumerate().find_map(|(home, eager)| {
+                    if occupied_eager_homes.contains(&home) {
+                        None
+                    } else {
+                        expiration_before_group(
+                            function,
+                            &eager.name,
+                            deferred.first_assignment(group),
+                        )
+                        .map(|last_read| (home, last_read))
+                    }
+                })
+            } else {
+                None
+            };
+            if let Some(home) = branch_reuse {
                 occupied_eager_homes.insert(home);
                 home_index_by_group[group] = Some(home);
+            } else if let Some((home, last_read)) = expired_reuse {
+                occupied_eager_homes.insert(home);
+                home_index_by_group[group] = Some(home);
+                expired_read_by_group[group] = Some(last_read);
             }
         }
         Self {
             home_index_by_group,
+            expired_read_by_group,
         }
     }
 
     pub(super) fn home_index(&self, group: usize) -> Option<usize> {
         self.home_index_by_group[group]
     }
+
+    /// The final eager read behind a sequential reuse. Branch-exclusive reuse
+    /// has no single expiration point and therefore cannot be superseded by a
+    /// parameter interval.
+    pub(super) fn expired_last_read(&self, group: usize) -> Option<usize> {
+        self.expired_read_by_group[group]
+    }
 }
 
-fn expires_before_group(function: &Function, eager: &str, first_assignment: usize) -> bool {
-    !statement_assigns_name(&function.statements, eager)
+fn expiration_before_group(
+    function: &Function,
+    eager: &str,
+    first_assignment: usize,
+) -> Option<usize> {
+    (!statement_assigns_name(&function.statements, eager)
         && function
             .return_expression
             .as_ref()
-            .is_none_or(|expression| !expression_reads_name(expression, eager))
-        && structured_name_last_read(function, eager)
-            .is_some_and(|last_read| first_assignment >= last_read)
+            .is_none_or(|expression| !expression_reads_name(expression, eager)))
+    .then(|| structured_name_last_read(function, eager))
+    .flatten()
+    .filter(|last_read| first_assignment >= *last_read)
 }
 
 fn branch_exclusive(function: &Function, eager: &str, deferred: &[&str]) -> bool {

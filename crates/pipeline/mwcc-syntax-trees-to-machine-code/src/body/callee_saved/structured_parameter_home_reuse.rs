@@ -47,7 +47,12 @@ impl StructuredParameterHomeReuse {
         for (parameter, last_read) in parameters {
             let reusable = (0..deferred.group_count)
                 .filter(|group| reused_parameter_by_group[*group].is_none())
-                .filter(|group| eager_reuse.home_index(*group).is_none())
+                .filter(|group| {
+                    eager_reuse.home_index(*group).is_none()
+                        || eager_reuse
+                            .expired_last_read(*group)
+                            .is_some_and(|eager_last_read| last_read > eager_last_read)
+                })
                 // A local assignment defines its result only after the entire
                 // right-hand side has consumed the parameter. A final parameter
                 // read and the local definition in the same statement therefore
@@ -64,10 +69,10 @@ impl StructuredParameterHomeReuse {
             .into_iter()
             .enumerate()
             .map(|(group, parameter)| {
-                if let Some(home) = eager_reuse.home_index(group) {
-                    home
-                } else if let Some(parameter) = parameter {
+                if let Some(parameter) = parameter {
                     eager_count + parameter
+                } else if let Some(home) = eager_reuse.home_index(group) {
+                    home
                 } else {
                     let home = eager_count + saved_parameters.len() + fresh_group_count;
                     fresh_group_count += 1;
@@ -207,5 +212,48 @@ mod tests {
 
         assert_eq!(reuse.fresh_group_count, 0);
         assert_eq!(reuse.home_index(deferred.group("late")), 0);
+    }
+
+    #[test]
+    fn prefers_the_most_recently_expired_parameter_over_an_eager_home() {
+        let mut function = function(false);
+        function.locals.insert(
+            0,
+            LocalDeclaration {
+                declared_type: Type::Int,
+                name: "eager".into(),
+                initializer: Some(Expression::IntegerLiteral(7)),
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                row_bytes: None,
+            },
+        );
+        function.statements.insert(
+            0,
+            Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![Expression::Variable("eager".into())],
+            }),
+        );
+        let deferred = plan_deferred_saved_homes(&function, &[&function.locals[1]]).unwrap();
+        let eager_reuse =
+            StructuredEagerHomeReuse::plan(&function, &[&function.locals[0]], &deferred);
+        let late_group = deferred.group("late");
+        assert_eq!(eager_reuse.home_index(late_group), Some(0));
+
+        let reuse = StructuredParameterHomeReuse::plan(
+            &function,
+            1,
+            &[&function.parameters[0]],
+            &deferred,
+            &eager_reuse,
+        );
+
+        assert_eq!(reuse.fresh_group_count, 0);
+        assert_eq!(reuse.home_index(late_group), 1);
     }
 }
