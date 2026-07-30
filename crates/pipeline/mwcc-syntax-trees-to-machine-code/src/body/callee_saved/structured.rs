@@ -763,6 +763,11 @@ impl Generator {
             .map(|local| {
                 parameter_home_reuse.home_index(deferred_home_plan.group(&local.name))
             });
+        let returned_deferred_parameter_home = returned_deferred_home.is_some_and(|home| {
+            (eager_saved_locals.len()
+                ..eager_saved_locals.len() + saved_parameters.len())
+                .contains(&home)
+        });
         let value_home_count = eager_saved_locals.len()
             + saved_parameters.len()
             + parameter_home_reuse.fresh_group_count;
@@ -814,7 +819,7 @@ impl Generator {
             0,
         )
         .is_some();
-        if returned_deferred_pair {
+        if returned_deferred_pair || returned_deferred_parameter_home {
             self.epilogue_lr_before_gprs = true;
         }
         let unused_array_two_homes = unused_frame_array

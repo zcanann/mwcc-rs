@@ -138,6 +138,7 @@ mod structured_guarded_ucode_schedule;
 mod structured_home_layout;
 mod structured_if_else;
 mod structured_if_else_cr_reuse;
+mod structured_if_else_member_reuse;
 mod structured_initializer_live_in;
 mod structured_initializer_live_in_schedule;
 mod structured_interleaved_frame_layout;

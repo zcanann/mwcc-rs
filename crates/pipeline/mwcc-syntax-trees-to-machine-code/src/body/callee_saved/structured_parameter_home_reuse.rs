@@ -45,12 +45,12 @@ impl StructuredParameterHomeReuse {
             })
             .filter_map(|(index, parameter)| {
                 structured_name_last_read(function, &parameter.name)
-                    .map(|last_read| (index, last_read))
+                    .map(|last_read| (index, parameter.name.as_str(), last_read))
             })
             .collect();
-        parameters.sort_by_key(|(_, last_read)| std::cmp::Reverse(*last_read));
+        parameters.sort_by_key(|(_, _, last_read)| std::cmp::Reverse(*last_read));
 
-        for (parameter, last_read) in parameters {
+        for (parameter, parameter_name, last_read) in parameters {
             let reusable = (0..deferred.group_count)
                 .filter(|group| reused_parameter_by_group[*group].is_none())
                 .filter(|group| {
@@ -63,7 +63,17 @@ impl StructuredParameterHomeReuse {
                 // right-hand side has consumed the parameter. A final parameter
                 // read and the local definition in the same statement therefore
                 // have adjacent, non-overlapping live intervals.
-                .filter(|group| deferred.first_assignment(*group) >= last_read)
+                .filter(|group| {
+                    deferred.first_assignment(*group) >= last_read
+                        || (deferred.member_count(*group) == 1
+                            && deferred.members(*group).any(|result| {
+                                super::structured_if_else_member_reuse::function_member_select_reuses_parameter(
+                                    function,
+                                    result,
+                                    parameter_name,
+                                )
+                            }))
+                })
                 .max_by_key(|group| deferred.first_assignment(*group));
             if let Some(group) = reusable {
                 reused_parameter_by_group[group] = Some(parameter);
@@ -207,6 +217,54 @@ mod tests {
                 arguments: vec![Expression::Variable("late".into())],
             }),
         ];
+        let deferred = plan_deferred_saved_homes(&function, &[&function.locals[0]]).unwrap();
+        let reuse = StructuredParameterHomeReuse::plan(
+            &function,
+            0,
+            &[&function.parameters[0]],
+            &deferred,
+            &StructuredEagerHomeReuse::plan(&function, &[], &deferred),
+        );
+
+        assert_eq!(reuse.fresh_group_count, 0);
+        assert_eq!(reuse.home_index(deferred.group("late")), 0);
+    }
+
+    #[test]
+    fn reuses_a_parameter_home_for_a_false_edge_member_select() {
+        let mut function = function(false);
+        let member = Expression::Member {
+            base: Box::new(Expression::Variable("incoming".into())),
+            offset: 12,
+            member_type: Type::Int,
+            index_stride: None,
+        };
+        function.statements = vec![
+            Statement::Expression(Expression::Call {
+                name: "before".into(),
+                arguments: Vec::new(),
+            }),
+            Statement::If {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::Equal,
+                    left: Box::new(member.clone()),
+                    right: Box::new(Expression::IntegerLiteral(3)),
+                },
+                then_body: vec![Statement::Assign {
+                    name: "late".into(),
+                    value: Expression::IntegerLiteral(1),
+                }],
+                else_body: vec![Statement::Assign {
+                    name: "late".into(),
+                    value: member,
+                }],
+            },
+            Statement::Expression(Expression::Call {
+                name: "after".into(),
+                arguments: vec![Expression::Variable("late".into())],
+            }),
+        ];
+        function.return_expression = Some(Expression::Variable("late".into()));
         let deferred = plan_deferred_saved_homes(&function, &[&function.locals[0]]).unwrap();
         let reuse = StructuredParameterHomeReuse::plan(
             &function,

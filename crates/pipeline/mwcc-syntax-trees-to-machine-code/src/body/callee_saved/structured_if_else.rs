@@ -25,6 +25,12 @@ impl Generator {
         entry_alias: &mut Option<EntryParameterAlias>,
     ) -> Compilation<()> {
         debug_assert!(!else_body.is_empty());
+        let member_else_reuse =
+            super::structured_if_else_member_reuse::member_else_reuse_plan(
+                condition,
+                then_body,
+                else_body,
+            );
         if entry_alias.is_none()
             && self.try_emit_structured_if_else_cr_reuse(
                 condition,
@@ -182,6 +188,22 @@ impl Generator {
         if let [branch] = branches.enter_else.as_slice() {
             self.schedule_frame_store_before_if_branch(*branch);
         }
+        let member_else_reuse = member_else_reuse.and_then(|plan| {
+            branches
+                .enter_then
+                .is_empty()
+                .then(|| {
+                    let [branch] = branches.enter_else.as_slice() else {
+                        return None;
+                    };
+                    super::structured_if_else_member_reuse::compared_register_before_branch(
+                        &self.output.instructions,
+                        *branch,
+                    )
+                    .map(|source| (plan, source))
+                })
+                .flatten()
+        });
         self.commit_structured_float_handoff();
 
         let then_start = self.output.instructions.len();
@@ -253,7 +275,11 @@ impl Generator {
             retained_else_wide_mask_cache,
         );
         let else_result = (|| {
-            if !self.try_emit_shared_float_zero_assignments(else_body)?
+            let reused_member = member_else_reuse.is_some_and(|(plan, source)| {
+                self.emit_member_else_reuse(plan, source)
+            });
+            if !reused_member
+                && !self.try_emit_shared_float_zero_assignments(else_body)?
                 && !self.try_emit_structured_frame_bitfield_stores(else_body)?
             {
                 self.emit_structured_arm_with_global_pointer_cache(
