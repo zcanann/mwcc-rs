@@ -7,6 +7,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use super::linkage_first_anchor_only_schedule::is_anchor_only_prefix;
 
 impl Generator {
     pub(crate) fn schedule_linkage_first_data_anchor_frame(&mut self) {
@@ -23,21 +24,6 @@ impl Generator {
             self.schedule_anchor_only_frame();
         }
         normalize_data_anchor_array_lookup(&mut self.output.instructions);
-    }
-
-    fn schedule_anchor_only_frame(&mut self) {
-        // Build 163 starts materializing a retained writable-section base
-        // between `mflr` and the linkage stores, then finishes it directly
-        // into the sole saved register after that register has been saved.
-        self.move_instruction_before(4, 1);
-        let Instruction::AddImmediateShifted { d, .. } = &mut self.output.instructions[1] else {
-            unreachable!("the anchor-only high half was matched")
-        };
-        *d = 3;
-        let Instruction::AddImmediate { a, .. } = &mut self.output.instructions[5] else {
-            unreachable!("the anchor-only low half was matched")
-        };
-        *a = 3;
     }
 
     fn schedule_four_home_data_anchor_frame(&mut self) {
@@ -177,33 +163,6 @@ fn is_two_home_anchor_prefix(instructions: &[Instruction], frame_size: i16) -> b
                 d: 30,
                 a: 3,
                 offset: 44,
-            },
-            ..
-        ] if *offset == -frame_size
-    )
-}
-
-fn is_anchor_only_prefix(instructions: &[Instruction], frame_size: i16) -> bool {
-    matches!(
-        instructions,
-        [
-            Instruction::MoveFromLinkRegister { d: 0 },
-            Instruction::StoreWord {
-                s: 0,
-                a: 1,
-                offset: 4,
-            },
-            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset },
-            Instruction::StoreWord { s: 31, a: 1, .. },
-            Instruction::AddImmediateShifted {
-                d: 5,
-                a: 0,
-                immediate: 0,
-            },
-            Instruction::AddImmediate {
-                d: 31,
-                a: 5,
-                immediate: 0,
             },
             ..
         ] if *offset == -frame_size

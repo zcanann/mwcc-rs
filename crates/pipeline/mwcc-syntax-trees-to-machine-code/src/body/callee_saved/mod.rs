@@ -38,6 +38,7 @@ mod frame_convention;
 mod later_call_arguments;
 mod linkage_first_arguments;
 mod linkage_first_data_anchor;
+mod linkage_first_anchor_only_schedule;
 mod linkage_first_data_anchor_schedule;
 mod linkage_first_float_result_schedule;
 mod linkage_first_global_float_argument_schedule;
