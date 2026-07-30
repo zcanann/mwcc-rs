@@ -89,7 +89,8 @@ use super::structured_prologue::{
 use super::structured_register_width::assigned_register_width;
 use super::structured_state_transfer_layout::is_unused_array_state_transfer;
 use super::structured_value_versions::{
-    has_split_value_version, reassignment_live_source, split_reassigned_local_versions,
+    has_split_value_version, leaf_parameter_mask_version, reassignment_live_source,
+    split_reassigned_local_versions,
 };
 use super::structured_variadic_output_frame::StructuredVariadicOutputFrame;
 use super::structured_unobserved_scalar_table::UnobservedScalarTable;
@@ -3558,10 +3559,14 @@ impl Generator {
                                 )
                             })
                             .flatten();
+                        let split_leaf_parameter_mask =
+                            !self.non_leaf && leaf_parameter_mask_version(function, name, value);
                         let destination = if terminal_result {
                             Eabi::general_result().number
                         } else if let Some(register) = terminal_argument {
                             register
+                        } else if split_leaf_parameter_mask {
+                            self.fresh_virtual_general_preferring(4)
                         } else if separates_live_alias {
                             if let Some(register) = transient_call_argument_register(
                                 &statements[statement_index + 1..],
@@ -3759,7 +3764,11 @@ impl Generator {
                             .get_mut(name)
                             .expect("structured assignment home")
                             .width = assigned_register_width(declared_type, value);
-                        if terminal_result || separates_live_alias || terminal_argument.is_some() {
+                        if terminal_result
+                            || separates_live_alias
+                            || terminal_argument.is_some()
+                            || split_leaf_parameter_mask
+                        {
                             self.locations
                                 .get_mut(name)
                                 .expect("structured assignment home")

@@ -7,7 +7,7 @@
 
 #[allow(unused_imports)]
 use super::*;
-use super::structured_early_return_schedule::resolve_structured_epilogue_branches;
+use super::structured_early_return_schedule::resolve_leaf_structured_returns;
 use super::structured::structured_hidden_label_count;
 
 impl Generator {
@@ -74,6 +74,7 @@ impl Generator {
         self.retain_guarded_nested_member_base();
         self.reuse_guarded_narrow_member_update();
         self.schedule_volatile_bitset_hint_tail();
+        self.schedule_leaf_global_store_compare();
         debug_assert!(pending_gotos.is_empty());
         if let Some(return_expression) = &function.return_expression {
             let result = match function.return_type {
@@ -83,11 +84,58 @@ impl Generator {
             self.evaluate(return_expression, function.return_type, result)?;
         }
         let epilogue = self.output.instructions.len();
-        resolve_structured_epilogue_branches(&mut self.output.instructions, epilogue);
+        resolve_leaf_structured_returns(&mut self.output.instructions, epilogue);
         self.output.anonymous_label_bump += structured_hidden_label_count(&structured_statements);
         self.emit_epilogue_and_return();
         Ok(true)
     }
+
+    /// Fill a global store's issue slot with the first instruction of the
+    /// following comparison when both consume the same register. The compare
+    /// materialization is independent of the store and MWCC schedules it first.
+    fn schedule_leaf_global_store_compare(&mut self) {
+        let Some((from, to)) = leaf_global_store_compare_move(&self.output.instructions) else {
+            return;
+        };
+        crate::move_instruction_before_retargeting(self, from, to);
+        // The moved compare now begins the continuation that previously began
+        // at the store. Incoming control-flow edges must include that hoisted
+        // instruction rather than preserving the store as their destination.
+        for instruction in &mut self.output.instructions[..to] {
+            match instruction {
+                Instruction::Branch { target }
+                | Instruction::BranchConditionalForward { target, .. }
+                    if *target == to + 1 =>
+                {
+                    *target = to;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn leaf_global_store_compare_move(instructions: &[Instruction]) -> Option<(usize, usize)> {
+    instructions.windows(4).enumerate().find_map(|(index, window)| {
+        matches!(
+            window,
+            [
+                Instruction::StoreWord {
+                    s: stored,
+                    a: 0,
+                    ..
+                },
+                Instruction::AddImmediateShifted {
+                    d: 0,
+                    a: compared,
+                    ..
+                },
+                Instruction::CompareLogicalWordImmediate { a: 0, .. },
+                Instruction::BranchConditionalForward { .. },
+            ] if stored == compared
+        )
+        .then_some((index + 1, index))
+    })
 }
 
 /// Put parser-extracted terminal guards back into source CFG form for the
@@ -241,5 +289,32 @@ mod tests {
             ] if matches!(then_body.as_slice(), [Statement::Return(Some(Expression::IntegerLiteral(2)))])
                 && else_body.is_empty()
         ));
+    }
+
+    #[test]
+    fn moves_a_following_compare_materialization_before_a_global_store() {
+        let instructions = vec![
+            Instruction::StoreWord {
+                s: 4,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::AddImmediateShifted {
+                d: 0,
+                a: 4,
+                immediate: -3,
+            },
+            Instruction::CompareLogicalWordImmediate {
+                a: 0,
+                immediate: 0x1100,
+            },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 4,
+            },
+        ];
+
+        assert_eq!(leaf_global_store_compare_move(&instructions), Some((1, 0)));
     }
 }

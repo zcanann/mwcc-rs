@@ -15,6 +15,30 @@ pub(super) fn has_split_value_version(function: &Function, source: &str) -> bool
         .iter()
         .any(|local| local.name.starts_with(&prefix))
 }
+
+/// MWCC gives a frame-free parameter's masked value a new SSA home after the
+/// original value has already participated in an early-return condition.
+/// Restrict this to a direct self-mask; other reassignments retain the general
+/// structured home policy.
+pub(super) fn leaf_parameter_mask_version(
+    function: &Function,
+    name: &str,
+    value: &Expression,
+) -> bool {
+    function
+        .parameters
+        .iter()
+        .any(|parameter| parameter.name == name)
+        && matches!(
+            value,
+            Expression::Binary {
+                operator: BinaryOperator::BitAnd,
+                left,
+                right,
+            } if matches!(left.as_ref(), Expression::Variable(source) if source == name)
+                && constant_value(right).is_some()
+        )
+}
 #[allow(unused_imports)]
 use super::*;
 
@@ -425,5 +449,22 @@ mod tests {
         function.locals.push(local("__mwcc_value_data_1", None));
         assert!(has_split_value_version(&function, "data"));
         assert!(!has_split_value_version(&function, "other"));
+    }
+
+    #[test]
+    fn recognizes_a_direct_parameter_self_mask_version() {
+        let mut function = function();
+        function.parameters.push(mwcc_syntax_trees::Parameter {
+            parameter_type: Type::UnsignedInt,
+            name: "error".into(),
+        });
+        let value = Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: Box::new(Expression::Variable("error".into())),
+            right: Box::new(Expression::IntegerLiteral(0x00ff_ffff)),
+        };
+
+        assert!(leaf_parameter_mask_version(&function, "error", &value));
+        assert!(!leaf_parameter_mask_version(&function, "other", &value));
     }
 }

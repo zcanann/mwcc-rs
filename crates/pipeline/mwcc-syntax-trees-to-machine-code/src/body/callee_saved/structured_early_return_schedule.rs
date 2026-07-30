@@ -36,6 +36,29 @@ pub(super) fn resolve_structured_epilogue_branches(
     }
 }
 
+/// Frame-free structured bodies return directly from each source early-return
+/// block. Conditional placeholder edges still target the final fallthrough
+/// return, but an unconditional value-return edge is already a complete leaf
+/// exit and becomes `blr` in place.
+pub(super) fn resolve_leaf_structured_returns(
+    instructions: &mut [Instruction],
+    epilogue: usize,
+) {
+    for instruction in instructions {
+        match instruction {
+            Instruction::Branch { target } if is_structured_epilogue_placeholder(*target) => {
+                *instruction = Instruction::BranchToLinkRegister;
+            }
+            Instruction::BranchConditionalForward { target, .. }
+                if is_structured_epilogue_placeholder(*target) =>
+            {
+                *target = epilogue;
+            }
+            _ => {}
+        }
+    }
+}
+
 fn adjacent_structured_epilogue_branch(
     instructions: &[Instruction],
     epilogue: usize,
@@ -246,6 +269,31 @@ mod tests {
         assert!(matches!(
             instructions[2],
             Instruction::BranchConditionalForward { target: 3, .. }
+        ));
+    }
+
+    #[test]
+    fn resolves_leaf_value_returns_directly() {
+        let mut instructions = vec![
+            Instruction::Branch {
+                target: STRUCTURED_EPILOGUE_PLACEHOLDER,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: STRUCTURED_EPILOGUE_PLACEHOLDER,
+            },
+        ];
+
+        resolve_leaf_structured_returns(&mut instructions, 2);
+
+        assert!(matches!(
+            instructions[0],
+            Instruction::BranchToLinkRegister
+        ));
+        assert!(matches!(
+            instructions[1],
+            Instruction::BranchConditionalForward { target: 2, .. }
         ));
     }
 

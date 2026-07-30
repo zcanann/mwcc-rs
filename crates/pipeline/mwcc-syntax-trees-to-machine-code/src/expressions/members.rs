@@ -560,12 +560,13 @@ impl Generator {
                         displacement,
                     )?);
                 } else {
-                    self.emit_global_load_value(name, destination)?;
-                    let displacement = self.emit_member_base_adjustment(destination, offset);
+                    let base = self.address_base_for_load_destination(destination)?;
+                    self.emit_global_load_value(name, base)?;
+                    let displacement = self.emit_member_base_adjustment(base, offset);
                     self.output.instructions.push(displacement_load(
                         pointee,
                         destination,
-                        destination,
+                        base,
                         displacement,
                     )?);
                 }
