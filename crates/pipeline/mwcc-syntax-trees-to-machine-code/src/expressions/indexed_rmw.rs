@@ -2,7 +2,79 @@
 
 use super::*;
 
+fn fixed_address_identity_slot<'a>(
+    target: &'a Expression,
+    value: &Expression,
+) -> Option<(&'a str, i64)> {
+    if !same_operand(target, value) {
+        return None;
+    }
+    let Expression::Index { base, index } = target else {
+        return None;
+    };
+    let Expression::Variable(bank) = base.as_ref() else {
+        return None;
+    };
+    Some((bank, constant_value(index)?))
+}
+
 impl Generator {
+    /// Preserve an explicitly volatile fixed-address identity transaction:
+    /// `bank[k] = bank[k]`. Although the value is unchanged, both the hardware
+    /// read and write are observable and must share one materialized bank base.
+    pub(crate) fn try_emit_fixed_address_identity_store(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+    ) -> Compilation<bool> {
+        let Some((bank, index)) = fixed_address_identity_slot(target, value) else {
+            return Ok(false);
+        };
+        let Some(&(address, element_type)) = self.fixed_address_arrays.get(bank) else {
+            return Ok(false);
+        };
+        let Some(element) = pointee_of_type(element_type) else {
+            return Ok(false);
+        };
+        let (high, low) = split_address(address);
+        let materialized_bank_page = self.behavior.fixed_address_poll_address_style
+            == mwcc_versions::FixedAddressPollAddressStyle::MaterializedBankPage;
+        let displacement = i16::try_from(
+            if materialized_bank_page {
+                0
+            } else {
+                i64::from(low)
+            } + index * i64::from(element.size()),
+        )
+        .map_err(|_| {
+            Diagnostic::error("fixed-address identity-store displacement is out of range")
+        })?;
+        let base = self.fresh_virtual_general();
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(base, high));
+        if materialized_bank_page && low != 0 {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: base,
+                a: base,
+                immediate: low,
+            });
+        }
+        self.output.instructions.push(displacement_load(
+            element,
+            GENERAL_SCRATCH,
+            base,
+            displacement,
+        )?);
+        self.output.instructions.push(displacement_store(
+            element,
+            GENERAL_SCRATCH,
+            base,
+            displacement,
+        )?);
+        Ok(true)
+    }
+
     /// Emit an explicit constant-slot update of a fixed-address halfword bank:
     /// `bank[k] = ((u16)bank[k] & MASK) | BITS`.
     ///
@@ -528,5 +600,28 @@ fn indexed_rmw_constant_is_encodable(operator: BinaryOperator, constant: i64) ->
             (constant > 1 && (constant & (constant - 1)) == 0) || i16::try_from(constant).is_ok()
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_only_the_same_constant_fixed_array_slot() {
+        let target = Expression::Index {
+            base: Box::new(Expression::Variable("__DIRegs".into())),
+            index: Box::new(Expression::IntegerLiteral(1)),
+        };
+        assert_eq!(
+            fixed_address_identity_slot(&target, &target),
+            Some(("__DIRegs", 1))
+        );
+
+        let other = Expression::Index {
+            base: Box::new(Expression::Variable("__DIRegs".into())),
+            index: Box::new(Expression::IntegerLiteral(2)),
+        };
+        assert_eq!(fixed_address_identity_slot(&target, &other), None);
     }
 }
