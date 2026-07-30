@@ -3,6 +3,7 @@
 //! Split by family (fire 528); behavior-identical to the former single expressions.rs.
 
 mod arithmetic;
+mod adjacent_fixed_bank_stores;
 mod aggregate_member_arithmetic;
 mod aggregate_member_copy;
 mod aggregate_member_copy_loop;

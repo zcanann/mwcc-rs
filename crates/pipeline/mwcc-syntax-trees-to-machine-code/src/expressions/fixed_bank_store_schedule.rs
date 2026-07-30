@@ -42,6 +42,7 @@ impl Generator {
             schedule_materialized_bank_store(&mut self.output.instructions);
         }
     }
+
 }
 
 #[cfg(test)]
@@ -75,4 +76,5 @@ mod tests {
             }
         ));
     }
+
 }
