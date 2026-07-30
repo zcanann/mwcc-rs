@@ -478,13 +478,19 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
         run.min(2)
     } else {
         // The leading run of argument materializations mwcc hoists into the latency
-        // gap: ready register moves plus load-immediate forms (`li`, `lis`, and an
-        // SDA21 string/global address, which is `addi rD,0,…` + a relocation). A
-        // frame- or register-relative `addi rD,r1,…` (e.g. `&local`) is NOT hoisted.
+        // gap: ready register moves, in-place narrow argument conversions, plus
+        // load-immediate forms (`li`, `lis`, and an SDA21 string/global address,
+        // which is `addi rD,0,…` + a relocation). A frame- or register-relative
+        // `addi rD,r1,…` (e.g. `&local`) is NOT hoisted.
         let mut run = 0;
         while save + 1 + run < instructions.len()
             && match instructions[save + 1 + run] {
                 Instruction::Or { a, s, b } => a > 1 && s > 1 && b > 1,
+                Instruction::ExtendSignByte { a, s }
+                | Instruction::ExtendSignHalfword { a, s }
+                | Instruction::ClearLeftImmediate { a, s, .. } => {
+                    a > 1 && a == s
+                }
                 Instruction::AddImmediate { a: 0, .. }
                 | Instruction::AddImmediateShifted { a: 0, .. } => true,
                 _ => false,
@@ -1367,5 +1373,50 @@ mod tests {
             }
         ));
         assert_eq!(permutation, [0, 1, 4, 2, 3, 5]);
+    }
+
+    #[test]
+    fn in_place_narrow_argument_fills_the_saved_link_latency_window() {
+        let mut stream = vec![
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            },
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::ClearLeftImmediate {
+                a: 3,
+                s: 3,
+                clear: 24,
+            },
+            Instruction::BranchAndLink {
+                target: "callee".into(),
+            },
+        ];
+
+        let permutation = schedule_link_register_save(&mut stream);
+
+        assert!(matches!(
+            stream[2],
+            Instruction::ClearLeftImmediate {
+                a: 3,
+                s: 3,
+                clear: 24
+            }
+        ));
+        assert!(matches!(
+            stream[3],
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20
+            }
+        ));
+        assert_eq!(permutation, [0, 1, 3, 2, 4]);
     }
 }
