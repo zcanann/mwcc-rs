@@ -328,6 +328,20 @@ impl Generator {
                     Instruction::Branch { .. } | Instruction::BranchConditionalForward { .. }
                 )
             });
+        let anchored_entry_parameter_guard = self.data_section_anchor.is_some()
+            && physical_saved.len() == 2
+            && guarded_before_first_call
+            && self.output.instructions[..first_call]
+                .iter()
+                .any(|instruction| {
+                    let register = match instruction {
+                        Instruction::CompareWordImmediate { a, .. }
+                        | Instruction::CompareLogicalWordImmediate { a, .. } => *a,
+                        _ => return false,
+                    };
+                    (3..3 + self.entry_parameter_words.min(8) as u8)
+                        .contains(&register)
+                });
         let preserve_logical_size = self.legacy_callee_saved_frame_layout
             == LegacyCalleeSavedFrameLayout::PreserveLogicalSize;
         let addressable_parameter_frame = self
@@ -384,7 +398,9 @@ impl Generator {
         // the established single inferred lane regardless of their count.
         let inferred_entry_lane_count = || {
             if self.entry_parameter_words != 0
-                && (materialized_home_before_call || parameter_derived_home_before_call)
+                && (materialized_home_before_call
+                    || parameter_derived_home_before_call
+                    || anchored_entry_parameter_guard)
                 && retain_entry_parameter_table
             {
                 // Build 163 retains the incoming parameter table in pairs of

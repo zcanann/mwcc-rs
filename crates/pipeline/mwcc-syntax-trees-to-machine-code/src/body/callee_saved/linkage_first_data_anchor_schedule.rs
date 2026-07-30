@@ -16,7 +16,12 @@ impl Generator {
         {
             return;
         }
-        if is_four_home_anchor_prefix(&self.output.instructions, self.frame_size) {
+        if is_entry_parameter_anchor_prefix(
+            &self.output.instructions,
+            self.frame_size,
+        ) {
+            self.schedule_entry_parameter_before_data_anchor();
+        } else if is_four_home_anchor_prefix(&self.output.instructions, self.frame_size) {
             self.schedule_four_home_data_anchor_frame();
         } else if is_two_home_anchor_prefix(&self.output.instructions, self.frame_size) {
             self.schedule_two_home_data_anchor_frame();
@@ -24,6 +29,27 @@ impl Generator {
             self.schedule_anchor_only_frame();
         }
         normalize_data_anchor_array_lookup(&mut self.output.instructions);
+    }
+
+    fn schedule_entry_parameter_before_data_anchor(&mut self) {
+        // The anchor's unallocated high half initially shares physical r3 with
+        // the first source parameter. Consume that parameter before staging
+        // the anchor, then use r4 for both relocation halves. This mirrors the
+        // linkage-first schedule while keeping the source parameter volatile.
+        self.move_instruction_before(7, 1);
+        self.move_instruction_before(5, 3);
+        let Instruction::AddImmediateShifted { d, .. } =
+            &mut self.output.instructions[3]
+        else {
+            unreachable!("the entry-parameter anchor high half was matched")
+        };
+        *d = 4;
+        let Instruction::AddImmediate { a, .. } =
+            &mut self.output.instructions[6]
+        else {
+            unreachable!("the entry-parameter anchor low half was matched")
+        };
+        *a = 4;
     }
 
     fn schedule_four_home_data_anchor_frame(&mut self) {
@@ -164,6 +190,39 @@ fn is_two_home_anchor_prefix(instructions: &[Instruction], frame_size: i16) -> b
                 a: 3,
                 offset: 44,
             },
+            ..
+        ] if *offset == -frame_size
+    )
+}
+
+fn is_entry_parameter_anchor_prefix(
+    instructions: &[Instruction],
+    frame_size: i16,
+) -> bool {
+    matches!(
+        instructions,
+        [
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset },
+            Instruction::StoreWord { s: 31, a: 1, .. },
+            Instruction::AddImmediateShifted {
+                d: 5,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 31,
+                a: 5,
+                immediate: 0,
+            },
+            Instruction::StoreWord { s: 30, a: 1, .. },
+            Instruction::CompareLogicalWordImmediate { a: 3, .. },
+            Instruction::BranchConditionalForward { .. },
             ..
         ] if *offset == -frame_size
     )
@@ -540,6 +599,54 @@ fn normalize_data_anchor_array_lookup(instructions: &mut [Instruction]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_an_entry_parameter_guard_after_anchor_setup() {
+        let instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            },
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 12,
+            },
+            Instruction::AddImmediateShifted {
+                d: 5,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 31,
+                a: 5,
+                immediate: 0,
+            },
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 8,
+            },
+            Instruction::CompareLogicalWordImmediate {
+                a: 3,
+                immediate: 16,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 16,
+            },
+        ];
+
+        assert!(is_entry_parameter_anchor_prefix(&instructions, 16));
+    }
 
     #[test]
     fn normalizes_terminal_saved_parameter_copies() {
