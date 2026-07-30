@@ -166,6 +166,7 @@ mod structured_inlined_address_receiver_schedule;
 mod structured_inlined_guarded_value_diamond_schedule;
 mod structured_inlined_guarded_value_transaction_schedule;
 mod structured_inlined_interrupt_transaction_schedule;
+mod structured_nested_interrupt_transaction_schedule;
 mod structured_inlined_store_receiver_schedule;
 mod structured_inline_assertion;
 mod structured_locals;

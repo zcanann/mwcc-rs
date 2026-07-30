@@ -11,12 +11,14 @@ use super::*;
 
 impl Generator {
     pub(crate) fn schedule_structured_inlined_interrupt_transaction(&mut self) {
-        if self.inline_statement_body_substitutions < 2
-            || !is_inlined_interrupt_transaction(
-                &self.output.instructions,
-                &self.output.relocations,
-            )
-        {
+        if self.inline_statement_body_substitutions < 2 {
+            return;
+        }
+        if !is_inlined_interrupt_transaction(
+            &self.output.instructions,
+            &self.output.relocations,
+        ) {
+            self.schedule_structured_nested_interrupt_transaction();
             return;
         }
 
