@@ -10,47 +10,78 @@ use super::*;
 mod guarded_indexed;
 mod indexed_mixed_arguments;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArgumentPlacement {
+    Register { source: u8, target: u8 },
+    Constant { value: i64, target: u8 },
+}
+
+fn placement_overwrites_later_source(placements: &[ArgumentPlacement]) -> bool {
+    placements
+        .iter()
+        .enumerate()
+        .any(|(index, placement)| {
+            let target = match placement {
+                ArgumentPlacement::Register { source, target } if source != target => *target,
+                ArgumentPlacement::Constant { target, .. } => *target,
+                ArgumentPlacement::Register { .. } => return false,
+            };
+            placements[index + 1..].iter().any(|later| {
+                matches!(
+                    later,
+                    ArgumentPlacement::Register { source, .. } if *source == target
+                )
+            })
+        })
+}
+
 impl Generator {
-    fn leaf_indirect_argument_moves(
+    fn indirect_argument_placements(
         &self,
         arguments: &[Expression],
-    ) -> Compilation<Vec<(u8, u8)>> {
-        let argument_moves = arguments
+    ) -> Compilation<Vec<ArgumentPlacement>> {
+        let placements = arguments
             .iter()
             .enumerate()
             .map(|(index, argument)| {
+                let target = Eabi::FIRST_GENERAL_ARGUMENT + index as u8;
+                if let Expression::IntegerLiteral(value) = argument {
+                    return Ok(ArgumentPlacement::Constant {
+                        value: *value,
+                        target,
+                    });
+                }
                 let (source, width, _) = self.leaf_info(argument)?;
                 if width != 32 || source == 12 {
                     return Err(Diagnostic::error(
                         "arguments to a bare indirect call need dependency-aware marshaling (roadmap)",
                     ));
                 }
-                Ok((source, Eabi::FIRST_GENERAL_ARGUMENT + index as u8))
+                Ok(ArgumentPlacement::Register { source, target })
             })
             .collect::<Compilation<Vec<_>>>()?;
-        let overwrites_later_source =
-            argument_moves.iter().enumerate().any(|(index, &(source, target))| {
-                source != target
-                    && argument_moves[index + 1..]
-                        .iter()
-                        .any(|&(later_source, _)| later_source == target)
-            });
-        if arguments.len() > 8 || overwrites_later_source {
+        if arguments.len() > 8 || placement_overwrites_later_source(&placements) {
             return Err(Diagnostic::error(
                 "arguments to a bare indirect call need dependency-aware marshaling (roadmap)",
             ));
         }
-        Ok(argument_moves)
+        Ok(placements)
     }
 
-    fn emit_leaf_indirect_arguments(
+    fn emit_indirect_arguments(
         &mut self,
         arguments: &[Expression],
-        moves: &[(u8, u8)],
+        placements: &[ArgumentPlacement],
     ) -> Compilation<()> {
-        for (argument, &(source, target)) in arguments.iter().zip(moves) {
-            if source != target {
-                self.evaluate_general(argument, target)?;
+        for (argument, placement) in arguments.iter().zip(placements) {
+            match *placement {
+                ArgumentPlacement::Register { source, target } if source != target => {
+                    self.evaluate_general(argument, target)?;
+                }
+                ArgumentPlacement::Constant { value, target } => {
+                    self.load_integer_constant(target, value);
+                }
+                ArgumentPlacement::Register { .. } => {}
             }
         }
         Ok(())
@@ -83,10 +114,10 @@ impl Generator {
                 "this bare indirect-call target is not supported yet (roadmap)",
             ));
         }
-        let argument_moves = self.leaf_indirect_argument_moves(arguments)?;
+        let placements = self.indirect_argument_placements(arguments)?;
 
         self.evaluate(target, Type::UnsignedInt, 12)?;
-        self.emit_leaf_indirect_arguments(arguments, &argument_moves)?;
+        self.emit_indirect_arguments(arguments, &placements)?;
         self.emit_indirect_branch_and_link(12);
         Ok(())
     }
@@ -206,5 +237,42 @@ impl Generator {
             .push(Instruction::BranchToCountRegisterAndLink);
         self.emit_epilogue_and_return();
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{placement_overwrites_later_source, ArgumentPlacement};
+
+    #[test]
+    fn accepts_a_constant_before_an_independent_register_argument() {
+        let placements = [
+            ArgumentPlacement::Constant {
+                value: 0,
+                target: 3,
+            },
+            ArgumentPlacement::Register {
+                source: 4,
+                target: 4,
+            },
+        ];
+
+        assert!(!placement_overwrites_later_source(&placements));
+    }
+
+    #[test]
+    fn rejects_a_constant_that_overwrites_a_later_argument_source() {
+        let placements = [
+            ArgumentPlacement::Constant {
+                value: 0,
+                target: 3,
+            },
+            ArgumentPlacement::Register {
+                source: 3,
+                target: 4,
+            },
+        ];
+
+        assert!(placement_overwrites_later_source(&placements));
     }
 }

@@ -22,7 +22,7 @@ impl Generator {
         let Some((entry, arguments)) = recognize(condition, then_body, &self.globals) else {
             return Ok(false);
         };
-        let argument_moves = self.leaf_indirect_argument_moves(arguments)?;
+        let placements = self.indirect_argument_placements(arguments)?;
 
         self.evaluate(entry, Type::UnsignedInt, 12)?;
         self.output
@@ -38,20 +38,26 @@ impl Generator {
             self.output
                 .instructions
                 .push(Instruction::MoveToLinkRegister { s: 12 });
-            for &(source, target) in &argument_moves {
-                if source != target {
-                    self.output.instructions.push(Instruction::AddImmediate {
-                        d: target,
-                        a: source,
-                        immediate: 0,
-                    });
+            for placement in &placements {
+                match *placement {
+                    ArgumentPlacement::Register { source, target } if source != target => {
+                        self.output.instructions.push(Instruction::AddImmediate {
+                            d: target,
+                            a: source,
+                            immediate: 0,
+                        });
+                    }
+                    ArgumentPlacement::Constant { value, target } => {
+                        self.load_integer_constant(target, value);
+                    }
+                    ArgumentPlacement::Register { .. } => {}
                 }
             }
             self.output
                 .instructions
                 .push(Instruction::BranchToLinkRegisterAndLink);
         } else {
-            self.emit_leaf_indirect_arguments(arguments, &argument_moves)?;
+            self.emit_indirect_arguments(arguments, &placements)?;
             self.emit_indirect_branch_and_link(12);
         }
         self.bind_label(done);
