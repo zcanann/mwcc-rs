@@ -1060,7 +1060,7 @@ impl Generator {
     /// This is intentionally only the storage/value width needed to decide
     /// whether an unsigned operand promotes to `int`; the full expression type
     /// system remains in the syntax-tree layer.
-    fn unpromoted_integer_width(&self, expression: &Expression) -> Option<u8> {
+    pub(crate) fn unpromoted_integer_width(&self, expression: &Expression) -> Option<u8> {
         match expression {
             Expression::Variable(name) => self
                 .locations

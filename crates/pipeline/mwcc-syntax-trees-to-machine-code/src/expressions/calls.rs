@@ -420,6 +420,9 @@ impl Generator {
         if self.try_emit_structured_aggregate_copy_arguments(arguments, name)? {
             return Ok(());
         }
+        if self.try_emit_fixed_clock_wide_callback_arguments(arguments, name)? {
+            return Ok(());
+        }
         // A CALL in a non-first argument clobbers the argument registers already holding earlier
         // arguments (a call returns in r3 and clobbers r3–r12), and its own result lands in r3 rather
         // than the argument's positional register. mwcc evaluates such arguments RIGHT-first, preserving
@@ -1082,6 +1085,21 @@ impl Generator {
                 ));
                 diagnostic
             })?;
+            if let CallArgumentPlacement::WideGeneral { parameter_type } = placement {
+                next_general = self
+                    .emit_widened_general_call_argument(
+                        argument,
+                        parameter_type,
+                        next_general,
+                    )
+                    .map_err(|mut diagnostic| {
+                        diagnostic.message.push_str(&format!(
+                            " (while marshaling wide argument {index} to '{name}')"
+                        ));
+                        diagnostic
+                    })?;
+                continue;
+            }
             if let CallArgumentPlacement::ConvertFloatingToGeneral { parameter_type } = placement {
                 self.emit_cast_to_integer(parameter_type, argument, next_general)
                     .map_err(|mut diagnostic| {

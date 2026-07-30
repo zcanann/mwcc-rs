@@ -11,6 +11,9 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum CallArgumentPlacement {
     General,
+    WideGeneral {
+        parameter_type: Type,
+    },
     ConvertFloatingToGeneral {
         parameter_type: Type,
     },
@@ -56,6 +59,9 @@ pub(super) fn classify_call_argument(
                     convert_integer: true,
                 })
             }
+        }
+        Some(parameter_type @ (Type::LongLong | Type::UnsignedLongLong)) => {
+            Ok(CallArgumentPlacement::WideGeneral { parameter_type })
         }
         Some(parameter_type) if argument_is_float => {
             Ok(CallArgumentPlacement::ConvertFloatingToGeneral { parameter_type })
@@ -158,6 +164,22 @@ mod tests {
             classify_call_argument(Some(Type::Int), true, None).unwrap(),
             CallArgumentPlacement::ConvertFloatingToGeneral {
                 parameter_type: Type::Int,
+            }
+        );
+    }
+
+    #[test]
+    fn classifies_wide_integer_formals_as_register_pairs() {
+        assert_eq!(
+            classify_call_argument(Some(Type::LongLong), false, None).unwrap(),
+            CallArgumentPlacement::WideGeneral {
+                parameter_type: Type::LongLong,
+            }
+        );
+        assert_eq!(
+            classify_call_argument(Some(Type::UnsignedLongLong), false, Some(7)).unwrap(),
+            CallArgumentPlacement::WideGeneral {
+                parameter_type: Type::UnsignedLongLong,
             }
         );
     }

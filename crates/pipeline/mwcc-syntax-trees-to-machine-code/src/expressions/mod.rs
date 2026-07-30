@@ -41,6 +41,7 @@ mod punned_displacement;
 mod shifted_member_mask;
 mod stores;
 mod strings;
+mod wide_call_arguments;
 mod xnor_feedback_update;
 
 pub(crate) use members::embedded_member_address_base;
