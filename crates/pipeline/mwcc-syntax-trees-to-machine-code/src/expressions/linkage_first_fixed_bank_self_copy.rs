@@ -22,6 +22,7 @@ struct Region {
 struct CallbackAddress {
     high: usize,
     low: usize,
+    high_base: u8,
     argument: u8,
 }
 
@@ -114,12 +115,22 @@ fn callback_address(
     if !matches!(
         instructions.get(high_relocation.instruction_index),
         Some(Instruction::AddImmediateShifted { d, a: 0, .. }) if d == high_base
-    ) {
+    ) || instructions[high_relocation.instruction_index + 1..low_relocation.instruction_index]
+        .iter()
+        .any(|instruction| {
+            mwcc_vreg::register_operands(instruction)
+                .into_iter()
+                .any(|operand| {
+                    operand.class == mwcc_vreg::Class::General && operand.register == *high_base
+                })
+        })
+    {
         return None;
     }
     Some(CallbackAddress {
         high: high_relocation.instruction_index,
         low: low_relocation.instruction_index,
+        high_base: *high_base,
         argument: *argument,
     })
 }
@@ -174,6 +185,21 @@ fn scratch_store_fills_second_address_slot(instructions: &[Instruction], after: 
     )
 }
 
+fn rewrite_callback_high_base(
+    instructions: &mut [Instruction],
+    callback: CallbackAddress,
+    high_base: u8,
+) {
+    let Instruction::AddImmediateShifted { d, .. } = &mut instructions[callback.high] else {
+        unreachable!("the recognized callback high remains a lis");
+    };
+    *d = high_base;
+    let Instruction::AddImmediate { a, .. } = &mut instructions[callback.low] else {
+        unreachable!("the recognized callback low remains an addi");
+    };
+    *a = high_base;
+}
+
 impl Generator {
     pub(crate) fn split_linkage_first_fixed_bank_self_copies(&mut self) {
         if self.behavior.frame_convention != mwcc_versions::FrameConvention::LinkageFirst
@@ -217,9 +243,11 @@ impl Generator {
             // itself occupies r4, the independent bank base takes r5 instead.
             let preferred = if callback.argument == 4 { 5 } else { 4 };
             let full_base = self.fresh_virtual_general_preferring(preferred);
+            let callback_high_base = self.fresh_virtual_general_preferring(3);
             let delay_low =
                 scratch_store_fills_second_address_slot(&self.output.instructions, start + 4);
             rewrite(&mut self.output.instructions, region, full_base);
+            rewrite_callback_high_base(&mut self.output.instructions, callback, callback_high_base);
 
             // The completed bank base ends the page value's lifetime. Reuse its
             // home for the callback high half, then fill the address latency
@@ -338,9 +366,29 @@ mod tests {
             Some(CallbackAddress {
                 high: 4,
                 low: 5,
+                high_base: 34,
                 argument: 4,
             })
         );
+
+        rewrite_callback_high_base(
+            &mut instructions,
+            CallbackAddress {
+                high: 4,
+                low: 5,
+                high_base: 34,
+                argument: 4,
+            },
+            35,
+        );
+        assert!(matches!(
+            instructions[4],
+            Instruction::AddImmediateShifted { d: 35, a: 0, .. }
+        ));
+        assert!(matches!(
+            instructions[5],
+            Instruction::AddImmediate { d: 4, a: 35, .. }
+        ));
     }
 
     #[test]
