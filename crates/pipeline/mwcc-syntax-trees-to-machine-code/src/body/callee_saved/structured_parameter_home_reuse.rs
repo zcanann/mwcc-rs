@@ -6,7 +6,10 @@
 //! the same physical home. This plan composes those two independently proven
 //! interval sets without coupling statement emission to source names.
 
-use super::structured_locals::{structured_name_last_read, DeferredSavedHomePlan};
+use super::structured_locals::{
+    structured_name_last_read, structured_name_occurs_in_loop,
+    DeferredSavedHomePlan,
+};
 use super::structured_eager_home_reuse::StructuredEagerHomeReuse;
 #[allow(unused_imports)]
 use super::*;
@@ -29,6 +32,9 @@ impl StructuredParameterHomeReuse {
         let mut parameters: Vec<_> = saved_parameters
             .iter()
             .enumerate()
+            .filter(|(_, parameter)| {
+                !structured_name_occurs_in_loop(function, &parameter.name)
+            })
             .filter(|(_, parameter)| {
                 function
                     .return_expression
@@ -255,5 +261,40 @@ mod tests {
 
         assert_eq!(reuse.fresh_group_count, 0);
         assert_eq!(reuse.home_index(late_group), 1);
+    }
+
+    #[test]
+    fn keeps_a_parameter_read_on_each_loop_iteration_live() {
+        let mut function = function(false);
+        function.statements = vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: vec![
+                Statement::Expression(Expression::Variable("incoming".into())),
+                Statement::Assign {
+                    name: "late".into(),
+                    value: Expression::IntegerLiteral(1),
+                },
+                Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: vec![Expression::Variable("late".into())],
+                }),
+            ],
+        }];
+        let deferred = plan_deferred_saved_homes(&function, &[&function.locals[0]]).unwrap();
+        let eager_reuse = StructuredEagerHomeReuse::plan(&function, &[], &deferred);
+
+        let reuse = StructuredParameterHomeReuse::plan(
+            &function,
+            0,
+            &[&function.parameters[0]],
+            &deferred,
+            &eager_reuse,
+        );
+
+        assert_eq!(reuse.fresh_group_count, 1);
+        assert_eq!(reuse.home_index(deferred.group("late")), 1);
     }
 }

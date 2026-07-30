@@ -5,7 +5,10 @@
 //! arm. MWCC colors those values into one callee-saved home. Keep the
 //! control-flow proof separate from physical-register layout and emission.
 
-use super::structured_locals::{structured_name_last_read, DeferredSavedHomePlan};
+use super::structured_locals::{
+    structured_name_last_read, structured_name_occurs_in_loop,
+    DeferredSavedHomePlan,
+};
 #[allow(unused_imports)]
 use super::*;
 
@@ -81,7 +84,8 @@ fn expiration_before_group(
     eager: &str,
     first_assignment: usize,
 ) -> Option<usize> {
-    (!statement_assigns_name(&function.statements, eager)
+    (!structured_name_occurs_in_loop(function, eager)
+        && !statement_assigns_name(&function.statements, eager)
         && function
             .return_expression
             .as_ref()

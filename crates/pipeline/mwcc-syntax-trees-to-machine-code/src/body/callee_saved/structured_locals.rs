@@ -56,6 +56,14 @@ pub(super) fn structured_name_last_read(function: &Function, name: &str) -> Opti
     interval.last_read
 }
 
+/// Textual expiration is not a lifetime proof for a value referenced in a
+/// repeating loop: a later assignment in the body is followed by the earlier
+/// read on the next iteration. Until loop fixed-point interference is modeled,
+/// keep such values in distinct homes.
+pub(super) fn structured_name_occurs_in_loop(function: &Function, name: &str) -> bool {
+    statements_touch_name_in_loop(&function.statements, name, false)
+}
+
 /// Color deferred locals whose initialization remains in the body.
 /// Two locals may share a callee-saved home only when the first one's final
 /// textual read precedes the second one's first assignment. Structured bodies
@@ -100,9 +108,11 @@ pub(super) fn plan_deferred_saved_homes(
 
     let mut group_last_reads = Vec::<usize>::new();
     let mut group_first_assignments = Vec::<usize>::new();
+    let mut group_contains_loop_value = Vec::<bool>::new();
     let mut group_by_name = std::collections::HashMap::<String, usize>::new();
     let mut path_reused_groups = std::collections::HashSet::new();
     for (name, first_assignment, last_read) in intervals {
+        let occurs_in_loop = structured_name_occurs_in_loop(function, name);
         // Ordinary assignments use MWCC's LIFO lifetime discipline: when
         // several homes are free, the next local takes the one whose previous
         // value died latest. Consecutive frame loads consume the expired homes
@@ -120,6 +130,9 @@ pub(super) fn plan_deferred_saved_homes(
                     .iter()
                     .enumerate()
                     .filter(|(group, previous_last_read)| {
+                        if occurs_in_loop || group_contains_loop_value[*group] {
+                            return false;
+                        }
                         let textually_expired = **previous_last_read < first_assignment;
                         let path_disjoint = interference.as_ref().is_some_and(|interference| {
                             group_by_name.iter().all(|(member, candidate)| {
@@ -142,12 +155,14 @@ pub(super) fn plan_deferred_saved_homes(
             .unwrap_or_else(|| {
                 group_last_reads.push(0);
                 group_first_assignments.push(first_assignment);
+                group_contains_loop_value.push(false);
                 group_last_reads.len() - 1
             });
         if group < existing_group_count && group_last_reads[group] >= first_assignment {
             path_reused_groups.insert(group);
         }
         group_last_reads[group] = group_last_reads[group].max(last_read);
+        group_contains_loop_value[group] |= occurs_in_loop;
         group_by_name.insert(name.to_owned(), group);
     }
     Some(DeferredSavedHomePlan {
@@ -155,6 +170,81 @@ pub(super) fn plan_deferred_saved_homes(
         group_by_name,
         group_first_assignments,
         path_reuse_count: path_reused_groups.len(),
+    })
+}
+
+fn statements_touch_name_in_loop(
+    statements: &[Statement],
+    name: &str,
+    inside_loop: bool,
+) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Store { target, value } => {
+            inside_loop
+                && (expression_reads_name(target, name)
+                    || expression_reads_name(value, name))
+        }
+        Statement::Assign {
+            name: assigned,
+            value,
+        } => {
+            inside_loop
+                && (assigned == name || expression_reads_name(value, name))
+        }
+        Statement::Expression(expression) | Statement::Return(Some(expression)) => {
+            inside_loop && expression_reads_name(expression, name)
+        }
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            (inside_loop && expression_reads_name(condition, name))
+                || statements_touch_name_in_loop(then_body, name, inside_loop)
+                || statements_touch_name_in_loop(else_body, name, inside_loop)
+        }
+        Statement::Loop {
+            initializer,
+            condition,
+            step,
+            body,
+            ..
+        } => {
+            initializer
+                .iter()
+                .chain(condition)
+                .chain(step)
+                .any(|expression| {
+                    expression_reads_name(expression, name)
+                        || expression_assignment_count(expression, name) != 0
+                })
+                || statements_touch_name_in_loop(body, name, true)
+        }
+        Statement::Switch { scrutinee, arms, default } => {
+            (inside_loop && expression_reads_name(scrutinee, name))
+                || arms.iter().any(|arm| match &arm.body {
+                    mwcc_syntax_trees::ArmBody::Return(expression) => {
+                        inside_loop && expression_reads_name(expression, name)
+                    }
+                    mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                        statements_touch_name_in_loop(statements, name, inside_loop)
+                    }
+                })
+                || default.as_ref().is_some_and(|body| match body {
+                    mwcc_syntax_trees::ArmBody::Return(expression) => {
+                        inside_loop && expression_reads_name(expression, name)
+                    }
+                    mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                        statements_touch_name_in_loop(statements, name, inside_loop)
+                    }
+                })
+        }
+        Statement::InlineAsm(_) => inside_loop,
+        Statement::Return(None)
+        | Statement::Break
+        | Statement::Continue
+        | Statement::Goto(_)
+        | Statement::Label(_) => false,
     })
 }
 
@@ -1218,6 +1308,67 @@ mod tests {
             &statements,
             "temporary"
         ));
+    }
+
+    #[test]
+    fn keeps_loop_values_in_distinct_deferred_homes() {
+        let mut cursor = local("cursor", Expression::IntegerLiteral(0));
+        cursor.initializer = None;
+        let mut temporary = local("temporary", Expression::IntegerLiteral(0));
+        temporary.initializer = None;
+        let function = Function {
+            return_type: Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![cursor, temporary],
+            statements: vec![Statement::Loop {
+                kind: LoopKind::For,
+                initializer: Some(Expression::Assign {
+                    target: Box::new(Expression::Variable("cursor".into())),
+                    value: Box::new(Expression::Variable("head".into())),
+                }),
+                condition: Some(Expression::Variable("cursor".into())),
+                step: Some(Expression::Assign {
+                    target: Box::new(Expression::Variable("cursor".into())),
+                    value: Box::new(Expression::Member {
+                        base: Box::new(Expression::Variable("cursor".into())),
+                        offset: 8,
+                        member_type: Type::StructPointer { element_size: 0 },
+                        index_stride: None,
+                    }),
+                }),
+                body: vec![
+                    Statement::Expression(Expression::Variable("cursor".into())),
+                    Statement::Assign {
+                        name: "temporary".into(),
+                        value: Expression::IntegerLiteral(1),
+                    },
+                    Statement::Expression(Expression::Call {
+                        name: "consume".into(),
+                        arguments: vec![Expression::Variable("temporary".into())],
+                    }),
+                ],
+            }],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let locals: Vec<_> = function.locals.iter().collect();
+
+        let plan = plan_deferred_saved_homes(&function, &locals)
+            .expect("loop locals have valid definitions");
+
+        assert!(structured_name_occurs_in_loop(&function, "cursor"));
+        assert!(structured_name_occurs_in_loop(&function, "temporary"));
+        assert_eq!(plan.group_count, 2);
     }
 
     #[test]
