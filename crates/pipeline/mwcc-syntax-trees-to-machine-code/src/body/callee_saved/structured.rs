@@ -2898,6 +2898,27 @@ impl Generator {
                     then_body,
                     else_body,
                 } if else_body.is_empty() => {
+                    if let Some(value) = constant_value(condition) {
+                        if value != 0 {
+                            self.emit_structured_statements(
+                                then_body,
+                                function,
+                                ephemeral_locals,
+                                false,
+                                return_branches,
+                                label_positions,
+                                pending_gotos,
+                                entry_alias,
+                            )
+                            .map_err(|mut diagnostic| {
+                                diagnostic.message.push_str(&format!(
+                                    " (inside constant structured if statement {statement_index})"
+                                ));
+                                diagnostic
+                            })?;
+                        }
+                        continue;
+                    }
                     if is_lowered_switch_guard(condition) {
                         // A source switch retains its dispatch edge even for a
                         // single case. Branch into the matching arm and use an
