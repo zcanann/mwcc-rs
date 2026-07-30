@@ -68,6 +68,7 @@ use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
 };
 use super::structured_loop_member_receiver_layout::StructuredLoopMemberReceiverLayout;
+use super::structured_object_collision_loop_layout::StructuredObjectCollisionLoopLayout;
 use super::structured_preloop_alias::fold_preloop_comma_pointer_alias;
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_frame_address_null_select,
@@ -741,6 +742,29 @@ impl Generator {
             &parameter_home_reuse,
             count,
         );
+        let object_collision_loop_layout =
+            StructuredObjectCollisionLoopLayout::plan(
+                function,
+                &eager_saved_locals,
+                &saved_parameters,
+                &deferred_saved_locals,
+                &deferred_home_plan,
+                &parameter_home_reuse,
+                count,
+            );
+        if capture {
+            eprintln!(
+                "structured object collision loop layout: {} \
+                 (eager={}, parameters={}, deferred={}, groups={}, fresh={}, homes={})",
+                object_collision_loop_layout.is_some(),
+                eager_saved_locals.len(),
+                saved_parameters.len(),
+                deferred_saved_locals.len(),
+                deferred_home_plan.group_count,
+                parameter_home_reuse.fresh_group_count,
+                count,
+            );
+        }
         let returned_deferred_pair = returned_deferred_pair_preference(
             with_frame_array,
             eager_saved_locals.len(),
@@ -939,6 +963,11 @@ impl Generator {
                     };
                     self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = loop_member_receiver_layout
+                    .as_ref()
+                    .and_then(|layout| layout.preference(home_index))
+                {
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = object_collision_loop_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
                 {

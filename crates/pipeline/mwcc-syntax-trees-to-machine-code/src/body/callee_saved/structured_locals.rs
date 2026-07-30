@@ -66,11 +66,12 @@ pub(super) fn structured_name_occurs_in_loop(function: &Function, name: &str) ->
 
 /// Color deferred locals whose initialization remains in the body.
 /// Two locals may share a callee-saved home only when the first one's final
-/// textual read precedes the second one's first assignment. Structured bodies
-/// have no loops or backward branches, so that source-order proof is also a
-/// control-flow-safe non-overlap proof. A local may be updated repeatedly after
-/// its first definition; the eligibility pass separately proves that every read
-/// is dominated by that definition.
+/// textual read precedes the second one's first assignment. For acyclic regions,
+/// that source-order proof is also a control-flow-safe non-overlap proof. Loop
+/// values remain distinct because a later textual assignment precedes the next
+/// iteration's earlier read. A local may be updated repeatedly after its first
+/// definition; the eligibility pass separately proves that every read is
+/// dominated by that definition.
 pub(super) fn plan_deferred_saved_homes(
     function: &Function,
     locals: &[&LocalDeclaration],
