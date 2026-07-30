@@ -2718,7 +2718,9 @@ impl Parser {
                 while *self.peek() == Token::BracketOpen {
                     is_array = true;
                     self.advance();
-                    let _length = self.parse_integer_constant()?;
+                    if *self.peek() != Token::BracketClose {
+                        let _length = self.parse_integer_constant()?;
+                    }
                     self.expect(Token::BracketClose)?;
                 }
                 self.expect(Token::Colon)?;

@@ -1548,6 +1548,28 @@ mod tests {
     }
 
     #[test]
+    fn records_an_unsized_fixed_address_array() {
+        let source = r#"
+            typedef unsigned int u32;
+            volatile u32 __DIRegs[] : (0xCC006000);
+            void write(void) { __DIRegs[0] = 0x2A; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.fixed_address_arrays.get("__DIRegs"),
+            Some(&(0xCC006000, Type::UnsignedInt))
+        );
+    }
+
+    #[test]
     fn preserves_fixed_address_struct_pointer_indirection() {
         let source = r#"
             typedef struct Context { int state; } Context;
