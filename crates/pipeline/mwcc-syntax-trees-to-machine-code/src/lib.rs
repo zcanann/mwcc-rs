@@ -872,6 +872,7 @@ fn lower_function_body(
     // Coalesce away `mr rX,rX` self-moves the allocator leaves when it colors a value's
     // virtual home to the register the value already holds (mwcc coalesces them).
     coalesce_self_moves(&mut generator);
+    coalesce_float_conversion_moves(&mut generator);
     generator.share_leaf_constant_guard_epilogue();
     // Allocation can coalesce a just-published frame value and its immediate
     // reload to the same physical register even when their virtual lanes were
@@ -1421,6 +1422,45 @@ fn coalesce_self_moves(generator: &mut Generator) {
     remap_instruction_indices(generator, &permutation);
 }
 
+/// Fold an immediately converted float copy into the conversion's source.
+///
+/// Allocation can color a call-result handoff as `fmr f0,f1; fctiwz f0,f0`.
+/// The copy has no observable intermediate value and MWCC converts directly
+/// from f1. Apply the same coalescing to every adjacent physical pair while
+/// preserving all instruction-index owners.
+fn coalesce_float_conversion_moves(generator: &mut Generator) {
+    let mut index = 0;
+    while index + 1 < generator.output.instructions.len() {
+        let replacement = adjacent_float_conversion_move(&generator.output.instructions, index);
+        let Some((d, b)) = replacement else {
+            index += 1;
+            continue;
+        };
+        generator.output.instructions[index + 1] =
+            Instruction::ConvertToIntegerWordZero { d, b };
+        remove_instruction_retargeting_to_next(generator, index);
+    }
+}
+
+fn adjacent_float_conversion_move(
+    instructions: &[Instruction],
+    index: usize,
+) -> Option<(u8, u8)> {
+    match (instructions.get(index)?, instructions.get(index + 1)?) {
+        (
+            Instruction::FloatMove {
+                d: moved,
+                b: source,
+            },
+            Instruction::ConvertToIntegerWordZero {
+                d: converted,
+                b: converted_source,
+            },
+        ) if moved == converted && moved == converted_source => Some((*converted, *source)),
+        _ => None,
+    }
+}
+
 /// Initialized-array pool functions retain their selection-order virtual stream
 /// through allocation so scheduling cannot lengthen live ranges enough to make
 /// a previously feasible function spill or fail. Once registers are physical,
@@ -1688,6 +1728,20 @@ mod instruction_index_tests {
 
         assert_eq!(target, 2);
         assert!(matches!(instructions[target], Instruction::Or { a: 3, .. }));
+    }
+
+    #[test]
+    fn an_immediately_converted_float_copy_folds_into_the_conversion() {
+        let instructions = vec![
+            Instruction::FloatMove { d: 0, b: 1 },
+            Instruction::ConvertToIntegerWordZero { d: 0, b: 0 },
+        ];
+
+        assert_eq!(
+            adjacent_float_conversion_move(&instructions, 0),
+            Some((0, 1))
+        );
+        assert_eq!(adjacent_float_conversion_move(&instructions, 1), None);
     }
 
     #[test]
