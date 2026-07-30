@@ -19,16 +19,89 @@ impl Generator {
             a: 3,
             immediate: 0,
         };
-        if let Some(
-            [Instruction::StoreWord {
-                a: command_base, ..
-            }, Instruction::StoreWord {
-                a: callback_base, ..
-            }],
-        ) = self.output.instructions.get_mut(7..9)
+
+        let mut initialization_cursor = if matches!(
+            self.output.instructions.get(7),
+            Some(Instruction::StoreWord { s: 0, a: 31, .. })
+        ) {
+            8
+        } else {
+            7
+        };
+        if let Some((constant, member_offset)) = plan.initial_member_constant {
+            let constant_index = self.output.instructions[initialization_cursor..plan.disable_call]
+                .iter()
+                .position(|instruction| {
+                    matches!(
+                        instruction,
+                        Instruction::AddImmediate {
+                            d: 0,
+                            a: 0,
+                            immediate,
+                        } if *immediate == constant
+                    )
+                })
+                .expect("the retained member constant was matched")
+                + initialization_cursor;
+            crate::move_instruction_before_retargeting(
+                self,
+                constant_index,
+                initialization_cursor,
+            );
+            let Instruction::AddImmediate { d, .. } =
+                &mut self.output.instructions[initialization_cursor]
+            else {
+                unreachable!("the retained member constant was matched")
+            };
+            *d = 3;
+            initialization_cursor += 1;
+
+            let Instruction::StoreWord { a, .. } = &mut self.output.instructions[7] else {
+                unreachable!("the command publication was matched")
+            };
+            *a = 3;
+            let Instruction::StoreWord { s, .. } = self.output.instructions
+                [initialization_cursor..plan.disable_call]
+                .iter_mut()
+                .find(|instruction| {
+                    matches!(
+                        instruction,
+                        Instruction::StoreWord {
+                            s: 0,
+                            a: 31,
+                            offset,
+                        } if *offset == member_offset
+                    )
+                })
+                .expect("the retained member constant store was matched")
+            else {
+                unreachable!("the retained member constant store was matched")
+            };
+            *s = 3;
+        } else {
+            for instruction in &mut self.output.instructions[7..plan.disable_call] {
+                if let Instruction::StoreWord { a, .. } = instruction {
+                    if *a == 31 {
+                        *a = 3;
+                    }
+                }
+            }
+        }
+        if let Some(zero_index) = self.output.instructions[initialization_cursor..plan.disable_call]
+            .iter()
+            .position(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::AddImmediate {
+                        d: 0,
+                        a: 0,
+                        immediate: 0,
+                    }
+                )
+            })
+            .map(|index| index + initialization_cursor)
         {
-            *command_base = 3;
-            *callback_base = 3;
+            crate::move_instruction_before_retargeting(self, zero_index, initialization_cursor);
         }
 
         crate::move_instruction_before_retargeting(
@@ -54,10 +127,13 @@ impl Generator {
             plan.restore_call + 1,
         );
 
+        let new_frame_size = plan.frame_size + 8;
         for instruction in &mut self.output.instructions {
             match instruction {
-                Instruction::StoreWordWithUpdate { s: 1, a: 1, offset } if *offset == -24 => {
-                    *offset = -32
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, offset }
+                    if *offset == -plan.frame_size =>
+                {
+                    *offset = -new_frame_size
                 }
                 Instruction::StoreWord {
                     s: 31,
@@ -68,7 +144,7 @@ impl Generator {
                     d: 31,
                     a: 1,
                     offset,
-                } if *offset == 20 => *offset = 28,
+                } if *offset == plan.frame_size - 4 => *offset = new_frame_size - 4,
                 Instruction::StoreWord {
                     s: 30,
                     a: 1,
@@ -78,22 +154,28 @@ impl Generator {
                     d: 30,
                     a: 1,
                     offset,
-                } if *offset == 16 => *offset = 24,
-                Instruction::LoadWord { d: 0, a: 1, offset } if *offset == 28 => *offset = 36,
+                } if *offset == plan.frame_size - 8 => *offset = new_frame_size - 8,
+                Instruction::LoadWord { d: 0, a: 1, offset }
+                    if *offset == plan.frame_size + 4 =>
+                {
+                    *offset = new_frame_size + 4
+                }
                 Instruction::AddImmediate {
                     d: 1,
                     a: 1,
                     immediate,
-                } if *immediate == 24 => *immediate = 32,
+                } if *immediate == plan.frame_size => *immediate = new_frame_size,
                 _ => {}
             }
         }
-        self.frame_size = 32;
+        self.frame_size = new_frame_size;
     }
 }
 
 #[derive(Clone, Copy)]
 struct CompactStructuredQueueTransaction {
+    frame_size: i16,
+    initial_member_constant: Option<(i16, i16)>,
     disable_call: usize,
     queue_call: usize,
     restore_call: usize,
@@ -102,9 +184,8 @@ struct CompactStructuredQueueTransaction {
 fn compact_structured_queue_transaction(
     instructions: &[Instruction],
 ) -> Option<CompactStructuredQueueTransaction> {
-    if !matches!(
-        instructions.get(0..7),
-        Some([
+    let Some(
+        [
             Instruction::MoveFromLinkRegister { d: 0 },
             Instruction::StoreWord {
                 s: 0,
@@ -114,28 +195,54 @@ fn compact_structured_queue_transaction(
             Instruction::StoreWordWithUpdate {
                 s: 1,
                 a: 1,
-                offset: -24,
+                offset: frame_update,
             },
             Instruction::StoreWord {
                 s: 31,
                 a: 1,
-                offset: 20,
+                offset: r31_offset,
             },
             Instruction::Or { a: 31, s: 3, b: 3 },
             Instruction::StoreWord {
                 s: 30,
                 a: 1,
-                offset: 16,
+                offset: r30_offset,
             },
             Instruction::AddImmediate { d: 0, a: 0, .. },
-        ])
-    ) {
+        ],
+    ) = instructions.get(0..7)
+    else {
+        return None;
+    };
+    let frame_size = frame_update.checked_neg()?;
+    if frame_size < 24
+        || frame_size & 7 != 0
+        || *r31_offset != frame_size - 4
+        || *r30_offset != frame_size - 8
+    {
         return None;
     }
 
     let disable_call = call_index(instructions, "OSDisableInterrupts")?;
     let queue_call = call_index(instructions, "__DVDPushWaitingQueue")?;
     let restore_call = call_index(instructions, "OSRestoreInterrupts")?;
+    let initial_member_constant = instructions[7..disable_call]
+        .windows(2)
+        .find_map(|window| match window {
+            [
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 0,
+                    immediate,
+                },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 31,
+                    offset,
+                },
+            ] if *immediate != 0 => Some((*immediate, *offset)),
+            _ => None,
+        });
     if queue_call != disable_call + 6
         || !matches!(
             instructions.get(disable_call + 1..queue_call),
@@ -181,6 +288,8 @@ fn compact_structured_queue_transaction(
         return None;
     }
     Some(CompactStructuredQueueTransaction {
+        frame_size,
+        initial_member_constant,
         disable_call,
         queue_call,
         restore_call,
@@ -199,7 +308,7 @@ mod tests {
 
     #[test]
     fn recognizes_a_compact_inlined_queue_transaction() {
-        let instructions = vec![
+        let mut instructions = vec![
             Instruction::MoveFromLinkRegister { d: 0 },
             Instruction::StoreWord {
                 s: 0,
@@ -265,8 +374,54 @@ mod tests {
 
         let plan = compact_structured_queue_transaction(&instructions)
             .expect("compact transaction should be recognized");
+        assert_eq!(plan.frame_size, 24);
+        assert_eq!(plan.initial_member_constant, None);
         assert_eq!(plan.disable_call, 7);
         assert_eq!(plan.queue_call, 13);
         assert_eq!(plan.restore_call, 16);
+
+        instructions[2] = Instruction::StoreWordWithUpdate {
+            s: 1,
+            a: 1,
+            offset: -32,
+        };
+        instructions[3] = Instruction::StoreWord {
+            s: 31,
+            a: 1,
+            offset: 28,
+        };
+        instructions[5] = Instruction::StoreWord {
+            s: 30,
+            a: 1,
+            offset: 24,
+        };
+        instructions.splice(
+            7..7,
+            [
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 31,
+                    offset: 8,
+                },
+                Instruction::StoreWord {
+                    s: 4,
+                    a: 31,
+                    offset: 24,
+                },
+                Instruction::load_immediate(0, 32),
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 31,
+                    offset: 20,
+                },
+            ],
+        );
+        let extended = compact_structured_queue_transaction(&instructions)
+            .expect("extended initialization should use the same transaction");
+        assert_eq!(extended.frame_size, 32);
+        assert_eq!(extended.initial_member_constant, Some((32, 20)));
+        assert_eq!(extended.disable_call, 11);
+        assert_eq!(extended.queue_call, 17);
+        assert_eq!(extended.restore_call, 20);
     }
 }
