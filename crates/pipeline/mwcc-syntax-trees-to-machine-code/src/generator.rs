@@ -345,6 +345,10 @@ pub(crate) struct Generator {
     /// Structured lowering recognized the pairwise object-collision loop whose
     /// entry is finalized after allocated FPR frame materialization.
     pub(crate) structured_object_collision_loop_entry: bool,
+    /// Conditional edges owned by a retained source switch dispatcher. They
+    /// can have the same local shape as a structured `if (...) goto`, but MWCC
+    /// preserves the switch's two-edge leaf rather than folding it.
+    pub(crate) structured_switch_dispatch_conditionals: HashSet<usize>,
     /// Complete global element base shared only within the current call's
     /// argument transaction. It is reset before every argument list.
     pub(crate) transient_global_index_base: Option<TransientGlobalIndexBase>,

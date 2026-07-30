@@ -572,6 +572,7 @@ fn lower_function_body(
         data_section_anchor_reuses_deferred_home: false,
         structured_array_pool_emitted: false,
         structured_object_collision_loop_entry: false,
+        structured_switch_dispatch_conditionals: HashSet::new(),
         transient_global_index_base: None,
         full_bss_globals: globals
             .iter()

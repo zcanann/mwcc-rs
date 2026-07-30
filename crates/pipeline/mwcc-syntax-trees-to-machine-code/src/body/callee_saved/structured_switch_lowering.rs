@@ -68,6 +68,25 @@ pub(super) fn is_lowered_switch_guard(condition: &Expression) -> bool {
     )
 }
 
+pub(super) fn canonical_switch_hidden_label_count(
+    function: &Function,
+    scrutinee: &Expression,
+    arms: &[mwcc_syntax_trees::SwitchArm],
+    default: Option<&ArmBody>,
+) -> u32 {
+    let mut probe = function.clone();
+    probe.statements = vec![Statement::Switch {
+        scrutinee: scrutinee.clone(),
+        arms: arms.to_vec(),
+        default: default.cloned(),
+    }];
+    lower_structured_switches(&probe)
+        .as_ref()
+        .map_or(0, |lowered| {
+            super::structured::structured_hidden_label_count(&lowered.statements)
+        })
+}
+
 struct SwitchLowering {
     occupied: HashSet<String>,
     next_switch: usize,
@@ -111,7 +130,8 @@ impl SwitchLowering {
                 } => {
                     if self.preserve_dense
                         && self.control_depth == 0
-                        && is_dense_structured_switch(arms)
+                        && (is_dense_structured_switch(arms)
+                            || super::structured_sparse_switch::is_sparse_shared_body_switch(arms))
                     {
                         let arms = arms
                             .iter()

@@ -101,6 +101,13 @@ impl Generator {
     pub(super) fn fold_structured_conditional_gotos(&mut self) {
         let mut conditional = 0;
         while conditional + 1 < self.output.instructions.len() {
+            if self
+                .structured_switch_dispatch_conditionals
+                .contains(&conditional)
+            {
+                conditional += 1;
+                continue;
+            }
             let Some((options, condition_bit, target)) =
                 conditional_goto_diamond(&self.output.instructions, conditional)
             else {
@@ -255,6 +262,14 @@ impl Generator {
         for relocation in &mut self.output.relocations {
             if relocation.instruction_index > at {
                 relocation.instruction_index -= 1;
+            }
+        }
+        self.output
+            .data_section_displacements
+            .retain(|displacement| displacement.instruction_index != at);
+        for displacement in &mut self.output.data_section_displacements {
+            if displacement.instruction_index > at {
+                displacement.instruction_index -= 1;
             }
         }
         for instruction in &mut self.output.instructions {

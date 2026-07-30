@@ -352,7 +352,7 @@ impl Generator {
         Ok(())
     }
 
-    fn reset_structured_switch_edge_caches(&mut self) {
+    pub(super) fn reset_structured_switch_edge_caches(&mut self) {
         self.condition_global_values.clear();
         self.condition_float_cache = Default::default();
         self.condition_member_cache = Default::default();
@@ -381,7 +381,7 @@ fn switch_bodies_use_name(
         })
 }
 
-fn statements_fall_through(statements: &[Statement]) -> bool {
+pub(super) fn statements_fall_through(statements: &[Statement]) -> bool {
     let mut falls_through = true;
     for statement in statements {
         if !falls_through {

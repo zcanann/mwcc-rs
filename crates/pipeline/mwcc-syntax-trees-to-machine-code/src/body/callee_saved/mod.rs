@@ -231,6 +231,7 @@ mod structured_terminal_wrapper_inline_schedule;
 mod structured_tlut_packet_schedule;
 mod structured_saved_float_initializer;
 mod structured_shared_member_arguments;
+mod structured_sparse_switch;
 mod structured_value_versions;
 mod structured_virtual_call_schedule;
 mod structured_variadic_output_frame;

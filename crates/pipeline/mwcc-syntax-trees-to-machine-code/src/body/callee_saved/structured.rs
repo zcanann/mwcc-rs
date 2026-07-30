@@ -73,6 +73,7 @@ use super::structured_switch_lowering::{
     is_lowered_switch_guard, lower_structured_switches,
     lower_structured_switches_for_emission,
 };
+use super::structured_sparse_switch::is_sparse_shared_body_switch;
 use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
 };
@@ -3016,17 +3017,33 @@ impl Generator {
                     scrutinee,
                     arms,
                     default,
-                } => self.emit_structured_dense_switch(
-                    scrutinee,
-                    arms,
-                    default.as_ref(),
-                    function,
-                    ephemeral_locals,
-                    return_branches,
-                    label_positions,
-                    pending_gotos,
-                    entry_alias,
-                )?,
+                } => {
+                    if is_sparse_shared_body_switch(arms) {
+                        self.emit_structured_sparse_switch(
+                            scrutinee,
+                            arms,
+                            default.as_ref(),
+                            function,
+                            ephemeral_locals,
+                            return_branches,
+                            label_positions,
+                            pending_gotos,
+                            entry_alias,
+                        )?;
+                    } else {
+                        self.emit_structured_dense_switch(
+                            scrutinee,
+                            arms,
+                            default.as_ref(),
+                            function,
+                            ephemeral_locals,
+                            return_branches,
+                            label_positions,
+                            pending_gotos,
+                            entry_alias,
+                        )?;
+                    }
+                }
                 Statement::If {
                     condition,
                     then_body,
