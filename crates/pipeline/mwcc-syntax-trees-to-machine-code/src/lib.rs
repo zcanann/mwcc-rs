@@ -919,6 +919,7 @@ fn lower_function_body(
     generator.finalize_structured_state_transfer_bit_swap(function);
     generator.finalize_structured_state_transfer_hp_call(function);
     generator.finalize_structured_state_transfer_copy_schedule(function);
+    generator.finalize_structured_state_transfer_guard_schedule(function);
     generator.compact_exclusive_inline_conversion_frame();
     generator.schedule_structured_conversion_following_call();
     generator.schedule_structured_argument_load_latency();
