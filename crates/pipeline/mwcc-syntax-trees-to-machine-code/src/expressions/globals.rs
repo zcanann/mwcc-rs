@@ -35,18 +35,21 @@ impl Generator {
         // run ahead of the prologue's LR store, the addi after it — is the
         // save-scheduler's (the lis is an `a == 0` load-immediate form it hoists).
         if !self.globals.contains_key(name) && self.call_return_types.contains_key(name) {
-            self.record_relocation(RelocationKind::Addr16Ha, name);
-            self.output
-                .instructions
-                .push(Instruction::AddImmediateShifted {
-                    d: destination,
-                    a: 0,
-                    immediate: 0,
-                });
+            // r0 may hold the completed address, but it cannot carry the high
+            // half: using it as the following `addi` base reads literal zero.
+            // Keep that high half in a fresh GPR which cannot overlap r3: an
+            // immediately preceding call result may still be live there even
+            // though it has no named location.
+            let high = if destination == GENERAL_SCRATCH {
+                self.fresh_virtual_general_avoiding(vec![Eabi::general_result().number])
+            } else {
+                destination
+            };
+            self.emit_address_high(high, name);
             self.record_relocation(RelocationKind::Addr16Lo, name);
             self.output.instructions.push(Instruction::AddImmediate {
                 d: destination,
-                a: destination,
+                a: high,
                 immediate: 0,
             });
             return Ok(());

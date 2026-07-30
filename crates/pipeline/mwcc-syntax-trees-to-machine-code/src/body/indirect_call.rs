@@ -68,7 +68,7 @@ impl Generator {
         // A short-lived local used as the second argument can live in r4 from
         // its definition. The explicit copy below then coalesces as a self
         // move; a fixed r3 call result still retains the required copy.
-        self.prefer_virtual_general(base, Eabi::FIRST_GENERAL_ARGUMENT + 1);
+        self.prefer_virtual_general_if_unset(base, Eabi::FIRST_GENERAL_ARGUMENT + 1);
         self.evaluate(target, Type::UnsignedInt, 12)?;
         if base != Eabi::FIRST_GENERAL_ARGUMENT + 1 {
             self.emit_integer_materialization_copy(

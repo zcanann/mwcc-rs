@@ -56,6 +56,7 @@ use super::structured_global_member_address_cache::
 use super::structured_frame_publication::{
     StructuredFramePublication, CURSOR_OFFSET, LOCAL_REGION_BYTES, OWNER_OFFSET,
 };
+use super::structured_async_callback_switch_layout::StructuredAsyncCallbackSwitchLayout;
 use super::structured_home_layout::{
     allocator_result_cursor_preferences, compact_aggregate_scratch_frame_pair,
     dense_eager_deferred_preferences, dense_eager_home_preference,
@@ -1063,6 +1064,16 @@ impl Generator {
                     )
                 })
                 .unwrap_or_default();
+        let async_callback_switch_layout = StructuredAsyncCallbackSwitchLayout::plan(
+            &structured_switch_source,
+            with_frame_array,
+            eager_saved_locals.len(),
+            &saved_parameters,
+            &deferred_saved_locals,
+            &deferred_home_plan,
+            &parameter_home_reuse,
+            count,
+        );
         let retained_store_constant_homes = eager_saved_locals.is_empty()
             && saved_parameters.is_empty()
             && count == deferred_home_plan.group_count
@@ -1121,6 +1132,11 @@ impl Generator {
                 {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(&preferred) = allocator_cursor_preferences.get(&home_index) {
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = async_callback_switch_layout
+                    .as_ref()
+                    .and_then(|layout| layout.preference(home_index))
+                {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = variadic_output_frame
                     .as_ref()
@@ -1303,6 +1319,8 @@ impl Generator {
                 unreachable!("the sequenced callback wait layout owns three homes")
             };
             logical_saved_homes.extend([*wait_state, *identifier, *receiver]);
+        } else if let Some(layout) = &async_callback_switch_layout {
+            logical_saved_homes.extend(layout.save_order(&homes));
         } else {
             logical_saved_homes.extend(homes.iter().copied());
         }
@@ -2996,6 +3014,9 @@ impl Generator {
             ]);
         } else {
             self.emit_epilogue_and_return();
+        }
+        if let Some(layout) = &async_callback_switch_layout {
+            self.schedule_async_callback_switch(layout.homes(&homes));
         }
         if pooled_dense_inline_save {
             self.schedule_structured_array_pool_epilogue();

@@ -766,6 +766,14 @@ impl Generator {
         }
     }
 
+    /// Add a local consumer preference without replacing a whole-function
+    /// lifetime/layout decision already attached to the value.
+    pub(crate) fn prefer_virtual_general_if_unset(&mut self, register: u8, preferred: u8) {
+        if let Reg::Virtual(register) = Reg::from_field(register, Class::General) {
+            self.register_prefer.entry(register).or_insert(preferred);
+        }
+    }
+
     /// Prevent an existing general virtual from occupying any of `avoid`.
     /// Whole-body owners use this after they discover a retained value whose
     /// measured home must outrank otherwise independent locals.

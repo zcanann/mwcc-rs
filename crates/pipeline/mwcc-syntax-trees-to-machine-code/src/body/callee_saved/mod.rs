@@ -151,6 +151,8 @@ mod structured_guarded_mutating_inline_schedule;
 mod structured_expression_visit;
 mod structured_guard_cache_schedule;
 mod structured_deferred_local_layout;
+mod structured_async_callback_switch_layout;
+mod structured_async_callback_switch_schedule;
 mod structured_guarded_ucode_schedule;
 mod structured_home_layout;
 mod structured_if_else;
