@@ -1039,16 +1039,6 @@ impl Generator {
                 ))
             }
         };
-        // The store's pointer address (a param/local pointer) is resolved into a volatile
-        // register BEFORE the value is placed. A call in the value clobbers every volatile
-        // register, including that address — mwcc preserves it in a callee-saved register
-        // across the call (`mr r31,r3; bl; stw r3,0(r31)`). We do not save callee registers
-        // yet, so storing through the clobbered address would miscompile; defer instead. A
-        // re-materializable address (a global/constant pointer) is handled by an earlier
-        // branch and never reaches here, so this cannot regress a byte-exact case.
-        if expression_has_call(value) {
-            return Err(Diagnostic::error("a store through a register pointer whose value contains a call needs callee-saved preservation (roadmap)"));
-        }
         if index.is_none() {
             if let Some((pointee, address, offset)) = self.punned_displacement_address(base) {
                 let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
@@ -1062,7 +1052,24 @@ impl Generator {
                 return Ok(());
             }
         }
-        let (pointee, address) = self.resolve_pointer(base)?;
+        // Form the pointer before evaluating the value. A virtual address then
+        // has an ordinary live range across any call in the value, so allocation
+        // colors it into a nonvolatile register and the canonical frame owner
+        // saves that register. A pinned volatile pointer cannot be recolored;
+        // copy it to a virtual first. Pinned nonvolatile pointers are already
+        // safe. This is the same value-flow shape as `mr r31,r3; bl; stw
+        // r3,0(r31)`, without assigning the physical saved register here.
+        let (pointee, mut address) = self.resolve_pointer(base)?;
+        if expression_has_call(value)
+            && !mwcc_vreg::Reg::is_virtual_field(address)
+            && address < 14
+        {
+            let retained = self.fresh_virtual_general();
+            self.output
+                .instructions
+                .push(Instruction::move_register(retained, address));
+            address = retained;
+        }
         // The address register is live for the store; reserve it while the value is
         // placed so a value needing a temporary (e.g. a magic-number divide) can't pick
         // it and clobber the store address.
