@@ -13,14 +13,24 @@ impl Generator {
         if !is_unused_array_state_transfer(function) {
             return;
         }
-        let Some((start, storage_offset)) =
-            allocated_state_transfer_bit_swap(&self.output.instructions)
-        else {
-            return;
+        let (start, storage_offset, has_redundant_receiver_move) =
+            if let Some((start, storage_offset)) =
+                allocated_state_transfer_bit_swap(&self.output.instructions)
+            {
+                (start, storage_offset, true)
+            } else if let Some((start, storage_offset)) =
+                allocated_compact_state_transfer_bit_swap(&self.output.instructions)
+            {
+                (start, storage_offset, false)
+            } else {
+                return;
+            };
+
+        if has_redundant_receiver_move {
+            self.move_instruction_before(start + 11, start + 10);
+            crate::remove_instruction_retargeting_to_next(self, start + 11);
         };
 
-        self.move_instruction_before(start + 11, start + 10);
-        crate::remove_instruction_retargeting_to_next(self, start + 11);
         self.output.instructions[start..start + 10].clone_from_slice(&[
             Instruction::LoadByteZero {
                 d: 0,
@@ -141,6 +151,72 @@ fn allocated_state_transfer_bit_swap(instructions: &[Instruction]) -> Option<(us
             };
             (*source_offset == *source_storage_offset
                 && *source_offset == *destination_offset
+                && *source_offset == *source_store_offset
+                && *source_offset == *destination_storage_offset
+                && *source_offset == *destination_store_offset)
+                .then_some((start, *source_offset))
+        })
+}
+
+fn allocated_compact_state_transfer_bit_swap(
+    instructions: &[Instruction],
+) -> Option<(usize, i16)> {
+    instructions
+        .windows(11)
+        .enumerate()
+        .find_map(|(start, window)| {
+            let [Instruction::LoadByteZero {
+                d: 3,
+                a: 31,
+                offset: source_offset,
+            }, Instruction::RotateAndMask {
+                a: 3,
+                s: 3,
+                shift: 29,
+                begin: 31,
+                end: 31,
+            }, Instruction::LoadByteZero {
+                d: 4,
+                a: 29,
+                offset: destination_source_offset,
+            }, Instruction::LoadByteZero {
+                d: 0,
+                a: 31,
+                offset: source_storage_offset,
+            }, Instruction::RotateAndMaskInsert {
+                a: 0,
+                s: 4,
+                shift: 0,
+                begin: 28,
+                end: 28,
+            }, Instruction::StoreByte {
+                s: 0,
+                a: 31,
+                offset: source_store_offset,
+            }, Instruction::LoadByteZero {
+                d: 0,
+                a: 29,
+                offset: destination_storage_offset,
+            }, Instruction::RotateAndMaskInsert {
+                a: 0,
+                s: 3,
+                shift: 3,
+                begin: 28,
+                end: 28,
+            }, Instruction::StoreByte {
+                s: 0,
+                a: 29,
+                offset: destination_store_offset,
+            }, Instruction::AddImmediate {
+                d: 3,
+                a: 29,
+                immediate: 0,
+            }, Instruction::BranchAndLink { .. }] = window
+            else {
+                return None;
+            };
+            (*source_offset == *destination_source_offset
+                && *source_offset == *source_storage_offset
                 && *source_offset == *source_store_offset
                 && *source_offset == *destination_storage_offset
                 && *source_offset == *destination_store_offset)

@@ -127,41 +127,103 @@ impl Generator {
             ..
         } = value
         {
-            if width == source_width
-                && u16::from(*source_shift) + u16::from(*source_width)
+            if width == source_width {
+                if u16::from(*source_shift) + u16::from(*source_width)
                     <= u16::from(member_type.width())
-                && structurally_equal(storage, source_storage)
-            {
-                // When both fields occupy the same storage unit, MWCC rotates
-                // the loaded unit into itself.  This preserves all unrelated
-                // bits and avoids a second load plus a separate extraction.
-                let storage_value =
-                    self.fresh_virtual_general_avoiding(vec![GENERAL_SCRATCH]);
-                let address = self.member_base_register(base)?;
-                self.output.instructions.push(displacement_load(
-                    storage_pointee,
-                    storage_value,
-                    address,
-                    *offset as i16,
-                )?);
-                let begin = 32 - *shift - *width;
-                let end = 31 - *shift;
-                self.output
-                    .instructions
-                    .push(Instruction::RotateAndMaskInsert {
-                        a: storage_value,
-                        s: storage_value,
-                        shift: (*shift + 32 - *source_shift) % 32,
-                        begin,
-                        end,
-                    });
-                self.output.instructions.push(displacement_store(
-                    storage_pointee,
-                    storage_value,
-                    address,
-                    *offset as i16,
-                )?);
-                return Ok(true);
+                    && structurally_equal(storage, source_storage)
+                {
+                    // When both fields occupy the same storage unit, MWCC rotates
+                    // the loaded unit into itself.  This preserves all unrelated
+                    // bits and avoids a second load plus a separate extraction.
+                    let storage_value =
+                        self.fresh_virtual_general_avoiding(vec![GENERAL_SCRATCH]);
+                    let address = self.member_base_register(base)?;
+                    self.output.instructions.push(displacement_load(
+                        storage_pointee,
+                        storage_value,
+                        address,
+                        *offset as i16,
+                    )?);
+                    let begin = 32 - *shift - *width;
+                    let end = 31 - *shift;
+                    self.output
+                        .instructions
+                        .push(Instruction::RotateAndMaskInsert {
+                            a: storage_value,
+                            s: storage_value,
+                            shift: (*shift + 32 - *source_shift) % 32,
+                            begin,
+                            end,
+                        });
+                    self.output.instructions.push(displacement_store(
+                        storage_pointee,
+                        storage_value,
+                        address,
+                        *offset as i16,
+                    )?);
+                    return Ok(true);
+                }
+                if let Expression::Member {
+                    base: source_base,
+                    offset: source_offset,
+                    member_type: source_member_type,
+                    index_stride: None,
+                } = source_storage.as_ref()
+                {
+                    if matches!(source_base.as_ref(), Expression::Variable(_))
+                        && matches!(
+                            source_member_type,
+                            Type::UnsignedChar | Type::UnsignedShort | Type::UnsignedInt
+                        )
+                        && u16::from(*source_shift) + u16::from(*source_width)
+                            <= u16::from(source_member_type.width())
+                        && i16::try_from(*source_offset).is_ok()
+                    {
+                        // Equal-width fields in separate storage units can be
+                        // transferred directly from the raw source word. The
+                        // insert's rotation maps the source field coordinates
+                        // to the destination coordinates, so extracting to bit
+                        // zero and shifting back would be redundant.
+                        let source_pointee =
+                            pointee_of_type(*source_member_type).ok_or_else(|| {
+                                Diagnostic::error("unsupported source bit-field storage type")
+                            })?;
+                        let source =
+                            self.fresh_virtual_general_avoiding(vec![GENERAL_SCRATCH]);
+                        let source_address = self.member_base_register(source_base)?;
+                        self.output.instructions.push(displacement_load(
+                            source_pointee,
+                            source,
+                            source_address,
+                            *source_offset as i16,
+                        )?);
+                        let address = self.member_base_register(base)?;
+                        self.output.instructions.push(displacement_load(
+                            storage_pointee,
+                            GENERAL_SCRATCH,
+                            address,
+                            *offset as i16,
+                        )?);
+                        let begin = 32 - *shift - *width;
+                        let end = 31 - *shift;
+                        self.output
+                            .instructions
+                            .push(Instruction::RotateAndMaskInsert {
+                                a: GENERAL_SCRATCH,
+                                s: source,
+                                shift: (*shift + 32 - *source_shift) % 32,
+                                begin,
+                                end,
+                            });
+                        self.output.instructions.push(displacement_store(
+                            storage_pointee,
+                            GENERAL_SCRATCH,
+                            address,
+                            *offset as i16,
+                        )?);
+                        return Ok(true);
+                    }
+                }
             }
         }
         let source = self.fresh_virtual_general_avoiding(vec![GENERAL_SCRATCH]);
