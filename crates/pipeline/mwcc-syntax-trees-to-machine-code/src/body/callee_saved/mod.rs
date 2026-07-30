@@ -151,6 +151,7 @@ mod structured_member_scale_schedule;
 mod structured_noncopy_conversion_schedule;
 mod structured_conversion_pair_schedule;
 mod structured_conversion_call_schedule;
+mod structured_conversion_member_store_schedule;
 mod structured_repeated_float_to_int_conversion;
 mod structured_noncopy_packet_schedule;
 mod structured_noncopy_tail_packets;
