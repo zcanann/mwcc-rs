@@ -121,7 +121,7 @@ impl Generator {
             0,
         )
         .expect("validated stateReady call disappeared");
-        let Instruction::Branch { target: epilogue } = self.output.instructions[state_ready + 1]
+        let Instruction::Branch { .. } = self.output.instructions[state_ready + 1]
         else {
             unreachable!("validated transaction exit changed form")
         };
@@ -147,13 +147,34 @@ impl Generator {
             Instruction::BranchConditionalForward {
                 options: 4,
                 condition_bit: 2,
-                target: epilogue + 4,
+                target: 0,
             },
         );
         let Instruction::Branch { target } = &mut self.output.instructions[state_ready + 2] else {
             unreachable!("inserted true-result join changed form")
         };
         *target = state_ready + 4;
+        let epilogue = self
+            .output
+            .instructions
+            .iter()
+            .rposition(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::LoadWord {
+                        d: 0,
+                        a: 1,
+                        offset: 36,
+                    }
+                )
+            })
+            .expect("validated guarded-value epilogue disappeared");
+        let Instruction::BranchConditionalForward { target, .. } =
+            &mut self.output.instructions[state_ready + 5]
+        else {
+            unreachable!("inserted guarded-value exit changed form")
+        };
+        *target = epilogue;
 
         let cancel_load = relocation_index(
             &self.output.relocations,

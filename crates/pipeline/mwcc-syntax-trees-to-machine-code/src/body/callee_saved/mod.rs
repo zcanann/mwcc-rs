@@ -215,6 +215,8 @@ mod structured_nested_member_base;
 mod structured_member_bound_call_schedule;
 mod structured_preloop_alias;
 mod structured_precomposition_home_layout;
+mod structured_precomposition_entry_schedule;
+mod structured_precomposition_tail_schedule;
 mod structured_parameter_home_reuse;
 mod structured_prologue;
 mod structured_release_schedule;
