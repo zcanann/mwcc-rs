@@ -977,6 +977,7 @@ fn lower_function_body(
     generator.schedule_guarded_item_charge();
     generator.schedule_damage_vector_transaction();
     generator.schedule_dual_status_switches();
+    generator.schedule_retained_item_ratio();
     generator.reuse_absolute_pooled_float_literals();
     generator.reuse_repeated_integer_constants();
     generator.finalize_structured_noncopy_conversion_lanes();
