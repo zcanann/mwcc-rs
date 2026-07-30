@@ -9,15 +9,19 @@ pub(crate) fn report_pressure(
     allocation: &Allocation,
     used: &[u8],
 ) {
-    if std::env::var_os("MWCC_DIAGNOSTIC_ALLOCATION").is_none()
-        || used.len() <= generator.callee_saved.len()
-    {
+    let Some(requested) = std::env::var_os("MWCC_DIAGNOSTIC_ALLOCATION") else {
+        return;
+    };
+    let named_function = !requested.is_empty()
+        && requested != "1"
+        && requested == std::ffi::OsStr::new(&generator.output.name);
+    if !named_function && used.len() <= generator.callee_saved.len() {
         return;
     }
 
     eprintln!(
-        "allocation pressure: declared={:?} used={used:?}",
-        generator.callee_saved
+        "allocation pressure for {}: declared={:?} used={used:?}",
+        generator.output.name, generator.callee_saved
     );
     for interval in &liveness.intervals {
         eprintln!(

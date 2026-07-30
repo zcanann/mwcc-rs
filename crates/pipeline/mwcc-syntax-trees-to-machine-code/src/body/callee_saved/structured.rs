@@ -51,6 +51,7 @@ use super::structured_home_layout::{
     returned_deferred_pair_preference, saved_float_home_preference,
     uses_rounded_pointer_dense_layout,
 };
+use super::structured_indirect_call_home::promote_cost_free_indirect_call_locals;
 use super::structured_liveness::{
     read_after_possible_call, read_after_possible_call_in_return,
     transient_condition_call_result_callee,
@@ -392,7 +393,7 @@ impl Generator {
                     .map(|parameter| parameter.name.as_str()),
             )
             .collect();
-        let survivors: std::collections::HashSet<&str> = candidates
+        let mut survivors: std::collections::HashSet<&str> = candidates
             .into_iter()
             .filter(|name| {
                 read_after_possible_call_in_return(
@@ -408,7 +409,7 @@ impl Generator {
         // Entry-initialized locals rank ahead of incoming parameters. Deferred
         // locals introduced by nested declarations or inline expansion rank
         // after them and may share a home when their lifetimes do not overlap.
-        let saved_locals: Vec<&LocalDeclaration> = function
+        let mut saved_locals: Vec<&LocalDeclaration> = function
             .locals
             .iter()
             .filter(|local| {
@@ -423,31 +424,6 @@ impl Generator {
                         ))
             })
             .collect();
-        if saved_locals.iter().any(|local| {
-            local.is_static
-                || local.array_length.is_some()
-                || !matches!(
-                    class_of(local.declared_type),
-                    Ok(ValueClass::General | ValueClass::Float)
-                )
-        }) {
-            decline!(format!(
-                "a saved local is unsupported: {}",
-                saved_locals
-                    .iter()
-                    .filter(|local| {
-                        local.is_static
-                            || local.array_length.is_some()
-                            || !matches!(
-                                class_of(local.declared_type),
-                                Ok(ValueClass::General | ValueClass::Float)
-                            )
-                    })
-                    .map(|local| format!("{}:{:?}", local.name, local.declared_type))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
         let mut saved_parameters: Vec<_> = function
             .parameters
             .iter()
@@ -479,6 +455,70 @@ impl Generator {
                     .get(&parameter.name)
                     .is_some_and(|location| location.class == ValueClass::Float)
             });
+        let promoted_indirect_call_locals = promote_cost_free_indirect_call_locals(
+            function,
+            &survivors,
+            &saved_parameters,
+            &saved_locals,
+        );
+        if !promoted_indirect_call_locals.is_empty() {
+            survivors.extend(
+                promoted_indirect_call_locals
+                    .iter()
+                    .map(|local| local.name.as_str()),
+            );
+            saved_locals = function
+                .locals
+                .iter()
+                .filter(|local| {
+                    local.array_length.is_none()
+                        && survivors.contains(local.name.as_str())
+                        && !call_accumulators.contains(local.name.as_str())
+                        && (self.one_word_aggregate_locals.contains(&local.name)
+                            || !is_transient_direct_call_argument_local(
+                                &function.statements,
+                                function.return_expression.as_ref(),
+                                &local.name,
+                            ))
+                })
+                .collect();
+        }
+        if capture {
+            let mut survivor_names: Vec<_> = survivors.iter().copied().collect();
+            survivor_names.sort_unstable();
+            eprintln!(
+                "structured body plan: survivors={survivor_names:?} saved_locals={:?}",
+                saved_locals
+                    .iter()
+                    .map(|local| local.name.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
+        if saved_locals.iter().any(|local| {
+            local.is_static
+                || local.array_length.is_some()
+                || !matches!(
+                    class_of(local.declared_type),
+                    Ok(ValueClass::General | ValueClass::Float)
+                )
+        }) {
+            decline!(format!(
+                "a saved local is unsupported: {}",
+                saved_locals
+                    .iter()
+                    .filter(|local| {
+                        local.is_static
+                            || local.array_length.is_some()
+                            || !matches!(
+                                class_of(local.declared_type),
+                                Ok(ValueClass::General | ValueClass::Float)
+                            )
+                    })
+                    .map(|local| format!("{}:{:?}", local.name, local.declared_type))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         let Some(ephemeral_locals) = plan_ephemeral_locals(function, &survivors, &address_taken)
         else {
             decline!("ephemeral-local planning rejected the body");

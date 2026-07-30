@@ -56,7 +56,9 @@ fn flow(
 ) -> Flow {
     let mut read_after = false;
     let mut falls_through = true;
-    for statement in statements {
+    for (statement_index, statement) in statements.iter().enumerate() {
+        let read_before_statement = read_after;
+        let call_before_statement = prior_call;
         if let Statement::Label(label) = statement {
             seen_labels.insert(label.clone());
             let incoming = pending_gotos.remove(label).unwrap_or_default();
@@ -231,6 +233,15 @@ fn flow(
                 prior_call |= statement_has_call(statement);
             }
             Statement::Label(_) => unreachable!("labels are handled before reachability"),
+        }
+        if !read_before_statement
+            && read_after
+            && std::env::var_os("MWCC_DIAGNOSTIC_LIVENESS")
+                .is_some_and(|requested| requested == std::ffi::OsStr::new(name))
+        {
+            eprintln!(
+                "structured liveness read for {name} at block statement {statement_index}, prior_call={call_before_statement}: {statement:?}"
+            );
         }
     }
     Flow {
@@ -571,6 +582,54 @@ mod tests {
             Statement::Expression(Expression::Variable("value".into())),
         ];
         assert!(read_after_possible_call(&statements, "value", false).read_after_call);
+    }
+
+    #[test]
+    fn an_unrelated_indirect_call_does_not_resurrect_an_expired_value() {
+        let statements = vec![
+            call("before"),
+            Statement::Assign {
+                name: "value".into(),
+                value: Expression::IntegerLiteral(1),
+            },
+            Statement::Expression(Expression::Variable("value".into())),
+            Statement::Expression(Expression::CallThrough {
+                target: Box::new(Expression::Variable("callback".into())),
+                arguments: vec![Expression::Variable("object".into())],
+            }),
+        ];
+
+        assert!(!read_after_possible_call(&statements, "value", false).read_after_call);
+    }
+
+    #[test]
+    fn a_plain_indirect_call_reads_its_operands_before_the_branch() {
+        let statements = vec![Statement::Expression(Expression::CallThrough {
+            target: Box::new(Expression::Index {
+                base: Box::new(Expression::Variable("callbacks".into())),
+                index: Box::new(Expression::Variable("slot".into())),
+            }),
+            arguments: vec![Expression::Variable("object".into())],
+        })];
+
+        assert!(!read_after_possible_call(&statements, "slot", false).read_after_call);
+        assert!(!read_after_possible_call(&statements, "object", false).read_after_call);
+    }
+
+    #[test]
+    fn a_nested_call_can_precede_an_indirect_call_operand_read() {
+        let statements = vec![Statement::Expression(Expression::CallThrough {
+            target: Box::new(Expression::Variable("callback".into())),
+            arguments: vec![
+                Expression::Variable("object".into()),
+                Expression::Call {
+                    name: "prepare".into(),
+                    arguments: Vec::new(),
+                },
+            ],
+        })];
+
+        assert!(read_after_possible_call(&statements, "object", false).read_after_call);
     }
 
     #[test]

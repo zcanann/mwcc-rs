@@ -955,6 +955,14 @@ fn expression_reads_across_call(
 /// read in the other is unsafe; a call's arguments run before that call, so reads
 /// confined to them are safe.
 fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>) -> bool {
+    // Every recursive arm below answers a candidate-specific question.  An
+    // unsupported call-bearing shape can conservatively retain a value only
+    // when that value actually occurs in the expression; otherwise one
+    // indirect call would make every source local appear live across it.
+    if !reads_register(expression, registers) {
+        return false;
+    }
+
     // Two sibling operands evaluated in an order mwcc may pick: a call in one
     // beside a register read in the other can read the register after the call.
     let pair = |left: &Expression, right: &Expression| {
@@ -964,19 +972,23 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
             || (expression_has_call(right) && reads_register(left, registers))
     };
     match expression {
-        // An indirect call evaluates its callee `target` and arguments BEFORE the
-        // branch, so a NO-ARGUMENT call through a simple pointer target (`(*s->fp)()`,
-        // `(**pp)()`) reads nothing after the call — the callee load is the last thing
-        // before `bctrl`. With arguments (which collide with the pointer's base
-        // register) or a computed target, the interplay needs the allocator: stay
-        // conservative.
+        // The indirect branch itself happens after its target and arguments are
+        // evaluated, so it cannot make those reads cross a call. Nested calls
+        // inside one operand can: MWCC may evaluate the call-bearing operand
+        // before another operand, just as it does for binary expressions.
         Expression::CallThrough { target, arguments } => {
-            !arguments.is_empty()
-                || !matches!(
-                    target.as_ref(),
-                    Expression::Dereference { .. } | Expression::Member { .. }
-                )
-                || reads_register_after_call(target, registers)
+            let operands: Vec<_> = std::iter::once(target.as_ref())
+                .chain(arguments.iter())
+                .collect();
+            operands
+                .iter()
+                .any(|operand| reads_register_after_call(operand, registers))
+                || operands.iter().enumerate().any(|(call_index, operand)| {
+                    expression_has_call(operand)
+                        && operands.iter().enumerate().any(|(read_index, other)| {
+                            call_index != read_index && reads_register(other, registers)
+                        })
+                })
         }
         // The object and explicit arguments all run before dispatch. Preserve
         // the ordinary call-argument safety rule for nested calls.
