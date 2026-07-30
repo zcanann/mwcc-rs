@@ -15,12 +15,12 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
+        let structured_statements = leaf_structured_statements(function);
         if function_makes_call(function)
-            || !function.guards.is_empty()
             || !self.frame_slots.is_empty()
             || !leaf_return_shape_is_supported(function)
-            || !requires_structured_branch_graph(&function.statements)
-            || !supports_leaf_structured_statements(&function.statements)
+            || !requires_structured_branch_graph(&structured_statements)
+            || !supports_leaf_structured_statements(&structured_statements)
             || function.locals.iter().any(|local| {
                 local.is_static
                     || local.array_length.is_some()
@@ -62,7 +62,7 @@ impl Generator {
         let mut label_positions = std::collections::HashMap::new();
         let mut pending_gotos = Vec::new();
         self.emit_structured_statements(
-            &function.statements,
+            &structured_statements,
             function,
             &[],
             false,
@@ -84,10 +84,23 @@ impl Generator {
         }
         let epilogue = self.output.instructions.len();
         resolve_structured_epilogue_branches(&mut self.output.instructions, epilogue);
-        self.output.anonymous_label_bump += structured_hidden_label_count(&function.statements);
+        self.output.anonymous_label_bump += structured_hidden_label_count(&structured_statements);
         self.emit_epilogue_and_return();
         Ok(true)
     }
+}
+
+/// Put parser-extracted terminal guards back into source CFG form for the
+/// structured emitter. Guards are semantically `if (condition) return value;`
+/// statements immediately before the function's final return expression.
+fn leaf_structured_statements(function: &Function) -> Vec<Statement> {
+    let mut statements = function.statements.clone();
+    statements.extend(function.guards.iter().map(|guard| Statement::If {
+        condition: guard.condition.clone(),
+        then_body: vec![Statement::Return(Some(guard.value.clone()))],
+        else_body: Vec::new(),
+    }));
+    statements
 }
 
 fn requires_structured_branch_graph(statements: &[Statement]) -> bool {
@@ -184,5 +197,49 @@ mod tests {
             else_body: Vec::new(),
         }];
         assert!(requires_structured_branch_graph(&statements));
+    }
+
+    #[test]
+    fn appends_parser_guards_as_structured_early_returns() {
+        let mut function = Function {
+            return_type: Type::Int,
+            name: "classify".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: Some(Expression::IntegerLiteral(3)),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        function.statements.push(Statement::Store {
+            target: Expression::Variable("seen".into()),
+            value: Expression::IntegerLiteral(1),
+        });
+        function.guards.push(mwcc_syntax_trees::GuardedReturn {
+            condition: Expression::Variable("matched".into()),
+            value: Expression::IntegerLiteral(2),
+        });
+
+        let statements = leaf_structured_statements(&function);
+        assert!(matches!(
+            statements.as_slice(),
+            [
+                Statement::Store { .. },
+                Statement::If {
+                    then_body,
+                    else_body,
+                    ..
+                }
+            ] if matches!(then_body.as_slice(), [Statement::Return(Some(Expression::IntegerLiteral(2)))])
+                && else_body.is_empty()
+        ));
     }
 }
