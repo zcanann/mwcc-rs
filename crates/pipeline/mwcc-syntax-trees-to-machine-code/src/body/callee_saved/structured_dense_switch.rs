@@ -67,6 +67,7 @@ impl Generator {
             .map(|(name, location)| (name.clone(), location.register))
             .collect::<Vec<_>>();
 
+        let mut temporary_scrutinee = false;
         let scrutinee_register = match scrutinee {
             Expression::Variable(name) if self.locations.contains_key(name) => {
                 let location = &self.locations[name];
@@ -78,8 +79,13 @@ impl Generator {
                 location.register
             }
             _ => {
-                self.evaluate_general(scrutinee, GENERAL_SCRATCH)?;
-                GENERAL_SCRATCH
+                temporary_scrutinee = true;
+                // PowerPC treats r0 as literal zero in `addi`'s base field.
+                // A negative minimum rebases the value with `addi`, so first
+                // evaluate a computed scrutinee in the next ABI scratch.
+                let register = computed_scrutinee_register(subtract);
+                self.evaluate_general(scrutinee, register)?;
+                register
             }
         };
         for (offset, (name, source)) in preserved_dispatch_values.into_iter().enumerate() {
@@ -104,7 +110,9 @@ impl Generator {
             // is immediately reusable for the jump-table address. This is the
             // same lifetime rule as the ordinary switch owner, generalized
             // from its fixed r3 scrutinee to an allocator-backed local.
-            let table_register = if scrutinee_register == GENERAL_SCRATCH {
+            let table_register = if temporary_scrutinee
+                || scrutinee_register == GENERAL_SCRATCH
+            {
                 Eabi::general_result().number
             } else {
                 scrutinee_register
@@ -391,6 +399,14 @@ fn switch_bodies_use_name(
         })
 }
 
+fn computed_scrutinee_register(requires_rebase: bool) -> u8 {
+    if requires_rebase {
+        Eabi::general_result().number + 1
+    } else {
+        GENERAL_SCRATCH
+    }
+}
+
 pub(super) fn statements_fall_through(statements: &[Statement]) -> bool {
     let mut falls_through = true;
     for statement in statements {
@@ -417,6 +433,16 @@ pub(super) fn statements_fall_through(statements: &[Statement]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rebased_computed_scrutinee_avoids_the_addi_zero_base() {
+        assert_ne!(computed_scrutinee_register(true), GENERAL_SCRATCH);
+        assert_eq!(
+            computed_scrutinee_register(true),
+            Eabi::general_result().number + 1
+        );
+        assert_eq!(computed_scrutinee_register(false), GENERAL_SCRATCH);
+    }
 
     #[test]
     fn recognizes_two_terminal_if_arms_as_non_fallthrough() {
