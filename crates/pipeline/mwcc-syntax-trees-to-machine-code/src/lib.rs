@@ -1042,6 +1042,7 @@ fn lower_function_body(
     generator.finalize_structured_member_bound_call_epilogue();
     generator.schedule_structured_inlined_interrupt_transaction();
     generator.schedule_structured_inlined_guarded_value_transaction();
+    generator.schedule_structured_inlined_guarded_value_diamond();
 
     ordinal_accounting::relocate_inline_initializer_ordinals(
         &mut generator.output,
