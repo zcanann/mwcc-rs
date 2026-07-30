@@ -66,19 +66,11 @@ impl Generator {
             .into_iter()
             .filter(|(name, count)| {
                 (*count >= 2 || reusable.is_some_and(|values| values.contains_key(name)))
-                    && !self.volatile_globals.contains(name.as_str())
-                    && matches!(
-                        self.globals.get(name.as_str()),
-                        Some(
-                            Type::Int
-                                | Type::UnsignedInt
-                                | Type::Char
-                                | Type::UnsignedChar
-                                | Type::Short
-                                | Type::UnsignedShort
-                                | Type::Pointer(_)
-                                | Type::StructPointer { .. }
-                        )
+                    && cacheable_scalar_global(
+                        name,
+                        &self.globals,
+                        &self.volatile_globals,
+                        &self.global_arrays,
                     )
             })
             .map(|(name, _)| {
@@ -159,6 +151,33 @@ impl Generator {
             }
         }
     }
+}
+
+fn cacheable_scalar_global(
+    name: &str,
+    globals: &HashMap<String, Type>,
+    volatile_globals: &HashSet<String>,
+    global_arrays: &HashSet<String>,
+) -> bool {
+    // A file-scope array name is an address designator inside
+    // `array[index]`, not a scalar value read. Its elements need the array
+    // owner's shared address schedule; caching the name here incorrectly
+    // emits a dead load of element zero before the condition.
+    !volatile_globals.contains(name)
+        && !global_arrays.contains(name)
+        && matches!(
+            globals.get(name),
+            Some(
+                Type::Int
+                    | Type::UnsignedInt
+                    | Type::Char
+                    | Type::UnsignedChar
+                    | Type::Short
+                    | Type::UnsignedShort
+                    | Type::Pointer(_)
+                    | Type::StructPointer { .. }
+            )
+        )
 }
 
 /// Visit scalar global VALUE reads. Member bases are owned by the pointer-base
@@ -532,5 +551,23 @@ mod tests {
         let mut names = Vec::new();
         collect_member_pointer_base_order(&condition, &mut names, &mut HashSet::new());
         assert_eq!(names, ["later", "first"]);
+    }
+
+    #[test]
+    fn excludes_array_designators_from_the_scalar_value_cache() {
+        let globals = HashMap::from([("commands".into(), Type::UnsignedInt)]);
+        let arrays = HashSet::from(["commands".into()]);
+        assert!(!cacheable_scalar_global(
+            "commands",
+            &globals,
+            &HashSet::new(),
+            &arrays,
+        ));
+        assert!(cacheable_scalar_global(
+            "commands",
+            &globals,
+            &HashSet::new(),
+            &HashSet::new(),
+        ));
     }
 }
