@@ -481,6 +481,7 @@ impl Generator {
             .into_iter()
             .filter(|name| {
                 read_after_possible_call_in_function(function, name)
+                    || self.inline_source_call_survivors.contains(*name)
                     || (self.one_word_aggregate_locals.contains(*name)
                     && body_uses_local(&function.statements, name)
                     && function.statements.iter().any(statement_has_call))

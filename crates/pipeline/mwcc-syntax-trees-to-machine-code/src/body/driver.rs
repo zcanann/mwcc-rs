@@ -1708,7 +1708,30 @@ impl Generator {
             } else {
                 0
             };
+            let prior_source_call_survivors =
+                std::mem::take(&mut self.inline_source_call_survivors);
+            if expanded.retains_source_call_survivors {
+                self.inline_source_call_survivors.extend(
+                    function
+                        .locals
+                        .iter()
+                        .map(|local| local.name.as_str())
+                        .chain(
+                            function
+                                .parameters
+                                .iter()
+                                .map(|parameter| parameter.name.as_str()),
+                        )
+                        .filter(|name| {
+                            super::callee_saved::read_after_possible_call_in_function(
+                                function, name,
+                            )
+                        })
+                        .map(str::to_owned),
+                );
+            }
             let result = self.evaluate_body(&expanded.function);
+            self.inline_source_call_survivors = prior_source_call_survivors;
             if result.is_ok() {
                 self.output.anonymous_label_bump = self
                     .output

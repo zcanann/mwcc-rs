@@ -55,7 +55,7 @@ pub(crate) fn read_after_possible_call_in_return(
 /// before later initializers or statements can read them. Reaching the named
 /// local's own declaration starts its new lifetime after its initializer has
 /// completed, so calls from preceding declarations do not leak into it.
-pub(super) fn read_after_possible_call_in_function(
+pub(crate) fn read_after_possible_call_in_function(
     function: &Function,
     name: &str,
 ) -> bool {

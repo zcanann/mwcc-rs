@@ -186,6 +186,11 @@ pub(crate) struct ExpandedCalls {
     /// Whether structured labels introduced by this late-selected lane are
     /// absent from the translation unit's anonymous-symbol stream.
     pub(crate) discounts_structured_hidden_labels: bool,
+    /// Whether allocator liveness must retain the source caller's call
+    /// survivors. A composed guarded-value helper folds mutually exclusive
+    /// call and fallthrough edges, while MWCC's pre-composition allocator
+    /// conservatively sees the original value diamond.
+    pub(crate) retains_source_call_survivors: bool,
 }
 
 impl InlineBodySet {
@@ -763,6 +768,71 @@ impl InlineBodySet {
         Some(result)
     }
 
+    /// Expand a guarded value transaction together with several repeated
+    /// statement helpers in one large, call-dense state-machine callback.
+    ///
+    /// Treating either family independently is the wrong profitability model:
+    /// the guarded transaction exposes the caller's early exit, while the
+    /// repeated error helpers share the resulting saved values and epilogue.
+    /// Require both families and source visibility so ordinary large callers
+    /// keep the conservative out-of-line policy.
+    pub(crate) fn expand_mixed_bounded_transactions(
+        &self,
+        function: &Function,
+    ) -> Option<ExpandedCalls> {
+        if safety::statement_weight(&function.statements) <= 16 {
+            return None;
+        }
+        let caller_position = *self.definition_positions.get(&function.name)?;
+        let mut calls = HashMap::new();
+        collect_function_calls(function, &mut calls);
+        let visible_bodies = self
+            .bounded_caller_bodies
+            .iter()
+            .filter(|(name, _)| {
+                self.definition_positions
+                    .get(*name)
+                    .is_some_and(|position| *position < caller_position)
+            })
+            .map(|(name, body)| (name.clone(), body.clone()))
+            .collect::<HashMap<_, _>>();
+        let visible_values = self
+            .guarded_transaction_values
+            .iter()
+            .filter(|(name, _)| {
+                self.definition_positions
+                    .get(*name)
+                    .is_some_and(|position| *position < caller_position)
+            })
+            .map(|(name, body)| (name.clone(), body.clone()))
+            .collect::<HashMap<_, _>>();
+        let statement_calls = calls
+            .iter()
+            .filter(|(name, _)| visible_bodies.contains_key(*name))
+            .map(|(_, count)| *count)
+            .sum::<usize>();
+        let guarded_calls = calls
+            .iter()
+            .filter(|(name, _)| visible_values.contains_key(*name))
+            .map(|(_, count)| *count)
+            .sum::<usize>();
+        if statement_calls < 3 || guarded_calls == 0 {
+            return None;
+        }
+
+        let mut expanded = self.clone();
+        expanded.bodies.extend(visible_bodies);
+        expanded.values.extend(visible_values);
+        let mut result = expanded.expand_calls_with_facts_policy(function, true)?;
+        // This mixed lane is selected by late whole-file profitability after
+        // the ordinary anonymous-label pass. Its structured branches therefore
+        // affect frame planning but not later static-local ordinals.
+        result.advances_ordinary_ordinals = false;
+        result.discounts_structured_hidden_labels = true;
+        result.retains_source_call_survivors = true;
+        Some(result)
+    }
+
     /// Expand a repeatable definition at a terminal wrapper call. Source-level
     /// scratch padding may precede the call, but no executable wrapper work can
     /// surround it. This is the non-loop counterpart to repeated loop-site
@@ -809,7 +879,8 @@ impl InlineBodySet {
     /// Frame and section-anchor planning call this same owner before emission,
     /// so they analyze the exact AST that the lowering driver will later use.
     pub(crate) fn expand_selective_calls(&self, function: &Function) -> Option<ExpandedCalls> {
-        self.expand_bounded_guarded_value_transactions(function)
+        self.expand_mixed_bounded_transactions(function)
+            .or_else(|| self.expand_bounded_guarded_value_transactions(function))
             .or_else(|| self.expand_repeatable_guarded_calls(function))
             .or_else(|| self.expand_repeatable_bounded_caller_calls(function))
             .or_else(|| self.expand_repeatable_loop_calls(function))
@@ -997,6 +1068,7 @@ impl InlineBodySet {
             retains_ordinary_residue: true,
             advances_ordinary_ordinals: true,
             discounts_structured_hidden_labels: false,
+            retains_source_call_survivors: false,
         })
     }
 
@@ -3646,6 +3718,85 @@ mod tests {
                     && source == "changing_global"
             )
         }));
+    }
+
+    #[test]
+    fn mixed_bounded_lane_retains_source_call_survivor_policy() {
+        let helper = function(
+            "helper",
+            Vec::new(),
+            vec![Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: Vec::new(),
+            })],
+        );
+        let mut guarded = function(
+            "guarded",
+            Vec::new(),
+            vec![Statement::If {
+                condition: Expression::Variable("requested".into()),
+                then_body: vec![
+                    Statement::Expression(Expression::Call {
+                        name: "publish".into(),
+                        arguments: Vec::new(),
+                    }),
+                    Statement::Expression(Expression::Call {
+                        name: "finish".into(),
+                        arguments: Vec::new(),
+                    }),
+                    Statement::Return(Some(Expression::IntegerLiteral(1))),
+                ],
+                else_body: Vec::new(),
+            }],
+        );
+        guarded.return_type = Type::Int;
+        guarded.return_expression = Some(Expression::IntegerLiteral(0));
+        let guarded_body =
+            value_body::summarize_automatic_guarded_transaction(&guarded)
+                .expect("the guarded helper should have a value summary");
+
+        let mut statements = (0..17)
+            .map(|value| {
+                Statement::Expression(Expression::IntegerLiteral(value))
+            })
+            .collect::<Vec<_>>();
+        statements.extend((0..3).map(|_| {
+            Statement::Expression(Expression::Call {
+                name: "helper".into(),
+                arguments: Vec::new(),
+            })
+        }));
+        statements.push(Statement::If {
+            condition: Expression::Call {
+                name: "guarded".into(),
+                arguments: Vec::new(),
+            },
+            then_body: vec![Statement::Return(None)],
+            else_body: Vec::new(),
+        });
+        let caller = function("caller", Vec::new(), statements);
+
+        let mut bodies = InlineBodySet::default();
+        bodies
+            .bounded_caller_bodies
+            .insert(helper.name.clone(), helper);
+        bodies
+            .guarded_transaction_values
+            .insert(guarded.name.clone(), guarded_body);
+        bodies.definition_positions.insert("helper".into(), 0);
+        bodies.definition_positions.insert("guarded".into(), 1);
+        bodies.definition_positions.insert("caller".into(), 2);
+
+        let expanded = bodies
+            .expand_mixed_bounded_transactions(&caller)
+            .expect("the large mixed caller should compose both helper families");
+        let mut calls = HashMap::new();
+        collect_function_calls(&expanded.function, &mut calls);
+        assert!(!calls.contains_key("helper"));
+        assert!(!calls.contains_key("guarded"));
+        assert!(expanded.retains_source_call_survivors);
+        assert!(!expanded.advances_ordinary_ordinals);
+        assert!(expanded.discounts_structured_hidden_labels);
     }
 
     #[test]
