@@ -798,7 +798,7 @@ fn summarize_automatic_bounded_predicate(function: &Function) -> Option<ValueInl
         return None;
     }
 
-    let mut predicates = vec![leading.clone()];
+    let mut predicates = vec![coalesce_contiguous_equality_runs(leading)];
     for index in 0..*limit {
         let replacements = std::iter::once((
             index_local.name.clone(),
@@ -826,6 +826,94 @@ fn summarize_automatic_bounded_predicate(function: &Function) -> Option<ValueInl
         expression,
         automatic_transaction: false,
     })
+}
+
+/// Fold source-adjacent equality alternatives into one unsigned range test.
+///
+/// The bounded command classifiers selected above commonly spell a dense
+/// enumeration as `value == N || value == N + 1`. MWCC preserves singleton
+/// alternatives around that run but canonicalizes the run itself to
+/// `(unsigned)(value - N) <= span` before composing the array search.
+fn coalesce_contiguous_equality_runs(expression: &Expression) -> Expression {
+    fn flatten<'a>(expression: &'a Expression, terms: &mut Vec<&'a Expression>) {
+        if let Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left,
+            right,
+        } = expression
+        {
+            flatten(left, terms);
+            flatten(right, terms);
+        } else {
+            terms.push(expression);
+        }
+    }
+
+    fn literal_equality(expression: &Expression) -> Option<(&str, i64)> {
+        let Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left,
+            right,
+        } = expression
+        else {
+            return None;
+        };
+        match (left.as_ref(), right.as_ref()) {
+            (Expression::Variable(name), Expression::IntegerLiteral(value))
+            | (Expression::IntegerLiteral(value), Expression::Variable(name)) => {
+                Some((name, *value))
+            }
+            _ => None,
+        }
+    }
+
+    let mut terms = Vec::new();
+    flatten(expression, &mut terms);
+    if terms.len() < 2 {
+        return expression.clone();
+    }
+    let mut folded = Vec::with_capacity(terms.len());
+    let mut index = 0;
+    while index < terms.len() {
+        let Some((name, minimum)) = literal_equality(terms[index]) else {
+            folded.push(terms[index].clone());
+            index += 1;
+            continue;
+        };
+        let mut end = index + 1;
+        let mut maximum = minimum;
+        while let Some((next_name, next_value)) =
+            terms.get(end).and_then(|term| literal_equality(term))
+        {
+            if next_name != name || maximum.checked_add(1) != Some(next_value) {
+                break;
+            }
+            maximum = next_value;
+            end += 1;
+        }
+        if end == index + 1 {
+            folded.push(terms[index].clone());
+        } else {
+            folded.push(Expression::Binary {
+                operator: BinaryOperator::LessEqual,
+                left: Box::new(Expression::Binary {
+                    operator: BinaryOperator::Subtract,
+                    left: Box::new(Expression::Variable(name.into())),
+                    right: Box::new(Expression::IntegerLiteral(minimum)),
+                }),
+                right: Box::new(Expression::IntegerLiteral(maximum - minimum)),
+            });
+        }
+        index = end;
+    }
+    folded
+        .into_iter()
+        .reduce(|left, right| Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left: Box::new(left),
+            right: Box::new(right),
+        })
+        .unwrap_or_else(|| expression.clone())
 }
 
 fn returns_integer(statements: &[Statement], expected: i64) -> bool {
@@ -1215,6 +1303,38 @@ mod tests {
             super::super::safety::expression_use_count(&summary.expression, "commands"),
             2
         );
+    }
+
+    #[test]
+    fn coalesces_source_adjacent_predicate_equalities() {
+        let equal = |value| Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left: Box::new(Expression::Variable("command".into())),
+            right: Box::new(Expression::IntegerLiteral(value)),
+        };
+        let or = |left, right| Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left: Box::new(left),
+            right: Box::new(right),
+        };
+        let expression = or(
+            or(or(equal(9), equal(10)), equal(11)),
+            equal(12),
+        );
+        let expected = Expression::Binary {
+            operator: BinaryOperator::LessEqual,
+            left: Box::new(Expression::Binary {
+                operator: BinaryOperator::Subtract,
+                left: Box::new(Expression::Variable("command".into())),
+                right: Box::new(Expression::IntegerLiteral(9)),
+            }),
+            right: Box::new(Expression::IntegerLiteral(3)),
+        };
+
+        assert!(crate::analysis::structurally_equal(
+            &coalesce_contiguous_equality_runs(&expression),
+            &expected,
+        ));
     }
 
     #[test]

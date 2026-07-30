@@ -835,6 +835,11 @@ impl Generator {
                 // 0/1 result with forward branches through the scratch and a join, vs the
                 // tail form's early `beqlr` returns.
                 if matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr) {
+                    if *operator == BinaryOperator::LogicalOr
+                        && self.try_emit_flat_logical_or_value(expression, destination)?
+                    {
+                        return Ok(());
+                    }
                     return self.emit_short_circuit_via_scratch(*operator, left, right, destination);
                 }
                 // `&global +/- n` is pointer arithmetic: materialize the address into a

@@ -12,6 +12,7 @@ mod float;
 mod large_equality_compare;
 mod logical_call_select;
 mod logical_range;
+mod logical_value;
 mod member_bound_select;
 mod nested_phi_select;
 mod narrow_member_compare;
