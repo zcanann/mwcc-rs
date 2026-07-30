@@ -6,6 +6,7 @@ pub(super) mod data;
 mod enumerations;
 mod fatal_messaging;
 mod functions;
+mod general;
 mod guarded_global_callbacks;
 mod module_lifecycle;
 mod profile_pointer_tables;
@@ -73,6 +74,8 @@ enum MeasuredShape {
     /// One aggregate-pointer registry and the two lifecycle functions that
     /// install and clear its externally-owned active-table pointer.
     ProfilePointerTable,
+    /// Ordinary mixed code and data using backend-selected variable homes.
+    General,
 }
 
 pub(super) fn lower(
@@ -196,6 +199,8 @@ pub(super) fn lower(
             machine_functions,
             &layout,
         )?);
+    } else if shape == MeasuredShape::General {
+        line_records.extend(general::line_records(&source_functions, &layout));
     } else if matches!(
         shape,
         MeasuredShape::ConstantFunctions | MeasuredShape::FragmentedFunctionsWithAggregateData
@@ -530,6 +535,25 @@ pub(super) fn lower(
         return finish(line, records, DebugLayout::AfterDataGrouped);
     }
 
+    if shape == MeasuredShape::General {
+        let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+        let data = data::records(unit, &globals, first_global_id, true)?;
+        let source_function_refs = source_functions
+            .iter()
+            .map(|(function, _)| *function)
+            .collect::<Vec<_>>();
+        let variables = general::variables(&source_functions, machine_functions);
+        let function_plan =
+            functions::selected_plan_with_variables(&source_function_refs, data.next_id, &variables)?;
+        records.extend(data.records);
+        records.extend(function_plan.records(unit, &layout, &data.aggregate_ids, None)?);
+        return finish(
+            line,
+            records,
+            DebugLayout::BetweenFullAndSmallDataGrouped,
+        );
+    }
+
     for (index, global) in globals.iter().enumerate() {
         let next = if index + 1 < globals.len() {
             DebugEntryId(first_global_id.0 + index as u32 + 1)
@@ -674,6 +698,9 @@ pub(super) fn lower(
         }
         MeasuredShape::ProfilePointerTable => {
             unreachable!("profile-pointer-table units return before legacy function records")
+        }
+        MeasuredShape::General => {
+            unreachable!("general units return before legacy function records")
         }
     }
     finish(line, records, DebugLayout::BeforeDataGrouped)
@@ -878,9 +905,7 @@ fn classify_shape(
         }
     }
 
-    Err(Diagnostic::error(
-        "debug-info: this translation unit's legacy DWARF DIE shape is not implemented yet (roadmap)",
-    ))
+    Ok(MeasuredShape::General)
 }
 
 fn is_exported_constant_int_function(function: &Function) -> bool {
