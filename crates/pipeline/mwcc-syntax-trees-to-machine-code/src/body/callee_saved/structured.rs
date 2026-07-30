@@ -16,7 +16,8 @@ use super::structured_aggregate_slots::{
 };
 use super::structured_call_schedule::{
     direct_callback_wait_home_preference, is_sequenced_callback_wait_layout,
-    sequenced_callback_wait_home_preference, terminal_offset_call_argument_register,
+    sequenced_callback_wait_frame_slot, sequenced_callback_wait_home_preference,
+    sequenced_callback_wait_save_order, terminal_offset_call_argument_register,
     transient_call_argument_register,
 };
 use super::structured_constant_versions::retain_repeated_store_constant_across_call;
@@ -1243,6 +1244,9 @@ impl Generator {
         let frame_slot_for_home = |home_index: usize| {
             if let Some(layout) = &loop_member_receiver_layout {
                 layout.frame_slot(home_index)
+            } else if sequenced_callback_wait_layout {
+                sequenced_callback_wait_frame_slot(home_index)
+                    .expect("the sequenced callback wait layout owns three homes")
             } else {
                 match reused_data_anchor_home_index {
                     Some(reused) if home_index == reused => 0,
@@ -1957,6 +1961,7 @@ impl Generator {
             || compact_aggregate_scratch_pair
             || paired_eager_deferred_homes
             || unused_array_eager_homes
+            || sequenced_callback_wait_layout
             || loop_member_receiver_layout.is_some()
             || saved_home_stores_precede_initialization(
                 self.behavior.frame_convention,
@@ -2021,9 +2026,16 @@ impl Generator {
         };
         let stagger_dense_parameter_copies =
             dense_saved_range && saved_parameter_base != 0 && saved_parameter_homes.len() >= 2;
-        let loop_member_entry_emitted =
-            if let Some(layout) = &loop_member_receiver_layout {
-                for home_index in layout.save_order() {
+        let ordered_entry_save_order = loop_member_receiver_layout
+            .as_ref()
+            .map(|layout| layout.save_order().to_vec())
+            .or_else(|| {
+                sequenced_callback_wait_layout
+                    .then_some(sequenced_callback_wait_save_order().to_vec())
+            });
+        let ordered_entry_emitted =
+            if let Some(save_order) = ordered_entry_save_order {
+                for home_index in save_order {
                     let home = homes[home_index];
                     self.emit_structured_saved_home_store(
                         home,
@@ -2047,7 +2059,7 @@ impl Generator {
             } else {
                 false
             };
-        if batched_saved_home_stores && !loop_member_entry_emitted {
+        if batched_saved_home_stores && !ordered_entry_emitted {
             if !dense_saved_range {
                 for (home_index, &home) in homes[..saved_parameter_base].iter().enumerate() {
                     self.emit_structured_saved_home_store(

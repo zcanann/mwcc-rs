@@ -143,6 +143,19 @@ pub(super) fn is_sequenced_callback_wait_layout(
             .is_some_and(|statement| rejects_zero_result(statement, result))
 }
 
+/// Source-home indices in physical frame-slot order for a sequenced callback
+/// wait. The deferred interrupt state owns the top slot, followed by the
+/// identifier and receiver parameter homes.
+pub(super) const fn sequenced_callback_wait_save_order() -> [usize; 3] {
+    [2, 0, 1]
+}
+
+pub(super) fn sequenced_callback_wait_frame_slot(home_index: usize) -> Option<usize> {
+    sequenced_callback_wait_save_order()
+        .iter()
+        .position(|candidate| *candidate == home_index)
+}
+
 fn terminal_call(expression: &Expression) -> Option<(&str, &[Expression])> {
     match expression {
         Expression::Call { name, arguments } => Some((name, arguments)),
@@ -722,6 +735,17 @@ fn is_coalesced_shift_add_window(instructions: &[Instruction], home: u8) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sequenced_callback_wait_save_order_and_slots_are_inverses() {
+        for (slot, home_index) in sequenced_callback_wait_save_order().into_iter().enumerate() {
+            assert_eq!(
+                sequenced_callback_wait_frame_slot(home_index),
+                Some(slot),
+            );
+        }
+        assert_eq!(sequenced_callback_wait_frame_slot(3), None);
+    }
 
     #[test]
     fn recognizes_a_coalesced_shift_add_argument() {
