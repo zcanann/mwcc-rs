@@ -71,6 +71,120 @@ pub(super) fn direct_callback_wait_home_preference(
     .flatten()
 }
 
+/// Lay out a larger inlined async transaction's retained receiver, identifier,
+/// and wait state in ascending saved-register order.
+///
+/// The first comma sequence owns a diagnostic branch and ends in the queueing
+/// call; the following guard rejects a zero result before entering a blocking
+/// wait loop. The identifier dies after publication, so the later return value
+/// may reuse its middle home while the interrupt token occupies the high home.
+pub(super) fn sequenced_callback_wait_home_preference(
+    function: &Function,
+    saved_parameters: &[&Parameter],
+    deferred_saved_locals: &[&LocalDeclaration],
+    first_saved: usize,
+    home_index: usize,
+) -> Option<u8> {
+    if !is_sequenced_callback_wait_layout(
+        function,
+        saved_parameters,
+        deferred_saved_locals,
+        first_saved,
+    ) {
+        return None;
+    }
+    let [receiver, _identifier] = function.parameters.as_slice() else {
+        unreachable!("the layout recognizer requires two parameters")
+    };
+    let preferred = saved_parameters
+        .get(home_index)
+        .map(|parameter| {
+            if parameter.name == receiver.name {
+                first_saved
+            } else {
+                first_saved + 1
+            }
+        })
+        .unwrap_or(first_saved + 2);
+    u8::try_from(preferred).ok()
+}
+
+pub(super) fn is_sequenced_callback_wait_layout(
+    function: &Function,
+    saved_parameters: &[&Parameter],
+    deferred_saved_locals: &[&LocalDeclaration],
+    first_saved: usize,
+) -> bool {
+    let [receiver, identifier] = function.parameters.as_slice() else {
+        return false;
+    };
+    let Some(Statement::Assign {
+        name: result,
+        value: sequence @ Expression::Comma { .. },
+    }) = function.statements.first()
+    else {
+        return false;
+    };
+    let Some((_, arguments)) = terminal_call(sequence) else {
+        return false;
+    };
+    let terminal_receiver = arguments.last().and_then(variable_name);
+    saved_parameters.len() == 2
+        && deferred_saved_locals.len() == 2
+        && first_saved == 29
+        && saved_parameters
+            .iter()
+            .all(|parameter| parameter.name == receiver.name || parameter.name == identifier.name)
+        && terminal_receiver == Some(receiver.name.as_str())
+        && sequence_contains_conditional(sequence)
+        && function
+            .statements
+            .get(1)
+            .is_some_and(|statement| rejects_zero_result(statement, result))
+}
+
+fn terminal_call(expression: &Expression) -> Option<(&str, &[Expression])> {
+    match expression {
+        Expression::Call { name, arguments } => Some((name, arguments)),
+        Expression::Comma { right, .. } => terminal_call(right),
+        _ => None,
+    }
+}
+
+fn variable_name(expression: &Expression) -> Option<&str> {
+    match expression {
+        Expression::Variable(name) => Some(name),
+        Expression::Cast { operand, .. } => variable_name(operand),
+        _ => None,
+    }
+}
+
+fn sequence_contains_conditional(expression: &Expression) -> bool {
+    match expression {
+        Expression::Conditional { .. } => true,
+        Expression::Comma { left, right } => {
+            sequence_contains_conditional(left) || sequence_contains_conditional(right)
+        }
+        _ => false,
+    }
+}
+
+fn rejects_zero_result(statement: &Statement, result: &str) -> bool {
+    matches!(statement, Statement::If {
+        condition: Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left,
+            right,
+        },
+        then_body,
+        else_body,
+    } if else_body.is_empty()
+        && matches!(left.as_ref(), Expression::Variable(name) if name == result)
+        && constant_value(right) == Some(0)
+        && matches!(then_body.as_slice(), [Statement::Return(Some(value))]
+            if constant_value(value) == Some(-1)))
+}
+
 pub(super) fn transient_call_argument_register(
     statements: &[Statement],
     candidate: &str,

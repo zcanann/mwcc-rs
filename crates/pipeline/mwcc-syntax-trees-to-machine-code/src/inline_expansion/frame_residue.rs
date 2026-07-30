@@ -71,7 +71,79 @@ pub(super) fn legacy_value_body_frame_residue_bytes(
         &function.statements,
         &uninitialized_pointers,
     );
-    retained_addresses.min(substitutions) * 8
+    let retained_transactions =
+        usize::from(has_extended_sequenced_call_assignment(&function.statements));
+    retained_addresses
+        .max(retained_transactions)
+        .min(substitutions)
+        * 8
+}
+
+fn has_extended_sequenced_call_assignment(statements: &[Statement]) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Assign {
+            value: value @ Expression::Comma { .. },
+            ..
+        } => {
+            sequence_element_count(value) >= 8
+                && expression_contains_conditional(value)
+                && expression_ends_in_call(value)
+        }
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            has_extended_sequenced_call_assignment(then_body)
+                || has_extended_sequenced_call_assignment(else_body)
+        }
+        Statement::Loop { body, .. } => has_extended_sequenced_call_assignment(body),
+        Statement::Switch {
+            arms, default, ..
+        } => {
+            arms.iter().any(|arm| match &arm.body {
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+                mwcc_syntax_trees::ArmBody::Statements(body) => {
+                    has_extended_sequenced_call_assignment(body)
+                }
+            }) || default.as_ref().is_some_and(|body| match body {
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+                mwcc_syntax_trees::ArmBody::Statements(body) => {
+                    has_extended_sequenced_call_assignment(body)
+                }
+            })
+        }
+        _ => false,
+    })
+}
+
+fn sequence_element_count(expression: &Expression) -> usize {
+    match expression {
+        Expression::Comma { left, right } => {
+            sequence_element_count(left) + sequence_element_count(right)
+        }
+        _ => 1,
+    }
+}
+
+fn expression_contains_conditional(expression: &Expression) -> bool {
+    match expression {
+        Expression::Conditional { .. } => true,
+        Expression::Comma { left, right } => {
+            expression_contains_conditional(left) || expression_contains_conditional(right)
+        }
+        _ => false,
+    }
+}
+
+fn expression_ends_in_call(expression: &Expression) -> bool {
+    match expression {
+        Expression::Call { .. }
+        | Expression::CallThrough { .. }
+        | Expression::VirtualCall { .. } => true,
+        Expression::Comma { right, .. } => expression_ends_in_call(right),
+        _ => false,
+    }
 }
 
 fn uninitialized_pointer_names(function: &Function) -> std::collections::HashSet<&str> {

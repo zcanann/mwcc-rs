@@ -26,8 +26,9 @@ pub(crate) fn thread_conditional_branch_targets(instructions: &mut [Instruction]
     }
 }
 
-/// Thread conditional branches through an otherwise unreachable one-branch
-/// forwarding block, then remove that dead block.
+/// Thread incoming branches through an otherwise unreachable one-branch
+/// forwarding block, then remove that dead block. A block with no incoming
+/// edge is dead outright and follows the same removal path.
 ///
 /// The structured statement emitter can leave this shape when one arm returns
 /// and its sibling falls into an enclosing join:
@@ -78,16 +79,7 @@ fn forwarding_branch_block(instructions: &[Instruction]) -> Option<(usize, usize
         {
             return None;
         }
-        let conditional_incoming = instructions
-            .iter()
-            .take(index)
-            .any(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::BranchConditionalForward { target, .. } if *target == index
-                )
-            });
-        conditional_incoming.then_some((index, landing))
+        Some((index, landing))
     })
 }
 
@@ -112,6 +104,19 @@ mod tests {
         ];
 
         assert_eq!(forwarding_branch_block(&instructions), Some((3, 4)));
+    }
+
+    #[test]
+    fn recognizes_an_unreferenced_branch_after_an_unconditional_edge() {
+        let instructions = [
+            Instruction::load_immediate(3, 2),
+            Instruction::Branch { target: 4 },
+            Instruction::Branch { target: 3 },
+            Instruction::load_immediate(3, 0),
+            Instruction::BranchToLinkRegister,
+        ];
+
+        assert_eq!(forwarding_branch_block(&instructions), Some((2, 3)));
     }
 
     #[test]

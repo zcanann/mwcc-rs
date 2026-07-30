@@ -15,7 +15,8 @@ use super::structured_aggregate_slots::{
     plan_terminal_one_word_aggregate_call_copies,
 };
 use super::structured_call_schedule::{
-    direct_callback_wait_home_preference, terminal_offset_call_argument_register,
+    direct_callback_wait_home_preference, is_sequenced_callback_wait_layout,
+    sequenced_callback_wait_home_preference, terminal_offset_call_argument_register,
     transient_call_argument_register,
 };
 use super::structured_constant_versions::retain_repeated_store_constant_across_call;
@@ -1054,6 +1055,12 @@ impl Generator {
             && deferred_saved_locals
                 .iter()
                 .all(|local| local.name.starts_with("__mwcc_retained_constant_"));
+        let sequenced_callback_wait_layout = is_sequenced_callback_wait_layout(
+            function,
+            &saved_parameters,
+            &deferred_saved_locals,
+            first_saved,
+        );
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
                 if loop_assertion_strings.is_some() {
@@ -1195,6 +1202,14 @@ impl Generator {
                     home_index,
                 ) {
                     self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = sequenced_callback_wait_home_preference(
+                    function,
+                    &saved_parameters,
+                    &deferred_saved_locals,
+                    first_saved,
+                    home_index,
+                ) {
+                    self.fresh_virtual_general_preferring(preferred)
                 } else if with_frame_array && eager_saved_locals.is_empty() && count <= 18 {
                     let preferred = if dense_entry_prefix && deferred_home_plan.group_count == 1 {
                         if home_index < saved_parameters.len() {
@@ -1261,6 +1276,11 @@ impl Generator {
                     .into_iter()
                     .map(|home_index| homes[home_index]),
             );
+        } else if sequenced_callback_wait_layout {
+            let [identifier, receiver, wait_state] = homes.as_slice() else {
+                unreachable!("the sequenced callback wait layout owns three homes")
+            };
+            logical_saved_homes.extend([*wait_state, *identifier, *receiver]);
         } else {
             logical_saved_homes.extend(homes.iter().copied());
         }
@@ -2480,6 +2500,16 @@ impl Generator {
                     // returns. Ephemeral planning also proves that its value
                     // crosses no later call, so it can remain in the fixed EABI
                     // result home without a copy out and back.
+                    mwcc_target::Eabi::general_result().number
+                }
+                ValueClass::General
+                    if is_sequenced_call_result_local(&function.statements, &local.name) =>
+                {
+                    // Inline value composition sequences the callee's effects
+                    // before its terminal call with comma operators. Liveness
+                    // has already proved this local crosses no later call, so
+                    // the surviving call value can stay in the EABI result
+                    // register just like a bare `result = call()`.
                     mwcc_target::Eabi::general_result().number
                 }
                 ValueClass::General => {
@@ -4222,12 +4252,32 @@ fn value_read_before_redefinition(statements: &[Statement], name: &str) -> bool 
 
 fn is_call_result_local(statements: &[Statement], candidate: &str) -> bool {
     statements.iter().any(|statement| {
-        matches!(statement,
-            Statement::Assign {
-                name,
-                value: Expression::Call { .. },
-            } if name == candidate)
+        matches!(
+            statement,
+            Statement::Assign { name, value }
+                if name == candidate && expression_ends_in_call(value)
+        )
     })
+}
+
+fn is_sequenced_call_result_local(statements: &[Statement], candidate: &str) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Assign {
+            name,
+            value: value @ Expression::Comma { .. },
+        } => name == candidate && expression_ends_in_call(value),
+        _ => false,
+    })
+}
+
+fn expression_ends_in_call(expression: &Expression) -> bool {
+    match expression {
+        Expression::Call { .. }
+        | Expression::CallThrough { .. }
+        | Expression::VirtualCall { .. } => true,
+        Expression::Comma { right, .. } => expression_ends_in_call(right),
+        _ => false,
+    }
 }
 
 pub(crate) fn structured_hidden_label_count(statements: &[Statement]) -> u32 {
