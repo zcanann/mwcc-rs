@@ -194,6 +194,7 @@ mod structured_state_transfer_guard_schedule;
 mod structured_state_transfer_hp_call;
 mod structured_state_transfer_layout;
 mod structured_state_transfer_scale_schedule;
+mod structured_state_transfer_status_schedule;
 mod structured_switch_lowering;
 mod structured_tail_result_guard;
 mod structured_terminal_wrapper_inline_schedule;
