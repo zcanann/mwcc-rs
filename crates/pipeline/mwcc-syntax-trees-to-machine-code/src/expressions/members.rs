@@ -2220,6 +2220,15 @@ impl Generator {
         let pointee = pointee_of_type(element_type).ok_or_else(|| {
             Diagnostic::error("a global array of this element type is not supported yet (roadmap)")
         })?;
+        if self.try_emit_post_step_global_array_store(
+            name,
+            total_size,
+            pointee,
+            index,
+            value,
+        )? {
+            return Ok(());
+        }
         // A float/double LITERAL element store at a CONSTANT index. mwcc materializes the value
         // (`lfs`/`lfd` from the `.sdata2` pool) and the array base, scheduling the value load
         // relative to the base differently per shape (all verified version-invariant across

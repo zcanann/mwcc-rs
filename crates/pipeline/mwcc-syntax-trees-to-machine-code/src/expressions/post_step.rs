@@ -241,7 +241,10 @@ impl Generator {
     }
 }
 
-fn step_amount_for_type(value_type: Type, operator: BinaryOperator) -> Compilation<i16> {
+pub(crate) fn step_amount_for_type(
+    value_type: Type,
+    operator: BinaryOperator,
+) -> Compilation<i16> {
     let amount = match value_type {
         Type::Int | Type::UnsignedInt => 1,
         Type::Pointer(pointee) => i16::from(pointee.size()),

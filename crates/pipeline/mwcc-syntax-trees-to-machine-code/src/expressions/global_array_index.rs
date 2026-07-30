@@ -5,6 +5,125 @@ use super::*;
 use super::members::split_scaled_index;
 
 impl Generator {
+    /// Store through a file-scope array indexed by a postfix-stepped scalar
+    /// global.
+    ///
+    /// The index's old and new values overlap the array-address materialization.
+    /// Keeping this schedule separate from ordinary postfix evaluation preserves
+    /// both the side-effect boundary and MWCC's address-policy-specific order:
+    /// large arrays complete their base before stepping the index, while small
+    /// arrays materialize their SDA base before the step and scale only after the
+    /// updated index has been stored.
+    pub(crate) fn try_emit_post_step_global_array_store(
+        &mut self,
+        name: &str,
+        total_size: u32,
+        pointee: Pointee,
+        index: &Expression,
+        value: &Expression,
+    ) -> Compilation<bool> {
+        let Expression::PostStep {
+            target,
+            operator,
+            pointer_link: None,
+        } = index
+        else {
+            return Ok(false);
+        };
+        let Expression::Variable(index_name) = target.as_ref() else {
+            return Ok(false);
+        };
+        let Some(index_type) = self.globals.get(index_name.as_str()).copied() else {
+            return Ok(false);
+        };
+        if !matches!(index_type, Type::Int | Type::UnsignedInt)
+            || !pointee.size().is_power_of_two()
+            || matches!(
+                pointee,
+                Pointee::Float
+                    | Pointee::Double
+                    | Pointee::LongLong
+                    | Pointee::UnsignedLongLong
+            )
+        {
+            return Ok(false);
+        }
+        let value_register = self.general_register_of_leaf(value)?;
+        let amount = super::post_step::step_amount_for_type(index_type, *operator)?;
+        let small =
+            self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
+        let old_value = self.fresh_virtual_general_preferring(if small { 5 } else { 6 });
+        self.emit_global_load(index_name, old_value)?;
+
+        if small {
+            let base = self.fresh_virtual_general_preferring(4);
+            self.emit_global_array_base(name, total_size, base)?;
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: GENERAL_SCRATCH,
+                a: old_value,
+                immediate: amount,
+            });
+            self.emit_global_store(
+                index_name,
+                pointee_of_type(index_type).expect("word postfix index is scalar"),
+                GENERAL_SCRATCH,
+            )?;
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: GENERAL_SCRATCH,
+                    s: old_value,
+                    shift: pointee.size().trailing_zeros() as u8,
+                });
+            self.output.instructions.push(indexed_store(
+                pointee,
+                value_register,
+                base,
+                GENERAL_SCRATCH,
+            )?);
+            return Ok(true);
+        }
+
+        let address = self.fresh_virtual_general_preferring(4);
+        self.emit_address_high(address, name);
+        self.record_relocation(RelocationKind::Addr16Lo, name);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: GENERAL_SCRATCH,
+            a: address,
+            immediate: 0,
+        });
+        let stepped = self.fresh_virtual_general_preferring(5);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: stepped,
+            a: old_value,
+            immediate: amount,
+        });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: address,
+                s: old_value,
+                shift: pointee.size().trailing_zeros() as u8,
+            });
+        self.emit_global_store(
+            index_name,
+            pointee_of_type(index_type).expect("word postfix index is scalar"),
+            stepped,
+        )?;
+        self.output.instructions.push(Instruction::Add {
+            d: address,
+            a: GENERAL_SCRATCH,
+            b: address,
+        });
+        self.output.instructions.push(displacement_store(
+            pointee,
+            value_register,
+            address,
+            0,
+        )?);
+        Ok(true)
+    }
+
     /// Load `array[global_index]` under the mainline address policy.
     ///
     /// The scalar index first loads into r0. MWCC then completes the large
