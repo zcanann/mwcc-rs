@@ -55,7 +55,11 @@ fn loop_float_zero_plan(output: &mwcc_machine_code::MachineFunction) -> Option<L
             .iter()
             .enumerate()
             .find_map(|(index, instruction)| match instruction {
-                Instruction::Branch { target } if *target > index + 1 => Some((index, *target)),
+                Instruction::Branch { target }
+                    if *target > index + 1 && *target <= instructions.len() =>
+                {
+                    Some((index, *target))
+                }
                 _ => None,
             })?;
     let loop_body = entry_branch + 1;
@@ -203,5 +207,18 @@ mod tests {
 
         assert_eq!(plan.entry_branch, 0);
         assert_eq!(plan.loads, [2, 4, 6, 8]);
+    }
+
+    #[test]
+    fn ignores_unresolved_forward_branch_placeholders() {
+        let mut output = mwcc_machine_code::MachineFunction::new("partial");
+        output.instructions.push(Instruction::Branch {
+            target: usize::MAX / 4,
+        });
+        output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
+
+        assert!(loop_float_zero_plan(&output).is_none());
     }
 }

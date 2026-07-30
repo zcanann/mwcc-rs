@@ -36,6 +36,76 @@ fn placement_overwrites_later_source(placements: &[ArgumentPlacement]) -> bool {
 }
 
 impl Generator {
+    /// `object->callback(object->value, object)`: preserve the shared base in
+    /// the second ABI argument before the first argument overwrites r3. The
+    /// callee load remains ahead of the computed member argument, matching the
+    /// callback schedule used inside structured DVD state handlers.
+    fn try_emit_shared_base_member_indirect_call(
+        &mut self,
+        target: &Expression,
+        arguments: &[Expression],
+    ) -> Compilation<bool> {
+        let Expression::Member {
+            base: target_base,
+            ..
+        } = target
+        else {
+            return Ok(false);
+        };
+        let Expression::Variable(base_name) = target_base.as_ref() else {
+            return Ok(false);
+        };
+        let [first, Expression::Variable(second)] = arguments else {
+            return Ok(false);
+        };
+        let first_member = match first {
+            member @ Expression::Member { .. } => member,
+            Expression::Cast {
+                target_type,
+                operand,
+            } if target_type.width() == 32
+                && matches!(
+                    operand.as_ref(),
+                    Expression::Member { member_type, .. } if member_type.width() == 32
+                ) =>
+            {
+                operand.as_ref()
+            }
+            _ => return Ok(false),
+        };
+        let Expression::Member {
+            base: first_base, ..
+        } = first_member
+        else {
+            return Ok(false);
+        };
+        if second != base_name
+            || !matches!(first_base.as_ref(), Expression::Variable(name) if name == base_name)
+        {
+            return Ok(false);
+        }
+        let base = self.general_register_of(base_name)?;
+        if base == Eabi::FIRST_GENERAL_ARGUMENT {
+            self.output.instructions.push(Instruction::move_register(
+                Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                base,
+            ));
+            self.evaluate(target, Type::UnsignedInt, 12)?;
+            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        } else {
+            self.evaluate(target, Type::UnsignedInt, 12)?;
+            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+            if base != Eabi::FIRST_GENERAL_ARGUMENT + 1 {
+                self.output.instructions.push(Instruction::move_register(
+                    Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                    base,
+                ));
+            }
+        }
+        self.emit_indirect_branch_and_link(12);
+        Ok(true)
+    }
+
     fn indirect_argument_placements(
         &self,
         arguments: &[Expression],
@@ -100,6 +170,9 @@ impl Generator {
         target: &Expression,
         arguments: &[Expression],
     ) -> Compilation<()> {
+        if self.try_emit_shared_base_member_indirect_call(target, arguments)? {
+            return Ok(());
+        }
         if self.try_emit_indexed_indirect_call_with_mixed_arguments(
             target,
             arguments,

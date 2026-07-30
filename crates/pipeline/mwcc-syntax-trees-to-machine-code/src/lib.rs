@@ -1596,6 +1596,11 @@ fn remap_branch_targets(instructions: &mut [Instruction], permutation: &[usize])
         };
         *target = if *target == old_end {
             new_end
+        } else if *target >= old_end {
+            // Structured lowering temporarily encodes unresolved joins as
+            // out-of-range sentinels. Instruction-removal passes must leave
+            // those opaque placeholders for their owning resolver.
+            *target
         } else {
             permutation[*target]
         };
@@ -1723,6 +1728,25 @@ mod instruction_index_tests {
 
         assert_eq!(instructions[0], Instruction::Branch { target: 2 });
         assert_eq!(instructions[2], Instruction::load_immediate(5, 3));
+    }
+
+    #[test]
+    fn instruction_remapping_preserves_unresolved_branch_placeholders() {
+        let placeholder = usize::MAX / 4;
+        let mut instructions = vec![
+            Instruction::Branch {
+                target: placeholder,
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+        remap_branch_targets(&mut instructions, &[0, 1]);
+
+        assert_eq!(
+            instructions[0],
+            Instruction::Branch {
+                target: placeholder
+            }
+        );
     }
 
     #[test]
