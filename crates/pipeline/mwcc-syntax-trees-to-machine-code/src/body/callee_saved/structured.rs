@@ -2495,6 +2495,7 @@ impl Generator {
             );
         }
         self.schedule_structured_signed_conversion_pair();
+        self.reuse_structured_float_to_int_result();
         self.fold_structured_void_early_return_branches();
         self.schedule_loop_assertion_entry_alias();
         self.schedule_loop_assertion_string_highs();
