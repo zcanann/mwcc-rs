@@ -11,6 +11,7 @@ use super::*;
 impl Generator {
     pub(crate) fn schedule_structured_queue_transaction(&mut self) {
         let Some(plan) = structured_queue_transaction(&self.output.instructions) else {
+            self.schedule_compact_structured_queue_transaction();
             return;
         };
 

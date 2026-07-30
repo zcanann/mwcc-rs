@@ -1297,13 +1297,18 @@ impl Generator {
                 collect_logical_and_terms(condition, &mut terms);
                 let previous_float_cache =
                     self.begin_composed_condition_float_cache(condition);
+                let previous_member_cache = self.begin_condition_member_cache(condition);
                 let condition_result = (|| {
                     for term in terms {
+                        if self.try_emit_equality_or_false_edge(term, else_label)? {
+                            continue;
+                        }
                         let (options, condition_bit) = self.emit_condition_test(term)?;
                         self.emit_branch_conditional_to(options, condition_bit, else_label);
                     }
                     Ok(())
                 })();
+                self.restore_condition_member_cache(previous_member_cache);
                 let true_result = condition_result.and_then(|()| {
                     self.emit_comma_side_effect(when_true)
                 });

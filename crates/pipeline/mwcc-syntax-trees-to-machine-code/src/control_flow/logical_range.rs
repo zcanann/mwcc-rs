@@ -11,6 +11,34 @@ struct EqualityRange<'a> {
 }
 
 impl Generator {
+    /// Emit a pure OR of equality tests as control-flow edges rather than
+    /// materializing an intermediate C boolean. Earlier true alternatives
+    /// enter the guarded body; the final false alternative skips it.
+    pub(crate) fn try_emit_equality_or_false_edge(
+        &mut self,
+        condition: &Expression,
+        false_target: mwcc_vreg::Label,
+    ) -> Compilation<bool> {
+        if self.behavior.logical_or_value_style != mwcc_versions::LogicalOrValueStyle::TrueFirst {
+            return Ok(false);
+        }
+        let Some(terms) = equality_or_terms(condition) else {
+            return Ok(false);
+        };
+        let body = self.fresh_label();
+        let last = terms.len() - 1;
+        for (index, term) in terms.into_iter().enumerate() {
+            let (options, condition_bit) = self.emit_condition_test(term)?;
+            self.emit_branch_conditional_to(
+                if index == last { options } else { options ^ 8 },
+                condition_bit,
+                if index == last { false_target } else { body },
+            );
+        }
+        self.bind_label(body);
+        Ok(true)
+    }
+
     /// Replace a grouped equality body's one-instruction goto with direct
     /// conditional edges to the same label. This is the structured form MWCC
     /// uses for `if (x == A || ...) break`, and unlike a global forward-branch
@@ -414,6 +442,35 @@ fn equality_range(condition: &Expression) -> Option<EqualityRange<'_>> {
     })
 }
 
+fn equality_or_terms(expression: &Expression) -> Option<Vec<&Expression>> {
+    fn collect<'a>(expression: &'a Expression, terms: &mut Vec<&'a Expression>) -> bool {
+        if let Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left,
+            right,
+        } = expression
+        {
+            return collect(left, terms) && collect(right, terms);
+        }
+        let Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left,
+            right,
+        } = expression
+        else {
+            return false;
+        };
+        if constant_value(left).is_none() && constant_value(right).is_none() {
+            return false;
+        }
+        terms.push(expression);
+        true
+    }
+
+    let mut terms = Vec::new();
+    (collect(expression, &mut terms) && terms.len() >= 2).then_some(terms)
+}
+
 fn equality_alternatives(condition: &Expression) -> Option<(&str, Vec<i64>)> {
     fn collect<'e>(
         expression: &'e Expression,
@@ -523,6 +580,26 @@ mod tests {
     fn rejects_a_gap_or_a_different_operand() {
         assert!(equality_range(&or(equal("command", 9), equal("command", 11))).is_none());
         assert!(equality_range(&or(equal("command", 9), equal("other", 10))).is_none());
+    }
+
+    #[test]
+    fn recognizes_nested_equality_or_terms_for_direct_guard_edges() {
+        let condition = or(
+            or(equal("command", 1), equal("command", 4)),
+            equal("command", 5),
+        );
+        assert_eq!(
+            equality_or_terms(&condition)
+                .expect("pure equality OR")
+                .len(),
+            3
+        );
+        assert!(equality_or_terms(&Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left: Box::new(equal("command", 1)),
+            right: Box::new(Expression::Variable("other".into())),
+        })
+        .is_none());
     }
 
     #[test]

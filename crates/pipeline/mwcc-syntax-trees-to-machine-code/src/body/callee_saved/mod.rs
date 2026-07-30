@@ -211,6 +211,7 @@ mod structured_state_transfer_pointer_schedule;
 mod structured_state_transfer_scale_schedule;
 mod structured_state_transfer_status_schedule;
 mod structured_state_transfer_tail_schedule;
+mod structured_compact_queue_transaction_schedule;
 mod structured_queue_transaction_schedule;
 mod structured_switch_lowering;
 mod structured_dense_switch;
