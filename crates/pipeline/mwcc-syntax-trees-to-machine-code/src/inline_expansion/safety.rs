@@ -568,6 +568,17 @@ pub(super) fn materializable_arguments(
                             && (stable_argument(base, stable_variables)
                                 || matches!(base.as_ref(), Expression::Variable(_)))
                     )
+                    // A scalar array element is the indexed counterpart to a
+                    // member read above. Capture the selected value once at
+                    // the call site; this preserves volatile reads and keeps
+                    // the expanded body from re-evaluating either operand.
+                    || matches!(
+                        argument,
+                        Expression::Index { base, index }
+                            if (stable_argument(base, stable_variables)
+                                || matches!(base.as_ref(), Expression::Variable(_)))
+                                && stable_argument(index, stable_variables)
+                    )
             })
 }
 
@@ -986,6 +997,21 @@ mod tests {
             offset: 4,
             member_type: Type::Int,
             index_stride: None,
+        };
+
+        assert!(materializable_arguments(
+            &scalar_parameter_function(),
+            &[argument],
+            &HashSet::new(),
+            false,
+        ));
+    }
+
+    #[test]
+    fn materializes_a_constant_index_from_a_named_array_once() {
+        let argument = Expression::Index {
+            base: Box::new(Expression::Variable("registers".into())),
+            index: Box::new(Expression::IntegerLiteral(8)),
         };
 
         assert!(materializable_arguments(

@@ -2645,6 +2645,32 @@ impl Generator {
         let low = address as i16;
         let size = element.size() as i64;
         if let Some(constant) = constant_value(index) {
+            if self.behavior.fixed_address_poll_address_style
+                == mwcc_versions::FixedAddressPollAddressStyle::MaterializedBankPage
+            {
+                let displacement =
+                    i16::try_from(constant * size).map_err(|_| {
+                        Diagnostic::error(
+                            "fixed-address array subscript offset out of range (roadmap)",
+                        )
+                    })?;
+                let base = self.address_base_for_load_destination(destination)?;
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(base, high_adjusted));
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: base,
+                    a: base,
+                    immediate: low,
+                });
+                self.output.instructions.push(displacement_load(
+                    element,
+                    destination,
+                    base,
+                    displacement,
+                )?);
+                return Ok(());
+            }
             let displacement = i16::try_from(low as i64 + constant * size).map_err(|_| {
                 Diagnostic::error("fixed-address array subscript offset out of range (roadmap)")
             })?;
