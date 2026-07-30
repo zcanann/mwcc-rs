@@ -54,7 +54,7 @@ use super::structured_home_layout::{
 use super::structured_indirect_call_home::promote_cost_free_indirect_call_locals;
 use super::structured_interleaved_frame_layout::StructuredInterleavedFrameLayout;
 use super::structured_liveness::{
-    read_after_possible_call, read_after_possible_call_in_return,
+    read_after_possible_call, read_after_possible_call_in_function,
     transient_condition_call_result_callee,
 };
 use super::structured_loop_invariants::hoist_iterator_end_sentinels;
@@ -426,11 +426,8 @@ impl Generator {
         let mut survivors: std::collections::HashSet<&str> = candidates
             .into_iter()
             .filter(|name| {
-                read_after_possible_call_in_return(
-                    &function.statements,
-                    function.return_expression.as_ref(),
-                    name,
-                ) || (self.one_word_aggregate_locals.contains(*name)
+                read_after_possible_call_in_function(function, name)
+                    || (self.one_word_aggregate_locals.contains(*name)
                     && body_uses_local(&function.statements, name)
                     && function.statements.iter().any(statement_has_call))
             })

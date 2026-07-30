@@ -1,7 +1,7 @@
 //! Path-sensitive saved-home liveness for structured control flow.
 
 use crate::analysis::*;
-use mwcc_syntax_trees::{Expression, LoopKind, Statement};
+use mwcc_syntax_trees::{Expression, Function, LoopKind, Statement};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +44,46 @@ pub(crate) fn read_after_possible_call_in_return(
         || (body.falls_through
             && return_expression.is_some_and(|expression| {
                 expression_reads_name_across_call(expression, name, body.call_on_fallthrough)
+            }))
+}
+
+/// Whether `name` needs a saved home across declaration initializers, the
+/// structured body, and its fallthrough return expression.
+///
+/// Initializers execute in source order before the body. A call in one
+/// initializer therefore clobbers volatile parameters and earlier locals
+/// before later initializers or statements can read them. Reaching the named
+/// local's own declaration starts its new lifetime after its initializer has
+/// completed, so calls from preceding declarations do not leak into it.
+pub(super) fn read_after_possible_call_in_function(
+    function: &Function,
+    name: &str,
+) -> bool {
+    let mut read_after_call = false;
+    let mut prior_call = false;
+    for local in &function.locals {
+        if let Some(initializer) = &local.initializer {
+            read_after_call |=
+                expression_reads_name_across_call(initializer, name, prior_call);
+            if local.name != name {
+                prior_call |= expression_has_call(initializer);
+            }
+        }
+        if local.name == name {
+            prior_call = false;
+        }
+    }
+
+    let body = read_after_possible_call(&function.statements, name, prior_call);
+    read_after_call
+        || body.read_after_call
+        || (body.falls_through
+            && function.return_expression.as_ref().is_some_and(|expression| {
+                expression_reads_name_across_call(
+                    expression,
+                    name,
+                    body.call_on_fallthrough,
+                )
             }))
 }
 
@@ -644,6 +684,52 @@ mod tests {
             Some(&tail),
             "object"
         ));
+    }
+
+    #[test]
+    fn an_initializer_call_makes_later_parameter_reads_survive() {
+        let function = Function {
+            return_type: mwcc_syntax_trees::Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![mwcc_syntax_trees::Parameter {
+                parameter_type: mwcc_syntax_trees::Type::Pointer(
+                    mwcc_syntax_trees::Pointee::UnsignedChar,
+                ),
+                name: "object".into(),
+            }],
+            locals: vec![mwcc_syntax_trees::LocalDeclaration {
+                declared_type: mwcc_syntax_trees::Type::Int,
+                name: "result".into(),
+                initializer: Some(Expression::Call {
+                    name: "inspect".into(),
+                    arguments: vec![Expression::Variable("object".into())],
+                }),
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                row_bytes: None,
+            }],
+            statements: vec![Statement::Expression(Expression::Variable(
+                "object".into(),
+            ))],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        assert!(read_after_possible_call_in_function(&function, "object"));
+        assert!(!read_after_possible_call_in_function(&function, "result"));
     }
 
     #[test]
