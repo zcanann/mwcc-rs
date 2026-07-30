@@ -20,6 +20,9 @@ impl Generator {
         {
             return Ok(false);
         }
+        if self.try_emit_trailing_global_alternative_value(expression, destination)? {
+            return Ok(true);
+        }
         if self.try_emit_bounded_array_alternative_value(expression, destination)? {
             return Ok(true);
         }

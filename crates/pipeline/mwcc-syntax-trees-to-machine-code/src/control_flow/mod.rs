@@ -22,6 +22,7 @@ mod passes;
 mod record_condition;
 mod record_mask;
 mod select;
+mod trailing_global_alternative_value;
 mod wide_pair_mask;
 pub(crate) use wide_pair_mask::WidePairMaskCache;
 
