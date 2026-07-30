@@ -18,6 +18,10 @@ pub(super) struct ValueInlineBody {
 }
 
 impl ValueInlineBody {
+    pub(super) fn stores_global_name(&self, name: &str) -> bool {
+        statements_store_global_name(&self.source.statements, name)
+    }
+
     fn forwarded_call_arguments(&self) -> Option<&[Expression]> {
         match &self.expression {
             Expression::Call { arguments, .. } => Some(arguments),
@@ -63,6 +67,40 @@ impl ValueInlineBody {
                 == 1
         })
     }
+}
+
+fn statements_store_global_name(statements: &[Statement], name: &str) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Store {
+            target: Expression::Variable(target),
+            ..
+        } => target == name,
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            statements_store_global_name(then_body, name)
+                || statements_store_global_name(else_body, name)
+        }
+        Statement::Loop { body, .. } => statements_store_global_name(body, name),
+        Statement::Switch {
+            arms, default, ..
+        } => {
+            arms.iter().any(|arm| match &arm.body {
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+                mwcc_syntax_trees::ArmBody::Statements(body) => {
+                    statements_store_global_name(body, name)
+                }
+            }) || default.as_ref().is_some_and(|body| match body {
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+                mwcc_syntax_trees::ArmBody::Statements(body) => {
+                    statements_store_global_name(body, name)
+                }
+            })
+        }
+        _ => false,
+    })
 }
 
 pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
@@ -523,6 +561,79 @@ pub(super) fn summarize_automatic_transaction(function: &Function) -> Option<Val
     })
 }
 
+/// Summarize a repeated guarded transaction whose true edge owns effects and
+/// returns one while the fallthrough returns zero.
+///
+/// SDK state machines use this shape for cancellation/finalization helpers:
+/// publish state, invoke guarded callbacks, then report whether the caller
+/// should return. The value composer can alpha-rename the helper's scalar
+/// locals and `compose_guarded_truth_value` restores the source-level branch
+/// at each caller, so this remains semantic composition rather than a
+/// target-specific instruction capture.
+pub(super) fn summarize_automatic_guarded_transaction(
+    function: &Function,
+) -> Option<ValueInlineBody> {
+    if !function.is_static
+        || matches!(function.return_type, Type::Void | Type::Struct { .. })
+        || function.locals.len() > 4
+        || !function.guards.is_empty()
+        || function.asm_body.is_some()
+        || function.locals.iter().any(|local| {
+            local.is_static
+                || local.is_volatile
+                || local.array_length.is_some()
+                || matches!(local.declared_type, Type::Void | Type::Struct { .. })
+        })
+    {
+        return None;
+    }
+    let [Statement::If {
+        condition,
+        then_body,
+        else_body,
+    }] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    let fallback = function.return_expression.as_ref()?;
+    if !else_body.is_empty()
+        || !matches!(fallback, Expression::IntegerLiteral(0))
+        || !matches!(then_body.last(), Some(Statement::Return(Some(Expression::IntegerLiteral(1)))))
+        || statement_count(&function.statements) > 16
+        || crate::analysis::expression_has_side_effect(condition)
+    {
+        return None;
+    }
+    let mut calls = std::collections::HashMap::new();
+    super::collect_function_calls(function, &mut calls);
+    if calls.values().sum::<usize>() < 2 {
+        return None;
+    }
+    let expression = Expression::Conditional {
+        condition: Box::new(condition.clone()),
+        when_true: Box::new(summarize_return_arm(then_body, function.return_type)?),
+        when_false: Box::new(normalize_reference_result(
+            function.return_type,
+            fallback.clone(),
+        )),
+        origin: ConditionalOrigin::IfReturns,
+    };
+    let first_effect = statement_expression(then_body.first()?)?;
+    if function.parameters.iter().any(|parameter| {
+        let total = super::safety::expression_use_count(&expression, &parameter.name);
+        total > 1
+            || (total == 1
+                && super::safety::expression_use_count(&first_effect, &parameter.name) != 1)
+    }) {
+        return None;
+    }
+    Some(ValueInlineBody {
+        source: function.clone(),
+        expression,
+        automatic_transaction: true,
+    })
+}
+
 /// Summarize a same-TU scalar helper whose only control flow is a chain of
 /// positive guards ending in an early value return:
 ///
@@ -708,6 +819,60 @@ mod tests {
             summarize_automatic_transaction(&function).expect("bounded value transaction");
         assert!(summary.automatic_transaction);
         assert!(matches!(summary.expression, Expression::Comma { .. }));
+    }
+
+    #[test]
+    fn summarizes_a_repeated_guarded_effect_transaction() {
+        let mut function = empty_function("finish_if_requested", Type::Int);
+        function.is_static = true;
+        function.locals.push(LocalDeclaration {
+            declared_type: Type::StructPointer { element_size: 48 },
+            name: "finished".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        function.statements = vec![Statement::If {
+            condition: Expression::Variable("requested".into()),
+            then_body: vec![
+                Statement::Assign {
+                    name: "finished".into(),
+                    value: Expression::Variable("executing".into()),
+                },
+                Statement::If {
+                    condition: Expression::Variable("callback".into()),
+                    then_body: vec![Statement::Expression(Expression::Call {
+                        name: "notify".into(),
+                        arguments: vec![Expression::Variable("finished".into())],
+                    })],
+                    else_body: Vec::new(),
+                },
+                Statement::Expression(Expression::Call {
+                    name: "ready".into(),
+                    arguments: Vec::new(),
+                }),
+                Statement::Return(Some(Expression::IntegerLiteral(1))),
+            ],
+            else_body: Vec::new(),
+        }];
+        function.return_expression = Some(Expression::IntegerLiteral(0));
+
+        let summary = summarize_automatic_guarded_transaction(&function)
+            .expect("the guarded callback transaction should be repeatable");
+
+        assert!(summary.automatic_transaction);
+        assert!(matches!(
+            summary.expression,
+            Expression::Conditional {
+                when_false,
+                ..
+            } if matches!(when_false.as_ref(), Expression::IntegerLiteral(0))
+        ));
     }
 
     #[test]

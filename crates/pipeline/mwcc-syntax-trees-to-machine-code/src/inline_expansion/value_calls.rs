@@ -3,7 +3,9 @@
 use super::safety::{stable_argument, stable_local_values};
 use super::substitution::substitute_expression;
 use super::value_body::ValueInlineBody;
-use mwcc_syntax_trees::{ArmBody, BinaryOperator, Expression, LocalDeclaration, Statement};
+use mwcc_syntax_trees::{
+    ArmBody, BinaryOperator, Expression, LocalDeclaration, Statement, UnaryOperator,
+};
 use std::collections::{HashMap, HashSet};
 
 pub(super) struct LocalAllocator<'a> {
@@ -82,7 +84,7 @@ pub(super) fn expand_statement(
                     )
                 })
                 .collect();
-            compose_guarded_truth_value(condition, then_body, else_body)
+            compose_guarded_truth_value(condition, then_body, else_body, bodies)
         }
         Statement::Return(value) => Statement::Return(
             value
@@ -173,9 +175,10 @@ pub(super) fn expand_statement(
 fn compose_guarded_truth_value(
     condition: Expression,
     mut then_body: Vec<Statement>,
-    else_body: Vec<Statement>,
+    mut else_body: Vec<Statement>,
+    bodies: &HashMap<String, ValueInlineBody>,
 ) -> Statement {
-    let Some((guard, effects)) = guarded_true_effects(&condition) else {
+    let Some((guard, effects, caller_true_on_guard)) = guarded_boolean_effects(&condition) else {
         return Statement::If {
             condition,
             then_body,
@@ -184,30 +187,73 @@ fn compose_guarded_truth_value(
     };
     let mut composed = effects
         .into_iter()
-        .filter_map(effect_statement)
+        .filter_map(|effect| effect_statement(effect, bodies))
         .collect::<Vec<_>>();
-    composed.append(&mut then_body);
-    Statement::If {
-        condition: guard.clone(),
-        then_body: composed,
-        else_body,
+    if caller_true_on_guard {
+        composed.append(&mut then_body);
+        Statement::If {
+            condition: guard.clone(),
+            then_body: composed,
+            else_body,
+        }
+    } else {
+        composed.append(&mut else_body);
+        Statement::If {
+            condition: guard.clone(),
+            then_body: composed,
+            else_body: then_body,
+        }
     }
 }
 
-fn guarded_true_effects(condition: &Expression) -> Option<(&Expression, Vec<Expression>)> {
-    let selection = match condition {
+fn guarded_boolean_effects(
+    condition: &Expression,
+) -> Option<(&Expression, Vec<Expression>, bool)> {
+    let (selection, caller_true_on_guard) = match condition {
         Expression::Binary {
             operator: BinaryOperator::NotEqual,
             left,
             right,
-        } if matches!(right.as_ref(), Expression::IntegerLiteral(0)) => left.as_ref(),
+        } if matches!(right.as_ref(), Expression::IntegerLiteral(0)) => (left.as_ref(), true),
         Expression::Binary {
             operator: BinaryOperator::NotEqual,
             left,
             right,
-        } if matches!(left.as_ref(), Expression::IntegerLiteral(0)) => right.as_ref(),
-        expression => expression,
+        } if matches!(left.as_ref(), Expression::IntegerLiteral(0)) => (right.as_ref(), true),
+        Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left,
+            right,
+        } if matches!(right.as_ref(), Expression::IntegerLiteral(0)) => {
+            return guarded_selection_effects(left).map(|(guard, effects)| {
+                (guard, effects, false)
+            });
+        }
+        Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left,
+            right,
+        } if matches!(left.as_ref(), Expression::IntegerLiteral(0)) => {
+            return guarded_selection_effects(right).map(|(guard, effects)| {
+                (guard, effects, false)
+            });
+        }
+        Expression::Unary {
+            operator: UnaryOperator::LogicalNot,
+            operand,
+        } => {
+            return guarded_selection_effects(operand)
+                .map(|(guard, effects)| (guard, effects, false));
+        }
+        expression => (expression, true),
     };
+    guarded_selection_effects(selection)
+        .map(|(guard, effects)| (guard, effects, caller_true_on_guard))
+}
+
+fn guarded_selection_effects(
+    selection: &Expression,
+) -> Option<(&Expression, Vec<Expression>)> {
     let Expression::Conditional {
         condition: guard,
         when_true,
@@ -238,13 +284,33 @@ fn flatten_sequence(expression: &Expression, output: &mut Vec<Expression>) {
     }
 }
 
-fn effect_statement(expression: Expression) -> Option<Statement> {
+fn effect_statement(
+    expression: Expression,
+    bodies: &HashMap<String, ValueInlineBody>,
+) -> Option<Statement> {
     match expression {
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+            ..
+        } => Some(Statement::If {
+            condition: *condition,
+            then_body: effect_arm_statements(*when_true, bodies)?,
+            else_body: effect_arm_statements(*when_false, bodies)?,
+        }),
         Expression::Assign { target, value } => match *target {
-            Expression::Variable(name) => Some(Statement::Assign {
-                name,
-                value: *value,
-            }),
+            Expression::Variable(name)
+                if bodies.values().any(|body| body.stores_global_name(&name)) =>
+            {
+                Some(Statement::Store {
+                    target: Expression::Variable(name),
+                    value: *value,
+                })
+            }
+            Expression::Variable(name) => {
+                Some(Statement::Assign { name, value: *value })
+            }
             target => Some(Statement::Store {
                 target,
                 value: *value,
@@ -256,6 +322,21 @@ fn effect_statement(expression: Expression) -> Option<Statement> {
         | Expression::StringLiteral(_) => None,
         expression => Some(Statement::Expression(expression)),
     }
+}
+
+fn effect_arm_statements(
+    expression: Expression,
+    bodies: &HashMap<String, ValueInlineBody>,
+) -> Option<Vec<Statement>> {
+    let mut sequence = Vec::new();
+    flatten_sequence(&expression, &mut sequence);
+    if !matches!(sequence.pop(), Some(Expression::IntegerLiteral(0))) {
+        return None;
+    }
+    sequence
+        .into_iter()
+        .map(|effect| effect_statement(effect, bodies))
+        .collect()
 }
 
 fn expand_arm(
@@ -365,8 +446,19 @@ pub(super) fn expand_expression(
                 }
                 let pure_single_use = !crate::analysis::expression_has_side_effect(&argument)
                     && body.parameter_used_once_in_forwarded_call(&parameter.name);
+                let guarded_transaction_single_use =
+                    super::value_body::summarize_automatic_guarded_transaction(&body.source)
+                        .is_some()
+                        && use_count == 1
+                        && matches!(
+                            argument,
+                            Expression::Variable(_)
+                                | Expression::IntegerLiteral(_)
+                                | Expression::FloatLiteral(_)
+                        );
                 if forwards_once_in_order
                     || pure_single_use
+                    || guarded_transaction_single_use
                     || stable_argument(&argument, stable_variables)
                 {
                     replacements.insert(parameter.name.clone(), argument);
@@ -647,6 +739,7 @@ mod tests {
             expanded,
             vec![Statement::Expression(Expression::Variable("body".into()))],
             Vec::new(),
+            &HashMap::new(),
         );
         assert!(matches!(
             composed,
@@ -659,6 +752,49 @@ mod tests {
                     Statement::Assign { name, value: Expression::IntegerLiteral(0) },
                     Statement::Expression(Expression::Variable(body)),
                 ] if name == "flag" && body == "body")
+        ));
+    }
+
+    #[test]
+    fn composes_a_false_result_consumer_onto_the_guard_else_edge() {
+        let flag = Expression::Variable("flag".into());
+        let expanded = Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left: Box::new(Expression::Conditional {
+                condition: Box::new(flag.clone()),
+                when_true: Box::new(Expression::Comma {
+                    left: Box::new(Expression::Assign {
+                        target: Box::new(flag.clone()),
+                        value: Box::new(Expression::IntegerLiteral(0)),
+                    }),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                }),
+                when_false: Box::new(Expression::IntegerLiteral(0)),
+                origin: mwcc_syntax_trees::ConditionalOrigin::IfReturns,
+            }),
+            right: Box::new(Expression::IntegerLiteral(0)),
+        };
+
+        let composed = compose_guarded_truth_value(
+            expanded,
+            vec![Statement::Expression(Expression::Variable("not_requested".into()))],
+            Vec::new(),
+            &HashMap::new(),
+        );
+
+        assert!(matches!(
+            composed,
+            Statement::If {
+                condition: Expression::Variable(ref name),
+                ref then_body,
+                ref else_body,
+            } if name == "flag"
+                && matches!(then_body.as_slice(), [
+                    Statement::Assign { name, value: Expression::IntegerLiteral(0) },
+                ] if name == "flag")
+                && matches!(else_body.as_slice(), [
+                    Statement::Expression(Expression::Variable(body)),
+                ] if body == "not_requested")
         ));
     }
 }

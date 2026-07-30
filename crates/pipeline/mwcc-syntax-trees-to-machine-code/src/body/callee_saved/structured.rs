@@ -4154,7 +4154,7 @@ fn is_call_result_local(statements: &[Statement], candidate: &str) -> bool {
     })
 }
 
-pub(super) fn structured_hidden_label_count(statements: &[Statement]) -> u32 {
+pub(crate) fn structured_hidden_label_count(statements: &[Statement]) -> u32 {
     statements
         .iter()
         .map(|statement| match statement {

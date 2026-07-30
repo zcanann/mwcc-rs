@@ -1666,7 +1666,8 @@ impl Generator {
         }
         if let Some(expanded) = self
             .inline_bodies
-            .expand_repeatable_guarded_calls(function)
+            .expand_bounded_guarded_value_transactions(function)
+            .or_else(|| self.inline_bodies.expand_repeatable_guarded_calls(function))
             .or_else(|| {
                 self.inline_bodies
                     .expand_repeatable_bounded_caller_calls(function)
@@ -1677,31 +1678,50 @@ impl Generator {
                     .expand_repeatable_terminal_wrapper_call(function)
             })
         {
-            self.legacy_inline_expansion_frame_bytes +=
-                crate::inline_expansion::legacy_statement_body_frame_residue_bytes(
-                    &expanded.function,
-                    expanded.statement_frame_residue_substitutions,
-                    expanded.statement_mutating_body_substitutions,
-                );
-            self.legacy_inline_expansion_frame_bytes +=
-                crate::inline_expansion::legacy_value_body_frame_residue_bytes(
-                    &expanded.function,
-                    expanded.value_body_substitutions,
-                );
-            self.inline_statement_body_substitutions +=
-                expanded.statement_body_substitutions;
-            if self
-                .behavior
-                .ordinary_inline_substitution_advances_ordinals
-            {
-                self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
-                    self.inline_expansion_facts,
-                    expanded.statement_body_substitutions,
-                    expanded.value_body_substitutions,
-                    self.behavior.inline_statement_substitution_label_weight,
-                );
+            if expanded.retains_ordinary_residue {
+                self.legacy_inline_expansion_frame_bytes +=
+                    crate::inline_expansion::legacy_statement_body_frame_residue_bytes(
+                        &expanded.function,
+                        expanded.statement_frame_residue_substitutions,
+                        expanded.statement_mutating_body_substitutions,
+                    );
+                self.legacy_inline_expansion_frame_bytes +=
+                    crate::inline_expansion::legacy_value_body_frame_residue_bytes(
+                        &expanded.function,
+                        expanded.value_body_substitutions,
+                    );
+                self.inline_statement_body_substitutions +=
+                    expanded.statement_body_substitutions;
+                if self
+                    .behavior
+                    .ordinary_inline_substitution_advances_ordinals
+                {
+                    self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
+                        self.inline_expansion_facts,
+                        expanded.statement_body_substitutions,
+                        expanded.value_body_substitutions,
+                        self.behavior.inline_statement_substitution_label_weight,
+                    );
+                }
             }
-            return self.evaluate_body(&expanded.function);
+            let hidden_label_discount = if expanded.retains_ordinary_residue {
+                0
+            } else {
+                super::callee_saved::structured_hidden_label_count(
+                    &expanded.function.statements,
+                )
+                .saturating_sub(super::callee_saved::structured_hidden_label_count(
+                    &function.statements,
+                ))
+            };
+            let result = self.evaluate_body(&expanded.function);
+            if result.is_ok() {
+                self.output.anonymous_label_bump = self
+                    .output
+                    .anonymous_label_bump
+                    .saturating_sub(hidden_label_discount);
+            }
+            return result;
         }
         if calls_inline_candidate {
             if let Some(expanded) = self.inline_bodies.expand_calls_with_facts(function) {

@@ -78,6 +78,7 @@ mod saved_pointer_zero_test_schedule;
 mod scaled_two_call_add;
 mod shared_global_float_pair_schedule;
 mod structured;
+pub(super) use structured::structured_hidden_label_count;
 #[cfg(test)]
 mod structured_guard_tests;
 mod structured_allocator_cursor_schedule;

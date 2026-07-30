@@ -100,6 +100,10 @@ pub struct InlineBodySet {
     /// Larger guarded transactions available only to terminal scratch wrappers.
     terminal_wrapper_bodies: HashMap<String, Function>,
     values: HashMap<String, ValueInlineBody>,
+    /// Repeated guarded value transactions selected only for bounded callers.
+    /// Larger callers need the general callee-saved allocator before their
+    /// inlined callback state can be represented safely.
+    guarded_transaction_values: HashMap<String, ValueInlineBody>,
     required: HashSet<String>,
     /// Retained pure inline-assembly helpers are already in their final
     /// instruction vocabulary. Keep them as call-site fragments instead of
@@ -169,6 +173,9 @@ pub(crate) struct ExpandedCalls {
     pub(crate) statement_frame_residue_substitutions: usize,
     pub(crate) statement_mutating_body_substitutions: usize,
     pub(crate) value_body_substitutions: usize,
+    /// Whether ordinary inline-analysis frame and anonymous-symbol residue
+    /// accounting applies to this expansion lane.
+    pub(crate) retains_ordinary_residue: bool,
 }
 
 impl InlineBodySet {
@@ -342,6 +349,13 @@ impl InlineBodySet {
                 }
             }
         }
+        let guarded_transaction_values = definitions
+            .iter()
+            .filter_map(|function| {
+                value_body::summarize_automatic_guarded_transaction(function)
+                    .map(|body| (function.name.clone(), body))
+            })
+            .collect();
         if let Some(needle) = std::env::var_os("MWCC_CAPTURE_INLINE") {
             let needle = needle.to_string_lossy();
             for function in definitions
@@ -395,6 +409,7 @@ impl InlineBodySet {
             repeatable_guarded_call_bodies,
             terminal_wrapper_bodies,
             values,
+            guarded_transaction_values,
             required,
             asm_fragments,
             elide_overwritten_vptr_stores: false,
@@ -498,6 +513,7 @@ impl InlineBodySet {
             .any(|name| {
                 self.bodies.contains_key(name)
                     || self.repeatable_guarded_call_bodies.contains_key(name)
+                    || self.guarded_transaction_values.contains_key(name)
                     || self.values.contains_key(name)
             })
             || function
@@ -655,6 +671,40 @@ impl InlineBodySet {
             .bodies
             .extend(self.repeatable_guarded_call_bodies.clone());
         expanded.expand_calls_with_facts_policy(function, false)
+    }
+
+    /// Expand a repeated guarded value transaction inside a bounded caller.
+    ///
+    /// The helper itself is profitable at every site, but a large caller can
+    /// introduce several overlapping callback survivors. Keep selection
+    /// separate from value summarization so those callers remain callable
+    /// until the general saved-register allocator can represent them.
+    pub(crate) fn expand_bounded_guarded_value_transactions(
+        &self,
+        function: &Function,
+    ) -> Option<ExpandedCalls> {
+        if safety::statement_weight(&function.statements) > 16 {
+            return None;
+        }
+        let mut calls = HashMap::new();
+        collect_function_calls(function, &mut calls);
+        if !calls
+            .keys()
+            .any(|name| self.guarded_transaction_values.contains_key(name))
+        {
+            return None;
+        }
+        let mut expanded = self.clone();
+        expanded
+            .values
+            .extend(self.guarded_transaction_values.clone());
+        let mut result = expanded.expand_calls_with_facts_policy(function, false)?;
+        // This repeated IPA transaction is selected after ordinary inline
+        // analysis and does not consume that pass's anonymous-symbol or frame
+        // residue budget. Its alpha-renamed survivor is planned directly by
+        // structured callee-saved lowering.
+        result.retains_ordinary_residue = false;
+        Some(result)
     }
 
     /// Expand a repeatable definition at a terminal wrapper call. Source-level
@@ -856,6 +906,7 @@ impl InlineBodySet {
             statement_frame_residue_substitutions,
             statement_mutating_body_substitutions,
             value_body_substitutions,
+            retains_ordinary_residue: true,
         })
     }
 
