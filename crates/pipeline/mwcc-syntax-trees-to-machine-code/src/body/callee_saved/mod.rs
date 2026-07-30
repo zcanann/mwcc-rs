@@ -189,6 +189,7 @@ mod structured_register_width;
 mod structured_rounded_pointer_schedule;
 mod structured_store_schedule;
 mod structured_state_transfer_bit_swap;
+mod structured_state_transfer_hp_call;
 mod structured_state_transfer_layout;
 mod structured_switch_lowering;
 mod structured_tail_result_guard;
