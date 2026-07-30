@@ -87,11 +87,7 @@ fn indexed_callback_lookup(instructions: &[Instruction]) -> Option<usize> {
         let add_uses_low_and_scale =
             (*add_left == *low && *add_right == *scaled)
                 || (*add_left == *scaled && *add_right == *low);
-        let preceded_by_call = instructions[start.saturating_sub(8)..start]
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }));
-        if preceded_by_call
-            && index == scale_source
+        if index == scale_source
             && high == low_base
             && address == callback_base
             && add_uses_low_and_scale
@@ -149,9 +145,6 @@ mod tests {
     #[test]
     fn recognizes_an_indexed_callback_slot_load() {
         let instructions = [
-            Instruction::BranchAndLink {
-                target: "prepare".into(),
-            },
             Instruction::LoadWord {
                 d: 3,
                 a: 31,
@@ -189,11 +182,11 @@ mod tests {
             Instruction::BranchConditionalForward {
                 options: 12,
                 condition_bit: 2,
-                target: 10,
+                target: 9,
             },
             Instruction::MoveToLinkRegister { s: 12 },
         ];
 
-        assert_eq!(indexed_callback_lookup(&instructions), Some(1));
+        assert_eq!(indexed_callback_lookup(&instructions), Some(0));
     }
 }
