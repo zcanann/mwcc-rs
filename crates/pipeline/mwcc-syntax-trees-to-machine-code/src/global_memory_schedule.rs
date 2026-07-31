@@ -147,6 +147,103 @@ pub(crate) fn hoist_address_highs_over_stores(
     permutation
 }
 
+/// Start a non-power-of-two global-array scale before its independent address
+/// pair. Structured control-flow bodies reach the physical stream already
+/// scheduled, so their `lis; mulli; addi; add` selection does not pass through
+/// the generic list scheduler. MWCC issues the longer integer multiply first:
+/// `mulli; lis; addi; add`.
+///
+/// The complete four-instruction dataflow and matching relocation pair prove
+/// both the independence of the first two instructions and their ownership by
+/// one address computation. Control-flow entry points remain immovable.
+pub(crate) fn hoist_integer_scales_over_address_highs(
+    instructions: &mut [Instruction],
+    relocations: &[Relocation],
+) -> Vec<usize> {
+    let mut permutation = (0..instructions.len()).collect::<Vec<_>>();
+    let control_entries = instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::BranchConditionalForward { target, .. }
+            | Instruction::Branch { target }
+                if *target < instructions.len() =>
+            {
+                Some(*target)
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+
+    let mut high = 0;
+    while high + 3 < instructions.len() {
+        let scale = high + 1;
+        let low = high + 2;
+        let sum = high + 3;
+        if [high, scale, low, sum]
+            .iter()
+            .any(|index| control_entries.contains(index))
+        {
+            high += 1;
+            continue;
+        }
+        let Instruction::AddImmediateShifted {
+            d: high_register,
+            a: 0,
+            ..
+        } = instructions[high]
+        else {
+            high += 1;
+            continue;
+        };
+        let Instruction::MultiplyImmediate {
+            d: scaled,
+            a: scale_source,
+            ..
+        } = instructions[scale]
+        else {
+            high += 1;
+            continue;
+        };
+        let Instruction::AddImmediate {
+            d: base,
+            a: low_base,
+            ..
+        } = instructions[low]
+        else {
+            high += 1;
+            continue;
+        };
+        let Instruction::Add {
+            a: sum_left,
+            b: sum_right,
+            ..
+        } = instructions[sum]
+        else {
+            high += 1;
+            continue;
+        };
+        let sum_consumes_both =
+            (sum_left == base && sum_right == scaled)
+                || (sum_left == scaled && sum_right == base);
+        if low_base != high_register
+            || !sum_consumes_both
+            || [scaled, scale_source].contains(&high_register)
+            || external_address_target(relocations, high, RelocationKind::Addr16Ha)
+                != external_address_target(relocations, low, RelocationKind::Addr16Lo)
+            || external_address_target(relocations, high, RelocationKind::Addr16Ha).is_none()
+        {
+            high += 1;
+            continue;
+        }
+
+        instructions.swap(high, scale);
+        permutation[high] = scale;
+        permutation[scale] = high;
+        high += 4;
+    }
+    permutation
+}
+
 fn external_address_target(
     relocations: &[Relocation],
     index: usize,
@@ -425,5 +522,42 @@ mod tests {
             hoist_address_highs_over_stores(&mut control_entry, &relocations),
             [0, 1, 2, 3, 4],
         );
+    }
+
+    #[test]
+    fn integer_scale_starts_before_an_independent_global_address_pair() {
+        let mut instructions = vec![
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::MultiplyImmediate {
+                d: 4,
+                a: 28,
+                immediate: 80,
+            },
+            Instruction::AddImmediate {
+                d: 0,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::Add {
+                d: 29,
+                a: 0,
+                b: 4,
+            },
+        ];
+        let relocations = [
+            address_relocation(0, RelocationKind::Addr16Ha, "records"),
+            address_relocation(2, RelocationKind::Addr16Lo, "records"),
+        ];
+
+        let permutation =
+            hoist_integer_scales_over_address_highs(&mut instructions, &relocations);
+
+        assert!(matches!(instructions[0], Instruction::MultiplyImmediate { .. }));
+        assert!(matches!(instructions[1], Instruction::AddImmediateShifted { .. }));
+        assert_eq!(permutation, [1, 0, 2, 3]);
     }
 }

@@ -1121,6 +1121,11 @@ fn lower_function_body(
     generator.schedule_structured_repeated_call_poll_transaction();
     generator.normalize_structured_call_poll_zero_comparisons();
     generator.schedule_structured_call_poll_fixed_address_entry();
+    let scale = global_memory_schedule::hoist_integer_scales_over_address_highs(
+        &mut generator.output.instructions,
+        &generator.output.relocations,
+    );
+    remap_instruction_indices(&mut generator, &scale);
     if generator.behavior.schedule_latency_slots {
         if !generator.structured_repeated_call_poll_owner {
             branch_cleanup::align_tight_polling_call_loops(&mut generator);
