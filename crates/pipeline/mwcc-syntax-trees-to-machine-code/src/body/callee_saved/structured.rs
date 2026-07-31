@@ -1412,6 +1412,11 @@ impl Generator {
                 layout
                     .frame_slot(home_index)
                     .expect("the publication layout owns every saved home")
+            } else if let Some(slot) = recovered_general_homes
+                .as_ref()
+                .and_then(|layout| layout.frame_slot(home_index))
+            {
+                slot
             } else if sequenced_callback_wait_layout {
                 sequenced_callback_wait_frame_slot(home_index)
                     .expect("the sequenced callback wait layout owns three homes")
@@ -1460,6 +1465,11 @@ impl Generator {
                     .into_iter()
                     .map(|home_index| homes[home_index]),
             );
+        } else if let Some(save_order) = recovered_general_homes
+            .as_ref()
+            .and_then(StructuredRecoveredGeneralHomes::save_order)
+        {
+            logical_saved_homes.extend(save_order.iter().map(|home_index| homes[*home_index]));
         } else if sequenced_callback_wait_layout {
             let [identifier, receiver, wait_state] = homes.as_slice() else {
                 unreachable!("the sequenced callback wait layout owns three homes")
@@ -2154,6 +2164,10 @@ impl Generator {
             || sequenced_callback_wait_layout
             || loop_member_receiver_layout.is_some()
             || loop_call_publication_layout.is_some()
+            || recovered_general_homes
+                .as_ref()
+                .and_then(StructuredRecoveredGeneralHomes::save_order)
+                .is_some()
             || saved_home_stores_precede_initialization(
                 self.behavior.frame_convention,
                 eager_saved_locals.len(),
@@ -2226,6 +2240,12 @@ impl Generator {
                     .map(|layout| layout.save_order().to_vec())
             })
             .or_else(|| {
+                recovered_general_homes
+                    .as_ref()
+                    .and_then(StructuredRecoveredGeneralHomes::save_order)
+                    .map(<[usize]>::to_vec)
+            })
+            .or_else(|| {
                 sequenced_callback_wait_layout
                     .then_some(sequenced_callback_wait_save_order().to_vec())
             });
@@ -2239,6 +2259,10 @@ impl Generator {
                         plan.frame_size,
                     );
                     if loop_call_publication_layout.is_none()
+                        && recovered_general_homes
+                            .as_ref()
+                            .and_then(StructuredRecoveredGeneralHomes::save_order)
+                            .is_none()
                         && (saved_parameter_base..deferred_home_base)
                         .contains(&home_index)
                     {
@@ -2252,7 +2276,12 @@ impl Generator {
                         });
                     }
                 }
-                if loop_call_publication_layout.is_some() {
+                if loop_call_publication_layout.is_some()
+                    || recovered_general_homes
+                        .as_ref()
+                        .and_then(StructuredRecoveredGeneralHomes::save_order)
+                        .is_some()
+                {
                     for (_, home, incoming) in &saved_parameter_homes {
                         self.output
                             .instructions
