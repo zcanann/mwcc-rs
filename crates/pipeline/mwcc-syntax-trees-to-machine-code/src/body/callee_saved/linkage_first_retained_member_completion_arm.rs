@@ -216,6 +216,69 @@ fn recognize_at(
         return None;
     }
 
+    let [Instruction::LoadWord {
+        d: next_object,
+        a: 0,
+        ..
+    }, Instruction::AddImmediate {
+        d: next_replacement,
+        a: next_anchor,
+        ..
+    }, Instruction::AddImmediate {
+        d: next_zero,
+        a: 0,
+        immediate: 0,
+    }, Instruction::StoreWord {
+        s: next_published,
+        a: 0,
+        ..
+    }, Instruction::StoreWord {
+        s: next_stored_zero,
+        a: next_state_object,
+        offset: 12,
+    }, Instruction::LoadWord {
+        d: next_callback,
+        a: next_callback_object,
+        offset: 40,
+    }, Instruction::CompareLogicalWordImmediate {
+        a: next_compared_callback,
+        immediate: 0,
+    }, Instruction::BranchConditionalForward {
+        target: next_callback_join,
+        ..
+    }, Instruction::MoveToLinkRegister {
+        s: next_linked_callback,
+    }, Instruction::AddImmediate {
+        d: next_callback_result,
+        a: 0,
+        immediate: 0,
+    }, Instruction::BranchToLinkRegisterAndLink, Instruction::BranchAndLink { .. }, Instruction::Branch { target: next_exit }] =
+        instructions.get(start + 35..start + 48)?
+    else {
+        return None;
+    };
+    if next_anchor == &0
+        || next_replacement != next_published
+        || next_zero != next_stored_zero
+        || next_object != next_state_object
+        || next_object != next_callback_object
+        || next_callback != next_compared_callback
+        || next_callback != next_linked_callback
+        || next_callback_result != &3
+        || next_callback_join != &(start + 46)
+        || next_exit != true_exit
+        || external_target_at(relocations, start + 35, RelocationKind::EmbSda21)
+            != Some("executing")
+        || external_target_at(relocations, start + 38, RelocationKind::EmbSda21)
+            != Some("executing")
+        || external_target_at(relocations, start + 46, RelocationKind::Rel24) != Some("stateReady")
+        || !displacements
+            .iter()
+            .any(|displacement| displacement.instruction_index == start + 36)
+    {
+        return None;
+    }
+
     Some(RetainedMemberCompletionArm { start })
 }
 
@@ -226,7 +289,7 @@ impl Generator {
         }
 
         let mut start = 0;
-        while start + 35 <= self.output.instructions.len() {
+        while start + 48 <= self.output.instructions.len() {
             let Some(arm) = recognize_at(
                 &self.output.instructions,
                 &self.output.relocations,
@@ -299,6 +362,18 @@ impl Generator {
             };
             *a = 5;
 
+            crate::remove_instruction_retargeting_to_next(self, base + 33);
+            crate::move_instruction_before_retargeting(self, base + 35, base + 34);
+            let Instruction::AddImmediate { d, .. } = &mut self.output.instructions[base + 33]
+            else {
+                unreachable!("validated next replacement address changed form")
+            };
+            *d = 0;
+            let Instruction::StoreWord { s, .. } = &mut self.output.instructions[base + 34] else {
+                unreachable!("validated next replacement publication changed form")
+            };
+            *s = 0;
+
             debug_assert!(matches!(
                 self.output.instructions[base + 1],
                 Instruction::AddImmediate {
@@ -307,7 +382,7 @@ impl Generator {
                     immediate: 28
                 }
             ));
-            start += 33;
+            start += 45;
         }
     }
 }
@@ -402,7 +477,7 @@ mod tests {
             Instruction::BranchAndLink {
                 target: "stateReady".into(),
             },
-            Instruction::Branch { target: 40 },
+            Instruction::Branch { target: 53 },
             Instruction::load_immediate(0, 0),
             Instruction::LoadWord {
                 d: 3,
@@ -450,9 +525,51 @@ mod tests {
             Instruction::BranchAndLink {
                 target: "DVDLowAudioStream".into(),
             },
-            Instruction::Branch { target: 40 },
+            Instruction::Branch { target: 53 },
+            Instruction::LoadWord {
+                d: 4,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 31,
+                immediate: 64,
+            },
+            Instruction::load_immediate(0, 0),
+            Instruction::StoreWord {
+                s: 3,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 4,
+                offset: 12,
+            },
+            Instruction::LoadWord {
+                d: 12,
+                a: 4,
+                offset: 40,
+            },
+            Instruction::CompareLogicalWordImmediate {
+                a: 12,
+                immediate: 0,
+            },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 46,
+            },
+            Instruction::MoveToLinkRegister { s: 12 },
+            Instruction::load_immediate(3, 0),
+            Instruction::BranchToLinkRegisterAndLink,
+            Instruction::BranchAndLink {
+                target: "stateReady".into(),
+            },
+            Instruction::Branch { target: 53 },
         ];
-        instructions.extend((0..5).map(|_| Instruction::load_immediate(0, 0)));
+        instructions.extend((0..6).map(|_| Instruction::load_immediate(0, 0)));
         let relocations = vec![
             relocation(0, RelocationKind::EmbSda21, "executing"),
             relocation(8, RelocationKind::EmbSda21, "executing"),
@@ -465,13 +582,24 @@ mod tests {
             relocation(31, RelocationKind::Addr16Ha, "cbForStateBusy"),
             relocation(32, RelocationKind::Addr16Lo, "cbForStateBusy"),
             relocation(33, RelocationKind::Rel24, "DVDLowAudioStream"),
+            relocation(35, RelocationKind::EmbSda21, "executing"),
+            relocation(38, RelocationKind::EmbSda21, "executing"),
+            relocation(46, RelocationKind::Rel24, "stateReady"),
         ];
-        let displacements = vec![mwcc_machine_code::DataSectionDisplacement {
-            instruction_index: 9,
-            target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
-                "DummyCommandBlock".into(),
-            ),
-        }];
+        let displacements = vec![
+            mwcc_machine_code::DataSectionDisplacement {
+                instruction_index: 9,
+                target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+                    "DummyCommandBlock".into(),
+                ),
+            },
+            mwcc_machine_code::DataSectionDisplacement {
+                instruction_index: 36,
+                target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+                    "DummyCommandBlock".into(),
+                ),
+            },
+        ];
 
         assert_eq!(
             recognize_at(&instructions, &relocations, &displacements, 0),
