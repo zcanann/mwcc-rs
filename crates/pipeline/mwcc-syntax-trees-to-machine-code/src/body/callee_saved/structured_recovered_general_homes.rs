@@ -7,6 +7,7 @@ pub(super) struct StructuredRecoveredGeneralHomes {
     preferences: Vec<u8>,
     parameter_count: usize,
     save_order: Option<Vec<usize>>,
+    preferences_follow_groups: bool,
 }
 
 fn recovered_register(name: &str) -> Option<u8> {
@@ -23,7 +24,6 @@ impl StructuredRecoveredGeneralHomes {
     /// preceding homes.
     pub(super) fn plan(function: &Function) -> Option<Self> {
         if !function.guards.is_empty()
-            || !function_makes_call(function)
             || function.statements.is_empty()
         {
             return None;
@@ -57,6 +57,23 @@ impl StructuredRecoveredGeneralHomes {
         if recovered.is_empty() {
             return None;
         }
+        if !function_makes_call(function)
+            && recovered_global_transaction_loop(function, &names, &recovered)
+        {
+            return Some(Self {
+                names,
+                preferences: recovered
+                    .into_iter()
+                    .map(|(_, register)| register)
+                    .collect(),
+                parameter_count: 0,
+                save_order: None,
+                preferences_follow_groups: true,
+            });
+        }
+        if !function_makes_call(function) {
+            return None;
+        }
         let straight_assignments = function.statements.iter().all(|statement| {
             matches!(statement, Statement::Assign { name, .. } if names.contains(name))
         }) && function.return_expression.as_ref().is_some_and(|returned| {
@@ -77,6 +94,7 @@ impl StructuredRecoveredGeneralHomes {
                 preferences,
                 parameter_count: 0,
                 save_order: None,
+                preferences_follow_groups: false,
             });
         }
 
@@ -130,6 +148,7 @@ impl StructuredRecoveredGeneralHomes {
             preferences,
             parameter_count: 1,
             save_order: Some(vec![1, 0, 2]),
+            preferences_follow_groups: false,
         })
     }
 
@@ -143,12 +162,24 @@ impl StructuredRecoveredGeneralHomes {
         eager_count: usize,
         parameter_count: usize,
         total_count: usize,
+        deferred: &super::structured_locals::DeferredSavedHomePlan,
     ) -> Option<u8> {
-        (eager_count == 0
-            && parameter_count == self.parameter_count
-            && total_count == self.preferences.len())
-            .then(|| self.preferences.get(home_index).copied())
-            .flatten()
+        if eager_count != 0
+            || parameter_count != self.parameter_count
+            || total_count != self.preferences.len()
+        {
+            return None;
+        }
+        if self.preferences_follow_groups {
+            let group = home_index.checked_sub(parameter_count)?;
+            return deferred.members(group).find_map(|member| {
+                self.names
+                    .iter()
+                    .position(|name| name == member)
+                    .and_then(|index| self.preferences.get(index).copied())
+            });
+        }
+        self.preferences.get(home_index).copied()
     }
 
     pub(super) fn save_order(&self) -> Option<&[usize]> {
@@ -159,6 +190,70 @@ impl StructuredRecoveredGeneralHomes {
         self.save_order()?
             .iter()
             .position(|candidate| *candidate == home_index)
+    }
+}
+
+fn recovered_global_transaction_loop(
+    function: &Function,
+    names: &[String],
+    recovered: &[(usize, u8)],
+) -> bool {
+    if function.return_type != Type::Void
+        || function.return_expression.is_some()
+        || recovered.len() != names.len()
+        || function
+            .statements
+            .iter()
+            .filter(|statement| matches!(statement, Statement::Loop { .. }))
+            .count()
+            < 2
+        || !names.iter().all(|name| {
+            super::structured_locals::body_uses_local(&function.statements, name)
+        })
+    {
+        return false;
+    }
+    let mut registers = recovered
+        .iter()
+        .map(|(_, register)| *register)
+        .collect::<Vec<_>>();
+    registers.sort_unstable();
+    registers.dedup();
+    if registers.len() != names.len()
+        || registers.last().copied() != Some(31)
+        || registers.windows(2).any(|pair| pair[1] != pair[0] + 1)
+    {
+        return false;
+    }
+    let mut stored_globals = Vec::new();
+    collect_scalar_global_stores(&function.statements, names, &mut stored_globals);
+    matches!(stored_globals.as_slice(), [first, second, ..] if first == second)
+}
+
+fn collect_scalar_global_stores(
+    statements: &[Statement],
+    locals: &[String],
+    output: &mut Vec<String>,
+) {
+    for statement in statements {
+        match statement {
+            Statement::Store {
+                target: Expression::Variable(name),
+                ..
+            } if !locals.contains(name) => output.push(name.clone()),
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_scalar_global_stores(then_body, locals, output);
+                collect_scalar_global_stores(else_body, locals, output);
+            }
+            Statement::Loop { body, .. } => {
+                collect_scalar_global_stores(body, locals, output);
+            }
+            _ => {}
+        }
     }
 }
 

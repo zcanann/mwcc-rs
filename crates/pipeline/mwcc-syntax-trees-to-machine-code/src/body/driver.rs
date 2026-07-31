@@ -1750,6 +1750,20 @@ impl Generator {
                     self.globals.insert(name.clone(), global_type);
                 }
             }
+            if !expanded.introduced_mutable_globals.is_empty() {
+                self.reserved.extend(
+                    expanded
+                        .function
+                        .parameters
+                        .iter()
+                        .filter_map(|parameter| self.locations.get(&parameter.name))
+                        .filter(|location| {
+                            location.class == ValueClass::General
+                                && !mwcc_vreg::Reg::is_virtual_field(location.register)
+                        })
+                        .map(|location| location.register),
+                );
+            }
             let result = self.evaluate_body(&expanded.function);
             if result.is_ok() {
                 self.output.anonymous_label_bump = self

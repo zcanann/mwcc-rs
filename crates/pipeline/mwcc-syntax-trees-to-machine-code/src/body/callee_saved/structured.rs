@@ -1205,6 +1205,7 @@ impl Generator {
                             eager_saved_locals.len(),
                             saved_parameters.len(),
                             count,
+                            &deferred_home_plan,
                         )
                     })
                 {
