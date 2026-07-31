@@ -2,6 +2,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use super::guarded_global_rmw::guarded_body_read_needs_value_reuse;
 
 impl Generator {
     fn lower_wide_mask_local_for_version(&self, function: &Function) -> Option<Function> {
@@ -2323,8 +2324,9 @@ impl Generator {
         // `if (gi) f(gi);` — a global read in BOTH an if-condition and its then-body. mwcc loads the
         // global ONCE into the argument register, tests it there, and reuses it for the guarded call
         // (`lwz r3,gi; cmpwi r3,0; beq; bl f`); our codegen loads it into the scratch for the test, then
-        // RELOADS it for the body — wrong bytes. Defer until that value is reused across the branch. (A
-        // parameter condition, or a body that does not read the condition's global, stays byte-exact.)
+        // RELOADS it for the body — wrong bytes. Defer until that value is reused across the branch.
+        // Measured narrow `if (...) gi++` tails are different: MWCC deliberately reloads them in the
+        // taken arm, so the focused guarded-global RMW classifier admits those to structured lowering.
         for statement in &function.statements {
             if let Statement::If {
                 condition,
@@ -2343,13 +2345,13 @@ impl Generator {
                     .collect();
                 let body_reads_condition_global =
                     then_body.iter().any(|body_statement| match body_statement {
-                        Statement::Expression(expression) => condition_globals
-                            .iter()
-                            .any(|global| expression_reads_name(expression, global)),
-                        Statement::Store { value, .. } => condition_globals
-                            .iter()
-                            .any(|global| expression_reads_name(value, global)),
-                        _ => false,
+                        _ => condition_globals.iter().any(|global| {
+                            guarded_body_read_needs_value_reuse(
+                                body_statement,
+                                global,
+                                self.globals[*global],
+                            )
+                        }),
                     });
                 if body_reads_condition_global {
                     return Err(Diagnostic::error(format!(
