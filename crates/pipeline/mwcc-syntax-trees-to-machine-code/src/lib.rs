@@ -576,6 +576,7 @@ fn lower_function_body(
         structured_sequenced_callback_wait_starter: None,
         structured_switch_dispatch_conditionals: HashSet::new(),
         structured_cfg_cleanup_owner: false,
+        structured_repeated_call_poll_owner: false,
         structured_shared_switch_global_value: None,
         transient_global_index_base: None,
         full_bss_globals: globals
@@ -1091,8 +1092,11 @@ fn lower_function_body(
     generator.schedule_structured_global_member_address();
     generator.schedule_linkage_first_state_switch_layout();
     generator.schedule_linkage_first_global_indirect_callback_tail();
+    generator.schedule_structured_repeated_call_poll_transaction();
     if generator.behavior.schedule_latency_slots {
-        branch_cleanup::align_tight_polling_call_loops(&mut generator);
+        if !generator.structured_repeated_call_poll_owner {
+            branch_cleanup::align_tight_polling_call_loops(&mut generator);
+        }
         // Address-pair latency filling is safe on the final physical stream,
         // after adjacency-sensitive structured schedules have consumed their
         // selected forms.

@@ -360,6 +360,10 @@ pub(crate) struct Generator {
     /// forwarding blocks and no-op fallthrough branches. Ordinary functions
     /// retain that optimizer residue.
     pub(crate) structured_cfg_cleanup_owner: bool,
+    /// A structured sequence of direct sends followed by empty call-poll loops.
+    /// MWCC removes their pre-test fallthrough branches without applying the
+    /// generic eight-byte alignment used by standalone polling loops.
+    pub(crate) structured_repeated_call_poll_owner: bool,
     /// A nonvolatile global pointer loaded immediately before a guarded switch
     /// and consumed at the start of several mutually exclusive arms.
     pub(crate) structured_shared_switch_global_value: Option<(String, u8)>,

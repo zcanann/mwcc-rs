@@ -3128,6 +3128,9 @@ mod tests {
     #[path = "global_doubly_linked_append_trace.rs"]
     mod global_doubly_linked_append_trace;
 
+    #[path = "repeated_call_poll_transaction.rs"]
+    mod repeated_call_poll_transaction;
+
     #[path = "inlined_list_append.rs"]
     mod inlined_list_append;
 
