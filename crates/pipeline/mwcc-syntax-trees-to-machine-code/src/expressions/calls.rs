@@ -1290,6 +1290,9 @@ impl Generator {
                                 .dereferenced_width(base)
                                 .is_some_and(|width| width < 32),
                             Expression::Member { member_type, .. } => member_type.width() < 32,
+                            Expression::Assign { .. } => self
+                                .unpromoted_integer_width(general_argument)
+                                .is_some_and(|width| width < 32),
                             // A narrow-returning callee has already produced an
                             // ABI-canonical narrow value in r3. Passing that
                             // result directly to another narrow parameter does

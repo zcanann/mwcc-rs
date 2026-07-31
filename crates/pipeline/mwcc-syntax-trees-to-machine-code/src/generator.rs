@@ -1118,7 +1118,9 @@ impl Generator {
             Expression::BitFieldRead { promoted_type, .. } => Some(promoted_type.width()),
             Expression::PostStep { target, .. } => self.unpromoted_integer_width(target),
             Expression::IndexedUpdateValue { value } => self.unpromoted_integer_width(value),
-            Expression::Assign { value, .. } => self.unpromoted_integer_width(value),
+            // An assignment expression has the type of its left operand, not
+            // the type of the value before conversion.
+            Expression::Assign { target, .. } => self.unpromoted_integer_width(target),
             Expression::Comma { right, .. } => self.unpromoted_integer_width(right),
             Expression::VirtualCall { return_type, .. } => Some(return_type.width()),
             Expression::Call { name, .. } => self
@@ -1257,8 +1259,9 @@ impl Generator {
             Expression::MemberAddress { .. } => Ok(false),
             // The address of an lvalue is an unsigned pointer.
             Expression::AddressOf { .. } => Ok(false),
-            // An assignment yields the stored value.
-            Expression::Assign { value, .. } => self.signedness_of(value),
+            // An assignment yields the value after conversion to the left
+            // operand's type.
+            Expression::Assign { target, .. } => self.signedness_of(target),
             // A comma operator yields its right operand.
             Expression::Comma { right, .. } => self.signedness_of(right),
             // A call's signedness is its declared return type's; an unknown callee

@@ -180,15 +180,30 @@ impl Generator {
             if restore {
                 self.reserved.remove(&address);
             }
+            let converted = assignment_narrowing(*member_type, self.unpromoted_integer_width(value))
+                .map(|(width, signed)| {
+                    let converted = if destination == GENERAL_SCRATCH {
+                        destination
+                    } else {
+                        GENERAL_SCRATCH
+                    };
+                    self.emit_widen(converted, destination, width, signed);
+                    (converted, width, signed)
+                });
             let displacement = i16::try_from(*offset).map_err(|_| {
                 Diagnostic::error("assignment-valued member offset is out of range")
             })?;
             self.output.instructions.push(displacement_store(
                 pointee,
-                destination,
+                converted.map_or(destination, |(converted, _, _)| converted),
                 address,
                 displacement,
             )?);
+            if let Some((converted, width, signed)) = converted {
+                if converted != destination {
+                    self.emit_widen(destination, converted, width, signed);
+                }
+            }
             return Ok(());
         }
         // An indexed assignment nested inside another store (`a[0] = a[1] =
@@ -1957,6 +1972,12 @@ fn word_cast_of_word_leaf_is_store_identity(
         )
 }
 
+fn assignment_narrowing(target: Type, source_width: Option<u8>) -> Option<(u8, bool)> {
+    let target_width = target.width();
+    (target_width < 32 && source_width.unwrap_or(32) > target_width)
+        .then_some((target_width, target.is_signed()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1992,5 +2013,15 @@ mod tests {
             Pointee::Float,
             32,
         ));
+    }
+
+    #[test]
+    fn assignment_result_uses_the_narrow_target_type() {
+        assert_eq!(
+            assignment_narrowing(Type::UnsignedChar, Some(16)),
+            Some((8, false))
+        );
+        assert_eq!(assignment_narrowing(Type::Short, Some(32)), Some((16, true)));
+        assert_eq!(assignment_narrowing(Type::UnsignedChar, Some(8)), None);
     }
 }
