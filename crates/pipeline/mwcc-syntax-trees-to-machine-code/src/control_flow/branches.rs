@@ -2077,7 +2077,7 @@ impl Generator {
         // Both signed and unsigned byte loads are computed values with no
         // persistent home. Signedness only changes the comparison step after
         // placement; the `lbz` itself belongs in the scratch for either type.
-        if self.is_byte_load(operand) {
+        if self.is_byte_load(operand) || self.is_halfword_load(operand) {
             self.evaluate_general(operand, GENERAL_SCRATCH)?;
             return Ok(GENERAL_SCRATCH);
         }

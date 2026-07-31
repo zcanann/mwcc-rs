@@ -5,7 +5,7 @@ use crate::expressions::load_base_name;
 use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{BinaryOperator, Expression};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Type};
 
 impl Generator {
     /// Materialize `unsigned narrow < C` as the sign bit of `value - C`.
@@ -1856,6 +1856,28 @@ impl Generator {
             _ => return false,
         };
         width == Some(8)
+    }
+
+    /// Whether `value` is a 16-bit memory load. Both signed and unsigned
+    /// halfword loads yield an ordinary GPR comparison operand; instruction
+    /// selection preserves the source signedness with `lha` versus `lhz`.
+    pub(crate) fn is_halfword_load(&self, value: &Expression) -> bool {
+        let width = match value {
+            Expression::Variable(name)
+                if !self.locations.contains_key(name)
+                    && !self.frame_slots.contains_key(name)
+                    && self.globals.get(name).is_some_and(|value_type| {
+                        matches!(value_type, Type::Short | Type::UnsignedShort)
+                    }) =>
+            {
+                Some(16)
+            }
+            Expression::Dereference { pointer } => self.dereferenced_width(pointer),
+            Expression::Index { base, .. } => self.dereferenced_width(base),
+            Expression::Member { member_type, .. } => Some(member_type.width()),
+            _ => return false,
+        };
+        width == Some(16)
     }
 
     /// Whether `value` is a load of a signed 8-bit value (a `char`/`signed char`
