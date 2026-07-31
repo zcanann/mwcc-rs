@@ -1659,17 +1659,26 @@ impl Generator {
                 if left_extend.is_none() && self.is_signed_byte_load(left)? {
                     left_extend = Some((8, true));
                 }
+                if left_extend.is_none() && matches!(left.as_ref(), Expression::Assign { .. }) {
+                    if let Some(width) = self
+                        .unpromoted_integer_width(left)
+                        .filter(|width| *width < 32)
+                    {
+                        left_extend = Some((width, self.signedness_of(left)?));
+                    }
+                }
                 match (as_small_integer(right), constant_value(right) == Some(0)) {
                     // A literal zero is also a small integer, so the zero-test
                     // arm must precede the general immediate arm. Its record-form
                     // extension both restores the narrow value and sets CR0.
                     (_, true) => {
                         if let Some((width, narrow_signed)) = left_extend {
-                            if matches!(
-                                left.as_ref(),
-                                Expression::Call { .. } | Expression::VirtualCall { .. }
-                            ) && self.behavior.narrow_call_zero_test_style
-                                == mwcc_versions::NarrowCallZeroTestStyle::SeparateCompare
+                            if matches!(left.as_ref(), Expression::Assign { .. })
+                                || (matches!(
+                                    left.as_ref(),
+                                    Expression::Call { .. } | Expression::VirtualCall { .. }
+                                ) && self.behavior.narrow_call_zero_test_style
+                                    == mwcc_versions::NarrowCallZeroTestStyle::SeparateCompare)
                             {
                                 self.emit_widen(
                                     GENERAL_SCRATCH,
