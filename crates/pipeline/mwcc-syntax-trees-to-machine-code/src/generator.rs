@@ -484,6 +484,10 @@ pub(crate) struct Generator {
     /// materialized float assignment. The expression planner sizes the window;
     /// nested operand placement consumes its homes from the outside in.
     pub(crate) materialized_float_window: Option<(u8, u8)>,
+    /// Volatile homes reserved by a structured branch whose returned float
+    /// parameter remains live across mutually exclusive member-store arms.
+    pub(crate) structured_branch_float_work_home: Option<u8>,
+    pub(crate) structured_branch_constant_address_home: Option<u8>,
     /// Skipped inline definitions' names — a body calling one defers after
     /// the exact-match templates decline (mwcc inlines; a bl would be wrong).
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
@@ -996,7 +1000,11 @@ impl Generator {
             self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
             return 0;
         }
-        let base = self.fresh_virtual_general();
+        let base = if let Some(preferred) = self.structured_branch_constant_address_home {
+            self.fresh_virtual_general_preferring(preferred)
+        } else {
+            self.fresh_virtual_general()
+        };
         self.record_target(RelocationKind::Addr16Ha, RelocationTarget::Constant(index));
         self.output
             .instructions

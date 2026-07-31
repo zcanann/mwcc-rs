@@ -33,6 +33,13 @@ impl Generator {
             return Ok(false);
         }
 
+        if let Some(work_homes) =
+            super::structured_branch_work_homes::StructuredBranchWorkHomes::plan(self, function)
+        {
+            self.structured_branch_float_work_home = Some(work_homes.float);
+            self.structured_branch_constant_address_home = Some(work_homes.constant_address);
+        }
+
         for local in &function.locals {
             let class = class_of(local.declared_type).expect("eligibility checked");
             let home = match class {

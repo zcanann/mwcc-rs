@@ -670,7 +670,11 @@ impl Generator {
             // virtual for every scalar operation in generated, unrolled math
             // routines. A scratch-owned parent still needs a distinct lane.
             let anchor = if destination == FLOAT_SCRATCH {
-                self.fresh_virtual_float()
+                if let Some(preferred) = self.structured_branch_float_work_home {
+                    self.fresh_virtual_float_preferring(preferred)
+                } else {
+                    self.fresh_virtual_float()
+                }
             } else {
                 destination
             };

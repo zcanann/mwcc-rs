@@ -203,6 +203,7 @@ mod structured_noncopy_packet_schedule;
 mod structured_noncopy_tail_packets;
 mod structured_liveness;
 mod structured_bitset_hint_schedule;
+mod structured_branch_work_homes;
 mod structured_loop_lowering;
 mod structured_repeated_call_poll;
 mod structured_recovered_float_homes;
