@@ -38,6 +38,7 @@ mod retained_global_pointer_store;
 mod members;
 mod narrow_compound;
 mod nested_global_member_pointer_store;
+mod nested_global_member_pointer_variable_store;
 mod nested_member_array_load;
 mod nested_member_array_store;
 mod non_power_struct_member_store;

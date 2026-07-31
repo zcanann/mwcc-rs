@@ -653,6 +653,9 @@ impl Generator {
         if self.try_emit_legacy_global_member_pointer_indexed_store(target, value)? {
             return Ok(());
         }
+        if self.try_emit_legacy_nested_global_member_pointer_variable_store(target, value)? {
+            return Ok(());
+        }
         if self.try_emit_legacy_nested_global_member_pointer_store(target, value)? {
             return Ok(());
         }

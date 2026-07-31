@@ -7,19 +7,19 @@
 #[allow(unused_imports)]
 use super::*;
 
-struct NestedGlobalPointerStore<'a> {
-    global: &'a str,
-    root_pointer_offset: u32,
-    first_index_offset: u32,
-    first_index_type: Type,
-    first_stride: u32,
-    nested_pointer_offset: u32,
-    second_index_offset: u32,
-    second_index_type: Type,
-    second_stride: u32,
-    final_offset: i64,
-    element: Pointee,
-    value: &'a Expression,
+pub(super) struct NestedGlobalPointerStore<'a> {
+    pub(super) global: &'a str,
+    pub(super) root_pointer_offset: u32,
+    pub(super) first_index_offset: u32,
+    pub(super) first_index_type: Type,
+    pub(super) first_stride: u32,
+    pub(super) nested_pointer_offset: u32,
+    pub(super) second_index_offset: u32,
+    pub(super) second_index_type: Type,
+    pub(super) second_stride: u32,
+    pub(super) final_offset: i64,
+    pub(super) element: Pointee,
+    pub(super) value: &'a Expression,
 }
 
 fn global_member<'a>(
@@ -44,7 +44,7 @@ fn global_member<'a>(
     Some((global, *offset, *member_type))
 }
 
-fn classify<'a>(
+pub(super) fn classify<'a>(
     target: &'a Expression,
     value: &'a Expression,
 ) -> Option<NestedGlobalPointerStore<'a>> {
@@ -115,6 +115,7 @@ fn classify<'a>(
             ..
         } => Some(pointee_of_type(*member_type)?),
         Expression::IntegerLiteral(_) => None,
+        Expression::Variable(_) => None,
         _ => return None,
     };
     if *first_element_size != *first_stride
@@ -191,6 +192,9 @@ impl Generator {
         let Some(store) = classify(target, value) else {
             return Ok(false);
         };
+        if matches!(store.value, Expression::Variable(_)) {
+            return Ok(false);
+        }
         if !matches!(
             self.addressable_globals.get(store.global),
             Some(Type::Struct { size, .. }) if *size > 8
