@@ -540,7 +540,7 @@ impl Generator {
     /// Claim one conversion image. Leaf functions discover these lazily, so
     /// grow the single frame push as additional conversions are encountered.
     /// Callee-saved bodies must pre-plan their range before emitting a prologue.
-    fn claim_float_to_int_scratch(&mut self) -> Compilation<i16> {
+    pub(crate) fn claim_float_to_int_scratch(&mut self) -> Compilation<i16> {
         if self.float_to_int_scratch_next == 0 {
             if self.non_leaf || self.frame_size != 0 {
                 return Err(mwcc_core::Diagnostic::error(

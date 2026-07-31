@@ -35,6 +35,7 @@ mod linkage_first_fixed_bank_region;
 mod linkage_first_fixed_bank_self_copy;
 mod materialized_bitand_constant;
 mod retained_global_pointer_store;
+mod scaled_integer_call_narrow_store;
 mod members;
 mod narrow_compound;
 mod nested_global_pointer_float_store;
