@@ -8,6 +8,8 @@
 #[allow(unused_imports)]
 use super::*;
 
+mod retained_diamond;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CancelCompletionArm {
     start: usize,
@@ -111,6 +113,7 @@ impl Generator {
             *s = 3;
             start += 8;
         }
+        retained_diamond::schedule(self);
     }
 }
 
