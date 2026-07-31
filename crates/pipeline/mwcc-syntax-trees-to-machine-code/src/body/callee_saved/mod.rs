@@ -214,6 +214,15 @@ mod structured_periodic_float_normalization;
 pub(crate) fn uses_direct_paired_single_restores(function: &Function) -> bool {
     structured_periodic_float_normalization::StructuredPeriodicFloatNormalization::plan(function)
         .is_some()
+        || structured_recovered_general_homes::StructuredRecoveredGeneralHomes::plan(
+            function,
+            &[],
+        )
+        .is_some_and(|plan| plan.direct_paired_single_restores())
+}
+pub(crate) fn branches_enter_float_restores(function: &Function) -> bool {
+    structured_recovered_general_homes::StructuredRecoveredGeneralHomes::plan(function, &[])
+        .is_some_and(|plan| plan.direct_paired_single_restores())
 }
 mod structured_unoptimized_leaf_homes;
 mod structured_unoptimized_inline_float_loop_homes;

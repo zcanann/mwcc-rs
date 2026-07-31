@@ -53,11 +53,14 @@ impl Generator {
     /// Expand an already scheduled non-leaf frame around the FPRs selected by
     /// register allocation. Predecrement frames preserve both paired-single
     /// lanes; the legacy linkage-first convention uses compact double lanes.
+    /// Restore encoding and epilogue-entry ownership remain separate because
+    /// some early exits intentionally enter after a direct restore packet.
     pub(crate) fn materialize_allocated_float_frame(
         &mut self,
         registers: &[u8],
         paired_single_frame: bool,
         direct_paired_single_restores: bool,
+        branches_enter_float_restores: bool,
     ) -> Compilation<()> {
         let registers = required_float_save_range(self.callee_saved_float, registers)
             .map_err(Diagnostic::error)?;
@@ -73,6 +76,7 @@ impl Generator {
                     saved_gpr_count,
                     paired_single_frame,
                     direct_paired_single_restores,
+                    branches_enter_float_restores,
                 )
                 .map_err(Diagnostic::error)?
             }
@@ -137,6 +141,7 @@ fn materialize_predecrement_frame(
     saved_gpr_count: usize,
     paired_single_frame: bool,
     direct_paired_single_restores: bool,
+    branches_enter_float_restores: bool,
 ) -> Result<(Vec<usize>, i16), &'static str> {
     let expected: Vec<u8> = (0..registers.len())
         .map(|index| 31u8.saturating_sub(index as u8))
@@ -356,10 +361,12 @@ fn materialize_predecrement_frame(
         if index == save_at {
             rebuilt.append(&mut saves);
         }
+        let restore_entry =
+            (branches_enter_float_restores && index == restore_at).then_some(rebuilt.len());
         if index == restore_at {
             rebuilt.append(&mut restores);
         }
-        permutation[index] = rebuilt.len();
+        permutation[index] = restore_entry.unwrap_or(rebuilt.len());
         rebuilt.push(instruction);
     }
     *instructions = rebuilt;
@@ -512,7 +519,8 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
         let (_, frame_growth) =
-            materialize_predecrement_frame(&mut instructions, &[31, 30], 0, true, false).unwrap();
+            materialize_predecrement_frame(&mut instructions, &[31, 30], 0, true, false, false)
+                .unwrap();
 
         assert_eq!(frame_growth, 32);
         assert!(matches!(
@@ -548,7 +556,8 @@ mod tests {
         ];
 
         let (_, frame_growth) =
-            materialize_predecrement_frame(&mut instructions, &[31], 2, true, false).unwrap();
+            materialize_predecrement_frame(&mut instructions, &[31], 2, true, false, false)
+                .unwrap();
 
         assert_eq!(frame_growth, 16);
         assert!(matches!(
@@ -605,7 +614,8 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
         let (permutation, frame_growth) =
-            materialize_predecrement_frame(&mut instructions, &[31, 30], 1, true, false).unwrap();
+            materialize_predecrement_frame(&mut instructions, &[31, 30], 1, true, false, false)
+                .unwrap();
 
         assert_eq!(frame_growth, 32);
         assert_eq!(permutation[3], 7);
@@ -691,7 +701,8 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
         let (_, frame_growth) =
-            materialize_predecrement_frame(&mut instructions, &[31], 1, false, false).unwrap();
+            materialize_predecrement_frame(&mut instructions, &[31], 1, false, false, false)
+                .unwrap();
 
         assert_eq!(frame_growth, 16);
         assert!(matches!(
@@ -739,6 +750,7 @@ mod tests {
             Instruction::MoveFromLinkRegister { d: 0 },
             Instruction::StoreWord { s: 0, a: 1, offset: 52 },
             Instruction::BranchAndLink { target: "call".into() },
+            Instruction::Branch { target: 5 },
             Instruction::AddImmediate { d: 11, a: 1, immediate: 48 },
             Instruction::BranchAndLink { target: "_restgpr_27".into() },
             Instruction::LoadWord { d: 0, a: 1, offset: 52 },
@@ -747,8 +759,9 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
 
-        materialize_predecrement_frame(&mut instructions, &[31], 5, true, true)
-            .expect("direct paired-single frame");
+        let (permutation, _) =
+            materialize_predecrement_frame(&mut instructions, &[31], 5, true, true, true)
+                .expect("direct paired-single frame");
 
         let restore = instructions
             .iter()
@@ -768,6 +781,7 @@ mod tests {
             .expect("GPR restore-helper setup");
         assert!(restore < restore_gpr_setup);
         assert!(restore < restore_gprs);
+        assert_eq!(permutation[5], restore);
     }
 
 }

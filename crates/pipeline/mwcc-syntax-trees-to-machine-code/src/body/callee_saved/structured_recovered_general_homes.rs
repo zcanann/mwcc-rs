@@ -8,6 +8,7 @@ pub(super) struct StructuredRecoveredGeneralHomes {
     parameter_count: usize,
     save_order: Option<Vec<usize>>,
     preferences_follow_groups: bool,
+    direct_paired_single_restores: bool,
 }
 
 fn recovered_register(name: &str) -> Option<u8> {
@@ -89,6 +90,7 @@ impl StructuredRecoveredGeneralHomes {
                 parameter_count: 0,
                 save_order: None,
                 preferences_follow_groups: true,
+                direct_paired_single_restores: false,
             });
         }
         if !function_makes_call(function) {
@@ -115,6 +117,7 @@ impl StructuredRecoveredGeneralHomes {
                 parameter_count: 0,
                 save_order: None,
                 preferences_follow_groups: false,
+                direct_paired_single_restores: false,
             });
         }
 
@@ -203,6 +206,7 @@ impl StructuredRecoveredGeneralHomes {
                 parameter_count: used_parameters.len(),
                 save_order: None,
                 preferences_follow_groups: false,
+                direct_paired_single_restores: nested_void_recovered_loop,
             });
         }
         let missing = single_missing_register(&recovered_registers);
@@ -230,6 +234,7 @@ impl StructuredRecoveredGeneralHomes {
             parameter_count: 1,
             save_order: Some(vec![1, 0, 2]),
             preferences_follow_groups: false,
+            direct_paired_single_restores: false,
         })
     }
 
@@ -269,6 +274,10 @@ impl StructuredRecoveredGeneralHomes {
 
     pub(super) fn source_order_parameter_copies(&self) -> bool {
         self.parameter_count >= 2
+    }
+
+    pub(super) fn direct_paired_single_restores(&self) -> bool {
+        self.direct_paired_single_restores
     }
 
     pub(super) fn frame_slot(&self, home_index: usize) -> Option<usize> {

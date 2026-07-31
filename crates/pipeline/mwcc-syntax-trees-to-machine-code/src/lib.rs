@@ -953,6 +953,7 @@ fn lower_function_body(
         paired_single_float_frame,
         body::uses_direct_paired_single_restores(function)
             || generator.has_retained_sqrtf_spill_slot(),
+        body::branches_enter_float_restores(function),
     )?;
     generator.schedule_unoptimized_inline_float_restore_order();
     generator.finalize_unoptimized_leaf_source_homes();
