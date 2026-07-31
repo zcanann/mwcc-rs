@@ -16,6 +16,50 @@ enum FrameAggregateSource<'a> {
     },
 }
 
+fn emit_pipelined_vec3_copy(
+    instructions: &mut Vec<Instruction>,
+    first_word: u8,
+    source_register: u8,
+    source_offset: i16,
+    target_offset: i16,
+) -> Compilation<()> {
+    let offset = |base: i16, add: i16| {
+        base.checked_add(add)
+            .ok_or_else(|| Diagnostic::error("a Vec3 frame-copy offset is out of range"))
+    };
+    instructions.push(Instruction::LoadWord {
+        d: first_word,
+        a: source_register,
+        offset: source_offset,
+    });
+    instructions.push(Instruction::LoadWord {
+        d: GENERAL_SCRATCH,
+        a: source_register,
+        offset: offset(source_offset, 4)?,
+    });
+    instructions.push(Instruction::StoreWord {
+        s: first_word,
+        a: 1,
+        offset: target_offset,
+    });
+    instructions.push(Instruction::StoreWord {
+        s: GENERAL_SCRATCH,
+        a: 1,
+        offset: offset(target_offset, 4)?,
+    });
+    instructions.push(Instruction::LoadWord {
+        d: GENERAL_SCRATCH,
+        a: source_register,
+        offset: offset(source_offset, 8)?,
+    });
+    instructions.push(Instruction::StoreWord {
+        s: GENERAL_SCRATCH,
+        a: 1,
+        offset: offset(target_offset, 8)?,
+    });
+    Ok(())
+}
+
 impl FrameAggregateSource<'_> {
     fn size(&self) -> u32 {
         match self {
@@ -184,6 +228,24 @@ impl Generator {
         } else {
             false
         };
+        if source_size == 12 && !source_is_frame && source_register != GENERAL_SCRATCH {
+            let first_word = self.fresh_virtual_general_preferring(6);
+            emit_pipelined_vec3_copy(
+                &mut self.output.instructions,
+                first_word,
+                source_register,
+                source_offset,
+                target_offset,
+            )?;
+            for displacement in [0, 4, 8] {
+                self.written_slots.insert(
+                    target_offset.checked_add(displacement).ok_or_else(|| {
+                        Diagnostic::error("a Vec3 frame-copy destination is out of range")
+                    })?,
+                );
+            }
+            return Ok(true);
+        }
         let words = source_size / 4;
         let indices: Box<dyn Iterator<Item = u32>> = if backwards {
             Box::new((0..words).rev())
@@ -382,5 +444,24 @@ mod tests {
             Some((44, 12))
         );
         assert!(frame_aggregate_array_element(slot, 3).is_err());
+    }
+
+    #[test]
+    fn pipelines_the_first_two_words_of_a_vec3_frame_copy() {
+        let mut instructions = Vec::new();
+
+        emit_pipelined_vec3_copy(&mut instructions, 6, 3, 0, 20).unwrap();
+
+        assert!(matches!(
+            instructions.as_slice(),
+            [
+                Instruction::LoadWord { d: 6, a: 3, offset: 0 },
+                Instruction::LoadWord { d: 0, a: 3, offset: 4 },
+                Instruction::StoreWord { s: 6, a: 1, offset: 20 },
+                Instruction::StoreWord { s: 0, a: 1, offset: 24 },
+                Instruction::LoadWord { d: 0, a: 3, offset: 8 },
+                Instruction::StoreWord { s: 0, a: 1, offset: 28 },
+            ]
+        ));
     }
 }
