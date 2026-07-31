@@ -1106,10 +1106,15 @@ impl Behavior {
                 }
             },
             shared_float_dag_style: config.build.profile.shared_float_dag_style(),
-            float_compare_value_before_const: config
-                .build
-                .profile
-                .float_compare_value_before_const(),
+            // O0-O3 preserve source operand order for a loaded value compared
+            // with a pool constant. O4 normally lets the latency scheduler
+            // hoist the constant; the profile flag records builds whose O4
+            // scheduler retains value-first order as well.
+            float_compare_value_before_const: config.flags.optimization != Optimization::O4
+                || config
+                    .build
+                    .profile
+                    .float_compare_value_before_const(),
             preload_ephemeral_float_compare_literal: config
                 .build
                 .profile
@@ -1813,6 +1818,28 @@ mod tests {
             behavior.shift_mask_fusion_style,
             ShiftMaskFusionStyle::Fused
         );
+    }
+
+    #[test]
+    fn non_o4_float_comparisons_load_values_before_pool_constants() {
+        for optimization in [
+            Optimization::O0,
+            Optimization::O1,
+            Optimization::O2,
+            Optimization::O3,
+        ] {
+            let mut config = CompilerConfig::new(build::GC_1_3_2);
+            config.flags.optimization = optimization;
+            assert!(Behavior::resolve(&config).float_compare_value_before_const);
+        }
+
+        let mut config = CompilerConfig::new(build::GC_1_3_2);
+        config.flags.optimization = Optimization::O4;
+        assert!(!Behavior::resolve(&config).float_compare_value_before_const);
+
+        let mut patch_config = CompilerConfig::new(build::GC_2_0P1);
+        patch_config.flags.optimization = Optimization::O4;
+        assert!(Behavior::resolve(&patch_config).float_compare_value_before_const);
     }
 
     #[test]
