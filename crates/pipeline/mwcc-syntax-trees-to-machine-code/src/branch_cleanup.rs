@@ -52,7 +52,7 @@ pub(crate) fn collapse_forwarding_branch_blocks(generator: &mut Generator) {
         return;
     }
 
-    let allow_unreferenced = generator.collapse_unreferenced_forwarding_branches;
+    let allow_unreferenced = generator.structured_cfg_cleanup_owner;
     while let Some((index, landing)) = forwarding_branch_block(
         &generator.output.instructions,
         allow_unreferenced,

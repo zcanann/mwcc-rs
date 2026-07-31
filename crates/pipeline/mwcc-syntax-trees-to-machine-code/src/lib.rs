@@ -574,7 +574,7 @@ fn lower_function_body(
         structured_object_collision_loop_entry: false,
         structured_sequenced_callback_wait_starter: None,
         structured_switch_dispatch_conditionals: HashSet::new(),
-        collapse_unreferenced_forwarding_branches: false,
+        structured_cfg_cleanup_owner: false,
         structured_shared_switch_global_value: None,
         transient_global_index_base: None,
         full_bss_globals: globals
@@ -749,7 +749,7 @@ fn lower_function_body(
         ));
     }
     if generator.behavior.schedule_latency_slots {
-        generator.collapse_unreferenced_forwarding_branches |=
+        generator.structured_cfg_cleanup_owner |=
             body::owns_unreferenced_forwarding_branch_cleanup(&generator.output.instructions);
         if generator.structured_array_pool_emitted {
             branch_cleanup::thread_conditional_branch_targets(
@@ -757,7 +757,9 @@ fn lower_function_body(
             );
         }
         branch_cleanup::collapse_forwarding_branch_blocks(&mut generator);
-        branch_cleanup::remove_fallthrough_branches(&mut generator);
+        if generator.structured_cfg_cleanup_owner {
+            branch_cleanup::remove_fallthrough_branches(&mut generator);
+        }
     }
     collapse_conditional_skip_to_backward_branch(&mut generator);
     // Peephole: a conditional forward branch whose target is the function's TERMINAL

@@ -1115,7 +1115,7 @@ impl Generator {
         if sequenced_callback_wait_layout {
             self.structured_sequenced_callback_wait_starter =
                 sequenced_callback_wait_starter(function).map(str::to_owned);
-            self.collapse_unreferenced_forwarding_branches = true;
+            self.structured_cfg_cleanup_owner = true;
         }
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
