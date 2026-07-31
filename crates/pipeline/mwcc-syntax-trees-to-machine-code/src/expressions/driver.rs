@@ -470,6 +470,11 @@ impl Generator {
                     // A bare array variable in value position decays to its address
                     // (`return g;` / `f(g)` for `int g[N]`), not a load of g[0].
                     self.emit_global_array_decay(name, total_size, destination)
+                } else if let Some(source) = self.condition_global_base(name)? {
+                    if source != destination {
+                        self.emit_integer_materialization_copy(destination, source);
+                    }
+                    Ok(())
                 } else {
                     self.emit_global_load(name, destination)
                 }
@@ -509,7 +514,27 @@ impl Generator {
                     self.emit_load_from_pointer(pointer, destination)
                 }
             }
-            Expression::Member { base, offset, member_type, index_stride } => self.emit_member_load(base, *offset, *member_type, *index_stride, destination),
+            Expression::Member {
+                base,
+                offset,
+                member_type,
+                index_stride,
+            } => {
+                if let Some(source) = self.condition_member_register(expression) {
+                    if source != destination {
+                        self.emit_integer_materialization_copy(destination, source);
+                    }
+                    Ok(())
+                } else {
+                    self.emit_member_load(
+                        base,
+                        *offset,
+                        *member_type,
+                        *index_stride,
+                        destination,
+                    )
+                }
+            }
             Expression::MemberAddress { base, offset, .. } => self.emit_member_address(base, *offset, destination),
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),
             Expression::Call { name, arguments } => self.emit_call(name, arguments, Some(destination), false),

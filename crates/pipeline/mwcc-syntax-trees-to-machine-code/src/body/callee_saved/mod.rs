@@ -164,6 +164,7 @@ mod structured_async_callback_switch_schedule;
 mod structured_guarded_ucode_schedule;
 mod structured_home_layout;
 mod structured_if_else;
+mod structured_if_else_branch_entry_cache;
 mod structured_if_else_cr_reuse;
 mod structured_if_else_member_reuse;
 mod structured_initializer_live_in;

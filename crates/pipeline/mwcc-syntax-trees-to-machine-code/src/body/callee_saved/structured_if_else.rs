@@ -31,6 +31,14 @@ impl Generator {
                 then_body,
                 else_body,
             );
+        let mut branch_entry_cache =
+            super::structured_if_else_branch_entry_cache::plan(
+                condition,
+                then_body,
+                else_body,
+                &self.globals,
+                &self.volatile_globals,
+            );
         if entry_alias.is_none()
             && self.try_emit_structured_if_else_cr_reuse(
                 condition,
@@ -51,11 +59,24 @@ impl Generator {
             })
             .flatten();
         let previous_wide_mask_cache = self.begin_wide_pair_mask_condition(condition);
+        let branch_entry_followup = branch_entry_cache.as_ref().and_then(|_| {
+            let Statement::Expression(expression) = then_body.first()? else {
+                return None;
+            };
+            Some(expression)
+        });
         let previous_cache = self.begin_condition_global_cache_with_followup(
             condition,
-            nested_else_condition,
+            nested_else_condition.or(branch_entry_followup),
         );
-        if nested_else_condition.is_some() {
+        if let Some(plan) = branch_entry_cache.as_ref() {
+            if !self.materialize_pending_condition_global_value_fixed(
+                &plan.global,
+                Eabi::FIRST_GENERAL_ARGUMENT,
+            )? {
+                branch_entry_cache = None;
+            }
+        } else if nested_else_condition.is_some() {
             self.prefer_pending_condition_global_values(5);
         }
         let previous_float_cache = self.begin_composed_condition_float_cache(condition);
@@ -174,6 +195,17 @@ impl Generator {
                 enter_else,
             })
         })();
+        if let Some(plan) = branch_entry_cache.as_ref() {
+            if !self.fix_condition_member_value_register(&plan.member, 4) {
+                branch_entry_cache = None;
+            }
+        }
+        let branch_entry_global_cache = branch_entry_cache
+            .as_ref()
+            .map(|_| self.condition_global_values.clone());
+        let branch_entry_member_cache = branch_entry_cache
+            .as_ref()
+            .map(|_| self.condition_member_cache.clone());
         self.restore_condition_member_cache(previous_member_cache);
         let retained_multiply_plan = condition_abs_value(condition).and_then(|value| {
             let source = self.observed_condition_float_register(value)?;
@@ -251,8 +283,10 @@ impl Generator {
                     });
                 }
             } else if !self.try_emit_structured_frame_bitfield_stores(then_body)? {
-                self.emit_structured_arm_with_global_pointer_cache(
+                self.emit_branch_entry_cached_arm(
                     then_body,
+                    branch_entry_global_cache.as_ref(),
+                    branch_entry_member_cache.as_ref(),
                     function,
                     ephemeral_locals,
                     return_branches,
@@ -302,8 +336,10 @@ impl Generator {
                 && !self.try_emit_shared_float_zero_assignments(else_body)?
                 && !self.try_emit_structured_frame_bitfield_stores(else_body)?
             {
-                self.emit_structured_arm_with_global_pointer_cache(
+                self.emit_branch_entry_cached_arm(
                     else_body,
+                    branch_entry_global_cache.as_ref(),
+                    branch_entry_member_cache.as_ref(),
                     function,
                     ephemeral_locals,
                     return_branches,

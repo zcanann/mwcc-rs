@@ -102,6 +102,26 @@ impl Generator {
         }
     }
 
+    pub(crate) fn materialize_pending_condition_global_value_fixed(
+        &mut self,
+        name: &str,
+        register: u8,
+    ) -> Compilation<bool> {
+        if !matches!(
+            self.condition_global_values.get(name),
+            Some(
+                ConditionGlobalValue::Pending
+                    | ConditionGlobalValue::PendingPreferred(_)
+            )
+        ) {
+            return Ok(false);
+        }
+        self.emit_global_load_value(name, register)?;
+        self.condition_global_values
+            .insert(name.to_owned(), ConditionGlobalValue::Register(register));
+        Ok(true)
+    }
+
     /// Materialize cacheable bases before evaluating the first comparison.
     /// MWCC hoists these independent pointer loads in source encounter order,
     /// even when the first member access occurs on a later `&&` term.

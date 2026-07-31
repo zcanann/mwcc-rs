@@ -39,6 +39,59 @@ impl Generator {
         self.condition_member_cache = previous;
     }
 
+    pub(crate) fn condition_member_cache_rebased(
+        &self,
+        cache: &ConditionMemberCache,
+    ) -> ConditionMemberCache {
+        let mut cache = cache.clone();
+        for value in &mut cache.values {
+            value.instruction_index = self.output.instructions.len();
+        }
+        cache
+    }
+
+    pub(crate) fn fix_condition_member_value_register(
+        &mut self,
+        operand: &Expression,
+        register: u8,
+    ) -> bool {
+        let Some(value) = self
+            .condition_member_cache
+            .values
+            .iter_mut()
+            .rev()
+            .find(|value| same_member(&value.expression, operand))
+        else {
+            return false;
+        };
+        let Some(load_index) = value.instruction_index.checked_sub(1) else {
+            return false;
+        };
+        let old = value.register;
+        let Some(Instruction::LoadWord { d, .. }) =
+            self.output.instructions.get_mut(load_index)
+        else {
+            return false;
+        };
+        if *d != old {
+            return false;
+        }
+        *d = register;
+        let Some(
+            Instruction::CompareWordImmediate { a, .. }
+            | Instruction::CompareLogicalWordImmediate { a, .. },
+        ) = self.output.instructions.get_mut(load_index + 1)
+        else {
+            return false;
+        };
+        if *a != old {
+            return false;
+        }
+        *a = register;
+        value.register = register;
+        true
+    }
+
     pub(crate) fn condition_member_register(
         &self,
         operand: &Expression,
