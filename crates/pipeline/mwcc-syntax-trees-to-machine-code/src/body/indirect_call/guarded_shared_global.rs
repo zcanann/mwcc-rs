@@ -16,7 +16,14 @@ impl Generator {
             return Ok(false);
         };
 
+        let switch_base = self
+            .structured_shared_switch_global_value
+            .as_ref()
+            .filter(|(name, _)| name == global)
+            .map(|(_, register)| *register);
         let base = if let Some(base) = self.condition_global_base(global)? {
+            base
+        } else if let Some(base) = switch_base {
             base
         } else {
             self.emit_global_load_value(global, Eabi::FIRST_GENERAL_ARGUMENT)?;
@@ -62,21 +69,19 @@ fn recognize<'a>(
     then_body: &'a [Statement],
     globals: &std::collections::HashMap<String, Type>,
 ) -> Option<(&'a str, i16)> {
-    let Expression::Binary {
-        operator: BinaryOperator::NotEqual,
-        left,
-        right,
-    } = condition
-    else {
-        return None;
+    let guarded_member = match condition {
+        Expression::Binary {
+            operator: BinaryOperator::NotEqual,
+            left,
+            right,
+        } if matches!(right.as_ref(), Expression::IntegerLiteral(0)) => left.as_ref(),
+        Expression::Member { .. } => condition,
+        _ => return None,
     };
-    if !matches!(right.as_ref(), Expression::IntegerLiteral(0)) {
-        return None;
-    }
     let [Statement::Expression(Expression::CallThrough { target, arguments })] = then_body else {
         return None;
     };
-    let (condition_base, condition_offset) = member(left)?;
+    let (condition_base, condition_offset) = member(guarded_member)?;
     let (call_base, call_offset) = member(target)?;
     if condition_base != call_base
         || condition_offset != call_offset
@@ -162,5 +167,23 @@ mod tests {
         )]);
 
         assert_eq!(recognize(&condition, &body, &globals), None);
+    }
+
+    #[test]
+    fn recognizes_a_bare_member_truth_test() {
+        let condition = callback("current", 40);
+        let body = [Statement::Expression(Expression::CallThrough {
+            target: Box::new(callback("current", 40)),
+            arguments: vec![Expression::Variable("current".into())],
+        })];
+        let globals = std::collections::HashMap::from([(
+            "current".into(),
+            Type::StructPointer { element_size: 64 },
+        )]);
+
+        assert_eq!(
+            recognize(&condition, &body, &globals),
+            Some(("current", 40))
+        );
     }
 }

@@ -12,7 +12,7 @@ use crate::condition_member_cache::ConditionMemberCache;
 use std::collections::HashMap;
 
 pub(super) struct BranchEntryCachePlan {
-    pub(super) global: String,
+    pub(super) global: Option<String>,
     pub(super) member: Expression,
 }
 
@@ -37,18 +37,29 @@ pub(super) fn plan(
     }
     let then_arguments = direct_call_arguments(then_body.first()?)?;
     let else_arguments = direct_call_arguments(else_body.first()?)?;
-    if !matches!(
+    let global = if matches!(
         then_arguments.first(),
         Some(Expression::Variable(name)) if name == global
-    ) || !matches!(
+    ) && matches!(
         else_arguments,
         [Expression::Variable(name), value]
             if name == global && structurally_equal(value, member)
     ) {
+        Some(global.clone())
+    } else if matches!(
+        then_arguments,
+        [first, _] if constant_value(first) == Some(0)
+    ) && matches!(
+        else_arguments,
+        [first, value]
+            if constant_value(first) == Some(0) && structurally_equal(value, member)
+    ) {
+        None
+    } else {
         return None;
-    }
+    };
     Some(BranchEntryCachePlan {
-        global: global.clone(),
+        global,
         member: member.clone(),
     })
 }
@@ -103,8 +114,8 @@ impl Generator {
         pending_gotos: &mut Vec<(usize, String)>,
         entry_alias: &mut Option<EntryParameterAlias>,
     ) -> Compilation<()> {
-        let (Some(global_cache), Some(member_cache), Some((first, remainder))) =
-            (global_cache, member_cache, statements.split_first())
+        let (Some(member_cache), Some((first, remainder))) =
+            (member_cache, statements.split_first())
         else {
             return self.emit_structured_arm_with_global_pointer_cache(
                 statements,
@@ -116,8 +127,8 @@ impl Generator {
                 entry_alias,
             );
         };
-        let previous_globals =
-            std::mem::replace(&mut self.condition_global_values, global_cache.clone());
+        let previous_globals = global_cache
+            .map(|cache| std::mem::replace(&mut self.condition_global_values, cache.clone()));
         let edge_member_cache = self.condition_member_cache_rebased(member_cache);
         let previous_members =
             std::mem::replace(&mut self.condition_member_cache, edge_member_cache);
@@ -130,7 +141,9 @@ impl Generator {
             pending_gotos,
             entry_alias,
         );
-        self.restore_condition_global_cache(previous_globals);
+        if let Some(previous) = previous_globals {
+            self.restore_condition_global_cache(previous);
+        }
         self.restore_condition_member_cache(previous_members);
         prefix_result?;
         self.emit_structured_arm_with_global_pointer_cache(
@@ -186,13 +199,42 @@ mod tests {
             Type::StructPointer { element_size: 64 },
         )]);
 
-        assert!(plan(
+        let plan = plan(
             &condition,
             &then_body,
             &else_body,
             &globals,
             &std::collections::HashSet::new(),
         )
-        .is_some());
+        .expect("condition values should feed both arm entries");
+        assert_eq!(plan.global.as_deref(), Some("current"));
+    }
+
+    #[test]
+    fn recognizes_a_condition_member_as_the_null_first_call_second_argument() {
+        let condition = Expression::Binary {
+            operator: BinaryOperator::NotEqual,
+            left: Box::new(member()),
+            right: Box::new(Expression::IntegerLiteral(0)),
+        };
+        let then_body = [call(vec![
+            Expression::IntegerLiteral(0),
+            Expression::Variable("prior".into()),
+        ])];
+        let else_body = [call(vec![Expression::IntegerLiteral(0), member()])];
+        let globals = std::collections::HashMap::from([(
+            "current".into(),
+            Type::StructPointer { element_size: 64 },
+        )]);
+
+        let plan = plan(
+            &condition,
+            &then_body,
+            &else_body,
+            &globals,
+            &std::collections::HashSet::new(),
+        )
+        .expect("condition member should feed the else call");
+        assert_eq!(plan.global, None);
     }
 }

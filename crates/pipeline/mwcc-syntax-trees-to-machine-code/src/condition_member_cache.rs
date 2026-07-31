@@ -27,8 +27,19 @@ impl Generator {
         &mut self,
         condition: &Expression,
     ) -> ConditionMemberCache {
+        self.begin_condition_member_cache_with_edge_reuse(condition, false)
+    }
+
+    /// Open the same scoped cache for a single comparison when its loaded
+    /// member is explicitly planned to feed the first statement on either
+    /// outgoing edge.
+    pub(crate) fn begin_condition_member_cache_with_edge_reuse(
+        &mut self,
+        condition: &Expression,
+        edge_reuse: bool,
+    ) -> ConditionMemberCache {
         let previous = std::mem::take(&mut self.condition_member_cache);
-        self.condition_member_cache.active = is_short_circuit_chain(condition);
+        self.condition_member_cache.active = edge_reuse || is_short_circuit_chain(condition);
         previous
     }
 

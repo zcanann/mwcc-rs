@@ -69,18 +69,24 @@ impl Generator {
             condition,
             nested_else_condition.or(branch_entry_followup),
         );
-        if let Some(plan) = branch_entry_cache.as_ref() {
+        let branch_entry_global = branch_entry_cache
+            .as_ref()
+            .and_then(|plan| plan.global.clone());
+        if let Some(global) = branch_entry_global {
             if !self.materialize_pending_condition_global_value_fixed(
-                &plan.global,
+                &global,
                 Eabi::FIRST_GENERAL_ARGUMENT,
             )? {
                 branch_entry_cache = None;
             }
-        } else if nested_else_condition.is_some() {
+        } else if branch_entry_cache.is_none() && nested_else_condition.is_some() {
             self.prefer_pending_condition_global_values(5);
         }
         let previous_float_cache = self.begin_composed_condition_float_cache(condition);
-        let previous_member_cache = self.begin_condition_member_cache(condition);
+        let previous_member_cache = self.begin_condition_member_cache_with_edge_reuse(
+            condition,
+            branch_entry_cache.is_some(),
+        );
         struct ConditionBranches {
             enter_then: Vec<usize>,
             enter_else: Vec<usize>,
