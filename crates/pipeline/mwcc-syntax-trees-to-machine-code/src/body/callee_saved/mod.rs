@@ -109,6 +109,7 @@ mod structured_deferred_interference;
 mod structured_entry_alias;
 mod structured_entry_member_guard_schedule;
 mod structured_eager_home_reuse;
+mod structured_entry_saved_member_mask;
 mod entry_saved_zero_test_schedule;
 mod structured_entry_zero_store;
 mod structured_exclusive_arm_callback_schedule;

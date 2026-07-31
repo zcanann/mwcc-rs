@@ -13,6 +13,9 @@ impl Generator {
     /// directly is semantically equivalent, but loses that latency-hiding copy
     /// and changes every following call relocation by one instruction.
     pub(super) fn schedule_entry_member_saved_home(&mut self, function: &Function) {
+        if self.restore_explicit_entry_saved_member_mask(function) {
+            return;
+        }
         // A pure forwarding wrapper inherits the callee's value graph but not
         // its entry schedule, so MWCC keeps the direct saved-home load there.
         // A caller that continues into its own floating arithmetic after an
