@@ -162,6 +162,11 @@ impl Generator {
         if load_width == Some(width) {
             return self.evaluate_general(expression, result);
         }
+        if load_width.is_some_and(|loaded| loaded > width) {
+            self.evaluate_general(expression, GENERAL_SCRATCH)?;
+            self.emit_widen(result, GENERAL_SCRATCH, width, signed);
+            return Ok(());
+        }
 
         // A narrow result truncates, so for an operator whose low bits depend only on
         // its operands' low bits — add/sub/and/or/xor/mul/shift-left — a narrow leaf

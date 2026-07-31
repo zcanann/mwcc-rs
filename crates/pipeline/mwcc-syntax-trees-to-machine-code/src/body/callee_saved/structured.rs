@@ -85,6 +85,7 @@ use super::structured_repeated_call_poll::{
     is_repeated_call_poll_transaction, owns_long_string_data_anchor,
 };
 use super::structured_recovered_float_homes;
+use super::structured_recovered_general_homes::StructuredRecoveredGeneralHomes;
 use super::structured_switch_lowering::{
     is_lowered_switch_guard, lower_structured_switches,
     lower_structured_switches_for_emission, resolve_structured_switch_joins,
@@ -516,6 +517,10 @@ impl Generator {
                     && function.statements.iter().any(statement_has_call))
             })
             .collect();
+        let recovered_general_homes = StructuredRecoveredGeneralHomes::plan(function);
+        if let Some(plan) = &recovered_general_homes {
+            survivors.extend(plan.names());
+        }
         survivors.extend(
             super::super::materialized_float_assignment::materialized_float_assignment_names(
                 function,
@@ -705,7 +710,9 @@ impl Generator {
             &eager_saved_locals,
             &saved_parameter_names,
         );
-        let deferred_home_plan = if self.inline_source_call_survivors.is_empty() {
+        let deferred_home_plan = if recovered_general_homes.is_some() {
+            plan_distinct_deferred_saved_homes(function, &deferred_saved_locals)
+        } else if self.inline_source_call_survivors.is_empty() {
             plan_deferred_saved_homes(function, &deferred_saved_locals)
         } else {
             plan_distinct_deferred_saved_homes(function, &deferred_saved_locals)
@@ -1172,6 +1179,18 @@ impl Generator {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if retained_store_constant_homes {
                     self.fresh_virtual_general_preferring((first_saved + home_index) as u8)
+                } else if let Some(preferred) = recovered_general_homes
+                    .as_ref()
+                    .and_then(|plan| {
+                        plan.preference(
+                            home_index,
+                            eager_saved_locals.len(),
+                            saved_parameters.len(),
+                            count,
+                        )
+                    })
+                {
+                    self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = loop_member_receiver_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
@@ -3033,6 +3052,15 @@ impl Generator {
                     a: source,
                     immediate: 0,
                 });
+            } else if is_narrow_int(function.return_type)
+                && matches!(
+                    return_expression,
+                    Expression::Dereference { .. }
+                        | Expression::Index { .. }
+                        | Expression::Member { .. }
+                )
+            {
+                self.evaluate_narrow_return(return_expression, function.return_type, result)?;
             } else {
                 self.evaluate(return_expression, function.return_type, result)?;
             }
@@ -3184,6 +3212,11 @@ impl Generator {
             self.structured_cfg_cleanup_owner = true;
             self.structured_repeated_call_poll_owner = true;
         }
+        super::structured_recovered_narrow_parameter_image::apply(
+            self,
+            function,
+            recovered_general_homes.is_some(),
+        )?;
         Ok(true)
     }
 
