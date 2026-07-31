@@ -2170,6 +2170,15 @@ impl Generator {
             }
             return Ok(());
         }
+        if self.try_emit_computed_global_array_element_address(
+            name,
+            total_size,
+            element_size,
+            index,
+            destination,
+        )? {
+            return Ok(());
+        }
 
         let index_register = self.general_register_of_leaf(index)?;
         let cached_scaled = match index {

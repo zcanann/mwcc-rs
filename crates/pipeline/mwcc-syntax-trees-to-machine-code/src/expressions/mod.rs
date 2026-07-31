@@ -24,6 +24,7 @@ mod frame_matrix;
 mod fixed_bank_store_schedule;
 mod function_address;
 mod global_array_decay;
+mod global_array_element_address;
 mod global_array_index;
 mod globals;
 mod global_member_pointer_indexed_store;
