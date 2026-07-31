@@ -650,6 +650,9 @@ impl Generator {
         if self.try_emit_indexed_rmw(target, value, indexed_update_syntax)? {
             return Ok(());
         }
+        if self.try_emit_legacy_global_member_pointer_indexed_store(target, value)? {
+            return Ok(());
+        }
         // `a[i].field = v;` — scale the index by the struct size, then store at the
         // field offset (`stwx` for a zero offset, else `add; stw`). The value is
         // placed after the scale, before the address add — mwcc's order.
