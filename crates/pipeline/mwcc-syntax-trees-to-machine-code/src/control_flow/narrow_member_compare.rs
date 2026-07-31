@@ -7,6 +7,52 @@ use super::*;
 use mwcc_syntax_trees::Type;
 
 impl Generator {
+    /// Compare a narrow member with a word-sized memory value. A signed byte
+    /// needs separate raw and promoted homes while the word load remains live:
+    /// `lbz r3,off(base); extsb r4,r3; lwz r5,off(other); cmplw r4,r5`.
+    pub(crate) fn try_emit_narrow_member_word_compare(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        signed_compare: bool,
+    ) -> Compilation<bool> {
+        let Some((_, _, member_type)) = as_member(left) else {
+            return Ok(false);
+        };
+        if !is_narrow_integer(member_type) || !self.is_word_load(right) {
+            return Ok(false);
+        }
+
+        let member_register = if member_type == Type::Char {
+            let raw = self.fresh_virtual_general_preferring(3);
+            self.evaluate_general(left, raw)?;
+            let promoted = self.fresh_virtual_general_preferring(4);
+            self.emit_widen(promoted, raw, 8, true);
+            promoted
+        } else {
+            let promoted = self.fresh_virtual_general_preferring(4);
+            self.evaluate_general(left, promoted)?;
+            promoted
+        };
+        let word_register = self.fresh_virtual_general_preferring(5);
+        self.evaluate_general(right, word_register)?;
+
+        if signed_compare {
+            self.output.instructions.push(Instruction::CompareWord {
+                a: member_register,
+                b: word_register,
+            });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::CompareLogicalWord {
+                    a: member_register,
+                    b: word_register,
+                });
+        }
+        Ok(true)
+    }
+
     /// Compare two narrow memory values when both naturally load through r0.
     ///
     /// Narrow loads already produce a promoted value except for signed bytes:
@@ -107,5 +153,26 @@ impl Generator {
                 });
         }
         Ok(true)
+    }
+}
+
+fn is_narrow_integer(value_type: Type) -> bool {
+    matches!(
+        value_type,
+        Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_narrow_integer;
+    use mwcc_syntax_trees::Type;
+
+    #[test]
+    fn classifies_only_narrow_integer_types() {
+        assert!(is_narrow_integer(Type::Char));
+        assert!(is_narrow_integer(Type::UnsignedShort));
+        assert!(!is_narrow_integer(Type::Int));
+        assert!(!is_narrow_integer(Type::Float));
     }
 }

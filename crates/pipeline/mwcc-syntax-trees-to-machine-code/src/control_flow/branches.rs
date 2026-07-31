@@ -1588,6 +1588,10 @@ impl Generator {
                     };
                 let scalarized_one_word_member =
                     is_scalarized_one_word_member(left, &self.one_word_aggregate_locals);
+                if self.try_emit_narrow_member_word_compare(left, right, signed)? {
+                    return Ok(false_branch_bo_bi(*operator)
+                        .expect("is_comparison restricts the operator"));
+                }
                 // A memory-valued left operand may need a temporary address GPR.
                 // Keep every fixed register read by the right operand live while
                 // selecting that address; otherwise `global.field == parameter`
