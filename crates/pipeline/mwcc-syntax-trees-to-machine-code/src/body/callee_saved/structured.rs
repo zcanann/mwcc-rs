@@ -4463,7 +4463,7 @@ impl Generator {
                                 self.packed_shift_mask_min_operations = 2;
                             }
                             let result = if matches!(declared_type, Type::Float | Type::Double)
-                                && !function_makes_call(function)
+                                && !expression_has_call(value)
                             {
                                 self.evaluate_materialized_float_assignment_value(
                                     value,

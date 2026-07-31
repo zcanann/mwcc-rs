@@ -53,12 +53,23 @@ fn is_contextual_float_literal(expression: &Expression) -> bool {
 /// one additional descending window home for the partner's entire evaluation.
 fn materialized_float_temporary_count(expression: &Expression) -> u32 {
     match expression {
-        Expression::Binary { left, right, .. } => {
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
             let left_computed = is_complex(left);
             let right_computed = is_complex(right);
             let retained_literal = (is_contextual_float_literal(left) && right_computed)
                 || (is_contextual_float_literal(right) && left_computed);
-            u32::from(retained_literal || (left_computed && right_computed))
+            // Additive parents retain a completed subtree while evaluating its
+            // sibling. Products instead reuse the f2 operand lane internally;
+            // their final destination is owned by the additive parent and is
+            // already represented by ordinary expression pressure.
+            let retained_subtree = left_computed
+                && right_computed
+                && matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract);
+            u32::from(retained_literal || retained_subtree)
                 + materialized_float_temporary_count(left)
                 + materialized_float_temporary_count(right)
         }
@@ -319,5 +330,25 @@ mod tests {
 
         assert_eq!(crate::analysis::register_need(&expression), 3);
         assert_eq!(materialized_float_temporary_count(&expression), 4);
+    }
+
+    #[test]
+    fn product_operand_lanes_do_not_expand_the_persistent_window() {
+        let subtract = |left, right| binary(BinaryOperator::Subtract, left, right);
+        let multiply = |left, right| binary(BinaryOperator::Multiply, left, right);
+        let add = |left, right| binary(BinaryOperator::Add, left, right);
+        let squared = |left: &str, right: &str| {
+            multiply(
+                subtract(variable(left), variable(right)),
+                subtract(variable(left), variable(right)),
+            )
+        };
+        let expression = add(
+            squared("az", "bz"),
+            add(squared("ax", "bx"), squared("ay", "by")),
+        );
+
+        assert_eq!(crate::analysis::register_need(&expression), 4);
+        assert_eq!(materialized_float_temporary_count(&expression), 2);
     }
 }

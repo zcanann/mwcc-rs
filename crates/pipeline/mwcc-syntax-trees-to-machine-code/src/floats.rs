@@ -694,6 +694,11 @@ impl Generator {
             // virtual for every scalar operation in generated, unrolled math
             // routines. A scratch-owned parent still needs a distinct lane.
             let anchor = if self.behavior.optimization == mwcc_versions::Optimization::O0
+                && self.materialized_float_assignment_active
+                && destination != FLOAT_SCRATCH
+            {
+                self.fresh_virtual_float_preferring(1)
+            } else if self.behavior.optimization == mwcc_versions::Optimization::O0
                 && same_operand(left, right)
             {
                 self.fresh_virtual_float_preferring(1)
@@ -977,7 +982,13 @@ impl Generator {
                 // mwcc emits the lighter operand's add before the heavier product,
                 // a scheduler nuance not yet pinned down, so left-to-right stands.)
                 let temp = self.with_reserved_inputs(right, |generator| {
-                    let temp = generator.fresh_materialized_float_temporary();
+                    let temp = if generator.materialized_float_assignment_active
+                        && matches!(operator, BinaryOperator::Multiply | BinaryOperator::Divide)
+                    {
+                        generator.fresh_virtual_float_preferring(2)
+                    } else {
+                        generator.fresh_materialized_float_temporary()
+                    };
                     generator.evaluate_float(left, temp)?;
                     Ok(temp)
                 })?;
