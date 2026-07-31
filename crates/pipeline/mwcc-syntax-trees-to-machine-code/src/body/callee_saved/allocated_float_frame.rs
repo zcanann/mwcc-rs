@@ -117,6 +117,18 @@ fn materialize_predecrement_frame(
     };
     let frame_growth = new_size - old_size;
     let compact_padding = frame_growth - payload_bytes;
+    if !instructions.iter().any(instruction_links) {
+        return materialize_leaf_predecrement_frame(
+            instructions,
+            registers,
+            paired_single_frame,
+            frame_push,
+            old_size,
+            new_size,
+            frame_growth,
+            saved_gpr_count,
+        );
+    }
     let link_offset = old_size
         .checked_add(4)
         .ok_or("allocated FPR link slot is out of range")?;
@@ -135,7 +147,7 @@ fn materialize_predecrement_frame(
         .ok_or("allocated FPR frame has no saved-link store")?;
     let last_call = instructions
         .iter()
-        .rposition(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
+        .rposition(instruction_links)
         .ok_or("allocator-selected FPR saves require a non-leaf body")?;
     let restore_at = instructions
         .iter()
@@ -261,6 +273,102 @@ fn materialize_predecrement_frame(
     Ok((permutation, frame_growth))
 }
 
+fn instruction_links(instruction: &Instruction) -> bool {
+    matches!(
+        instruction,
+        Instruction::BranchAndLink { .. }
+            | Instruction::BranchToLinkRegisterAndLink
+            | Instruction::BranchToCountRegisterAndLink
+    )
+}
+
+fn materialize_leaf_predecrement_frame(
+    instructions: &mut Vec<Instruction>,
+    registers: &[u8],
+    paired_single_frame: bool,
+    frame_push: usize,
+    old_size: i16,
+    new_size: i16,
+    frame_growth: i16,
+    saved_gpr_count: usize,
+) -> Result<(Vec<usize>, i16), &'static str> {
+    if saved_gpr_count != 0
+        || instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::MoveFromLinkRegister { .. }
+                    | Instruction::MoveToLinkRegister { .. }
+                    | Instruction::StoreWord { s: 0, a: 1, .. }
+                    | Instruction::LoadWord { d: 0, a: 1, .. }
+            )
+        })
+    {
+        return Err("allocator-selected leaf FPR frame retains linkage state");
+    }
+    let frame_pop = instructions
+        .iter()
+        .rposition(|instruction| {
+            matches!(instruction, Instruction::AddImmediate { d: 1, a: 1, immediate } if *immediate == old_size)
+        })
+        .ok_or("allocator-selected leaf FPR frame has no stack restore")?;
+    if let Instruction::StoreWordWithUpdate { offset, .. } = &mut instructions[frame_push] {
+        *offset = -new_size;
+    }
+    if let Instruction::AddImmediate { immediate, .. } = &mut instructions[frame_pop] {
+        *immediate = new_size;
+    }
+
+    let mut saves = Vec::new();
+    let mut restores = Vec::new();
+    for (index, register) in registers.iter().copied().enumerate() {
+        let lane_bytes = if paired_single_frame { 16 } else { 8 };
+        let double_offset = new_size - lane_bytes * (index as i16 + 1);
+        saves.push(Instruction::StoreFloatDouble {
+            s: register,
+            a: 1,
+            offset: double_offset,
+        });
+        if paired_single_frame {
+            let paired_offset = double_offset + 8;
+            saves.push(Instruction::PairedSingleQuantizedStore {
+                s: register,
+                a: 1,
+                offset: paired_offset,
+                w: 0,
+                i: 0,
+            });
+            restores.push(Instruction::PairedSingleQuantizedLoad {
+                d: register,
+                a: 1,
+                offset: paired_offset,
+                w: 0,
+                i: 0,
+            });
+        }
+        restores.push(Instruction::LoadFloatDouble {
+            d: register,
+            a: 1,
+            offset: double_offset,
+        });
+    }
+
+    let old = std::mem::take(instructions);
+    let mut permutation = vec![0usize; old.len()];
+    let mut rebuilt = Vec::with_capacity(old.len() + saves.len() + restores.len());
+    for (index, instruction) in old.into_iter().enumerate() {
+        if index == frame_push + 1 {
+            rebuilt.append(&mut saves);
+        }
+        if index == frame_pop {
+            rebuilt.append(&mut restores);
+        }
+        permutation[index] = rebuilt.len();
+        rebuilt.push(instruction);
+    }
+    *instructions = rebuilt;
+    Ok((permutation, frame_growth))
+}
+
 #[cfg(test)]
 mod declared_range_tests {
     use super::required_float_save_range;
@@ -282,6 +390,45 @@ mod declared_range_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expands_a_leaf_frame_without_linkage_state() {
+        let mut instructions = vec![
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            },
+            Instruction::FloatMove { d: 1, b: 31 },
+            Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+        let (_, frame_growth) =
+            materialize_predecrement_frame(&mut instructions, &[31, 30], 0, true).unwrap();
+
+        assert_eq!(frame_growth, 32);
+        assert!(matches!(
+            instructions.as_slice(),
+            [
+                Instruction::StoreWordWithUpdate { offset: -48, .. },
+                Instruction::StoreFloatDouble { s: 31, offset: 32, .. },
+                Instruction::PairedSingleQuantizedStore { s: 31, offset: 40, .. },
+                Instruction::StoreFloatDouble { s: 30, offset: 16, .. },
+                Instruction::PairedSingleQuantizedStore { s: 30, offset: 24, .. },
+                Instruction::FloatMove { .. },
+                Instruction::PairedSingleQuantizedLoad { d: 31, offset: 40, .. },
+                Instruction::LoadFloatDouble { d: 31, offset: 32, .. },
+                Instruction::PairedSingleQuantizedLoad { d: 30, offset: 24, .. },
+                Instruction::LoadFloatDouble { d: 30, offset: 16, .. },
+                Instruction::AddImmediate { immediate: 48, .. },
+                Instruction::BranchToLinkRegister,
+            ]
+        ));
+    }
 
     #[test]
     fn expands_a_wii_predecrement_frame_for_two_saved_fprs() {

@@ -535,6 +535,11 @@ impl Generator {
                     && function.statements.iter().any(statement_has_call))
             })
             .collect();
+        survivors.extend(
+            super::super::materialized_float_assignment::materialized_float_assignment_names(
+                function,
+            ),
+        );
         let call_accumulators = call_accumulator_names(function);
         // Entry-initialized locals rank ahead of incoming parameters. Deferred
         // locals introduced by nested declarations or inline expansion rank

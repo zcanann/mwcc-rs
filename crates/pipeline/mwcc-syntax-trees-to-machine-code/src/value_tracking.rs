@@ -503,7 +503,9 @@ impl Generator {
         for local in &function.locals {
             // An uninitialized local has no value until it is assigned below.
             if let Some(initializer) = &local.initializer {
-                guard_no_duplication(initializer, &values)?;
+                if guard_no_duplication(initializer, &values).is_err() {
+                    return Ok(false);
+                }
                 let value = substitute(initializer, &values);
                 values.insert(local.name.clone(), value);
             }
@@ -511,7 +513,9 @@ impl Generator {
         for statement in &function.statements {
             match statement {
                 Statement::Assign { name, value } => {
-                    guard_no_duplication(value, &values)?;
+                    if guard_no_duplication(value, &values).is_err() {
+                        return Ok(false);
+                    }
                     let value = substitute(value, &values);
                     values.insert(name.clone(), value);
                 }
@@ -541,7 +545,9 @@ impl Generator {
                 "a non-void function needs a return value",
             ));
         };
-        guard_no_duplication(return_expression, &values)?;
+        if guard_no_duplication(return_expression, &values).is_err() {
+            return Ok(false);
+        }
         let inlined = substitute(return_expression, &values);
         // Inlining a computed local into an additive chain (`t = a + b; … t + c` ->
         // `(a+b)+c`) makes us lower it like a *direct* multi-term sum, which mwcc
@@ -561,7 +567,7 @@ impl Generator {
             .values()
             .all(|value| matches!(value, Expression::IntegerLiteral(_)));
         if has_additive_chain(&inlined) && !all_values_constant {
-            return Err(Diagnostic::error("a value-tracked local folded into a multi-term sum needs the register allocator to match mwcc's in-place mutation (roadmap)"));
+            return Ok(false);
         }
         let result = match function.return_type {
             Type::Float => Eabi::float_result().number,

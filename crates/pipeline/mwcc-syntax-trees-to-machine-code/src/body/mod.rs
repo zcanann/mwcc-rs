@@ -150,6 +150,7 @@ mod member_equality_range_schedule;
 mod member_store_forwarding;
 mod member_tab;
 mod member_store_fill;
+mod materialized_float_assignment;
 mod materialized_store_locals;
 mod masked_word_store_switch;
 mod masked_transfer_command_switch;

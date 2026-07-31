@@ -2863,6 +2863,9 @@ impl Generator {
         if self.try_masked_transfer_command_switch(function)? {
             return Ok(());
         }
+        if self.try_materialized_float_assignment_body(function)? {
+            return Ok(());
+        }
         if self.try_value_tracking(function)? {
             return Ok(());
         }
