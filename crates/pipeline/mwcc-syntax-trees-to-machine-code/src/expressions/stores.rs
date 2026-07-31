@@ -640,9 +640,17 @@ impl Generator {
                             "frame array '{name}' is missing its scalar element type for {target:?} = {value:?}"
                         )));
                     };
+                    if self.try_emit_variable_frame_array_store(
+                        slot.offset,
+                        element,
+                        index,
+                        value,
+                    )? {
+                        return Ok(());
+                    }
                     let Some(index) = constant_value(index) else {
                         return Err(Diagnostic::error(
-                            "a variable-index frame-array store is not supported yet (roadmap)",
+                            "a variable-index frame-array store needs a promoted register index (roadmap)",
                         ));
                     };
                     let offset =
