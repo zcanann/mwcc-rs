@@ -634,7 +634,7 @@ fn lower_function_body(
         condition_member_cache: Default::default(),
         wide_pair_mask_cache: Default::default(),
         const_address_bases: HashMap::new(),
-        emitted_variable_index_store: false,
+        emitted_leaf_variable_index_store_since_scratch_barrier: false,
         packed_shift_mask_min_operations: 3,
         prematerialized_float_constants: Vec::new(),
         preloaded_float_compare_literals: Vec::new(),

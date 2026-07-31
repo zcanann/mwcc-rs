@@ -508,14 +508,13 @@ pub(crate) struct Generator {
     /// schedule and therefore defer. Zero-high accesses use r0-as-zero directly
     /// and are not recorded.
     pub(crate) const_address_bases: HashMap<i16, u8>,
-    /// Set once a VARIABLE-index subscript store (`a[i] = v`, i not constant) has
-    /// scaled its index through the r0 scratch. mwcc pre-scales the indices of
-    /// MULTIPLE such stores up front (`slwi r4,r4,2; slwi r0,r6,2; stwx…; stwx…`),
-    /// a look-ahead schedule the just-in-time `slwi r0,i,k` per store does not
-    /// model — so a SECOND variable-index subscript store defers rather than emit
-    /// the wrong (interleaved, r0-reusing) order. Constant-index stores use a
-    /// displacement (no r0 scaling) and never set or consult this.
-    pub(crate) emitted_variable_index_store: bool,
+    /// Set once a VARIABLE-index subscript store with an already-materialized
+    /// value (`a[i] = v`, i not constant) has scaled its index through r0.
+    /// mwcc pre-scales the indices of an uninterrupted RUN of those stores, so a
+    /// second leaf-value store needs look-ahead. An indexed RHS is a scheduling
+    /// barrier of its own (`slwi; lwzx; slwi; stwx`) and starts a fresh run.
+    /// Constant-index stores use a displacement and never consult this state.
+    pub(crate) emitted_leaf_variable_index_store_since_scratch_barrier: bool,
     /// Minimum cast/mask/shift depth owned by the packed rotate-mask selector.
     /// Ordinary source expressions use three to preserve the shallow legacy
     /// schedules; compiler-created packet invariants temporarily lower it to

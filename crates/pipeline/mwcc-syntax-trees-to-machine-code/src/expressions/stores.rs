@@ -1186,27 +1186,42 @@ impl Generator {
                     .push(displacement_store(pointee, source, address, offset)?);
             }
             Some(index) => {
-                // A SECOND variable-index subscript store defers: mwcc pre-scales the indices
-                // of multiple such stores up front (`slwi r4,r4,2; slwi r0,r6,2; stwx…; stwx…`),
-                // a look-ahead schedule the per-store just-in-time `slwi r0,i,k` does not model
-                // (measured DIFF: `a[i]=x; a[j]=y`). The first is byte-exact; the second emits
-                // the wrong interleaved, r0-reusing order — so defer it.
-                if self.emitted_variable_index_store {
+                // MWCC pre-scales an uninterrupted run of leaf-valued stores
+                // (`a[i]=x; a[j]=y`) up front. An indexed RHS is different: its
+                // load consumes r0 immediately, then MWCC re-scales the target
+                // just before the store (`slwi; lwzx; slwi; stwx`). Treat that
+                // load as a scratch-scheduling barrier and restart the leaf run.
+                let indexed_source = matches!(value, Expression::Index { .. })
+                    && !matches!(pointee, Pointee::Float | Pointee::Double);
+                if self.emitted_leaf_variable_index_store_since_scratch_barrier
+                    && !indexed_source
+                {
                     return Err(Diagnostic::error("a second variable-index subscript store needs look-ahead index scheduling (roadmap)"));
                 }
-                self.emitted_variable_index_store = true;
+                self.emitted_leaf_variable_index_store_since_scratch_barrier = !indexed_source;
                 // A variable index uses the scratch for scaling, so the value must
                 // be a leaf (it stays in its own register) — no temporary, so release
                 // the address reservation up front.
                 if restore {
                     self.reserved.remove(&address);
                 }
-                if !matches!(value, Expression::Variable(_)) {
+                if !matches!(value, Expression::Variable(_)) && !indexed_source {
                     return Err(Diagnostic::error(
                         "store with a variable index needs a simple value (roadmap)",
                     ));
                 }
-                let source = self.place_store_value(value, pointee)?;
+                let source = if indexed_source {
+                    // The indexed load itself needs r0 for its scale. Keep its
+                    // result in a separately allocated value register so the
+                    // target's following scale cannot overwrite it.
+                    let source = self.fresh_virtual_general_preferring(
+                        Eabi::FIRST_GENERAL_ARGUMENT + 2,
+                    );
+                    self.evaluate_general(value, source)?;
+                    source
+                } else {
+                    self.place_store_value(value, pointee)?
+                };
                 // `a[i + const] = v` / `a[i - const] = v`: scale the variable index, add it to the base,
                 // and fold the constant into the store displacement (`slwi r0,i,k; add a,a,r0; stw v,off(a)`).
                 if let Expression::Binary {
