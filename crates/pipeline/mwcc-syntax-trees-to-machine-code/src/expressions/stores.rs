@@ -679,6 +679,9 @@ impl Generator {
         if self.try_emit_nested_member_array_store(target, value)? {
             return Ok(());
         }
+        if self.try_emit_member_array_constant_store(target, value)? {
+            return Ok(());
+        }
         // `a[i].field = v;` — scale the index by the struct size, then store at the
         // field offset (`stwx` for a zero offset, else `add; stw`). The value is
         // placed after the scale, before the address add — mwcc's order.
