@@ -71,6 +71,17 @@ impl Generator {
                     "floating assignment has a non-floating member target",
                 ));
             }
+            if let Some((frame_pointee, frame_offset)) = self.frame_subobject_slot(target) {
+                self.evaluate_float(value, destination)?;
+                self.output.instructions.push(displacement_store(
+                    frame_pointee,
+                    destination,
+                    1,
+                    frame_offset,
+                )?);
+                self.written_slots.insert(frame_offset);
+                return Ok(());
+            }
             let address =
                 self.with_reserved_inputs(value, |generator| generator.member_base_register(base))?;
             let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
@@ -1218,81 +1229,6 @@ impl Generator {
             }
         }
         Ok(())
-    }
-
-    /// Store a scalar into a member (or constant-indexed member array) of an
-    /// automatic aggregate. The aggregate already has a frame slot, so the
-    /// member address folds directly into an r1 displacement.
-    fn try_emit_frame_subobject_store(
-        &mut self,
-        target: &Expression,
-        value: &Expression,
-    ) -> Compilation<bool> {
-        fn member_slot(
-            generator: &Generator,
-            base: &Expression,
-            offset: u32,
-            value_type: Type,
-        ) -> Option<(Pointee, i16)> {
-            let name = match base {
-                Expression::Variable(name) => name,
-                Expression::AddressOf { operand } => {
-                    let Expression::Variable(name) = operand.as_ref() else {
-                        return None;
-                    };
-                    name
-                }
-                _ => return None,
-            };
-            let slot = generator.frame_slots.get(name)?;
-            if !matches!(slot.value_type, Type::Struct { .. }) || slot.is_array {
-                return None;
-            }
-            let pointee = pointee_of_type(value_type)?;
-            let offset = i16::try_from(offset).ok()?;
-            Some((pointee, slot.offset.checked_add(offset)?))
-        }
-
-        let resolved = match target {
-            Expression::Member {
-                base,
-                offset,
-                member_type,
-                index_stride: None,
-            } => member_slot(self, base, *offset, *member_type),
-            Expression::Index { base, index } => {
-                let Expression::Member {
-                    base,
-                    offset,
-                    member_type,
-                    index_stride: None,
-                } = base.as_ref()
-                else {
-                    return Ok(false);
-                };
-                let Some(index) = constant_value(index) else {
-                    return Ok(false);
-                };
-                let Some(pointee) = pointee_of_type(*member_type) else {
-                    return Ok(false);
-                };
-                let indexed = index
-                    .checked_mul(i64::from(pointee.size()))
-                    .and_then(|bytes| i64::from(*offset).checked_add(bytes))
-                    .and_then(|bytes| u32::try_from(bytes).ok());
-                indexed.and_then(|offset| member_slot(self, base, offset, *member_type))
-            }
-            _ => None,
-        };
-        let Some((pointee, offset)) = resolved else {
-            return Ok(false);
-        };
-        let source = self.place_store_value(value, pointee)?;
-        self.output
-            .instructions
-            .push(displacement_store(pointee, source, 1, offset)?);
-        self.written_slots.insert(offset);
-        Ok(true)
     }
 
     /// Emit a comma-operator's discarded left operand for its side effects only: a call

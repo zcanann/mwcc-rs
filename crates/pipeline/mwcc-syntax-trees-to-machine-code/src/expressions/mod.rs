@@ -19,6 +19,7 @@ mod constructor_initializers;
 mod computed_index_subscript;
 mod driver;
 mod frame_aggregate_copy;
+mod frame_subobject;
 mod frame_matrix;
 mod fixed_bank_store_schedule;
 mod function_address;
