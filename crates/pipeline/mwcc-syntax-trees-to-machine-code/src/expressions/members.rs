@@ -2334,6 +2334,15 @@ impl Generator {
         )? {
             return Ok(());
         }
+        if self.try_emit_member_indexed_global_array_constant_store(
+            name,
+            total_size,
+            pointee,
+            index,
+            value,
+        )? {
+            return Ok(());
+        }
         // A float/double LITERAL element store at a CONSTANT index. mwcc materializes the value
         // (`lfs`/`lfd` from the `.sdata2` pool) and the array base, scheduling the value load
         // relative to the base differently per shape (all verified version-invariant across

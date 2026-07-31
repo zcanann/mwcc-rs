@@ -83,10 +83,7 @@ impl Generator {
         target: &Expression,
         value: &Expression,
     ) -> Compilation<bool> {
-        if self.behavior.optimization != mwcc_versions::Optimization::O0
-            || self.behavior.int_call_result_conversion_style
-                != mwcc_versions::IntCallResultConversionStyle::LegacyBiasFirst
-        {
+        if self.behavior.optimization != mwcc_versions::Optimization::O0 {
             return Ok(false);
         }
         let Some(store) = classify(target, value) else {
