@@ -1423,6 +1423,42 @@ impl Generator {
                 // binary-placement owner, which anchors the left global in a
                 // virtual register and loads the right into scratch.
                 if self.is_global(left) && self.is_global(right) {
+                    let retained_left = match left.as_ref() {
+                        Expression::Variable(name)
+                            if self.condition_global_values.contains_key(name) =>
+                        {
+                            self.condition_global_base(name)?
+                        }
+                        _ => None,
+                    };
+                    if let Some(left_register) = retained_left {
+                        let inserted = self.reserved.insert(left_register);
+                        let right_result =
+                            self.condition_operand_register(right);
+                        if inserted {
+                            self.reserved.remove(&left_register);
+                        }
+                        let right_register = right_result?;
+                        let signed = self.signedness_of(left)?
+                            && self.signedness_of(right)?;
+                        if signed {
+                            self.output.instructions.push(
+                                Instruction::CompareWord {
+                                    a: left_register,
+                                    b: right_register,
+                                },
+                            );
+                        } else {
+                            self.output.instructions.push(
+                                Instruction::CompareLogicalWord {
+                                    a: left_register,
+                                    b: right_register,
+                                },
+                            );
+                        }
+                        return Ok(false_branch_bo_bi(*operator)
+                            .expect("is_comparison restricts the operator"));
+                    }
                     let operands = self.place_general_operands(*operator, left, right)?;
                     let signed =
                         self.signedness_of(left)? && self.signedness_of(right)?;

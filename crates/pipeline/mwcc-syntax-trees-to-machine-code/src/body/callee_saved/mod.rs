@@ -98,6 +98,7 @@ mod structured_leaf;
 mod structured_call_schedule;
 mod structured_sequenced_callback_wait;
 mod structured_condition_schedule;
+mod structured_condition_join_cache;
 mod structured_complement_product_pair;
 mod structured_constructor_schedule;
 mod structured_copy_packet_schedule;

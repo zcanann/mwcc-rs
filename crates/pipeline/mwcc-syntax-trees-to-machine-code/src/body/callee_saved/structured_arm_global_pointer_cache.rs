@@ -7,12 +7,64 @@
 #[allow(unused_imports)]
 use super::*;
 use crate::condition_global_cache::ConditionGlobalValue;
+use super::structured_condition_join_cache::followup_after_call_free_join;
 use super::structured_entry_alias::EntryParameterAlias;
 use super::structured_expression_visit::visit_statement;
 
 struct ArmGlobalPointerCachePlan {
     global: String,
     prefix_len: usize,
+}
+
+fn repeated_leading_guard_store_constant(statements: &[Statement]) -> Option<i32> {
+    let [
+        Statement::Store {
+            target:
+                Expression::Member {
+                    index_stride: None,
+                    ..
+                },
+            value: leading_value,
+        },
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        },
+        ..,
+    ] = statements
+    else {
+        return None;
+    };
+    let Some(Statement::Store {
+        value: guarded_value,
+        ..
+    }) = then_body.first()
+    else {
+        return None;
+    };
+    let leading = i32::try_from(constant_value(leading_value)?).ok()?;
+    let guarded = i32::try_from(constant_value(guarded_value)?).ok()?;
+    (leading == guarded
+        && else_body.is_empty()
+        && !crate::analysis::expression_has_side_effect(condition))
+    .then_some(leading)
+}
+
+fn repeated_constant_scope_len(statements: &[Statement]) -> usize {
+    let [
+        Statement::If { then_body, .. },
+        following,
+        ..,
+    ] = statements
+    else {
+        return 1;
+    };
+    if followup_after_call_free_join(then_body, Some(following)).is_some() {
+        2
+    } else {
+        1
+    }
 }
 
 fn plan(
@@ -71,8 +123,23 @@ impl Generator {
         if self.structured_shared_switch_global_value.is_some()
             && !statements.is_empty()
         {
+            let repeated_constant =
+                repeated_leading_guard_store_constant(statements);
+            let mut previous_constants = repeated_constant.map(|constant| {
+                // The comparison-switch base in r4 is dead on entry to any
+                // selected arm. The linear interval model cannot see that
+                // path boundary and would reject r4 as overlapping later
+                // dispatch comparisons, so this arm-local semantic proof owns
+                // the fixed work register directly.
+                let register = 4;
+                self.load_integer_constant(register, i64::from(constant));
+                std::mem::replace(
+                    &mut self.prematerialized_constants,
+                    vec![(constant, register)],
+                )
+            });
             let (leading, remainder) = statements.split_at(1);
-            self.emit_structured_statements(
+            let leading_result = self.emit_structured_statements(
                 leading,
                 function,
                 ephemeral_locals,
@@ -81,23 +148,65 @@ impl Generator {
                 label_positions,
                 pending_gotos,
                 entry_alias,
-            )?;
+            );
+            if let Err(diagnostic) = leading_result {
+                if let Some(previous) = previous_constants {
+                    self.prematerialized_constants = previous;
+                }
+                return Err(diagnostic);
+            }
             let previous_values =
                 std::mem::take(&mut self.condition_global_values);
             let previous_shared =
                 self.structured_shared_switch_global_value.take();
-            let remainder_result = self.emit_structured_statements(
-                remainder,
-                function,
-                ephemeral_locals,
-                false,
-                return_branches,
-                label_positions,
-                pending_gotos,
-                entry_alias,
-            );
+            let remainder_result = if previous_constants.is_some()
+                && !remainder.is_empty()
+            {
+                let scope_len = repeated_constant_scope_len(remainder);
+                let (constant_scope, after_scope) =
+                    remainder.split_at(scope_len);
+                let scope_result = self.emit_structured_statements(
+                    constant_scope,
+                    function,
+                    ephemeral_locals,
+                    false,
+                    return_branches,
+                    label_positions,
+                    pending_gotos,
+                    entry_alias,
+                );
+                self.prematerialized_constants = previous_constants
+                    .take()
+                    .expect("the repeated constant was materialized");
+                scope_result.and_then(|()| {
+                    self.emit_structured_statements(
+                        after_scope,
+                        function,
+                        ephemeral_locals,
+                        false,
+                        return_branches,
+                        label_positions,
+                        pending_gotos,
+                        entry_alias,
+                    )
+                })
+            } else {
+                self.emit_structured_statements(
+                    remainder,
+                    function,
+                    ephemeral_locals,
+                    false,
+                    return_branches,
+                    label_positions,
+                    pending_gotos,
+                    entry_alias,
+                )
+            };
             self.condition_global_values = previous_values;
             self.structured_shared_switch_global_value = previous_shared;
+            if let Some(previous) = previous_constants {
+                self.prematerialized_constants = previous;
+            }
             return remainder_result;
         }
         let Some(plan) = plan(statements, &self.globals, &self.volatile_globals) else {
@@ -209,4 +318,35 @@ mod tests {
         )]);
         assert!(plan(&statements, &globals, &std::collections::HashSet::new()).is_none());
     }
+
+    #[test]
+    fn retains_a_leading_member_constant_through_the_following_guard() {
+        let mut statements = vec![
+            Statement::Store {
+                target: member(0),
+                value: Expression::IntegerLiteral(1),
+            },
+            Statement::If {
+                condition: Expression::Variable("same_task".into()),
+                then_body: vec![Statement::Store {
+                    target: Expression::Variable("yielded".into()),
+                    value: Expression::IntegerLiteral(1),
+                }],
+                else_body: Vec::new(),
+            },
+        ];
+
+        assert_eq!(
+            repeated_leading_guard_store_constant(&statements),
+            Some(1)
+        );
+        let following_guard = Statement::If {
+            condition: member(40),
+            then_body: Vec::new(),
+            else_body: Vec::new(),
+        };
+        statements.push(following_guard);
+        assert_eq!(repeated_constant_scope_len(&statements[1..]), 2);
+    }
+
 }

@@ -16,10 +16,15 @@ impl Generator {
             return Ok(false);
         };
 
-        self.emit_global_load_value(global, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        let base = if let Some(base) = self.condition_global_base(global)? {
+            base
+        } else {
+            self.emit_global_load_value(global, Eabi::FIRST_GENERAL_ARGUMENT)?;
+            Eabi::FIRST_GENERAL_ARGUMENT
+        };
         self.output.instructions.push(Instruction::LoadWord {
             d: 12,
-            a: Eabi::FIRST_GENERAL_ARGUMENT,
+            a: base,
             offset,
         });
         self.output
@@ -30,6 +35,12 @@ impl Generator {
             });
         let done = self.fresh_label();
         self.emit_branch_conditional_to(12, 2, done);
+        if base != Eabi::FIRST_GENERAL_ARGUMENT {
+            self.emit_integer_materialization_copy(
+                Eabi::FIRST_GENERAL_ARGUMENT,
+                base,
+            );
+        }
         if self.behavior.frame_convention == FrameConvention::LinkageFirst {
             self.const_address_bases.clear();
             self.output

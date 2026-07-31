@@ -88,6 +88,9 @@ use super::structured_shared_switch_global_value::{
     plan as plan_structured_shared_switch_global_value,
     SharedSwitchGlobalValueHome,
 };
+use super::structured_condition_join_cache::{
+    followup_after_call_free_join, retained_values_after_join,
+};
 use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
 };
@@ -3370,6 +3373,13 @@ impl Generator {
                         guarded_store_value
                             .or(nested_condition)
                             .or(guarded_value_followup);
+                    let joined_followup = guarded_followup.is_none().then(|| {
+                        followup_after_call_free_join(
+                            then_body,
+                            statements.get(statement_index + 1),
+                        )
+                    }).flatten();
+                    let cache_followup = guarded_followup.or(joined_followup);
                     let terms = logical_and_terms(condition);
                     let (previous_cache, previous_float_cache) =
                         if let Some((previous, previous_float)) =
@@ -3382,7 +3392,7 @@ impl Generator {
                             (
                                 self.begin_condition_global_cache_with_followup(
                                     condition,
-                                    guarded_followup,
+                                    cache_followup,
                                 ),
                                 if let Some(value) = guarded_store_value {
                                     self.begin_composed_condition_float_cache_with_value_followup(
@@ -3639,12 +3649,20 @@ impl Generator {
                         statements.get(statement_index + 1),
                         Some(Statement::If { else_body, .. }) if else_body.is_empty()
                     );
-                    let continuation_cache = carry_fallthrough_cache.then(|| {
-                        (
+                    let continuation_cache = if carry_fallthrough_cache {
+                        Some((
                             self.condition_global_values.clone(),
                             self.condition_float_cache.clone(),
+                        ))
+                    } else if joined_followup.is_some() {
+                        retained_values_after_join(
+                            self.condition_global_values.clone(),
+                            then_body,
                         )
-                    });
+                        .map(|values| (values, Default::default()))
+                    } else {
+                        None
+                    };
                     let guarded_true_cache =
                         guarded_followup.map(|_| self.condition_global_values.clone());
                     let guarded_true_float_cache = guarded_followup.map(|followup| {
