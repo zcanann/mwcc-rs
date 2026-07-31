@@ -20,6 +20,7 @@ mod constructor_initializers;
 mod computed_index_subscript;
 mod driver;
 mod frame_aggregate_copy;
+mod frame_array_indexed_load;
 mod frame_array_indexed_store;
 mod frame_subobject;
 mod frame_matrix;

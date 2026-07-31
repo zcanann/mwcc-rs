@@ -234,6 +234,7 @@ mod structured_loop_packet_load_reuse;
 mod structured_loop_packet_setup;
 mod structured_loop_packet_zero;
 mod structured_loop_register_pressure;
+mod structured_loop_mutated_parameters;
 mod structured_loop_assertion_strings;
 mod structured_loop_assertion_entry_schedule;
 mod structured_loop_assertion_string_schedule;

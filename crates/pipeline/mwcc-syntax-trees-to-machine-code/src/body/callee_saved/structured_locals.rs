@@ -675,6 +675,14 @@ fn assignment_flow(
         if !falls_through {
             continue;
         }
+        if let Statement::Store { target, value } = statement {
+            let (next_initialized, target_assigned) =
+                expression_initialization_flow(target, name, initialized)?;
+            let (next_initialized, value_assigned) =
+                expression_initialization_flow(value, name, next_initialized)?;
+            initialized = next_initialized;
+            assigned |= target_assigned || value_assigned;
+        }
         let embedded_expression = match statement {
             Statement::Assign { value, .. }
             | Statement::Expression(value)
@@ -1554,6 +1562,31 @@ mod tests {
         }];
 
         assert!(is_definitely_assigned_before_reads(&statements, "cursor"));
+        assert!(is_definitely_assigned_before_reads(
+            &statements,
+            "temporary"
+        ));
+    }
+
+    #[test]
+    fn accepts_an_inlined_value_temporary_inside_a_loop_store() {
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::For,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: vec![Statement::Store {
+                target: Expression::Variable("output".into()),
+                value: Expression::Comma {
+                    left: Box::new(Expression::Assign {
+                        target: Box::new(Expression::Variable("temporary".into())),
+                        value: Box::new(Expression::FloatLiteral(3.0)),
+                    }),
+                    right: Box::new(Expression::Variable("temporary".into())),
+                },
+            }],
+        }];
+
         assert!(is_definitely_assigned_before_reads(
             &statements,
             "temporary"

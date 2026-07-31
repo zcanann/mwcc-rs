@@ -1534,6 +1534,11 @@ impl Generator {
                 return Ok(());
             }
         }
+        if let Expression::Variable(name) = base {
+            if self.try_emit_variable_frame_array_load(name, index, destination)? {
+                return Ok(());
+            }
+        }
         // `g[index]` where `g` is a file-scope array global: its address is
         // materialized by size (SDA21 small / ADDR16 large), then the element load.
         if let Expression::Variable(name) = base {

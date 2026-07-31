@@ -104,6 +104,7 @@ use super::structured_condition_join_cache::{
 use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
 };
+use super::structured_loop_mutated_parameters::loop_mutated_parameters;
 use super::structured_loop_member_receiver_layout::StructuredLoopMemberReceiverLayout;
 use super::structured_loop_call_publication_layout::StructuredLoopCallPublicationLayout;
 use super::structured_object_collision_loop_layout::StructuredObjectCollisionLoopLayout;
@@ -2777,6 +2778,31 @@ impl Generator {
             }
         }
         self.try_preload_ephemeral_float_compare_literal(function, &ephemeral_locals)?;
+        // A parameter mutated around a loop backedge is one allocator-owned
+        // value home. Start it as a virtual with its incoming ABI register as
+        // the coalescing preference: the entry copy then disappears when that
+        // register is free, while CFG liveness keeps later temporaries out of
+        // the loop-carried home.
+        for parameter in loop_mutated_parameters(function) {
+            let Some(location) = self.locations.get(&parameter.name) else {
+                continue;
+            };
+            if location.class != ValueClass::General
+                || location.width != 32
+                || mwcc_vreg::Reg::is_virtual_field(location.register)
+            {
+                continue;
+            }
+            let incoming = location.register;
+            let home = self.fresh_virtual_general_preferring(incoming);
+            self.output
+                .instructions
+                .push(Instruction::move_register(home, incoming));
+            self.locations
+                .get_mut(&parameter.name)
+                .expect("loop-mutated parameter location disappeared")
+                .register = home;
+        }
         // Initializers are evaluated at declaration time, while an incoming
         // parameter still has its entry-register alias. MWCC can preserve that
         // alias after copying the value to a saved home (`mr r31,r3; lwz ...,r3`)
