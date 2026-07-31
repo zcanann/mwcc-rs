@@ -184,6 +184,15 @@ impl Generator {
                     return self.evaluate_float(&promoted, destination);
                 }
                 let double = self.is_double_value(left) || self.is_double_value(right);
+                if self.try_emit_integer_affine_float(
+                    *operator,
+                    left,
+                    right,
+                    destination,
+                    double,
+                )? {
+                    return Ok(());
+                }
                 if self.try_emit_scaled_integer_product(
                     *operator,
                     left,
