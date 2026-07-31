@@ -998,8 +998,17 @@ impl Generator {
         if !stride.is_power_of_two() {
             return Err(Diagnostic::error("a global struct-array member with a non-power-of-two stride is not supported yet (roadmap)"));
         }
-        let index_register = self.materialize_index_operand(index)?;
-        if destination == GENERAL_SCRATCH {
+        let needs_distinct_address = destination == GENERAL_SCRATCH
+            || matches!(pointee, Pointee::Float | Pointee::Double);
+        let index_register = if needs_distinct_address
+            && self.general_register_of_leaf(index).is_err()
+        {
+            self.evaluate_general(index, GENERAL_SCRATCH)?;
+            GENERAL_SCRATCH
+        } else {
+            self.materialize_index_operand(index)?
+        };
+        if needs_distinct_address {
             if self.emit_legacy_global_struct_array_scratch_load(
                 name,
                 total_size,
@@ -1007,6 +1016,7 @@ impl Generator {
                 stride,
                 offset,
                 pointee,
+                destination,
             )? {
                 return Ok(());
             }

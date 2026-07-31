@@ -512,12 +512,10 @@ impl Generator {
         Ok(true)
     }
 
-    /// Load an offset-zero field from a variable-indexed global struct array into
-    /// r0 under the legacy explicit-address schedule. The ordinary address helper
-    /// assumes its destination can also hold the element address; r0 cannot (and
-    /// is already the low-half staging register). Keep the address and scaled
-    /// index in separate virtual GPRs instead:
-    /// `lis hi; slwi scaled,index; addi r0,hi,@l; add hi,r0,scaled; lwz r0,0(hi)`.
+    /// Load a field from a variable-indexed global struct array when the value
+    /// destination cannot also be its GPR address base: r0, or any FPR. Keep the
+    /// address and scaled index in separate GPRs instead:
+    /// `lis hi; slwi scaled,index; addi r0,hi,@l; add hi,r0,scaled; load d,off(hi)`.
     pub(crate) fn emit_legacy_global_struct_array_scratch_load(
         &mut self,
         name: &str,
@@ -526,28 +524,35 @@ impl Generator {
         stride: u32,
         member_offset: u32,
         pointee: Pointee,
+        destination: u8,
     ) -> Compilation<bool> {
         if self.behavior.global_array_index_style
             != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
             || (self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8)
             || !stride.is_power_of_two()
-            || member_offset != 0
         {
             return Ok(false);
         }
+        let member_offset = i16::try_from(member_offset).map_err(|_| {
+            Diagnostic::error("global struct-array member displacement is out of range")
+        })?;
         // These homes stay physical because the legacy schedule deliberately
         // retains the now-dead scaled-index register as the later boolean result
         // lane. Keep both distinct from the live source index and from each other.
         let high = self.free_general_excluding(index)?;
         let scaled = self.free_general_excluding_two(index, high)?;
-        self.emit_address_high(high, name);
-        self.output
-            .instructions
-            .push(Instruction::ShiftLeftImmediate {
-                a: scaled,
-                s: index,
-                shift: stride.trailing_zeros() as u8,
-            });
+        let scale = Instruction::ShiftLeftImmediate {
+            a: scaled,
+            s: index,
+            shift: stride.trailing_zeros() as u8,
+        };
+        if matches!(pointee, Pointee::Float | Pointee::Double) {
+            self.output.instructions.push(scale);
+            self.emit_address_high(high, name);
+        } else {
+            self.emit_address_high(high, name);
+            self.output.instructions.push(scale);
+        }
         self.record_relocation(RelocationKind::Addr16Lo, name);
         self.output.instructions.push(Instruction::AddImmediate {
             d: GENERAL_SCRATCH,
@@ -561,9 +566,9 @@ impl Generator {
         });
         self.output.instructions.push(displacement_load(
             pointee,
-            GENERAL_SCRATCH,
+            destination,
             high,
-            0,
+            member_offset,
         )?);
         Ok(true)
     }
