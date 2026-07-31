@@ -309,6 +309,7 @@ impl Generator {
                 // so it is not routed here (only a global variable is a load).
                 if matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply)
                     && same_operand(left, right)
+                    && self.behavior.optimization != mwcc_versions::Optimization::O0
                     && (matches!(left.as_ref(), Expression::Dereference { .. } | Expression::Member { .. } | Expression::Index { .. })
                         || matches!(left.as_ref(), Expression::Variable(name) if self.globals.contains_key(name.as_str())))
                 {
@@ -669,7 +670,11 @@ impl Generator {
             // coalescing explicitly, this avoids manufacturing one disposable
             // virtual for every scalar operation in generated, unrolled math
             // routines. A scratch-owned parent still needs a distinct lane.
-            let anchor = if destination == FLOAT_SCRATCH {
+            let anchor = if self.behavior.optimization == mwcc_versions::Optimization::O0
+                && same_operand(left, right)
+            {
+                self.fresh_virtual_float_preferring(1)
+            } else if destination == FLOAT_SCRATCH {
                 if let Some(preferred) = self.structured_branch_float_work_home {
                     self.fresh_virtual_float_preferring(preferred)
                 } else {
