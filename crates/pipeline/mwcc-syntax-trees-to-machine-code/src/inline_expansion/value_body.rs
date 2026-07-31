@@ -23,18 +23,7 @@ impl ValueInlineBody {
     }
 
     fn forwarded_call_arguments(&self) -> Option<&[Expression]> {
-        match &self.expression {
-            Expression::Call { arguments, .. } => Some(arguments),
-            Expression::Comma { left, right }
-                if matches!(right.as_ref(), Expression::IntegerLiteral(0)) =>
-            {
-                match left.as_ref() {
-                    Expression::Call { arguments, .. } => Some(arguments),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
+        forwarded_call_arguments(&self.expression)
     }
 
     /// Whether substituting caller arguments directly preserves both their
@@ -73,6 +62,19 @@ impl ValueInlineBody {
     /// lane instead of extending its lifetime through an argument temporary.
     pub(super) fn forwards_known_function_designators(&self) -> bool {
         self.automatic_transaction && extended_diagnostic_transaction(&self.source)
+    }
+}
+
+fn forwarded_call_arguments(expression: &Expression) -> Option<&[Expression]> {
+    match expression {
+        Expression::Call { arguments, .. } => Some(arguments),
+        Expression::Cast { operand, .. } => forwarded_call_arguments(operand),
+        Expression::Comma { left, right }
+            if matches!(right.as_ref(), Expression::IntegerLiteral(0)) =>
+        {
+            forwarded_call_arguments(left)
+        }
+        _ => None,
     }
 }
 
@@ -1604,6 +1606,27 @@ mod tests {
         assert!(!summary.arguments_forwarded_once_in_order());
         assert!(summary.parameter_used_once_in_forwarded_call("value"));
         assert!(!summary.parameter_used_once_in_forwarded_call("object"));
+    }
+
+    #[test]
+    fn recognizes_forwarded_call_arguments_through_a_result_cast() {
+        let expression = Expression::Cast {
+            target_type: Type::Float,
+            operand: Box::new(Expression::Call {
+                name: "wide_math".into(),
+                arguments: vec![Expression::Cast {
+                    target_type: Type::Double,
+                    operand: Box::new(Expression::Variable("value".into())),
+                }],
+            }),
+        };
+
+        let arguments = forwarded_call_arguments(&expression).expect("casted forwarding call");
+        assert_eq!(arguments.len(), 1);
+        assert_eq!(
+            super::super::safety::expression_use_count(&arguments[0], "value"),
+            1
+        );
     }
 
     #[test]
