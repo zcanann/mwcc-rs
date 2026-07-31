@@ -13,6 +13,75 @@ use mwcc_syntax_trees::{BinaryOperator, Expression};
 use mwcc_versions::Optimization;
 
 impl Generator {
+    /// Emit `literal * integer` when the integer must first cross from a GPR
+    /// into the single-precision register file. Legacy O0 keeps the literal in
+    /// a distinct FPR while the magic-bias conversion produces the other
+    /// factor in f0.
+    pub(crate) fn try_emit_literal_scaled_integer(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+        double: bool,
+    ) -> Compilation<bool> {
+        if operator != BinaryOperator::Multiply
+            || double
+            || self.behavior.optimization != Optimization::O0
+        {
+            return Ok(false);
+        }
+        let Some((scale, integer)) = literal_scaled_integer(left, right, |factor| {
+            self.is_float_value(factor)
+        }) else {
+            return Ok(false);
+        };
+        let Some(width) = self.unpromoted_integer_width(integer) else {
+            return Ok(false);
+        };
+
+        let scale_register = self.fresh_virtual_float_preferring(2);
+        self.load_float_literal(scale_register, scale, false);
+
+        let leaf = self.leaf_info(integer).ok();
+        let source = if let Some((source, width, signed)) = leaf {
+            if width >= 32 {
+                source
+            } else {
+                let widened = self.fresh_virtual_general_preferring(0);
+                self.emit_widen(widened, source, width, signed);
+                widened
+            }
+        } else {
+            let computed = self.fresh_virtual_general_preferring(0);
+            self.evaluate_general(integer, computed)?;
+            if width == 8 && self.signedness_of(integer)? {
+                self.emit_widen(computed, computed, 8, true);
+            }
+            computed
+        };
+        let promoted = self.fresh_virtual_float_preferring(FLOAT_SCRATCH);
+        let bias = self.fresh_virtual_float_preferring(1);
+        let scratch = self.claim_int_to_float_scratch()?;
+        self.emit_int_to_float_body_at(
+            source,
+            promoted,
+            false,
+            self.signedness_of(integer)?,
+            bias,
+            IntToFloatSchedule::LeafValue,
+            scratch,
+        );
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle {
+                d: destination,
+                a: scale_register,
+                c: promoted,
+            });
+        Ok(true)
+    }
+
     pub(crate) fn try_emit_scaled_integer_product(
         &mut self,
         operator: BinaryOperator,
@@ -119,6 +188,22 @@ fn scaled_product<'e>(
     }
 }
 
+fn literal_scaled_integer<'e>(
+    left: &'e Expression,
+    right: &'e Expression,
+    is_float: impl Fn(&Expression) -> bool,
+) -> Option<(f64, &'e Expression)> {
+    match (left, right) {
+        (Expression::FloatLiteral(scale), integer)
+        | (integer, Expression::FloatLiteral(scale))
+            if !is_float(integer) =>
+        {
+            Some((*scale, integer))
+        }
+        _ => None,
+    }
+}
+
 fn mixed_product<'e>(
     expression: &'e Expression,
     is_float: impl Fn(&Expression) -> bool,
@@ -140,7 +225,7 @@ fn mixed_product<'e>(
 
 #[cfg(test)]
 mod tests {
-    use super::{mixed_product, scaled_product};
+    use super::{literal_scaled_integer, mixed_product, scaled_product};
     use mwcc_syntax_trees::{BinaryOperator, Expression};
 
     fn multiply(left: Expression, right: Expression) -> Expression {
@@ -194,5 +279,29 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn recognizes_a_literal_scaled_integer_in_either_order() {
+        let integer = Expression::Variable("count".into());
+        let expression = multiply(Expression::FloatLiteral(0.25), integer.clone());
+        let (scale, factor) = match &expression {
+            Expression::Binary { left, right, .. } => {
+                literal_scaled_integer(left, right, |_| false).expect("scaled integer")
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(scale, 0.25);
+        assert!(matches!(factor, Expression::Variable(name) if name == "count"));
+
+        let expression = multiply(integer.clone(), Expression::FloatLiteral(0.25));
+        let (scale, factor) = match &expression {
+            Expression::Binary { left, right, .. } => {
+                literal_scaled_integer(left, right, |_| false).expect("scaled integer")
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(scale, 0.25);
+        assert!(matches!(factor, Expression::Variable(name) if name == "count"));
     }
 }

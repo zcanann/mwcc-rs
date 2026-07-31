@@ -202,6 +202,15 @@ impl Generator {
                 )? {
                     return Ok(());
                 }
+                if self.try_emit_literal_scaled_integer(
+                    *operator,
+                    left,
+                    right,
+                    destination,
+                    double,
+                )? {
+                    return Ok(());
+                }
                 if self.try_emit_float_damping_product(
                     *operator,
                     left,
