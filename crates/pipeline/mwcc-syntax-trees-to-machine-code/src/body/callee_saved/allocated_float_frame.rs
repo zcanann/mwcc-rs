@@ -5,6 +5,51 @@ use super::*;
 use super::allocated_float_frame_linkage_first::materialize_linkage_first_frame;
 
 impl Generator {
+    /// Remove linkage state left behind when automatic inlining turns a
+    /// structured non-leaf plan into a leaf. Keep the base frame itself: frame
+    /// locals and allocator-selected callee-saved values still occupy it.
+    pub(crate) fn strip_artificial_leaf_linkage(&mut self) -> Compilation<()> {
+        if self.output.instructions.iter().any(instruction_links) {
+            return Ok(());
+        }
+        let len = self.output.instructions.len();
+        let has_linkage_state = self.output.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::MoveFromLinkRegister { .. }
+                    | Instruction::MoveToLinkRegister { .. }
+            )
+        });
+        if !has_linkage_state {
+            return Ok(());
+        }
+        if len < 7
+            || !matches!(
+                self.output.instructions.as_slice(),
+                [
+                    Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
+                    Instruction::MoveFromLinkRegister { d: 0 },
+                    Instruction::StoreWord { s: 0, a: 1, .. },
+                    ..,
+                    Instruction::LoadWord { d: 0, a: 1, .. },
+                    Instruction::MoveToLinkRegister { s: 0 },
+                    Instruction::AddImmediate { d: 1, a: 1, .. },
+                    Instruction::BranchToLinkRegister,
+                ]
+            )
+        {
+            return Err(Diagnostic::error(
+                "inlined leaf has an unexpected linkage frame",
+            ));
+        }
+
+        crate::remove_instruction_retargeting_to_next(self, len - 3);
+        crate::remove_instruction_retargeting_to_next(self, len - 4);
+        crate::remove_instruction_retargeting_to_next(self, 2);
+        crate::remove_instruction_retargeting_to_next(self, 1);
+        Ok(())
+    }
+
     /// Expand an already scheduled non-leaf frame around the FPRs selected by
     /// register allocation. Predecrement frames preserve both paired-single
     /// lanes; the legacy linkage-first convention uses compact double lanes.

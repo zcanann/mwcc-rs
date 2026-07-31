@@ -84,34 +84,6 @@ impl Generator {
         }
         Ok(claimed)
     }
-
-    fn strip_artificial_leaf_linkage(&mut self) -> Compilation<()> {
-        let len = self.output.instructions.len();
-        let valid = matches!(
-            self.output.instructions.as_slice(),
-            [
-                Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
-                Instruction::MoveFromLinkRegister { d: 0 },
-                Instruction::StoreWord { s: 0, a: 1, .. },
-                ..,
-                Instruction::LoadWord { d: 0, a: 1, .. },
-                Instruction::MoveToLinkRegister { s: 0 },
-                Instruction::AddImmediate { d: 1, a: 1, .. },
-                Instruction::BranchToLinkRegister,
-            ]
-        );
-        if !valid || len < 7 {
-            return Err(Diagnostic::error(
-                "materialized float leaf has an unexpected linkage frame",
-            ));
-        }
-
-        crate::remove_instruction_retargeting_to_next(self, len - 3);
-        crate::remove_instruction_retargeting_to_next(self, len - 4);
-        crate::remove_instruction_retargeting_to_next(self, 2);
-        crate::remove_instruction_retargeting_to_next(self, 1);
-        Ok(())
-    }
 }
 
 #[cfg(test)]

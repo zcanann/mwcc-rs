@@ -391,20 +391,7 @@ impl Generator {
                     "frame mode requires an automatic array, aggregate, scalar, or conversion slot"
                 );
             }
-            if !((function.return_type == Type::Void && function.return_expression.is_none())
-                    || (matches!(
-                        function.return_type,
-                        Type::Int
-                            | Type::UnsignedInt
-                            | Type::Short
-                            | Type::UnsignedShort
-                            | Type::Char
-                            | Type::UnsignedChar
-                            | Type::Pointer(_)
-                            | Type::StructPointer { .. }
-                    )
-                        && function.return_expression.is_some()))
-            {
+            if !structured_return_is_supported(function) {
                 decline!("automatic-array return shape is unsupported");
             }
             plan

@@ -921,6 +921,7 @@ fn lower_function_body(
     // pre-allocation pass until generic scheduling removes that branch.
     generator.schedule_saved_return_epilogue(function);
     generator.schedule_post_call_zero_global_publication();
+    generator.strip_artificial_leaf_linkage()?;
     // Issue the epilogue's saved-LR reload right after the last call (ahead of the
     // post-call computation), as mwcc does — a final pass on the physical stream.
     hoist_link_register_reload(&mut generator);
