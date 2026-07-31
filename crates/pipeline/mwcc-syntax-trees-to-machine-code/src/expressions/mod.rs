@@ -37,6 +37,7 @@ mod materialized_bitand_constant;
 mod retained_global_pointer_store;
 mod members;
 mod narrow_compound;
+mod nested_global_pointer_float_store;
 mod nested_global_member_pointer_store;
 mod nested_global_member_pointer_variable_store;
 mod nested_member_array_load;
