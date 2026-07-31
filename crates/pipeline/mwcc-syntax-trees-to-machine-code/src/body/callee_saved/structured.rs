@@ -332,6 +332,10 @@ impl Generator {
             (self.behavior.optimization == mwcc_versions::Optimization::O0)
                 .then(|| StructuredPeriodicFloatNormalization::plan(function))
                 .flatten();
+        let retained_sqrtf_spill = self.retained_sqrtf_spill_local(function);
+        if !with_frame_array && retained_sqrtf_spill.is_some() {
+            decline!("retained sqrtf requires its recovered scalar frame image");
+        }
         let frame_scalar_parameters: Vec<_> = if with_frame_array {
             function
                 .parameters
@@ -353,7 +357,9 @@ impl Generator {
                 .filter(|local| {
                     local.array_length.is_none()
                         && !matches!(local.declared_type, Type::Struct { .. })
-                        && address_taken.contains(local.name.as_str())
+                        && (address_taken.contains(local.name.as_str())
+                            || retained_sqrtf_spill
+                                .is_some_and(|spill| spill.name == local.name))
                 })
                 .collect()
         } else {

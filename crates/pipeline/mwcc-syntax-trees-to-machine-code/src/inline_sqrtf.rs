@@ -9,7 +9,9 @@
 use crate::generator::{Generator, ValueClass, FLOAT_SCRATCH};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type};
+use mwcc_syntax_trees::{
+    BinaryOperator, Expression, Function, LocalDeclaration, Statement, Type,
+};
 
 pub(crate) fn is_supported_retained_sqrtf(function: &Function) -> bool {
     if function.name != "sqrtf"
@@ -167,6 +169,23 @@ fn float_literal(expression: &Expression, expected: f64) -> bool {
 }
 
 impl Generator {
+    /// Recover the caller-owned volatile result image introduced by inlining
+    /// the canonical SDK `sqrtf`. Decompilation sources preserve this compiler
+    /// temporary as `spN`, where N is its hexadecimal frame displacement.
+    pub(crate) fn retained_sqrtf_spill_local<'a>(
+        &self,
+        function: &'a Function,
+    ) -> Option<&'a LocalDeclaration> {
+        let has_retained_call = function.statements.iter().any(|statement| {
+            matches!(statement,
+                Statement::Store { value, .. } if self.is_retained_sqrtf_call(value))
+        });
+        if !has_retained_call {
+            return None;
+        }
+        recovered_sqrtf_spill_local(function)
+    }
+
     pub(crate) fn is_retained_sqrtf_call(&self, expression: &Expression) -> bool {
         let Expression::Call { name, arguments } = expression else {
             return false;
@@ -175,6 +194,8 @@ impl Generator {
             && self
                 .inline_bodies
                 .retained_body(name)
+                .or_else(|| self.inline_bodies.definition_body(name))
+                .or_else(|| self.inline_bodies.composable_body(name))
                 .is_some_and(is_supported_retained_sqrtf)
     }
 
@@ -192,18 +213,19 @@ impl Generator {
         let input = self.float_register_of_leaf(&arguments[0])?;
         let spill = self
             .frame_slots
-            .get("spC")
-            .copied()
-            .filter(|slot| {
-                slot.offset == 12
+            .iter()
+            .find_map(|(name, slot)| {
+                (recovered_spill_offset(name) == Some(slot.offset)
                     && slot.class == ValueClass::Float
                     && slot.size == 4
                     && slot.value_type == Type::Float
-                    && !slot.is_array
+                    && slot.parameter_register.is_none()
+                    && !slot.is_array)
+                    .then_some(*slot)
             })
             .ok_or_else(|| {
                 Diagnostic::error(
-                    "retained sqrtf needs its recovered volatile float spill at r1+12",
+                    "retained sqrtf needs one recovered volatile `spN` float spill",
                 )
             })?;
 
@@ -297,9 +319,34 @@ impl Generator {
     }
 }
 
+pub(crate) fn has_recovered_sqrtf_spill(function: &Function) -> bool {
+    function.statements.iter().any(|statement| {
+        matches!(statement,
+            Statement::Store {
+                value: Expression::Call { name, arguments },
+                ..
+            } if name == "sqrtf" && arguments.len() == 1)
+    }) && recovered_sqrtf_spill_local(function).is_some()
+}
+
+fn recovered_sqrtf_spill_local(function: &Function) -> Option<&LocalDeclaration> {
+    let mut candidates = function.locals.iter().filter(|local| {
+        local.declared_type == Type::Float
+            && local.initializer.is_none()
+            && local.array_length.is_none()
+            && recovered_spill_offset(&local.name).is_some()
+    });
+    let candidate = candidates.next()?;
+    candidates.next().is_none().then_some(candidate)
+}
+
+fn recovered_spill_offset(name: &str) -> Option<i16> {
+    i16::from_str_radix(name.strip_prefix("sp")?, 16).ok()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{float_literal, variable};
+    use super::{float_literal, recovered_spill_offset, variable};
     use mwcc_syntax_trees::Expression;
 
     #[test]
@@ -308,5 +355,12 @@ mod tests {
         assert!(!variable(&Expression::Variable("y".into()), "x"));
         assert!(float_literal(&Expression::FloatLiteral(0.5), 0.5));
         assert!(!float_literal(&Expression::FloatLiteral(0.25), 0.5));
+    }
+
+    #[test]
+    fn recovered_spill_names_encode_hexadecimal_frame_offsets() {
+        assert_eq!(recovered_spill_offset("sp8"), Some(8));
+        assert_eq!(recovered_spill_offset("spC"), Some(12));
+        assert_eq!(recovered_spill_offset("scratch"), None);
     }
 }

@@ -1570,6 +1570,12 @@ impl Generator {
             // which lowers it to the `fabs` instruction in the scratch (mwcc: `fabs f0,f1;
             // stfd f0`). Only a REAL call stores its result from the float return register.
             if let Expression::Call { name, arguments } = value {
+                if self.is_retained_sqrtf_call(value) {
+                    let result = self.fresh_virtual_float_preferring(28);
+                    if self.try_emit_retained_sqrtf(value, result)? {
+                        return Ok(result);
+                    }
+                }
                 if !is_intrinsic_call(name) {
                     if !matches!(
                         self.call_return_types.get(name),
