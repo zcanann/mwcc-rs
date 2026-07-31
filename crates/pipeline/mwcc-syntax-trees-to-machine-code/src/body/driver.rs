@@ -1796,10 +1796,20 @@ impl Generator {
                         &self.globals,
                         &self.volatile_globals,
                     );
+                let shared_store_function = shared_store_base
+                    .as_ref()
+                    .unwrap_or(scalarized_function);
+                let shared_array_store_base =
+                    crate::shared_global_array_store_base::materialize_consecutive_global_array_store_base(
+                        shared_store_function,
+                        &self.globals,
+                        &self.global_arrays,
+                        &self.volatile_globals,
+                    );
                 return self.evaluate_body(
-                    shared_store_base
+                    shared_array_store_base
                         .as_ref()
-                        .unwrap_or(scalarized_function),
+                        .unwrap_or(shared_store_function),
                 );
             }
             if calls_skipped_inline {

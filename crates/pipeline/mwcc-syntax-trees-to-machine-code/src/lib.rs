@@ -61,6 +61,7 @@ mod ordinal_accounting;
 mod placement;
 mod runtime_conversions;
 mod shared_global_store_base;
+mod shared_global_array_store_base;
 mod switch;
 mod symbol_order;
 mod value_tracking;
