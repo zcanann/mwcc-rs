@@ -90,6 +90,8 @@ use super::structured_periodic_float_normalization::StructuredPeriodicFloatNorma
 use super::structured_unoptimized_leaf_homes::StructuredUnoptimizedLeafHomes;
 use super::structured_unoptimized_inline_float_loop_homes::
     StructuredUnoptimizedInlineFloatLoopHomes;
+use super::structured_unoptimized_inline_float_transaction_homes::
+    StructuredUnoptimizedInlineFloatTransactionHomes;
 use super::structured_switch_lowering::{
     is_lowered_switch_guard, lower_structured_switches,
     lower_structured_switches_for_emission, resolve_structured_switch_joins,
@@ -735,8 +737,14 @@ impl Generator {
                     )
                 })
                 .flatten();
+        let unoptimized_inline_float_transaction_homes =
+            (self.behavior.optimization == mwcc_versions::Optimization::O0)
+                .then(|| StructuredUnoptimizedInlineFloatTransactionHomes::plan(function))
+                .flatten();
         self.unoptimized_inline_float_loop_homes =
             unoptimized_inline_float_loop_homes.is_some();
+        self.unoptimized_inline_float_transaction_homes =
+            unoptimized_inline_float_transaction_homes.is_some();
         let dense_loop_window =
             plan_dense_loop_register_window(&function.statements, &ephemeral_locals);
         let dense_loop_carried =
@@ -2682,6 +2690,11 @@ impl Generator {
             .callee_saved_float
             .max(u8::try_from(saved_float_count).unwrap_or(18))
             .max(structured_recovered_float_homes::saved_count(function))
+            .max(
+                unoptimized_inline_float_transaction_homes
+                    .as_ref()
+                    .map_or(0, |plan| plan.saved_count()),
+            )
             // Retained sqrtf lowering owns f31 for the Newton estimate and f28
             // for the rounded result. Declare the entire ABI-contiguous range
             // before allocation so frame materialization can preserve both.
@@ -2744,6 +2757,10 @@ impl Generator {
                 let preferred = unoptimized_leaf_homes
                     .as_ref()
                     .and_then(|plan| plan.float_preference(&local.name))
+                    .unwrap_or(preferred);
+                let preferred = unoptimized_inline_float_transaction_homes
+                    .as_ref()
+                    .and_then(|plan| plan.preference(&local.name))
                     .unwrap_or(preferred);
                 self.fresh_virtual_float_preferring(preferred)
             })
@@ -2913,10 +2930,15 @@ impl Generator {
                     }
                 }
                 ValueClass::Float => {
-                    let preferred = unoptimized_inline_float_loop_homes
+                    let preferred = unoptimized_inline_float_transaction_homes
                         .as_ref()
-                        .and_then(|plan| {
-                            plan.preference(&local.name, self.callee_saved_float)
+                        .and_then(|plan| plan.preference(&local.name))
+                        .or_else(|| {
+                            unoptimized_inline_float_loop_homes
+                                .as_ref()
+                                .and_then(|plan| {
+                                    plan.preference(&local.name, self.callee_saved_float)
+                                })
                         })
                         .unwrap_or_else(|| {
                             self.ephemeral_float_home_preference(function, &ephemeral_locals)

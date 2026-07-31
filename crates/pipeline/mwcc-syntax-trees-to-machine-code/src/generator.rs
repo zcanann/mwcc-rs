@@ -459,6 +459,9 @@ pub(crate) struct Generator {
     /// O0 inline expansion selected a saved-FPR source-image window whose
     /// redundant physical handoffs are restored after register allocation.
     pub(crate) unoptimized_inline_float_loop_homes: bool,
+    /// O0 composed projection/interpolation transaction whose hygienic float
+    /// bindings retain their source-image saved-FPR handoff chain.
+    pub(crate) unoptimized_inline_float_transaction_homes: bool,
     /// The next virtual-register id in each independent register file.
     pub(crate) virtual_cursors: VirtualCursors,
     /// Per-virtual placement hints: registers the allocator must avoid for a

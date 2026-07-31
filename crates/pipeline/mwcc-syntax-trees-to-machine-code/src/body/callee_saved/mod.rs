@@ -227,6 +227,7 @@ pub(crate) fn branches_enter_float_restores(function: &Function) -> bool {
 }
 mod structured_unoptimized_leaf_homes;
 mod structured_unoptimized_inline_float_loop_homes;
+mod structured_unoptimized_inline_float_transaction_homes;
 mod structured_unoptimized_leaf_schedule;
 mod structured_loop_member_receiver_layout;
 mod structured_loop_call_publication_layout;
