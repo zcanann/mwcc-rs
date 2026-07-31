@@ -385,7 +385,7 @@ impl Generator {
     }
 }
 
-fn switch_bodies_use_name(
+pub(super) fn switch_bodies_use_name(
     arms: &[mwcc_syntax_trees::SwitchArm],
     default: Option<&ArmBody>,
     name: &str,

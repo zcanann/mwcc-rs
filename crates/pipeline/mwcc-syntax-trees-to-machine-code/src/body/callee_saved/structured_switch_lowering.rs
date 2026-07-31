@@ -229,7 +229,8 @@ impl SwitchLowering {
                 } => {
                     if self.preserve_dense
                         && ((self.control_depth == 0
-                            && is_dense_structured_switch(arms))
+                            && (is_dense_structured_switch(arms)
+                                || shared_base_comparison_switch(arms).is_some()))
                             || super::structured_sparse_switch::is_sparse_shared_body_switch(arms))
                     {
                         let arms = arms
@@ -373,6 +374,34 @@ pub(super) fn is_dense_structured_switch(
                 && span <= (arms.len() as i64).saturating_mul(2)))
 }
 
+/// Return the low-half-zero anchor used by MWCC's comparison tree for a small
+/// switch whose 32-bit case values cannot be encoded by `cmpwi`.
+///
+/// Keeping this policy separate from [`is_dense_structured_switch`] prevents a
+/// six-case tree from being mistaken for a jump table merely because its
+/// absolute values are large.
+pub(super) fn shared_base_comparison_switch(
+    arms: &[mwcc_syntax_trees::SwitchArm],
+) -> Option<i64> {
+    if !(2..=6).contains(&arms.len()) {
+        return None;
+    }
+    let mut values = HashSet::with_capacity(arms.len());
+    if !arms.iter().all(|arm| values.insert(arm.value)) {
+        return None;
+    }
+    let minimum = arms.iter().map(|arm| arm.value).min()?;
+    if (i16::MIN as i64..i16::MAX as i64).contains(&minimum) {
+        return None;
+    }
+    let base = minimum & !0xffff;
+    arms.iter()
+        .all(|arm| {
+            (i16::MIN as i64..=i16::MAX as i64).contains(&(arm.value - base))
+        })
+        .then_some(base)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,6 +426,34 @@ mod tests {
             text_deferred: false,
             peephole_disabled: false,
         }
+    }
+
+    fn arm(value: i64) -> SwitchArm {
+        SwitchArm {
+            value,
+            body: ArmBody::Statements(vec![Statement::Break]),
+            falls_through: false,
+        }
+    }
+
+    #[test]
+    fn separates_a_small_shared_base_tree_from_dense_jump_tables() {
+        let arms = (0..6)
+            .map(|offset| arm(0xdcd1_0000 + offset))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            shared_base_comparison_switch(&arms),
+            Some(0xdcd1_0000)
+        );
+        assert!(!is_dense_structured_switch(&arms));
+    }
+
+    #[test]
+    fn rejects_shared_base_offsets_that_do_not_fit_addi() {
+        let arms = vec![arm(0xdcd1_0000), arm(0xdcd1_8000)];
+
+        assert_eq!(shared_base_comparison_switch(&arms), None);
     }
 
     #[test]

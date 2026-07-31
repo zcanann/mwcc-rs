@@ -249,6 +249,7 @@ mod structured_void_queue_transaction_schedule;
 mod structured_queue_transaction_schedule;
 mod structured_switch_lowering;
 mod structured_dense_switch;
+mod structured_comparison_switch;
 mod structured_tail_result_guard;
 mod structured_terminal_wrapper_inline_schedule;
 mod structured_tlut_packet_schedule;

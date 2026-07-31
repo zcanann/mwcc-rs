@@ -147,6 +147,48 @@ impl<'a> LoopLowering<'a> {
                     then_body: self.lower_statements(then_body, targets)?,
                     else_body: self.lower_statements(else_body, targets)?,
                 }),
+                Statement::Switch {
+                    scrutinee,
+                    arms,
+                    default,
+                } => {
+                    let arms = arms
+                        .iter()
+                        .map(|arm| {
+                            let body = match &arm.body {
+                                ArmBody::Statements(statements) => {
+                                    ArmBody::Statements(
+                                        self.lower_statements(statements, targets)?,
+                                    )
+                                }
+                                ArmBody::Return(value) => {
+                                    ArmBody::Return(value.clone())
+                                }
+                            };
+                            Some(mwcc_syntax_trees::SwitchArm {
+                                value: arm.value,
+                                body,
+                                falls_through: arm.falls_through,
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    let default = match default {
+                        Some(ArmBody::Statements(statements)) => {
+                            Some(ArmBody::Statements(
+                                self.lower_statements(statements, targets)?,
+                            ))
+                        }
+                        Some(ArmBody::Return(value)) => {
+                            Some(ArmBody::Return(value.clone()))
+                        }
+                        None => None,
+                    };
+                    lowered.push(Statement::Switch {
+                        scrutinee: scrutinee.clone(),
+                        arms,
+                        default,
+                    });
+                }
                 Statement::Break => lowered.push(Statement::Goto(
                     targets?.break_label.to_owned(),
                 )),
@@ -272,6 +314,16 @@ fn collect_labels(statements: &[Statement], labels: &mut std::collections::HashS
                 collect_labels(else_body, labels);
             }
             Statement::Loop { body, .. } => collect_labels(body, labels),
+            Statement::Switch { arms, default, .. } => {
+                for arm in arms {
+                    if let ArmBody::Statements(body) = &arm.body {
+                        collect_labels(body, labels);
+                    }
+                }
+                if let Some(ArmBody::Statements(body)) = default {
+                    collect_labels(body, labels);
+                }
+            }
             _ => {}
         }
     }
@@ -281,6 +333,27 @@ fn collect_labels(statements: &[Statement], labels: &mut std::collections::HashS
 mod tests {
     use super::*;
     use mwcc_syntax_trees::SwitchArm;
+
+    fn function(statements: Vec<Statement>) -> Function {
+        Function {
+            return_type: Type::Void,
+            name: "structured".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements,
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
 
     fn for_loop(body: Vec<Statement>) -> Statement {
         Statement::Loop {
@@ -348,6 +421,55 @@ mod tests {
             .statements
             .iter()
             .any(|statement| matches!(statement, Statement::Loop { .. })));
+    }
+
+    #[test]
+    fn lowers_loops_retained_inside_switch_arms() {
+        let mut function = function(vec![Statement::Switch {
+            scrutinee: Expression::Variable("kind".into()),
+            arms: vec![SwitchArm {
+                value: 0xdcd1_0000,
+                body: ArmBody::Statements(vec![Statement::Loop {
+                    kind: LoopKind::While,
+                    initializer: None,
+                    condition: Some(Expression::Variable("pending".into())),
+                    step: None,
+                    body: vec![Statement::Expression(Expression::Call {
+                        name: "poll".into(),
+                        arguments: Vec::new(),
+                    })],
+                }]),
+                falls_through: false,
+            }],
+            default: None,
+        }]);
+        function.locals.push(LocalDeclaration {
+            declared_type: Type::Int,
+            name: "kind".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+
+        let lowered = lower_structured_loops(&function, &Default::default())
+            .expect("a loop inside a retained switch should lower");
+        let Statement::Switch { arms, .. } = &lowered.statements[0] else {
+            panic!("the source switch should remain visible");
+        };
+        let ArmBody::Statements(body) = &arms[0].body else {
+            panic!("the arm should retain its statement body");
+        };
+        assert!(!body
+            .iter()
+            .any(|statement| matches!(statement, Statement::Loop { .. })));
+        assert!(body
+            .iter()
+            .any(|statement| matches!(statement, Statement::Label(_))));
     }
 
     #[test]

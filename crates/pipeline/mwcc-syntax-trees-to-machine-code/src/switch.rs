@@ -36,6 +36,12 @@ pub(super) enum Target {
     Default,
 }
 
+#[derive(Clone, Copy)]
+enum SwitchCompareOperand {
+    Immediate,
+    SharedBase { register: u8, value: i64 },
+}
+
 impl Generator {
     /// Emit a statement-bodied comparison-tree switch whose case bodies each
     /// make one call and then join the function's ordinary continuation.
@@ -1045,6 +1051,67 @@ impl Generator {
         khi: Option<i64>,
         patches: &mut Vec<(usize, Target)>,
     ) -> usize {
+        self.lower_switch_range_with_operand(
+            register,
+            values,
+            lo,
+            hi,
+            klo,
+            khi,
+            SwitchCompareOperand::Immediate,
+            patches,
+        )
+    }
+
+    /// Emit the ordinary comparison-tree topology while sharing one materialized
+    /// high-half base across case values that do not fit `cmpwi`.
+    pub(super) fn lower_shared_base_switch_range(
+        &mut self,
+        register: u8,
+        values: &[i64],
+        base_register: u8,
+        base_value: i64,
+        patches: &mut Vec<(usize, Target)>,
+    ) -> usize {
+        debug_assert!(!values.is_empty());
+        debug_assert_eq!(base_value & 0xffff, 0);
+        debug_assert!(values.iter().all(|value| {
+            (i16::MIN as i64..=i16::MAX as i64).contains(&(value - base_value))
+        }));
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: base_register,
+                a: 0,
+                immediate: ((base_value as u32) >> 16) as u16 as i16,
+            });
+        self.lower_switch_range_with_operand(
+            register,
+            values,
+            0,
+            values.len() - 1,
+            None,
+            None,
+            SwitchCompareOperand::SharedBase {
+                register: base_register,
+                value: base_value,
+            },
+            patches,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_switch_range_with_operand(
+        &mut self,
+        register: u8,
+        values: &[i64],
+        lo: usize,
+        hi: usize,
+        klo: Option<i64>,
+        khi: Option<i64>,
+        operand: SwitchCompareOperand,
+        patches: &mut Vec<(usize, Target)>,
+    ) -> usize {
         let entry = self.output.instructions.len();
         let count = hi - lo + 1;
 
@@ -1052,17 +1119,17 @@ impl Generator {
             let value = values[lo];
             if khi == Some(value) {
                 // Top of the known range, bottom open: `>= v` is exactly `v`.
-                self.emit_switch_compare(register, value);
+                self.emit_switch_compare(register, value, operand);
                 self.emit_switch_conditional(patches, BGE, Target::Body(lo));
                 self.emit_switch_branch(patches, Target::Default);
             } else if klo == Some(value) {
                 // Bottom of the known range, top open: `>= v+1` is the default.
-                self.emit_switch_compare(register, value + 1);
+                self.emit_switch_compare(register, value + 1, operand);
                 self.emit_switch_conditional(patches, BGE, Target::Default);
                 self.emit_switch_branch(patches, Target::Body(lo));
             } else {
                 // Strictly inside the range (or isolated): an equality test.
-                self.emit_switch_compare(register, value);
+                self.emit_switch_compare(register, value, operand);
                 self.emit_switch_conditional(patches, BEQ, Target::Body(lo));
                 self.emit_switch_branch(patches, Target::Default);
             }
@@ -1084,7 +1151,7 @@ impl Generator {
             ) {
                 let left_hi = lo + left_rel; // index of centre-1
                 let right_lo = lo + right_rel; // index of centre+1 (== left_hi + 1)
-                self.emit_switch_compare(register, centre);
+                self.emit_switch_compare(register, centre, operand);
                 self.emit_switch_conditional(patches, BEQ, Target::Default);
                 let bge_index = self.output.instructions.len();
                 self.output
@@ -1098,13 +1165,14 @@ impl Generator {
                 if left_hi == lo && klo == Some(values[lo]) {
                     self.emit_switch_branch(patches, Target::Body(lo));
                 } else {
-                    self.lower_switch_range(
+                    self.lower_switch_range_with_operand(
                         register,
                         values,
                         lo,
                         left_hi,
                         klo,
                         Some(centre - 1),
+                        operand,
                         patches,
                     );
                 }
@@ -1112,13 +1180,14 @@ impl Generator {
                 if right_lo == hi && khi == Some(values[hi]) {
                     patches.push((bge_index, Target::Body(hi)));
                 } else {
-                    let right_entry = self.lower_switch_range(
+                    let right_entry = self.lower_switch_range_with_operand(
                         register,
                         values,
                         right_lo,
                         hi,
                         Some(centre + 1),
                         khi,
+                        operand,
                         patches,
                     );
                     if let Instruction::BranchConditionalForward { target, .. } =
@@ -1139,7 +1208,7 @@ impl Generator {
             lo + (count - 1) / 2
         };
         let pivot = values[mid];
-        self.emit_switch_compare(register, pivot);
+        self.emit_switch_compare(register, pivot, operand);
         self.emit_switch_conditional(patches, BEQ, Target::Body(mid));
 
         // The single `bge` selects the right range; the fall-through is the left
@@ -1161,7 +1230,16 @@ impl Generator {
             // A single value pinned on both sides: branch straight to its body.
             self.emit_switch_branch(patches, Target::Body(lo));
         } else {
-            self.lower_switch_range(register, values, lo, mid - 1, klo, Some(pivot - 1), patches);
+            self.lower_switch_range_with_operand(
+                register,
+                values,
+                lo,
+                mid - 1,
+                klo,
+                Some(pivot - 1),
+                operand,
+                patches,
+            );
         }
 
         // Right range [mid+1, hi], now bounded below by pivot+1: the `bge` target.
@@ -1172,13 +1250,14 @@ impl Generator {
             // A single value pinned on both sides: the `bge` jumps straight to it.
             patches.push((bge_index, Target::Body(hi)));
         } else {
-            let right_entry = self.lower_switch_range(
+            let right_entry = self.lower_switch_range_with_operand(
                 register,
                 values,
                 mid + 1,
                 hi,
                 Some(pivot + 1),
                 khi,
+                operand,
                 patches,
             );
             if let Instruction::BranchConditionalForward { target, .. } =
@@ -1191,13 +1270,35 @@ impl Generator {
         entry
     }
 
-    fn emit_switch_compare(&mut self, register: u8, immediate: i64) {
-        self.output
-            .instructions
-            .push(Instruction::CompareWordImmediate {
-                a: register,
-                immediate: immediate as i16,
-            });
+    fn emit_switch_compare(
+        &mut self,
+        register: u8,
+        value: i64,
+        operand: SwitchCompareOperand,
+    ) {
+        match operand {
+            SwitchCompareOperand::Immediate => {
+                self.output
+                    .instructions
+                    .push(Instruction::CompareWordImmediate {
+                        a: register,
+                        immediate: value as i16,
+                    });
+            }
+            SwitchCompareOperand::SharedBase {
+                register: base_register,
+                value: base_value,
+            } => {
+                self.output.instructions.extend(
+                    shared_base_compare_instructions(
+                        register,
+                        base_register,
+                        base_value,
+                        value,
+                    ),
+                );
+            }
+        }
     }
 
     /// Push a forward conditional branch (`(BO, BI)`) bound to `target`.
@@ -1235,6 +1336,33 @@ const BGE: (u8, u8) = (4, 0);
 /// `bgt` — branch if cr0[GT] (BO=12 branch-if-true, BI=1 the GT bit).
 const BGT: (u8, u8) = (12, 1);
 
+fn shared_base_compare_instructions(
+    register: u8,
+    base_register: u8,
+    base_value: i64,
+    value: i64,
+) -> Vec<Instruction> {
+    let offset = (value - base_value) as i16;
+    if offset == 0 {
+        vec![Instruction::CompareWord {
+            a: register,
+            b: base_register,
+        }]
+    } else {
+        vec![
+            Instruction::AddImmediate {
+                d: GENERAL_SCRATCH,
+                a: base_register,
+                immediate: offset,
+            },
+            Instruction::CompareWord {
+                a: register,
+                b: GENERAL_SCRATCH,
+            },
+        ]
+    }
+}
+
 fn terminal_hidden_if_labels(statements: &[Statement]) -> u32 {
     statements
         .iter()
@@ -1258,11 +1386,43 @@ fn joined_call_hidden_labels(arm_count: usize, _has_default: bool) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::joined_call_hidden_labels;
+    use super::{
+        joined_call_hidden_labels, shared_base_compare_instructions,
+    };
+    use mwcc_machine_code::Instruction;
 
     #[test]
     fn joined_call_switch_accounts_arms_default_and_join() {
         assert_eq!(joined_call_hidden_labels(2, true), 6);
         assert_eq!(joined_call_hidden_labels(2, false), 6);
+    }
+
+    #[test]
+    fn shared_base_switch_comparisons_reuse_the_materialized_high_half() {
+        assert_eq!(
+            shared_base_compare_instructions(
+                3,
+                4,
+                0xdcd1_0000,
+                0xdcd1_0003,
+            ),
+            vec![
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 4,
+                    immediate: 3,
+                },
+                Instruction::CompareWord { a: 3, b: 0 },
+            ]
+        );
+        assert_eq!(
+            shared_base_compare_instructions(
+                3,
+                4,
+                0xdcd1_0000,
+                0xdcd1_0000,
+            ),
+            vec![Instruction::CompareWord { a: 3, b: 4 }]
+        );
     }
 }

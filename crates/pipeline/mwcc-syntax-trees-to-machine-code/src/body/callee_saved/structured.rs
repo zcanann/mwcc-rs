@@ -81,7 +81,7 @@ use super::structured_loop_lowering::{
 use super::structured_switch_lowering::{
     is_lowered_switch_guard, lower_structured_switches,
     lower_structured_switches_for_emission, resolve_structured_switch_joins,
-    structured_switch_join_placeholder,
+    shared_base_comparison_switch, structured_switch_join_placeholder,
 };
 use super::structured_sparse_switch::is_sparse_shared_body_switch;
 use super::structured_shared_switch_global_value::
@@ -3185,6 +3185,18 @@ impl Generator {
                 } => {
                     if is_sparse_shared_body_switch(arms) {
                         self.emit_structured_sparse_switch(
+                            scrutinee,
+                            arms,
+                            default.as_ref(),
+                            function,
+                            ephemeral_locals,
+                            return_branches,
+                            label_positions,
+                            pending_gotos,
+                            entry_alias,
+                        )?;
+                    } else if shared_base_comparison_switch(arms).is_some() {
+                        self.emit_structured_comparison_switch(
                             scrutinee,
                             arms,
                             default.as_ref(),
