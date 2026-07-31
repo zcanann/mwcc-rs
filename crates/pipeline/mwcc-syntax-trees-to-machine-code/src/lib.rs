@@ -752,7 +752,9 @@ fn lower_function_body(
     if generator.behavior.schedule_latency_slots {
         generator.structured_cfg_cleanup_owner |=
             body::owns_unreferenced_forwarding_branch_cleanup(&generator.output.instructions);
-        if generator.structured_array_pool_emitted {
+        if generator.structured_cfg_cleanup_owner
+            || generator.structured_array_pool_emitted
+        {
             branch_cleanup::thread_conditional_branch_targets(
                 &mut generator.output.instructions,
             );
