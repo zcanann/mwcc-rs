@@ -12,6 +12,7 @@ struct RetainedTransaction {
     initial_zero: usize,
     retry_store: usize,
     cancel_branch: usize,
+    resume_constant: usize,
     resume_store: usize,
     executing_load: usize,
     cancel_store: usize,
@@ -159,6 +160,7 @@ fn recognize(
             initial_zero,
             retry_store,
             cancel_branch,
+            resume_constant,
             resume_store,
             executing_load,
             cancel_store,
@@ -215,7 +217,9 @@ impl Generator {
         };
         *s = 3;
 
-        let state_ready = plan.state_ready;
+        crate::remove_instruction_retargeting_to_next(self, plan.resume_constant);
+        let state_ready = plan.state_ready - 1;
+        let epilogue = plan.epilogue - 1;
         let Instruction::Branch { .. } = self.output.instructions[state_ready + 1] else {
             unreachable!("validated transaction exit changed form")
         };
@@ -246,7 +250,7 @@ impl Generator {
         else {
             unreachable!("inserted caller exit changed form")
         };
-        *target = plan.epilogue + 2;
+        *target = epilogue + 2;
     }
 }
 
@@ -335,6 +339,7 @@ mod tests {
         let plan = recognize(&instructions, &relocations, &displacements)
             .expect("the retained transaction should match");
         assert_eq!(plan.cancel_branch, 4);
+        assert_eq!(plan.resume_constant, 5);
         assert_eq!(plan.dummy_address, 9);
         assert_eq!(plan.state_ready, 12);
     }
