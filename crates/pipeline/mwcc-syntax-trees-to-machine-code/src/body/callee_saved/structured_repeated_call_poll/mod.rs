@@ -4,6 +4,7 @@
 //! separate responsibilities so additional protocol variants do not bloat the
 //! structured body planner.
 
+mod handler;
 mod recognize;
 mod schedule;
 
