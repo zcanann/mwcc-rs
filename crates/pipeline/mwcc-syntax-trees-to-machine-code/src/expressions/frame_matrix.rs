@@ -3,6 +3,22 @@
 #[allow(unused_imports)]
 use super::*;
 
+fn loaded_row_index(expression: &Expression) -> bool {
+    matches!(
+        expression,
+        Expression::Member {
+            member_type: Type::Char
+                | Type::UnsignedChar
+                | Type::Short
+                | Type::UnsignedShort
+                | Type::Int
+                | Type::UnsignedInt,
+            index_stride: None,
+            ..
+        }
+    )
+}
+
 impl Generator {
     pub(crate) fn emit_frame_matrix_row_address(
         &mut self,
@@ -30,7 +46,41 @@ impl Generator {
             return Ok(());
         }
 
-        let row_register = self.general_register_of_leaf(row)?;
+        let row_register = match self.general_register_of_leaf(row) {
+            Ok(register) => register,
+            Err(_) if loaded_row_index(row) && destination != GENERAL_SCRATCH => {
+                self.evaluate_general(row, GENERAL_SCRATCH)?;
+                if row_bytes.is_power_of_two() {
+                    self.output
+                        .instructions
+                        .push(Instruction::ShiftLeftImmediate {
+                            a: GENERAL_SCRATCH,
+                            s: GENERAL_SCRATCH,
+                            shift: row_bytes.trailing_zeros() as u8,
+                        });
+                } else {
+                    self.output.instructions.push(Instruction::MultiplyImmediate {
+                        d: GENERAL_SCRATCH,
+                        a: GENERAL_SCRATCH,
+                        immediate: i16::try_from(row_bytes).map_err(|_| {
+                            Diagnostic::error("frame matrix row stride is out of range")
+                        })?,
+                    });
+                }
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: destination,
+                    a: 1,
+                    immediate: slot.offset,
+                });
+                self.output.instructions.push(Instruction::Add {
+                    d: destination,
+                    a: destination,
+                    b: GENERAL_SCRATCH,
+                });
+                return Ok(());
+            }
+            Err(diagnostic) => return Err(diagnostic),
+        };
         if row_bytes.is_power_of_two() {
             self.output
                 .instructions
@@ -108,5 +158,23 @@ impl Generator {
             .and_then(|offset| i16::try_from(offset).ok())
             .ok_or_else(|| Diagnostic::error("frame matrix subscript is out of range"))?;
         Ok(Some((element, displacement)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loaded_scalar_members_are_computed_row_indices() {
+        let member = Expression::Member {
+            base: Box::new(Expression::Variable("data".into())),
+            offset: 1,
+            member_type: Type::UnsignedChar,
+            index_stride: None,
+        };
+
+        assert!(loaded_row_index(&member));
+        assert!(!loaded_row_index(&Expression::IntegerLiteral(1)));
     }
 }
