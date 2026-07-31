@@ -1,7 +1,8 @@
 //! Call emission and argument marshaling.
 
 use super::call_argument_types::{
-    aggregate_reference_source, assigned_general_name, classify_call_argument, narrow_general_argument,
+    affine_variable_argument, aggregate_reference_source, assigned_general_name,
+    classify_call_argument, narrow_general_argument,
     outgoing_general_stack_offset, AggregateReferenceSource, CallArgumentPlacement,
 };
 #[allow(unused_imports)]
@@ -1311,6 +1312,34 @@ impl Generator {
                             // register (`lhax r26,...; extsh r3,r26`).
                             if let Some(assigned) = assigned_general_name(general_argument) {
                                 if let Some(source) = self.lookup_general(assigned) {
+                                    self.evaluate_general(general_argument, source)?;
+                                    if let Some(narrow) = narrow_general_argument(
+                                        parameter_type,
+                                        next_general,
+                                        source,
+                                    ) {
+                                        self.output.instructions.push(narrow);
+                                        next_general += 1;
+                                        continue;
+                                    }
+                                }
+                            }
+                            // Arithmetic promotes a narrow scalar global to a
+                            // word before the callee's prototype converts it
+                            // back (`lha r5,g; addi r5,-1; extsh r3,r5`).
+                            if let Some(variable) = affine_variable_argument(general_argument) {
+                                if matches!(
+                                    self.globals.get(variable),
+                                    Some(
+                                        Type::Char
+                                            | Type::UnsignedChar
+                                            | Type::Short
+                                            | Type::UnsignedShort
+                                            | Type::Int
+                                            | Type::UnsignedInt
+                                    )
+                                ) {
+                                    let source = self.fresh_virtual_general_preferring(5);
                                     self.evaluate_general(general_argument, source)?;
                                     if let Some(narrow) = narrow_general_argument(
                                         parameter_type,

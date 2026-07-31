@@ -121,6 +121,30 @@ pub(super) fn assigned_general_name(expression: &Expression) -> Option<&str> {
     Some(name)
 }
 
+/// A scalar variable plus or minus a constant is a computed word even when the
+/// variable itself has narrow storage. Prototype conversion therefore happens
+/// after evaluating the arithmetic into a temporary register.
+pub(super) fn affine_variable_argument(expression: &Expression) -> Option<&str> {
+    let Expression::Binary {
+        operator,
+        left,
+        right,
+    } = expression
+    else {
+        return None;
+    };
+    match (operator, left.as_ref(), right.as_ref()) {
+        (
+            BinaryOperator::Add | BinaryOperator::Subtract,
+            Expression::Variable(name),
+            constant,
+        ) if constant_value(constant).is_some() => Some(name),
+        (BinaryOperator::Add, constant, Expression::Variable(name))
+            if constant_value(constant).is_some() => Some(name),
+        _ => None,
+    }
+}
+
 /// Map an ABI argument index back to the source prototype.
 ///
 /// Aggregate-returning calls prepend a hidden result address which is absent
@@ -268,6 +292,17 @@ mod tests {
         };
         assert_eq!(assigned_general_name(&assignment), Some("saved"));
         assert!(assigned_general_name(&Expression::IntegerLiteral(4)).is_none());
+    }
+
+    #[test]
+    fn recognizes_affine_variable_arguments() {
+        let argument = Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left: Box::new(Expression::Variable("state".into())),
+            right: Box::new(Expression::IntegerLiteral(1)),
+        };
+        assert_eq!(affine_variable_argument(&argument), Some("state"));
+        assert!(affine_variable_argument(&Expression::Variable("state".into())).is_none());
     }
 
     #[test]
