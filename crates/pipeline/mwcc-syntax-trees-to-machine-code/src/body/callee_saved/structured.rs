@@ -4245,6 +4245,7 @@ impl Generator {
                             == FrameConvention::Predecrement
                             && statement_index + 1 == statements.len()
                             && in_place_call_combined_return_name(function) == Some(name.as_str());
+                        let assigned_class = class_of(declared_type)?;
                         let separates_live_alias = reassignment_live_source(
                             function,
                             name,
@@ -4252,7 +4253,14 @@ impl Generator {
                             &statements[statement_index + 1..],
                         )
                         .and_then(|source| self.locations.get(source))
-                        .is_some_and(|source| source.register == previous);
+                        .is_some_and(|source| {
+                            same_class_register(
+                                source.class,
+                                source.register,
+                                assigned_class,
+                                previous,
+                            )
+                        });
                         let terminal_argument = terminal_volatile
                             .then(|| {
                                 terminal_offset_call_argument_register(
@@ -4271,13 +4279,18 @@ impl Generator {
                         } else if split_leaf_parameter_mask {
                             self.fresh_virtual_general_preferring(4)
                         } else if separates_live_alias {
-                            if let Some(register) = transient_call_argument_register(
-                                &statements[statement_index + 1..],
-                                name,
-                            ) {
-                                self.fresh_virtual_general_preferring(register)
-                            } else {
-                                self.fresh_virtual_general()
+                            match assigned_class {
+                                ValueClass::General => {
+                                    if let Some(register) = transient_call_argument_register(
+                                        &statements[statement_index + 1..],
+                                        name,
+                                    ) {
+                                        self.fresh_virtual_general_preferring(register)
+                                    } else {
+                                        self.fresh_virtual_general()
+                                    }
+                                }
+                                ValueClass::Float => self.fresh_virtual_float(),
                             }
                         } else {
                             previous
@@ -4632,6 +4645,15 @@ fn structured_return_is_supported(function: &Function) -> bool {
             || statements_always_return(&function.statements)))
 }
 
+fn same_class_register(
+    source_class: ValueClass,
+    source_register: u8,
+    destination_class: ValueClass,
+    destination_register: u8,
+) -> bool {
+    source_class == destination_class && source_register == destination_register
+}
+
 /// Whether control cannot reach the end of this statement sequence. Structured
 /// lowering already emits source-level returns through a shared epilogue; an
 /// integer function whose final if/else tree returns from every leaf therefore
@@ -4962,6 +4984,22 @@ mod tests {
             Expression::Variable(c),
             Expression::Variable(d),
         ] if c == "c" && d == "d"));
+    }
+
+    #[test]
+    fn virtual_fields_from_different_register_classes_do_not_alias() {
+        assert!(!same_class_register(
+            ValueClass::General,
+            32,
+            ValueClass::Float,
+            32,
+        ));
+        assert!(same_class_register(
+            ValueClass::Float,
+            32,
+            ValueClass::Float,
+            32,
+        ));
     }
 
     #[test]
