@@ -13,6 +13,43 @@ use mwcc_syntax_trees::{BinaryOperator, Expression, Type};
 use mwcc_target::Eabi;
 
 impl Generator {
+    pub(crate) fn is_integer_call_promoted_to_float(&self, expression: &Expression) -> bool {
+        matches!(expression, Expression::Call { name, .. }
+            if !is_intrinsic_call(name)
+                && !matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)))
+    }
+
+    /// Evaluate an integer-returning call in floating context. The integer
+    /// result remains in r3 until the ordinary call-result conversion image
+    /// promotes it into the requested FPR.
+    pub(crate) fn emit_integer_call_float_value(
+        &mut self,
+        expression: &Expression,
+        destination: u8,
+        double: bool,
+    ) -> Compilation<bool> {
+        let Expression::Call { name, arguments } = expression else {
+            return Ok(false);
+        };
+        if !self.is_integer_call_promoted_to_float(expression) {
+            return Ok(false);
+        }
+        let signed = self.signedness_of(expression)?;
+        let source = Eabi::general_result().number;
+        self.emit_call(name, arguments, None, false)?;
+        let scratch = self.claim_int_to_float_scratch()?;
+        self.emit_int_to_float_body_at(
+            source,
+            destination,
+            double,
+            signed,
+            destination,
+            IntToFloatSchedule::CallResult,
+            scratch,
+        );
+        Ok(true)
+    }
+
     pub(crate) fn try_emit_integer_call_float_arithmetic(
         &mut self,
         operator: BinaryOperator,

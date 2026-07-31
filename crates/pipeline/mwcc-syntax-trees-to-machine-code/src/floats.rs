@@ -127,6 +127,13 @@ impl Generator {
                 if self.try_emit_retained_sqrtf(expression, destination)? {
                     return Ok(());
                 }
+                if self.emit_integer_call_float_value(
+                    expression,
+                    destination,
+                    self.is_double_value(expression),
+                )? {
+                    return Ok(());
+                }
                 if !matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)) {
                     return Err(Diagnostic::error("a call returning int used as a float needs an int->float conversion of the result (roadmap)"));
                 }
@@ -243,8 +250,10 @@ impl Generator {
                 // multiply by the exact reciprocal: mwcc pools `1/C` and emits fmul(s).
                 if *operator == BinaryOperator::Divide {
                     if let Expression::FloatLiteral(value) = right.as_ref() {
-                        if let Some(reciprocal) = reciprocal_if_power_of_two(*value, double) {
-                            let dividend = self.float_register_of_leaf(left)?;
+                        if let (Some(reciprocal), Ok(dividend)) = (
+                            reciprocal_if_power_of_two(*value, double),
+                            self.float_register_of_leaf(left),
+                        ) {
                             if double {
                                 self.load_double_constant(FLOAT_SCRATCH, reciprocal.to_bits());
                                 self.output.instructions.push(Instruction::FloatMultiplyDouble { d: destination, a: dividend, c: FLOAT_SCRATCH });
@@ -787,14 +796,22 @@ impl Generator {
         if let Expression::FloatLiteral(value) = left {
             if is_complex(right)
                 || self.is_float_call_value(right)
+                || self.is_integer_call_promoted_to_float(right)
                 || matches!(right, Expression::Comma { .. } | Expression::Assign { .. })
             {
-                let computed = if destination == FLOAT_SCRATCH {
+                let integer_call = self.is_integer_call_promoted_to_float(right);
+                let computed = if integer_call {
+                    self.fresh_virtual_float_preferring(1)
+                } else if destination == FLOAT_SCRATCH {
                     self.fresh_virtual_float()
                 } else {
                     destination
                 };
-                self.evaluate_float(right, computed)?;
+                if !integer_call
+                    || !self.emit_integer_call_float_value(right, computed, double)?
+                {
+                    self.evaluate_float(right, computed)?;
+                }
                 self.load_float_literal(FLOAT_SCRATCH, *value, double);
                 return Operands::ordered(FLOAT_SCRATCH, computed);
             }
@@ -802,14 +819,22 @@ impl Generator {
         if let Expression::FloatLiteral(value) = right {
             if is_complex(left)
                 || self.is_float_call_value(left)
+                || self.is_integer_call_promoted_to_float(left)
                 || matches!(left, Expression::Comma { .. } | Expression::Assign { .. })
             {
-                let computed = if destination == FLOAT_SCRATCH {
+                let integer_call = self.is_integer_call_promoted_to_float(left);
+                let computed = if integer_call {
+                    self.fresh_virtual_float_preferring(1)
+                } else if destination == FLOAT_SCRATCH {
                     self.fresh_virtual_float()
                 } else {
                     destination
                 };
-                self.evaluate_float(left, computed)?;
+                if !integer_call
+                    || !self.emit_integer_call_float_value(left, computed, double)?
+                {
+                    self.evaluate_float(left, computed)?;
+                }
                 self.load_float_literal(FLOAT_SCRATCH, *value, double);
                 return Operands::reversed(computed, FLOAT_SCRATCH);
             }
@@ -834,9 +859,11 @@ impl Generator {
         }
         let left_computed = is_complex(left)
             || self.is_float_call_value(left)
+            || self.is_integer_call_promoted_to_float(left)
             || matches!(left, Expression::Comma { .. } | Expression::Assign { .. });
         let right_computed = is_complex(right)
             || self.is_float_call_value(right)
+            || self.is_integer_call_promoted_to_float(right)
             || matches!(right, Expression::Comma { .. } | Expression::Assign { .. });
         if expression_has_call(right) && !left_computed && !self.float_location_survives_call(left)
         {
