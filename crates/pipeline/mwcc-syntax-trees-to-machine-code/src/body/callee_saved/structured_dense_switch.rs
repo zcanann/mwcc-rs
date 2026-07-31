@@ -408,26 +408,92 @@ fn computed_scrutinee_register(requires_rebase: bool) -> u8 {
 }
 
 pub(super) fn statements_fall_through(statements: &[Statement]) -> bool {
-    let mut falls_through = true;
+    let labels = statements
+        .iter()
+        .enumerate()
+        .filter_map(|(index, statement)| {
+            let Statement::Label(name) = statement else {
+                return None;
+            };
+            Some((name.as_str(), index))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut pending = vec![0usize];
+    let mut visited = vec![false; statements.len() + 1];
+    while let Some(index) = pending.pop() {
+        if index == statements.len() {
+            return true;
+        }
+        if visited[index] {
+            continue;
+        }
+        visited[index] = true;
+        let outcome = statement_control_outcome(&statements[index]);
+        if outcome.falls_through {
+            pending.push(index + 1);
+        }
+        for target in outcome.gotos {
+            if let Some(&target) = labels.get(target.as_str()) {
+                pending.push(target);
+            }
+        }
+    }
+    false
+}
+
+#[derive(Default)]
+struct StatementControlOutcome {
+    falls_through: bool,
+    gotos: Vec<String>,
+}
+
+fn statement_control_outcome(statement: &Statement) -> StatementControlOutcome {
+    match statement {
+        Statement::Return(_) | Statement::Break | Statement::Continue => {
+            StatementControlOutcome::default()
+        }
+        Statement::Goto(target) => StatementControlOutcome {
+            falls_through: false,
+            gotos: vec![target.clone()],
+        },
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            let then_outcome = block_control_outcome(then_body);
+            let else_outcome = block_control_outcome(else_body);
+            StatementControlOutcome {
+                falls_through:
+                    then_outcome.falls_through || else_outcome.falls_through,
+                gotos: then_outcome
+                    .gotos
+                    .into_iter()
+                    .chain(else_outcome.gotos)
+                    .collect(),
+            }
+        }
+        _ => StatementControlOutcome {
+            falls_through: true,
+            gotos: Vec::new(),
+        },
+    }
+}
+
+fn block_control_outcome(statements: &[Statement]) -> StatementControlOutcome {
+    let mut outcome = StatementControlOutcome {
+        falls_through: true,
+        gotos: Vec::new(),
+    };
     for statement in statements {
-        if !falls_through {
+        if !outcome.falls_through {
             break;
         }
-        falls_through = match statement {
-            Statement::Return(_) | Statement::Goto(_) | Statement::Break | Statement::Continue => {
-                false
-            }
-            Statement::If {
-                then_body,
-                else_body,
-                ..
-            } if !else_body.is_empty() => {
-                statements_fall_through(then_body) || statements_fall_through(else_body)
-            }
-            _ => true,
-        };
+        let statement_outcome = statement_control_outcome(statement);
+        outcome.gotos.extend(statement_outcome.gotos);
+        outcome.falls_through = statement_outcome.falls_through;
     }
-    falls_through
+    outcome
 }
 
 #[cfg(test)]
@@ -462,5 +528,32 @@ mod tests {
             else_body: Vec::new(),
         }];
         assert!(statements_fall_through(&statements));
+    }
+
+    #[test]
+    fn an_internal_loop_goto_can_still_reach_the_arm_end() {
+        let statements = [
+            Statement::Goto("condition".into()),
+            Statement::Label("body".into()),
+            Statement::Label("condition".into()),
+            Statement::If {
+                condition: Expression::Variable("busy".into()),
+                then_body: vec![Statement::Goto("body".into())],
+                else_body: Vec::new(),
+            },
+            Statement::Assign {
+                name: "done".into(),
+                value: Expression::IntegerLiteral(1),
+            },
+        ];
+
+        assert!(statements_fall_through(&statements));
+    }
+
+    #[test]
+    fn a_goto_outside_the_arm_does_not_fall_through() {
+        assert!(!statements_fall_through(&[Statement::Goto(
+            "outside".into(),
+        )]));
     }
 }
