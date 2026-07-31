@@ -29,6 +29,7 @@ mod index_operand;
 mod indexed_rmw;
 mod linkage_first_fixed_bank_region;
 mod linkage_first_fixed_bank_self_copy;
+mod materialized_bitand_constant;
 mod retained_global_pointer_store;
 mod members;
 mod narrow_compound;

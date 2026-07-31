@@ -1081,6 +1081,15 @@ impl Generator {
             _ => {}
         }
 
+        if self.try_emit_materialized_bitand_constant(
+            operator,
+            variable,
+            constant,
+            destination,
+        )? {
+            return Ok(true);
+        }
+
         // An add of a 32-bit constant too large for `addi` splits into `addis`
         // (high half) + `addi` (low half), the low half sign-extended so the high
         // half is carry-adjusted: `addis d,x,ha; addi d,d,lo`. Both ops read the
