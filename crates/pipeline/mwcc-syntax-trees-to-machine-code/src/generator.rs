@@ -1277,6 +1277,11 @@ impl Generator {
         &self,
         pointer: &Expression,
     ) -> Compilation<mwcc_syntax_trees::Pointee> {
+        // A postfix pointer step yields the old pointer value. Its mutation
+        // changes the tracked address, not the pointee type of the expression.
+        if let Expression::PostStep { target, .. } = pointer {
+            return self.pointee_of(target);
+        }
         // `*(p + i)` / `p[i]` of a pointer-plus-index dereferences the pointer operand's
         // pointee (the integer offset does not change the element type). `+` commutes. This
         // gives `signedness_of(*(p + i))` the element signedness, so `is_signed_byte_load`

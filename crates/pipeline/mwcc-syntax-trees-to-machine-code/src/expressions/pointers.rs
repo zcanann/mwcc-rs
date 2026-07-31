@@ -65,6 +65,29 @@ impl Generator {
         pointer: &Expression,
         destination: u8,
     ) -> Compilation<()> {
+        // `*pointer++` consumes the old address, then advances the tracked
+        // pointer. Keep the load and mutation adjacent here so integer and
+        // floating dereferences share the same side-effect semantics.
+        if let Expression::PostStep {
+            target,
+            operator,
+            pointer_link,
+        } = pointer
+        {
+            let (pointee, address) = self.pointer_leaf(target)?;
+            self.output.instructions.push(displacement_load(
+                pointee,
+                destination,
+                address,
+                0,
+            )?);
+            if !self.emit_post_step_update_after_use(target, *operator, *pointer_link)? {
+                return Err(Diagnostic::error(
+                    "a dereferenced postfix pointer needs a register-local target",
+                ));
+            }
+            return Ok(());
+        }
         // A type-pun through a frame-resident address (`*(int*)&x`) is a plain
         // displacement load from r1.
         if let Some((pointee, offset)) = self.resolve_frame_pointer(pointer) {
