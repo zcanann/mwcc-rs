@@ -732,7 +732,13 @@ impl Generator {
                     | Expression::Assign { .. }
                     | Expression::Comma { .. }
             ) {
-                let located = self.fresh_virtual_float_preferring(1);
+                let located = self.fresh_virtual_float_preferring(
+                    if self.materialized_float_assignment_active {
+                        2
+                    } else {
+                        1
+                    },
+                );
                 self.emit_located_operand(left, located)?;
                 self.evaluate_float(right, FLOAT_SCRATCH)?;
                 return Operands::ordered(located, FLOAT_SCRATCH);

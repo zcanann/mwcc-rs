@@ -94,6 +94,50 @@ fn is_float_assignment_statement(function: &Function, statement: &Statement) -> 
 }
 
 impl Generator {
+    fn next_general_parameter_home(&self) -> Option<u8> {
+        self.locations
+            .values()
+            .filter(|location| location.class == ValueClass::General)
+            .filter_map(|location| {
+                match mwcc_vreg::Reg::from_field(
+                    location.register,
+                    mwcc_vreg::Class::General,
+                ) {
+                    mwcc_vreg::Reg::Physical(register) => Some(register),
+                    mwcc_vreg::Reg::Virtual(_) => None,
+                }
+            })
+            .max()
+            .and_then(|register| register.checked_add(1))
+            .filter(|register| *register <= 12)
+    }
+
+    /// A loaded value paired with a computed subtree needs one reusable lane
+    /// between the retained subtree homes and f0/f1. Ordinary register pressure
+    /// does not see that lane because the load itself is a leaf.
+    fn materialized_float_has_located_computed_pair(&self, expression: &Expression) -> bool {
+        match expression {
+            Expression::Binary { left, right, .. } => {
+                (self.is_float_located(left) && is_complex(right))
+                    || (is_complex(left) && self.is_float_located(right))
+                    || self.materialized_float_has_located_computed_pair(left)
+                    || self.materialized_float_has_located_computed_pair(right)
+            }
+            Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+                self.materialized_float_has_located_computed_pair(operand)
+            }
+            Expression::Conditional {
+                when_true,
+                when_false,
+                ..
+            } => {
+                self.materialized_float_has_located_computed_pair(when_true)
+                    || self.materialized_float_has_located_computed_pair(when_false)
+            }
+            _ => false,
+        }
+    }
+
     /// Evaluate one call-free float assignment inside MWCC's descending
     /// volatile-FPR expression window. Incoming float leaves occupy the low
     /// homes; persistent subtree results are assigned above them from the
@@ -104,6 +148,11 @@ impl Generator {
         value_type: Type,
         destination: u8,
     ) -> Compilation<()> {
+        if self.behavior.optimization == mwcc_versions::Optimization::O0
+            && self.structured_constant_address_home.is_none()
+        {
+            self.structured_constant_address_home = self.next_general_parameter_home();
+        }
         let highest_input = self
             .locations
             .iter()
@@ -120,7 +169,10 @@ impl Generator {
             .max()
             .unwrap_or(0);
         let demand = crate::analysis::register_need(value)
-            .max(materialized_float_temporary_count(value));
+            .max(materialized_float_temporary_count(value))
+            .saturating_add(u32::from(
+                self.materialized_float_has_located_computed_pair(value),
+            ));
         let demand = u8::try_from(demand).unwrap_or(14);
         let top = highest_input.saturating_add(demand);
         if demand < 2 || top > 13 {

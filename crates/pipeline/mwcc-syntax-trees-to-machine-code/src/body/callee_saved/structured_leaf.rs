@@ -37,7 +37,7 @@ impl Generator {
             super::structured_branch_work_homes::StructuredBranchWorkHomes::plan(self, function)
         {
             self.structured_branch_float_work_home = Some(work_homes.float);
-            self.structured_branch_constant_address_home = Some(work_homes.constant_address);
+            self.structured_constant_address_home = Some(work_homes.constant_address);
         }
 
         for local in &function.locals {

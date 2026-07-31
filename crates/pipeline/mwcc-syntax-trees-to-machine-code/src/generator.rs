@@ -494,7 +494,9 @@ pub(crate) struct Generator {
     /// Volatile homes reserved by a structured branch whose returned float
     /// parameter remains live across mutually exclusive member-store arms.
     pub(crate) structured_branch_float_work_home: Option<u8>,
-    pub(crate) structured_branch_constant_address_home: Option<u8>,
+    /// Scoped preference for a pooled constant's general address base. Body
+    /// planners set this when MWCC continues the incoming argument-home run.
+    pub(crate) structured_constant_address_home: Option<u8>,
     /// Skipped inline definitions' names — a body calling one defers after
     /// the exact-match templates decline (mwcc inlines; a bl would be wrong).
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
@@ -1007,7 +1009,7 @@ impl Generator {
             self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
             return 0;
         }
-        let base = if let Some(preferred) = self.structured_branch_constant_address_home {
+        let base = if let Some(preferred) = self.structured_constant_address_home {
             self.fresh_virtual_general_preferring(preferred)
         } else {
             self.fresh_virtual_general()
