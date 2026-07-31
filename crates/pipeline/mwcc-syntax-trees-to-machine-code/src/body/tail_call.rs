@@ -189,18 +189,13 @@ impl Generator {
             if (!self.behavior.tail_call_optimization && !allocator_tail_call)
                 || self.locations.contains_key(name)
                 || self.globals.contains_key(name)
-                || self.variadic_callees.contains(name)
                 || (self.call_return_types.get(name) != Some(&function.return_type)
                     && !allocator_pointer_return_is_compatible(name, function.return_type))
             {
                 return Ok(false);
             }
 
-            self.emit_arguments(arguments, name)?;
-            self.record_relocation(RelocationKind::Rel24, name);
-            self.output.instructions.push(Instruction::BranchExternal {
-                target: name.clone(),
-            });
+            self.emit_direct_sibling_call(name, arguments)?;
             return Ok(true);
         }
 
@@ -224,7 +219,6 @@ impl Generator {
             if !self.behavior.tail_call_optimization
                 || self.locations.contains_key(name)
                 || self.globals.contains_key(name)
-                || self.variadic_callees.contains(name)
                 // A scalar result may be discarded by the void caller.  Its
                 // EABI result register does not participate in a sibling
                 // transfer, so requiring an exactly-void callee needlessly
@@ -236,11 +230,7 @@ impl Generator {
             {
                 return Ok(false);
             }
-            self.emit_arguments(arguments, name)?;
-            self.record_relocation(RelocationKind::Rel24, name);
-            self.output.instructions.push(Instruction::BranchExternal {
-                target: name.clone(),
-            });
+            self.emit_direct_sibling_call(name, arguments)?;
             return Ok(true);
         }
         if !self.behavior.terminal_indirect_tail_call {

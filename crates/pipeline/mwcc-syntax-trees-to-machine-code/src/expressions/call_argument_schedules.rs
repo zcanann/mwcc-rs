@@ -6,6 +6,7 @@ mod global_address;
 mod members;
 mod nested;
 mod repeated_member;
+mod string_endangered_word;
 
 #[allow(unused_imports)]
 use super::*;

@@ -226,3 +226,43 @@ fn matches_gc_1_1_discarded_masked_call_frame() {
     ];
     assert!(object.windows(expected.len()).any(|bytes| bytes == expected));
 }
+
+#[test]
+fn preserves_a_cast_incoming_word_while_forming_a_string_argument() {
+    let source = br#"
+        typedef unsigned int u32;
+        extern void report(const char*, ...);
+
+        void trace(void* object) {
+            report("the object address is 0x%08X\n", (u32)object);
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    flags.optimization = mwcc_versions::Optimization::O4;
+    flags.ipa_file = true;
+    let object = compile(
+        source,
+        "endangered-string-argument.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_3_0A3,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the cast incoming pointer should be preserved before r3 is overwritten");
+
+    let arguments = [
+        0x3c, 0xa0, 0x00, 0x00, // lis r5,string@ha
+        0x7c, 0x64, 0x1b, 0x78, // mr r4,r3
+        0x38, 0x65, 0x00, 0x00, // addi r3,r5,string@l
+        0x4c, 0xc6, 0x31, 0x82, // crclr 4*cr1+eq
+    ];
+    assert!(object
+        .windows(arguments.len())
+        .any(|bytes| bytes == arguments));
+}

@@ -385,6 +385,26 @@ impl Generator {
         Ok(())
     }
 
+    /// Marshal a direct sibling call and transfer without linking. Variadic
+    /// callees still require the EABI CR1 floating-argument marker immediately
+    /// before the external branch.
+    pub(crate) fn emit_direct_sibling_call(
+        &mut self,
+        name: &str,
+        arguments: &[Expression],
+    ) -> Compilation<()> {
+        self.emit_arguments(arguments, name)?;
+        if self.variadic_callees.contains(name) {
+            self.emit_variadic_condition(arguments);
+        }
+        self.const_address_bases.clear();
+        self.record_relocation(RelocationKind::Rel24, name);
+        self.output.instructions.push(Instruction::BranchExternal {
+            target: name.to_string(),
+        });
+        Ok(())
+    }
+
     fn emit_variadic_condition(&mut self, arguments: &[Expression]) {
         let instruction = if arguments
             .iter()
@@ -592,6 +612,9 @@ impl Generator {
             }
         }
         let direct_call = !self.globals.contains_key(name) && !self.locations.contains_key(name);
+        if self.try_emit_string_and_endangered_word_arguments(arguments, direct_call)? {
+            return Ok(());
+        }
         if self.try_emit_repeated_member_add_arguments(arguments, direct_call)? {
             return Ok(());
         }
