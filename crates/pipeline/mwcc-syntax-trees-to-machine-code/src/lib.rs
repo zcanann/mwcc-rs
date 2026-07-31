@@ -627,6 +627,7 @@ fn lower_function_body(
         non_leaf: false,
         preceded_by_asm: function.preceded_by_asm,
         callee_saved_float: 0,
+        unoptimized_inline_float_loop_homes: false,
         virtual_cursors: generator::VirtualCursors::default(),
         register_avoid: HashMap::new(),
         register_prefer: HashMap::new(),
@@ -933,6 +934,7 @@ fn lower_function_body(
     generator.schedule_saved_return_epilogue(function);
     generator.schedule_post_call_zero_global_publication();
     generator.strip_artificial_leaf_linkage()?;
+    generator.schedule_unoptimized_inline_float_loop_handoffs();
     // Issue the epilogue's saved-LR reload right after the last call (ahead of the
     // post-call computation), as mwcc does — a final pass on the physical stream.
     hoist_link_register_reload(&mut generator);

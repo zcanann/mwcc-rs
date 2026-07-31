@@ -456,6 +456,9 @@ pub(crate) struct Generator {
     /// Callee-saved FLOAT registers the arm saves (f31 descending) — the
     /// extab's saved-FPR count.
     pub(crate) callee_saved_float: u8,
+    /// O0 inline expansion selected a saved-FPR source-image window whose
+    /// redundant physical handoffs are restored after register allocation.
+    pub(crate) unoptimized_inline_float_loop_homes: bool,
     /// The next virtual-register id in each independent register file.
     pub(crate) virtual_cursors: VirtualCursors,
     /// Per-virtual placement hints: registers the allocator must avoid for a

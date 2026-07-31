@@ -735,6 +735,8 @@ impl Generator {
                     )
                 })
                 .flatten();
+        self.unoptimized_inline_float_loop_homes =
+            unoptimized_inline_float_loop_homes.is_some();
         let dense_loop_window =
             plan_dense_loop_register_window(&function.statements, &ephemeral_locals);
         let dense_loop_carried =
