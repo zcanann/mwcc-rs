@@ -7,15 +7,32 @@
 
 #[allow(unused_imports)]
 use super::*;
+use super::structured_expression_visit::visit_expression;
 use mwcc_syntax_trees::ArmBody;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SharedSwitchGlobalValueHome {
+    LazyPreferred(u8),
+    EagerFixed(u8),
+}
 
 pub(super) struct SharedSwitchGlobalValuePlan {
     pub(super) activation_index: usize,
     pub(super) completion_index: usize,
     pub(super) global: String,
+    pub(super) home: SharedSwitchGlobalValueHome,
 }
 
 pub(super) fn plan(
+    statements: &[Statement],
+    globals: &std::collections::HashMap<String, Type>,
+    volatile_globals: &std::collections::HashSet<String>,
+) -> Option<SharedSwitchGlobalValuePlan> {
+    preceding_member_load_plan(statements, globals, volatile_globals)
+        .or_else(|| guarded_scrutinee_rewrite_plan(statements, globals, volatile_globals))
+}
+
+fn preceding_member_load_plan(
     statements: &[Statement],
     globals: &std::collections::HashMap<String, Type>,
     volatile_globals: &std::collections::HashSet<String>,
@@ -73,8 +90,123 @@ pub(super) fn plan(
                 activation_index,
                 completion_index,
                 global: global.clone(),
+                home: SharedSwitchGlobalValueHome::LazyPreferred(4),
             })
         })
+}
+
+/// Retain a pointer loaded by a call-result guard into the immediately
+/// following switch. This is the source shape produced by dispatchers that
+/// rewrite one exceptional command before switching on the call result:
+///
+/// `if (current->flags && command == exceptional) command = replacement;`
+/// `switch (command) { ... }`
+///
+/// The guarded assignment may change only the switch scrutinee. Requiring at
+/// least three arms to consume the pointer at their entry keeps this a
+/// whole-switch allocation decision rather than ordinary local CSE.
+fn guarded_scrutinee_rewrite_plan(
+    statements: &[Statement],
+    globals: &std::collections::HashMap<String, Type>,
+    volatile_globals: &std::collections::HashSet<String>,
+) -> Option<SharedSwitchGlobalValuePlan> {
+    statements
+        .windows(2)
+        .enumerate()
+        .find_map(|(activation_index, pair)| {
+            let [
+                Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                },
+                Statement::Switch {
+                    scrutinee,
+                    arms,
+                    ..
+                },
+            ] = pair
+            else {
+                return None;
+            };
+            let Expression::Variable(scrutinee_name) = scrutinee else {
+                return None;
+            };
+            if !else_body.is_empty()
+                || crate::analysis::expression_has_side_effect(condition)
+                || !matches!(
+                    then_body.as_slice(),
+                    [Statement::Assign { name, value }]
+                        if name == scrutinee_name
+                            && !crate::analysis::expression_has_side_effect(value)
+                )
+            {
+                return None;
+            }
+            let global =
+                unique_condition_struct_pointer(condition, globals, volatile_globals)?;
+            let consuming_arms = arms
+                .iter()
+                .filter(|arm| arm_starts_with_global_member_use(&arm.body, &global))
+                .count();
+            (consuming_arms >= 3).then(|| SharedSwitchGlobalValuePlan {
+                activation_index,
+                completion_index: activation_index + 1,
+                global,
+                home: SharedSwitchGlobalValueHome::EagerFixed(5),
+            })
+        })
+}
+
+fn unique_condition_struct_pointer(
+    condition: &Expression,
+    globals: &std::collections::HashMap<String, Type>,
+    volatile_globals: &std::collections::HashSet<String>,
+) -> Option<String> {
+    let mut candidates = std::collections::BTreeSet::new();
+    visit_expression(condition, &mut |expression| {
+        let Expression::Member { base, .. } = expression else {
+            return;
+        };
+        let Expression::Variable(name) = base.as_ref() else {
+            return;
+        };
+        if matches!(globals.get(name), Some(Type::StructPointer { .. }))
+            && !volatile_globals.contains(name)
+        {
+            candidates.insert(name.clone());
+        }
+    });
+    let mut candidates = candidates.into_iter();
+    let candidate = candidates.next()?;
+    candidates.next().is_none().then_some(candidate)
+}
+
+fn arm_starts_with_global_member_use(body: &ArmBody, global: &str) -> bool {
+    let ArmBody::Statements(statements) = body else {
+        return false;
+    };
+    let Some(first) = statements.first() else {
+        return false;
+    };
+    let expression = match first {
+        Statement::Store { target, .. } => target,
+        Statement::Assign { value, .. } | Statement::Expression(value) => value,
+        Statement::If { condition, .. } => condition,
+        _ => return false,
+    };
+    if crate::analysis::expression_has_side_effect(expression) {
+        return false;
+    }
+    let mut uses_global = false;
+    visit_expression(expression, &mut |expression| {
+        uses_global |= matches!(
+            expression,
+            Expression::Member { base, .. }
+                if matches!(base.as_ref(), Expression::Variable(name) if name == global)
+        );
+    });
+    uses_global
 }
 
 fn guarded_arm_starts_with_member_store(statement: &Statement, global: &str) -> bool {
@@ -265,6 +397,10 @@ mod tests {
         assert_eq!(plan.activation_index, 0);
         assert_eq!(plan.completion_index, 1);
         assert_eq!(plan.global, "executing");
+        assert_eq!(
+            plan.home,
+            SharedSwitchGlobalValueHome::LazyPreferred(4),
+        );
     }
 
     #[test]
@@ -301,5 +437,59 @@ mod tests {
             .expect("the false-edge pointer should reach the following guard");
 
         assert_eq!(plan.completion_index, 2);
+    }
+
+    #[test]
+    fn carries_a_guard_pointer_into_a_following_command_switch() {
+        let guard = Statement::If {
+            condition: Expression::Binary {
+                operator: BinaryOperator::LogicalAnd,
+                left: Box::new(member(8)),
+                right: Box::new(Expression::Binary {
+                    operator: BinaryOperator::Equal,
+                    left: Box::new(Expression::Variable("command".into())),
+                    right: Box::new(Expression::IntegerLiteral(2)),
+                }),
+            },
+            then_body: vec![Statement::Assign {
+                name: "command".into(),
+                value: Expression::IntegerLiteral(3),
+            }],
+            else_body: Vec::new(),
+        };
+        let callback_guard = |offset| Statement::If {
+            condition: member(offset),
+            then_body: Vec::new(),
+            else_body: Vec::new(),
+        };
+        let switch = Statement::Switch {
+            scrutinee: Expression::Variable("command".into()),
+            arms: vec![
+                arm(1),
+                arm(2),
+                SwitchArm {
+                    value: 3,
+                    body: ArmBody::Statements(vec![callback_guard(48)]),
+                    falls_through: false,
+                },
+            ],
+            default: None,
+        };
+        let globals = std::collections::HashMap::from([(
+            "executing".into(),
+            Type::StructPointer { element_size: 64 },
+        )]);
+
+        let plan = plan(
+            &[guard, switch],
+            &globals,
+            &std::collections::HashSet::new(),
+        )
+        .expect("the guarded pointer should span the following switch");
+
+        assert_eq!(plan.activation_index, 0);
+        assert_eq!(plan.completion_index, 1);
+        assert_eq!(plan.global, "executing");
+        assert_eq!(plan.home, SharedSwitchGlobalValueHome::EagerFixed(5));
     }
 }

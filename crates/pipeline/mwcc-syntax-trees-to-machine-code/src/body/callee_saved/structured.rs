@@ -84,8 +84,10 @@ use super::structured_switch_lowering::{
     shared_base_comparison_switch, structured_switch_join_placeholder,
 };
 use super::structured_sparse_switch::is_sparse_shared_body_switch;
-use super::structured_shared_switch_global_value::
-    plan as plan_structured_shared_switch_global_value;
+use super::structured_shared_switch_global_value::{
+    plan as plan_structured_shared_switch_global_value,
+    SharedSwitchGlobalValueHome,
+};
 use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
 };
@@ -3137,11 +3139,23 @@ impl Generator {
                 let previous_cache = std::mem::take(
                     &mut self.condition_global_values,
                 );
-                self.condition_global_values.insert(
-                    plan.global.clone(),
-                    crate::condition_global_cache::ConditionGlobalValue::
-                        PendingPreferred(4),
-                );
+                match plan.home {
+                    SharedSwitchGlobalValueHome::LazyPreferred(register) => {
+                        self.condition_global_values.insert(
+                            plan.global.clone(),
+                            crate::condition_global_cache::ConditionGlobalValue::
+                                PendingPreferred(register),
+                        );
+                    }
+                    SharedSwitchGlobalValueHome::EagerFixed(register) => {
+                        self.emit_global_load_value(&plan.global, register)?;
+                        self.condition_global_values.insert(
+                            plan.global.clone(),
+                            crate::condition_global_cache::ConditionGlobalValue::
+                                Register(register),
+                        );
+                    }
+                }
                 let previous_shared =
                     self.structured_shared_switch_global_value.take();
                 shared_switch_global_restore =

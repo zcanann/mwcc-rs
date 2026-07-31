@@ -62,6 +62,44 @@ impl Generator {
         pending_gotos: &mut Vec<(usize, String)>,
         entry_alias: &mut Option<EntryParameterAlias>,
     ) -> Compilation<()> {
+        // A pointer carried across a switch edge has one leading transaction
+        // of lifetime in each arm. It may feed a member store or a guarded
+        // callback, but must not remain live through the rest of the arm (and
+        // especially not across a call). Keeping that boundary explicit lets
+        // the allocator use a caller-clobbered work register instead of
+        // manufacturing a callee-saved lifetime for the whole switch.
+        if self.structured_shared_switch_global_value.is_some()
+            && !statements.is_empty()
+        {
+            let (leading, remainder) = statements.split_at(1);
+            self.emit_structured_statements(
+                leading,
+                function,
+                ephemeral_locals,
+                false,
+                return_branches,
+                label_positions,
+                pending_gotos,
+                entry_alias,
+            )?;
+            let previous_values =
+                std::mem::take(&mut self.condition_global_values);
+            let previous_shared =
+                self.structured_shared_switch_global_value.take();
+            let remainder_result = self.emit_structured_statements(
+                remainder,
+                function,
+                ephemeral_locals,
+                false,
+                return_branches,
+                label_positions,
+                pending_gotos,
+                entry_alias,
+            );
+            self.condition_global_values = previous_values;
+            self.structured_shared_switch_global_value = previous_shared;
+            return remainder_result;
+        }
         let Some(plan) = plan(statements, &self.globals, &self.volatile_globals) else {
             let start = self.output.instructions.len();
             let result = self.emit_structured_statements(

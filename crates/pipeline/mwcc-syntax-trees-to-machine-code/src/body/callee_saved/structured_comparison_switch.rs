@@ -27,6 +27,11 @@ impl Generator {
         pending_gotos: &mut Vec<(usize, String)>,
         entry_alias: &mut Option<EntryParameterAlias>,
     ) -> Compilation<()> {
+        // This owner emits complete structured edges and has no source-level
+        // branch identities to preserve. Allow the common late CFG cleanup to
+        // erase unconditional branches whose destination is already their
+        // physical fallthrough.
+        self.structured_cfg_cleanup_owner = true;
         let base = shared_base_comparison_switch(arms).ok_or_else(|| {
             Diagnostic::error("structured comparison switch has no shared-base dispatch plan")
         })?;
