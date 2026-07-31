@@ -26,40 +26,26 @@ pub(crate) fn materialized_float_assignment_names<'a>(
         .collect()
 }
 
-fn has_reused_computed_float(function: &Function) -> bool {
-    function
-        .statements
-        .iter()
-        .enumerate()
-        .any(|(index, statement)| {
-            let Statement::Assign { name, value } = statement else {
-                return false;
-            };
-            assigned_float_local(function, name).is_some()
-                && !matches!(value, Expression::Variable(_) | Expression::FloatLiteral(_))
-                && function.statements[index + 1..]
-                    .iter()
-                    .map(|later| match later {
-                        Statement::Assign { value, .. } => {
-                            crate::analysis::count_name_occurrences(value, name)
-                        }
-                        _ => 0,
-                    })
-                    .sum::<usize>()
-                    > 1
-        })
+fn has_computed_float_assignment(function: &Function) -> bool {
+    function.statements.iter().any(|statement| {
+        let Statement::Assign { name, value } = statement else {
+            return false;
+        };
+        assigned_float_local(function, name).is_some()
+            && !matches!(value, Expression::Variable(_) | Expression::FloatLiteral(_))
+    })
 }
 
 impl Generator {
-    /// Route a call-free floating CSE body through the structured virtual-register
-    /// allocator. Copy propagation must not duplicate the defining computation.
+    /// Route a call-free computed-float body through the structured
+    /// virtual-register allocator after copy propagation declines it.
     pub(crate) fn try_materialized_float_assignment_body(
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
         if function_makes_call(function)
             || !function.guards.is_empty()
-            || function.statements.len() < 2
+            || function.statements.is_empty()
             || !function.statements.iter().all(|statement| {
                 matches!(statement, Statement::Assign { name, .. }
                     if assigned_float_local(function, name).is_some())
@@ -69,7 +55,7 @@ impl Generator {
                 Some(Expression::Variable(name))
                     if assigned_float_local(function, name).is_some()
             )
-            || !has_reused_computed_float(function)
+            || !has_computed_float_assignment(function)
         {
             return Ok(false);
         }
@@ -115,7 +101,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recognizes_only_the_reused_computed_float() {
+    fn recognizes_a_single_computed_float_assignment() {
         let function = Function {
             return_type: Type::Float,
             name: "polynomial".into(),
@@ -134,24 +120,14 @@ mod tests {
                 is_const: false,
                 row_bytes: None,
             }],
-            statements: vec![
-                Statement::Assign {
-                    name: "temporary".into(),
-                    value: Expression::Binary {
-                        operator: BinaryOperator::Subtract,
-                        left: Box::new(Expression::FloatLiteral(1.0)),
-                        right: Box::new(Expression::FloatLiteral(0.5)),
-                    },
+            statements: vec![Statement::Assign {
+                name: "temporary".into(),
+                value: Expression::Binary {
+                    operator: BinaryOperator::Subtract,
+                    left: Box::new(Expression::FloatLiteral(1.0)),
+                    right: Box::new(Expression::FloatLiteral(0.5)),
                 },
-                Statement::Assign {
-                    name: "temporary".into(),
-                    value: Expression::Binary {
-                        operator: BinaryOperator::Multiply,
-                        left: Box::new(Expression::Variable("temporary".into())),
-                        right: Box::new(Expression::Variable("temporary".into())),
-                    },
-                },
-            ],
+            }],
             guards: Vec::new(),
             return_expression: Some(Expression::Variable("temporary".into())),
             section: None,
@@ -163,6 +139,6 @@ mod tests {
             peephole_disabled: false,
         };
 
-        assert!(has_reused_computed_float(&function));
+        assert!(has_computed_float_assignment(&function));
     }
 }

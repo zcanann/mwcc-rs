@@ -2863,10 +2863,10 @@ impl Generator {
         if self.try_masked_transfer_command_switch(function)? {
             return Ok(());
         }
-        if self.try_materialized_float_assignment_body(function)? {
+        if self.try_value_tracking(function)? {
             return Ok(());
         }
-        if self.try_value_tracking(function)? {
+        if self.try_materialized_float_assignment_body(function)? {
             return Ok(());
         }
         // Fold single-assignment, return-only locals (no call in their initializers)
