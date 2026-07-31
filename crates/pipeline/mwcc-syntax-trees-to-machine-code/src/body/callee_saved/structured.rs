@@ -4119,7 +4119,18 @@ impl Generator {
                         Type::Float | Type::Double => Eabi::float_result().number,
                         _ => Eabi::general_result().number,
                     };
-                    self.evaluate(value, function.return_type, result)?;
+                    if self.unoptimized_inline_float_transaction_homes
+                        && matches!(function.return_type, Type::Float | Type::Double)
+                        && !expression_has_call(value)
+                    {
+                        self.evaluate_materialized_float_assignment_value(
+                            value,
+                            function.return_type,
+                            result,
+                        )?;
+                    } else {
+                        self.evaluate(value, function.return_type, result)?;
+                    }
                     return_branches.push(self.output.instructions.len());
                     self.output
                         .instructions
