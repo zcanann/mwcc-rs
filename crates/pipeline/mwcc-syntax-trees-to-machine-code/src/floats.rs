@@ -636,6 +636,13 @@ impl Generator {
             );
         }
         if let Expression::Variable(name) = operand {
+            if self
+                .frame_slots
+                .get(name)
+                .is_some_and(|slot| slot.class == ValueClass::Float && !slot.is_array)
+            {
+                return true;
+            }
             if !self.locations.contains_key(name) {
                 return matches!(self.globals.get(name), Some(Type::Float | Type::Double));
             }

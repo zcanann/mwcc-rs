@@ -57,6 +57,7 @@ impl Generator {
         &mut self,
         registers: &[u8],
         paired_single_frame: bool,
+        direct_paired_single_restores: bool,
     ) -> Compilation<()> {
         let registers = required_float_save_range(self.callee_saved_float, registers)
             .map_err(Diagnostic::error)?;
@@ -71,6 +72,7 @@ impl Generator {
                     &registers,
                     saved_gpr_count,
                     paired_single_frame,
+                    direct_paired_single_restores,
                 )
                 .map_err(Diagnostic::error)?
             }
@@ -125,6 +127,7 @@ fn materialize_predecrement_frame(
     registers: &[u8],
     saved_gpr_count: usize,
     paired_single_frame: bool,
+    direct_paired_single_restores: bool,
 ) -> Result<(Vec<usize>, i16), &'static str> {
     let expected: Vec<u8> = (0..registers.len())
         .map(|index| 31u8.saturating_sub(index as u8))
@@ -275,21 +278,31 @@ fn materialize_predecrement_frame(
                 w: 0,
                 i: 0,
             });
-            restores.extend([
-                Instruction::load_immediate(0, paired_offset),
-                Instruction::PairedSingleQuantizedLoadIndexed {
+            if direct_paired_single_restores {
+                restores.push(Instruction::PairedSingleQuantizedLoad {
                     d: register,
                     a: 1,
-                    b: 0,
+                    offset: paired_offset,
                     w: 0,
                     i: 0,
-                },
-                Instruction::LoadFloatDouble {
-                    d: register,
-                    a: 1,
-                    offset: double_offset,
-                },
-            ]);
+                });
+            } else {
+                restores.extend([
+                    Instruction::load_immediate(0, paired_offset),
+                    Instruction::PairedSingleQuantizedLoadIndexed {
+                        d: register,
+                        a: 1,
+                        b: 0,
+                        w: 0,
+                        i: 0,
+                    },
+                ]);
+            }
+            restores.push(Instruction::LoadFloatDouble {
+                d: register,
+                a: 1,
+                offset: double_offset,
+            });
         } else {
             restores.push(Instruction::LoadFloatDouble {
                 d: register,
@@ -452,7 +465,7 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
         let (_, frame_growth) =
-            materialize_predecrement_frame(&mut instructions, &[31, 30], 0, true).unwrap();
+            materialize_predecrement_frame(&mut instructions, &[31, 30], 0, true, false).unwrap();
 
         assert_eq!(frame_growth, 32);
         assert!(matches!(
@@ -488,7 +501,7 @@ mod tests {
         ];
 
         let (_, frame_growth) =
-            materialize_predecrement_frame(&mut instructions, &[31], 2, true).unwrap();
+            materialize_predecrement_frame(&mut instructions, &[31], 2, true, false).unwrap();
 
         assert_eq!(frame_growth, 16);
         assert!(matches!(
@@ -545,7 +558,7 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
         let (permutation, frame_growth) =
-            materialize_predecrement_frame(&mut instructions, &[31, 30], 1, true).unwrap();
+            materialize_predecrement_frame(&mut instructions, &[31, 30], 1, true, false).unwrap();
 
         assert_eq!(frame_growth, 32);
         assert_eq!(permutation[3], 7);
@@ -631,7 +644,7 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
         let (_, frame_growth) =
-            materialize_predecrement_frame(&mut instructions, &[31], 1, false).unwrap();
+            materialize_predecrement_frame(&mut instructions, &[31], 1, false, false).unwrap();
 
         assert_eq!(frame_growth, 16);
         assert!(matches!(

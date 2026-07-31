@@ -49,6 +49,7 @@ mod dual_status_switch_schedule;
 mod retained_item_ratio_schedule;
 mod callee_saved;
 pub(crate) use callee_saved::owns_unreferenced_forwarding_branch_cleanup;
+pub(crate) use callee_saved::uses_direct_paired_single_restores;
 mod comma_operator;
 mod coalescing_free_list_insert;
 mod condition_linkage;

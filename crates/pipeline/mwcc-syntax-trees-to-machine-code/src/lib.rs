@@ -910,6 +910,7 @@ fn lower_function_body(
     // virtual home to the register the value already holds (mwcc coalesces them).
     coalesce_self_moves(&mut generator);
     coalesce_float_conversion_moves(&mut generator);
+    generator.schedule_periodic_float_normalization(function);
     generator.schedule_inlined_global_transaction_volatile_reuse();
     generator.share_leaf_constant_guard_epilogue();
     // Allocation can coalesce a just-published frame value and its immediate
@@ -947,6 +948,7 @@ fn lower_function_body(
     generator.materialize_allocated_float_frame(
         &allocated_float_saves,
         paired_single_float_frame,
+        body::uses_direct_paired_single_restores(function),
     )?;
     generator.finalize_unoptimized_leaf_source_homes();
     // Build 163 shares the selected body schedule, but wraps GPR survivors in a
@@ -1574,8 +1576,15 @@ fn coalesce_float_conversion_moves(generator: &mut Generator) {
             index += 1;
             continue;
         };
-        generator.output.instructions[index + 1] =
-            Instruction::ConvertToIntegerWordZero { d, b };
+        let rounds_to_single = matches!(
+            generator.output.instructions.get(index + 1),
+            Some(Instruction::RoundToSingle { .. })
+        );
+        generator.output.instructions[index + 1] = if rounds_to_single {
+            Instruction::RoundToSingle { d, b }
+        } else {
+            Instruction::ConvertToIntegerWordZero { d, b }
+        };
         remove_instruction_retargeting_to_next(generator, index);
     }
 }
@@ -1591,6 +1600,16 @@ fn adjacent_float_conversion_move(
                 b: source,
             },
             Instruction::ConvertToIntegerWordZero {
+                d: converted,
+                b: converted_source,
+            },
+        ) if moved == converted && moved == converted_source => Some((*converted, *source)),
+        (
+            Instruction::FloatMove {
+                d: moved,
+                b: source,
+            },
+            Instruction::RoundToSingle {
                 d: converted,
                 b: converted_source,
             },

@@ -86,6 +86,7 @@ use super::structured_repeated_call_poll::{
 };
 use super::structured_recovered_float_homes;
 use super::structured_recovered_general_homes::StructuredRecoveredGeneralHomes;
+use super::structured_periodic_float_normalization::StructuredPeriodicFloatNormalization;
 use super::structured_unoptimized_leaf_homes::StructuredUnoptimizedLeafHomes;
 use super::structured_switch_lowering::{
     is_lowered_switch_guard, lower_structured_switches,
@@ -327,11 +328,20 @@ impl Generator {
             Vec::new()
         };
         let address_taken = crate::frame::collect_address_taken(function);
+        let periodic_float_normalization =
+            (self.behavior.optimization == mwcc_versions::Optimization::O0)
+                .then(|| StructuredPeriodicFloatNormalization::plan(function))
+                .flatten();
         let frame_scalar_parameters: Vec<_> = if with_frame_array {
             function
                 .parameters
                 .iter()
-                .filter(|parameter| address_taken.contains(parameter.name.as_str()))
+                .filter(|parameter| {
+                    address_taken.contains(parameter.name.as_str())
+                        || periodic_float_normalization
+                            .as_ref()
+                            .is_some_and(|plan| plan.owns_frame_parameter(&parameter.name))
+                })
                 .collect()
         } else {
             Vec::new()
@@ -350,7 +360,10 @@ impl Generator {
             Vec::new()
         };
         if frame_scalar_parameters.iter().any(|parameter| {
-            class_of(parameter.parameter_type).ok() != Some(ValueClass::General)
+            !matches!(
+                class_of(parameter.parameter_type),
+                Ok(ValueClass::General | ValueClass::Float)
+            )
                 || parameter.parameter_type.width() > 32
         }) || frame_scalar_locals.iter().any(|local| {
             local.is_static
@@ -513,7 +526,9 @@ impl Generator {
                     .parameters
                     .iter()
                     .filter(|parameter| {
-                        !address_taken.contains(parameter.name.as_str())
+                        !frame_scalar_parameters
+                            .iter()
+                            .any(|framed| framed.name == parameter.name)
                     })
                     .map(|parameter| parameter.name.as_str()),
             )
@@ -567,7 +582,12 @@ impl Generator {
             .parameters
             .iter()
             .rev()
-            .filter(|parameter| survivors.contains(parameter.name.as_str()))
+            .filter(|parameter| {
+                survivors.contains(parameter.name.as_str())
+                    && !frame_scalar_parameters
+                        .iter()
+                        .any(|framed| framed.name == parameter.name)
+            })
             .collect();
         // A parameter returned after the call graph owns the longest visible
         // lifetime. MWCC gives it the highest callee-saved home even when a
@@ -1819,7 +1839,8 @@ impl Generator {
                     parameter.name.clone(),
                     FrameSlot {
                         offset: scalar_offset,
-                        class: ValueClass::General,
+                        class: class_of(parameter.parameter_type)
+                            .expect("frame scalar parameter class was checked"),
                         size: 4,
                         value_type: parameter.parameter_type,
                         parameter_register: Some(incoming),
@@ -2611,15 +2632,25 @@ impl Generator {
         self.callee_saved_float = self
             .callee_saved_float
             .max(u8::try_from(saved_float_count).unwrap_or(18))
-            .max(structured_recovered_float_homes::saved_count(function));
+            .max(structured_recovered_float_homes::saved_count(function))
+            .max(u8::from(periodic_float_normalization.is_some()) * 4);
         for (parameter_index, parameter) in saved_float_parameters.iter().enumerate() {
             let incoming = self
                 .locations
                 .get(&parameter.name)
                 .expect("eligibility checked")
                 .register;
-            let preferred =
-                31u8.saturating_sub(u8::try_from(parameter_index).unwrap_or(17).min(17));
+            let preferred = periodic_float_normalization
+                .as_ref()
+                .filter(|plan| plan.preserved_parameter == parameter.name)
+                .map_or_else(
+                    || {
+                        31u8.saturating_sub(
+                            u8::try_from(parameter_index).unwrap_or(17).min(17),
+                        )
+                    },
+                    |_| 28,
+                );
             let home = self.fresh_virtual_float_preferring(preferred);
             self.output
                 .instructions
@@ -2697,6 +2728,22 @@ impl Generator {
                     stride: None,
                 },
             );
+        }
+        if let Some(plan) = &periodic_float_normalization {
+            for (index, name) in plan.result_homes.iter().enumerate() {
+                let register = self.fresh_virtual_float_preferring(30 - index as u8);
+                self.locations.insert(
+                    (*name).to_owned(),
+                    Location {
+                        class: ValueClass::Float,
+                        register,
+                        signed: true,
+                        width: 32,
+                        pointee: None,
+                        stride: None,
+                    },
+                );
+            }
         }
         self.try_preload_ephemeral_float_compare_literal(function, &ephemeral_locals)?;
         // Initializers are evaluated at declaration time, while an incoming
@@ -2829,6 +2876,12 @@ impl Generator {
                     .expect("address-taken parameter has an incoming register"),
                 slot,
             ));
+            if periodic_float_normalization
+                .as_ref()
+                .is_some_and(|plan| plan.owns_frame_parameter(&parameter.name))
+            {
+                self.locations.remove(&parameter.name);
+            }
         }
         self.emit_structured_frame_array_initializers(
             frame_arrays,
@@ -4030,6 +4083,29 @@ impl Generator {
                         })
                         .expect("eligibility checked");
                     let previous = self.locations.get(name).map(|location| location.register);
+                    let periodic_result_home = function
+                        .statements
+                        .get(statement_index)
+                        .filter(|top_level| std::ptr::eq(*top_level, statement))
+                        .and_then(|_| StructuredPeriodicFloatNormalization::plan(function))
+                        .and_then(|plan| plan.result_home(statement_index))
+                        .and_then(|home| self.locations.get(home))
+                        .map(|location| location.register);
+                    if let Some(result_home) = periodic_result_home {
+                        let destination = previous.expect("periodic accumulator has a home");
+                        self.evaluate_register_store_value(value, declared_type, result_home)
+                            .map_err(|mut diagnostic| {
+                                diagnostic.message.push_str(&format!(
+                                    " (in periodic float assignment statement {statement_index})"
+                                ));
+                                diagnostic
+                            })?;
+                        self.output.instructions.push(Instruction::FloatMove {
+                            d: destination,
+                            b: result_home,
+                        });
+                        continue;
+                    }
                     let remaining = &statements[statement_index + 1..];
                     // The source-level return is emitted after every statement, but is not
                     // part of `remaining`.  A value tested before a later call and returned

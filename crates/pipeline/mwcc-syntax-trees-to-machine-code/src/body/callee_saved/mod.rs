@@ -210,6 +210,11 @@ mod structured_repeated_call_poll;
 mod structured_recovered_general_homes;
 mod structured_recovered_narrow_parameter_image;
 mod structured_recovered_float_homes;
+mod structured_periodic_float_normalization;
+pub(crate) fn uses_direct_paired_single_restores(function: &Function) -> bool {
+    structured_periodic_float_normalization::StructuredPeriodicFloatNormalization::plan(function)
+        .is_some()
+}
 mod structured_unoptimized_leaf_homes;
 mod structured_unoptimized_leaf_schedule;
 mod structured_loop_member_receiver_layout;
