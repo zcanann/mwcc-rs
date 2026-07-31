@@ -1,0 +1,88 @@
+use crate::{compile, SourceLanguage};
+
+#[test]
+fn emits_the_revolution_priority_list_insertion() {
+    let source = br#"
+        typedef unsigned int u32;
+
+        typedef struct Task {
+            u32 state;
+            u32 priority;
+            u32 reserved[12];
+            struct Task* next;
+            struct Task* prev;
+        } Task;
+
+        Task* current_task;
+        Task* first_task;
+        Task* last_task;
+
+        void insert_task(Task* task) {
+            Task* temp;
+
+            if (first_task == 0) {
+                current_task = task;
+                first_task = last_task = task;
+                task->next = task->prev = 0;
+                return;
+            }
+
+            temp = first_task;
+            while (temp != 0) {
+                if (task->priority < temp->priority) {
+                    task->prev = temp->prev;
+                    temp->prev = task;
+                    task->next = temp;
+                    if (task->prev == 0)
+                        first_task = task;
+                    else
+                        task->prev->next = task;
+                    break;
+                }
+                temp = temp->next;
+            }
+
+            if (temp == 0) {
+                last_task->next = task;
+                task->next = 0;
+                task->prev = last_task;
+                last_task = task;
+            }
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    flags.optimization = mwcc_versions::Optimization::O4;
+    flags.ipa_file = true;
+    let object = compile(
+        source,
+        "sorted-intrusive-global-insert.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_3_0A3,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the Revolution priority-list insertion should compile");
+
+    let expected = [
+        0x80, 0xa0, 0x00, 0x00, 0x2c, 0x05, 0x00, 0x00, 0x40, 0x82, 0x00, 0x64, 0x90, 0x60, 0x00,
+        0x00, 0x38, 0x00, 0x00, 0x00, 0x90, 0x60, 0x00, 0x00, 0x90, 0x60, 0x00, 0x00, 0x90, 0x03,
+        0x00, 0x3c, 0x90, 0x03, 0x00, 0x38, 0x4e, 0x80, 0x00, 0x20, 0x48, 0x00, 0x00, 0x44, 0x80,
+        0x83, 0x00, 0x04, 0x80, 0x05, 0x00, 0x04, 0x7c, 0x04, 0x00, 0x40, 0x40, 0x80, 0x00, 0x30,
+        0x80, 0x05, 0x00, 0x3c, 0x90, 0x03, 0x00, 0x3c, 0x90, 0x65, 0x00, 0x3c, 0x80, 0x83, 0x00,
+        0x3c, 0x90, 0xa3, 0x00, 0x38, 0x2c, 0x04, 0x00, 0x00, 0x40, 0x82, 0x00, 0x0c, 0x90, 0x60,
+        0x00, 0x00, 0x48, 0x00, 0x00, 0x18, 0x90, 0x64, 0x00, 0x38, 0x48, 0x00, 0x00, 0x10, 0x80,
+        0xa5, 0x00, 0x38, 0x2c, 0x05, 0x00, 0x00, 0x40, 0x82, 0xff, 0xbc, 0x2c, 0x05, 0x00, 0x00,
+        0x4c, 0x82, 0x00, 0x20, 0x80, 0x80, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x90, 0x64, 0x00,
+        0x38, 0x90, 0x03, 0x00, 0x38, 0x80, 0x00, 0x00, 0x00, 0x90, 0x03, 0x00, 0x3c, 0x90, 0x60,
+        0x00, 0x00, 0x4e, 0x80, 0x00, 0x20,
+    ];
+    assert!(object
+        .windows(expected.len())
+        .any(|bytes| bytes == expected));
+}

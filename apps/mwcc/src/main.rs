@@ -3119,6 +3119,9 @@ mod tests {
     #[path = "coalescing_free_list_insert.rs"]
     mod coalescing_free_list_insert;
 
+    #[path = "sorted_intrusive_global_insert.rs"]
+    mod sorted_intrusive_global_insert;
+
     #[path = "inlined_list_append.rs"]
     mod inlined_list_append;
 

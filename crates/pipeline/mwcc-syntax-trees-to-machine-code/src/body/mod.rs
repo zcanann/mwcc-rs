@@ -169,6 +169,7 @@ mod schedule_relocations;
 mod scaled_angle_call;
 mod variadic_report_member_schedule;
 mod wide_call_result_mask_chain;
+mod sorted_intrusive_global_insert;
 mod sorted_intrusive_insert;
 mod store_fill;
 mod store_return_schedule;

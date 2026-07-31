@@ -2657,6 +2657,12 @@ impl Generator {
         if self.try_coalescing_free_list_insert(function)? {
             return Ok(());
         }
+        // The Revolution DSP queue spells the same priority-sorted intrusive
+        // insertion as a leading empty-list return, a `while`/`break` search,
+        // and a trailing append.
+        if self.try_sorted_intrusive_global_insert(function)? {
+            return Ok(());
+        }
         // SDK callback queues insert one intrusive node into a priority-sorted doubly linked
         // list. The empty-tail and predecessor repairs form one scheduled control-flow owner.
         if self.try_sorted_intrusive_insert(function)? {
