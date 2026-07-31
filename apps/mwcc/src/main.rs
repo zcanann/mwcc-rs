@@ -3153,6 +3153,9 @@ mod tests {
     #[path = "inlined_list_append.rs"]
     mod inlined_list_append;
 
+    #[path = "automatic_inline_fallback.rs"]
+    mod automatic_inline_fallback;
+
     #[path = "guarded_payload_membership.rs"]
     mod guarded_payload_membership;
 

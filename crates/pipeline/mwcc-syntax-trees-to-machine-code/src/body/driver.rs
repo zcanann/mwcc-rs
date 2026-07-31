@@ -1753,31 +1753,38 @@ impl Generator {
         }
         if calls_inline_candidate {
             if let Some(expanded) = self.inline_bodies.expand_calls_with_facts(function) {
-                self.legacy_inline_expansion_frame_bytes +=
+                // Ordinary automatic inlining is optional: MWCC keeps an
+                // externally callable definition, and an unsupported expanded
+                // topology may still be compiled through that call. Lower the
+                // composed body transactionally so a late backend decline does
+                // not discard the source function or leak partial frame/label
+                // state into its out-of-line fallback.
+                let mut trial = self.clone();
+                trial.legacy_inline_expansion_frame_bytes +=
                     crate::inline_expansion::legacy_statement_body_frame_residue_bytes(
                         &expanded.function,
                         expanded.statement_frame_residue_substitutions,
                         expanded.statement_mutating_body_substitutions,
                     );
-                self.legacy_inline_expansion_frame_bytes +=
+                trial.legacy_inline_expansion_frame_bytes +=
                     crate::inline_expansion::legacy_value_body_frame_residue_bytes(
                         &expanded.function,
                         expanded.value_body_substitutions,
                     );
-                self.inline_statement_body_substitutions +=
+                trial.inline_statement_body_substitutions +=
                     expanded.statement_body_substitutions;
-                if self
+                if trial
                     .behavior
                     .ordinary_inline_substitution_advances_ordinals
                 {
-                    self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
-                        self.inline_expansion_facts,
+                    trial.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
+                        trial.inline_expansion_facts,
                         expanded.statement_body_substitutions,
                         expanded.value_body_substitutions,
-                        self.behavior.inline_statement_substitution_label_weight,
+                        trial.behavior.inline_statement_substitution_label_weight,
                     );
                 } else {
-                    self.output.anonymous_label_bump +=
+                    trial.output.anonymous_label_bump +=
                         crate::inline_expansion::legacy_mutating_value_body_ordinal_residue(
                             &expanded.function,
                             expanded.value_body_substitutions,
@@ -1786,19 +1793,19 @@ impl Generator {
                 let branch_reuse =
                     crate::branch_value_reuse::materialize_guarded_global_member_update(
                         &expanded.function,
-                        &self.globals,
+                        &trial.globals,
                     );
                 let branch_function = branch_reuse
                     .as_ref()
                     .unwrap_or(&expanded.function);
-                let scalarized = self.lower_wide_mask_local_for_version(branch_function);
+                let scalarized = trial.lower_wide_mask_local_for_version(branch_function);
                 let scalarized_function =
                     scalarized.as_ref().unwrap_or(branch_function);
                 let shared_store_base =
                     crate::shared_global_store_base::materialize_consecutive_global_struct_store_base(
                         scalarized_function,
-                        &self.globals,
-                        &self.volatile_globals,
+                        &trial.globals,
+                        &trial.volatile_globals,
                     );
                 let shared_store_function = shared_store_base
                     .as_ref()
@@ -1806,15 +1813,19 @@ impl Generator {
                 let shared_array_store_base =
                     crate::shared_global_array_store_base::materialize_consecutive_global_array_store_base(
                         shared_store_function,
-                        &self.globals,
-                        &self.global_arrays,
-                        &self.volatile_globals,
+                        &trial.globals,
+                        &trial.global_arrays,
+                        &trial.volatile_globals,
                     );
-                return self.evaluate_body(
+                let result = trial.evaluate_body(
                     shared_array_store_base
                         .as_ref()
                         .unwrap_or(shared_store_function),
                 );
+                if result.is_ok() {
+                    *self = trial;
+                    return result;
+                }
             }
             if calls_skipped_inline {
                 let mut unresolved: Vec<_> = self

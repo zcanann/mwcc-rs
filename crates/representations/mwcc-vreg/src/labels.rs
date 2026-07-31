@@ -38,6 +38,7 @@ pub struct LabelCheckpoint {
 
 /// The label table for one function: bindings and recorded branch uses.
 #[derive(Debug, Default)]
+#[derive(Clone)]
 pub struct Labels {
     /// `bound[label]` is the instruction index the label pins, once bound.
     bound: Vec<Option<usize>>,

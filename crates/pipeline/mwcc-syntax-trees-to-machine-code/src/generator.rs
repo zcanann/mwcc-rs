@@ -86,6 +86,7 @@ pub(crate) struct PreloadedFloatCompareLiteral {
     pub(crate) reuse_for_following_value: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct StructuredFloatHandoff {
     pub(crate) name: String,
     pub(crate) source: u8,
@@ -108,6 +109,7 @@ pub(crate) enum ValueClass {
     Float,
 }
 
+#[derive(Clone)]
 pub(crate) struct Location {
     pub(crate) class: ValueClass,
     pub(crate) register: u8,
@@ -123,7 +125,7 @@ pub(crate) struct Location {
 }
 
 /// The float-composition channel (see `Generator::float`).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct FloatContext {
     /// The float DAG tail reloads x from this frame offset (the fctiwz
     /// punned-guard composition): x's references become a frame lfd node
@@ -323,6 +325,7 @@ pub(crate) struct TransientGlobalIndexBase {
     pub(crate) register: u8,
 }
 
+#[derive(Clone)]
 pub(crate) struct Generator {
     /// This function is a VARIADIC definition — only a capture may emit it
     /// (the register-save prologue is unmodeled in general codegen).

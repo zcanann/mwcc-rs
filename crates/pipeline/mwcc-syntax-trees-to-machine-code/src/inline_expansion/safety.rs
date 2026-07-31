@@ -117,6 +117,67 @@ pub(super) fn automatic_composable_function(function: &Function) -> bool {
     ordinary || parameter_select
 }
 
+/// A one-use ordinary scalar helper that whole-file IPA can substitute as a
+/// value expression without exposing caller-visible storage.
+///
+/// Keep this lane deliberately SSA-like: every uniform scalar local is
+/// initialized exactly once, each initializer is pure, and the returned value
+/// is one of those locals.  This covers small arithmetic helpers while keeping
+/// aliasing, mutable parameters, and control flow in the statement composer.
+pub(super) fn automatic_straight_line_scalar_value_function(function: &Function) -> bool {
+    if matches!(function.return_type, Type::Void | Type::Struct { .. })
+        || function.locals.is_empty()
+        || function.locals.len() > 4
+        || !function.guards.is_empty()
+        || function.asm_body.is_some()
+        || function
+            .parameters
+            .iter()
+            .any(|parameter| {
+                parameter.parameter_type != function.return_type
+                    || variable_is_modified_or_escaped(function, &parameter.name)
+            })
+        || function.locals.iter().any(|local| {
+            local.declared_type != function.return_type
+                || local.is_static
+                || local.is_volatile
+                || local.array_length.is_some()
+                || local
+                    .initializer
+                    .as_ref()
+                    .is_some_and(crate::analysis::expression_has_side_effect)
+        })
+        || !uninitialized_local_reads_are_dominated(function)
+        || !matches!(
+            function.return_expression.as_ref(),
+            Some(Expression::Variable(name))
+                if function.locals.iter().any(|local| local.name == *name)
+        )
+    {
+        return false;
+    }
+
+    let local_names = function
+        .locals
+        .iter()
+        .map(|local| local.name.as_str())
+        .collect::<HashSet<_>>();
+    let mut initialized = function
+        .locals
+        .iter()
+        .filter(|local| local.initializer.is_some())
+        .map(|local| local.name.as_str())
+        .collect::<HashSet<_>>();
+    function.statements.iter().all(|statement| {
+        let Statement::Assign { name, value } = statement else {
+            return false;
+        };
+        local_names.contains(name.as_str())
+            && initialized.insert(name)
+            && !crate::analysis::expression_has_side_effect(value)
+    }) && initialized.len() == local_names.len()
+}
+
 /// A bounded scalar transaction whose result is a local may be expanded as
 /// statements at a call site even when its control flow cannot be represented
 /// by the expression-summary lane. This admits a canonical queue-draining

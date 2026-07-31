@@ -671,6 +671,18 @@ pub(super) fn summarize_automatic(function: &Function) -> Option<ValueInlineBody
     summarize(function)
 }
 
+/// Summarize a one-use ordinary helper whose scalar locals form a pure,
+/// straight-line value chain. Selection remains separate from the general
+/// automatic summary because these local-bearing bodies are profitable only
+/// under the call-count gate owned by whole-file inline analysis.
+pub(super) fn summarize_automatic_straight_line(
+    function: &Function,
+) -> Option<ValueInlineBody> {
+    super::safety::automatic_straight_line_scalar_value_function(function)
+        .then(|| summarize(function))
+        .flatten()
+}
+
 /// Unroll a small fixed-count predicate search selected by automatic IPA.
 ///
 /// SDK command classifiers commonly test a short explicit set, then scan a

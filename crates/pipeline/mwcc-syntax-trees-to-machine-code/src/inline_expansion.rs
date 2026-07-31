@@ -362,10 +362,13 @@ impl InlineBodySet {
                 values.entry(function.name.clone()).or_insert(body);
             } else {
                 let call_count = call_counts.get(&function.name).copied();
+                let straight_line = (call_count == Some(1))
+                    .then(|| value_body::summarize_automatic_straight_line(function))
+                    .flatten();
                 let transaction = (function.is_static || call_count == Some(1))
                     .then(|| value_body::summarize_automatic_transaction(function))
                     .flatten();
-                if let Some(body) = transaction {
+                if let Some(body) = straight_line.or(transaction) {
                     values
                         .entry(function.name.clone())
                         .and_modify(|existing| existing.automatic_transaction = true)
@@ -3432,6 +3435,87 @@ mod tests {
         let repeated =
             InlineBodySet::analyze_with_definitions(&[helper, caller.clone(), second_caller], &[]);
         assert!(repeated.expand_calls(&caller).is_none());
+    }
+
+    #[test]
+    fn composes_a_one_call_straight_line_scalar_helper() {
+        let float_parameter = |name: &str| Parameter {
+            parameter_type: Type::Float,
+            name: name.into(),
+        };
+        let float_local = |name: &str| LocalDeclaration {
+            declared_type: Type::Float,
+            name: name.into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        };
+        let mut helper = function(
+            "blend",
+            vec![
+                float_parameter("weight"),
+                float_parameter("left"),
+                float_parameter("middle"),
+                float_parameter("right"),
+            ],
+            vec![
+                Statement::Assign {
+                    name: "inverse".into(),
+                    value: Expression::Binary {
+                        operator: BinaryOperator::Subtract,
+                        left: Box::new(Expression::FloatLiteral(1.0)),
+                        right: Box::new(Expression::Variable("weight".into())),
+                    },
+                },
+                Statement::Assign {
+                    name: "result".into(),
+                    value: Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left: Box::new(Expression::Variable("left".into())),
+                        right: Box::new(Expression::Variable("inverse".into())),
+                    },
+                },
+            ],
+        );
+        helper.return_type = Type::Float;
+        helper.is_static = false;
+        helper.locals = vec![float_local("inverse"), float_local("result")];
+        helper.return_expression = Some(Expression::Variable("result".into()));
+
+        let mut caller = function(
+            "caller",
+            vec![
+                float_parameter("weight"),
+                float_parameter("left"),
+                float_parameter("middle"),
+                float_parameter("right"),
+            ],
+            vec![Statement::Expression(Expression::Call {
+                name: "blend".into(),
+                arguments: vec![
+                    Expression::Variable("weight".into()),
+                    Expression::Variable("left".into()),
+                    Expression::Variable("middle".into()),
+                    Expression::Variable("right".into()),
+                ],
+            })],
+        );
+        caller.is_static = false;
+
+        let bodies =
+            InlineBodySet::analyze_with_definitions(&[helper, caller.clone()], &[]);
+        let expanded = bodies
+            .expand_calls(&caller)
+            .expect("a one-use pure scalar helper should compose");
+        let mut calls = HashMap::new();
+        collect_function_calls(&expanded, &mut calls);
+        assert!(!calls.contains_key("blend"));
+        assert_eq!(expanded.locals.len(), 2);
     }
 
     #[test]
