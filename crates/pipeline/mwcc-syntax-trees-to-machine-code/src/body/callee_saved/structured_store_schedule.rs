@@ -8,8 +8,34 @@
 
 #[allow(unused_imports)]
 use super::*;
+use mwcc_machine_code::{MachineFunction, RelocationKind, RelocationTarget};
+#[cfg(test)]
+use mwcc_machine_code::Relocation;
 
 impl Generator {
+    /// After a call, issue a later independent global load before publishing a
+    /// zero and retain the zero in r3. This fills the load latency while keeping
+    /// r0 available for the loaded value's following global publication.
+    pub(crate) fn schedule_post_call_zero_global_publication(&mut self) {
+        while let Some(start) =
+            post_call_zero_global_publication_start(&self.output)
+        {
+            self.move_instruction_before(start + 2, start);
+            let Instruction::AddImmediate { d, .. } =
+                &mut self.output.instructions[start + 1]
+            else {
+                unreachable!("zero publication materialization was recognized")
+            };
+            *d = Eabi::FIRST_GENERAL_ARGUMENT;
+            let Instruction::StoreWord { s, .. } =
+                &mut self.output.instructions[start + 2]
+            else {
+                unreachable!("zero publication store was recognized")
+            };
+            *s = Eabi::FIRST_GENERAL_ARGUMENT;
+        }
+    }
+
     /// Keep a later narrow load out of the integer scratch while a lock value
     /// spans a repeated floating-zero reset. MWCC materializes the lock in the
     /// `lfs` latency slot, loads the narrow value into a fresh volatile home,
@@ -209,6 +235,82 @@ impl Generator {
     }
 }
 
+fn post_call_zero_global_publication_start(
+    output: &MachineFunction,
+) -> Option<usize> {
+    output.instructions.windows(5).enumerate().find_map(|(call, window)| {
+        let [
+            Instruction::BranchAndLink { .. }
+            | Instruction::BranchConditionalForward { .. },
+            Instruction::AddImmediate {
+                d: 0,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 0,
+                offset: 0,
+            },
+        ] = window
+        else {
+            return None;
+        };
+        if matches!(
+            window[0],
+            Instruction::BranchConditionalForward { target, .. }
+                if target >= call
+        ) {
+            return None;
+        }
+        let first_store = direct_sda_target(output, call + 2)?;
+        let load = direct_sda_target(output, call + 3)?;
+        let second_store = direct_sda_target(output, call + 4)?;
+        if first_store == load
+            || load == second_store
+            || output.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::BranchConditionalForward { target, .. }
+                        | Instruction::Branch { target }
+                        if (call + 1..=call + 4).contains(target)
+                )
+            })
+        {
+            return None;
+        }
+        Some(call + 1)
+    })
+}
+
+fn direct_sda_target(
+    output: &MachineFunction,
+    instruction_index: usize,
+) -> Option<&str> {
+    output.relocations.iter().find_map(|relocation| {
+        if relocation.instruction_index != instruction_index
+            || relocation.kind != RelocationKind::EmbSda21
+        {
+            return None;
+        }
+        match &relocation.target {
+            RelocationTarget::External(name)
+            | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
+            _ => None,
+        }
+    })
+}
+
 fn post_call_jump_state_reset_start(instructions: &[Instruction]) -> Option<usize> {
     instructions.windows(10).position(|window| {
         matches!(window, [
@@ -287,6 +389,43 @@ fn truth_test_variable(expression: &Expression) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_a_post_call_zero_and_distinct_global_copy() {
+        let mut output = MachineFunction::new("publish");
+        output.instructions = vec![
+            Instruction::BranchAndLink {
+                target: "update".into(),
+            },
+            Instruction::load_immediate(0, 0),
+            Instruction::StoreWord {
+                s: 0,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 0,
+                offset: 0,
+            },
+        ];
+        for (instruction_index, target) in
+            [(2, "zero"), (3, "source"), (4, "destination")]
+        {
+            output.relocations.push(Relocation {
+                instruction_index,
+                kind: RelocationKind::EmbSda21,
+                target: RelocationTarget::External(target.into()),
+            });
+        }
+
+        assert_eq!(post_call_zero_global_publication_start(&output), Some(1));
+    }
 
     #[test]
     fn recognizes_a_guarded_saved_receiver_mixed_call() {

@@ -13,6 +13,8 @@ use super::structured_conversion_call_schedule::permute_region;
 const AGGREGATE_RECEIVER_SCHEDULE: [usize; 10] = [0, 1, 2, 8, 3, 4, 5, 6, 7, 9];
 const FLOAT_ARGUMENT_SCHEDULE: [usize; 4] = [2, 0, 1, 3];
 const MEMBER_ARGUMENT_SCHEDULE: [usize; 6] = [2, 0, 1, 3, 4, 5];
+const NULL_GLOBAL_ARGUMENT_SCHEDULE: [usize; 3] = [1, 0, 2];
+const STATE_STORE_CONSTANT_CALL_SCHEDULE: [usize; 5] = [0, 2, 1, 3, 4];
 
 impl Generator {
     pub(crate) fn schedule_structured_argument_load_latency(&mut self) -> bool {
@@ -48,6 +50,34 @@ impl Generator {
             normalize_argument_copy(&mut self.output.instructions[start]);
             normalize_argument_copy(&mut self.output.instructions[start + 1]);
             permute_region(&mut self.output, start, &MEMBER_ARGUMENT_SCHEDULE);
+            changed = true;
+        }
+
+        while let Some(start) = self
+            .output
+            .instructions
+            .windows(NULL_GLOBAL_ARGUMENT_SCHEDULE.len())
+            .position(global_load_after_null_argument)
+        {
+            permute_region(
+                &mut self.output,
+                start,
+                &NULL_GLOBAL_ARGUMENT_SCHEDULE,
+            );
+            changed = true;
+        }
+
+        while let Some(start) = self
+            .output
+            .instructions
+            .windows(STATE_STORE_CONSTANT_CALL_SCHEDULE.len())
+            .position(state_store_before_constant_call)
+        {
+            permute_region(
+                &mut self.output,
+                start,
+                &STATE_STORE_CONSTANT_CALL_SCHEDULE,
+            );
             changed = true;
         }
 
@@ -166,6 +196,46 @@ fn member_chain_after_arguments(window: &[Instruction]) -> bool {
             && *receiver >= 14
             && *second_argument >= 14
             && *member_base >= 14
+    )
+}
+
+fn global_load_after_null_argument(window: &[Instruction]) -> bool {
+    matches!(
+        window,
+        [
+            Instruction::AddImmediate {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::LoadWord {
+                d: 4,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::BranchAndLink { .. },
+        ]
+    )
+}
+
+fn state_store_before_constant_call(window: &[Instruction]) -> bool {
+    matches!(
+        window,
+        [
+            Instruction::AddImmediate {
+                d: state,
+                a: 0,
+                ..
+            },
+            Instruction::StoreByte {
+                s: stored,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::AddImmediateShifted { d: 3, a: 0, .. },
+            Instruction::AddImmediate { d: 3, a: 3, .. },
+            Instruction::BranchAndLink { .. },
+        ] if state == stored
     )
 }
 
@@ -290,5 +360,45 @@ mod tests {
         ];
 
         assert!(member_chain_after_arguments(&window));
+    }
+
+    #[test]
+    fn recognizes_a_global_load_after_a_null_first_argument() {
+        let window = vec![
+            Instruction::load_immediate(3, 0),
+            Instruction::LoadWord {
+                d: 4,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::BranchAndLink {
+                target: "consume".into(),
+            },
+        ];
+
+        assert!(global_load_after_null_argument(&window));
+    }
+
+    #[test]
+    fn recognizes_a_state_store_before_a_constant_call() {
+        let window = vec![
+            Instruction::load_immediate(0, 3),
+            Instruction::StoreByte {
+                s: 0,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::load_immediate_shifted(3, -12847),
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 1,
+            },
+            Instruction::BranchAndLink {
+                target: "send".into(),
+            },
+        ];
+
+        assert!(state_store_before_constant_call(&window));
     }
 }
