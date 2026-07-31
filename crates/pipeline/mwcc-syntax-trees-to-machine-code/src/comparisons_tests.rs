@@ -203,3 +203,63 @@ fn two_global_comparison_preserves_both_loaded_values() {
         machine.instructions
     );
 }
+
+#[test]
+fn shifted_wide_add_compares_from_the_scratch() {
+    let function = Function {
+        return_type: Type::Void,
+        name: "f".into(),
+        is_static: false,
+        is_weak: false,
+        parameters: vec![Parameter {
+            parameter_type: Type::UnsignedInt,
+            name: "x".into(),
+        }],
+        locals: Vec::new(),
+        statements: vec![Statement::If {
+            condition: Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left: Box::new(Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(Expression::Variable("x".into())),
+                    right: Box::new(Expression::IntegerLiteral(0x232f_0000)),
+                }),
+                right: Box::new(Expression::IntegerLiteral(2)),
+            },
+            then_body: vec![Statement::Expression(Expression::Call {
+                name: "g".into(),
+                arguments: Vec::new(),
+            })],
+            else_body: Vec::new(),
+        }],
+        guards: Vec::new(),
+        return_expression: None,
+        section: None,
+        preceded_by_asm: false,
+        asm_body: None,
+        inline_asm_blocks: Vec::new(),
+        force_active: false,
+        text_deferred: false,
+        peephole_disabled: false,
+    };
+    let machine = lower(&function);
+
+    assert!(
+        machine.instructions.windows(2).any(|window| {
+            window
+                == [
+                    Instruction::AddImmediateShifted {
+                        d: 0,
+                        a: 3,
+                        immediate: 0x232f,
+                    },
+                    Instruction::CompareLogicalWordImmediate {
+                        a: 0,
+                        immediate: 2,
+                    },
+                ]
+        }),
+        "the shifted add must remain directly comparable in r0: {:?}",
+        machine.instructions
+    );
+}
