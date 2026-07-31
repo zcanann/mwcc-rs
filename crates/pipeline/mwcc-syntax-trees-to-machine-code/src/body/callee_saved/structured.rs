@@ -4608,6 +4608,8 @@ impl Generator {
                     ));
                     diagnostic
                 })?,
+                Statement::Store { target, value }
+                    if self.try_emit_materialized_float_store(target, value)? => {}
                 _ => self.emit_statement(statement).map_err(|mut diagnostic| {
                     diagnostic.message.push_str(&format!(
                         " (in structured body statement {statement_index}: {statement:?})"

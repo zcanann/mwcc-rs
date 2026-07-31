@@ -47,6 +47,44 @@ fn is_contextual_float_literal(expression: &Expression) -> bool {
     }
 }
 
+fn contains_contextual_float_literal(expression: &Expression) -> bool {
+    if is_contextual_float_literal(expression) {
+        return true;
+    }
+    match expression {
+        Expression::Binary { left, right, .. } => {
+            contains_contextual_float_literal(left) || contains_contextual_float_literal(right)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            contains_contextual_float_literal(operand)
+        }
+        Expression::Conditional {
+            when_true,
+            when_false,
+            ..
+        } => {
+            contains_contextual_float_literal(when_true)
+                || contains_contextual_float_literal(when_false)
+        }
+        _ => false,
+    }
+}
+
+/// Whether a root arithmetic expression owns a computed child that itself
+/// contains a literal. A literal directly beside a computed child needs only
+/// the ordinary two-lane store placement; nested literals require the retained
+/// descending window.
+fn has_nested_contextual_float_literal(expression: &Expression) -> bool {
+    let Expression::Binary { left, right, .. } = expression else {
+        return false;
+    };
+    [left.as_ref(), right.as_ref()].into_iter().any(|child| {
+        is_complex(child)
+            && !is_contextual_float_literal(child)
+            && contains_contextual_float_literal(child)
+    })
+}
+
 /// Count the persistent temporaries selected by the materialized-float
 /// scheduler.  This differs from ordinary Sethi-Ullman pressure when MWCC
 /// deliberately loads a literal before its complex partner: that literal owns
@@ -149,21 +187,7 @@ impl Generator {
         }
     }
 
-    /// Evaluate one call-free float assignment inside MWCC's descending
-    /// volatile-FPR expression window. Incoming float leaves occupy the low
-    /// homes; persistent subtree results are assigned above them from the
-    /// outside of the expression tree inward.
-    pub(crate) fn evaluate_materialized_float_assignment_value(
-        &mut self,
-        value: &Expression,
-        value_type: Type,
-        destination: u8,
-    ) -> Compilation<()> {
-        if self.behavior.optimization == mwcc_versions::Optimization::O0
-            && self.structured_constant_address_home.is_none()
-        {
-            self.structured_constant_address_home = self.next_general_parameter_home();
-        }
+    fn materialized_float_window_plan(&self, value: &Expression) -> Option<(u8, u8)> {
         let highest_input = self
             .locations
             .iter()
@@ -186,16 +210,67 @@ impl Generator {
             ));
         let demand = u8::try_from(demand).unwrap_or(14);
         let top = highest_input.saturating_add(demand);
-        if demand < 2 || top > 13 {
-            return self.evaluate_register_store_value(value, value_type, destination);
+        (demand >= 2 && top <= 13).then_some((top, demand))
+    }
+
+    fn begin_materialized_float_window(&mut self, window: (u8, u8)) -> Option<(u8, u8)> {
+        if self.behavior.optimization == mwcc_versions::Optimization::O0
+            && self.structured_constant_address_home.is_none()
+        {
+            self.structured_constant_address_home = self.next_general_parameter_home();
         }
-        let previous = self.materialized_float_window.replace((top, demand));
+        self.materialized_float_window.replace(window)
+    }
+
+    /// Evaluate one call-free float assignment inside MWCC's descending
+    /// volatile-FPR expression window. Incoming float leaves occupy the low
+    /// homes; persistent subtree results are assigned above them from the
+    /// outside of the expression tree inward.
+    pub(crate) fn evaluate_materialized_float_assignment_value(
+        &mut self,
+        value: &Expression,
+        value_type: Type,
+        destination: u8,
+    ) -> Compilation<()> {
+        let Some(window) = self.materialized_float_window_plan(value) else {
+            return self.evaluate_register_store_value(value, value_type, destination);
+        };
+        let previous = self.begin_materialized_float_window(window);
         let previous_active = self.materialized_float_assignment_active;
         self.materialized_float_assignment_active = true;
         let result = self.evaluate_register_store_value(value, value_type, destination);
         self.materialized_float_assignment_active = previous_active;
         self.materialized_float_window = previous;
         result
+    }
+
+    /// Give a call-free floating memory assignment the same expression window
+    /// as a materialized register local. Frame members and aggregate members
+    /// still store through their ordinary lvalue owner; only RHS placement is
+    /// scoped here.
+    pub(crate) fn try_emit_materialized_float_store(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+    ) -> Compilation<bool> {
+        if self.behavior.optimization != mwcc_versions::Optimization::O0
+            || !self.is_float_operand(target)
+            || expression_has_call(value)
+            || !has_nested_contextual_float_literal(value)
+        {
+            return Ok(false);
+        }
+        let Some(window) = self.materialized_float_window_plan(value) else {
+            return Ok(false);
+        };
+        let previous = self.begin_materialized_float_window(window);
+        let previous_active = self.materialized_float_assignment_active;
+        self.materialized_float_assignment_active = true;
+        let result = self.emit_store(target, value);
+        self.materialized_float_assignment_active = previous_active;
+        self.materialized_float_window = previous;
+        result?;
+        Ok(true)
     }
 
     pub(crate) fn materialized_float_window_active(&self) -> bool {
@@ -350,5 +425,27 @@ mod tests {
 
         assert_eq!(crate::analysis::register_need(&expression), 4);
         assert_eq!(materialized_float_temporary_count(&expression), 2);
+    }
+
+    #[test]
+    fn memory_windows_require_a_literal_inside_a_computed_child() {
+        let multiply = |left, right| binary(BinaryOperator::Multiply, left, right);
+        let add = |left, right| binary(BinaryOperator::Add, left, right);
+        let nested_product = multiply(
+            Expression::FloatLiteral(100.0),
+            multiply(Expression::FloatLiteral(2.0), variable("member")),
+        );
+        let scaled_update = add(
+            variable("current"),
+            multiply(Expression::FloatLiteral(200.0), variable("velocity")),
+        );
+        let direct_literal = add(
+            Expression::FloatLiteral(0.001),
+            multiply(variable("value"), variable("scale")),
+        );
+
+        assert!(has_nested_contextual_float_literal(&nested_product));
+        assert!(has_nested_contextual_float_literal(&scaled_update));
+        assert!(!has_nested_contextual_float_literal(&direct_literal));
     }
 }
