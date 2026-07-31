@@ -1351,6 +1351,11 @@ impl Generator {
         } else {
             None
         };
+        let materialized_norm_literal = if right_literal && !left_literal {
+            self.try_place_materialized_float_norm_literal_condition(left, right, double)?
+        } else {
+            None
+        };
         let loaded_pair_live_argument =
             self.try_place_loaded_pair_with_live_float_argument(left, right)?;
         let loaded_left_negated_loaded =
@@ -1366,6 +1371,8 @@ impl Generator {
         } else if let Some(registers) = loaded_literal_live_argument {
             registers
         } else if let Some(registers) = product_literal {
+            registers
+        } else if let Some(registers) = materialized_norm_literal {
             registers
         } else if let Some(registers) = loaded_pair_live_argument {
             registers

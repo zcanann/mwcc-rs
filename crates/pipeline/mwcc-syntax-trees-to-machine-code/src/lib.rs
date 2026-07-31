@@ -45,6 +45,7 @@ mod float_fused_triplet;
 mod float_integer_affine;
 mod float_integer_fraction;
 mod float_memory_conditional;
+mod float_materialized_condition;
 mod float_negated_add;
 mod float_negated_product;
 mod float_product_condition;
