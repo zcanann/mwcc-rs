@@ -53,6 +53,7 @@ mod frexp_family;
 mod generator;
 mod global_memory_schedule;
 mod inline_expansion;
+mod inline_sqrtf;
 mod inline_source_order;
 mod inline_summaries;
 mod legacy_comparisons;

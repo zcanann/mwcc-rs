@@ -30,6 +30,10 @@ impl Generator {
             let register = register?;
             self.emit_located_operand(left, register)?;
             register
+        } else if self.is_retained_sqrtf_call(left) {
+            let register = self.fresh_virtual_float_preferring(28);
+            self.evaluate_float(left, register)?;
+            register
         } else {
             self.float_register_of_leaf(left)?
         };

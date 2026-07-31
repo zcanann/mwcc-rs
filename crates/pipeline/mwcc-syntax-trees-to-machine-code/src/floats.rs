@@ -124,6 +124,9 @@ impl Generator {
             // so defer rather than return the unconverted (garbage) float register. The
             // symmetric store case already defers this way in place_store_value.
             Expression::Call { name, arguments } => {
+                if self.try_emit_retained_sqrtf(expression, destination)? {
+                    return Ok(());
+                }
                 if !matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)) {
                     return Err(Diagnostic::error("a call returning int used as a float needs an int->float conversion of the result (roadmap)"));
                 }

@@ -416,6 +416,7 @@ impl InlineBodySet {
                     function.statements.len(),
                     function.return_expression,
                 );
+                eprintln!("retained inline AST: {function:#?}");
             }
         }
         Self {
@@ -529,7 +530,13 @@ impl InlineBodySet {
     pub(crate) fn calls_required(&self, function: &Function) -> bool {
         let mut calls = HashMap::new();
         collect_function_calls(function, &mut calls);
-        calls.keys().any(|name| self.required.contains(name))
+        calls.keys().any(|name| {
+            self.required.contains(name)
+                && !self
+                    .retained_definitions
+                    .get(name)
+                    .is_some_and(crate::inline_sqrtf::is_supported_retained_sqrtf)
+        })
     }
 
     /// Whether a function references a retained body by its canonical AST
