@@ -817,6 +817,15 @@ impl Generator {
                 || self.is_integer_call_promoted_to_float(right)
                 || matches!(right, Expression::Comma { .. } | Expression::Assign { .. })
             {
+                if destination == FLOAT_SCRATCH
+                    && self.materialized_float_window_active()
+                    && !self.is_integer_call_promoted_to_float(right)
+                {
+                    let literal = self.fresh_materialized_float_temporary();
+                    self.load_float_literal(literal, value, double);
+                    self.evaluate_float(right, FLOAT_SCRATCH)?;
+                    return Operands::ordered(literal, FLOAT_SCRATCH);
+                }
                 let integer_call = self.is_integer_call_promoted_to_float(right);
                 let computed = if integer_call {
                     self.fresh_virtual_float_preferring(1)
@@ -840,6 +849,15 @@ impl Generator {
                 || self.is_integer_call_promoted_to_float(left)
                 || matches!(left, Expression::Comma { .. } | Expression::Assign { .. })
             {
+                if destination == FLOAT_SCRATCH
+                    && self.materialized_float_window_active()
+                    && !self.is_integer_call_promoted_to_float(left)
+                {
+                    let literal = self.fresh_materialized_float_temporary();
+                    self.load_float_literal(literal, value, double);
+                    self.evaluate_float(left, FLOAT_SCRATCH)?;
+                    return Operands::reversed(FLOAT_SCRATCH, literal);
+                }
                 let integer_call = self.is_integer_call_promoted_to_float(left);
                 let computed = if integer_call {
                     self.fresh_virtual_float_preferring(1)
@@ -916,7 +934,7 @@ impl Generator {
                 // mwcc emits the lighter operand's add before the heavier product,
                 // a scheduler nuance not yet pinned down, so left-to-right stands.)
                 let temp = self.with_reserved_inputs(right, |generator| {
-                    let temp = generator.fresh_virtual_float();
+                    let temp = generator.fresh_materialized_float_temporary();
                     generator.evaluate_float(left, temp)?;
                     Ok(temp)
                 })?;

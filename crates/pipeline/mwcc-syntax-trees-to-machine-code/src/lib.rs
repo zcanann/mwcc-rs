@@ -708,6 +708,7 @@ fn lower_function_body(
             })
             .collect(),
         descending_allocation_top: None,
+        materialized_float_window: None,
         skipped_inline_names: skipped_inline_names.clone(),
         // Allocation operators and the standard block-copy intrinsic are
         // compiler-known runtime entry points even when the preprocessed source

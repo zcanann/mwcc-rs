@@ -55,6 +55,58 @@ fn is_float_assignment_statement(function: &Function, statement: &Statement) -> 
 }
 
 impl Generator {
+    /// Evaluate one call-free float assignment inside MWCC's descending
+    /// volatile-FPR expression window. Incoming float leaves occupy the low
+    /// homes; persistent subtree results are assigned above them from the
+    /// outside of the expression tree inward.
+    pub(crate) fn evaluate_materialized_float_assignment_value(
+        &mut self,
+        value: &Expression,
+        value_type: Type,
+        destination: u8,
+    ) -> Compilation<()> {
+        let highest_input = self
+            .locations
+            .iter()
+            .filter(|(name, location)| {
+                location.class == ValueClass::Float
+                    && crate::analysis::expression_reads_name(value, name)
+            })
+            .filter_map(|(_, location)| {
+                match mwcc_vreg::Reg::from_field(location.register, mwcc_vreg::Class::Float) {
+                    mwcc_vreg::Reg::Physical(register) if register <= 13 => Some(register),
+                    _ => None,
+                }
+            })
+            .max()
+            .unwrap_or(0);
+        let demand = u8::try_from(crate::analysis::register_need(value)).unwrap_or(14);
+        let top = highest_input.saturating_add(demand);
+        if demand < 2 || top > 13 {
+            return self.evaluate_register_store_value(value, value_type, destination);
+        }
+        let previous = self.materialized_float_window.replace((top, demand));
+        let result = self.evaluate_register_store_value(value, value_type, destination);
+        self.materialized_float_window = previous;
+        result
+    }
+
+    pub(crate) fn materialized_float_window_active(&self) -> bool {
+        self.materialized_float_window.is_some()
+    }
+
+    pub(crate) fn fresh_materialized_float_temporary(&mut self) -> u8 {
+        let Some((preferred, remaining)) = self.materialized_float_window else {
+            return self.fresh_virtual_float();
+        };
+        self.materialized_float_window = if remaining > 1 {
+            Some((preferred.saturating_sub(1), remaining - 1))
+        } else {
+            None
+        };
+        self.fresh_virtual_float_preferring(preferred)
+    }
+
     /// Route a call-free computed-float body through the structured
     /// virtual-register allocator after copy propagation declines it.
     pub(crate) fn try_materialized_float_assignment_body(

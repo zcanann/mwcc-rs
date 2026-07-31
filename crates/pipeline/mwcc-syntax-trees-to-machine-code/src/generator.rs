@@ -480,6 +480,10 @@ pub(crate) struct Generator {
     /// DESCENDING allocation window's top register (r(N+2) for an N-store fill).
     /// `None` keeps the default LinearScan policy.
     pub(crate) descending_allocation_top: Option<u8>,
+    /// Descending volatile-FPR window used while evaluating one call-free
+    /// materialized float assignment. The expression planner sizes the window;
+    /// nested operand placement consumes its homes from the outside in.
+    pub(crate) materialized_float_window: Option<(u8, u8)>,
     /// Skipped inline definitions' names — a body calling one defers after
     /// the exact-match templates decline (mwcc inlines; a bl would be wrong).
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
@@ -983,12 +987,14 @@ impl Generator {
         });
     }
 
-    /// Select the base and relocation for one pooled-constant load. Absolute
-    /// addressing emits the high-half materialization here; the caller owns
-    /// the width-specific load and its returned low-half relocation.
-    fn pooled_constant_load_address(&mut self, index: usize) -> (u8, RelocationKind) {
+    /// Materialize the base for one pooled-constant load and record every
+    /// relocation owned by that address. Small-data addressing relocates the
+    /// following load itself. Absolute addressing relocates `lis; addi`, then
+    /// leaves the width-specific load at displacement zero.
+    fn pooled_constant_load_address(&mut self, index: usize) -> u8 {
         if self.behavior.read_only_global_addressing == GlobalAddressing::SmallData {
-            return (0, RelocationKind::EmbSda21);
+            self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
+            return 0;
         }
         let base = self.fresh_virtual_general();
         self.record_target(RelocationKind::Addr16Ha, RelocationTarget::Constant(index));
@@ -999,16 +1005,21 @@ impl Generator {
                 a: 0,
                 immediate: 0,
             });
-        (base, RelocationKind::Addr16Lo)
+        self.record_target(RelocationKind::Addr16Lo, RelocationTarget::Constant(index));
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: base,
+            a: base,
+            immediate: 0,
+        });
+        base
     }
 
     /// Emit a load of a single-precision pooled constant. Read-only small data
     /// uses one SDA21 load; `-sdata2 0` places the entry in `.rodata` and uses
-    /// the measured `lis @ha; lfs @l(base)` pair.
+    /// the measured `lis @ha; addi @lo; lfs 0(base)` sequence.
     pub(crate) fn load_float_constant(&mut self, destination: u8, value: f32) {
         let index = self.output.intern_constant(value.to_bits() as u64, 4);
-        let (base, relocation) = self.pooled_constant_load_address(index);
-        self.record_target(relocation, RelocationTarget::Constant(index));
+        let base = self.pooled_constant_load_address(index);
         self.output.instructions.push(Instruction::LoadFloatSingle {
             d: destination,
             a: base,
@@ -1021,8 +1032,7 @@ impl Generator {
     /// STATIC-LOCAL slot (measured: mbstring's first_byte_mark at `@4`).
     pub(crate) fn load_word_constant_static_slot(&mut self, destination: u8, bits: u32) {
         let index = self.output.intern_constant_static_slot(bits as u64, 4);
-        let (base, relocation) = self.pooled_constant_load_address(index);
-        self.record_target(relocation, RelocationTarget::Constant(index));
+        let base = self.pooled_constant_load_address(index);
         self.output.instructions.push(Instruction::LoadWord {
             d: destination,
             a: base,
@@ -1034,8 +1044,7 @@ impl Generator {
     /// symbol leads the owning static function (ww's mbstring variant).
     pub(crate) fn load_word_constant_image(&mut self, destination: u8, bits: u32) {
         let index = self.output.intern_constant_image(bits as u64, 4);
-        let (base, relocation) = self.pooled_constant_load_address(index);
-        self.record_target(relocation, RelocationTarget::Constant(index));
+        let base = self.pooled_constant_load_address(index);
         self.output.instructions.push(Instruction::LoadWord {
             d: destination,
             a: base,
@@ -1046,8 +1055,7 @@ impl Generator {
     /// Emit a pooled word load using SDA21 or an absolute high/low pair.
     pub(crate) fn load_word_constant(&mut self, destination: u8, bits: u32) {
         let index = self.output.intern_constant(bits as u64, 4);
-        let (base, relocation) = self.pooled_constant_load_address(index);
-        self.record_target(relocation, RelocationTarget::Constant(index));
+        let base = self.pooled_constant_load_address(index);
         self.output.instructions.push(Instruction::LoadWord {
             d: destination,
             a: base,
@@ -1058,8 +1066,7 @@ impl Generator {
     /// Emit a pooled double load using SDA21 or an absolute high/low pair.
     pub(crate) fn load_double_constant(&mut self, destination: u8, bits: u64) {
         let index = self.output.intern_constant(bits, 8);
-        let (base, relocation) = self.pooled_constant_load_address(index);
-        self.record_target(relocation, RelocationTarget::Constant(index));
+        let base = self.pooled_constant_load_address(index);
         self.output.instructions.push(Instruction::LoadFloatDouble {
             d: destination,
             a: base,
@@ -1070,8 +1077,7 @@ impl Generator {
     /// Emit a pooled-double load against a SPECIFIC pool slot (a capture that
     /// interned twin slots for one value — strtold's zero doubles @296/@297).
     pub(crate) fn load_double_constant_at(&mut self, destination: u8, index: usize) {
-        let (base, relocation) = self.pooled_constant_load_address(index);
-        self.record_target(relocation, RelocationTarget::Constant(index));
+        let base = self.pooled_constant_load_address(index);
         self.output.instructions.push(Instruction::LoadFloatDouble {
             d: destination,
             a: base,

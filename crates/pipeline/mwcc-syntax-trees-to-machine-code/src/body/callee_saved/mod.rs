@@ -205,6 +205,7 @@ mod structured_liveness;
 mod structured_bitset_hint_schedule;
 mod structured_loop_lowering;
 mod structured_repeated_call_poll;
+mod structured_recovered_float_homes;
 mod structured_loop_member_receiver_layout;
 mod structured_loop_call_publication_layout;
 mod structured_object_collision_loop_delta;

@@ -84,6 +84,7 @@ use super::structured_loop_lowering::{
 use super::structured_repeated_call_poll::{
     is_repeated_call_poll_transaction, owns_long_string_data_anchor,
 };
+use super::structured_recovered_float_homes;
 use super::structured_switch_lowering::{
     is_lowered_switch_guard, lower_structured_switches,
     lower_structured_switches_for_emission, resolve_structured_switch_joins,
@@ -128,27 +129,6 @@ use super::structured_variadic_output_frame::StructuredVariadicOutputFrame;
 use super::structured_unobserved_scalar_table::UnobservedScalarTable;
 #[allow(unused_imports)]
 use super::*;
-
-/// Decode the register-home convention used by decompilation sources. Names
-/// outside the explicit `var_fN` / `temp_fN` forms carry no allocation policy.
-fn recovered_saved_float_register(name: &str) -> Option<u8> {
-    let suffix = name
-        .strip_prefix("var_f")
-        .or_else(|| name.strip_prefix("temp_f"))?;
-    let register = suffix.parse::<u8>().ok()?;
-    (14..=31).contains(&register).then_some(register)
-}
-
-fn recovered_saved_float_count(function: &Function) -> u8 {
-    function
-        .locals
-        .iter()
-        .filter(|local| matches!(local.declared_type, Type::Float | Type::Double))
-        .filter_map(|local| recovered_saved_float_register(&local.name))
-        .map(|register| 32 - register)
-        .max()
-        .unwrap_or(0)
-}
 
 impl Generator {
     /// Lower a void structured body after assigning every value that can be read
@@ -2338,6 +2318,8 @@ impl Generator {
                                 .min(17),
                         )
                     };
+                    let preferred =
+                        structured_recovered_float_homes::preference(dependency, preferred);
                     let home = self.fresh_virtual_float_preferring(preferred);
                     self.evaluate(
                         dependency_initializer,
@@ -2547,7 +2529,7 @@ impl Generator {
         self.callee_saved_float = self
             .callee_saved_float
             .max(u8::try_from(saved_float_count).unwrap_or(18))
-            .max(recovered_saved_float_count(function));
+            .max(structured_recovered_float_homes::saved_count(function));
         for (parameter_index, parameter) in saved_float_parameters.iter().enumerate() {
             let incoming = self
                 .locations
@@ -2592,6 +2574,7 @@ impl Generator {
                             .min(17),
                     )
                 };
+                let preferred = structured_recovered_float_homes::preference(local, preferred);
                 self.fresh_virtual_float_preferring(preferred)
             })
             .collect();
@@ -4272,11 +4255,21 @@ impl Generator {
                             if name.starts_with("__mwcc_packet_word_") {
                                 self.packed_shift_mask_min_operations = 2;
                             }
-                            let result = self.evaluate_register_store_value(
-                                value,
-                                declared_type,
-                                destination,
-                            );
+                            let result = if matches!(declared_type, Type::Float | Type::Double)
+                                && !function_makes_call(function)
+                            {
+                                self.evaluate_materialized_float_assignment_value(
+                                    value,
+                                    declared_type,
+                                    destination,
+                                )
+                            } else {
+                                self.evaluate_register_store_value(
+                                    value,
+                                    declared_type,
+                                    destination,
+                                )
+                            };
                             self.packed_shift_mask_min_operations = packed_minimum;
                             for register in reserved_live_homes {
                                 self.reserved.remove(&register);
@@ -4750,14 +4743,6 @@ pub(super) fn logical_or_groups(expression: &Expression) -> Option<Vec<Vec<&Expr
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn recognizes_only_explicit_recovered_saved_float_homes() {
-        assert_eq!(recovered_saved_float_register("var_f25"), Some(25));
-        assert_eq!(recovered_saved_float_register("temp_f31"), Some(31));
-        assert_eq!(recovered_saved_float_register("var_f13"), None);
-        assert_eq!(recovered_saved_float_register("coefficient_f25"), None);
-    }
 
     #[test]
     fn decomposes_a_disjunction_into_ordered_conjunction_groups() {
