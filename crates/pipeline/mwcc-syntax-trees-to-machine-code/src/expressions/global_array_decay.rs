@@ -121,6 +121,30 @@ impl Generator {
         // destination when a distinct section-anchor register supplies the
         // base. Keep that one-instruction address form available to stores.
         if destination != GENERAL_SCRATCH || anchored {
+            let saved_home =
+                mwcc_vreg::Reg::from_field(destination, mwcc_vreg::Class::General)
+                    .virtual_register()
+                    .and_then(|register| self.register_prefer.get(&register))
+                    .is_some_and(|register| *register >= 14);
+            // At O0, assigning an absolute array address to a callee-saved
+            // local materializes the high half in the first volatile GPR and
+            // completes the address in the persistent destination. This keeps
+            // the short-lived relocation value out of the saved lifetime.
+            if saved_home
+                && self.behavior.optimization == mwcc_versions::Optimization::O0
+                && self.behavior.global_addressing == GlobalAddressing::Absolute
+                && !anchored
+            {
+                let high = self.fresh_virtual_general_preferring(3);
+                self.emit_address_high(high, name);
+                self.record_relocation(RelocationKind::Addr16Lo, name);
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: destination,
+                    a: high,
+                    immediate: 0,
+                });
+                return Ok(());
+            }
             return self.emit_global_array_base(name, total_size, destination);
         }
 
