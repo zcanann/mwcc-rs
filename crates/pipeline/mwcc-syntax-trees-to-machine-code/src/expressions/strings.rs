@@ -54,6 +54,15 @@ impl Generator {
     /// target a placeholder `@@strN` name, which the unit's string resolver rewrites
     /// to the real `@N`.
     pub(crate) fn emit_string_literal(&mut self, bytes: &[u8], destination: u8) -> Compilation<()> {
+        if bytes.len() + 1 > 8
+            && self
+                .data_section_anchor
+                .as_ref()
+                .is_some_and(|anchor| anchor.anchor_symbol == "...data.0")
+            && self.emit_data_anchor_string_literal(bytes, destination)
+        {
+            return Ok(());
+        }
         let placeholder = self.string_literal_placeholder(bytes);
         if self.behavior.string_literals_packed {
             self.output.packed_string_literals = true;

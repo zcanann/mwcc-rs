@@ -3131,6 +3131,9 @@ mod tests {
     #[path = "repeated_call_poll_transaction.rs"]
     mod repeated_call_poll_transaction;
 
+    #[path = "anchored_call_poll_transaction.rs"]
+    mod anchored_call_poll_transaction;
+
     #[path = "inlined_list_append.rs"]
     mod inlined_list_append;
 

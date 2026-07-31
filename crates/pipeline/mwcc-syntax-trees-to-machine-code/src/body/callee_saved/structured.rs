@@ -78,7 +78,9 @@ use super::structured_loop_assertion_strings::plan_loop_assertion_strings;
 use super::structured_loop_lowering::{
     lower_structured_loops, strip_side_effect_free_empty_switches,
 };
-use super::structured_repeated_call_poll::is_repeated_call_poll_transaction;
+use super::structured_repeated_call_poll::{
+    is_repeated_call_poll_transaction, owns_long_string_data_anchor,
+};
 use super::structured_switch_lowering::{
     is_lowered_switch_guard, lower_structured_switches,
     lower_structured_switches_for_emission, resolve_structured_switch_joins,
@@ -243,6 +245,16 @@ impl Generator {
         let function = stripped_empty_switches.as_ref().unwrap_or(function);
         let structured_switch_source = function.clone();
         let repeated_call_poll_transaction = is_repeated_call_poll_transaction(function);
+        let injected_string_data_anchor = repeated_call_poll_transaction
+            && self.data_section_anchor.is_none()
+            && owns_long_string_data_anchor(function);
+        if injected_string_data_anchor {
+            self.data_section_anchor = Some(crate::generator::DataSectionAnchorPlan {
+                symbols: std::collections::HashSet::new(),
+                anchor_symbol: "...data.0".into(),
+                register: None,
+            });
+        }
         let lowered_switches = lower_structured_switches(function);
         let function = lowered_switches.as_ref().unwrap_or(function);
         let retains_unobserved_local_lane = function
@@ -259,6 +271,9 @@ impl Generator {
             .is_some_and(|name| name == std::ffi::OsStr::new(&function.name));
         macro_rules! decline {
             ($reason:expr) => {{
+                if injected_string_data_anchor {
+                    self.data_section_anchor = None;
+                }
                 if capture {
                     eprintln!(
                         "structured body declined (frame_mode={with_frame_array}): {}",
