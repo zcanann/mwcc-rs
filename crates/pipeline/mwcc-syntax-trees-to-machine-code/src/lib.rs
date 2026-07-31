@@ -1058,6 +1058,7 @@ fn lower_function_body(
     generator.schedule_structured_inlined_anchored_retained_guarded_value_transaction();
     generator.fold_fixed_bank_transformed_loads();
     generator.schedule_linkage_first_retained_object_completion_arm();
+    generator.schedule_linkage_first_retained_member_completion_arm();
     generator.schedule_linkage_first_stateful_callback_completion_arm();
     generator.schedule_linkage_first_cancel_completion_arms();
     generator.schedule_structured_precomposition_entry();
