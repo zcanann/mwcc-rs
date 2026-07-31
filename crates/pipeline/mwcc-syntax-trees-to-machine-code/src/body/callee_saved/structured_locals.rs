@@ -513,7 +513,13 @@ pub(super) fn plan_ephemeral_locals<'a>(
     let mut live: std::collections::HashSet<&str> = function
         .locals
         .iter()
-        .filter(|local| body_uses_local(&function.statements, &local.name))
+        .filter(|local| {
+            body_uses_local(&function.statements, &local.name)
+                || function
+                    .return_expression
+                    .as_ref()
+                    .is_some_and(|value| expression_reads_name(value, &local.name))
+        })
         .map(|local| local.name.as_str())
         .collect();
 
@@ -581,12 +587,15 @@ pub(super) fn plan_ephemeral_locals<'a>(
 pub(super) fn dead_ephemeral_float_locals<'a>(
     ephemeral_locals: &[&'a LocalDeclaration],
     remaining_statements: &[Statement],
+    return_expression: Option<&Expression>,
 ) -> Vec<&'a str> {
     ephemeral_locals
         .iter()
         .filter(|local| {
             class_of(local.declared_type).ok() == Some(ValueClass::Float)
                 && !body_uses_local(remaining_statements, &local.name)
+                && !return_expression
+                    .is_some_and(|value| expression_reads_name(value, &local.name))
         })
         .map(|local| local.name.as_str())
         .collect()
@@ -1784,7 +1793,7 @@ mod tests {
         });
 
         assert_eq!(
-            dead_ephemeral_float_locals(&[&temporary], std::slice::from_ref(&later)),
+            dead_ephemeral_float_locals(&[&temporary], std::slice::from_ref(&later), None),
             ["temporary"]
         );
     }
@@ -1800,8 +1809,19 @@ mod tests {
         });
 
         assert!(
-            dead_ephemeral_float_locals(&[&temporary], std::slice::from_ref(&later)).is_empty()
+            dead_ephemeral_float_locals(&[&temporary], std::slice::from_ref(&later), None)
+                .is_empty()
         );
+    }
+
+    #[test]
+    fn retains_ephemeral_float_read_by_the_return_expression() {
+        let mut temporary = local("temporary", Expression::IntegerLiteral(0));
+        temporary.declared_type = Type::Float;
+        temporary.initializer = None;
+        let returned = Expression::Variable("temporary".into());
+
+        assert!(dead_ephemeral_float_locals(&[&temporary], &[], Some(&returned)).is_empty());
     }
 
     #[test]

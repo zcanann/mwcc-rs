@@ -2892,6 +2892,7 @@ impl Generator {
             self.release_dead_ephemeral_float_locations(
                 &ephemeral_locals,
                 &structured_function.statements[1..],
+                structured_function.return_expression.as_ref(),
             );
             1
         } else {
@@ -4361,6 +4362,7 @@ impl Generator {
                 self.release_dead_ephemeral_float_locations(
                     ephemeral_locals,
                     &statements[statement_index + 1..],
+                    function.return_expression.as_ref(),
                 );
             }
             if shared_switch_global_plan
@@ -4408,8 +4410,13 @@ impl Generator {
         &mut self,
         ephemeral_locals: &[&LocalDeclaration],
         remaining_statements: &[Statement],
+        return_expression: Option<&Expression>,
     ) {
-        for name in dead_ephemeral_float_locals(ephemeral_locals, remaining_statements) {
+        for name in dead_ephemeral_float_locals(
+            ephemeral_locals,
+            remaining_statements,
+            return_expression,
+        ) {
             self.locations.remove(name);
         }
     }
