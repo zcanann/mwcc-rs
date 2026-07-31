@@ -3125,6 +3125,9 @@ mod tests {
     #[path = "global_doubly_linked_remove.rs"]
     mod global_doubly_linked_remove;
 
+    #[path = "global_doubly_linked_append_trace.rs"]
+    mod global_doubly_linked_append_trace;
+
     #[path = "inlined_list_append.rs"]
     mod inlined_list_append;
 

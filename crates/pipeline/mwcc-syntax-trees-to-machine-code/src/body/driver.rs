@@ -2657,6 +2657,12 @@ impl Generator {
         if self.try_global_doubly_linked_remove(function)? {
             return Ok(());
         }
+        // A global queue append followed by a terminal variadic trace is one
+        // frameless schedule: the retained tail load feeds the append arm and
+        // the string high half overlaps the final state publication.
+        if self.try_global_doubly_linked_append_trace(function)? {
+            return Ok(());
+        }
         // Dolphin heap cells are inserted by address and coalesced with either
         // adjacent neighbor in one scheduled link-repair region.
         if self.try_coalescing_free_list_insert(function)? {
