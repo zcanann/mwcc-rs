@@ -1098,7 +1098,13 @@ impl Parser {
                                 substituted
                             }
                             _ => {
-                                let name = if self.cplusplus {
+                                // An `extern "C"` block changes the linkage of
+                                // declarations inside it, not lookup of names
+                                // declared before the block. Keep C++ ABI-name
+                                // recovery active for the whole C++ translation
+                                // unit so a C-linkage function can call a prior
+                                // C++ helper by its mangled symbol.
+                                let name = if self.cplusplus || self.default_cplusplus {
                                     match self.resolve_cxx_data_object(&name) {
                                         Some(data_object) => data_object,
                                         None => self
@@ -1157,7 +1163,7 @@ impl Parser {
                         .or_else(|| self.enum_constants.get(&name))
                     {
                         Expression::IntegerLiteral(value)
-                    } else if self.cplusplus {
+                    } else if self.cplusplus || self.default_cplusplus {
                         Expression::Variable(
                             self.resolve_cxx_data_object(&name)
                                 .or_else(|| self.resolve_free_cxx_function_address(&name))

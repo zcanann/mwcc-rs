@@ -3680,6 +3680,48 @@ blr\n\
     }
 
     #[test]
+    fn resolves_a_prior_cpp_helper_inside_an_extern_c_definition() {
+        let source = r#"
+            typedef void (*Callback)();
+            static void helper();
+            void consume(Callback);
+            extern "C" {
+                void caller() {
+                    helper();
+                    consume(helper);
+                }
+            }
+            static void helper() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["caller", "helper__Fv"]
+        );
+        assert!(matches!(
+            unit.functions[0].statements.first(),
+            Some(Statement::Expression(Expression::Call { name, .. }))
+                if name == "helper__Fv"
+        ));
+        assert!(matches!(
+            unit.functions[0].statements.get(1),
+            Some(Statement::Expression(Expression::Call { arguments, .. }))
+                if matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "helper__Fv")
+        ));
+    }
+
+    #[test]
     fn resolves_namespace_qualified_free_function_calls_and_definitions() {
         let source = r#"
             extern "C" { float sinf(float value); }
