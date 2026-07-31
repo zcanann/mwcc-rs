@@ -1094,6 +1094,7 @@ fn lower_function_body(
     generator.schedule_linkage_first_global_indirect_callback_tail();
     generator.schedule_structured_repeated_call_poll_transaction();
     generator.normalize_structured_call_poll_zero_comparisons();
+    generator.schedule_structured_call_poll_fixed_address_entry();
     if generator.behavior.schedule_latency_slots {
         if !generator.structured_repeated_call_poll_owner {
             branch_cleanup::align_tight_polling_call_loops(&mut generator);
