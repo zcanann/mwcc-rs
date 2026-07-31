@@ -1169,6 +1169,60 @@ impl Generator {
         });
     }
 
+    /// Convert a live signed integer without overwriting its GPR home.
+    ///
+    /// A mixed expression may need the original integer again after its
+    /// floating promotion (for example as a loop bound). MWCC builds the
+    /// biased low word in r0, stores it, then reuses r0 for the `0x4330` high
+    /// word. Keeping this schedule separate from the destructive leaf form
+    /// makes that liveness decision explicit at the conversion boundary.
+    pub(crate) fn emit_preserved_signed_int_to_float_body_at(
+        &mut self,
+        source: u8,
+        destination: u8,
+        bias_register: u8,
+        scratch: i16,
+    ) {
+        let image_word = self.fresh_virtual_general_preferring(GENERAL_SCRATCH);
+        self.output.has_conversion = true;
+        if self.frame_size < 16 {
+            self.frame_size = 16;
+        }
+        self.load_double_constant(bias_register, 0x4330_0000_8000_0000);
+        self.output
+            .instructions
+            .push(Instruction::XorImmediateShifted {
+                a: image_word,
+                s: source,
+                immediate: 0x8000,
+            });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: image_word,
+            a: 1,
+            offset: scratch + 4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(image_word, 17200));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: image_word,
+            a: 1,
+            offset: scratch,
+        });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: FLOAT_SCRATCH,
+            a: 1,
+            offset: scratch,
+        });
+        self.output
+            .instructions
+            .push(Instruction::FloatSubtractSingle {
+                d: destination,
+                a: FLOAT_SCRATCH,
+                b: bias_register,
+            });
+    }
+
     /// Emit a cast of a float operand to an integer in `destination`. mwcc
     /// converts with `fctiwz`, then bounces the value through the stack frame.
     /// Leaf float operands only for now; int->float (the constant-pool direction)

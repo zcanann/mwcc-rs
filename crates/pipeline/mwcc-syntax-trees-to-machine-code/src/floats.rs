@@ -211,6 +211,15 @@ impl Generator {
                 )? {
                     return Ok(());
                 }
+                if self.try_emit_integer_scaled_fraction(
+                    *operator,
+                    left,
+                    right,
+                    destination,
+                    double,
+                )? {
+                    return Ok(());
+                }
                 if self.try_emit_float_damping_product(
                     *operator,
                     left,
@@ -525,13 +534,15 @@ impl Generator {
         self.evaluate_general(integer_operand, integer_register)?;
         self.evaluate_float(float_operand, FLOAT_FIRST)?;
         let signed = self.signedness_of(integer_operand)?;
-        self.emit_int_to_float_body(
+        let scratch = self.claim_int_to_float_scratch()?;
+        self.emit_int_to_float_body_at(
             integer_register,
             FLOAT_SCRATCH,
             double,
             signed,
             BIAS_REGISTER,
             IntToFloatSchedule::LeafValue,
+            scratch,
         );
         let (left_register, right_register) = if left_float {
             (FLOAT_FIRST, FLOAT_SCRATCH)

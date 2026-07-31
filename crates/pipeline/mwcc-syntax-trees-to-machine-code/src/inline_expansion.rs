@@ -201,6 +201,10 @@ pub(crate) struct ExpandedCalls {
     /// caller's scalar-global map, so recursive lowering activates these exact
     /// targets from the addressable declaration map.
     pub(crate) introduced_mutable_globals: HashSet<String>,
+    /// Compiler locals preserving the source return image and its caller-use
+    /// image for a composed global scalar transaction. Structured lowering
+    /// must see these before it chooses the unoptimized saved-home window.
+    pub(crate) global_transaction_result_homes: Vec<String>,
 }
 
 impl InlineBodySet {
@@ -832,11 +836,13 @@ impl InlineBodySet {
         let mut expanded = self.clone();
         expanded.values.extend(visible_values);
         let mut result = expanded.expand_calls_with_facts_policy(function, false)?;
-        result.function = global_scalar_transaction::linearize(
+        let (linearized, result_homes) = global_scalar_transaction::linearize(
             &result.function,
             &introduced_mutable_globals,
         );
+        result.function = linearized;
         result.introduced_mutable_globals = introduced_mutable_globals;
+        result.global_transaction_result_homes = result_homes;
         Some(result)
     }
 
@@ -1166,6 +1172,7 @@ impl InlineBodySet {
             discounts_structured_hidden_labels: false,
             retains_source_call_survivors: false,
             introduced_mutable_globals: HashSet::new(),
+            global_transaction_result_homes: Vec::new(),
         })
     }
 

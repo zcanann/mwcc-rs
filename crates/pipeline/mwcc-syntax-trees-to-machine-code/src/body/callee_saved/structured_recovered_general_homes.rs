@@ -22,7 +22,10 @@ impl StructuredRecoveredGeneralHomes {
     /// those homes. Activate only when a recovered `*_rN` name confirms the
     /// declaration-order descending window; unnamed neighbors occupy the
     /// preceding homes.
-    pub(super) fn plan(function: &Function) -> Option<Self> {
+    pub(super) fn plan(
+        function: &Function,
+        inline_global_result_homes: &[String],
+    ) -> Option<Self> {
         if !function.guards.is_empty()
             || function.statements.is_empty()
         {
@@ -36,9 +39,8 @@ impl StructuredRecoveredGeneralHomes {
                     && local.initializer.is_none()
                     && local.array_length.is_none()
                     && class_of(local.declared_type).ok() == Some(ValueClass::General)
-                    && (function.statements.iter().any(|statement| {
-                        matches!(statement, Statement::Assign { name, .. } if name == &local.name)
-                    }) || (recovered_register(&local.name).is_some()
+                    && (body_assigns_local(&function.statements, &local.name)
+                        || (recovered_register(&local.name).is_some()
                         && super::structured_locals::body_uses_local(
                             &function.statements,
                             &local.name,
@@ -58,14 +60,32 @@ impl StructuredRecoveredGeneralHomes {
             return None;
         }
         if !function_makes_call(function)
-            && recovered_global_transaction_loop(function, &names, &recovered)
+            && recovered_global_transaction_loop(
+                function,
+                &names,
+                &recovered,
+                inline_global_result_homes,
+            )
         {
+            let preferences = names
+                .iter()
+                .map(|name| {
+                    recovered
+                        .iter()
+                        .find_map(|(index, register)| {
+                            (&names[*index] == name).then_some(*register)
+                        })
+                        .or_else(|| {
+                            inline_global_result_homes
+                                .iter()
+                                .position(|candidate| candidate == name)
+                                .map(|index| 28u8.saturating_sub(index as u8))
+                        })
+                })
+                .collect::<Option<Vec<_>>>()?;
             return Some(Self {
                 names,
-                preferences: recovered
-                    .into_iter()
-                    .map(|(_, register)| register)
-                    .collect(),
+                preferences,
                 parameter_count: 0,
                 save_order: None,
                 preferences_follow_groups: true,
@@ -193,14 +213,42 @@ impl StructuredRecoveredGeneralHomes {
     }
 }
 
+fn body_assigns_local(statements: &[Statement], local: &str) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Assign { name, .. } => name == local,
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => body_assigns_local(then_body, local) || body_assigns_local(else_body, local),
+        Statement::Loop { body, .. } => body_assigns_local(body, local),
+        Statement::Switch { arms, default, .. } => {
+            arms.iter().any(|arm| match &arm.body {
+                mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                    body_assigns_local(statements, local)
+                }
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+            }) || default.as_ref().is_some_and(|body| match body {
+                mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                    body_assigns_local(statements, local)
+                }
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+            })
+        }
+        _ => false,
+    })
+}
+
 fn recovered_global_transaction_loop(
     function: &Function,
     names: &[String],
     recovered: &[(usize, u8)],
+    inline_global_result_homes: &[String],
 ) -> bool {
     if function.return_type != Type::Void
         || function.return_expression.is_some()
-        || recovered.len() != names.len()
+        || recovered.len() + inline_global_result_homes.len() != names.len()
+        || inline_global_result_homes.len() != 2
         || function
             .statements
             .iter()
@@ -219,8 +267,9 @@ fn recovered_global_transaction_loop(
         .collect::<Vec<_>>();
     registers.sort_unstable();
     registers.dedup();
-    if registers.len() != names.len()
+    if registers.len() != recovered.len()
         || registers.last().copied() != Some(31)
+        || registers.first().copied() != Some(29)
         || registers.windows(2).any(|pair| pair[1] != pair[0] + 1)
     {
         return false;

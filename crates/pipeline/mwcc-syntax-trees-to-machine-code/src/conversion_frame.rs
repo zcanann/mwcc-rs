@@ -39,7 +39,21 @@ impl Generator {
                     expression_count(generator, declared_float_values, target)
                         + expression_count(generator, declared_float_values, value)
                 }
-                Expression::Binary { left, right, .. } | Expression::Comma { left, right } => {
+                Expression::Binary {
+                    operator,
+                    left,
+                    right,
+                } => {
+                    mixed_float_arithmetic_node_conversion_count(
+                        generator,
+                        declared_float_values,
+                        *operator,
+                        left,
+                        right,
+                    ) + expression_count(generator, declared_float_values, left)
+                        + expression_count(generator, declared_float_values, right)
+                }
+                Expression::Comma { left, right } => {
                     expression_count(generator, declared_float_values, left)
                         + expression_count(generator, declared_float_values, right)
                 }
@@ -178,8 +192,7 @@ impl Generator {
         ) -> usize {
             statements
                 .iter()
-                .enumerate()
-                .map(|(statement_index, statement)| match statement {
+                .map(|statement| match statement {
                     Statement::Store { target, value } => {
                         expression_count(generator, declared_float_values, target)
                             + expression_count(generator, declared_float_values, value)
@@ -193,28 +206,7 @@ impl Generator {
                                     value,
                                 ),
                         );
-                        let retained_float_alias = declared_float_values
-                            .contains(name.as_str())
-                            && statements[statement_index + 1..].iter().any(
-                                |later| {
-                                    direct_float_call_uses_local(
-                                        generator,
-                                        later,
-                                        name,
-                                    )
-                                },
-                            );
-                        let retained_float_alias_conversion = if retained_float_alias {
-                            mixed_float_arithmetic_conversion_count(
-                                generator,
-                                declared_float_values,
-                                value,
-                            )
-                        } else {
-                            0
-                        };
                         contextual_integer_conversion
-                            + retained_float_alias_conversion
                             + expression_count(generator, declared_float_values, value)
                     }
                     Statement::Expression(value) => {
@@ -303,23 +295,22 @@ impl Generator {
                 .sum()
         }
 
-        fn mixed_float_arithmetic_conversion_count(
+        fn mixed_float_arithmetic_node_conversion_count(
             generator: &Generator,
             declared_float_values: &HashSet<&str>,
-            expression: &Expression,
+            operator: BinaryOperator,
+            left: &Expression,
+            right: &Expression,
         ) -> usize {
-            let Expression::Binary {
-                operator:
-                    BinaryOperator::Add
+            if !matches!(
+                operator,
+                BinaryOperator::Add
                     | BinaryOperator::Subtract
                     | BinaryOperator::Multiply
-                    | BinaryOperator::Divide,
-                left,
-                right,
-            } = expression
-            else {
+                    | BinaryOperator::Divide
+            ) {
                 return 0;
-            };
+            }
             let is_float = |value: &Expression| {
                 matches!(
                     value,
@@ -328,61 +319,18 @@ impl Generator {
                 ) || generator.is_float_value(value)
                     || generator.is_float_operand(value)
             };
-            if !is_float(left) && !is_float(right) {
-                return 0;
-            }
-            usize::from(needs_conversion(
-                generator,
-                declared_float_values,
-                left,
-            )) + usize::from(needs_conversion(
-                generator,
-                declared_float_values,
-                right,
-            )) + mixed_float_arithmetic_conversion_count(
-                generator,
-                declared_float_values,
-                left,
-            ) + mixed_float_arithmetic_conversion_count(
-                generator,
-                declared_float_values,
-                right,
-            )
-        }
-
-        fn direct_float_call_uses_local(
-            generator: &Generator,
-            statement: &Statement,
-            local: &str,
-        ) -> bool {
-            match statement {
-                Statement::Expression(Expression::Call { name, arguments })
-                | Statement::Assign {
-                    value: Expression::Call { name, arguments },
-                    ..
-                } => arguments.iter().enumerate().any(|(index, argument)| {
-                    matches!(
-                        generator
-                            .call_parameter_types
-                            .get(name)
-                            .and_then(|types| types.get(index)),
-                        Some(Type::Float | Type::Double)
-                    ) && matches!(argument, Expression::Variable(name) if name == local)
-                }),
-                Statement::If {
-                    then_body,
-                    else_body,
-                    ..
-                } => then_body
-                    .iter()
-                    .chain(else_body)
-                    .any(|statement| {
-                        direct_float_call_uses_local(generator, statement, local)
-                    }),
-                Statement::Loop { body, .. } => body.iter().any(|statement| {
-                    direct_float_call_uses_local(generator, statement, local)
-                }),
-                _ => false,
+            match (is_float(left), is_float(right)) {
+                (true, false) => usize::from(needs_conversion(
+                    generator,
+                    declared_float_values,
+                    right,
+                )),
+                (false, true) => usize::from(needs_conversion(
+                    generator,
+                    declared_float_values,
+                    left,
+                )),
+                _ => 0,
             }
         }
 
@@ -400,13 +348,6 @@ impl Generator {
                                 &declared_float_values,
                                 initializer,
                             ),
-                    ) + usize::from(matches!(
-                        local.declared_type,
-                        Type::Float | Type::Double
-                    )) * mixed_float_arithmetic_conversion_count(
-                        self,
-                        &declared_float_values,
-                        initializer,
                     ) + expression_count(self, &declared_float_values, initializer),
                 )
             })

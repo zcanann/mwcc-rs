@@ -43,6 +43,7 @@ mod float_computed_loaded_condition;
 mod float_damping_product;
 mod float_fused_triplet;
 mod float_integer_affine;
+mod float_integer_fraction;
 mod float_memory_conditional;
 mod float_negated_add;
 mod float_negated_product;
@@ -672,6 +673,7 @@ fn lower_function_body(
         inline_statement_body_substitutions: 0,
         late_inline_statement_body_substitutions: 0,
         inline_source_call_survivors: HashSet::new(),
+        inline_global_transaction_result_homes: Vec::new(),
         forced_general_callee_saved: HashSet::new(),
         inline_expansion_facts,
         epilogue_lr_first: false,
@@ -908,6 +910,7 @@ fn lower_function_body(
     // virtual home to the register the value already holds (mwcc coalesces them).
     coalesce_self_moves(&mut generator);
     coalesce_float_conversion_moves(&mut generator);
+    generator.schedule_inlined_global_transaction_volatile_reuse();
     generator.share_leaf_constant_guard_epilogue();
     // Allocation can coalesce a just-published frame value and its immediate
     // reload to the same physical register even when their virtual lanes were

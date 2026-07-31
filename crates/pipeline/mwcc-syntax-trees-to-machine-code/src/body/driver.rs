@@ -1750,6 +1750,8 @@ impl Generator {
                     self.globals.insert(name.clone(), global_type);
                 }
             }
+            self.inline_global_transaction_result_homes
+                .extend(expanded.global_transaction_result_homes.iter().cloned());
             if !expanded.introduced_mutable_globals.is_empty() {
                 self.reserved.extend(
                     expanded

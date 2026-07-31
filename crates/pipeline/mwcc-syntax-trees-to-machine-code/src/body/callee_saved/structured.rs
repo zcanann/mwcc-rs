@@ -528,7 +528,10 @@ impl Generator {
                     && function.statements.iter().any(statement_has_call))
             })
             .collect();
-        let recovered_general_homes = StructuredRecoveredGeneralHomes::plan(function);
+        let recovered_general_homes = StructuredRecoveredGeneralHomes::plan(
+            function,
+            &self.inline_global_transaction_result_homes,
+        );
         let unoptimized_leaf_homes = StructuredUnoptimizedLeafHomes::plan(function);
         if let Some(plan) = &recovered_general_homes {
             survivors.extend(plan.names());
@@ -832,27 +835,13 @@ impl Generator {
                 .checked_sub(8)
                 .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
         }
-        if float_to_int_conversion_count != 0 {
+        if int_to_float_conversion_count != 0 {
             let occupied_end = 8i16
                 .checked_add(local_region_bytes)
                 .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
-            let conversion_base = occupied_end
-                .checked_add(7)
-                .map(|end| end & !7)
-                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
-            self.plan_float_to_int_scratch(conversion_base, float_to_int_conversion_count)?;
-            local_region_bytes = self
-                .float_to_int_scratch_end
-                .checked_sub(8)
-                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
-        }
-        if int_to_float_conversion_count != 0 {
             let conversion_base = if let Some(frame) = &variadic_output_frame {
                 frame.conversion_base
             } else {
-                let occupied_end = 8i16
-                    .checked_add(local_region_bytes)
-                    .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
                 occupied_end
                     .checked_add(7)
                     .map(|end| end & !7)
@@ -864,6 +853,20 @@ impl Generator {
             )?;
             local_region_bytes = self
                 .int_to_float_scratch_end
+                .checked_sub(8)
+                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+        }
+        if float_to_int_conversion_count != 0 {
+            let occupied_end = 8i16
+                .checked_add(local_region_bytes)
+                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+            let conversion_base = occupied_end
+                .checked_add(7)
+                .map(|end| end & !7)
+                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+            self.plan_float_to_int_scratch(conversion_base, float_to_int_conversion_count)?;
+            local_region_bytes = self
+                .float_to_int_scratch_end
                 .checked_sub(8)
                 .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
         }
@@ -4041,7 +4044,10 @@ impl Generator {
                         && value_read_before_redefinition(remaining, name)
                         && !read_after_possible_call(remaining, name, false).read_after_call
                         && !returned_after_later_call
-                        && !self.inline_source_call_survivors.contains(name);
+                        && !self.inline_source_call_survivors.contains(name)
+                        && !self
+                            .inline_global_transaction_result_homes
+                            .contains(name);
                     if terminal_volatile && matches!(value, Expression::Call { .. }) {
                         self.evaluate(value, declared_type, Eabi::general_result().number)?;
                         self.locations
