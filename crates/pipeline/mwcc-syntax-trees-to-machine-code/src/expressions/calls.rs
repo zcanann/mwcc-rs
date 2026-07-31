@@ -1,8 +1,8 @@
 //! Call emission and argument marshaling.
 
 use super::call_argument_types::{
-    aggregate_reference_source, classify_call_argument, outgoing_general_stack_offset,
-    AggregateReferenceSource, CallArgumentPlacement,
+    aggregate_reference_source, classify_call_argument, narrow_general_argument,
+    outgoing_general_stack_offset, AggregateReferenceSource, CallArgumentPlacement,
 };
 #[allow(unused_imports)]
 use super::*;
@@ -1302,20 +1302,17 @@ impl Generator {
                             _ => false,
                         };
                         if !argument_is_narrow {
-                            // An IN-PLACE register leaf narrows with one op (extsb/extsh
-                            // for a signed parameter, clrlwi 24/16 for unsigned) that the
-                            // prologue hoist then schedules into the mflr->LR-store slot
-                            // (measured: `void g(short); g(x)` -> extsh r3,r3 mid-prologue).
-                            // A value NOT already in its argument register still defers.
+                            // A register leaf narrows directly into its ABI argument home.
+                            // The source may already be in that home or remain in a saved
+                            // register (`extsh r3,r31`) while the call consumes r3.
+                            // Non-leaf evaluation still defers until its r0 choreography is
+                            // modeled independently.
                             if let Ok((register, _, _)) = self.leaf_info(general_argument) {
-                                if register == next_general {
-                                    let narrow = match parameter_type {
-                                        Type::Char => Instruction::ExtendSignByte { a: register, s: register },
-                                        Type::Short => Instruction::ExtendSignHalfword { a: register, s: register },
-                                        Type::UnsignedChar => Instruction::ClearLeftImmediate { a: register, s: register, clear: 24 },
-                                        Type::UnsignedShort => Instruction::ClearLeftImmediate { a: register, s: register, clear: 16 },
-                                        _ => return Err(Diagnostic::error("an argument wider than a narrow parameter needs a narrowing conversion (roadmap)")),
-                                    };
+                                if let Some(narrow) = narrow_general_argument(
+                                    parameter_type,
+                                    next_general,
+                                    register,
+                                ) {
                                     self.output.instructions.push(narrow);
                                     next_general += 1;
                                     continue;

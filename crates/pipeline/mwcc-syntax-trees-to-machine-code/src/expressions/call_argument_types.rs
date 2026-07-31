@@ -78,6 +78,37 @@ pub(super) fn classify_call_argument(
     }
 }
 
+/// Convert a word-sized integer register to the declared narrow parameter ABI
+/// value. MWCC writes the converted value directly to the argument register;
+/// the source can remain in a saved register when it is still live.
+pub(super) fn narrow_general_argument(
+    parameter_type: Type,
+    argument_register: u8,
+    source_register: u8,
+) -> Option<Instruction> {
+    match parameter_type {
+        Type::Char => Some(Instruction::ExtendSignByte {
+            a: argument_register,
+            s: source_register,
+        }),
+        Type::Short => Some(Instruction::ExtendSignHalfword {
+            a: argument_register,
+            s: source_register,
+        }),
+        Type::UnsignedChar => Some(Instruction::ClearLeftImmediate {
+            a: argument_register,
+            s: source_register,
+            clear: 24,
+        }),
+        Type::UnsignedShort => Some(Instruction::ClearLeftImmediate {
+            a: argument_register,
+            s: source_register,
+            clear: 16,
+        }),
+        _ => None,
+    }
+}
+
 /// Map an ABI argument index back to the source prototype.
 ///
 /// Aggregate-returning calls prepend a hidden result address which is absent
@@ -198,6 +229,23 @@ mod tests {
             outgoing_general_stack_offset(Eabi::LAST_GENERAL_ARGUMENT + 2),
             Some(12)
         );
+    }
+
+    #[test]
+    fn narrows_a_saved_word_directly_into_the_argument_register() {
+        assert!(matches!(
+            narrow_general_argument(Type::Short, 3, 31),
+            Some(Instruction::ExtendSignHalfword { a: 3, s: 31 })
+        ));
+        assert!(matches!(
+            narrow_general_argument(Type::UnsignedChar, 4, 30),
+            Some(Instruction::ClearLeftImmediate {
+                a: 4,
+                s: 30,
+                clear: 24
+            })
+        ));
+        assert!(narrow_general_argument(Type::Int, 3, 31).is_none());
     }
 
     #[test]
