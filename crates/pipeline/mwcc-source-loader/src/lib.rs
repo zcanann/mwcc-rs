@@ -65,9 +65,10 @@ impl SourceLoader {
 
     /// Load `input` and recursively materialize every resolvable include.
     ///
-    /// Headers are materialized once per translation unit. Real projects use
-    /// include guards pervasively; enforcing that invariant here also prevents
-    /// cycles while conditional evaluation is still a later frontend phase.
+    /// Headers are materialized according to their source-level include guards.
+    /// Only an include already active on the recursive load stack is suppressed;
+    /// this preserves unguarded X-macro headers that are intentionally included
+    /// more than once with different macro definitions.
     /// An unresolved include is retained verbatim. It may belong to an inactive
     /// conditional branch, and the later preprocessor is the component that can
     /// diagnose that distinction accurately.
@@ -82,7 +83,7 @@ impl SourceLoader {
             .collect::<Vec<_>>();
         let mut context = LoadContext {
             access_paths: &access_paths,
-            loaded: HashSet::new(),
+            loading: HashSet::new(),
             definitions: self.definitions.clone(),
             macros: self.macros.clone(),
             source_encoding: self.source_encoding,
@@ -93,7 +94,7 @@ impl SourceLoader {
 
 struct LoadContext<'a> {
     access_paths: &'a [PathBuf],
-    loaded: HashSet<PathBuf>,
+    loading: HashSet<PathBuf>,
     definitions: HashMap<String, String>,
     macros: HashMap<String, macro_expansion::Macro>,
     source_encoding: SourceEncoding,
@@ -104,7 +105,7 @@ impl LoadContext<'_> {
         let canonical = normalize_existing(path).map_err(|error| {
             Diagnostic::error(format!("cannot read {}: {error}", path.display()))
         })?;
-        if !self.loaded.insert(canonical.clone()) {
+        if !self.loading.insert(canonical.clone()) {
             return Ok(Vec::new());
         }
         // `__FILE__` is a context-sensitive predefined macro, not a normal
@@ -302,6 +303,7 @@ impl LoadContext<'_> {
                 self.macros.remove("__LINE__");
             }
         }
+        self.loading.remove(&canonical);
         Ok(output)
     }
 
@@ -795,9 +797,13 @@ mod tests {
     }
 
     #[test]
-    fn nested_headers_are_loaded_once_and_non_utf8_bytes_survive() {
+    fn guarded_nested_headers_are_loaded_once_and_non_utf8_bytes_survive() {
         let scratch = Scratch::new();
-        std::fs::write(scratch.0.join("leaf.h"), b"char *s = \"\x82\xa0\";\n").unwrap();
+        std::fs::write(
+            scratch.0.join("leaf.h"),
+            b"#ifndef LEAF_H\n#define LEAF_H\nchar *s = \"\x82\xa0\";\n#endif\n",
+        )
+        .unwrap();
         std::fs::write(
             scratch.0.join("middle.h"),
             b"#include \"leaf.h\"\n#include \"leaf.h\"\n",
@@ -813,9 +819,40 @@ mod tests {
             .load(&scratch.0.join("unit.c"))
             .unwrap();
         assert_eq!(
-            loaded,
-            b"#line 1\n#line 1\nchar *s = \"\x82\xa0\";\n#line 2\n#line 3\n#line 2\nint f(void);\n"
+            loaded
+                .windows(b"char *s = \"\x82\xa0\";".len())
+                .filter(|window| *window == b"char *s = \"\x82\xa0\";")
+                .count(),
+            1
         );
+    }
+
+    #[test]
+    fn unguarded_x_macro_headers_can_be_reincluded() {
+        let scratch = Scratch::new();
+        std::fs::write(scratch.0.join("table.inc"), b"ENTRY\n").unwrap();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            concat!(
+                "#define ENTRY int first;\n",
+                "#include \"table.inc\"\n",
+                "#undef ENTRY\n",
+                "#define ENTRY int second;\n",
+                "#include \"table.inc\"\n",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        let loaded = SourceLoader::default()
+            .load(&scratch.0.join("unit.c"))
+            .unwrap();
+        assert!(loaded
+            .windows(b"int first;".len())
+            .any(|window| window == b"int first;"));
+        assert!(loaded
+            .windows(b"int second;".len())
+            .any(|window| window == b"int second;"));
     }
 
     #[test]
