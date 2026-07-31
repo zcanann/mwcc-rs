@@ -371,6 +371,9 @@ impl Generator {
                 };
             }
         }
+        if self.try_emit_post_step_pointer_store(target, value)? {
+            return Ok(());
+        }
         // `*(T *)0xADDR = v` — a constant-address store (memory-mapped registers, the GX FIFO).
         // mwcc materializes the address base before the value (`lis base, hi`), keeping the base
         // GPR clear of the value's inputs, then stores `st value, lo(base)`. Mirrors the absolute

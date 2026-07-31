@@ -9,6 +9,50 @@
 use super::*;
 
 impl Generator {
+    /// Store through the old address produced by `*pointer++`, then advance the
+    /// tracked pointer. Call-valued stores need a separately retained old/new
+    /// pointer pair and remain with the general call-aware store scheduler.
+    pub(crate) fn try_emit_post_step_pointer_store(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+    ) -> Compilation<bool> {
+        let Expression::Dereference { pointer } = target else {
+            return Ok(false);
+        };
+        let Expression::PostStep {
+            target: pointer_target,
+            operator,
+            pointer_link,
+        } = pointer.as_ref()
+        else {
+            return Ok(false);
+        };
+        if expression_has_call(value) {
+            return Ok(false);
+        }
+
+        let (pointee, address) = self.pointer_leaf(pointer_target)?;
+        let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
+        let source = self.place_store_value(value, pointee)?;
+        if restore {
+            self.reserved.remove(&address);
+        }
+        self.output
+            .instructions
+            .push(displacement_store(pointee, source, address, 0)?);
+        if !self.emit_post_step_update_after_use(
+            pointer_target,
+            *operator,
+            *pointer_link,
+        )? {
+            return Err(Diagnostic::error(
+                "a store through a postfix pointer needs a register-local target",
+            ));
+        }
+        Ok(true)
+    }
+
     /// Apply the mutation half of a postfix step after a caller has consumed
     /// the old register value. Member access through `pointer++` uses this to
     /// preserve MWCC's `load old; increment pointer` schedule without first
