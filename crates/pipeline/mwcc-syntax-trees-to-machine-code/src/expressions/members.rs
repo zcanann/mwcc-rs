@@ -1477,6 +1477,9 @@ impl Generator {
         index: &Expression,
         destination: u8,
     ) -> Compilation<()> {
+        if self.try_emit_nested_member_array_load(base, index, destination)? {
+            return Ok(());
+        }
         // `matrix[row][column]` on a flattened automatic array: the inner
         // index denotes a row address, so two constant indices fold into one
         // r1-relative scalar load.
