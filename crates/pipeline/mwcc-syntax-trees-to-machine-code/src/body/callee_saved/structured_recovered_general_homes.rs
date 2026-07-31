@@ -144,6 +144,62 @@ impl StructuredRecoveredGeneralHomes {
             })
             .collect();
         let recovered_registers: Vec<_> = recovered.iter().map(|(_, register)| *register).collect();
+        let missing_window = sparse_window_parameter_homes(
+            &recovered_registers,
+            used_parameters.len(),
+        );
+        let sparse_recovered_loop = function.return_type != Type::Void
+            && has_loop
+            && all_recovered
+            && !used_parameters.is_empty()
+            && missing_window.is_some()
+            && names.iter().all(|name| {
+                super::structured_locals::body_uses_local(&function.statements, name)
+            });
+        if sparse_recovered_loop {
+            let missing_window = missing_window.expect("sparse loop window was checked");
+            let parameter_homes: std::collections::HashMap<_, _> = used_parameters
+                .iter()
+                .zip(missing_window.iter().rev())
+                .map(|(parameter, register)| (parameter.name.as_str(), *register))
+                .collect();
+            let mut deferred_names = names.clone();
+            deferred_names.sort_by_key(|name| {
+                super::structured_locals::structured_name_first_assignment(function, name)
+                    .unwrap_or(usize::MAX)
+            });
+            if deferred_names.iter().any(|name| {
+                super::structured_locals::structured_name_first_assignment(function, name)
+                    .is_none()
+            }) {
+                return None;
+            }
+            let mut home_names: Vec<_> = used_parameters
+                .iter()
+                .rev()
+                .map(|parameter| parameter.name.clone())
+                .collect();
+            home_names.extend(deferred_names.iter().cloned());
+            let preferences = home_names
+                .iter()
+                .map(|name| {
+                    parameter_homes.get(name.as_str()).copied().or_else(|| {
+                        recovered
+                            .iter()
+                            .find_map(|(index, register)| {
+                                (names[*index] == *name).then_some(*register)
+                            })
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            return Some(Self {
+                names: home_names,
+                preferences,
+                parameter_count: used_parameters.len(),
+                save_order: None,
+                preferences_follow_groups: false,
+            });
+        }
         let missing = single_missing_register(&recovered_registers);
         if function.return_type != Type::Void
             || !has_loop
@@ -314,6 +370,26 @@ fn single_missing_register(registers: &[u8]) -> Option<u8> {
     missing.next().is_none().then_some(register)
 }
 
+fn sparse_window_parameter_homes(
+    recovered_registers: &[u8],
+    parameter_count: usize,
+) -> Option<Vec<u8>> {
+    let window_size = recovered_registers.len().checked_add(parameter_count)?;
+    let first = 32u8.checked_sub(u8::try_from(window_size).ok()?)?;
+    let window: Vec<_> = (first..=31).collect();
+    if recovered_registers
+        .iter()
+        .any(|register| !window.contains(register))
+    {
+        return None;
+    }
+    let missing: Vec<_> = window
+        .into_iter()
+        .filter(|register| !recovered_registers.contains(register))
+        .collect();
+    (missing.len() == parameter_count).then_some(missing)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +407,15 @@ mod tests {
         assert_eq!(single_missing_register(&[29, 31]), Some(30));
         assert_eq!(single_missing_register(&[28, 31]), None);
         assert_eq!(single_missing_register(&[29, 30]), None);
+    }
+
+    #[test]
+    fn finds_all_parameter_holes_in_a_sparse_saved_window() {
+        assert_eq!(
+            sparse_window_parameter_homes(&[27, 29, 31], 2),
+            Some(vec![28, 30])
+        );
+        assert_eq!(sparse_window_parameter_homes(&[27, 31], 2), None);
+        assert_eq!(sparse_window_parameter_homes(&[26, 29, 31], 2), None);
     }
 }

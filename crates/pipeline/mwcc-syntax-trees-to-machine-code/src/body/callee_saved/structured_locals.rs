@@ -54,6 +54,10 @@ pub(super) fn structured_name_last_read(function: &Function, name: &str) -> Opti
     collect_function_deferred_interval(function, name)?.last_read
 }
 
+pub(super) fn structured_name_first_assignment(function: &Function, name: &str) -> Option<usize> {
+    collect_function_deferred_interval(function, name)?.first_assignment
+}
+
 /// Textual expiration is not a lifetime proof for a value referenced in a
 /// repeating loop: a later assignment in the body is followed by the earlier
 /// read on the next iteration. Until loop fixed-point interference is modeled,

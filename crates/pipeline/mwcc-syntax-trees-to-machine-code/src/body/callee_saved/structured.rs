@@ -2840,9 +2840,13 @@ impl Generator {
                         self.fresh_virtual_general()
                     }
                 }
-                ValueClass::Float => self.fresh_virtual_float_preferring(
-                    self.ephemeral_float_home_preference(function, &ephemeral_locals),
-                ),
+                ValueClass::Float => {
+                    let preferred =
+                        self.ephemeral_float_home_preference(function, &ephemeral_locals);
+                    self.fresh_virtual_float_preferring(
+                        structured_recovered_float_homes::preference(local, preferred),
+                    )
+                }
             });
             if alias.is_none() {
                 if let Some(initializer) = &local.initializer {
@@ -3344,6 +3348,7 @@ impl Generator {
             function,
             recovered_general_homes.is_some(),
         )?;
+        structured_recovered_float_homes::apply_final_preferences(self, function);
         Ok(true)
     }
 
