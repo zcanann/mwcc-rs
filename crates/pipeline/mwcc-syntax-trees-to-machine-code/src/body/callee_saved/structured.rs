@@ -3304,6 +3304,12 @@ impl Generator {
                     )? {
                         continue;
                     }
+                    if self.try_emit_guarded_shared_global_member_call(
+                        condition,
+                        then_body,
+                    )? {
+                        continue;
+                    }
                     if self.try_emit_structured_tail_result_guard(
                         condition,
                         then_body,

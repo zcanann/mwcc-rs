@@ -8,6 +8,7 @@
 use super::*;
 
 mod guarded_indexed;
+mod guarded_shared_global;
 mod indexed_mixed_arguments;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +37,48 @@ fn placement_overwrites_later_source(placements: &[ArgumentPlacement]) -> bool {
 }
 
 impl Generator {
+    /// `global_object->callback(global_object)`: materialize the shared global
+    /// pointer once, stage its callback in r12, and pass the same pointer in r3.
+    ///
+    /// A guarded call can arrive with the pointer already carried from its
+    /// condition. Keep that virtual home as the load base until the callee has
+    /// been staged, then copy it into the first ABI argument.
+    fn try_emit_shared_global_base_indirect_call(
+        &mut self,
+        target: &Expression,
+        arguments: &[Expression],
+    ) -> Compilation<bool> {
+        let Some((global, offset)) = shared_global_base_member_call(target, arguments) else {
+            return Ok(false);
+        };
+        if self.locations.contains_key(global)
+            || !matches!(
+                self.globals.get(global),
+                Some(Type::StructPointer { .. })
+            )
+        {
+            return Ok(false);
+        }
+        let offset = i16::try_from(offset)
+            .map_err(|_| Diagnostic::error("indirect callback member offset is out of range"))?;
+        let base = if let Some(base) = self.condition_global_base(global)? {
+            base
+        } else {
+            self.emit_global_load_value(global, Eabi::FIRST_GENERAL_ARGUMENT)?;
+            Eabi::FIRST_GENERAL_ARGUMENT
+        };
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 12,
+            a: base,
+            offset,
+        });
+        if base != Eabi::FIRST_GENERAL_ARGUMENT {
+            self.emit_integer_materialization_copy(Eabi::FIRST_GENERAL_ARGUMENT, base);
+        }
+        self.emit_indirect_branch_and_link(12);
+        Ok(true)
+    }
+
     /// `object->callback(constant, object)`: preserve the shared base in the
     /// second ABI argument before the first argument overwrites r3. The callee
     /// is staged first so a guarded callback can later reuse its null-test load.
@@ -215,6 +258,9 @@ impl Generator {
         target: &Expression,
         arguments: &[Expression],
     ) -> Compilation<()> {
+        if self.try_emit_shared_global_base_indirect_call(target, arguments)? {
+            return Ok(());
+        }
         if self.try_emit_shared_base_constant_indirect_call(target, arguments)? {
             return Ok(());
         }
@@ -361,9 +407,36 @@ impl Generator {
     }
 }
 
+fn shared_global_base_member_call<'a>(
+    target: &'a Expression,
+    arguments: &'a [Expression],
+) -> Option<(&'a str, u32)> {
+    let Expression::Member {
+        base,
+        offset,
+        member_type: Type::Pointer(_) | Type::StructPointer { .. },
+        index_stride: None,
+    } = target
+    else {
+        return None;
+    };
+    let (
+        Expression::Variable(base),
+        [Expression::Variable(argument)],
+    ) = (base.as_ref(), arguments)
+    else {
+        return None;
+    };
+    (base == argument).then_some((base.as_str(), *offset))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{placement_overwrites_later_source, ArgumentPlacement};
+    use super::{
+        placement_overwrites_later_source, shared_global_base_member_call,
+        ArgumentPlacement,
+    };
+    use mwcc_syntax_trees::{Expression, Pointee, Type};
 
     #[test]
     fn accepts_a_constant_before_an_independent_register_argument() {
@@ -395,5 +468,34 @@ mod tests {
         ];
 
         assert!(placement_overwrites_later_source(&placements));
+    }
+
+    #[test]
+    fn recognizes_a_member_callback_and_argument_with_one_shared_global_base() {
+        let target = Expression::Member {
+            base: Box::new(Expression::Variable("current".into())),
+            offset: 40,
+            member_type: Type::Pointer(Pointee::UnsignedInt),
+            index_stride: None,
+        };
+        let arguments = [Expression::Variable("current".into())];
+
+        assert_eq!(
+            shared_global_base_member_call(&target, &arguments),
+            Some(("current", 40))
+        );
+    }
+
+    #[test]
+    fn rejects_a_member_callback_with_a_distinct_argument_base() {
+        let target = Expression::Member {
+            base: Box::new(Expression::Variable("current".into())),
+            offset: 40,
+            member_type: Type::Pointer(Pointee::UnsignedInt),
+            index_stride: None,
+        };
+        let arguments = [Expression::Variable("other".into())];
+
+        assert_eq!(shared_global_base_member_call(&target, &arguments), None);
     }
 }
