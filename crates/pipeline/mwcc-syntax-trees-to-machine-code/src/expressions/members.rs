@@ -2394,6 +2394,21 @@ impl Generator {
                 return Ok(());
             }
         }
+        let size = pointee.size();
+        if size == 1 {
+            return Err(Diagnostic::error(
+                "a variable store to a byte global array is not supported yet (roadmap)",
+            ));
+        }
+        if self.try_emit_legacy_global_array_assignment_store(
+            name,
+            total_size,
+            pointee,
+            index,
+            value,
+        )? {
+            return Ok(());
+        }
         // A CONSTANT value over a VARIABLE index on a large (ADDR16) array is handled in
         // the variable-index path below: the constant materializes into the freed
         // base-high register after the `addi` — `lis r4,@ha; slwi r0,i,2; addi r3,r4,@lo;
@@ -2468,12 +2483,6 @@ impl Generator {
         // Variable index: the base reuses the (scaled-away) index register and the value stores
         // through it — `stwx`/`stfsx`/`stfdx`. A byte element defers (an unscaled byte index can
         // alias the base register).
-        let size = pointee.size();
-        if size == 1 {
-            return Err(Diagnostic::error(
-                "a variable store to a byte global array is not supported yet (roadmap)",
-            ));
-        }
         // A CONSTANT value (large array; rejected above otherwise): the constant
         // materializes into the freed base-high register after the `addi` —
         // `lis r4,@ha; slwi r0,i,2; addi r3,r4,@lo; li r4,C; stwx r4,r3,r0`. An index

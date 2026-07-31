@@ -98,6 +98,7 @@ use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
 };
 use super::structured_loop_member_receiver_layout::StructuredLoopMemberReceiverLayout;
+use super::structured_loop_call_publication_layout::StructuredLoopCallPublicationLayout;
 use super::structured_object_collision_loop_layout::StructuredObjectCollisionLoopLayout;
 use super::structured_object_collision_loop_schedule::schedule_object_collision_loop_entry;
 use super::structured_preloop_alias::fold_preloop_comma_pointer_alias;
@@ -902,6 +903,15 @@ impl Generator {
                 &parameter_home_reuse,
                 count,
             );
+        let loop_call_publication_layout = StructuredLoopCallPublicationLayout::plan(
+            function,
+            &eager_saved_locals,
+            &saved_parameters,
+            &deferred_saved_locals,
+            &deferred_home_plan,
+            &parameter_home_reuse,
+            count,
+        );
         if capture {
             eprintln!(
                 "structured object collision loop layout: {} \
@@ -1159,6 +1169,11 @@ impl Generator {
                     .and_then(|layout| layout.preference(home_index))
                 {
                     self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = loop_call_publication_layout
+                    .as_ref()
+                    .and_then(|layout| layout.preference(home_index))
+                {
+                    self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = object_collision_loop_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
@@ -1336,6 +1351,10 @@ impl Generator {
         let frame_slot_for_home = |home_index: usize| {
             if let Some(layout) = &loop_member_receiver_layout {
                 layout.frame_slot(home_index)
+            } else if let Some(layout) = &loop_call_publication_layout {
+                layout
+                    .frame_slot(home_index)
+                    .expect("the publication layout owns every saved home")
             } else if sequenced_callback_wait_layout {
                 sequenced_callback_wait_frame_slot(home_index)
                     .expect("the sequenced callback wait layout owns three homes")
@@ -1371,6 +1390,13 @@ impl Generator {
                 homes[parameter_home_reuse.home_index(group)]
             }));
         } else if let Some(layout) = &loop_member_receiver_layout {
+            logical_saved_homes.extend(
+                layout
+                    .save_order()
+                    .into_iter()
+                    .map(|home_index| homes[home_index]),
+            );
+        } else if let Some(layout) = &loop_call_publication_layout {
             logical_saved_homes.extend(
                 layout
                     .save_order()
@@ -2068,6 +2094,7 @@ impl Generator {
             || unused_array_eager_homes
             || sequenced_callback_wait_layout
             || loop_member_receiver_layout.is_some()
+            || loop_call_publication_layout.is_some()
             || saved_home_stores_precede_initialization(
                 self.behavior.frame_convention,
                 eager_saved_locals.len(),
@@ -2135,6 +2162,11 @@ impl Generator {
             .as_ref()
             .map(|layout| layout.save_order().to_vec())
             .or_else(|| {
+                loop_call_publication_layout
+                    .as_ref()
+                    .map(|layout| layout.save_order().to_vec())
+            })
+            .or_else(|| {
                 sequenced_callback_wait_layout
                     .then_some(sequenced_callback_wait_save_order().to_vec())
             });
@@ -2147,7 +2179,8 @@ impl Generator {
                         frame_slot_for_home(home_index),
                         plan.frame_size,
                     );
-                    if (saved_parameter_base..deferred_home_base)
+                    if loop_call_publication_layout.is_none()
+                        && (saved_parameter_base..deferred_home_base)
                         .contains(&home_index)
                     {
                         let (_, parameter_home, incoming) =
@@ -2158,6 +2191,13 @@ impl Generator {
                             a: *incoming,
                             immediate: 0,
                         });
+                    }
+                }
+                if loop_call_publication_layout.is_some() {
+                    for (_, home, incoming) in &saved_parameter_homes {
+                        self.output
+                            .instructions
+                            .push(Instruction::move_register(*home, *incoming));
                     }
                 }
                 true
@@ -2776,7 +2816,9 @@ impl Generator {
                     .as_ref()
                     .is_none_or(|initializer| !crate::analysis::expression_has_call(initializer))
         });
-        let entry_parameter_alias = (!dense_inline_save && initializers_preserve_entry_alias)
+        let entry_parameter_alias = (!dense_inline_save
+            && initializers_preserve_entry_alias
+            && loop_call_publication_layout.is_none())
             .then(|| {
                 plan_first_call_alias(
                     alias_statements,

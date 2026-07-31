@@ -1212,6 +1212,13 @@ pub trait CodegenProfile: core::fmt::Debug {
         GlobalArrayIndexStyle::Indexed
     }
 
+    /// Variable-indexed global-array accesses at `-O0` use an explicit
+    /// element address throughout the 2.x compiler line. Later compiler
+    /// families override this with their indexed form.
+    fn unoptimized_global_array_index_style(&self) -> GlobalArrayIndexStyle {
+        GlobalArrayIndexStyle::ExplicitAddress
+    }
+
     fn global_array_decay_store_style(&self) -> GlobalArrayDecayStoreStyle {
         GlobalArrayDecayStoreStyle::ScratchValue
     }
@@ -1600,6 +1607,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn unoptimized_global_array_index_style(&self) -> GlobalArrayIndexStyle {
+        GlobalArrayIndexStyle::Indexed
+    }
+
     fn wide_call_result_mask_style(&self) -> WideCallResultMaskStyle {
         WideCallResultMaskStyle::ScalarizeLowWord
     }
@@ -1794,6 +1805,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn unoptimized_global_array_index_style(&self) -> GlobalArrayIndexStyle {
+        GlobalArrayIndexStyle::Indexed
+    }
+
     fn punned_ladder_condition_style(&self) -> PunnedLadderConditionStyle {
         PunnedLadderConditionStyle::PreserveOuterInCr1
     }

@@ -833,6 +833,80 @@ impl Generator {
         Ok(true)
     }
 
+    /// Store an assignment-valued expression through a variable-indexed global
+    /// array on the build-163 address schedule.
+    ///
+    /// In `array[i] = local = call(...)`, the call result must first move from
+    /// r3 into `local`'s surviving home. Only then does MWCC form the explicit
+    /// element address and store from that home. Keeping this schedule beside
+    /// the other build-163 array schedules prevents the ordinary array-store
+    /// path from trying to keep a computed value alive in its address scratch.
+    pub(crate) fn try_emit_legacy_global_array_assignment_store(
+        &mut self,
+        name: &str,
+        total_size: u32,
+        pointee: Pointee,
+        index: &Expression,
+        value: &Expression,
+    ) -> Compilation<bool> {
+        if self.behavior.global_array_index_style
+            != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
+            || (self.behavior.global_addressing == GlobalAddressing::SmallData
+                && total_size <= 8)
+            || matches!(pointee, Pointee::Float | Pointee::Double)
+        {
+            return Ok(false);
+        }
+        let Expression::Variable(_) = index else {
+            return Ok(false);
+        };
+        let Expression::Assign { target, .. } = value else {
+            return Ok(false);
+        };
+        let Expression::Variable(local) = target.as_ref() else {
+            return Ok(false);
+        };
+        let Some(value_register) = self.lookup_general(local) else {
+            return Ok(false);
+        };
+        let index_register = self.general_register_of_leaf(index)?;
+
+        self.evaluate_general(value, value_register)?;
+
+        // Both source values remain live after this store: the assignment
+        // yields `value_register`, and a loop index is read again by the body
+        // or step. Scale into a temporary rather than using the destructive
+        // legacy leaf schedule. MWCC orders this as `slwi; lis; addi; add; stw`.
+        let scaled = self.fresh_virtual_general_preferring(4);
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: scaled,
+                s: index_register,
+                shift: pointee.size().trailing_zeros() as u8,
+            });
+        let address = self.fresh_virtual_general_preferring(3);
+        self.emit_address_high(address, name);
+        self.record_relocation(RelocationKind::Addr16Lo, name);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: GENERAL_SCRATCH,
+            a: address,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::Add {
+            d: address,
+            a: GENERAL_SCRATCH,
+            b: scaled,
+        });
+        self.output.instructions.push(displacement_store(
+            pointee,
+            value_register,
+            address,
+            0,
+        )?);
+        Ok(true)
+    }
+
     pub(crate) fn emit_legacy_global_array_constant_store(
         &mut self,
         name: &str,

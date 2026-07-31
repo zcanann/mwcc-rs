@@ -1153,7 +1153,14 @@ impl Behavior {
             field_merge_style: config.build.profile.field_merge_style(),
             return_register_store_style: config.build.profile.return_register_store_style(),
             comma_value_placement_style: config.build.profile.comma_value_placement_style(),
-            global_array_index_style: config.build.profile.global_array_index_style(),
+            global_array_index_style: if config.flags.optimization == Optimization::O0 {
+                config
+                    .build
+                    .profile
+                    .unoptimized_global_array_index_style()
+            } else {
+                config.build.profile.global_array_index_style()
+            },
             global_array_decay_store_style: config.build.profile.global_array_decay_store_style(),
             function_address_store_style: config.build.profile.function_address_store_style(),
             indexed_rmw_assignment_style: config.build.profile.indexed_rmw_assignment_style(),
@@ -1727,6 +1734,33 @@ mod tests {
             assert_eq!(
                 behavior.narrow_call_zero_test_style,
                 narrow_call_zero_test_style
+            );
+        }
+    }
+
+    #[test]
+    fn o0_global_array_indexes_track_the_measured_generation_boundary() {
+        for compiler_build in [build::GC_1_3_2, build::GC_2_6, build::GC_2_7] {
+            let mut config = CompilerConfig::new(compiler_build);
+            config.flags.optimization = Optimization::O0;
+            assert_eq!(
+                Behavior::resolve(&config).global_array_index_style,
+                GlobalArrayIndexStyle::ExplicitAddress
+            );
+
+            config.flags.optimization = Optimization::O4;
+            assert_eq!(
+                Behavior::resolve(&config).global_array_index_style,
+                GlobalArrayIndexStyle::Indexed
+            );
+        }
+
+        for compiler_build in [build::GC_3_0A3, build::GC_3_0A3P1, build::WII_1_0] {
+            let mut config = CompilerConfig::new(compiler_build);
+            config.flags.optimization = Optimization::O0;
+            assert_eq!(
+                Behavior::resolve(&config).global_array_index_style,
+                GlobalArrayIndexStyle::Indexed
             );
         }
     }

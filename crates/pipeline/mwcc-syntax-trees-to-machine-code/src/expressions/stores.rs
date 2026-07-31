@@ -1710,6 +1710,12 @@ impl Generator {
             value: inner,
         } = value
         {
+            if let Expression::Variable(name) = target.as_ref() {
+                if let Some(register) = self.lookup_general(name) {
+                    self.evaluate_general(value, register)?;
+                    return Ok(register);
+                }
+            }
             if let Some(register) = self.innermost_assigned_leaf(inner) {
                 self.emit_store(target, inner)?;
                 return Ok(register);
