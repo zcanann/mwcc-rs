@@ -1418,6 +1418,9 @@ impl Generator {
         if self.try_fixed_rmw_with_inline_tail(function)? {
             return Ok(());
         }
+        if self.try_conditional_global_array_publication(function)? {
+            return Ok(());
+        }
         if self.try_global_queue_pop_transaction(function)? {
             return Ok(());
         }
