@@ -557,6 +557,7 @@ impl Parser {
         if let Token::Identifier(name) = self.peek() {
             let name = name.clone();
             if let Some(&aliased) = self.typedefs.get(&name) {
+                self.last_type_was_volatile |= self.volatile_typedefs.contains(&name);
                 if let Some(identity) = self.enum_typedefs.get(&name).cloned() {
                     self.last_enum_tag = Some(identity);
                 }

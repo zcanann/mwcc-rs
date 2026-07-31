@@ -3,7 +3,7 @@
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{Pointee, SourceFundamentalType, Type};
 use mwcc_tokens::{SourceLocation, Token};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -491,6 +491,11 @@ pub(crate) struct Parser {
     pub(crate) global_types: HashMap<String, Type>,
     /// `typedef`-declared type aliases (e.g. `u32` -> `unsigned int`).
     pub(crate) typedefs: HashMap<String, Type>,
+    /// Typedef names whose aliased object type is volatile. Executable layout
+    /// intentionally erases cv-qualification from [`Self::typedefs`], while
+    /// declarations still need this side metadata to preserve observable
+    /// access semantics through aliases such as `typedef volatile u8 vu8`.
+    pub(crate) volatile_typedefs: HashSet<String>,
     /// Source scalar identity for typedefs whose storage type has been folded
     /// into the executable IR.
     pub(crate) typedef_source_fundamentals: HashMap<String, SourceFundamentalType>,

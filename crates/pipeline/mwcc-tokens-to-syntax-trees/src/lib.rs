@@ -373,6 +373,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         asm_parameters: Vec::new(),
         expression_struct_tag: None,
         typedefs: HashMap::new(),
+        volatile_typedefs: std::collections::HashSet::new(),
         typedef_source_fundamentals: HashMap::new(),
         function_pointer_typedefs: HashMap::new(),
         current_leaf_statement_lines: Vec::new(),
@@ -10783,6 +10784,29 @@ blr\n\
         .unwrap();
         assert!(unit.globals[0].is_volatile);
         assert!(!unit.globals[1].is_volatile);
+    }
+
+    #[test]
+    fn retains_volatile_through_scalar_typedef_aliases() {
+        let source = r#"
+            typedef volatile unsigned char vu8;
+            typedef vu8 re_aliased_vu8;
+            static vu8 first;
+            static re_aliased_vu8 second;
+            static unsigned char plain;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(unit.globals[0].is_volatile);
+        assert!(unit.globals[1].is_volatile);
+        assert!(!unit.globals[2].is_volatile);
     }
 
     #[test]

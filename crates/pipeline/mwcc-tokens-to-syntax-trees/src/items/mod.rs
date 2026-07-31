@@ -2294,6 +2294,7 @@ impl Parser {
                 let aliased_struct_tag = self.last_struct_tag.clone();
                 let aliased_enum_tag = self.last_enum_tag.clone();
                 let aliased_source_fundamental = self.last_source_fundamental;
+                let aliased_is_volatile = self.last_type_was_volatile;
                 // `typedef RET (*name)(params);` (function pointer, a 4-byte word
                 // pointer) or `typedef T (*name)[N];` (pointer to array — a ROW
                 // pointer whose subscript strides by N elements).
@@ -2360,6 +2361,11 @@ impl Parser {
                     {
                         definition.source_name.get_or_insert_with(|| name.clone());
                     }
+                }
+                if aliased_is_volatile {
+                    self.volatile_typedefs.insert(name.clone());
+                } else {
+                    self.volatile_typedefs.remove(&name);
                 }
                 self.typedefs.insert(name, aliased);
                 return Ok(());
@@ -4653,6 +4659,7 @@ impl Parser {
             String,
             Option<Type>,
             Option<crate::cxx::CxxFunctionType>,
+            bool,
         )> = Vec::new();
         let mut local_struct_typedefs: Vec<(String, Option<String>)> = Vec::new();
         let mut local_struct_layouts: Vec<(String, Option<StructLayout>)> = Vec::new();
@@ -4674,10 +4681,12 @@ impl Parser {
                         self.parse_local_typeof_member_typedef()?;
                     let previous_type = self.typedefs.insert(alias.clone(), declared_type);
                     let previous_function_type = self.function_pointer_typedefs.remove(&alias);
+                    let previous_volatile = self.volatile_typedefs.remove(&alias);
                     local_function_pointer_typedefs.push((
                         alias.clone(),
                         previous_type,
                         previous_function_type,
+                        previous_volatile,
                     ));
                     let previous_struct = self.struct_typedefs.get(&alias).cloned();
                     if let Some(tag) = struct_tag {
@@ -4695,10 +4704,12 @@ impl Parser {
                 let previous_function_type = self
                     .function_pointer_typedefs
                     .insert(alias.clone(), function_type);
+                let previous_volatile = self.volatile_typedefs.remove(&alias);
                 local_function_pointer_typedefs.push((
                     alias,
                     previous_type,
                     previous_function_type,
+                    previous_volatile,
                 ));
                 continue;
             }
@@ -5423,7 +5434,7 @@ impl Parser {
             self.expect(Token::BraceClose)?;
         }
 
-        for (alias, previous_type, previous_function_type) in
+        for (alias, previous_type, previous_function_type, previous_volatile) in
             local_function_pointer_typedefs.into_iter().rev()
         {
             match previous_type {
@@ -5435,9 +5446,15 @@ impl Parser {
                 }
             }
             if let Some(function_type) = previous_function_type {
-                self.function_pointer_typedefs.insert(alias, function_type);
+                self.function_pointer_typedefs
+                    .insert(alias.clone(), function_type);
             } else {
                 self.function_pointer_typedefs.remove(&alias);
+            }
+            if previous_volatile {
+                self.volatile_typedefs.insert(alias);
+            } else {
+                self.volatile_typedefs.remove(&alias);
             }
         }
         for (alias, previous_struct) in local_struct_typedefs.into_iter().rev() {
