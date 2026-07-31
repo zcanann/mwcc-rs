@@ -930,9 +930,11 @@ fn lower_function_body(
     // its compact 8-byte FPR save lanes. Newer builds add their 16-byte Gekko
     // lanes directly to the predecrement frame.
     generator.normalize_linkage_first_callee_saved_frame(!allocated_float_saves.is_empty());
+    let paired_single_float_frame = generator.behavior.frame_convention
+        == mwcc_versions::FrameConvention::Predecrement;
     generator.materialize_allocated_float_frame(
         &allocated_float_saves,
-        config.build.version >= (4, 3, 0),
+        paired_single_float_frame,
     )?;
     // Build 163 shares the selected body schedule, but wraps GPR survivors in a
     // larger linkage-first frame. Normalize only the verified allocator shape;

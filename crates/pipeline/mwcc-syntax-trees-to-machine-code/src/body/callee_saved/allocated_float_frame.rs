@@ -6,8 +6,8 @@ use super::allocated_float_frame_linkage_first::materialize_linkage_first_frame;
 
 impl Generator {
     /// Expand an already scheduled non-leaf frame around the FPRs selected by
-    /// register allocation. GameCube builds preserve only the scalar double
-    /// lane; Wii additionally preserves the paired-single half.
+    /// register allocation. Predecrement frames preserve both paired-single
+    /// lanes; the legacy linkage-first convention uses compact double lanes.
     pub(crate) fn materialize_allocated_float_frame(
         &mut self,
         registers: &[u8],
