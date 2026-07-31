@@ -262,10 +262,71 @@ impl StructuredRecoveredGeneralHomes {
         self.save_order.as_deref()
     }
 
+    pub(super) fn source_order_parameter_copies(&self) -> bool {
+        self.parameter_count >= 2
+    }
+
     pub(super) fn frame_slot(&self, home_index: usize) -> Option<usize> {
         self.save_order()?
             .iter()
             .position(|candidate| *candidate == home_index)
+    }
+}
+
+impl Generator {
+    /// Allocation uses the recovered physical homes as its tie-breakers. Once
+    /// those homes are fixed, issue independent incoming copies in ABI source
+    /// order without feeding that scheduling choice back into coloring.
+    pub(crate) fn schedule_allocated_recovered_parameter_copies(&mut self) {
+        if !self.structured_recovered_parameter_copies {
+            return;
+        }
+        let Some(range) = recovered_parameter_copy_run(&self.output.instructions) else {
+            return;
+        };
+        let old = self.output.instructions[range.clone()].to_vec();
+        let mut order: Vec<_> = (range.clone()).collect();
+        order.sort_by_key(|&index| {
+            recovered_parameter_copy(&self.output.instructions[index])
+                .expect("the recovered copy run was filtered as register moves")
+                .1
+        });
+        let mut permutation: Vec<usize> = (0..self.output.instructions.len()).collect();
+        for (new_index, old_index) in (range.clone()).zip(order) {
+            self.output.instructions[new_index] = old[old_index - range.start].clone();
+            permutation[old_index] = new_index;
+        }
+        crate::remap_instruction_indices(self, &permutation);
+        self.output
+            .relocations
+            .sort_by_key(|relocation| relocation.instruction_index);
+    }
+}
+
+fn recovered_parameter_copy_run(instructions: &[Instruction]) -> Option<std::ops::Range<usize>> {
+    let mut start = None;
+    for (index, instruction) in instructions.iter().enumerate() {
+        if recovered_parameter_copy(instruction).is_some() {
+            start.get_or_insert(index);
+            continue;
+        }
+        if let Some(first) = start.take() {
+            if index - first >= 2 {
+                return Some(first..index);
+            }
+        }
+    }
+    start.and_then(|first| (instructions.len() - first >= 2).then_some(first..instructions.len()))
+}
+
+fn recovered_parameter_copy(instruction: &Instruction) -> Option<(u8, u8)> {
+    match instruction {
+        Instruction::Or { a, s, b }
+            if a != s && s == b && (14..=31).contains(a) && (3..=10).contains(s) =>
+        {
+            Some((*a, *s))
+        }
+        _ => None,
     }
 }
 
@@ -417,5 +478,22 @@ mod tests {
         );
         assert_eq!(sparse_window_parameter_homes(&[27, 31], 2), None);
         assert_eq!(sparse_window_parameter_homes(&[26, 29, 31], 2), None);
+    }
+
+    #[test]
+    fn finds_the_recovered_entry_copy_packet() {
+        let instructions = [
+            Instruction::BranchAndLink {
+                target: "callee".into(),
+            },
+            Instruction::move_register(28, 4),
+            Instruction::move_register(30, 3),
+            Instruction::AddImmediate {
+                d: 27,
+                a: 0,
+                immediate: -1,
+            },
+        ];
+        assert_eq!(recovered_parameter_copy_run(&instructions), Some(1..3));
     }
 }

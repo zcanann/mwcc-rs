@@ -553,6 +553,9 @@ impl Generator {
             function,
             &self.inline_global_transaction_result_homes,
         );
+        self.structured_recovered_parameter_copies = recovered_general_homes
+            .as_ref()
+            .is_some_and(StructuredRecoveredGeneralHomes::source_order_parameter_copies);
         let unoptimized_leaf_homes = StructuredUnoptimizedLeafHomes::plan(function);
         if let Some(plan) = &recovered_general_homes {
             survivors.extend(plan.names());

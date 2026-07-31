@@ -577,6 +577,7 @@ fn lower_function_body(
         ),
         data_section_anchor_reuses_deferred_home: false,
         structured_array_pool_emitted: false,
+        structured_recovered_parameter_copies: false,
         structured_object_collision_loop_entry: false,
         structured_sequenced_callback_wait_starter: None,
         structured_switch_dispatch_conditionals: HashSet::new(),
@@ -1077,6 +1078,7 @@ fn lower_function_body(
     // normalize pooled-frame packets whose MWCC order is allocation-specific.
     schedule_allocated_structured_array_pool_control_flow(&mut generator);
     generator.schedule_allocated_structured_array_pool_parameter_copies();
+    generator.schedule_allocated_recovered_parameter_copies();
     generator.schedule_allocated_compact_structured_array_pool_entry();
     generator.schedule_allocated_structured_array_pool_first_image();
     generator.schedule_structured_variadic_output_frame();

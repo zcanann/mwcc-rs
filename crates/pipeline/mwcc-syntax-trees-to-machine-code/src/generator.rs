@@ -378,6 +378,10 @@ pub(crate) struct Generator {
     /// Later physical scheduling uses this provenance instead of inferring the
     /// owner from common instructions such as `stmw`.
     pub(crate) structured_array_pool_emitted: bool,
+    /// A recovered O0 saved-register window owns multiple incoming parameter
+    /// copies. Physical scheduling restores their source declaration order
+    /// after allocation has selected the requested homes.
+    pub(crate) structured_recovered_parameter_copies: bool,
     /// Structured lowering recognized the pairwise object-collision loop whose
     /// entry is finalized after allocated FPR frame materialization.
     pub(crate) structured_object_collision_loop_entry: bool,
