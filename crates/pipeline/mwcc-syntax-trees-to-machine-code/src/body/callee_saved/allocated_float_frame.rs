@@ -13,6 +13,8 @@ impl Generator {
         registers: &[u8],
         paired_single_frame: bool,
     ) -> Compilation<()> {
+        let registers = required_float_save_range(self.callee_saved_float, registers)
+            .map_err(Diagnostic::error)?;
         if registers.is_empty() {
             return Ok(());
         }
@@ -21,7 +23,7 @@ impl Generator {
             FrameConvention::Predecrement => {
                 materialize_predecrement_frame(
                     &mut self.output.instructions,
-                    registers,
+                    &registers,
                     saved_gpr_count,
                     paired_single_frame,
                 )
@@ -29,7 +31,7 @@ impl Generator {
             }
             FrameConvention::LinkageFirst => {
                 let permutation =
-                    materialize_linkage_first_frame(&mut self.output.instructions, registers)
+                    materialize_linkage_first_frame(&mut self.output.instructions, &registers)
                         .map_err(Diagnostic::error)?;
                 let frame_growth = i16::try_from(registers.len())
                     .ok()
@@ -48,6 +50,29 @@ impl Generator {
             .ok_or_else(|| Diagnostic::error("allocated FPR frame is too large"))?;
         Ok(())
     }
+}
+
+/// Resolve the ABI save range from selection's declared saved-float homes and
+/// allocation's physical subset. Structured owners know how many source-level
+/// values survive calls before coloring; allocator reuse may report only the
+/// registers occupied by virtual intervals, so that subset cannot define the
+/// frame on its own.
+fn required_float_save_range(
+    declared_count: u8,
+    allocated: &[u8],
+) -> Result<Vec<u8>, String> {
+    if allocated.is_empty() || declared_count == 0 {
+        return Ok(allocated.to_vec());
+    }
+    let declared: Vec<u8> = (0..declared_count)
+        .map(|index| 31u8.saturating_sub(index))
+        .collect();
+    if allocated.iter().any(|register| !declared.contains(register)) {
+        return Err(format!(
+            "allocator-selected FPRs {allocated:?} lie outside declared save range {declared:?}"
+        ));
+    }
+    Ok(declared)
 }
 
 fn materialize_predecrement_frame(
@@ -234,6 +259,24 @@ fn materialize_predecrement_frame(
     }
     *instructions = rebuilt;
     Ok((permutation, frame_growth))
+}
+
+#[cfg(test)]
+mod declared_range_tests {
+    use super::required_float_save_range;
+
+    #[test]
+    fn expands_an_allocator_subset_to_the_declared_contiguous_range() {
+        assert_eq!(
+            required_float_save_range(7, &[31, 30, 27]).expect("declared range"),
+            vec![31, 30, 29, 28, 27, 26, 25]
+        );
+    }
+
+    #[test]
+    fn rejects_an_allocation_outside_the_declared_range() {
+        assert!(required_float_save_range(2, &[31, 29]).is_err());
+    }
 }
 
 #[cfg(test)]

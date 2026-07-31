@@ -34,6 +34,18 @@ pub(crate) fn report_pressure(
             interval.live_slots.as_ref().map_or(0, Vec::len),
         );
     }
+    for occupancy in &liveness.pinned {
+        if occupancy.class == mwcc_vreg::Class::Float && occupancy.register >= 14 {
+            eprintln!(
+                "  pinned {:?} register={} start={} end={} slots={}",
+                occupancy.class,
+                occupancy.register,
+                occupancy.start,
+                occupancy.end,
+                occupancy.live_slots.as_ref().map_or(0, Vec::len),
+            );
+        }
+    }
     for (index, instruction) in generator.output.instructions.iter().enumerate() {
         eprintln!("  {index:04}: {instruction:?}");
     }

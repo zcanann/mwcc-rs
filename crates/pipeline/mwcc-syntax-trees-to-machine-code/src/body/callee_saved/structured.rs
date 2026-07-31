@@ -46,6 +46,7 @@ use super::structured_frame_arrays::{
     align_offset, array_stack_alignment, plan_structured_frame_arrays,
     structured_array_placement_order,
 };
+
 use super::structured_array_pool::plan_structured_array_pool;
 use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_frame_ordinals::pre_constant_label_count;
@@ -125,6 +126,27 @@ use super::structured_variadic_output_frame::StructuredVariadicOutputFrame;
 use super::structured_unobserved_scalar_table::UnobservedScalarTable;
 #[allow(unused_imports)]
 use super::*;
+
+/// Decode the register-home convention used by decompilation sources. Names
+/// outside the explicit `var_fN` / `temp_fN` forms carry no allocation policy.
+fn recovered_saved_float_register(name: &str) -> Option<u8> {
+    let suffix = name
+        .strip_prefix("var_f")
+        .or_else(|| name.strip_prefix("temp_f"))?;
+    let register = suffix.parse::<u8>().ok()?;
+    (14..=31).contains(&register).then_some(register)
+}
+
+fn recovered_saved_float_count(function: &Function) -> u8 {
+    function
+        .locals
+        .iter()
+        .filter(|local| matches!(local.declared_type, Type::Float | Type::Double))
+        .filter_map(|local| recovered_saved_float_register(&local.name))
+        .map(|register| 32 - register)
+        .max()
+        .unwrap_or(0)
+}
 
 impl Generator {
     /// Lower a void structured body after assigning every value that can be read
@@ -2516,7 +2538,8 @@ impl Generator {
         }
         self.callee_saved_float = self
             .callee_saved_float
-            .max(u8::try_from(saved_float_count).unwrap_or(18));
+            .max(u8::try_from(saved_float_count).unwrap_or(18))
+            .max(recovered_saved_float_count(function));
         for (parameter_index, parameter) in saved_float_parameters.iter().enumerate() {
             let incoming = self
                 .locations
@@ -4712,6 +4735,14 @@ pub(super) fn logical_or_groups(expression: &Expression) -> Option<Vec<Vec<&Expr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_only_explicit_recovered_saved_float_homes() {
+        assert_eq!(recovered_saved_float_register("var_f25"), Some(25));
+        assert_eq!(recovered_saved_float_register("temp_f31"), Some(31));
+        assert_eq!(recovered_saved_float_register("var_f13"), None);
+        assert_eq!(recovered_saved_float_register("coefficient_f25"), None);
+    }
 
     #[test]
     fn decomposes_a_disjunction_into_ordered_conjunction_groups() {
