@@ -45,6 +45,7 @@ mod float_memory_conditional;
 mod float_negated_add;
 mod float_negated_product;
 mod float_product_condition;
+mod float_scaled_integer_product;
 mod floats;
 mod frame;
 mod frexp_family;

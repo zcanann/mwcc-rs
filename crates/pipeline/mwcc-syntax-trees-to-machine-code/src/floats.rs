@@ -174,6 +174,15 @@ impl Generator {
                     return self.evaluate_float(&promoted, destination);
                 }
                 let double = self.is_double_value(left) || self.is_double_value(right);
+                if self.try_emit_scaled_integer_product(
+                    *operator,
+                    left,
+                    right,
+                    destination,
+                    double,
+                )? {
+                    return Ok(());
+                }
                 // Mixed `int OP float` arithmetic: promote the integer operand to float first.
                 if self.try_emit_mixed_promotion(*operator, left, right, destination, double)? {
                     return Ok(());
