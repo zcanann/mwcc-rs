@@ -122,7 +122,20 @@ impl Generator {
                 let pointee = pointee_of_type(global_type).ok_or_else(|| {
                     Diagnostic::error("global assignment of this type is not supported yet")
                 })?;
-                self.evaluate_general(value, destination)?;
+                let source_width = self.unpromoted_integer_width(value);
+                let source_signed = self.signedness_of(value)?;
+                let saved_truncation_context = self.narrow_truncation_context;
+                if global_type.width() < 32 {
+                    self.narrow_truncation_context = true;
+                }
+                let evaluated = self.evaluate_general(value, destination);
+                self.narrow_truncation_context = saved_truncation_context;
+                evaluated?;
+                if let Some((width, signed)) =
+                    assignment_narrowing(global_type, source_width, source_signed)
+                {
+                    self.emit_widen(destination, destination, width, signed);
+                }
                 self.emit_global_store(name, pointee, destination)?;
                 return Ok(());
             }
@@ -180,7 +193,11 @@ impl Generator {
             if restore {
                 self.reserved.remove(&address);
             }
-            let converted = assignment_narrowing(*member_type, self.unpromoted_integer_width(value))
+            let converted = assignment_narrowing(
+                *member_type,
+                self.unpromoted_integer_width(value),
+                self.signedness_of(value)?,
+            )
                 .map(|(width, signed)| {
                     let converted = if destination == GENERAL_SCRATCH {
                         destination
@@ -1972,9 +1989,15 @@ fn word_cast_of_word_leaf_is_store_identity(
         )
 }
 
-fn assignment_narrowing(target: Type, source_width: Option<u8>) -> Option<(u8, bool)> {
+fn assignment_narrowing(
+    target: Type,
+    source_width: Option<u8>,
+    source_signed: bool,
+) -> Option<(u8, bool)> {
     let target_width = target.width();
-    (target_width < 32 && source_width.unwrap_or(32) > target_width)
+    (target_width < 32
+        && (source_width.unwrap_or(32) > target_width
+            || (source_width == Some(target_width) && source_signed != target.is_signed())))
         .then_some((target_width, target.is_signed()))
 }
 
@@ -2018,10 +2041,20 @@ mod tests {
     #[test]
     fn assignment_result_uses_the_narrow_target_type() {
         assert_eq!(
-            assignment_narrowing(Type::UnsignedChar, Some(16)),
+            assignment_narrowing(Type::UnsignedChar, Some(16), true),
             Some((8, false))
         );
-        assert_eq!(assignment_narrowing(Type::Short, Some(32)), Some((16, true)));
-        assert_eq!(assignment_narrowing(Type::UnsignedChar, Some(8)), None);
+        assert_eq!(
+            assignment_narrowing(Type::Short, Some(32), true),
+            Some((16, true))
+        );
+        assert_eq!(
+            assignment_narrowing(Type::Short, Some(16), false),
+            Some((16, true))
+        );
+        assert_eq!(
+            assignment_narrowing(Type::UnsignedChar, Some(8), false),
+            None
+        );
     }
 }

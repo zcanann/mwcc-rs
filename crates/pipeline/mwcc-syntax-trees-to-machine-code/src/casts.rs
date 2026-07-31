@@ -1202,13 +1202,16 @@ impl Generator {
                 if target_type == Type::UnsignedInt {
                     return self.emit_float_to_unsigned_integer(operand, destination);
                 }
+                if self.narrow_truncation_context {
+                    return self.emit_float_to_signed_integer(operand, destination);
+                }
                 return Err(mwcc_core::Diagnostic::error(
                     "float-to-narrow-unsigned conversion is not modeled (roadmap)",
                 ));
             }
             // float -> int: convert, bounce through the frame, then narrow if needed.
             self.emit_float_to_signed_integer(operand, destination)?;
-            if target_type.width() < 32 {
+            if target_type.width() < 32 && !self.narrow_truncation_context {
                 // mwcc does NOT narrow a float -> (char/short) cast with an extend
                 // instruction: `return (char)a` leaves the fctiwz int in r3 as-is, and a
                 // store truncates via stb/sth. Emitting an extsb/extsh here is a spurious
@@ -1228,6 +1231,9 @@ impl Generator {
             if !self.signed_of(target_type) {
                 if target_type == Type::UnsignedInt {
                     return self.emit_float_to_unsigned_integer(operand, destination);
+                }
+                if self.narrow_truncation_context {
+                    return self.emit_float_to_signed_integer(operand, destination);
                 }
                 return Err(mwcc_core::Diagnostic::error(
                     "float-to-narrow-unsigned conversion is not modeled (roadmap)",
