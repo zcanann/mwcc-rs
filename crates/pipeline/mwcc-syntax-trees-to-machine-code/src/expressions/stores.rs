@@ -909,6 +909,9 @@ impl Generator {
                 }
             }
         }
+        if self.try_emit_unoptimized_non_power_struct_member_store(target, value)? {
+            return Ok(());
+        }
         // `p->field = v;` — a displacement store to the struct member.
         if let Expression::Member {
             base,
