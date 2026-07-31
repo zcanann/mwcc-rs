@@ -840,6 +840,25 @@ impl Generator {
             );
             return Ok(());
         }
+        // A leaf function may still convert a computed integer expression.
+        // Claim its dynamic frame before emitting the expression so the stack
+        // update remains the prologue, then let virtual allocation retain any
+        // overlapping integer intermediates until the conversion consumes them.
+        if crate::analysis::is_complex(operand) {
+            let signed = self.signedness_of(operand)?;
+            let scratch = self.claim_int_to_float_scratch()?;
+            let source = self.materialize_integer_conversion_operand(operand)?;
+            self.emit_int_to_float_body_at(
+                source,
+                destination,
+                double,
+                signed,
+                bias_register,
+                IntToFloatSchedule::LeafValue,
+                scratch,
+            );
+            return Ok(());
+        }
         // Signed narrow loads require an additional extsb/extsh whose placement
         // varies independently from the load and bias schedules.
         self.emit_int_to_float(operand, destination, double, bias_register)

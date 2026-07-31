@@ -1025,6 +1025,14 @@ impl Generator {
                 if self.try_emit_distributive_bitwise(*operator, left, right, destination)? {
                     return Ok(());
                 }
+                if self.try_emit_integer_abs_pair_binary(
+                    *operator,
+                    left,
+                    right,
+                    destination,
+                )? {
+                    return Ok(());
+                }
                 // Two COMPOUND-load operands (each wrapping a load in an op, `p->x*p->x +
                 // p->y*p->y`) reach the generic combine only as genuinely complex shapes — the
                 // simple two-load idioms above already took `*p op *q`, `s->x op s->y`, and two BARE

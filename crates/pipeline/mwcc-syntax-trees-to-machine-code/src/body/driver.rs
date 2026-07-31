@@ -5176,6 +5176,19 @@ impl Generator {
                         return Ok(());
                     }
                 }
+                // A computed expression containing no floating operand is
+                // evaluated in the GPR domain and converted once at the
+                // destination precision.  In particular, `(ABS(a) + ABS(b))`
+                // is an integer addition followed by one conversion; routing
+                // it through the floating binary walker would incorrectly try
+                // to convert both select operands independently.
+                if !self.is_float_operand(expression) {
+                    return self.emit_cast_to_float(
+                        expression,
+                        destination,
+                        value_type == Type::Double,
+                    );
+                }
                 // An integer memory load (`*p`, `a[i]`, `s.member` of integer type) in a
                 // float context needs the loaded value run through the int->float conversion.
                 // That path is not wired, so defer rather than hand it to evaluate_float,

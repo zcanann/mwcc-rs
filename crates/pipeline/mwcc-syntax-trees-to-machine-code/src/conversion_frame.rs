@@ -185,6 +185,14 @@ impl Generator {
                             + expression_count(generator, declared_float_values, value)
                     }
                     Statement::Assign { name, value } => {
+                        let contextual_integer_conversion = usize::from(
+                            declared_float_values.contains(name.as_str())
+                                && needs_conversion(
+                                    generator,
+                                    declared_float_values,
+                                    value,
+                                ),
+                        );
                         let retained_float_alias = declared_float_values
                             .contains(name.as_str())
                             && statements[statement_index + 1..].iter().any(
@@ -205,7 +213,8 @@ impl Generator {
                         } else {
                             0
                         };
-                        retained_float_alias_conversion
+                        contextual_integer_conversion
+                            + retained_float_alias_conversion
                             + expression_count(generator, declared_float_values, value)
                     }
                     Statement::Expression(value) => {
@@ -230,11 +239,16 @@ impl Generator {
                                 return_type,
                             )
                     }
-                    Statement::Return(value) => value
-                        .as_ref()
-                        .map_or(0, |value| {
-                            expression_count(generator, declared_float_values, value)
-                        }),
+                    Statement::Return(value) => value.as_ref().map_or(0, |value| {
+                        usize::from(
+                            matches!(return_type, Some(Type::Float | Type::Double))
+                                && needs_conversion(
+                                    generator,
+                                    declared_float_values,
+                                    value,
+                                ),
+                        ) + expression_count(generator, declared_float_values, value)
+                    }),
                     Statement::Switch {
                         scrutinee,
                         arms,
@@ -379,7 +393,14 @@ impl Generator {
             .filter_map(|local| {
                 let initializer = local.initializer.as_ref()?;
                 Some(
-                    usize::from(matches!(
+                    usize::from(
+                        matches!(local.declared_type, Type::Float | Type::Double)
+                            && needs_conversion(
+                                self,
+                                &declared_float_values,
+                                initializer,
+                            ),
+                    ) + usize::from(matches!(
                         local.declared_type,
                         Type::Float | Type::Double
                     )) * mixed_float_arithmetic_conversion_count(
@@ -401,7 +422,14 @@ impl Generator {
                 .return_expression
                 .as_ref()
                 .map_or(0, |value| {
-                    expression_count(self, &declared_float_values, value)
+                    usize::from(
+                        matches!(function.return_type, Type::Float | Type::Double)
+                            && needs_conversion(
+                                self,
+                                &declared_float_values,
+                                value,
+                            ),
+                    ) + expression_count(self, &declared_float_values, value)
                 })
     }
 

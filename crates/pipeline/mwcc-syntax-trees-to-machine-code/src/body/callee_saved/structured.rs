@@ -4253,7 +4253,7 @@ impl Generator {
                         }
                         .map_err(|mut diagnostic| {
                             diagnostic.message.push_str(&format!(
-                                " (in structured assignment statement {statement_index})"
+                                " (in structured assignment statement {statement_index}, target '{name}', value {value:?})"
                             ));
                             diagnostic
                         })?;
