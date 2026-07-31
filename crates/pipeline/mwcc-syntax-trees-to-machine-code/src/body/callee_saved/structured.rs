@@ -3364,6 +3364,7 @@ impl Generator {
                         };
                     let previous_member_cache =
                         self.begin_condition_member_cache(condition);
+                    let or_plan = logical_or_plan(condition);
                     struct ConditionBranches {
                         skip_body: Vec<usize>,
                         enter_body: Vec<usize>,
@@ -3371,7 +3372,18 @@ impl Generator {
                     }
                     self.preload_condition_literal_reused_in_body(condition, then_body);
                     let condition_result = (|| {
-                        self.preload_condition_global_cache(condition)?;
+                        if let Some(plan) = or_plan.as_ref().filter(|plan| !plan.suffix.is_empty()) {
+                            for term in plan
+                                .prefix
+                                .iter()
+                                .copied()
+                                .chain(plan.groups.iter().flatten().copied())
+                            {
+                                self.preload_condition_global_cache(term)?;
+                            }
+                        } else {
+                            self.preload_condition_global_cache(condition)?;
+                        }
                         if entry_alias.is_none() {
                             if let Some((enter_body, skip_body)) = self
                                 .try_emit_logical_equality_alternative_branches(condition)?
@@ -3383,7 +3395,6 @@ impl Generator {
                                 });
                             }
                         }
-                        let or_plan = logical_or_plan(condition);
                         if let Some(or_plan) = or_plan {
                             let mut skip_body = Vec::new();
                             let mut enter_body = Vec::new();
@@ -3501,6 +3512,31 @@ impl Generator {
                                 }
                                 if let Some(cache) = next_group_float_cache {
                                     self.condition_float_cache = cache;
+                                }
+                            }
+                            if !or_plan.suffix.is_empty() {
+                                let suffix_start = self.output.instructions.len();
+                                for branch in enter_body.drain(..) {
+                                    self.patch_forward(branch, suffix_start);
+                                }
+                                for term in or_plan.suffix {
+                                    let (options, condition_bit) =
+                                        self.emit_condition_test(term).map_err(
+                                            |mut diagnostic| {
+                                                diagnostic.message.push_str(&format!(
+                                                    " (in structured if condition {statement_index})"
+                                                ));
+                                                diagnostic
+                                            },
+                                        )?;
+                                    skip_body.push(self.output.instructions.len());
+                                    self.output.instructions.push(
+                                        Instruction::BranchConditionalForward {
+                                            options,
+                                            condition_bit,
+                                            target: 0,
+                                        },
+                                    );
                                 }
                             }
                             return Ok(ConditionBranches {
@@ -4493,25 +4529,34 @@ pub(super) fn logical_and_terms(expression: &Expression) -> Vec<&Expression> {
 pub(super) struct LogicalOrPlan<'a> {
     pub(super) prefix: Vec<&'a Expression>,
     pub(super) groups: Vec<Vec<&'a Expression>>,
+    pub(super) suffix: Vec<&'a Expression>,
 }
 
 /// An ordered OR-of-AND plan, optionally guarded by a shared leading
-/// conjunction. Besides a direct `(a && b) || (c && d)`, this recognizes
-/// `prefix && ((a && b) || (c && d))` without distributing and re-emitting the
-/// prefix for every alternative.
+/// or trailing conjunction. Besides a direct `(a && b) || (c && d)`, this
+/// recognizes `prefix && ((a && b) || (c && d)) && suffix` without
+/// distributing and re-emitting either shared conjunction.
 pub(super) fn logical_or_plan(expression: &Expression) -> Option<LogicalOrPlan<'_>> {
     if let Some(groups) = logical_or_groups(expression) {
         return Some(LogicalOrPlan {
             prefix: Vec::new(),
             groups,
+            suffix: Vec::new(),
         });
     }
-    let mut terms = logical_and_terms(expression);
-    let alternatives = terms.pop()?;
-    let groups = logical_or_groups(alternatives)?;
-    (!terms.is_empty()).then_some(LogicalOrPlan {
-        prefix: terms,
+    let terms = logical_and_terms(expression);
+    let mut alternatives = terms
+        .iter()
+        .enumerate()
+        .filter_map(|(index, term)| logical_or_groups(term).map(|groups| (index, groups)));
+    let (alternative_index, groups) = alternatives.next()?;
+    if alternatives.next().is_some() {
+        return None;
+    }
+    Some(LogicalOrPlan {
+        prefix: terms[..alternative_index].to_vec(),
         groups,
+        suffix: terms[alternative_index + 1..].to_vec(),
     })
 }
 
@@ -4604,6 +4649,7 @@ mod tests {
             [Expression::Variable(prefix)] if prefix == "prefix"
         ));
         assert_eq!(plan.groups.len(), 2);
+        assert!(plan.suffix.is_empty());
         assert!(matches!(
             plan.groups[0].as_slice(),
             [Expression::Variable(a), Expression::Variable(b)] if a == "a" && b == "b"
@@ -4611,6 +4657,28 @@ mod tests {
         assert!(matches!(
             plan.groups[1].as_slice(),
             [Expression::Variable(c), Expression::Variable(d)] if c == "c" && d == "d"
+        ));
+    }
+
+    #[test]
+    fn retains_a_shared_conjunction_after_disjunction_groups() {
+        let variable = |name: &str| Expression::Variable(name.into());
+        let condition = Expression::Binary {
+            operator: BinaryOperator::LogicalAnd,
+            left: Box::new(Expression::Binary {
+                operator: BinaryOperator::LogicalOr,
+                left: Box::new(variable("a")),
+                right: Box::new(variable("b")),
+            }),
+            right: Box::new(variable("suffix")),
+        };
+
+        let plan = logical_or_plan(&condition).expect("the trailing conjunction should decompose");
+        assert!(plan.prefix.is_empty());
+        assert_eq!(plan.groups.len(), 2);
+        assert!(matches!(
+            plan.suffix.as_slice(),
+            [Expression::Variable(suffix)] if suffix == "suffix"
         ));
     }
 
