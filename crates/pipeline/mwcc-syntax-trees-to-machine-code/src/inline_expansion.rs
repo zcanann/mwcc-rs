@@ -17,6 +17,7 @@ mod safety;
 mod substitution;
 mod value_body;
 mod value_calls;
+mod vector_transactions;
 
 pub(crate) use call_sites::collect_function_calls;
 use crate::inline_source_order::DefinitionOrder;
@@ -372,7 +373,9 @@ impl InlineBodySet {
                     == call_counts.get(&function.name).copied().unwrap_or(0)
             })
         {
-            if let Some(body) = value_body::summarize_automatic(function) {
+            if let Some(body) = value_body::summarize_automatic(function)
+                .or_else(|| vector_transactions::summarize_automatic(function))
+            {
                 values.entry(function.name.clone()).or_insert(body);
             } else {
                 let call_count = call_counts.get(&function.name).copied();
