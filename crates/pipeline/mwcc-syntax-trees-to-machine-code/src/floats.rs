@@ -183,6 +183,15 @@ impl Generator {
                 )? {
                     return Ok(());
                 }
+                if self.try_emit_float_damping_product(
+                    *operator,
+                    left,
+                    right,
+                    destination,
+                    double,
+                )? {
+                    return Ok(());
+                }
                 // Mixed `int OP float` arithmetic: promote the integer operand to float first.
                 if self.try_emit_mixed_promotion(*operator, left, right, destination, double)? {
                     return Ok(());
