@@ -40,6 +40,7 @@ mod linkage_first_arguments;
 mod linkage_first_cancel_completion_arms;
 mod linkage_first_callback_completion_arms;
 mod linkage_first_callback_state_arms;
+mod linkage_first_retained_object_completion_arm;
 mod linkage_first_stateful_callback_completion_arm;
 mod linkage_first_data_anchor;
 mod linkage_first_anchor_only_schedule;
