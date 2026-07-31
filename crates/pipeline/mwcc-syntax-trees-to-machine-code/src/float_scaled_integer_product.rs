@@ -30,26 +30,44 @@ impl Generator {
         let Some((scale, product)) = scaled_product(left, right) else {
             return Ok(false);
         };
-        let Some((floating, integer)) = mixed_product(product, |factor| self.is_float_leaf(factor))
-        else {
+        let Some((floating, integer)) = mixed_product(product, |factor| {
+            self.is_float_leaf(factor) || matches!(factor, Expression::FloatLiteral(_))
+        }) else {
             return Ok(false);
         };
-        let Ok((integer_source, width, signed)) = self.leaf_info(integer) else {
-            return Ok(false);
-        };
+        let leaf = self.leaf_info(integer).ok();
+        let (width, signed) = leaf
+            .map(|(_, width, signed)| (width, signed))
+            .unwrap_or((32, self.signedness_of(integer)?));
         if !signed {
             return Ok(false);
         }
 
-        let scale_register = self.fresh_virtual_float_preferring(2);
+        let literal_factor = matches!(floating, Expression::FloatLiteral(_));
+        let scale_register = self
+            .fresh_virtual_float_preferring(if literal_factor { 3 } else { 2 });
         self.load_float_literal(scale_register, scale, false);
 
-        let conversion_source = if width < 32 {
-            let widened = self.fresh_virtual_general_preferring(0);
-            self.emit_widen(widened, integer_source, width, true);
-            widened
+        let floating_register = if let Expression::FloatLiteral(value) = floating {
+            let register = self.fresh_virtual_float_preferring(2);
+            self.load_float_literal(register, *value, false);
+            register
         } else {
-            integer_source
+            self.float_register_of_leaf(floating)?
+        };
+
+        let conversion_source = if let Some((integer_source, _, _)) = leaf {
+            if width >= 32 {
+                integer_source
+            } else {
+                let widened = self.fresh_virtual_general_preferring(0);
+                self.emit_widen(widened, integer_source, width, true);
+                widened
+            }
+        } else {
+            let computed = self.fresh_virtual_general_preferring(0);
+            self.evaluate_general(integer, computed)?;
+            computed
         };
         let promoted = self.fresh_virtual_float_preferring(FLOAT_SCRATCH);
         let bias = self.fresh_virtual_float_preferring(1);
@@ -63,8 +81,6 @@ impl Generator {
             IntToFloatSchedule::LeafValue,
             scratch,
         );
-
-        let floating_register = self.float_register_of_leaf(floating)?;
         self.output
             .instructions
             .push(Instruction::FloatMultiplySingle {
@@ -156,5 +172,27 @@ mod tests {
         .expect("mixed product");
         assert!(matches!(floating, Expression::Variable(name) if name == "floating"));
         assert!(matches!(integer, Expression::Variable(name) if name == "integer"));
+    }
+
+    #[test]
+    fn recognizes_a_literal_factor_beside_a_computed_integer() {
+        let integer = Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left: Box::new(Expression::IntegerLiteral(4)),
+            right: Box::new(Expression::Variable("level".into())),
+        };
+        let product = multiply(Expression::FloatLiteral(0.5), integer);
+        let (floating, integer) = mixed_product(&product, |factor| {
+            matches!(factor, Expression::FloatLiteral(_))
+        })
+        .expect("mixed literal product");
+        assert!(matches!(floating, Expression::FloatLiteral(0.5)));
+        assert!(matches!(
+            integer,
+            Expression::Binary {
+                operator: BinaryOperator::Subtract,
+                ..
+            }
+        ));
     }
 }

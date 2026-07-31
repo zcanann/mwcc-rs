@@ -866,6 +866,7 @@ impl Generator {
     /// it routes to the FPU compare (`fcmpo`/`fcmpu`) path rather than the integer one.
     pub(crate) fn is_float_operand(&self, expression: &Expression) -> bool {
         match expression {
+            Expression::FloatLiteral(_) => true,
             Expression::Variable(name) => {
                 self.locations
                     .get(name.as_str())
