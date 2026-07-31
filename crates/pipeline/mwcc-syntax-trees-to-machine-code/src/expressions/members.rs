@@ -1678,6 +1678,9 @@ impl Generator {
                 return Err(Diagnostic::error("a variable-index subscript on a constant-address pointer is not supported yet (roadmap)"));
             }
         }
+        if self.try_emit_computed_index_member_pointer_subscript(base, index, destination)? {
+            return Ok(());
+        }
         let (pointee, address) = self.resolve_pointer(base)?;
         if let Some(constant) = constant_value(index) {
             let offset = constant * pointee.size() as i64;

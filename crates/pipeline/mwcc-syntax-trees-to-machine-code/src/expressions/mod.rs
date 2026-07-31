@@ -16,6 +16,7 @@ mod call_indexed_member;
 mod calls;
 mod constructed_new;
 mod constructor_initializers;
+mod computed_index_subscript;
 mod driver;
 mod frame_aggregate_copy;
 mod frame_matrix;
