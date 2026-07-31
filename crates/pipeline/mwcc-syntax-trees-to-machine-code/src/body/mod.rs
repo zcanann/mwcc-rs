@@ -94,6 +94,7 @@ mod float_octant_table_dispatch;
 mod forwarded_member_initialization_schedule;
 mod friction_limited_acceleration_clamp;
 mod fixed_address_object_flush;
+mod fixed_bank_transformed_load;
 mod fixed_port_bitfield;
 mod fixed_port_global_replay;
 mod fixed_port_indexed_bitfield;
