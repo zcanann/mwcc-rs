@@ -256,6 +256,7 @@ mod structured_tlut_packet_schedule;
 mod structured_saved_float_initializer;
 mod structured_shared_switch_global_value;
 mod structured_shared_switch_entry_schedule;
+mod structured_shared_switch_fixed_address_entry;
 mod structured_shared_member_arguments;
 mod structured_sparse_switch;
 mod structured_value_versions;

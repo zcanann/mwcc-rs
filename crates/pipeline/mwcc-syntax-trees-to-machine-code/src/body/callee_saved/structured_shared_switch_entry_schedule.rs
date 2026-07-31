@@ -22,6 +22,7 @@ impl Generator {
         {
             return;
         }
+        self.schedule_shared_switch_fixed_address_entry();
         if let Some(pair) = guarded_distinct_global_pair(function) {
             self.schedule_guarded_distinct_global_pair(pair);
         }
