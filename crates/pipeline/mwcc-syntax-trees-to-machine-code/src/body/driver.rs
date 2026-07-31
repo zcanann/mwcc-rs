@@ -1745,6 +1745,11 @@ impl Generator {
                 self.inline_source_call_survivors
                     .extend(source_call_survivors);
             }
+            for name in &expanded.introduced_mutable_globals {
+                if let Some(&global_type) = self.addressable_globals.get(name) {
+                    self.globals.insert(name.clone(), global_type);
+                }
+            }
             let result = self.evaluate_body(&expanded.function);
             if result.is_ok() {
                 self.output.anonymous_label_bump = self

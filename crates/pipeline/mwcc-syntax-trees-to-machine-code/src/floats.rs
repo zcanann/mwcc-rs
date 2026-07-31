@@ -498,7 +498,7 @@ impl Generator {
         // interleave two such conversions without duplicating their semantics.
         let left_float = self.is_float_value(left);
         let right_float = self.is_float_value(right);
-        if left_float == right_float || !self.non_leaf || destination != FLOAT_SCRATCH {
+        if left_float == right_float || !self.non_leaf {
             return Ok(false);
         }
         let (integer_operand, float_operand) = if left_float {
@@ -506,12 +506,17 @@ impl Generator {
         } else {
             (left, right)
         };
+        let computed_integer =
+            is_complex(integer_operand) && fits_single_scratch(integer_operand, false);
+        if destination != FLOAT_SCRATCH && !computed_integer {
+            return Ok(false);
+        }
         if self
             .cast_operand_width(integer_operand)
             .is_some_and(|width| width < 32)
             || !(self.is_word_load(integer_operand)
                 || self.general_register_of_leaf(integer_operand).is_ok()
-                || (is_complex(integer_operand) && fits_single_scratch(integer_operand, false)))
+                || computed_integer)
             || !self.is_float_value(float_operand)
         {
             return Ok(false);

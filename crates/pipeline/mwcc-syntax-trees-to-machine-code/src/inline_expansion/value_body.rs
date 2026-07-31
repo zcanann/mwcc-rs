@@ -9,6 +9,7 @@ use super::safety::composable_function;
 use mwcc_syntax_trees::{
     BinaryOperator, ConditionalOrigin, Expression, Function, Statement, Type, UnaryOperator,
 };
+use std::collections::HashSet;
 
 #[derive(Clone, Debug)]
 pub(super) struct ValueInlineBody {
@@ -20,6 +21,12 @@ pub(super) struct ValueInlineBody {
 impl ValueInlineBody {
     pub(super) fn stores_global_name(&self, name: &str) -> bool {
         statements_store_global_name(&self.source.statements, name)
+    }
+
+    pub(super) fn stored_global_names(&self) -> HashSet<String> {
+        let mut names = HashSet::new();
+        collect_stored_global_names(&self.source.statements, &mut names);
+        names
     }
 
     fn forwarded_call_arguments(&self) -> Option<&[Expression]> {
@@ -62,6 +69,38 @@ impl ValueInlineBody {
     /// lane instead of extending its lifetime through an argument temporary.
     pub(super) fn forwards_known_function_designators(&self) -> bool {
         self.automatic_transaction && extended_diagnostic_transaction(&self.source)
+    }
+}
+
+fn collect_stored_global_names(statements: &[Statement], names: &mut HashSet<String>) {
+    for statement in statements {
+        match statement {
+            Statement::Store {
+                target: Expression::Variable(name),
+                ..
+            } => {
+                names.insert(name.clone());
+            }
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_stored_global_names(then_body, names);
+                collect_stored_global_names(else_body, names);
+            }
+            Statement::Loop { body, .. } => collect_stored_global_names(body, names),
+            Statement::Switch {
+                arms, default, ..
+            } => {
+                for body in arms.iter().map(|arm| &arm.body).chain(default) {
+                    if let mwcc_syntax_trees::ArmBody::Statements(statements) = body {
+                        collect_stored_global_names(statements, names);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -655,6 +694,9 @@ pub(super) fn summarize_automatic(function: &Function) -> Option<ValueInlineBody
     if let Some(body) = summarize_automatic_bounded_predicate(function) {
         return Some(body);
     }
+    if let Some(body) = summarize_repeatable_global_scalar_transaction(function) {
+        return Some(body);
+    }
     if !function.locals.is_empty() {
         return None;
     }
@@ -669,6 +711,51 @@ pub(super) fn summarize_automatic(function: &Function) -> Option<ValueInlineBody
         return None;
     }
     summarize(function)
+}
+
+/// Recognize the small global read/modify/write helpers that MWCC duplicates
+/// at every visible call site under `-inline auto`.
+///
+/// A canonical example is a translation-unit RNG step: update one global with
+/// a multiply, update it again with an add, then return bits from that same
+/// object.  The comma-expression summary preserves each volatile-looking
+/// source operation in order, while this deliberately narrow semantic gate
+/// keeps arbitrary stateful functions out of the repeatable value lane.
+pub(super) fn summarize_repeatable_global_scalar_transaction(
+    function: &Function,
+) -> Option<ValueInlineBody> {
+    if matches!(function.return_type, Type::Void | Type::Struct { .. })
+        || !function.parameters.is_empty()
+        || !function.locals.is_empty()
+        || !function.guards.is_empty()
+        || function.asm_body.is_some()
+        || !(1..=3).contains(&function.statements.len())
+    {
+        return None;
+    }
+
+    let Some(Expression::Variable(global)) = function.statements.first().and_then(|statement| {
+        let Statement::Store { target, .. } = statement else {
+            return None;
+        };
+        Some(target)
+    }) else {
+        return None;
+    };
+    if function.statements.iter().any(|statement| {
+        let Statement::Store { target, value } = statement else {
+            return true;
+        };
+        !matches!(target, Expression::Variable(name) if name == global)
+            || crate::analysis::expression_has_side_effect(value)
+            || super::safety::expression_use_count(value, global) != 1
+    }) {
+        return None;
+    }
+    function.return_expression.as_ref().is_some_and(|result| {
+        !crate::analysis::expression_has_side_effect(result)
+            && super::safety::expression_use_count(result, global) == 1
+    }).then(|| summarize(function)).flatten()
 }
 
 /// Summarize a one-use ordinary helper whose scalar locals form a pure,
@@ -1239,6 +1326,40 @@ mod tests {
             summary.expression,
             Expression::Member { offset: 4, .. }
         ));
+    }
+
+    #[test]
+    fn summarizes_a_repeatable_global_scalar_transaction() {
+        let mut function = empty_function("next_random", Type::Int);
+        let global = || Expression::Variable("random_state".into());
+        function.statements = vec![
+            Statement::Store {
+                target: global(),
+                value: Expression::Binary {
+                    operator: BinaryOperator::Multiply,
+                    left: Box::new(global()),
+                    right: Box::new(Expression::IntegerLiteral(1103515245)),
+                },
+            },
+            Statement::Store {
+                target: global(),
+                value: Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(global()),
+                    right: Box::new(Expression::IntegerLiteral(12345)),
+                },
+            },
+        ];
+        function.return_expression = Some(Expression::Binary {
+            operator: BinaryOperator::ShiftRight,
+            left: Box::new(global()),
+            right: Box::new(Expression::IntegerLiteral(16)),
+        });
+
+        let summary = summarize_automatic(&function).expect("global scalar transaction");
+        assert!(matches!(summary.expression, Expression::Comma { left, right }
+            if matches!(left.as_ref(), Expression::Assign { .. })
+                && matches!(right.as_ref(), Expression::Comma { .. })));
     }
 
     #[test]

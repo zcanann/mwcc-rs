@@ -1161,38 +1161,6 @@ impl Generator {
             }
             let low = (constant as u32 & 0xffff) as i16;
             let high = ((constant as i32 - low as i32) >> 16) as i16;
-            if let Ok(operand_register) = self.general_register_of_leaf(variable) {
-                if low == 0 {
-                    // No low half: build the constant straight in the scratch with a
-                    // single `lis r0, high`, then multiply.
-                    self.output
-                        .instructions
-                        .push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, high));
-                    self.output.instructions.push(Instruction::MultiplyLow {
-                        d: destination,
-                        a: operand_register,
-                        b: GENERAL_SCRATCH,
-                    });
-                    return Ok(true);
-                }
-                // Leaf operand: it stays in its register; the constant is built in
-                // the scratch via a free register.
-                let free = self.free_general_excluding(operand_register)?;
-                self.output
-                    .instructions
-                    .push(Instruction::load_immediate_shifted(free, high));
-                self.output.instructions.push(Instruction::AddImmediate {
-                    d: GENERAL_SCRATCH,
-                    a: free,
-                    immediate: low,
-                });
-                self.output.instructions.push(Instruction::MultiplyLow {
-                    d: destination,
-                    a: operand_register,
-                    b: GENERAL_SCRATCH,
-                });
-                return Ok(true);
-            }
             if self.is_global(variable) {
                 if self.behavior.global_wide_multiply_style
                     == mwcc_versions::GlobalWideMultiplyStyle::Sequential
@@ -1233,6 +1201,38 @@ impl Generator {
                 self.output.instructions.push(Instruction::MultiplyLow {
                     d: destination,
                     a: operand,
+                    b: GENERAL_SCRATCH,
+                });
+                return Ok(true);
+            }
+            if let Ok(operand_register) = self.general_register_of_leaf(variable) {
+                if low == 0 {
+                    // No low half: build the constant straight in the scratch with a
+                    // single `lis r0, high`, then multiply.
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, high));
+                    self.output.instructions.push(Instruction::MultiplyLow {
+                        d: destination,
+                        a: operand_register,
+                        b: GENERAL_SCRATCH,
+                    });
+                    return Ok(true);
+                }
+                // Leaf operand: it stays in its register; the constant is built in
+                // the scratch via a free register.
+                let free = self.free_general_excluding(operand_register)?;
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(free, high));
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: GENERAL_SCRATCH,
+                    a: free,
+                    immediate: low,
+                });
+                self.output.instructions.push(Instruction::MultiplyLow {
+                    d: destination,
+                    a: operand_register,
                     b: GENERAL_SCRATCH,
                 });
                 return Ok(true);

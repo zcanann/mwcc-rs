@@ -10,6 +10,7 @@
 mod call_sites;
 mod discarded_result;
 mod frame_residue;
+mod global_scalar_transaction;
 mod ordinal_residue;
 mod returns;
 mod safety;
@@ -104,6 +105,10 @@ pub struct InlineBodySet {
     /// Larger guarded transactions available only to terminal scratch wrappers.
     terminal_wrapper_bodies: HashMap<String, Function>,
     values: HashMap<String, ValueInlineBody>,
+    /// Tiny global read/modify/write value helpers available to callers after
+    /// their definition even when earlier calls keep the helper out of the
+    /// translation-unit-wide automatic value set.
+    repeatable_global_transaction_values: HashMap<String, ValueInlineBody>,
     /// Repeated guarded value transactions selected only for bounded callers.
     /// Larger callers need the general callee-saved allocator before their
     /// inlined callback state can be represented safely.
@@ -191,6 +196,11 @@ pub(crate) struct ExpandedCalls {
     /// call and fallthrough edges, while MWCC's pre-composition allocator
     /// conservatively sees the original value diamond.
     pub(crate) retains_source_call_survivors: bool,
+    /// Mutable data symbols introduced solely by the selected inline body.
+    /// Function-local dependency filtering may have omitted them from the
+    /// caller's scalar-global map, so recursive lowering activates these exact
+    /// targets from the addressable declaration map.
+    pub(crate) introduced_mutable_globals: HashSet<String>,
 }
 
 impl InlineBodySet {
@@ -387,6 +397,13 @@ impl InlineBodySet {
                     .map(|body| (function.name.clone(), body))
             })
             .collect();
+        let repeatable_global_transaction_values = definitions
+            .iter()
+            .filter_map(|function| {
+                value_body::summarize_repeatable_global_scalar_transaction(function)
+                    .map(|body| (function.name.clone(), body))
+            })
+            .collect();
         if let Some(needle) = std::env::var_os("MWCC_CAPTURE_INLINE") {
             let needle = needle.to_string_lossy();
             for function in definitions
@@ -443,6 +460,7 @@ impl InlineBodySet {
             statement_value_bodies,
             terminal_wrapper_bodies,
             values,
+            repeatable_global_transaction_values,
             guarded_transaction_values,
             required,
             asm_fragments,
@@ -555,6 +573,7 @@ impl InlineBodySet {
                     || self.repeatable_guarded_call_bodies.contains_key(name)
                     || self.statement_value_bodies.contains_key(name)
                     || self.guarded_transaction_values.contains_key(name)
+                    || self.repeatable_global_transaction_values.contains_key(name)
                     || self.values.contains_key(name)
             })
             || function
@@ -778,6 +797,49 @@ impl InlineBodySet {
         Some(result)
     }
 
+    /// Expand each tiny global scalar transaction after its definition.
+    ///
+    /// Source visibility is asymmetric in a single translation unit: an
+    /// earlier call remains out of line, but that must not suppress the same
+    /// helper at later call sites. The ordinary all-or-nothing `values` map
+    /// cannot express that distinction, so this lane selects per caller.
+    pub(crate) fn expand_visible_global_scalar_transactions(
+        &self,
+        function: &Function,
+    ) -> Option<ExpandedCalls> {
+        let caller_position = *self.definition_positions.get(&function.name)?;
+        let mut calls = HashMap::new();
+        collect_function_calls(function, &mut calls);
+        let visible_values = self
+            .repeatable_global_transaction_values
+            .iter()
+            .filter(|(name, _)| {
+                calls.contains_key(*name)
+                    && self
+                        .definition_positions
+                        .get(*name)
+                        .is_some_and(|position| *position < caller_position)
+            })
+            .map(|(name, body)| (name.clone(), body.clone()))
+            .collect::<HashMap<_, _>>();
+        if visible_values.is_empty() {
+            return None;
+        }
+        let introduced_mutable_globals = visible_values
+            .values()
+            .flat_map(ValueInlineBody::stored_global_names)
+            .collect();
+        let mut expanded = self.clone();
+        expanded.values.extend(visible_values);
+        let mut result = expanded.expand_calls_with_facts_policy(function, false)?;
+        result.function = global_scalar_transaction::linearize(
+            &result.function,
+            &introduced_mutable_globals,
+        );
+        result.introduced_mutable_globals = introduced_mutable_globals;
+        Some(result)
+    }
+
     /// Expand a guarded value transaction together with several repeated
     /// statement helpers in one large, call-dense state-machine callback.
     ///
@@ -889,7 +951,8 @@ impl InlineBodySet {
     /// Frame and section-anchor planning call this same owner before emission,
     /// so they analyze the exact AST that the lowering driver will later use.
     pub(crate) fn expand_selective_calls(&self, function: &Function) -> Option<ExpandedCalls> {
-        self.expand_mixed_bounded_transactions(function)
+        self.expand_visible_global_scalar_transactions(function)
+            .or_else(|| self.expand_mixed_bounded_transactions(function))
             .or_else(|| self.expand_bounded_guarded_value_transactions(function))
             .or_else(|| self.expand_repeatable_guarded_calls(function))
             .or_else(|| self.expand_repeatable_bounded_caller_calls(function))
@@ -1102,6 +1165,7 @@ impl InlineBodySet {
             advances_ordinary_ordinals: true,
             discounts_structured_hidden_labels: false,
             retains_source_call_survivors: false,
+            introduced_mutable_globals: HashSet::new(),
         })
     }
 
@@ -3516,6 +3580,68 @@ mod tests {
         collect_function_calls(&expanded, &mut calls);
         assert!(!calls.contains_key("blend"));
         assert_eq!(expanded.locals.len(), 2);
+    }
+
+    #[test]
+    fn composes_a_repeated_global_scalar_transaction() {
+        let global = || Expression::Variable("random_state".into());
+        let mut helper = function(
+            "next_random",
+            Vec::new(),
+            vec![
+                Statement::Store {
+                    target: global(),
+                    value: Expression::Binary {
+                        operator: BinaryOperator::Multiply,
+                        left: Box::new(global()),
+                        right: Box::new(Expression::IntegerLiteral(1103515245)),
+                    },
+                },
+                Statement::Store {
+                    target: global(),
+                    value: Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left: Box::new(global()),
+                        right: Box::new(Expression::IntegerLiteral(12345)),
+                    },
+                },
+            ],
+        );
+        helper.return_type = Type::Int;
+        helper.return_expression = Some(Expression::Binary {
+            operator: BinaryOperator::ShiftRight,
+            left: Box::new(global()),
+            right: Box::new(Expression::IntegerLiteral(16)),
+        });
+        let mut caller = function("shuffle", Vec::new(), Vec::new());
+        caller.return_type = Type::Int;
+        caller.return_expression = Some(Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: Box::new(Expression::Call {
+                name: "next_random".into(),
+                arguments: Vec::new(),
+            }),
+            right: Box::new(Expression::Call {
+                name: "next_random".into(),
+                arguments: Vec::new(),
+            }),
+        });
+
+        let mut early_caller = caller.clone();
+        early_caller.name = "early_shuffle".into();
+        let bodies = InlineBodySet::analyze_with_definitions(
+            &[early_caller.clone(), helper, caller.clone()],
+            &[],
+        );
+        assert!(
+            bodies.expand_visible_global_scalar_transactions(&early_caller).is_none(),
+            "a call before the helper definition remains out of line"
+        );
+        let expanded = bodies
+            .expand_visible_global_scalar_transactions(&caller)
+            .expect("the repeatable transaction should replace both calls");
+        assert_eq!(expanded.value_body_substitutions, 2);
+        assert!(!bodies.calls_any(&expanded.function));
     }
 
     #[test]
