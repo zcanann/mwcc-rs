@@ -233,6 +233,7 @@ mod structured_prologue;
 mod structured_release_schedule;
 mod structured_register_width;
 mod structured_rounded_pointer_schedule;
+mod structured_global_self_member_handoff;
 mod structured_store_schedule;
 mod structured_state_transfer_bit_swap;
 mod structured_state_transfer_conversion_schedule;

@@ -1090,6 +1090,9 @@ fn lower_function_body(
     generator.schedule_structured_global_member_address();
     generator.schedule_linkage_first_state_switch_layout();
     generator.schedule_linkage_first_global_indirect_callback_tail();
+    if generator.behavior.schedule_latency_slots {
+        branch_cleanup::align_tight_polling_call_loops(&mut generator);
+    }
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for

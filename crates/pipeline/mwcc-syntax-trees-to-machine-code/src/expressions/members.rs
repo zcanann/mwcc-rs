@@ -546,6 +546,16 @@ impl Generator {
                     )?);
                     return Ok(());
                 }
+                if let Some(base) = self.live_global_register(name, true) {
+                    let displacement = self.emit_member_base_adjustment(base, offset);
+                    self.output.instructions.push(displacement_load(
+                        pointee,
+                        destination,
+                        base,
+                        displacement,
+                    )?);
+                    return Ok(());
+                }
                 // A FLOAT/double member loads into an FPR, so the pointer must go to a GPR base —
                 // reusing the FPR destination's NUMBER would address through the matching GPR
                 // (`f1`↔`r1`/sp). Integer members share the destination GPR as both base and result.

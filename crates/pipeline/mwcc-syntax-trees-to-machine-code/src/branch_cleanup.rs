@@ -82,6 +82,53 @@ pub(crate) fn remove_fallthrough_branches(generator: &mut Generator) {
     }
 }
 
+/// Align a tight call/compare/backedge polling loop to an eight-byte boundary.
+///
+/// This runs after fallthrough entry jumps have been removed, when the call's
+/// final instruction index is known. Branches continue to target the call, not
+/// the padding instruction; the common insertion helper preserves that
+/// identity while remapping relocation and label owners.
+pub(crate) fn align_tight_polling_call_loops(generator: &mut Generator) {
+    let mut start = 0;
+    while let Some(call) = tight_polling_call_loop(&generator.output.instructions, start) {
+        if call % 2 != 0 {
+            crate::insert_instruction_retargeting(
+                generator,
+                call,
+                Instruction::OrImmediate {
+                    a: 0,
+                    s: 0,
+                    immediate: 0,
+                },
+            );
+            start = call + 4;
+        } else {
+            start = call + 3;
+        }
+    }
+}
+
+fn tight_polling_call_loop(instructions: &[Instruction], start: usize) -> Option<usize> {
+    (start..instructions.len().saturating_sub(2)).find(|&index| {
+        matches!(instructions[index], Instruction::BranchAndLink { .. })
+            && matches!(
+                instructions[index + 1],
+                Instruction::CompareWordImmediate {
+                    a: 3,
+                    immediate: 0
+                } | Instruction::CompareLogicalWordImmediate {
+                    a: 3,
+                    immediate: 0
+                }
+            )
+            && matches!(
+                instructions[index + 2],
+                Instruction::BranchConditionalForward { target, .. }
+                    if target == index
+            )
+    })
+}
+
 fn fallthrough_branch(instructions: &[Instruction]) -> Option<usize> {
     instructions
         .iter()
@@ -121,6 +168,7 @@ fn forwarding_branch_block(
 mod tests {
     use super::{
         fallthrough_branch, forwarding_branch_block, thread_conditional_branch_targets,
+        tight_polling_call_loop,
     };
     use mwcc_machine_code::Instruction;
 
@@ -165,6 +213,26 @@ mod tests {
         ];
 
         assert_eq!(fallthrough_branch(&instructions), Some(1));
+    }
+
+    #[test]
+    fn recognizes_a_tight_call_polling_backedge() {
+        let instructions = [
+            Instruction::BranchAndLink {
+                target: "ready".into(),
+            },
+            Instruction::CompareLogicalWordImmediate {
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 0,
+            },
+        ];
+
+        assert_eq!(tight_polling_call_loop(&instructions, 0), Some(0));
     }
 
     #[test]

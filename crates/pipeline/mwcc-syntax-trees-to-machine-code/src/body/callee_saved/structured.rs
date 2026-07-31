@@ -3195,6 +3195,10 @@ impl Generator {
             }
             let emitted_start = self.output.instructions.len();
             match statement {
+                _ if self.try_emit_structured_global_self_member_handoff(
+                    statement,
+                    statements.get(statement_index + 1),
+                )? => {}
                 Statement::Switch {
                     scrutinee,
                     arms,
