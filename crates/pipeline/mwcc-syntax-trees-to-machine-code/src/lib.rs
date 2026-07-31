@@ -709,6 +709,7 @@ fn lower_function_body(
             .collect(),
         descending_allocation_top: None,
         materialized_float_window: None,
+        materialized_float_assignment_active: false,
         structured_branch_float_work_home: None,
         structured_branch_constant_address_home: None,
         skipped_inline_names: skipped_inline_names.clone(),

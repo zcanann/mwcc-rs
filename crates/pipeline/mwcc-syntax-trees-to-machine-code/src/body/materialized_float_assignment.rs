@@ -36,6 +36,45 @@ fn has_computed_float_assignment(function: &Function) -> bool {
     })
 }
 
+fn is_contextual_float_literal(expression: &Expression) -> bool {
+    match expression {
+        Expression::FloatLiteral(_) => true,
+        Expression::Cast {
+            target_type: Type::Float | Type::Double,
+            operand,
+        } => matches!(operand.as_ref(), Expression::FloatLiteral(_)),
+        _ => false,
+    }
+}
+
+/// Count the persistent temporaries selected by the materialized-float
+/// scheduler.  This differs from ordinary Sethi-Ullman pressure when MWCC
+/// deliberately loads a literal before its complex partner: that literal owns
+/// one additional descending window home for the partner's entire evaluation.
+fn materialized_float_temporary_count(expression: &Expression) -> u32 {
+    match expression {
+        Expression::Binary { left, right, .. } => {
+            let left_computed = is_complex(left);
+            let right_computed = is_complex(right);
+            let retained_literal = (is_contextual_float_literal(left) && right_computed)
+                || (is_contextual_float_literal(right) && left_computed);
+            u32::from(retained_literal || (left_computed && right_computed))
+                + materialized_float_temporary_count(left)
+                + materialized_float_temporary_count(right)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            materialized_float_temporary_count(operand)
+        }
+        Expression::Conditional {
+            when_true,
+            when_false,
+            ..
+        } => materialized_float_temporary_count(when_true)
+            .max(materialized_float_temporary_count(when_false)),
+        _ => 0,
+    }
+}
+
 fn is_float_assignment_statement(function: &Function, statement: &Statement) -> bool {
     match statement {
         Statement::Assign { name, .. } => assigned_float_local(function, name).is_some(),
@@ -80,13 +119,18 @@ impl Generator {
             })
             .max()
             .unwrap_or(0);
-        let demand = u8::try_from(crate::analysis::register_need(value)).unwrap_or(14);
+        let demand = crate::analysis::register_need(value)
+            .max(materialized_float_temporary_count(value));
+        let demand = u8::try_from(demand).unwrap_or(14);
         let top = highest_input.saturating_add(demand);
         if demand < 2 || top > 13 {
             return self.evaluate_register_store_value(value, value_type, destination);
         }
         let previous = self.materialized_float_window.replace((top, demand));
+        let previous_active = self.materialized_float_assignment_active;
+        self.materialized_float_assignment_active = true;
         let result = self.evaluate_register_store_value(value, value_type, destination);
+        self.materialized_float_assignment_active = previous_active;
         self.materialized_float_window = previous;
         result
     }
@@ -142,6 +186,18 @@ impl Generator {
 mod tests {
     use super::*;
 
+    fn variable(name: &str) -> Expression {
+        Expression::Variable(name.into())
+    }
+
+    fn binary(operator: BinaryOperator, left: Expression, right: Expression) -> Expression {
+        Expression::Binary {
+            operator,
+            left: Box::new(left),
+            right: Box::new(right),
+        }
+    }
+
     #[test]
     fn recognizes_a_single_computed_float_assignment() {
         let function = Function {
@@ -182,5 +238,34 @@ mod tests {
         };
 
         assert!(has_computed_float_assignment(&function));
+    }
+
+    #[test]
+    fn counts_preloaded_literals_in_the_descending_temporary_window() {
+        let multiply = |left, right| binary(BinaryOperator::Multiply, left, right);
+        let add = |left, right| binary(BinaryOperator::Add, left, right);
+        let subtract = |left, right| binary(BinaryOperator::Subtract, left, right);
+        let expression = multiply(
+            Expression::FloatLiteral(2.0),
+            add(
+                multiply(variable("arg8"), variable("argB")),
+                add(
+                    multiply(
+                        subtract(variable("arg8"), Expression::FloatLiteral(1.0)),
+                        variable("arg9"),
+                    ),
+                    multiply(
+                        subtract(
+                            Expression::FloatLiteral(1.0),
+                            multiply(Expression::FloatLiteral(2.0), variable("arg8")),
+                        ),
+                        variable("argA"),
+                    ),
+                ),
+            ),
+        );
+
+        assert_eq!(crate::analysis::register_need(&expression), 3);
+        assert_eq!(materialized_float_temporary_count(&expression), 4);
     }
 }

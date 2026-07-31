@@ -484,6 +484,10 @@ pub(crate) struct Generator {
     /// materialized float assignment. The expression planner sizes the window;
     /// nested operand placement consumes its homes from the outside in.
     pub(crate) materialized_float_window: Option<(u8, u8)>,
+    /// Whether selection is currently inside that assignment. This remains set
+    /// after the last window home is consumed because operand scheduling still
+    /// follows the materialized-polynomial convention.
+    pub(crate) materialized_float_assignment_active: bool,
     /// Volatile homes reserved by a structured branch whose returned float
     /// parameter remains live across mutually exclusive member-store arms.
     pub(crate) structured_branch_float_work_home: Option<u8>,

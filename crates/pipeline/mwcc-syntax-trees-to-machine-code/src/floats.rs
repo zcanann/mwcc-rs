@@ -821,8 +821,7 @@ impl Generator {
                 || self.is_integer_call_promoted_to_float(right)
                 || matches!(right, Expression::Comma { .. } | Expression::Assign { .. })
             {
-                if destination == FLOAT_SCRATCH
-                    && self.materialized_float_window_active()
+                if self.materialized_float_window_active()
                     && !self.is_integer_call_promoted_to_float(right)
                 {
                     let literal = self.fresh_materialized_float_temporary();
@@ -853,8 +852,7 @@ impl Generator {
                 || self.is_integer_call_promoted_to_float(left)
                 || matches!(left, Expression::Comma { .. } | Expression::Assign { .. })
             {
-                if destination == FLOAT_SCRATCH
-                    && self.materialized_float_window_active()
+                if self.materialized_float_window_active()
                     && !self.is_integer_call_promoted_to_float(left)
                 {
                     let literal = self.fresh_materialized_float_temporary();
@@ -924,7 +922,14 @@ impl Generator {
             ),
             (true, false) => {
                 self.evaluate_float(left, FLOAT_SCRATCH)?;
-                Operands::reversed(FLOAT_SCRATCH, self.float_register_of_leaf(right)?)
+                let right = self.float_register_of_leaf(right)?;
+                if self.materialized_float_assignment_active
+                    && operator == BinaryOperator::Multiply
+                {
+                    Operands::ordered(FLOAT_SCRATCH, right)
+                } else {
+                    Operands::reversed(FLOAT_SCRATCH, right)
+                }
             }
             (false, true) => {
                 self.evaluate_float(right, FLOAT_SCRATCH)?;
