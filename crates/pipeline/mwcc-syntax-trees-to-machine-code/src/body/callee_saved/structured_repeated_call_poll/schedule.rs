@@ -104,6 +104,15 @@ impl Generator {
         make_zero_comparisons_signed(&mut self.output.instructions);
     }
 
+    /// The protocol optimizer selects signed zero tests for call results and
+    /// nullable callback words even when their source representation is
+    /// unsigned. Exact skeleton schedules also use this common policy.
+    pub(crate) fn normalize_structured_call_poll_zero_comparisons(&mut self) {
+        if self.structured_repeated_call_poll_owner {
+            make_zero_comparisons_signed(&mut self.output.instructions);
+        }
+    }
+
     fn schedule_anchored_repeated_call_poll_transaction(&mut self) {
         let instructions = &self.output.instructions;
         let Some(epilogue) = instructions.len().checked_sub(6) else {
@@ -271,4 +280,27 @@ fn writes_variadic_word(instruction: &Instruction) -> bool {
             | Instruction::LoadWord { d: 4, .. }
             | Instruction::LoadHalfwordZero { d: 4, .. }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::make_zero_comparisons_signed;
+    use mwcc_machine_code::Instruction;
+
+    #[test]
+    fn converts_only_logical_zero_comparisons() {
+        let mut instructions = [
+            Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 },
+            Instruction::CompareLogicalWordImmediate { a: 4, immediate: 7 },
+        ];
+        make_zero_comparisons_signed(&mut instructions);
+        assert!(matches!(
+            instructions[0],
+            Instruction::CompareWordImmediate { a: 3, immediate: 0 }
+        ));
+        assert!(matches!(
+            instructions[1],
+            Instruction::CompareLogicalWordImmediate { a: 4, immediate: 7 }
+        ));
+    }
 }
