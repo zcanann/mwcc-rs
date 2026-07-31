@@ -57,6 +57,36 @@ impl Generator {
     }
 }
 
+/// Whether structured emission produced the nested DVD cancellation
+/// transaction whose dead forwarding residue MWCC removes before allocation.
+///
+/// The final physical recognizer below depends on allocated registers and
+/// instruction indices, so it runs too late to govern CFG cleanup. Preserve
+/// the same semantic ownership here through the transaction's call topology:
+/// an inlined cancellation owns the adjacent queue pop, then either the reset
+/// continuation or the synchronous cancel-all wait.
+pub(crate) fn owns_unreferenced_forwarding_branch_cleanup(
+    instructions: &[Instruction],
+) -> bool {
+    let calls = instructions.iter().filter_map(|instruction| {
+        let Instruction::BranchAndLink { target } = instruction else {
+            return None;
+        };
+        Some(target.as_str())
+    });
+    let calls: Vec<_> = calls.collect();
+    let has_nested_cancel = calls
+        .windows(2)
+        .any(|pair| pair == ["DVDCancelAsync", "__DVDPopWaitingQueue"]);
+    if !has_nested_cancel {
+        return false;
+    }
+
+    let has = |target| calls.contains(&target);
+    (has("__DVDClearWaitingQueue") && has("stateReady"))
+        || (has("cbForCancelAllSync") && has("OSSleepThread"))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NestedQueueResultPlan {
     queue_copy: usize,
@@ -362,5 +392,42 @@ mod tests {
         ];
 
         assert_eq!(nested_queue_result_plan(&instructions, &relocations), None);
+    }
+
+    #[test]
+    fn recognizes_nested_cancel_all_cleanup_owner_from_call_topology() {
+        let instructions = [
+            Instruction::BranchAndLink {
+                target: "OSDisableInterrupts".to_owned(),
+            },
+            Instruction::BranchAndLink {
+                target: "DVDCancelAsync".to_owned(),
+            },
+            Instruction::BranchAndLink {
+                target: "__DVDPopWaitingQueue".to_owned(),
+            },
+            Instruction::BranchAndLink {
+                target: "cbForCancelAllSync".to_owned(),
+            },
+            Instruction::BranchAndLink {
+                target: "OSSleepThread".to_owned(),
+            },
+        ];
+
+        assert!(owns_unreferenced_forwarding_branch_cleanup(&instructions));
+    }
+
+    #[test]
+    fn rejects_an_ordinary_callback_wait_without_nested_cancel() {
+        let instructions = [
+            Instruction::BranchAndLink {
+                target: "cbForCancelAllSync".to_owned(),
+            },
+            Instruction::BranchAndLink {
+                target: "OSSleepThread".to_owned(),
+            },
+        ];
+
+        assert!(!owns_unreferenced_forwarding_branch_cleanup(&instructions));
     }
 }

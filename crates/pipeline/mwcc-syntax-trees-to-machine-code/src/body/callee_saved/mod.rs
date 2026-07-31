@@ -179,6 +179,8 @@ mod structured_inlined_anchored_retained_guarded_value_transaction_schedule;
 mod structured_inlined_guarded_value_transaction_schedule;
 mod structured_inlined_interrupt_transaction_schedule;
 mod structured_nested_interrupt_transaction_schedule;
+pub(crate) use structured_nested_interrupt_transaction_schedule::
+    owns_unreferenced_forwarding_branch_cleanup;
 mod structured_inlined_store_receiver_schedule;
 mod structured_inline_assertion;
 mod structured_locals;

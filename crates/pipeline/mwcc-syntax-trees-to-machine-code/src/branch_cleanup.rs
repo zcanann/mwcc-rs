@@ -27,8 +27,9 @@ pub(crate) fn thread_conditional_branch_targets(instructions: &mut [Instruction]
 }
 
 /// Thread incoming branches through an otherwise unreachable one-branch
-/// forwarding block, then remove that dead block. A block with no incoming
-/// edge is dead outright and follows the same removal path.
+/// forwarding block, then remove that dead block. A proven semantic transaction
+/// may also discard a block with no incoming edge; other functions retain that
+/// optimizer residue because MWCC does.
 ///
 /// The structured statement emitter can leave this shape when one arm returns
 /// and its sibling falls into an enclosing join:
@@ -51,9 +52,11 @@ pub(crate) fn collapse_forwarding_branch_blocks(generator: &mut Generator) {
         return;
     }
 
-    while let Some((index, landing)) =
-        forwarding_branch_block(&generator.output.instructions)
-    {
+    let allow_unreferenced = generator.collapse_unreferenced_forwarding_branches;
+    while let Some((index, landing)) = forwarding_branch_block(
+        &generator.output.instructions,
+        allow_unreferenced,
+    ) {
         for instruction in &mut generator.output.instructions {
             match instruction {
                 Instruction::BranchConditionalForward { target, .. }
@@ -89,7 +92,10 @@ fn fallthrough_branch(instructions: &[Instruction]) -> Option<usize> {
         })
 }
 
-fn forwarding_branch_block(instructions: &[Instruction]) -> Option<(usize, usize)> {
+fn forwarding_branch_block(
+    instructions: &[Instruction],
+    allow_unreferenced: bool,
+) -> Option<(usize, usize)> {
     (1..instructions.len()).find_map(|index| {
         let Instruction::Branch { target: landing } = instructions[index] else {
             return None;
@@ -99,7 +105,15 @@ fn forwarding_branch_block(instructions: &[Instruction]) -> Option<(usize, usize
         {
             return None;
         }
-        Some((index, landing))
+        let has_incoming = instructions.iter().take(index).any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::BranchConditionalForward { target, .. }
+                    | Instruction::Branch { target }
+                    if *target == index
+            )
+        });
+        (allow_unreferenced || has_incoming).then_some((index, landing))
     })
 }
 
@@ -125,7 +139,7 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
 
-        assert_eq!(forwarding_branch_block(&instructions), Some((3, 4)));
+        assert_eq!(forwarding_branch_block(&instructions, false), Some((3, 4)));
     }
 
     #[test]
@@ -138,7 +152,8 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
 
-        assert_eq!(forwarding_branch_block(&instructions), Some((2, 3)));
+        assert_eq!(forwarding_branch_block(&instructions, true), Some((2, 3)));
+        assert_eq!(forwarding_branch_block(&instructions, false), None);
     }
 
     #[test]
@@ -165,7 +180,7 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
 
-        assert_eq!(forwarding_branch_block(&instructions), None);
+        assert_eq!(forwarding_branch_block(&instructions, false), None);
     }
 
     #[test]

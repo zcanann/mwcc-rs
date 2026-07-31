@@ -574,6 +574,7 @@ fn lower_function_body(
         structured_object_collision_loop_entry: false,
         structured_sequenced_callback_wait_starter: None,
         structured_switch_dispatch_conditionals: HashSet::new(),
+        collapse_unreferenced_forwarding_branches: false,
         structured_shared_switch_global_value: None,
         transient_global_index_base: None,
         full_bss_globals: globals
@@ -748,6 +749,8 @@ fn lower_function_body(
         ));
     }
     if generator.behavior.schedule_latency_slots {
+        generator.collapse_unreferenced_forwarding_branches |=
+            body::owns_unreferenced_forwarding_branch_cleanup(&generator.output.instructions);
         if generator.structured_array_pool_emitted {
             branch_cleanup::thread_conditional_branch_targets(
                 &mut generator.output.instructions,

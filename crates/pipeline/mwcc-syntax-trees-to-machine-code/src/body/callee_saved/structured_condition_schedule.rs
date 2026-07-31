@@ -347,8 +347,10 @@ fn conditional_goto_diamond(
     else {
         return None;
     };
-    (*skip == conditional + 2 && *target != conditional + 1)
-        .then_some((*options, *condition_bit, *target))
+    (*skip == conditional + 2
+        && *target != conditional + 1
+        && !super::structured_switch_lowering::is_structured_switch_join_placeholder(*target))
+    .then_some((*options, *condition_bit, *target))
 }
 
 fn find_entry_member_saved_home(instructions: &[Instruction]) -> Option<(usize, u8)> {
@@ -790,6 +792,24 @@ mod tests {
             conditional_goto_diamond(&instructions, 0),
             Some((12, 2, 0))
         );
+    }
+
+    #[test]
+    fn rejects_a_false_edge_skip_to_a_structured_switch_join() {
+        let instructions = [
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 2,
+            },
+            Instruction::Branch {
+                target: super::structured_switch_lowering::structured_switch_join_placeholder(3),
+            },
+            Instruction::load_immediate(3, 1),
+            Instruction::BranchToLinkRegister,
+        ];
+
+        assert_eq!(conditional_goto_diamond(&instructions, 0), None);
     }
 
     #[test]

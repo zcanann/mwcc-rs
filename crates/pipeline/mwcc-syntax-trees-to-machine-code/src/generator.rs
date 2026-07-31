@@ -356,6 +356,10 @@ pub(crate) struct Generator {
     /// can have the same local shape as a structured `if (...) goto`, but MWCC
     /// preserves the switch's two-edge leaf rather than folding it.
     pub(crate) structured_switch_dispatch_conditionals: HashSet<usize>,
+    /// A semantic transaction whose final CFG cleanup removes forwarding
+    /// branches with no incoming edge. Ordinary functions retain that
+    /// optimizer residue even though it is unreachable.
+    pub(crate) collapse_unreferenced_forwarding_branches: bool,
     /// A nonvolatile global pointer loaded immediately before a guarded switch
     /// and consumed at the start of several mutually exclusive arms.
     pub(crate) structured_shared_switch_global_value: Option<(String, u8)>,

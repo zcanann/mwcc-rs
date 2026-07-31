@@ -80,7 +80,8 @@ use super::structured_loop_lowering::{
 };
 use super::structured_switch_lowering::{
     is_lowered_switch_guard, lower_structured_switches,
-    lower_structured_switches_for_emission,
+    lower_structured_switches_for_emission, resolve_structured_switch_joins,
+    structured_switch_join_placeholder,
 };
 use super::structured_sparse_switch::is_sparse_shared_body_switch;
 use super::structured_shared_switch_global_value::
@@ -1114,6 +1115,7 @@ impl Generator {
         if sequenced_callback_wait_layout {
             self.structured_sequenced_callback_wait_starter =
                 sequenced_callback_wait_starter(function).map(str::to_owned);
+            self.collapse_unreferenced_forwarding_branches = true;
         }
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
@@ -2848,6 +2850,7 @@ impl Generator {
             }
         }
         self.fold_structured_conditional_gotos();
+        resolve_structured_switch_joins(&mut self.output.instructions);
         thread_forward_unconditional_branch_chains(&mut self.output.instructions);
         if let Some(layout) = &loop_member_receiver_layout {
             layout.coalesce_receiver_load(self, homes[0], homes[3]);
@@ -3291,7 +3294,7 @@ impl Generator {
                         if let Instruction::Branch { target } =
                             &mut self.output.instructions[skip_body]
                         {
-                            *target = join;
+                            *target = structured_switch_join_placeholder(join);
                         }
                         continue;
                     }

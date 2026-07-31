@@ -10,6 +10,13 @@ use mwcc_syntax_trees::{
 };
 use std::collections::HashSet;
 
+// Switch-arm exits retain their semantic provenance until the generic
+// conditional-goto fold has run. This tagged range cannot collide with a real
+// instruction index, and MachineFunction's encoder rejects any tag that leaks
+// past the dedicated resolver.
+const STRUCTURED_SWITCH_JOIN_PLACEHOLDER: usize = usize::MAX / 4;
+const STRUCTURED_SWITCH_JOIN_LIMIT: usize = usize::MAX / 2;
+
 pub(super) fn lower_structured_switches(function: &Function) -> Option<Function> {
     lower_structured_switches_with_mode(function, false)
 }
@@ -132,6 +139,32 @@ pub(super) fn is_lowered_switch_guard(condition: &Expression) -> bool {
             if name.starts_with("__mwcc_structured_switch_"))
             && matches!(right.as_ref(), Expression::IntegerLiteral(_))
     )
+}
+
+pub(super) fn structured_switch_join_placeholder(join: usize) -> usize {
+    STRUCTURED_SWITCH_JOIN_PLACEHOLDER
+        .checked_add(join)
+        .expect("a structured switch join fits in the placeholder range")
+}
+
+pub(super) fn is_structured_switch_join_placeholder(target: usize) -> bool {
+    (STRUCTURED_SWITCH_JOIN_PLACEHOLDER..STRUCTURED_SWITCH_JOIN_LIMIT).contains(&target)
+}
+
+pub(super) fn resolve_structured_switch_joins(
+    instructions: &mut [mwcc_machine_code::Instruction],
+) {
+    for instruction in instructions {
+        match instruction {
+            mwcc_machine_code::Instruction::Branch { target }
+            | mwcc_machine_code::Instruction::BranchConditionalForward { target, .. }
+                if is_structured_switch_join_placeholder(*target) =>
+            {
+                *target -= STRUCTURED_SWITCH_JOIN_PLACEHOLDER;
+            }
+            _ => {}
+        }
+    }
 }
 
 pub(super) fn canonical_switch_hidden_label_count(
