@@ -1,12 +1,70 @@
-//! Comparisons between a narrow register leaf and a memory-backed member.
+//! Comparisons whose narrow operands compete for the r0 load scratch.
 //!
-//! The member occupies r0 while the register leaf still needs extension, so
-//! the widened leaf joins allocation instead of overwriting the loaded value.
+//! Preserve and promote one operand in an allocator-backed register before a
+//! memory-backed sibling overwrites r0.
 
 use super::*;
 use mwcc_syntax_trees::Type;
 
 impl Generator {
+    /// Compare two narrow memory values when both naturally load through r0.
+    ///
+    /// Narrow loads already produce a promoted value except for signed bytes:
+    /// `lha` sign-extends and `lhz`/`lbz` zero-extend. Preserve the left load in
+    /// an allocator-backed register (sign-extending a signed byte on the way),
+    /// then let the right load reuse r0. This is MWCC's measured
+    /// `lbz r0; extsb r4,r0; lha r0; cmpw r4,r0` schedule.
+    pub(crate) fn try_emit_narrow_memory_compare(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        left_register: u8,
+        signed_compare: bool,
+    ) -> Compilation<bool> {
+        let narrow_memory = |generator: &Self, expression: &Expression| {
+            (generator.is_byte_load(expression) || generator.is_halfword_load(expression))
+                .then_some(())
+        };
+        if left_register != GENERAL_SCRATCH
+            || narrow_memory(self, left).is_none()
+            || narrow_memory(self, right).is_none()
+        {
+            return Ok(false);
+        }
+
+        let preserved_left = self.fresh_virtual_general_preferring(4);
+        if self.is_signed_byte_load(left)? {
+            self.emit_widen(preserved_left, left_register, 8, true);
+        } else {
+            self.output.instructions.push(Instruction::move_register(
+                preserved_left,
+                left_register,
+            ));
+        }
+
+        let right_register = self.condition_operand_register(right)?;
+        // Direct member/dereference/index byte loads are raw `lbz` values. A
+        // signed-char global is already extended by `emit_global_load`.
+        if self.is_signed_byte_load(right)? && !matches!(right, Expression::Variable(_)) {
+            self.emit_widen(right_register, right_register, 8, true);
+        }
+
+        if signed_compare {
+            self.output.instructions.push(Instruction::CompareWord {
+                a: preserved_left,
+                b: right_register,
+            });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::CompareLogicalWord {
+                    a: preserved_left,
+                    b: right_register,
+                });
+        }
+        Ok(true)
+    }
+
     pub(crate) fn try_emit_narrow_leaf_member_compare(
         &mut self,
         left: &Expression,

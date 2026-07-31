@@ -1780,6 +1780,15 @@ impl Generator {
                                 }
                             }
                             _ => {
+                                if self.try_emit_narrow_memory_compare(
+                                    left,
+                                    right,
+                                    left_register,
+                                    signed,
+                                )? {
+                                    return Ok(false_branch_bo_bi(*operator)
+                                        .expect("is_comparison restricts the operator"));
+                                }
                                 if self.try_emit_narrow_leaf_member_compare(
                                     left,
                                     right,

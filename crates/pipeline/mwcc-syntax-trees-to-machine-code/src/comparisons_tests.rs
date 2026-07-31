@@ -66,8 +66,12 @@ fn lower_with_globals(function: &Function, globals: &[GlobalDeclaration]) -> Mac
 }
 
 fn pointer_global(name: &str) -> GlobalDeclaration {
+    typed_global(name, Type::StructPointer { element_size: 4 })
+}
+
+fn typed_global(name: &str, declared_type: Type) -> GlobalDeclaration {
     GlobalDeclaration {
-        declared_type: Type::StructPointer { element_size: 4 },
+        declared_type,
         source_fundamental: None,
         name: name.into(),
         is_extern: true,
@@ -88,6 +92,87 @@ fn pointer_global(name: &str) -> GlobalDeclaration {
         section: None,
         attribute_alignment: None,
     }
+}
+
+#[test]
+fn narrow_memory_comparison_preserves_and_promotes_both_loads() {
+    let function = Function {
+        return_type: Type::Void,
+        name: "same_state".into(),
+        is_static: false,
+        is_weak: false,
+        parameters: vec![Parameter {
+            parameter_type: Type::StructPointer { element_size: 80 },
+            name: "object".into(),
+        }],
+        locals: Vec::new(),
+        statements: vec![Statement::If {
+            condition: Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left: Box::new(Expression::Member {
+                    base: Box::new(Expression::Variable("object".into())),
+                    offset: 72,
+                    member_type: Type::Char,
+                    index_stride: None,
+                }),
+                right: Box::new(Expression::Variable("state".into())),
+            },
+            then_body: vec![Statement::Expression(Expression::Call {
+                name: "matched".into(),
+                arguments: Vec::new(),
+            })],
+            else_body: Vec::new(),
+        }],
+        guards: Vec::new(),
+        return_expression: None,
+        section: None,
+        preceded_by_asm: false,
+        asm_body: None,
+        inline_asm_blocks: Vec::new(),
+        force_active: false,
+        text_deferred: false,
+        peephole_disabled: false,
+    };
+    let machine = lower_with_globals(&function, &[typed_global("state", Type::Short)]);
+
+    let byte_load = machine
+        .instructions
+        .iter()
+        .position(|instruction| {
+            matches!(
+                instruction,
+                Instruction::LoadByteZero {
+                    d: 0,
+                    offset: 72,
+                    ..
+                }
+            )
+        })
+        .expect("the signed member must load as a raw byte");
+    let (extend, preserved) = machine.instructions[byte_load + 1..]
+        .iter()
+        .enumerate()
+        .find_map(|(offset, instruction)| match instruction {
+            Instruction::ExtendSignByte { a, s: 0 } if *a != 0 => {
+                Some((byte_load + 1 + offset, *a))
+            }
+            _ => None,
+        })
+        .expect("the left byte must be promoted outside r0");
+    let halfword_load = machine.instructions[extend + 1..]
+        .iter()
+        .position(|instruction| {
+            matches!(instruction, Instruction::LoadHalfwordAlgebraic { d: 0, .. })
+        })
+        .map(|offset| extend + 1 + offset)
+        .expect("the right signed short must reload through r0");
+    assert!(
+        machine.instructions[halfword_load + 1..]
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::CompareWord { a, b: 0 } if *a == preserved)),
+        "the promoted member and global short must be compared: {:?}",
+        machine.instructions
+    );
 }
 
 fn bytes(words: &[u32]) -> Vec<u8> {
