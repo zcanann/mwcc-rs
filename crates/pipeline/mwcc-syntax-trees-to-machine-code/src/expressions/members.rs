@@ -2171,6 +2171,9 @@ impl Generator {
             );
         }
         if let Some(constant) = constant_value(index) {
+            if constant == 0 {
+                return self.emit_global_array_decay(name, total_size, destination);
+            }
             self.emit_global_array_base(name, total_size, destination)?;
             let offset = constant * i64::from(element_size);
             if offset != 0 {
