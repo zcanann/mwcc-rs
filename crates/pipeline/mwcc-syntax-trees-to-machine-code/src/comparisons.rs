@@ -1839,11 +1839,17 @@ impl Generator {
             && !matches!(value, Expression::Index { index, .. } if constant_value(index).is_none())
     }
 
-    /// Whether `value` is an 8-bit memory load — a dereference, index, or struct
-    /// member. All byte loads use `lbz`, so the loaded register already contains
-    /// the exact unsigned-byte value even when the source type is signed.
+    /// Whether `value` is an 8-bit memory load — a global, dereference, index,
+    /// or struct member. All byte loads use `lbz`, so the loaded register
+    /// already contains the exact unsigned-byte value even when the source type
+    /// is signed.
     pub(crate) fn is_byte_load(&self, value: &Expression) -> bool {
         let width = match value {
+            Expression::Variable(name) if unshadowed_global_byte_load(
+                value,
+                &self.globals,
+                self.locations.contains_key(name) || self.frame_slots.contains_key(name),
+            ) => Some(8),
             Expression::Dereference { pointer } => self.dereferenced_width(pointer),
             Expression::Index { base, .. } => self.dereferenced_width(base),
             Expression::Member { member_type, .. } => Some(member_type.width()),
@@ -1990,5 +1996,45 @@ impl Generator {
                 "this comparison operand shape needs the full register allocator (roadmap)",
             )),
         }
+    }
+}
+
+fn unshadowed_global_byte_load(
+    expression: &Expression,
+    globals: &std::collections::HashMap<String, mwcc_syntax_trees::Type>,
+    shadowed: bool,
+) -> bool {
+    if shadowed {
+        return false;
+    }
+    let Expression::Variable(name) = expression else {
+        return false;
+    };
+    matches!(
+        globals.get(name),
+        Some(mwcc_syntax_trees::Type::Char | mwcc_syntax_trees::Type::UnsignedChar)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unshadowed_global_byte_load;
+    use mwcc_syntax_trees::{Expression, Type};
+    use std::collections::HashMap;
+
+    #[test]
+    fn classifies_an_unshadowed_global_byte_as_a_memory_load() {
+        let globals = HashMap::from([("flag".into(), Type::UnsignedChar)]);
+        let expression = Expression::Variable("flag".into());
+
+        assert!(unshadowed_global_byte_load(&expression, &globals, false));
+    }
+
+    #[test]
+    fn leaves_a_shadowing_local_out_of_global_load_classification() {
+        let globals = HashMap::from([("flag".into(), Type::UnsignedChar)]);
+        let expression = Expression::Variable("flag".into());
+
+        assert!(!unshadowed_global_byte_load(&expression, &globals, true));
     }
 }
