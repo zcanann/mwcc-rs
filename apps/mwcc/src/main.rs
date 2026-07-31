@@ -3122,6 +3122,9 @@ mod tests {
     #[path = "sorted_intrusive_global_insert.rs"]
     mod sorted_intrusive_global_insert;
 
+    #[path = "global_doubly_linked_remove.rs"]
+    mod global_doubly_linked_remove;
+
     #[path = "inlined_list_append.rs"]
     mod inlined_list_append;
 

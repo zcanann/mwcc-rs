@@ -72,6 +72,7 @@ mod display_list_packet_runs;
 mod display_list_framebuffer_setup;
 mod device_registration_event_switch;
 mod doubly_linked_list_extract;
+mod global_doubly_linked_remove;
 mod driver;
 mod enum_remap_member_update;
 mod endian_probe;

@@ -2652,6 +2652,11 @@ impl Generator {
         if self.try_doubly_linked_list_extract(function)? {
             return Ok(());
         }
+        // A queue held by current/head/tail globals removes its head, tail, or
+        // middle node through three distinct early-return transactions.
+        if self.try_global_doubly_linked_remove(function)? {
+            return Ok(());
+        }
         // Dolphin heap cells are inserted by address and coalesced with either
         // adjacent neighbor in one scheduled link-repair region.
         if self.try_coalescing_free_list_insert(function)? {
