@@ -794,6 +794,9 @@ impl Generator {
             return Ok(false);
         }
 
+        // String-pool ordinals follow source argument order even though this
+        // schedule materializes the third argument first.
+        self.string_literal_placeholder(first);
         let third = self.string_literal_placeholder(third);
         self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT, &third);
         self.emit_string_address_low(
