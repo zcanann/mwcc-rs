@@ -1,8 +1,9 @@
 //! Loads from a scalar element of a row-indexed aggregate member array.
 //!
-//! MWCC scales the row directly into the result/argument register, folds the
-//! member and column displacement through r0, and finishes with an indexed
-//! load against the preserved aggregate base.
+//! MWCC loads a memory-backed row through r0 (or reads its register home),
+//! scales it directly into the result/argument register, folds the member and
+//! column displacement through r0, and finishes with an indexed load against
+//! the preserved aggregate base.
 
 #[allow(unused_imports)]
 use super::*;
@@ -67,7 +68,27 @@ impl Generator {
             return Ok(false);
         }
         let aggregate = self.general_register_of_leaf(load.aggregate)?;
-        let row_index = self.general_register_of_leaf(load.row_index)?;
+        let row_index = if let Ok(register) = self.general_register_of_leaf(load.row_index) {
+            register
+        } else if self.is_byte_load(load.row_index) || self.is_halfword_load(load.row_index) {
+            let newly_reserved = self.reserved.insert(aggregate);
+            let evaluated = self.evaluate_general(load.row_index, GENERAL_SCRATCH);
+            if newly_reserved {
+                self.reserved.remove(&aggregate);
+            }
+            evaluated?;
+            // Member/dereference/index signed-byte loads are raw `lbz`
+            // values. Globals already receive this promotion in their load
+            // owner, so only direct memory expressions need it here.
+            if self.is_signed_byte_load(load.row_index)?
+                && !matches!(load.row_index, Expression::Variable(_))
+            {
+                self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
+            }
+            GENERAL_SCRATCH
+        } else {
+            return Ok(false);
+        };
         if destination == aggregate || destination == row_index {
             return Ok(false);
         }
@@ -130,5 +151,31 @@ mod tests {
 
         assert!(classify(&row, &Expression::IntegerLiteral(0)).is_some());
         assert!(classify(&row, &Expression::Variable("column".into())).is_none());
+    }
+
+    #[test]
+    fn retains_a_memory_backed_row_index_for_the_lowering_owner() {
+        let member = Expression::MemberAddress {
+            base: Box::new(Expression::Variable("data".into())),
+            offset: 90,
+            element: Pointee::UnsignedChar,
+            index_stride: Some(2),
+        };
+        let row_index = Expression::Member {
+            base: Box::new(Expression::Variable("data".into())),
+            offset: 89,
+            member_type: Type::UnsignedChar,
+            index_stride: None,
+        };
+        let row = Expression::Index {
+            base: Box::new(member),
+            index: Box::new(row_index),
+        };
+
+        let load = classify(&row, &Expression::IntegerLiteral(0))
+            .expect("a memory-backed row index remains a nested member-array load");
+        assert!(matches!(load.row_index, Expression::Member { offset: 89, .. }));
+        assert_eq!(load.member_offset, 90);
+        assert_eq!(load.row_stride, 2);
     }
 }
