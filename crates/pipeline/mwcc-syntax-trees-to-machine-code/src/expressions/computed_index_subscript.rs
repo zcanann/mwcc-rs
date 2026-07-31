@@ -38,6 +38,35 @@ fn member_pointer_and_index<'a>(
     Some((*pointee, pointer_owner, index_owner))
 }
 
+fn member_pointer_and_affine_global_index<'a>(
+    base: &'a Expression,
+    index: &'a Expression,
+) -> Option<(Pointee, &'a str)> {
+    let Expression::Member {
+        member_type: Type::Pointer(pointee),
+        index_stride: None,
+        ..
+    } = base
+    else {
+        return None;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left,
+        right,
+    } = index
+    else {
+        return None;
+    };
+    match (left.as_ref(), right.as_ref()) {
+        (Expression::Variable(global), constant)
+            if constant_value(constant).is_some() => Some((*pointee, global)),
+        (constant, Expression::Variable(global))
+            if constant_value(constant).is_some() => Some((*pointee, global)),
+        _ => None,
+    }
+}
+
 impl Generator {
     pub(crate) fn try_emit_computed_index_member_pointer_subscript(
         &mut self,
@@ -45,6 +74,60 @@ impl Generator {
         index: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
+        if let Some((pointee, global)) =
+            member_pointer_and_affine_global_index(base, index)
+        {
+            if destination == GENERAL_SCRATCH
+                || matches!(
+                    pointee,
+                    Pointee::Float
+                        | Pointee::Double
+                        | Pointee::LongLong
+                        | Pointee::UnsignedLongLong
+                )
+                || !matches!(
+                    self.globals.get(global),
+                    Some(
+                        Type::Char
+                            | Type::UnsignedChar
+                            | Type::Short
+                            | Type::UnsignedShort
+                            | Type::Int
+                            | Type::UnsignedInt
+                    )
+                )
+            {
+                return Ok(false);
+            }
+            // MWCC retains the loaded member pointer independently of the
+            // saved result, computes `global + constant` in the next volatile
+            // lane, and scales through r0 before the indexed load.
+            let pointer = self.fresh_virtual_general_preferring(5);
+            self.evaluate_general(base, pointer)?;
+            let restore = self.reserved.insert(pointer);
+            let affine = self.fresh_virtual_general_preferring(4);
+            self.evaluate_general(index, affine)?;
+            let scaled = if pointee.size() == 1 {
+                affine
+            } else {
+                self.output.instructions.push(Instruction::ShiftLeftImmediate {
+                    a: GENERAL_SCRATCH,
+                    s: affine,
+                    shift: pointee.size().trailing_zeros() as u8,
+                });
+                GENERAL_SCRATCH
+            };
+            if restore {
+                self.reserved.remove(&pointer);
+            }
+            self.output.instructions.push(indexed_load(
+                pointee,
+                destination,
+                pointer,
+                scaled,
+            )?);
+            return Ok(true);
+        }
         let Some((pointee, pointer_owner, index_owner)) = member_pointer_and_index(base, index)
         else {
             return Ok(false);
@@ -110,5 +193,30 @@ mod tests {
 
         assert!(member_pointer_and_index(&pointer, &index).is_some());
         assert!(member_pointer_and_index(&pointer, &Expression::IntegerLiteral(0)).is_none());
+    }
+
+    #[test]
+    fn recognizes_an_affine_global_index_over_a_member_pointer() {
+        let pointer = Expression::Member {
+            base: Box::new(Expression::Variable("object".into())),
+            offset: 64,
+            member_type: Type::Pointer(Pointee::Short),
+            index_stride: None,
+        };
+        let index = Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: Box::new(Expression::Variable("selected".into())),
+            right: Box::new(Expression::IntegerLiteral(1)),
+        };
+
+        assert_eq!(
+            member_pointer_and_affine_global_index(&pointer, &index),
+            Some((Pointee::Short, "selected"))
+        );
+        assert!(member_pointer_and_affine_global_index(
+            &pointer,
+            &Expression::Variable("selected".into()),
+        )
+        .is_none());
     }
 }
