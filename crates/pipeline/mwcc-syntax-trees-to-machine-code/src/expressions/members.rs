@@ -960,6 +960,16 @@ impl Generator {
                 "unsupported global indexed member load type {member_type:?} at +{offset}"
             ))
         })?;
+        if self.try_emit_global_pointer_array_member_load(
+            name,
+            total_size,
+            index,
+            offset,
+            pointee,
+            destination,
+        )? {
+            return Ok(());
+        }
         // A constant index folds into the load displacement.
         if let Some(constant) = constant_value(index) {
             // A nonzero-sized aggregate needs a real GPR base; r0 reads as literal
