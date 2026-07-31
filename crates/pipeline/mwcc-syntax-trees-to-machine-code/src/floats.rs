@@ -811,7 +811,7 @@ impl Generator {
         // the scratch. Keeping the literal as the first commutative source
         // matches the ordinary literal/leaf path below while preserving source
         // order for subtraction and division.
-        if let Expression::FloatLiteral(value) = left {
+        if let Some(value) = contextual_float_literal(left) {
             if is_complex(right)
                 || self.is_float_call_value(right)
                 || self.is_integer_call_promoted_to_float(right)
@@ -830,11 +830,11 @@ impl Generator {
                 {
                     self.evaluate_float(right, computed)?;
                 }
-                self.load_float_literal(FLOAT_SCRATCH, *value, double);
+                self.load_float_literal(FLOAT_SCRATCH, value, double);
                 return Operands::ordered(FLOAT_SCRATCH, computed);
             }
         }
-        if let Expression::FloatLiteral(value) = right {
+        if let Some(value) = contextual_float_literal(right) {
             if is_complex(left)
                 || self.is_float_call_value(left)
                 || self.is_integer_call_promoted_to_float(left)
@@ -853,7 +853,7 @@ impl Generator {
                 {
                     self.evaluate_float(left, computed)?;
                 }
-                self.load_float_literal(FLOAT_SCRATCH, *value, double);
+                self.load_float_literal(FLOAT_SCRATCH, value, double);
                 return Operands::reversed(computed, FLOAT_SCRATCH);
             }
         }
@@ -861,17 +861,17 @@ impl Generator {
         // register (an 8-byte `lfd` in a double op, a 4-byte `lfs` otherwise); the
         // other (leaf-variable) operand stays in place. mwcc emits the constant as
         // the first source of the (commutative) operation.
-        if let Expression::FloatLiteral(value) = right {
+        if let Some(value) = contextual_float_literal(right) {
             if matches!(left, Expression::Variable(_)) {
                 let left_register = self.float_register_of_leaf(left)?;
-                self.load_float_literal(FLOAT_SCRATCH, *value, double);
+                self.load_float_literal(FLOAT_SCRATCH, value, double);
                 return Operands::reversed(left_register, FLOAT_SCRATCH);
             }
         }
-        if let Expression::FloatLiteral(value) = left {
+        if let Some(value) = contextual_float_literal(left) {
             if matches!(right, Expression::Variable(_)) {
                 let right_register = self.float_register_of_leaf(right)?;
-                self.load_float_literal(FLOAT_SCRATCH, *value, double);
+                self.load_float_literal(FLOAT_SCRATCH, value, double);
                 return Operands::ordered(FLOAT_SCRATCH, right_register);
             }
         }
@@ -933,6 +933,20 @@ fn fold_float_binary_literals(operator: BinaryOperator, left: f64, right: f64) -
         BinaryOperator::Subtract => Some(left - right),
         BinaryOperator::Multiply => Some(left * right),
         BinaryOperator::Divide => Some(left / right),
+        _ => None,
+    }
+}
+
+fn contextual_float_literal(expression: &Expression) -> Option<f64> {
+    match expression {
+        Expression::FloatLiteral(value) => Some(*value),
+        Expression::Cast {
+            target_type: Type::Float | Type::Double,
+            operand,
+        } => match operand.as_ref() {
+            Expression::FloatLiteral(value) => Some(*value),
+            _ => None,
+        },
         _ => None,
     }
 }

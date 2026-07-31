@@ -5,6 +5,7 @@ mod dependencies;
 mod global_address;
 mod members;
 mod nested;
+mod nested_float;
 mod repeated_member;
 mod string_endangered_word;
 

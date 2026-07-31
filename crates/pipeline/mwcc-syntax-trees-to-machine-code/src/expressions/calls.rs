@@ -456,6 +456,12 @@ impl Generator {
         {
             return Ok(());
         }
+        if self.try_emit_call_bearing_first_float_with_reloadable_suffix_arguments(
+            arguments,
+            name,
+        )? {
+            return Ok(());
+        }
         if self.try_emit_reloadable_first_nested_second_arguments(arguments, name)? {
             return Ok(());
         }

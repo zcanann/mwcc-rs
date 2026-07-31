@@ -11,6 +11,29 @@ use mwcc_core::Compilation;
 use mwcc_machine_code::{Instruction, MachineFunction, RelocationTarget};
 use mwcc_syntax_trees::{Expression, UnaryOperator};
 
+fn negated_and_literal<'e>(
+    left: &'e Expression,
+    right: &'e Expression,
+) -> Option<(&'e Expression, f64)> {
+    fn extract<'e>(
+        negated: &'e Expression,
+        literal: &Expression,
+    ) -> Option<(&'e Expression, f64)> {
+        let Expression::Unary {
+            operator: UnaryOperator::Negate,
+            operand,
+        } = negated
+        else {
+            return None;
+        };
+        let Expression::FloatLiteral(value) = literal else {
+            return None;
+        };
+        Some((operand.as_ref(), *value))
+    }
+    extract(left, right).or_else(|| extract(right, left))
+}
+
 impl Generator {
     /// Lower `[ - ]member * ABS(other_member)` as a paired select/product.
     /// This ends in an ordinary multiply; it is not the fused-negative
@@ -77,6 +100,31 @@ impl Generator {
         destination: u8,
         double: bool,
     ) -> Compilation<bool> {
+        if let Some((negated, literal)) = negated_and_literal(left, right) {
+            if destination == FLOAT_SCRATCH || !self.is_float_located(negated) {
+                return Ok(false);
+            }
+            self.load_float_literal(destination, literal, double);
+            self.emit_located_operand(negated, FLOAT_SCRATCH)?;
+            self.output.instructions.push(Instruction::FloatNegate {
+                d: FLOAT_SCRATCH,
+                b: FLOAT_SCRATCH,
+            });
+            self.output.instructions.push(if double {
+                Instruction::FloatMultiplyDouble {
+                    d: destination,
+                    a: destination,
+                    c: FLOAT_SCRATCH,
+                }
+            } else {
+                Instruction::FloatMultiplySingle {
+                    d: destination,
+                    a: destination,
+                    c: FLOAT_SCRATCH,
+                }
+            });
+            return Ok(true);
+        }
         let Expression::Unary {
             operator: UnaryOperator::Negate,
             operand: negated,
@@ -199,5 +247,22 @@ mod tests {
             ]
         ));
         assert_eq!(output.relocations[0].instruction_index, 1);
+    }
+
+    #[test]
+    fn recognizes_a_negated_operand_beside_a_literal_in_either_order() {
+        let negated = Expression::Unary {
+            operator: UnaryOperator::Negate,
+            operand: Box::new(Expression::Variable("value".into())),
+        };
+        let literal = Expression::FloatLiteral(0.25);
+        assert!(matches!(
+            negated_and_literal(&negated, &literal),
+            Some((Expression::Variable(name), 0.25)) if name == "value"
+        ));
+        assert!(matches!(
+            negated_and_literal(&literal, &negated),
+            Some((Expression::Variable(name), 0.25)) if name == "value"
+        ));
     }
 }
