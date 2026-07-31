@@ -2863,6 +2863,9 @@ impl Generator {
         if self.try_masked_transfer_command_switch(function)? {
             return Ok(());
         }
+        if self.try_unoptimized_source_home_leaf_body(function)? {
+            return Ok(());
+        }
         if self.try_value_tracking(function)? {
             return Ok(());
         }

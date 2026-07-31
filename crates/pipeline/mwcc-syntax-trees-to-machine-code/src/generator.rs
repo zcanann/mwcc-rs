@@ -488,6 +488,9 @@ pub(crate) struct Generator {
     /// after the last window home is consumed because operand scheduling still
     /// follows the materialized-polynomial convention.
     pub(crate) materialized_float_assignment_active: bool,
+    /// A call-free O0 source-home chain whose final physical schedule retains
+    /// narrow parameter extension and distinct intermediate scratch lanes.
+    pub(crate) structured_unoptimized_leaf_source_homes: bool,
     /// Volatile homes reserved by a structured branch whose returned float
     /// parameter remains live across mutually exclusive member-store arms.
     pub(crate) structured_branch_float_work_home: Option<u8>,

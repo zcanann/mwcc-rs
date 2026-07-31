@@ -335,18 +335,17 @@ fn materialize_leaf_predecrement_frame(
     old_size: i16,
     new_size: i16,
     frame_growth: i16,
-    saved_gpr_count: usize,
+    _saved_gpr_count: usize,
 ) -> Result<(Vec<usize>, i16), &'static str> {
-    if saved_gpr_count != 0
-        || instructions.iter().any(|instruction| {
-            matches!(
-                instruction,
-                Instruction::MoveFromLinkRegister { .. }
-                    | Instruction::MoveToLinkRegister { .. }
-                    | Instruction::StoreWord { s: 0, a: 1, .. }
-                    | Instruction::LoadWord { d: 0, a: 1, .. }
-            )
-        })
+    if instructions.iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instruction::MoveFromLinkRegister { .. }
+                | Instruction::MoveToLinkRegister { .. }
+                | Instruction::StoreWord { s: 0, a: 1, .. }
+                | Instruction::LoadWord { d: 0, a: 1, .. }
+        )
+    })
     {
         return Err("allocator-selected leaf FPR frame retains linkage state");
     }
@@ -472,6 +471,41 @@ mod tests {
                 Instruction::AddImmediate { immediate: 48, .. },
                 Instruction::BranchToLinkRegister,
             ]
+        ));
+    }
+
+    #[test]
+    fn composes_leaf_float_saves_above_existing_general_saves() {
+        let mut instructions = vec![
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 },
+            Instruction::StoreWord { s: 31, a: 1, offset: 12 },
+            Instruction::StoreWord { s: 30, a: 1, offset: 8 },
+            Instruction::FloatMove { d: 1, b: 31 },
+            Instruction::LoadWord { d: 31, a: 1, offset: 12 },
+            Instruction::LoadWord { d: 30, a: 1, offset: 8 },
+            Instruction::AddImmediate { d: 1, a: 1, immediate: 16 },
+            Instruction::BranchToLinkRegister,
+        ];
+
+        let (_, frame_growth) =
+            materialize_predecrement_frame(&mut instructions, &[31], 2, true).unwrap();
+
+        assert_eq!(frame_growth, 16);
+        assert!(matches!(
+            instructions[0],
+            Instruction::StoreWordWithUpdate { offset: -32, .. }
+        ));
+        assert!(matches!(
+            instructions[1],
+            Instruction::StoreFloatDouble { s: 31, offset: 16, .. }
+        ));
+        assert!(matches!(
+            instructions[3],
+            Instruction::StoreWord { s: 31, offset: 12, .. }
+        ));
+        assert!(matches!(
+            instructions[4],
+            Instruction::StoreWord { s: 30, offset: 8, .. }
         ));
     }
 

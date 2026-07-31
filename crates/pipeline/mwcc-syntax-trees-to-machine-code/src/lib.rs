@@ -710,6 +710,7 @@ fn lower_function_body(
         descending_allocation_top: None,
         materialized_float_window: None,
         materialized_float_assignment_active: false,
+        structured_unoptimized_leaf_source_homes: false,
         structured_branch_float_work_home: None,
         structured_branch_constant_address_home: None,
         skipped_inline_names: skipped_inline_names.clone(),
@@ -944,6 +945,7 @@ fn lower_function_body(
         &allocated_float_saves,
         paired_single_float_frame,
     )?;
+    generator.finalize_unoptimized_leaf_source_homes();
     // Build 163 shares the selected body schedule, but wraps GPR survivors in a
     // larger linkage-first frame. Normalize only the verified allocator shape;
     // convention-aware owners already emitted their final frame and are skipped.

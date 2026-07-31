@@ -86,6 +86,7 @@ use super::structured_repeated_call_poll::{
 };
 use super::structured_recovered_float_homes;
 use super::structured_recovered_general_homes::StructuredRecoveredGeneralHomes;
+use super::structured_unoptimized_leaf_homes::StructuredUnoptimizedLeafHomes;
 use super::structured_switch_lowering::{
     is_lowered_switch_guard, lower_structured_switches,
     lower_structured_switches_for_emission, resolve_structured_switch_joins,
@@ -132,6 +133,16 @@ use super::structured_unobserved_scalar_table::UnobservedScalarTable;
 use super::*;
 
 impl Generator {
+    pub(crate) fn try_unoptimized_source_home_leaf_body(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if StructuredUnoptimizedLeafHomes::plan(function).is_none() {
+            return Ok(false);
+        }
+        self.try_callee_saved_structured_body(function)
+    }
+
     /// Lower a void structured body after assigning every value that can be read
     /// following a (possibly conditional) call to a virtual callee-saved home.
     pub(crate) fn try_callee_saved_structured_body(
@@ -518,7 +529,11 @@ impl Generator {
             })
             .collect();
         let recovered_general_homes = StructuredRecoveredGeneralHomes::plan(function);
+        let unoptimized_leaf_homes = StructuredUnoptimizedLeafHomes::plan(function);
         if let Some(plan) = &recovered_general_homes {
+            survivors.extend(plan.names());
+        }
+        if let Some(plan) = &unoptimized_leaf_homes {
             survivors.extend(plan.names());
         }
         survivors.extend(
@@ -621,7 +636,8 @@ impl Generator {
             let mut survivor_names: Vec<_> = survivors.iter().copied().collect();
             survivor_names.sort_unstable();
             eprintln!(
-                "structured body plan: survivors={survivor_names:?} saved_locals={:?}",
+                "structured body plan: optimization={:?} survivors={survivor_names:?} saved_locals={:?}",
+                self.behavior.optimization,
                 saved_locals
                     .iter()
                     .map(|local| local.name.as_str())
@@ -710,7 +726,9 @@ impl Generator {
             &eager_saved_locals,
             &saved_parameter_names,
         );
-        let deferred_home_plan = if recovered_general_homes.is_some() {
+        let deferred_home_plan = if recovered_general_homes.is_some()
+            || unoptimized_leaf_homes.is_some()
+        {
             plan_distinct_deferred_saved_homes(function, &deferred_saved_locals)
         } else if self.inline_source_call_survivors.is_empty() {
             plan_deferred_saved_homes(function, &deferred_saved_locals)
@@ -1183,6 +1201,18 @@ impl Generator {
                     .as_ref()
                     .and_then(|plan| {
                         plan.preference(
+                            home_index,
+                            eager_saved_locals.len(),
+                            saved_parameters.len(),
+                            count,
+                        )
+                    })
+                {
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = unoptimized_leaf_homes
+                    .as_ref()
+                    .and_then(|plan| {
+                        plan.general_preference(
                             home_index,
                             eager_saved_locals.len(),
                             saved_parameters.len(),
@@ -2594,6 +2624,10 @@ impl Generator {
                     )
                 };
                 let preferred = structured_recovered_float_homes::preference(local, preferred);
+                let preferred = unoptimized_leaf_homes
+                    .as_ref()
+                    .and_then(|plan| plan.float_preference(&local.name))
+                    .unwrap_or(preferred);
                 self.fresh_virtual_float_preferring(preferred)
             })
             .collect();
@@ -3212,6 +3246,7 @@ impl Generator {
             self.structured_cfg_cleanup_owner = true;
             self.structured_repeated_call_poll_owner = true;
         }
+        self.structured_unoptimized_leaf_source_homes = unoptimized_leaf_homes.is_some();
         super::structured_recovered_narrow_parameter_image::apply(
             self,
             function,
