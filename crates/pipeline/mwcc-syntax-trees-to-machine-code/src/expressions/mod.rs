@@ -36,6 +36,7 @@ mod materialized_bitand_constant;
 mod retained_global_pointer_store;
 mod members;
 mod narrow_compound;
+mod nested_global_member_pointer_store;
 mod non_power_struct_member_store;
 mod operands;
 mod passes;
