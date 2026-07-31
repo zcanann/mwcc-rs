@@ -69,6 +69,103 @@ pub(crate) fn hoist_independent_sda_loads(
     permutation
 }
 
+/// Hoist an address high half over one independent store so the store fills
+/// the address pair's result-latency slot.
+///
+/// The natural statement stream for `object->state = value; call(callback)` is
+/// `store; lis callback@ha; addi callback@l`. Legacy MWCC issues the independent
+/// `lis` first and leaves the store between the dependent address halves. The
+/// relocation pair proves this is one address, while register and control-entry
+/// checks make crossing the store safe.
+pub(crate) fn hoist_address_highs_over_stores(
+    instructions: &mut [Instruction],
+    relocations: &[Relocation],
+) -> Vec<usize> {
+    let mut permutation = (0..instructions.len()).collect::<Vec<_>>();
+    let control_entries = instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::BranchConditionalForward { target, .. }
+            | Instruction::Branch { target }
+                if *target < instructions.len() =>
+            {
+                Some(*target)
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+
+    let mut store = 0;
+    while store + 3 < instructions.len() {
+        let high = store + 1;
+        let low = store + 2;
+        if control_entries.contains(&store)
+            || control_entries.contains(&high)
+            || control_entries.contains(&low)
+            || !direct_store(&instructions[store])
+            || !matches!(
+                instructions[low + 1],
+                Instruction::BranchAndLink { .. }
+            )
+        {
+            store += 1;
+            continue;
+        }
+        let Instruction::AddImmediateShifted {
+            d: high_register,
+            a: 0,
+            ..
+        } = instructions[high]
+        else {
+            store += 1;
+            continue;
+        };
+        let Instruction::AddImmediate {
+            a: low_base, ..
+        } = instructions[low]
+        else {
+            store += 1;
+            continue;
+        };
+        if low_base != high_register
+            || register_operands(&instructions[store]).iter().any(|operand| {
+                operand.class == Class::General && operand.register == high_register
+            })
+            || external_address_target(relocations, high, RelocationKind::Addr16Ha)
+                != external_address_target(relocations, low, RelocationKind::Addr16Lo)
+            || external_address_target(relocations, high, RelocationKind::Addr16Ha).is_none()
+        {
+            store += 1;
+            continue;
+        }
+
+        instructions.swap(store, high);
+        permutation[store] = high;
+        permutation[high] = store;
+        store += 3;
+    }
+    permutation
+}
+
+fn external_address_target(
+    relocations: &[Relocation],
+    index: usize,
+    kind: RelocationKind,
+) -> Option<(&str, i32)> {
+    relocations.iter().find_map(|relocation| {
+        if relocation.instruction_index != index || relocation.kind != kind {
+            return None;
+        }
+        match &relocation.target {
+            RelocationTarget::External(name) => Some((name.as_str(), 0)),
+            RelocationTarget::ExternalWithAddend(name, addend) => {
+                Some((name.as_str(), *addend))
+            }
+            _ => None,
+        }
+    })
+}
+
 fn external_sda_target(relocations: &[Relocation], index: usize) -> Option<&str> {
     relocations.iter().find_map(|relocation| {
         if relocation.instruction_index != index || relocation.kind != RelocationKind::EmbSda21 {
@@ -216,6 +313,117 @@ mod tests {
                 &[relocation(1, "state"), relocation(2, "argument")],
             ),
             [0, 1, 2],
+        );
+    }
+
+    fn address_relocation(index: usize, kind: RelocationKind, target: &str) -> Relocation {
+        Relocation {
+            instruction_index: index,
+            kind,
+            target: RelocationTarget::External(target.into()),
+        }
+    }
+
+    #[test]
+    fn store_fills_a_following_address_pairs_latency_slot() {
+        let mut instructions = vec![
+            Instruction::StoreWord {
+                s: 0,
+                a: 4,
+                offset: 12,
+            },
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::BranchAndLink {
+                target: "wait".into(),
+            },
+        ];
+        let relocations = [
+            address_relocation(1, RelocationKind::Addr16Ha, "callback"),
+            address_relocation(2, RelocationKind::Addr16Lo, "callback"),
+        ];
+
+        let permutation =
+            hoist_address_highs_over_stores(&mut instructions, &relocations);
+
+        assert!(matches!(
+            instructions[0],
+            Instruction::AddImmediateShifted { d: 3, .. }
+        ));
+        assert!(matches!(
+            instructions[1],
+            Instruction::StoreWord { s: 0, a: 4, .. }
+        ));
+        assert_eq!(permutation, [1, 0, 2, 3]);
+    }
+
+    #[test]
+    fn dependent_store_and_control_entry_preserve_address_order() {
+        let relocations = [
+            address_relocation(1, RelocationKind::Addr16Ha, "callback"),
+            address_relocation(2, RelocationKind::Addr16Lo, "callback"),
+        ];
+        let mut dependent = vec![
+            Instruction::StoreWord {
+                s: 3,
+                a: 4,
+                offset: 12,
+            },
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::BranchAndLink {
+                target: "wait".into(),
+            },
+        ];
+        assert_eq!(
+            hoist_address_highs_over_stores(&mut dependent, &relocations),
+            [0, 1, 2, 3],
+        );
+
+        let mut control_entry = vec![
+            Instruction::Branch { target: 1 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 4,
+                offset: 12,
+            },
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::BranchAndLink {
+                target: "wait".into(),
+            },
+        ];
+        let relocations = [
+            address_relocation(2, RelocationKind::Addr16Ha, "callback"),
+            address_relocation(3, RelocationKind::Addr16Lo, "callback"),
+        ];
+        assert_eq!(
+            hoist_address_highs_over_stores(&mut control_entry, &relocations),
+            [0, 1, 2, 3, 4],
         );
     }
 }

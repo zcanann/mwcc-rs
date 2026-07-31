@@ -1093,6 +1093,14 @@ fn lower_function_body(
     generator.schedule_linkage_first_global_indirect_callback_tail();
     if generator.behavior.schedule_latency_slots {
         branch_cleanup::align_tight_polling_call_loops(&mut generator);
+        // Address-pair latency filling is safe on the final physical stream,
+        // after adjacency-sensitive structured schedules have consumed their
+        // selected forms.
+        let address = global_memory_schedule::hoist_address_highs_over_stores(
+            &mut generator.output.instructions,
+            &generator.output.relocations,
+        );
+        remap_instruction_indices(&mut generator, &address);
     }
 
     // Debug lowering consumes final physical allocation, not the frontend's
