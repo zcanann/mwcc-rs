@@ -3,7 +3,7 @@
 use mwcc_syntax_trees::{Expression, Function, Statement};
 use std::collections::HashMap;
 
-pub(super) fn collect_function_calls(function: &Function, counts: &mut HashMap<String, usize>) {
+pub(crate) fn collect_function_calls(function: &Function, counts: &mut HashMap<String, usize>) {
     for local in &function.locals {
         if let Some(initializer) = &local.initializer {
             collect_expression_calls(initializer, counts);

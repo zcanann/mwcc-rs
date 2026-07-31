@@ -18,7 +18,7 @@ mod substitution;
 mod value_body;
 mod value_calls;
 
-use call_sites::collect_function_calls;
+pub(crate) use call_sites::collect_function_calls;
 use crate::inline_source_order::DefinitionOrder;
 use mwcc_syntax_trees::{
     ArmBody, AsmItem, Expression, Function, InlineAsmBlock, Statement, SwitchArm, Type,

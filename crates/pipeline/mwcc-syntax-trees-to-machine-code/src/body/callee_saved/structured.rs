@@ -332,7 +332,22 @@ impl Generator {
             (self.behavior.optimization == mwcc_versions::Optimization::O0)
                 .then(|| StructuredPeriodicFloatNormalization::plan(function))
                 .flatten();
-        let retained_sqrtf_spill = self.retained_sqrtf_spill_local(function);
+        let recovered_sqrtf_spill = self.retained_sqrtf_spill_local(function);
+        let synthetic_sqrtf_spill = (recovered_sqrtf_spill.is_none()
+            && self.function_has_retained_sqrtf_call(function))
+        .then(|| LocalDeclaration {
+            declared_type: Type::Float,
+            name: crate::inline_sqrtf::SYNTHETIC_SQRTF_SPILL.into(),
+            initializer: None,
+            is_volatile: true,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        let retained_sqrtf_spill = recovered_sqrtf_spill.or(synthetic_sqrtf_spill.as_ref());
         if !with_frame_array && retained_sqrtf_spill.is_some() {
             decline!("retained sqrtf requires its recovered scalar frame image");
         }
@@ -361,6 +376,7 @@ impl Generator {
                             || retained_sqrtf_spill
                                 .is_some_and(|spill| spill.name == local.name))
                 })
+                .chain(synthetic_sqrtf_spill.iter())
                 .collect()
         } else {
             Vec::new()
@@ -539,10 +555,12 @@ impl Generator {
                     .map(|parameter| parameter.name.as_str()),
             )
             .collect();
+        let retained_sqrtf_is_only_call = self.retained_sqrtf_is_only_call(function);
         let mut survivors: std::collections::HashSet<&str> = candidates
             .into_iter()
             .filter(|name| {
-                read_after_possible_call_in_function(function, name)
+                (!retained_sqrtf_is_only_call
+                    && read_after_possible_call_in_function(function, name))
                     || self.inline_source_call_survivors.contains(*name)
                     || (self.one_word_aggregate_locals.contains(*name)
                     && body_uses_local(&function.statements, name)
@@ -2642,6 +2660,10 @@ impl Generator {
             .callee_saved_float
             .max(u8::try_from(saved_float_count).unwrap_or(18))
             .max(structured_recovered_float_homes::saved_count(function))
+            // Retained sqrtf lowering owns f31 for the Newton estimate and f28
+            // for the rounded result. Declare the entire ABI-contiguous range
+            // before allocation so frame materialization can preserve both.
+            .max(u8::from(retained_sqrtf_spill.is_some()) * 4)
             .max(u8::from(periodic_float_normalization.is_some()) * 4);
         for (parameter_index, parameter) in saved_float_parameters.iter().enumerate() {
             let incoming = self

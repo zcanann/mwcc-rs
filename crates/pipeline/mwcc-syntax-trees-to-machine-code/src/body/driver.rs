@@ -5195,6 +5195,18 @@ impl Generator {
                 // value chain is the critical path, so the independent bias load fills the slot
                 // after. An intrinsic (`__fabs`) is not a real call and is left to evaluate_float.
                 if let Expression::Call { name, arguments } = expression {
+                    if self.is_retained_sqrtf_call(expression) {
+                        let result = self.fresh_virtual_float_preferring(28);
+                        if self.try_emit_retained_sqrtf(expression, result)? {
+                            if result != destination {
+                                self.output.instructions.push(Instruction::FloatMove {
+                                    d: destination,
+                                    b: result,
+                                });
+                            }
+                            return Ok(());
+                        }
+                    }
                     if !is_intrinsic_call(name)
                         && !matches!(
                             self.call_return_types.get(name),

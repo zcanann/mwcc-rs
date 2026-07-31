@@ -950,7 +950,7 @@ fn lower_function_body(
         &allocated_float_saves,
         paired_single_float_frame,
         body::uses_direct_paired_single_restores(function)
-            || inline_sqrtf::has_recovered_sqrtf_spill(function),
+            || generator.has_retained_sqrtf_spill_slot(),
     )?;
     generator.finalize_unoptimized_leaf_source_homes();
     // Build 163 shares the selected body schedule, but wraps GPR survivors in a

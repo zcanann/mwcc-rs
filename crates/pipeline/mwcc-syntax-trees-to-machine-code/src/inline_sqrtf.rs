@@ -13,6 +13,8 @@ use mwcc_syntax_trees::{
     BinaryOperator, Expression, Function, LocalDeclaration, Statement, Type,
 };
 
+pub(crate) const SYNTHETIC_SQRTF_SPILL: &str = "__mwcc_sqrtf_spill";
+
 pub(crate) fn is_supported_retained_sqrtf(function: &Function) -> bool {
     if function.name != "sqrtf"
         || function.return_type != Type::Float
@@ -176,14 +178,30 @@ impl Generator {
         &self,
         function: &'a Function,
     ) -> Option<&'a LocalDeclaration> {
-        let has_retained_call = function.statements.iter().any(|statement| {
-            matches!(statement,
-                Statement::Store { value, .. } if self.is_retained_sqrtf_call(value))
-        });
-        if !has_retained_call {
+        if !self.function_has_retained_sqrtf_call(function) {
             return None;
         }
         recovered_sqrtf_spill_local(function)
+    }
+
+    pub(crate) fn function_has_retained_sqrtf_call(&self, function: &Function) -> bool {
+        let mut calls = std::collections::HashMap::new();
+        crate::inline_expansion::collect_function_calls(function, &mut calls);
+        calls.contains_key("sqrtf")
+            && self
+                .inline_bodies
+                .retained_body("sqrtf")
+                .or_else(|| self.inline_bodies.definition_body("sqrtf"))
+                .or_else(|| self.inline_bodies.composable_body("sqrtf"))
+                .is_some_and(is_supported_retained_sqrtf)
+    }
+
+    pub(crate) fn retained_sqrtf_is_only_call(&self, function: &Function) -> bool {
+        let mut calls = std::collections::HashMap::new();
+        crate::inline_expansion::collect_function_calls(function, &mut calls);
+        !calls.is_empty()
+            && calls.keys().all(|name| name == "sqrtf")
+            && self.function_has_retained_sqrtf_call(function)
     }
 
     pub(crate) fn is_retained_sqrtf_call(&self, expression: &Expression) -> bool {
@@ -210,12 +228,21 @@ impl Generator {
         let Expression::Call { arguments, .. } = expression else {
             unreachable!("retained sqrtf classification established a call")
         };
-        let input = self.float_register_of_leaf(&arguments[0])?;
+        let input = match self.float_register_of_leaf(&arguments[0]) {
+            Ok(register) => register,
+            Err(_) if !crate::analysis::expression_has_call(&arguments[0]) => {
+                let register = self.fresh_virtual_float_preferring(30);
+                self.evaluate_float(&arguments[0], register)?;
+                register
+            }
+            Err(error) => return Err(error),
+        };
         let spill = self
             .frame_slots
             .iter()
             .find_map(|(name, slot)| {
-                (recovered_spill_offset(name) == Some(slot.offset)
+                ((name == SYNTHETIC_SQRTF_SPILL
+                    || recovered_spill_offset(name) == Some(slot.offset))
                     && slot.class == ValueClass::Float
                     && slot.size == 4
                     && slot.value_type == Type::Float
@@ -317,16 +344,18 @@ impl Generator {
         self.bind_label(join);
         Ok(true)
     }
-}
 
-pub(crate) fn has_recovered_sqrtf_spill(function: &Function) -> bool {
-    function.statements.iter().any(|statement| {
-        matches!(statement,
-            Statement::Store {
-                value: Expression::Call { name, arguments },
-                ..
-            } if name == "sqrtf" && arguments.len() == 1)
-    }) && recovered_sqrtf_spill_local(function).is_some()
+    pub(crate) fn has_retained_sqrtf_spill_slot(&self) -> bool {
+        self.frame_slots.iter().any(|(name, slot)| {
+            (name == SYNTHETIC_SQRTF_SPILL
+                || recovered_spill_offset(name) == Some(slot.offset))
+                && slot.class == ValueClass::Float
+                && slot.size == 4
+                && slot.value_type == Type::Float
+                && slot.parameter_register.is_none()
+                && !slot.is_array
+        })
+    }
 }
 
 fn recovered_sqrtf_spill_local(function: &Function) -> Option<&LocalDeclaration> {
