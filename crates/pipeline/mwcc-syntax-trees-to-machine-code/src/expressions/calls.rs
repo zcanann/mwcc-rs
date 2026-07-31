@@ -1,7 +1,7 @@
 //! Call emission and argument marshaling.
 
 use super::call_argument_types::{
-    aggregate_reference_source, classify_call_argument, narrow_general_argument,
+    aggregate_reference_source, assigned_general_name, classify_call_argument, narrow_general_argument,
     outgoing_general_stack_offset, AggregateReferenceSource, CallArgumentPlacement,
 };
 #[allow(unused_imports)]
@@ -1305,6 +1305,24 @@ impl Generator {
                             _ => false,
                         };
                         if !argument_is_narrow {
+                            // `callee(saved = narrow_load)` first commits the
+                            // assignment to its allocator-owned saved home, then
+                            // converts that word into the declared ABI argument
+                            // register (`lhax r26,...; extsh r3,r26`).
+                            if let Some(assigned) = assigned_general_name(general_argument) {
+                                if let Some(source) = self.lookup_general(assigned) {
+                                    self.evaluate_general(general_argument, source)?;
+                                    if let Some(narrow) = narrow_general_argument(
+                                        parameter_type,
+                                        next_general,
+                                        source,
+                                    ) {
+                                        self.output.instructions.push(narrow);
+                                        next_general += 1;
+                                        continue;
+                                    }
+                                }
+                            }
                             // A register leaf narrows directly into its ABI argument home.
                             // The source may already be in that home or remain in a saved
                             // register (`extsh r3,r31`) while the call consumes r3.

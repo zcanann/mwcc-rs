@@ -109,6 +109,18 @@ pub(super) fn narrow_general_argument(
     }
 }
 
+/// A scalar local assignment used directly as an argument leaves its result in
+/// that local's allocator-owned home before prototype conversion.
+pub(super) fn assigned_general_name(expression: &Expression) -> Option<&str> {
+    let Expression::Assign { target, .. } = expression else {
+        return None;
+    };
+    let Expression::Variable(name) = target.as_ref() else {
+        return None;
+    };
+    Some(name)
+}
+
 /// Map an ABI argument index back to the source prototype.
 ///
 /// Aggregate-returning calls prepend a hidden result address which is absent
@@ -246,6 +258,16 @@ mod tests {
             })
         ));
         assert!(narrow_general_argument(Type::Int, 3, 31).is_none());
+    }
+
+    #[test]
+    fn recognizes_an_assignment_argument_with_a_named_home() {
+        let assignment = Expression::Assign {
+            target: Box::new(Expression::Variable("saved".into())),
+            value: Box::new(Expression::IntegerLiteral(4)),
+        };
+        assert_eq!(assigned_general_name(&assignment), Some("saved"));
+        assert!(assigned_general_name(&Expression::IntegerLiteral(4)).is_none());
     }
 
     #[test]
