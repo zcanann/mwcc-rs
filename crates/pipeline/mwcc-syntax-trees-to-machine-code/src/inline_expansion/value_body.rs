@@ -752,10 +752,32 @@ pub(super) fn summarize_repeatable_global_scalar_transaction(
     }) {
         return None;
     }
-    function.return_expression.as_ref().is_some_and(|result| {
+    if !function.return_expression.as_ref().is_some_and(|result| {
         !crate::analysis::expression_has_side_effect(result)
             && super::safety::expression_use_count(result, global) == 1
-    }).then(|| summarize(function)).flatten()
+    }) {
+        return None;
+    }
+    summarize(function).map(|mut body| {
+        body.expression = apply_scalar_return_conversion(body.expression, function.return_type);
+        body
+    })
+}
+
+/// Preserve the assignment conversion performed by an ordinary function
+/// return after the call boundary disappears. Effects stay outside the cast;
+/// only the terminal value adopts the declared return type.
+fn apply_scalar_return_conversion(expression: Expression, return_type: Type) -> Expression {
+    match expression {
+        Expression::Comma { left, right } => Expression::Comma {
+            left,
+            right: Box::new(apply_scalar_return_conversion(*right, return_type)),
+        },
+        value => Expression::Cast {
+            target_type: return_type,
+            operand: Box::new(value),
+        },
+    }
 }
 
 /// Summarize a one-use ordinary helper whose scalar locals form a pure,
@@ -1359,7 +1381,11 @@ mod tests {
         let summary = summarize_automatic(&function).expect("global scalar transaction");
         assert!(matches!(summary.expression, Expression::Comma { left, right }
             if matches!(left.as_ref(), Expression::Assign { .. })
-                && matches!(right.as_ref(), Expression::Comma { .. })));
+                && matches!(right.as_ref(), Expression::Comma { right, .. }
+                    if matches!(right.as_ref(), Expression::Cast {
+                        target_type: Type::Int,
+                        ..
+                    }))));
     }
 
     #[test]
