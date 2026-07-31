@@ -21,6 +21,21 @@ pub(super) struct StructuredParameterHomeReuse {
 }
 
 impl StructuredParameterHomeReuse {
+    /// Preserve every recovered source home even when ordinary liveness proves
+    /// that a deferred local could reuse an expired parameter lane.
+    pub(super) fn retain_distinct(
+        eager_count: usize,
+        parameter_count: usize,
+        deferred_group_count: usize,
+    ) -> Self {
+        Self {
+            home_index_by_group: (0..deferred_group_count)
+                .map(|group| eager_count + parameter_count + group)
+                .collect(),
+            fresh_group_count: deferred_group_count,
+        }
+    }
+
     pub(super) fn plan(
         function: &Function,
         eager_count: usize,
@@ -167,6 +182,18 @@ mod tests {
             text_deferred: false,
             peephole_disabled: false,
         }
+    }
+
+    #[test]
+    fn retains_recovered_deferred_homes_after_parameter_lanes() {
+        let plan = StructuredParameterHomeReuse::retain_distinct(1, 2, 3);
+
+        assert_eq!(plan.fresh_group_count, 3);
+        assert_eq!(
+            (0..3).map(|group| plan.home_index(group)).collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
+        assert!(!plan.reuses_parameter_home(1, 2));
     }
 
     #[test]

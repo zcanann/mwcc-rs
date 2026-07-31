@@ -948,13 +948,21 @@ impl Generator {
 
         let eager_home_reuse =
             StructuredEagerHomeReuse::plan(function, &eager_saved_locals, &deferred_home_plan);
-        let parameter_home_reuse = StructuredParameterHomeReuse::plan(
-            function,
-            eager_saved_locals.len(),
-            &saved_parameters,
-            &deferred_home_plan,
-            &eager_home_reuse,
-        );
+        let parameter_home_reuse = if recovered_general_homes.is_some() {
+            StructuredParameterHomeReuse::retain_distinct(
+                eager_saved_locals.len(),
+                saved_parameters.len(),
+                deferred_home_plan.group_count,
+            )
+        } else {
+            StructuredParameterHomeReuse::plan(
+                function,
+                eager_saved_locals.len(),
+                &saved_parameters,
+                &deferred_home_plan,
+                &eager_home_reuse,
+            )
+        };
         let returned_deferred_home = function
             .return_expression
             .as_ref()

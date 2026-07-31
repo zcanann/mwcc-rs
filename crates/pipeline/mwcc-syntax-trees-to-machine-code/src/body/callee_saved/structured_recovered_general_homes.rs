@@ -148,8 +148,13 @@ impl StructuredRecoveredGeneralHomes {
             &recovered_registers,
             used_parameters.len(),
         );
-        let sparse_recovered_loop = function.return_type != Type::Void
-            && has_loop
+        let nested_void_recovered_loop = function.return_type == Type::Void
+            && !has_loop
+            && names.iter().any(|name| {
+                super::structured_locals::structured_name_occurs_in_loop(function, name)
+            });
+        let sparse_recovered_loop = ((function.return_type != Type::Void && has_loop)
+            || nested_void_recovered_loop)
             && all_recovered
             && !used_parameters.is_empty()
             && missing_window.is_some()
@@ -475,6 +480,10 @@ mod tests {
         assert_eq!(
             sparse_window_parameter_homes(&[27, 29, 31], 2),
             Some(vec![28, 30])
+        );
+        assert_eq!(
+            sparse_window_parameter_homes(&[28, 27, 29, 30, 31], 1),
+            Some(vec![26])
         );
         assert_eq!(sparse_window_parameter_homes(&[27, 31], 2), None);
         assert_eq!(sparse_window_parameter_homes(&[26, 29, 31], 2), None);
