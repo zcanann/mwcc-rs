@@ -1168,6 +1168,9 @@ impl Generator {
                 eprintln!("expanded function: {expanded:#?}");
             }
         }
+        if self.try_inlined_quadratic_float_map_loop(function)? {
+            return Ok(());
+        }
         // Recursive body transforms can introduce hygienic inline locals after
         // parameter assignment initialized this set. Retain their provenance so
         // local-pointer aliases are not later mistaken for entry parameters.
