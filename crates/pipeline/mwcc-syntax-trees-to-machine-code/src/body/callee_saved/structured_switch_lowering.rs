@@ -258,16 +258,25 @@ impl SwitchLowering {
                         lowered.push(statement.clone());
                         continue;
                     }
+                    let switch_has_break = arms.iter().any(|arm| {
+                        matches!(&arm.body, ArmBody::Statements(body) if current_switch_has_break(body))
+                    }) || matches!(default, Some(ArmBody::Statements(body)) if current_switch_has_break(body));
+                    let join_label = switch_has_break.then(|| self.fresh_name());
                     let default = default
                         .as_ref()
-                        .map_or_else(Vec::new, |body| self.lower_arm(body));
+                        .map_or_else(Vec::new, |body| {
+                            self.lower_canonical_arm(body, join_label.as_deref())
+                        });
                     // A final fallthrough arm enters the explicit default body.
                     // Earlier fallthrough labels inherit the complete next arm,
                     // which may itself already include that default continuation.
                     let mut continuation = default.clone();
                     let mut cases = Vec::with_capacity(arms.len());
                     for arm in arms.iter().rev() {
-                        let mut body = self.lower_arm(&arm.body);
+                        let mut body = self.lower_canonical_arm(
+                            &arm.body,
+                            join_label.as_deref(),
+                        );
                         if arm.falls_through {
                             body.extend(continuation.clone());
                         }
@@ -305,6 +314,9 @@ impl SwitchLowering {
                         }];
                     }
                     lowered.extend(decision);
+                    if let Some(join_label) = join_label {
+                        lowered.push(Statement::Label(join_label));
+                    }
                     self.changed = true;
                 }
                 _ => lowered.push(statement.clone()),
@@ -317,6 +329,23 @@ impl SwitchLowering {
         match body {
             ArmBody::Statements(statements) => {
                 self.lower_nested_statements(statements)
+            }
+            ArmBody::Return(value) => vec![Statement::Return(Some(value.clone()))],
+        }
+    }
+
+    fn lower_canonical_arm(
+        &mut self,
+        body: &ArmBody,
+        join_label: Option<&str>,
+    ) -> Vec<Statement> {
+        match body {
+            ArmBody::Statements(statements) => {
+                let rewritten = join_label
+                    .map(|join_label| rewrite_current_switch_breaks(statements, join_label));
+                self.lower_nested_statements(
+                    rewritten.as_deref().unwrap_or(statements),
+                )
             }
             ArmBody::Return(value) => vec![Statement::Return(Some(value.clone()))],
         }
@@ -341,6 +370,46 @@ impl SwitchLowering {
             }
         }
     }
+}
+
+fn current_switch_has_break(statements: &[Statement]) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Break => true,
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => current_switch_has_break(then_body) || current_switch_has_break(else_body),
+        // These introduce their own break target. Nested switches are lowered
+        // recursively and receive an independent join label.
+        Statement::Loop { .. } | Statement::Switch { .. } => false,
+        _ => false,
+    })
+}
+
+fn rewrite_current_switch_breaks(
+    statements: &[Statement],
+    join_label: &str,
+) -> Vec<Statement> {
+    statements
+        .iter()
+        .map(|statement| match statement {
+            Statement::Break => Statement::Goto(join_label.into()),
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => Statement::If {
+                condition: condition.clone(),
+                then_body: rewrite_current_switch_breaks(then_body, join_label),
+                else_body: rewrite_current_switch_breaks(else_body, join_label),
+            },
+            // Preserve loop breaks for loop lowering and nested switch breaks
+            // for the recursive switch invocation.
+            Statement::Loop { .. } | Statement::Switch { .. } => statement.clone(),
+            _ => statement.clone(),
+        })
+        .collect()
 }
 
 pub(super) fn is_dense_structured_switch(
@@ -602,6 +671,70 @@ mod tests {
                 else_body.as_slice(),
                 [Statement::Return(Some(Expression::IntegerLiteral(2)))]
             )
+        ));
+    }
+
+    #[test]
+    fn lowers_a_conditional_switch_break_to_its_join() {
+        let switch = Statement::Switch {
+            scrutinee: Expression::Variable("kind".into()),
+            arms: vec![SwitchArm {
+                value: 1,
+                body: ArmBody::Statements(vec![
+                    Statement::If {
+                        condition: Expression::Variable("done".into()),
+                        then_body: vec![Statement::Break],
+                        else_body: Vec::new(),
+                    },
+                    Statement::Store {
+                        target: Expression::Variable("result".into()),
+                        value: Expression::IntegerLiteral(7),
+                    },
+                ]),
+                falls_through: false,
+            }],
+            default: None,
+        };
+        let lowered = lower_structured_switches(&function(vec![switch]))
+            .expect("switch break should lower");
+        assert!(matches!(
+            lowered.statements.as_slice(),
+            [
+                Statement::Assign { .. },
+                Statement::If { then_body, .. },
+                Statement::Label(join),
+            ] if matches!(then_body.as_slice(), [
+                Statement::If { then_body: break_body, .. },
+                Statement::Store { .. },
+            ] if matches!(break_body.as_slice(), [Statement::Goto(target)] if target == join))
+        ));
+    }
+
+    #[test]
+    fn leaves_a_nested_loop_break_for_loop_lowering() {
+        let switch = Statement::Switch {
+            scrutinee: Expression::Variable("kind".into()),
+            arms: vec![SwitchArm {
+                value: 1,
+                body: ArmBody::Statements(vec![Statement::Loop {
+                    kind: mwcc_syntax_trees::LoopKind::While,
+                    initializer: None,
+                    condition: Some(Expression::IntegerLiteral(1)),
+                    step: None,
+                    body: vec![Statement::Break],
+                }]),
+                falls_through: false,
+            }],
+            default: None,
+        };
+        let lowered = lower_structured_switches(&function(vec![switch]))
+            .expect("switch should lower without claiming the loop break");
+        assert!(matches!(
+            lowered.statements.as_slice(),
+            [Statement::Assign { .. }, Statement::If { then_body, .. }]
+                if matches!(then_body.as_slice(), [
+                    Statement::Loop { body, .. }
+                ] if matches!(body.as_slice(), [Statement::Break]))
         ));
     }
 
