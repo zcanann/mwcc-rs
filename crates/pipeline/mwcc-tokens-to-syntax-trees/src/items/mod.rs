@@ -4933,17 +4933,21 @@ impl Parser {
                             }
                             data_bytes = Some(bytes);
                             Some(length)
-                        } else if is_static
-                            && matches!(declared_type, Type::Struct { .. })
+                        } else if matches!(declared_type, Type::Struct { .. })
                             && struct_tag.is_some()
                         {
-                            // Preserve field widths/padding and address fields for a static
-                            // array of structs. The same relocation-aware serializer serves
-                            // file-scope struct arrays.
+                            // Preserve field widths and padding for both static
+                            // and automatic arrays of structs. Automatic images
+                            // are copied into their frame slot at function entry;
+                            // address-bearing images still need runtime
+                            // relocation support and therefore defer below.
                             let tag = struct_tag.as_ref().unwrap();
                             let mut relocations = Vec::new();
                             let bytes =
                                 self.parse_struct_array_initializer(tag, &mut relocations)?;
+                            if !is_static && !relocations.is_empty() {
+                                return Err(Diagnostic::error("an automatic struct-array initializer with address elements is not supported yet (roadmap)"));
+                            }
                             data_relocations.extend(relocations.into_iter().map(
                                 |(offset, target, addend)| {
                                     local_data_relocation(offset, target, addend)
@@ -4976,13 +4980,24 @@ impl Parser {
                             // An AUTOMATIC initialized array parses like the static
                             // form (its byte image on the local); native frame copy-in
                             // remains a generator concern.
-                            if inner_elements > 1 && !is_static {
-                                return Err(Diagnostic::error("an automatic multi-dimensional array initializer is not supported yet (roadmap)"));
-                            }
-                            if inner_elements > 1 {
+                            if inner_elements > 1
+                                && matches!(declared_type, Type::Char | Type::UnsignedChar)
+                                && (matches!(self.peek_at(1), Token::StringLiteral(_))
+                                    || (*self.peek_at(1) == Token::BraceOpen
+                                        && matches!(self.peek_at(2), Token::StringLiteral(_))))
+                            {
+                                let bytes = self.parse_fixed_width_char_rows(usize::from(
+                                    inner_elements,
+                                ))?;
+                                let count = u16::try_from(bytes.len()).map_err(|_| {
+                                    Diagnostic::error("too many character-row initializer bytes")
+                                })?;
+                                data_bytes = Some(bytes);
+                                Some(explicit.unwrap_or(count))
+                            } else if inner_elements > 1 {
                                 let values = self.parse_constant_initializer(declared_type)?;
                                 let count = u16::try_from(values.len()).map_err(|_| {
-                                    Diagnostic::error("too many static array initializer elements")
+                                    Diagnostic::error("too many array initializer elements")
                                 })?;
                                 let mut bytes = Vec::new();
                                 for value in values {
@@ -4994,7 +5009,7 @@ impl Parser {
                                         Type::Char | Type::UnsignedChar => bytes.push(value as u8),
                                         Type::Short | Type::UnsignedShort => bytes
                                             .extend_from_slice(&(value as u16).to_be_bytes()),
-                                        _ => return Err(Diagnostic::error("a multi-dimensional static-local initializer element is not supported yet (roadmap)")),
+                                        _ => return Err(Diagnostic::error("a multi-dimensional local initializer element is not supported yet (roadmap)")),
                                     }
                                 }
                                 data_bytes = Some(bytes);

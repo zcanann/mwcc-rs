@@ -4536,6 +4536,62 @@ blr\n\
     }
 
     #[test]
+    fn flattens_automatic_multidimensional_string_rows() {
+        let source = r#"
+            int probe(void) {
+                char names[2][4] = {"one", "x"};
+                return 0;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let local = &unit.functions[0].locals[0];
+        assert_eq!(local.array_length, Some(8));
+        assert_eq!(local.row_bytes, Some(4));
+        assert_eq!(
+            local.data_bytes.as_deref(),
+            Some(&[b'o', b'n', b'e', 0, b'x', 0, 0, 0][..])
+        );
+    }
+
+    #[test]
+    fn serializes_automatic_struct_array_initializer() {
+        let source = r#"
+            typedef struct Vec { float x, y, z; } Vec;
+            int probe(void) {
+                Vec points[2] = {{-1.0f, 2.0f, 3.0f}, {4.0f, 5.0f, 6.0f}};
+                return 0;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let local = &unit.functions[0].locals[0];
+        assert_eq!(local.array_length, Some(2));
+        assert_eq!(local.row_bytes, None);
+        assert_eq!(
+            local.data_bytes.as_deref(),
+            Some(
+                &[
+                    0xbf, 0x80, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x40, 0x40, 0x00, 0x00,
+                    0x40, 0x80, 0x00, 0x00, 0x40, 0xa0, 0x00, 0x00, 0x40, 0xc0, 0x00, 0x00,
+                ][..]
+            )
+        );
+    }
+
+    #[test]
     fn retains_function_scope_char_array_string_initializers() {
         let source = r#"
             void probe(void) {

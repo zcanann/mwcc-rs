@@ -274,6 +274,36 @@ impl Parser {
         }
     }
 
+    /// Parse the row strings of `char table[][N]`. Each literal initializes
+    /// exactly one N-byte row: its terminator is retained when it fits and the
+    /// remainder is zero-filled before the next row begins.
+    pub(crate) fn parse_fixed_width_char_rows(
+        &mut self,
+        row_bytes: usize,
+    ) -> Compilation<Vec<u8>> {
+        self.expect(Token::BraceOpen)?;
+        let mut image = Vec::new();
+        while *self.peek() != Token::BraceClose {
+            let nested = self.eat_keyword(Token::BraceOpen);
+            let Token::StringLiteral(bytes) = self.advance() else {
+                return Err(Diagnostic::error(
+                    "a fixed-width character row initializer must be a string literal",
+                ));
+            };
+            let copy = bytes.len().min(row_bytes);
+            image.extend_from_slice(&bytes[..copy]);
+            image.resize(image.len() + row_bytes - copy, 0);
+            if nested {
+                self.expect(Token::BraceClose)?;
+            }
+            if !self.eat_keyword(Token::Comma) {
+                break;
+            }
+        }
+        self.expect(Token::BraceClose)?;
+        Ok(image)
+    }
+
     /// One scalar element of a global initializer, encoded to the raw bits the
     /// object stores for `element_type`. An integer element is a full constant
     /// *expression* (`((dir)+(file))`, `1 << 3`, `(u8)0xFF`), folded to its value;
