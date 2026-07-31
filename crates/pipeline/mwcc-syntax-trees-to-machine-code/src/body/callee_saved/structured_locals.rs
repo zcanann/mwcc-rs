@@ -338,6 +338,10 @@ fn collect_deferred_interval(
         if let Some(expression) = expression {
             collect_expression_interval(expression, name, position, interval);
         }
+        if let Statement::Store { target, value } = statement {
+            collect_expression_interval(target, name, position, interval);
+            collect_expression_interval(value, name, position, interval);
+        }
         let reads = match statement {
             Statement::InlineAsm(_) => false,
             Statement::Store { target, value } => {
@@ -1602,6 +1606,35 @@ mod tests {
         assert!(structured_name_occurs_in_loop(&function, "cursor"));
         assert!(structured_name_occurs_in_loop(&function, "temporary"));
         assert_eq!(plan.group_count, 2);
+    }
+
+    #[test]
+    fn finds_a_deferred_assignment_nested_in_a_store_value() {
+        let mut assigned = local("assigned", Expression::IntegerLiteral(0));
+        assigned.initializer = None;
+        let function = function_with_local(
+            assigned,
+            vec![
+                Statement::Store {
+                    target: Expression::Variable("global".into()),
+                    value: Expression::Assign {
+                        target: Box::new(Expression::Variable("assigned".into())),
+                        value: Box::new(Expression::Call {
+                            name: "produce".into(),
+                            arguments: Vec::new(),
+                        }),
+                    },
+                },
+                Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: vec![Expression::Variable("assigned".into())],
+                }),
+            ],
+        );
+
+        let plan = plan_deferred_saved_homes(&function, &[&function.locals[0]])
+            .expect("the nested assignment defines the saved local");
+        assert_eq!(plan.group_count, 1);
     }
 
     #[test]
