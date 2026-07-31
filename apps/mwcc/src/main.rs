@@ -216,6 +216,17 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                 index += 1;
                 if let Some(value) = arguments.get(index) {
                     invocation.flags.inline_enabled = value != "off";
+                    let modes: Vec<_> = value.split(',').map(str::trim).collect();
+                    if modes.contains(&"off") {
+                        invocation.flags.automatic_inlining_enabled = false;
+                    } else if modes
+                        .iter()
+                        .any(|mode| matches!(*mode, "auto" | "all"))
+                    {
+                        invocation.flags.automatic_inlining_enabled = true;
+                    } else if modes.contains(&"noauto") {
+                        invocation.flags.automatic_inlining_enabled = false;
+                    }
                     let deferred = value.split(',').any(|part| part.trim() == "deferred");
                     let deferred_continuation = value.trim_end().ends_with(',')
                         && arguments
@@ -868,16 +879,26 @@ fn compile(
         .chain(unit.cxx_declared_function_names.iter().cloned())
         .collect();
     let inline_summaries = if config.flags.inline_enabled {
+        let automatic_definitions = config
+            .flags
+            .automatic_inlining_enabled
+            .then_some(unit.functions.as_slice())
+            .unwrap_or_default();
         mwcc_syntax_trees_to_machine_code::InlineSummaries::analyze_with_skipped(
-            &unit.functions,
+            automatic_definitions,
             &unit.skipped_inline_definitions,
         )
     } else {
         mwcc_syntax_trees_to_machine_code::InlineSummaries::default()
     };
     let inline_bodies = if config.flags.inline_enabled {
+        let automatic_definitions = config
+            .flags
+            .automatic_inlining_enabled
+            .then_some(unit.functions.as_slice())
+            .unwrap_or_default();
         mwcc_syntax_trees_to_machine_code::InlineBodySet::analyze_with_definitions(
-            &unit.functions,
+            automatic_definitions,
             &unit.skipped_inline_definitions,
         )
         .with_nesting_budget(inline_nesting_budget)
@@ -4800,6 +4821,7 @@ mod tests {
             "off".into(),
         ]);
         assert!(!parsed.flags.inline_enabled);
+        assert!(!parsed.flags.automatic_inlining_enabled);
         assert!(!parsed.flags.inline_deferred);
 
         let parsed = parse_invocation(&[
@@ -4809,6 +4831,7 @@ mod tests {
             "auto".into(),
         ]);
         assert!(parsed.flags.inline_enabled);
+        assert!(parsed.flags.automatic_inlining_enabled);
         assert!(!parsed.flags.inline_deferred);
 
         let parsed = parse_invocation(&[
@@ -4817,7 +4840,22 @@ mod tests {
             "deferred".into(),
         ]);
         assert!(parsed.flags.inline_enabled);
+        assert!(parsed.flags.automatic_inlining_enabled);
         assert!(parsed.flags.inline_deferred);
+
+        let parsed = parse_invocation(&[
+            "-inline".into(),
+            "auto".into(),
+            "-inline".into(),
+            "noauto".into(),
+        ]);
+        assert!(parsed.flags.inline_enabled);
+        assert!(!parsed.flags.automatic_inlining_enabled);
+        assert!(!parsed.flags.inline_deferred);
+
+        let parsed = parse_invocation(&["-inline".into(), "on,noauto".into()]);
+        assert!(parsed.flags.inline_enabled);
+        assert!(!parsed.flags.automatic_inlining_enabled);
     }
 
     #[test]

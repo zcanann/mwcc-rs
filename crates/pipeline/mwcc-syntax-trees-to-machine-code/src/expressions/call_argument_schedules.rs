@@ -60,7 +60,71 @@ fn stable_call_binary(
     }
 }
 
+fn shared_word_array_triplet(arguments: &[Expression]) -> Option<&str> {
+    let [first, second, third] = arguments else {
+        return None;
+    };
+    fn indexed(expression: &Expression, expected_index: i64) -> Option<&str> {
+        let Expression::Index { base, index } = expression else {
+            return None;
+        };
+        let Expression::Variable(array) = base.as_ref() else {
+            return None;
+        };
+        (constant_value(index) == Some(expected_index)).then_some(array.as_str())
+    }
+    let array = indexed(first, 0)?;
+    (indexed(second, 1)? == array && indexed(third, 2)? == array).then_some(array)
+}
+
 impl Generator {
+    /// Marshal three adjacent words from one absolute global-array base.
+    ///
+    /// The high half starts in r3, then the completed base moves directly to
+    /// r5 so all three loads can consume it while r3/r4/r5 become arguments:
+    /// `lis r3,array; addi r5,r3,array; lwz r3,0(r5); lwz r4,4(r5); lwz r5,8(r5)`.
+    pub(crate) fn try_emit_shared_word_array_triplet_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<bool> {
+        let Some(array) = shared_word_array_triplet(arguments) else {
+            return Ok(false);
+        };
+        let direct_call = !self.globals.contains_key(name)
+            && !self.locations.contains_key(name)
+            && !self.known_locals.contains(name);
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || !matches!(self.globals.get(array), Some(Type::Int | Type::UnsignedInt))
+            || self.global_array_sizes.get(array).copied().unwrap_or(0) < 12
+        {
+            return Ok(false);
+        }
+
+        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        let base = first + 2;
+        self.emit_address_high(first, array);
+        self.record_relocation(RelocationKind::Addr16Lo, array);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: base,
+            a: first,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::LoadWord { d: first, a: base, offset: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: first + 1,
+            a: base,
+            offset: 4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::LoadWord { d: base, a: base, offset: 8 });
+        Ok(true)
+    }
+
     /// Marshal `(large_global_array, string)` with the independent string
     /// materialization in the array address's dependency slot.
     ///
@@ -1394,5 +1458,29 @@ impl Generator {
             first,
         )?);
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn indexed(array: &str, index: i64) -> Expression {
+        Expression::Index {
+            base: Box::new(Expression::Variable(array.into())),
+            index: Box::new(Expression::IntegerLiteral(index)),
+        }
+    }
+
+    #[test]
+    fn recognizes_three_adjacent_words_from_one_array() {
+        let arguments = [indexed("words", 0), indexed("words", 1), indexed("words", 2)];
+        assert_eq!(shared_word_array_triplet(&arguments), Some("words"));
+    }
+
+    #[test]
+    fn rejects_a_triplet_with_a_different_base() {
+        let arguments = [indexed("words", 0), indexed("other", 1), indexed("words", 2)];
+        assert_eq!(shared_word_array_triplet(&arguments), None);
     }
 }

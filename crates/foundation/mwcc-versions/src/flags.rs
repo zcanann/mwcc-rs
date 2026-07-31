@@ -91,6 +91,10 @@ pub struct Flags {
     /// Command-line `-inline` options are last-wins; `off` materializes every
     /// reachable inline definition instead of composing it at call sites.
     pub inline_enabled: bool,
+    /// Whether ordinary definitions may become automatic inline candidates.
+    /// `-inline noauto` leaves source-declared inline expansion enabled while
+    /// excluding these same-translation-unit candidates.
+    pub automatic_inlining_enabled: bool,
     /// `-inline …,deferred`: deferred inlining emits the object's compiler-generated
     /// functions in REVERSE definition order (and thus their symbols/records too).
     /// Hand-written `asm` functions are emitted immediately and retain source order.
@@ -150,6 +154,7 @@ impl Default for Flags {
             char_default: CharDefault::BuildDefault,
             enum_storage: EnumStorage::Int,
             inline_enabled: true,
+            automatic_inlining_enabled: true,
             inline_deferred: false,
             cpp_exceptions: true,
             rtti: false,
