@@ -139,14 +139,14 @@ impl Generator {
                 return self.emit_global_load(name, result);
             }
             let (register, variable_width, _) = self.leaf_info(expression)?;
-            if register != result {
-                return Err(Diagnostic::error(
-                    "narrow return of a non-result variable (roadmap M1)",
-                ));
-            }
-            // A wider variable is truncated; one already this narrow needs nothing.
+            // A wider variable is truncated directly from its allocated home;
+            // one already this narrow only needs the ordinary result copy.
             if variable_width > width {
                 self.emit_widen(result, register, width, signed);
+            } else if register != result {
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(result, register));
             }
             return Ok(());
         }

@@ -3185,7 +3185,8 @@ impl Generator {
             } else if is_narrow_int(function.return_type)
                 && matches!(
                     return_expression,
-                    Expression::Dereference { .. }
+                    Expression::Variable(_)
+                        | Expression::Dereference { .. }
                         | Expression::Index { .. }
                         | Expression::Member { .. }
                 )
@@ -3348,7 +3349,6 @@ impl Generator {
             function,
             recovered_general_homes.is_some(),
         )?;
-        structured_recovered_float_homes::apply_final_preferences(self, function);
         Ok(true)
     }
 

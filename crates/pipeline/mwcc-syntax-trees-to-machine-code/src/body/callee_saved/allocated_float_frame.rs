@@ -195,16 +195,42 @@ fn materialize_predecrement_frame(
         .ok_or("allocated FPR frame has no saved-link store")?;
     let last_call = instructions
         .iter()
-        .rposition(instruction_links)
+        .rposition(|instruction| {
+            instruction_links(instruction) && !instruction_is_gpr_restore(instruction)
+        })
         .ok_or("allocator-selected FPR saves require a non-leaf body")?;
-    let restore_at = instructions
-        .iter()
-        .enumerate()
-        .skip(last_call + 1)
-        .find_map(|(index, instruction)| match instruction {
-            Instruction::LoadWord { d, a: 1, .. } if *d >= 14 => Some(index),
-            Instruction::LoadWord { d: 0, a: 1, offset } if *offset == link_offset => Some(index),
-            _ => None,
+    let direct_restore_helper_setup = direct_paired_single_restores
+        .then(|| {
+            instructions
+                .iter()
+                .enumerate()
+                .skip(last_call + 1)
+                .find(|(_, instruction)| instruction_is_gpr_restore(instruction))
+                .map(|(index, _)| {
+                    index
+                        .checked_sub(1)
+                        .filter(|previous| {
+                            matches!(
+                                instructions[*previous],
+                                Instruction::AddImmediate { d: 11, a: 1, .. }
+                            )
+                        })
+                        .unwrap_or(index)
+                })
+        })
+        .flatten();
+    let restore_at = direct_restore_helper_setup
+        .or_else(|| {
+            instructions
+                .iter()
+                .enumerate()
+                .skip(last_call + 1)
+                .find_map(|(index, instruction)| match instruction {
+                    Instruction::LoadWord { d, a: 1, .. } if *d >= 14 => Some(index),
+                    Instruction::LoadWord { d: 0, a: 1, offset }
+                        if *offset == link_offset => Some(index),
+                    _ => None,
+                })
         })
         .ok_or("allocated FPR frame has no epilogue restore point")?;
 
@@ -338,6 +364,10 @@ fn instruction_links(instruction: &Instruction) -> bool {
             | Instruction::BranchToLinkRegisterAndLink
             | Instruction::BranchToCountRegisterAndLink
     )
+}
+
+fn instruction_is_gpr_restore(instruction: &Instruction) -> bool {
+    matches!(instruction, Instruction::BranchAndLink { target } if target.starts_with("_restgpr_"))
 }
 
 fn materialize_leaf_predecrement_frame(
@@ -683,6 +713,44 @@ mod tests {
                 Instruction::BranchToLinkRegister,
             ]
         ));
+    }
+
+    #[test]
+    fn places_direct_fpr_restores_before_the_gpr_restore_helper() {
+        let mut instructions = vec![
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -48 },
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord { s: 0, a: 1, offset: 52 },
+            Instruction::BranchAndLink { target: "call".into() },
+            Instruction::AddImmediate { d: 11, a: 1, immediate: 48 },
+            Instruction::BranchAndLink { target: "_restgpr_27".into() },
+            Instruction::LoadWord { d: 0, a: 1, offset: 52 },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::AddImmediate { d: 1, a: 1, immediate: 48 },
+            Instruction::BranchToLinkRegister,
+        ];
+
+        materialize_predecrement_frame(&mut instructions, &[31], 5, true, true)
+            .expect("direct paired-single frame");
+
+        let restore = instructions
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::PairedSingleQuantizedLoad { d: 31, .. })
+            })
+            .expect("FPR restore");
+        let restore_gprs = instructions
+            .iter()
+            .position(instruction_is_gpr_restore)
+            .expect("GPR restore helper");
+        let restore_gpr_setup = instructions
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::AddImmediate { d: 11, a: 1, .. })
+            })
+            .expect("GPR restore-helper setup");
+        assert!(restore < restore_gpr_setup);
+        assert!(restore < restore_gprs);
     }
 
 }

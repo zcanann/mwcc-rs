@@ -33,34 +33,6 @@ pub(super) fn saved_count(function: &Function) -> u8 {
         .unwrap_or(0)
 }
 
-/// Reassert recovered homes after structured lowering has finished splitting
-/// local lifetimes.  An assignment or semantic loop owner can replace the
-/// virtual initially allocated for a declaration; the final live version still
-/// represents the same recovered source local and therefore carries the same
-/// allocation preference.
-pub(super) fn apply_final_preferences(generator: &mut Generator, function: &Function) {
-    for local in &function.locals {
-        let Some(preferred) = register(&local.name) else {
-            continue;
-        };
-        let Some(location) = generator.locations.get(&local.name) else {
-            continue;
-        };
-        if location.class != ValueClass::Float {
-            continue;
-        }
-        let Some(virtual_register) =
-            mwcc_vreg::Reg::from_field(location.register, mwcc_vreg::Class::Float)
-                .virtual_register()
-        else {
-            continue;
-        };
-        generator
-            .register_prefer
-            .insert(virtual_register, preferred);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
