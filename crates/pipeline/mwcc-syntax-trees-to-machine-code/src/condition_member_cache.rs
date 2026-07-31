@@ -1,9 +1,11 @@
-//! Scoped reuse of integer member loads inside short-circuit conditions.
+//! Scoped reuse of full-width integer member loads inside short-circuit conditions.
 //!
 //! Each later term is reached only through the previous term's fallthrough, so
 //! a repeated direct member load remains available when no store, call, or
 //! register definition intervenes. This is true for the false edge of OR and
 //! the true edge of AND; both edges are dominated by the earlier member load.
+//! Narrow loads remain term-local: MWCC reloads their byte or halfword storage
+//! rather than carrying the scratch value into the next term.
 
 use crate::generator::Generator;
 use mwcc_machine_code::Instruction;
@@ -180,18 +182,14 @@ fn cacheable_member(expression: &Expression, generator: &Generator) -> bool {
     let Expression::Variable(base) = base.as_ref() else {
         return false;
     };
-    !generator.volatile_globals.contains(base)
-        && matches!(
-            member_type,
-            Type::Int
-                | Type::UnsignedInt
-                | Type::Char
-                | Type::UnsignedChar
-                | Type::Short
-                | Type::UnsignedShort
-                | Type::Pointer(_)
-                | Type::StructPointer { .. }
-        )
+    !generator.volatile_globals.contains(base) && cacheable_member_type(*member_type)
+}
+
+fn cacheable_member_type(member_type: Type) -> bool {
+    matches!(
+        member_type,
+        Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. }
+    )
 }
 
 fn same_member(left: &Expression, right: &Expression) -> bool {
@@ -260,6 +258,15 @@ mod tests {
         }
     }
 
+    fn narrow_member(name: &str, offset: u32) -> Expression {
+        Expression::Member {
+            base: Box::new(Expression::Variable(name.into())),
+            offset,
+            member_type: Type::UnsignedChar,
+            index_stride: None,
+        }
+    }
+
     #[test]
     fn member_identity_includes_base_and_offset() {
         assert!(same_member(&member("fp", 12), &member("fp", 12)));
@@ -283,5 +290,14 @@ mod tests {
         assert!(is_short_circuit_chain(&and));
         assert!(is_short_circuit_chain(&or));
         assert!(!is_short_circuit_chain(&member("fp", 12)));
+    }
+
+    #[test]
+    fn narrow_members_are_not_retained_between_short_circuit_terms() {
+        assert!(cacheable_member_type(Type::UnsignedInt));
+        let Expression::Member { member_type, .. } = narrow_member("fp", 12) else {
+            unreachable!()
+        };
+        assert!(!cacheable_member_type(member_type));
     }
 }
