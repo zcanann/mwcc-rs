@@ -26,6 +26,7 @@ mod global_array_index;
 mod globals;
 mod implicit_narrow_store;
 mod index_operand;
+mod indexed_call_result_store;
 mod indexed_rmw;
 mod linkage_first_fixed_bank_region;
 mod linkage_first_fixed_bank_self_copy;

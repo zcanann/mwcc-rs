@@ -1045,6 +1045,9 @@ impl Generator {
                 return Ok(());
             }
         }
+        if self.try_emit_indexed_call_result_store(target, value)? {
+            return Ok(());
+        }
         let (base, index) = match target {
             Expression::Dereference { pointer } => (pointer.as_ref(), None),
             Expression::Index { base, index } => (base.as_ref(), Some(index.as_ref())),
