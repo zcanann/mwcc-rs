@@ -36,6 +36,24 @@ fn has_computed_float_assignment(function: &Function) -> bool {
     })
 }
 
+fn is_float_assignment_statement(function: &Function, statement: &Statement) -> bool {
+    match statement {
+        Statement::Assign { name, .. } => assigned_float_local(function, name).is_some(),
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            !then_body.is_empty()
+                && then_body
+                    .iter()
+                    .chain(else_body)
+                    .all(|statement| is_float_assignment_statement(function, statement))
+        }
+        _ => false,
+    }
+}
+
 impl Generator {
     /// Route a call-free computed-float body through the structured
     /// virtual-register allocator after copy propagation declines it.
@@ -46,10 +64,10 @@ impl Generator {
         if function_makes_call(function)
             || !function.guards.is_empty()
             || function.statements.is_empty()
-            || !function.statements.iter().all(|statement| {
-                matches!(statement, Statement::Assign { name, .. }
-                    if assigned_float_local(function, name).is_some())
-            })
+            || !function
+                .statements
+                .iter()
+                .all(|statement| is_float_assignment_statement(function, statement))
             || !matches!(
                 function.return_expression.as_ref(),
                 Some(Expression::Variable(name))
