@@ -35,6 +35,21 @@ pub(crate) fn aggregate_reference_pointer(expression: &Expression) -> Option<&Ex
     .then_some(pointer)
 }
 
+fn inline_member_array_address(
+    pointer: &Expression,
+) -> Option<(&Expression, u32, Pointee)> {
+    let Expression::MemberAddress {
+        base,
+        offset,
+        element,
+        ..
+    } = pointer
+    else {
+        return None;
+    };
+    Some((base, *offset, *element))
+}
+
 impl Generator {
     /// Place an operand and return the register holding it. A leaf stays in its
     /// own register. A sub-expression is computed into the destination when the
@@ -56,6 +71,22 @@ impl Generator {
             self.output
                 .instructions
                 .push(displacement_load(pointee, destination, 1, offset)?);
+            return Ok(());
+        }
+        // `*object->inline_array` reads element zero directly from the owning
+        // object. The MemberAddress already denotes inline storage, not a
+        // pointer-valued member that needs an intervening word load.
+        if let Some((base, offset, pointee)) = inline_member_array_address(pointer) {
+            let address = self.member_base_register(base)?;
+            let displacement = i16::try_from(offset).map_err(|_| {
+                Diagnostic::error("inline member-array offset is out of range")
+            })?;
+            self.output.instructions.push(displacement_load(
+                pointee,
+                destination,
+                address,
+                displacement,
+            )?);
             return Ok(());
         }
         // A type-pun through the address of a scalar global reads that global's
@@ -826,6 +857,22 @@ mod tests {
             Some(4)
         );
         assert_eq!(pointer_member_stride(&member(Type::UnsignedInt)), None);
+    }
+
+    #[test]
+    fn recognizes_element_zero_of_an_inline_member_array() {
+        let pointer = Expression::MemberAddress {
+            base: Box::new(Expression::Variable("object".into())),
+            offset: 76,
+            element: Pointee::UnsignedInt,
+            index_stride: None,
+        };
+        assert!(matches!(
+            inline_member_array_address(&pointer),
+            Some((Expression::Variable(base), 76, Pointee::UnsignedInt))
+                if base == "object"
+        ));
+        assert!(inline_member_array_address(&member(Type::UnsignedInt)).is_none());
     }
 
     #[test]
