@@ -1416,6 +1416,32 @@ impl Generator {
                 {
                     return Ok(branch);
                 }
+                // Two direct globals must be live at the same time.  The
+                // generic condition operand path uses r0 for a memory value;
+                // invoking it twice would overwrite the left load and reduce
+                // `global_a == global_b` to `cmpw r0,r0`.  Reuse the ordinary
+                // binary-placement owner, which anchors the left global in a
+                // virtual register and loads the right into scratch.
+                if self.is_global(left) && self.is_global(right) {
+                    let operands = self.place_general_operands(*operator, left, right)?;
+                    let signed =
+                        self.signedness_of(left)? && self.signedness_of(right)?;
+                    if signed {
+                        self.output.instructions.push(Instruction::CompareWord {
+                            a: operands.left,
+                            b: operands.right,
+                        });
+                    } else {
+                        self.output
+                            .instructions
+                            .push(Instruction::CompareLogicalWord {
+                                a: operands.left,
+                                b: operands.right,
+                            });
+                    }
+                    return Ok(false_branch_bo_bi(*operator)
+                        .expect("is_comparison restricts the operator"));
+                }
                 // Two member loads need distinct temporaries. Keep r3 for the
                 // left value and reserve it while selecting the right member's
                 // address, which naturally gives a global pointer base r4 and
