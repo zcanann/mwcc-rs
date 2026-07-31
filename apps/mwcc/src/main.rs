@@ -1014,7 +1014,23 @@ fn compile(
             &unit.function_return_fundamentals,
             function_config,
         ) {
-            Ok(machine_function) => machine_functions.push(machine_function),
+            Ok(machine_function) => {
+                if let Some(branch) = machine_function.unresolved_branch() {
+                    let diagnostic = Diagnostic::error(format!(
+                        "instruction {} has unresolved branch target {} (function length {})",
+                        branch.instruction_index, branch.target, branch.function_length,
+                    ));
+                    if parity_keep_going {
+                        eprintln!(
+                            "mwcc: parity skipped function '{}': {}",
+                            function.name, diagnostic,
+                        );
+                        continue;
+                    }
+                    return Err(diagnostic);
+                }
+                machine_functions.push(machine_function);
+            }
             Err(mut diagnostic) => {
                 // Whole-TU parity sweeps bucket the stable reason. Feature work can opt
                 // into the failing function name without changing the default output.

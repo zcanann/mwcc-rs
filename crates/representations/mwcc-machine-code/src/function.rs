@@ -309,6 +309,15 @@ pub struct MachineFunction {
     pub force_active: bool,
 }
 
+/// A branch whose target still carries an internal label placeholder instead
+/// of an instruction index. Object encoding cannot serialize this function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnresolvedBranch {
+    pub instruction_index: usize,
+    pub target: usize,
+    pub function_length: usize,
+}
+
 impl MachineFunction {
     pub fn new(name: impl Into<String>) -> Self {
         MachineFunction {
@@ -482,6 +491,28 @@ impl MachineFunction {
         self.constants.len() - 1
     }
 
+    /// Find the first branch that cannot be serialized as a function-relative
+    /// instruction displacement. This is deliberately available before object
+    /// assembly so diagnostic keep-going mode can omit one malformed function
+    /// without losing every independently lowered function in the unit.
+    pub fn unresolved_branch(&self) -> Option<UnresolvedBranch> {
+        self.instructions
+            .iter()
+            .enumerate()
+            .find_map(|(instruction_index, instruction)| {
+                let target = match instruction {
+                    Instruction::BranchConditionalForward { target, .. }
+                    | Instruction::Branch { target } => *target,
+                    _ => return None,
+                };
+                (target > self.instructions.len()).then_some(UnresolvedBranch {
+                    instruction_index,
+                    target,
+                    function_length: self.instructions.len(),
+                })
+            })
+    }
+
     /// Encode the whole function to big-endian `.text` bytes. Forward conditional
     /// branches are resolved here from instruction positions.
     pub fn encode_text(&self) -> Vec<u8> {
@@ -564,5 +595,22 @@ mod tests {
             RelocationTarget::ConstantWithAddend(1, 4)
         ));
         assert_eq!(function.constant_number_gaps, [(1, 1)]);
+    }
+
+    #[test]
+    fn reports_an_internal_branch_placeholder_before_encoding() {
+        let mut function = MachineFunction::new("broken");
+        function.instructions.push(Instruction::Branch {
+            target: (1usize << (usize::BITS - 2)) + 7,
+        });
+
+        assert_eq!(
+            function.unresolved_branch(),
+            Some(UnresolvedBranch {
+                instruction_index: 0,
+                target: (1usize << (usize::BITS - 2)) + 7,
+                function_length: 1,
+            }),
+        );
     }
 }
