@@ -104,6 +104,7 @@ mod structured_constructor_schedule;
 mod structured_copy_packet_schedule;
 mod structured_call_accumulator;
 mod structured_aggregate_slots;
+mod structured_by_value_aggregate_arguments;
 mod structured_deferred_interference;
 mod structured_entry_alias;
 mod structured_entry_member_guard_schedule;

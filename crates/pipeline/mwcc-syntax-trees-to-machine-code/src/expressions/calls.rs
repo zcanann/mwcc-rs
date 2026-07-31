@@ -1029,6 +1029,8 @@ impl Generator {
                 }
             }
         }
+        let by_value_aggregate_call =
+            self.prepare_structured_by_value_aggregate_call(arguments, name)?;
         let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
         let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
         let mut folded_float_arguments: Vec<(u64, bool, u8)> = Vec::new();
@@ -1086,6 +1088,8 @@ impl Generator {
             }
             Some((later, target, source))
         });
+        let prematerialized_general =
+            prematerialized_general.filter(|_| by_value_aggregate_call.is_none());
         if let Some((_, target, source)) = prematerialized_general {
             if self.behavior.frame_convention == mwcc_versions::FrameConvention::LinkageFirst
                 && self.preceded_by_asm
@@ -1118,6 +1122,24 @@ impl Generator {
                 ));
                 diagnostic
             })?;
+            if let Some(copy) = by_value_aggregate_call.as_ref().and_then(|call| {
+                call.copies
+                    .iter()
+                    .find(|copy| copy.argument_index == index)
+            }) {
+                if !matches!(parameter_type, Some(Type::Struct { .. })) {
+                    return Err(Diagnostic::error(
+                        "structured by-value aggregate parameter changed after frame planning",
+                    ));
+                }
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: next_general,
+                    a: 1,
+                    immediate: copy.copy_offset,
+                });
+                next_general += 1;
+                continue;
+            }
             if let CallArgumentPlacement::WideGeneral { parameter_type } = placement {
                 next_general = self
                     .emit_widened_general_call_argument(

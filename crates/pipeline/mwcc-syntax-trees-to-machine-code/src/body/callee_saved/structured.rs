@@ -14,6 +14,8 @@ use super::structured_aggregate_slots::{
     plan_aggregate_frame_slots, plan_aggregate_frame_slots_from,
     plan_terminal_one_word_aggregate_call_copies,
 };
+use super::structured_by_value_aggregate_arguments::
+    plan_structured_by_value_aggregate_arguments;
 use super::structured_call_schedule::{
     direct_callback_wait_home_preference, terminal_offset_call_argument_register,
     transient_call_argument_register,
@@ -435,9 +437,21 @@ impl Generator {
                     )
                 })
                 .flatten();
+        let aggregate_by_value_plan = aggregate_call_copy_plan
+            .is_none()
+            .then(|| {
+                plan_structured_by_value_aggregate_arguments(
+                    function,
+                    &self.call_parameter_types,
+                )
+            })
+            .flatten();
         let aggregate_call_copy_bytes = aggregate_call_copy_plan
             .as_ref()
-            .map_or(0, |plan| plan.total_bytes);
+            .map_or_else(
+                || aggregate_by_value_plan.as_ref().map_or(0, |plan| plan.total_bytes),
+                |plan| plan.total_bytes,
+            );
         let unused_frame_array = !frame_arrays.is_empty()
             && frame_arrays
                 .iter()
@@ -768,7 +782,7 @@ impl Generator {
         };
         let mut local_region_bytes = if let Some(layout) = &interleaved_frame_layout {
             layout.local_region_bytes()
-        } else if !aggregate_frame_locals.is_empty() {
+        } else if !aggregate_frame_locals.is_empty() || aggregate_call_copy_bytes != 0 {
             let mut end = 8u32
                 .checked_add(u32::try_from(aggregate_call_copy_bytes).map_err(|_| {
                     Diagnostic::error("structured aggregate copy area is out of range")
@@ -1434,7 +1448,7 @@ impl Generator {
             .frame_size
             .checked_add(path_reuse_frame_bytes)
             .ok_or_else(|| Diagnostic::error("structured path-reuse frame is too large"))?;
-        if aggregate_call_copy_plan.is_some()
+        if aggregate_call_copy_bytes != 0
             && self.behavior.frame_convention == FrameConvention::LinkageFirst
             && homes.is_empty()
         {
@@ -1477,6 +1491,7 @@ impl Generator {
             }
         }
         self.structured_aggregate_call_copy_plan = aggregate_call_copy_plan.clone();
+        self.structured_by_value_aggregate_plan = aggregate_by_value_plan;
         let guarded_structured_constant_return =
             saved_parameters.len() >= 2 && is_guarded_structured_constant_return(function);
         if !frame_arrays.is_empty()
@@ -1556,6 +1571,7 @@ impl Generator {
                 let aggregate_base = u32::try_from(
                     array_offset
                         .checked_add(frame_array_bytes)
+                        .and_then(|offset| offset.checked_add(aggregate_call_copy_bytes))
                         .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?,
                 )
                 .map_err(|_| Diagnostic::error("structured local frame is out of range"))?;

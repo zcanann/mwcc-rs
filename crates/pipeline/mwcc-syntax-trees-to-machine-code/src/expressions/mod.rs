@@ -8,6 +8,7 @@ mod aggregate_member_arithmetic;
 mod aggregate_member_copy;
 mod aggregate_member_copy_loop;
 mod biased_scaled_member_sum;
+mod by_value_aggregate_arguments;
 mod bit_field_stores;
 mod bit_fields;
 mod call_argument_schedules;

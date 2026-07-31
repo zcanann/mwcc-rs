@@ -249,6 +249,36 @@ pub(crate) struct StructuredAggregateCallCopyPlan {
     pub(crate) total_bytes: i16,
 }
 
+/// One dereferenced aggregate value copied into compiler-owned caller storage.
+/// The source pointer remains explicit so argument marshaling can prove that it
+/// is consuming the same source expression the frame planner measured.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StructuredByValueAggregateArgumentCopy {
+    pub(crate) argument_index: usize,
+    pub(crate) source_pointer: String,
+    pub(crate) copy_offset: i16,
+    pub(crate) size: u32,
+}
+
+/// The by-value aggregate arguments owned by one direct call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StructuredByValueAggregateCall {
+    pub(crate) callee: String,
+    pub(crate) copies: Vec<StructuredByValueAggregateArgumentCopy>,
+}
+
+/// Whole-function ownership of compiler-created by-value aggregate objects.
+///
+/// MWCC assigns distinct objects to every source call, even after inlining
+/// makes their lifetimes appear reusable. Calls consume this plan in source
+/// order while frame offsets are assigned in reverse call and argument order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StructuredByValueAggregatePlan {
+    pub(crate) calls: Vec<StructuredByValueAggregateCall>,
+    pub(crate) next_call: usize,
+    pub(crate) total_bytes: i16,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct StructuredGlobalIndexCache {
     pub(crate) global: String,
@@ -546,6 +576,9 @@ pub(crate) struct Generator {
     /// describes the separate caller-owned copies below them.
     pub(crate) structured_aggregate_call_copy_plan:
         Option<StructuredAggregateCallCopyPlan>,
+    /// Compiler-created caller objects for dereferenced struct arguments.
+    pub(crate) structured_by_value_aggregate_plan:
+        Option<StructuredByValueAggregatePlan>,
     /// Slot offsets STORED THROUGH during emission (a pun store, a writeback).
     /// A spilled float parameter reloads at its return only when its slot is
     /// here — otherwise the value is still live in the incoming register
