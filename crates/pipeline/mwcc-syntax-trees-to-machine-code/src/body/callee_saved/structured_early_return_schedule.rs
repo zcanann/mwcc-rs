@@ -127,27 +127,7 @@ impl Generator {
                 condition_bit,
                 target: STRUCTURED_EPILOGUE_PLACEHOLDER,
             };
-            self.output.instructions.remove(return_branch);
-            self.labels.removed(return_branch, 1);
-            self.output
-                .relocations
-                .retain(|relocation| relocation.instruction_index != return_branch);
-            for relocation in &mut self.output.relocations {
-                if relocation.instruction_index > return_branch {
-                    relocation.instruction_index -= 1;
-                }
-            }
-            for instruction in &mut self.output.instructions {
-                match instruction {
-                    Instruction::BranchConditionalForward { target, .. }
-                    | Instruction::Branch { target }
-                        if *target > return_branch =>
-                    {
-                        *target -= 1;
-                    }
-                    _ => {}
-                }
-            }
+            self.remove_structured_condition_instruction(return_branch);
             conditional += 1;
         }
     }
@@ -196,27 +176,7 @@ impl Generator {
                 continue;
             }
 
-            self.output.instructions.remove(second);
-            self.labels.removed(second, 1);
-            self.output
-                .relocations
-                .retain(|relocation| relocation.instruction_index != second);
-            for relocation in &mut self.output.relocations {
-                if relocation.instruction_index > second {
-                    relocation.instruction_index -= 1;
-                }
-            }
-            for instruction in &mut self.output.instructions {
-                match instruction {
-                    Instruction::BranchConditionalForward { target, .. }
-                    | Instruction::Branch { target }
-                        if *target > second =>
-                    {
-                        *target -= 1;
-                    }
-                    _ => {}
-                }
-            }
+            self.remove_structured_condition_instruction(second);
         }
     }
 

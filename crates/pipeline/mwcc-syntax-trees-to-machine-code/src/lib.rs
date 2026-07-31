@@ -1486,17 +1486,26 @@ fn schedule_link_register_save(generator: &mut Generator) {
 /// Coalesce allocator self-moves on the physical stream, remapping every
 /// instruction-index owner through the resulting removal.
 fn coalesce_self_moves(generator: &mut Generator) {
-    let relocation_owners: Vec<usize> = generator
-        .output
+    let metadata_owners = self_move_metadata_owners(&generator.output);
+    let permutation = mwcc_vreg::coalesce_self_moves_preserving(
+        &mut generator.output.instructions,
+        &metadata_owners,
+    );
+    remap_instruction_indices(generator, &permutation);
+}
+
+fn self_move_metadata_owners(output: &MachineFunction) -> Vec<usize> {
+    output
         .relocations
         .iter()
         .map(|relocation| relocation.instruction_index)
-        .collect();
-    let permutation = mwcc_vreg::coalesce_self_moves_preserving(
-        &mut generator.output.instructions,
-        &relocation_owners,
-    );
-    remap_instruction_indices(generator, &permutation);
+        .chain(
+            output
+                .data_section_displacements
+                .iter()
+                .map(|displacement| displacement.instruction_index),
+        )
+        .collect()
 }
 
 /// Fold an immediately converted float copy into the conversion's source.
@@ -1815,6 +1824,40 @@ fn collapse_conditional_skip_to_backward_branch_once(
 #[cfg(test)]
 mod instruction_index_tests {
     use super::*;
+
+    #[test]
+    fn a_data_displacement_owned_self_add_is_not_coalesced() {
+        let mut output = MachineFunction::new("anchored");
+        output.instructions = vec![
+            Instruction::AddImmediate {
+                d: 31,
+                a: 31,
+                immediate: 0,
+            },
+            Instruction::move_register(4, 4),
+        ];
+        output.data_section_displacements.push(
+            mwcc_machine_code::DataSectionDisplacement {
+                instruction_index: 0,
+                target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+                    "object".into(),
+                ),
+            },
+        );
+
+        let owners = self_move_metadata_owners(&output);
+        mwcc_vreg::coalesce_self_moves_preserving(&mut output.instructions, &owners);
+
+        assert_eq!(output.instructions.len(), 1);
+        assert!(matches!(
+            output.instructions[0],
+            Instruction::AddImmediate {
+                d: 31,
+                a: 31,
+                immediate: 0
+            }
+        ));
+    }
 
     #[test]
     fn a_branch_to_a_removed_instruction_retargets_to_the_next_survivor() {

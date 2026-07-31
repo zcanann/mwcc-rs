@@ -292,48 +292,11 @@ impl Generator {
     }
 
     fn insert_frame_instruction(&mut self, position: usize, instruction: Instruction) {
-        self.output.instructions.insert(position, instruction);
-        self.labels.inserted(position, 1);
-        for relocation in &mut self.output.relocations {
-            if relocation.instruction_index >= position {
-                relocation.instruction_index += 1;
-            }
-        }
-        for instruction in &mut self.output.instructions {
-            match instruction {
-                Instruction::BranchConditionalForward { target, .. }
-                | Instruction::Branch { target }
-                    if *target >= position =>
-                {
-                    *target += 1;
-                }
-                _ => {}
-            }
-        }
+        crate::insert_instruction_retargeting(self, position, instruction);
     }
 
     fn remove_frame_instruction(&mut self, position: usize) {
-        self.output.instructions.remove(position);
-        self.labels.removed_retargeting_to_next(position, 1);
-        self.output
-            .relocations
-            .retain(|relocation| relocation.instruction_index != position);
-        for relocation in &mut self.output.relocations {
-            if relocation.instruction_index > position {
-                relocation.instruction_index -= 1;
-            }
-        }
-        for instruction in &mut self.output.instructions {
-            match instruction {
-                Instruction::BranchConditionalForward { target, .. }
-                | Instruction::Branch { target } => {
-                    if *target > position {
-                        *target -= 1;
-                    }
-                }
-                _ => {}
-            }
-        }
+        crate::remove_instruction_retargeting_to_next(self, position);
     }
 }
 

@@ -327,13 +327,7 @@ impl Generator {
         {
             return;
         }
-        self.output.instructions.remove(term_start);
-        self.labels.removed(term_start, 1);
-        for relocation in &mut self.output.relocations {
-            if relocation.instruction_index > term_start {
-                relocation.instruction_index -= 1;
-            }
-        }
+        self.remove_structured_condition_instruction(term_start);
     }
 }
 
