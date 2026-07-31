@@ -23,10 +23,79 @@ pub(super) fn summarize_automatic(function: &Function) -> Option<ValueInlineBody
     {
         return None;
     }
-    if !is_scalar_projection(function) {
-        return None;
+    if is_guarded_interpolation(function) {
+        return value_body::summarize_bounded_sequenced_automatic(function, 16);
     }
-    value_body::summarize(function)
+    is_scalar_projection(function)
+        .then(|| value_body::summarize(function))
+        .flatten()
+}
+
+fn is_guarded_interpolation(function: &Function) -> bool {
+    let [first, second, output, amount] = function.parameters.as_slice() else {
+        return false;
+    };
+    let Some(output_mask) =
+        interpolation_output_mask(&function.statements, &output.name, &amount.name)
+    else {
+        return false;
+    };
+    is_three_float_struct(first.parameter_type)
+        && is_three_float_struct(second.parameter_type)
+        && matches!(output.parameter_type, Type::StructPointer { element_size: 12 })
+        && amount.parameter_type == Type::Float
+        && function.locals.is_empty()
+        && matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &amount.name)
+        && matches!(function.statements.as_slice(), [Statement::If { .. }])
+        && output_mask == 0b111
+}
+
+/// Return the output members definitely written on every path. Sequential
+/// statements accumulate writes, while a conditional retains only writes made
+/// by both arms.
+fn interpolation_output_mask(
+    statements: &[Statement],
+    output_name: &str,
+    amount_name: &str,
+) -> Option<u8> {
+    statements.iter().try_fold(0u8, |output_mask, statement| {
+        let written = match statement {
+            Statement::Assign { name, value }
+                if name == amount_name && !crate::analysis::expression_has_side_effect(value) =>
+            {
+                0
+            }
+            Statement::Store {
+                target:
+                    Expression::Member {
+                        base,
+                        offset,
+                        member_type: Type::Float,
+                        index_stride: None,
+                    },
+                value,
+            } if matches!(base.as_ref(), Expression::Variable(name) if name == output_name)
+                && !crate::analysis::expression_has_side_effect(value) =>
+            {
+                match offset {
+                    0 => 0b001,
+                    4 => 0b010,
+                    8 => 0b100,
+                    _ => return None,
+                }
+            }
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } if !crate::analysis::expression_has_side_effect(condition) => {
+                interpolation_output_mask(then_body, output_name, amount_name)?
+                    & interpolation_output_mask(else_body, output_name, amount_name)?
+            }
+            _ => return None,
+        };
+        Some(output_mask | written)
+    })
 }
 
 fn is_scalar_projection(function: &Function) -> bool {
@@ -149,6 +218,78 @@ mod tests {
             },
         ];
 
+        assert!(summarize_automatic(&function).is_some());
+    }
+
+    #[test]
+    fn summarizes_a_bounded_guarded_vector_interpolation() {
+        let vector = Type::Struct { size: 12, align: 4 };
+        let parameters = vec![
+            Parameter {
+                parameter_type: vector,
+                name: "first".into(),
+            },
+            Parameter {
+                parameter_type: vector,
+                name: "second".into(),
+            },
+            Parameter {
+                parameter_type: Type::StructPointer { element_size: 12 },
+                name: "output".into(),
+            },
+            Parameter {
+                parameter_type: Type::Float,
+                name: "amount".into(),
+            },
+        ];
+        let store = |offset| Statement::Store {
+            target: Expression::Member {
+                base: Box::new(Expression::Variable("output".into())),
+                offset,
+                member_type: Type::Float,
+                index_stride: None,
+            },
+            value: Expression::FloatLiteral(offset as f64),
+        };
+        let branch = |amount, stores: Vec<Statement>| {
+            let mut body = stores;
+            if let Some(value) = amount {
+                body.push(Statement::Assign {
+                    name: "amount".into(),
+                    value: Expression::FloatLiteral(value),
+                });
+            }
+            body
+        };
+        let function = Function {
+            return_type: Type::Float,
+            name: "interpolate".into(),
+            is_static: false,
+            is_weak: false,
+            parameters,
+            locals: Vec::new(),
+            statements: vec![Statement::If {
+                condition: Expression::FloatLiteral(1.0),
+                then_body: branch(Some(0.0), vec![store(0), store(4), store(8)]),
+                else_body: vec![Statement::If {
+                    condition: Expression::FloatLiteral(1.0),
+                    then_body: branch(Some(1.0), vec![store(0), store(4), store(8)]),
+                    else_body: branch(None, vec![store(0), store(4), store(8)]),
+                }],
+            }],
+            guards: Vec::new(),
+            return_expression: Some(Expression::Variable("amount".into())),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        assert!(is_guarded_interpolation(&function));
+        assert!(value_body::summarize(&function).is_none());
         assert!(summarize_automatic(&function).is_some());
     }
 }

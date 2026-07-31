@@ -396,16 +396,7 @@ fn materialize_leaf_predecrement_frame(
     frame_growth: i16,
     _saved_gpr_count: usize,
 ) -> Result<(Vec<usize>, i16), &'static str> {
-    if instructions.iter().any(|instruction| {
-        matches!(
-            instruction,
-            Instruction::MoveFromLinkRegister { .. }
-                | Instruction::MoveToLinkRegister { .. }
-                | Instruction::StoreWord { s: 0, a: 1, .. }
-                | Instruction::LoadWord { d: 0, a: 1, .. }
-        )
-    })
-    {
+    if leaf_retains_linkage_state(instructions, old_size) {
         return Err("allocator-selected leaf FPR frame retains linkage state");
     }
     let frame_pop = instructions
@@ -472,6 +463,24 @@ fn materialize_leaf_predecrement_frame(
     Ok((permutation, frame_growth))
 }
 
+fn leaf_retains_linkage_state(instructions: &[Instruction], frame_size: i16) -> bool {
+    let Some(link_offset) = frame_size.checked_add(4) else {
+        return true;
+    };
+    instructions.iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instruction::MoveFromLinkRegister { .. }
+                | Instruction::MoveToLinkRegister { .. }
+        ) || matches!(
+            instruction,
+            Instruction::StoreWord { s: 0, a: 1, offset }
+                | Instruction::LoadWord { d: 0, a: 1, offset }
+                if *offset == link_offset
+        )
+    })
+}
+
 #[cfg(test)]
 mod declared_range_tests {
     use super::required_float_save_range;
@@ -501,6 +510,32 @@ mod declared_range_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_r0_aggregate_slots_are_not_linkage_state() {
+        let instructions = vec![
+            Instruction::StoreWord { s: 0, a: 1, offset: 8 },
+            Instruction::LoadWord { d: 0, a: 1, offset: 20 },
+        ];
+
+        assert!(!leaf_retains_linkage_state(&instructions, 96));
+    }
+
+    #[test]
+    fn recognizes_only_the_abi_link_slot_and_link_register_moves() {
+        assert!(leaf_retains_linkage_state(
+            &[Instruction::StoreWord { s: 0, a: 1, offset: 100 }],
+            96
+        ));
+        assert!(leaf_retains_linkage_state(
+            &[Instruction::LoadWord { d: 0, a: 1, offset: 100 }],
+            96
+        ));
+        assert!(leaf_retains_linkage_state(
+            &[Instruction::MoveFromLinkRegister { d: 0 }],
+            96
+        ));
+    }
 
     #[test]
     fn expands_a_leaf_frame_without_linkage_state() {

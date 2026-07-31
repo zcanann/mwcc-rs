@@ -428,16 +428,46 @@ fn summarize_result_selection(function: &Function) -> Option<Expression> {
 /// locals are allocated when this summary is substituted, so initializers and
 /// side effects still execute exactly where the original call appeared.
 fn summarize_sequenced_body(function: &Function, result: Expression) -> Option<Expression> {
-    summarize_sequenced_body_with_policy(function, result, false)
+    summarize_sequenced_body_with_policy(function, result, false, 12)
+}
+
+/// Summarize a semantically pre-qualified automatic-inline transaction with a
+/// caller-owned statement budget. Specialized recognizers use this instead of
+/// widening the general value-summary budget for every function.
+pub(super) fn summarize_bounded_sequenced_automatic(
+    function: &Function,
+    statement_limit: usize,
+) -> Option<ValueInlineBody> {
+    if function.return_type == Type::Void
+        || !function.guards.is_empty()
+        || function.asm_body.is_some()
+    {
+        return None;
+    }
+    summarize_sequenced_body_with_policy(
+        function,
+        normalize_reference_result(
+            function.return_type,
+            function.return_expression.clone()?,
+        ),
+        false,
+        statement_limit,
+    )
+    .map(|expression| ValueInlineBody {
+        source: function.clone(),
+        expression,
+        automatic_transaction: false,
+    })
 }
 
 fn summarize_sequenced_body_with_policy(
     function: &Function,
     result: Expression,
     forward_terminal_result: bool,
+    statement_limit: usize,
 ) -> Option<Expression> {
     if function.locals.len() > 8
-        || statement_count(&function.statements) > 12
+        || statement_count(&function.statements) > statement_limit
         || function.locals.iter().any(|local| {
             local.is_static
                 || local.is_volatile
@@ -1091,6 +1121,7 @@ pub(super) fn summarize_automatic_transaction(function: &Function) -> Option<Val
                         .expect("transaction eligibility checked its return expression"),
                 ),
                 true,
+                12,
             )
             .expect("a summarized transaction remains a sequenced body");
         }
