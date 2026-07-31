@@ -954,6 +954,7 @@ fn lower_function_body(
         body::uses_direct_paired_single_restores(function)
             || generator.has_retained_sqrtf_spill_slot(),
     )?;
+    generator.schedule_unoptimized_inline_float_restore_order();
     generator.finalize_unoptimized_leaf_source_homes();
     // Build 163 shares the selected body schedule, but wraps GPR survivors in a
     // larger linkage-first frame. Normalize only the verified allocator shape;
