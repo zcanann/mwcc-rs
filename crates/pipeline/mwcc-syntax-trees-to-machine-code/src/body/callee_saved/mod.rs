@@ -216,6 +216,7 @@ pub(crate) fn uses_direct_paired_single_restores(function: &Function) -> bool {
         .is_some()
 }
 mod structured_unoptimized_leaf_homes;
+mod structured_unoptimized_inline_float_loop_homes;
 mod structured_unoptimized_leaf_schedule;
 mod structured_loop_member_receiver_layout;
 mod structured_loop_call_publication_layout;

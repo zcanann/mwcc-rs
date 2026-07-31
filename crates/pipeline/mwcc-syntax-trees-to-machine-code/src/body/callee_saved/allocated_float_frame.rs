@@ -101,25 +101,34 @@ impl Generator {
 
 /// Resolve the ABI save range from selection's declared saved-float homes and
 /// allocation's physical subset. Structured owners know how many source-level
-/// values survive calls before coloring; allocator reuse may report only the
-/// registers occupied by virtual intervals, so that subset cannot define the
-/// frame on its own.
+/// values survive calls before coloring, while the allocator can extend that
+/// source range with O0 homes below it. Preserve the complete ABI-contiguous
+/// range through the lowest lane owned by either side.
 fn required_float_save_range(
     declared_count: u8,
     allocated: &[u8],
 ) -> Result<Vec<u8>, String> {
-    if allocated.is_empty() || declared_count == 0 {
-        return Ok(allocated.to_vec());
+    if allocated.is_empty() {
+        return Ok(Vec::new());
     }
-    let declared: Vec<u8> = (0..declared_count)
-        .map(|index| 31u8.saturating_sub(index))
-        .collect();
-    if allocated.iter().any(|register| !declared.contains(register)) {
+    if allocated.iter().any(|register| !(14..=31).contains(register)) {
         return Err(format!(
-            "allocator-selected FPRs {allocated:?} lie outside declared save range {declared:?}"
+            "allocator-selected FPRs {allocated:?} include a volatile or invalid register"
         ));
     }
-    Ok(declared)
+    let allocated_count = 32u8.saturating_sub(
+        *allocated
+            .iter()
+            .min()
+            .expect("nonempty allocation checked above"),
+    );
+    let count = declared_count.max(allocated_count);
+    if count > 18 {
+        return Err(format!(
+            "allocator-selected FPR range requires {count} saved registers"
+        ));
+    }
+    Ok((0..count).map(|index| 31 - index).collect())
 }
 
 fn materialize_predecrement_frame(
@@ -469,8 +478,16 @@ mod declared_range_tests {
     }
 
     #[test]
-    fn rejects_an_allocation_outside_the_declared_range() {
-        assert!(required_float_save_range(2, &[31, 29]).is_err());
+    fn extends_the_declared_range_to_an_allocator_owned_lower_lane() {
+        assert_eq!(
+            required_float_save_range(2, &[31, 29]).expect("extended range"),
+            vec![31, 30, 29]
+        );
+    }
+
+    #[test]
+    fn rejects_an_allocator_lane_outside_the_saved_fpr_bank() {
+        assert!(required_float_save_range(2, &[31, 13]).is_err());
     }
 }
 

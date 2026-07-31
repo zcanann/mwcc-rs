@@ -88,6 +88,8 @@ use super::structured_recovered_float_homes;
 use super::structured_recovered_general_homes::StructuredRecoveredGeneralHomes;
 use super::structured_periodic_float_normalization::StructuredPeriodicFloatNormalization;
 use super::structured_unoptimized_leaf_homes::StructuredUnoptimizedLeafHomes;
+use super::structured_unoptimized_inline_float_loop_homes::
+    StructuredUnoptimizedInlineFloatLoopHomes;
 use super::structured_switch_lowering::{
     is_lowered_switch_guard, lower_structured_switches,
     lower_structured_switches_for_emission, resolve_structured_switch_joins,
@@ -724,6 +726,15 @@ impl Generator {
         else {
             decline!("ephemeral-local planning rejected the body");
         };
+        let unoptimized_inline_float_loop_homes =
+            (self.behavior.optimization == mwcc_versions::Optimization::O0)
+                .then(|| {
+                    StructuredUnoptimizedInlineFloatLoopHomes::plan(
+                        function,
+                        &ephemeral_locals,
+                    )
+                })
+                .flatten();
         let dense_loop_window =
             plan_dense_loop_register_window(&function.statements, &ephemeral_locals);
         let dense_loop_carried =
@@ -2892,8 +2903,14 @@ impl Generator {
                     }
                 }
                 ValueClass::Float => {
-                    let preferred =
-                        self.ephemeral_float_home_preference(function, &ephemeral_locals);
+                    let preferred = unoptimized_inline_float_loop_homes
+                        .as_ref()
+                        .and_then(|plan| {
+                            plan.preference(&local.name, self.callee_saved_float)
+                        })
+                        .unwrap_or_else(|| {
+                            self.ephemeral_float_home_preference(function, &ephemeral_locals)
+                        });
                     self.fresh_virtual_float_preferring(
                         structured_recovered_float_homes::preference(local, preferred),
                     )
