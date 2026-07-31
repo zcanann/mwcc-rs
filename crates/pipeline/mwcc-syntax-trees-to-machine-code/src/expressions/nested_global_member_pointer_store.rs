@@ -108,15 +108,15 @@ fn classify<'a>(
     };
     let (_, first_index_offset, first_index_type) = global_member(first_index, Some(global))?;
     let (_, second_index_offset, second_index_type) = global_member(second_index, Some(global))?;
-    let Expression::Member {
-        member_type: value_type,
-        index_stride: None,
-        ..
-    } = value
-    else {
-        return None;
+    let value_pointee = match value {
+        Expression::Member {
+            member_type,
+            index_stride: None,
+            ..
+        } => Some(pointee_of_type(*member_type)?),
+        Expression::IntegerLiteral(_) => None,
+        _ => return None,
     };
-    let value_pointee = pointee_of_type(*value_type)?;
     if *first_element_size != *first_stride
         || *second_element_size == 0
         || !matches!(
@@ -143,11 +143,13 @@ fn classify<'a>(
         )
         || matches!(
             value_pointee,
-            Pointee::Char
-                | Pointee::Float
-                | Pointee::Double
-                | Pointee::LongLong
-                | Pointee::UnsignedLongLong
+            Some(
+                Pointee::Char
+                    | Pointee::Float
+                    | Pointee::Double
+                    | Pointee::LongLong
+                    | Pointee::UnsignedLongLong
+            )
         )
     {
         return None;
@@ -195,27 +197,31 @@ impl Generator {
         ) {
             return Ok(false);
         }
-        let (source_base, source_offset, source_type) = match store.value {
+        let source_member = match store.value {
             Expression::Member {
                 base,
                 offset,
                 member_type,
                 ..
-            } => (
+            } => Some((
                 self.general_register_of_leaf(base)?,
                 i16::try_from(*offset)
                     .map_err(|_| Diagnostic::error("source member offset is out of range"))?,
                 pointee_of_type(*member_type)
                     .expect("nested store source was classified as scalar"),
-            ),
-            _ => unreachable!("nested store value was classified as a member"),
+            )),
+            Expression::IntegerLiteral(_) => None,
+            _ => unreachable!("nested store value shape was classified"),
         };
         // This owner uses r3-r5 throughout the pointer walk. A volatile source
         // base needs whole-function home planning before entering this path;
         // otherwise a later implicit call-argument use would be clobbered.
-        if (!mwcc_vreg::Reg::is_virtual_field(source_base) && source_base < 14) || source_base == 5
-        {
-            return Ok(false);
+        if let Some((source_base, _, _)) = source_member {
+            if (!mwcc_vreg::Reg::is_virtual_field(source_base) && source_base < 14)
+                || source_base == 5
+            {
+                return Ok(false);
+            }
         }
         let root_pointer_offset = i16::try_from(store.root_pointer_offset)
             .map_err(|_| Diagnostic::error("root pointer-member offset is out of range"))?;
@@ -233,12 +239,20 @@ impl Generator {
             .map_err(|_| Diagnostic::error("second global index offset is out of range"))?;
 
         let source = self.fresh_virtual_general_preferring(5);
-        self.output.instructions.push(displacement_load(
-            source_type,
-            source,
-            source_base,
-            source_offset,
-        )?);
+        match (source_member, store.value) {
+            (Some((source_base, source_offset, source_type)), _) => {
+                self.output.instructions.push(displacement_load(
+                    source_type,
+                    source,
+                    source_base,
+                    source_offset,
+                )?);
+            }
+            (None, Expression::IntegerLiteral(constant)) => {
+                self.load_integer_constant(source, *constant);
+            }
+            _ => unreachable!("nested store source was classified"),
+        }
 
         let owner = self.fresh_virtual_general_preferring(3);
         self.emit_nested_store_global_address(store.global, owner);
