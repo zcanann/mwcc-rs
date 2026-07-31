@@ -13,6 +13,12 @@ struct PhysicalHandoffShape {
     interpolation: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Vec3CopyPacket {
+    source: u8,
+    target_offset: i16,
+}
+
 pub(super) struct StructuredUnoptimizedInlineFloatTransactionHomes {
     caller_result: String,
     projection_result: String,
@@ -72,6 +78,28 @@ impl Generator {
             shape.projection + 2,
             Instruction::FloatMove { d: 31, b: 28 },
         );
+        if let Some(copy_start) = (shape.projection + 3..self.output.instructions.len())
+            .find(|start| {
+                vec3_copy_packet(&self.output.instructions, *start)
+                    == Some(Vec3CopyPacket {
+                        source: 4,
+                        target_offset: 20,
+                    })
+                    && vec3_copy_packet(&self.output.instructions, *start + 6)
+                        == Some(Vec3CopyPacket {
+                            source: 5,
+                            target_offset: 8,
+                        })
+            })
+        {
+            for index in 0..6 {
+                crate::move_instruction_before_retargeting(
+                    self,
+                    copy_start + 6 + index,
+                    copy_start + index,
+                );
+            }
+        }
         let frame_push = self
             .output
             .instructions
@@ -114,6 +142,30 @@ impl Generator {
         };
         self.frame_size = 80;
     }
+}
+
+fn vec3_copy_packet(instructions: &[Instruction], start: usize) -> Option<Vec3CopyPacket> {
+    let [
+        Instruction::LoadWord { d: 6, a: source0, offset: source_offset0 },
+        Instruction::LoadWord { d: 0, a: source1, offset: source_offset1 },
+        Instruction::StoreWord { s: 6, a: 1, offset: target_offset0 },
+        Instruction::StoreWord { s: 0, a: 1, offset: target_offset1 },
+        Instruction::LoadWord { d: 0, a: source2, offset: source_offset2 },
+        Instruction::StoreWord { s: 0, a: 1, offset: target_offset2 },
+    ] = instructions.get(start..start.checked_add(6)?)?
+    else {
+        return None;
+    };
+    (*source0 == *source1
+        && *source0 == *source2
+        && source_offset0.checked_add(4) == Some(*source_offset1)
+        && source_offset0.checked_add(8) == Some(*source_offset2)
+        && target_offset0.checked_add(4) == Some(*target_offset1)
+        && target_offset0.checked_add(8) == Some(*target_offset2))
+    .then_some(Vec3CopyPacket {
+        source: *source0,
+        target_offset: *target_offset0,
+    })
 }
 
 fn physical_handoff_shape(instructions: &[Instruction]) -> Option<PhysicalHandoffShape> {
@@ -403,6 +455,26 @@ mod tests {
         let shape = physical_handoff_shape(&instructions).expect("handoff shape");
         assert_eq!(shape.projection, 0);
         assert_eq!(shape.interpolation, 3);
+    }
+
+    #[test]
+    fn recognizes_a_pipelined_vec3_copy_packet() {
+        let instructions = vec![
+            Instruction::LoadWord { d: 6, a: 5, offset: 0 },
+            Instruction::LoadWord { d: 0, a: 5, offset: 4 },
+            Instruction::StoreWord { s: 6, a: 1, offset: 8 },
+            Instruction::StoreWord { s: 0, a: 1, offset: 12 },
+            Instruction::LoadWord { d: 0, a: 5, offset: 8 },
+            Instruction::StoreWord { s: 0, a: 1, offset: 16 },
+        ];
+
+        assert_eq!(
+            vec3_copy_packet(&instructions, 0),
+            Some(Vec3CopyPacket {
+                source: 5,
+                target_offset: 8,
+            })
+        );
     }
 
     #[test]
