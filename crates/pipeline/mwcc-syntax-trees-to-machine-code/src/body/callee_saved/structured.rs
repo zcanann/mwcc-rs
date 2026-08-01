@@ -192,12 +192,22 @@ impl Generator {
                 then_body: vec![Statement::Return(Some(guard.value))],
                 else_body: Vec::new(),
             }));
+        let address_taken = crate::frame::collect_address_taken(&normalized);
+        let needs_frame = normalized
+            .locals
+            .iter()
+            .any(|local| address_taken.contains(local.name.as_str()));
+        if needs_frame && self.try_callee_saved_structured_frame_body(&normalized)? {
+            self.legacy_callee_saved_frame_layout =
+                LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable;
+            return Ok(true);
+        }
         if self.try_callee_saved_structured_body(&normalized)? {
             self.legacy_callee_saved_frame_layout =
                 LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable;
             return Ok(true);
         }
-        if self.try_callee_saved_structured_frame_body(&normalized)? {
+        if !needs_frame && self.try_callee_saved_structured_frame_body(&normalized)? {
             self.legacy_callee_saved_frame_layout =
                 LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable;
             return Ok(true);

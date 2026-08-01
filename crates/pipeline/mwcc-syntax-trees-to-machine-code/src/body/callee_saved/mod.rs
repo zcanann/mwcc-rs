@@ -72,6 +72,7 @@ mod guarded_computed_survivor_frame;
 mod guarded_pointer_call;
 mod guarded_call_pointer_load_reuse;
 mod guarded_report_store_schedule;
+mod guarded_return_frame_schedule;
 mod indirect_call_schedule;
 mod indexed_call_store_return;
 mod indexed_member_call_store_loop;

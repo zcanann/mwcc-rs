@@ -947,6 +947,7 @@ fn lower_function_body(
     // Symmetrically, delay the prologue's saved-LR store past the first call's ready
     // argument materializations (mwcc fills the mflr->store latency gap).
     schedule_link_register_save(&mut generator);
+    generator.schedule_guarded_return_address_frame();
     // Build 163 lays out GPR homes and retained entry lanes before reserving
     // its compact 8-byte FPR save lanes. Newer builds add their 16-byte Gekko
     // lanes directly to the predecrement frame.
