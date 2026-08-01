@@ -60,7 +60,7 @@ pub(crate) fn nested_retained_switch_hidden_label_count(function: &Function) -> 
                     let retained = u32::from(
                         inside_switch
                             && super::structured_sparse_switch::
-                                is_sparse_shared_body_switch(arms),
+                                is_sparse_retained_switch(arms),
                     ) * canonical_switch_hidden_label_count(
                         function,
                         scrutinee,
@@ -241,7 +241,8 @@ impl SwitchLowering {
                         && ((self.control_depth == 0
                             && (is_dense_structured_switch(arms)
                                 || shared_base_comparison_switch(arms).is_some()))
-                            || super::structured_sparse_switch::is_sparse_shared_body_switch(arms))
+                            || (self.control_depth == 0
+                                && super::structured_sparse_switch::is_sparse_retained_switch(arms)))
                     {
                         let switch_has_break = arms.iter().any(|arm| {
                             matches!(&arm.body, ArmBody::Statements(body) if current_switch_has_break(body))

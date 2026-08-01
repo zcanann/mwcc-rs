@@ -105,7 +105,9 @@ use super::structured_switch_lowering::{
     lower_structured_switches_for_emission, resolve_structured_switch_joins,
     shared_base_comparison_switch, structured_switch_join_placeholder,
 };
-use super::structured_sparse_switch::is_sparse_shared_body_switch;
+use super::structured_sparse_switch::{
+    has_direct_call_sparse_switch, is_sparse_retained_switch,
+};
 use super::structured_shared_switch_global_value::{
     plan as plan_structured_shared_switch_global_value,
     SharedSwitchGlobalValueHome,
@@ -302,6 +304,7 @@ impl Generator {
         let function = stripped_empty_switches.as_ref().unwrap_or(function);
         let structured_switch_source = function.clone();
         let repeated_call_poll_transaction = is_repeated_call_poll_transaction(function);
+        let direct_call_sparse_switch = has_direct_call_sparse_switch(function);
         let counted_call_retry = is_counted_call_retry(function);
         let injected_string_data_anchor = repeated_call_poll_transaction
             && self.data_section_anchor.is_none()
@@ -2352,6 +2355,16 @@ impl Generator {
             LegacyCalleeSavedFrameLayout::InferFromValueOrigin
         } else if guarded_structured_constant_return {
             LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable
+        } else if direct_call_sparse_switch
+            && saved_float_parameters.is_empty()
+            && eager_saved_locals.is_empty()
+            && saved_parameters.len() == 1
+            && deferred_saved_locals.is_empty()
+            && saved_home_slot_base == 0
+            && count == 1
+            && self.legacy_inline_expansion_frame_bytes == 0
+        {
+            LegacyCalleeSavedFrameLayout::CompactValueHomes
         } else if counted_call_retry
             && saved_float_parameters.is_empty()
             && eager_saved_locals.len() == 1
@@ -3760,6 +3773,11 @@ impl Generator {
                 self.evaluate(return_expression, function.return_type, result)?;
             }
         }
+        if direct_call_sparse_switch {
+            if let [(_, home, _)] = saved_parameter_homes.as_slice() {
+                self.schedule_sparse_switch_tail_argument_copy(*home);
+            }
+        }
         let lowered_accumulator_return =
             !call_accumulators.is_empty() && self.lower_structured_call_accumulator_return();
         let epilogue = self.output.instructions.len();
@@ -4077,7 +4095,7 @@ impl Generator {
                     arms,
                     default,
                 } => {
-                    if is_sparse_shared_body_switch(arms) {
+                    if is_sparse_retained_switch(arms) {
                         self.emit_structured_sparse_switch(
                             scrutinee,
                             arms,

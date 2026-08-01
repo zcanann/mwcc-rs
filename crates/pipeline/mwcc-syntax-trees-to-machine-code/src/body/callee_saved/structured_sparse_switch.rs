@@ -1,9 +1,10 @@
-//! Sparse structured switches with source-shared fallthrough bodies.
+//! Sparse structured switches emitted as balanced comparison trees.
 //!
-//! Liveness uses the canonical nested-if view, but emission must retain each
-//! source body once. Cloning a run of empty case labels into separate if arms
-//! duplicates callback transactions and prevents MWCC's balanced comparison
-//! tree from forming.
+//! Liveness uses the canonical nested-if view, while emission retains small
+//! sparse switches so it can choose MWCC's comparison pivots directly. This
+//! also keeps source-shared fallthrough bodies unique: cloning a run of empty
+//! case labels duplicates callback transactions and prevents the balanced tree
+//! from forming.
 
 use super::structured_dense_switch::statements_fall_through;
 use super::structured_entry_alias::EntryParameterAlias;
@@ -18,9 +19,11 @@ struct CaseRange {
     body: usize,
 }
 
-pub(super) fn is_sparse_shared_body_switch(arms: &[mwcc_syntax_trees::SwitchArm]) -> bool {
+pub(super) fn is_sparse_retained_switch(arms: &[mwcc_syntax_trees::SwitchArm]) -> bool {
+    let has_fallthrough = arms.iter().any(|arm| arm.falls_through);
     if arms.is_empty()
-        || !arms.iter().any(|arm| arm.falls_through)
+        || (!has_fallthrough
+            && super::structured_switch_lowering::is_dense_structured_switch(arms))
         || arms
             .iter()
             .any(|arm| !(i16::MIN as i64..i16::MAX as i64).contains(&arm.value))
@@ -33,7 +36,68 @@ pub(super) fn is_sparse_shared_body_switch(arms: &[mwcc_syntax_trees::SwitchArm]
     }
     let ranges = shared_case_ranges(arms);
     ranges.len() <= 6
-        && dispatch_range_is_supported(&ranges, 0, ranges.len() - 1, None)
+        && dispatch_range_is_supported(
+            &ranges,
+            0,
+            ranges.len() - 1,
+            None,
+            !has_fallthrough,
+        )
+}
+
+pub(super) fn has_direct_call_sparse_switch(function: &Function) -> bool {
+    function.statements.iter().any(|statement| {
+        matches!(statement,
+            Statement::Switch {
+                scrutinee: Expression::Call { .. },
+                arms,
+                ..
+            } if is_sparse_retained_switch(arms))
+    })
+}
+
+impl Generator {
+    /// Build 163 treats the saved owner forwarded by a sparse-switch tail call
+    /// as a value materialization. The ordinary pointer argument path retains
+    /// `mr`; rewrite only the fully proven `(saved owner, constant, switch
+    /// result)` terminal call window owned by this lowering.
+    pub(super) fn schedule_sparse_switch_tail_argument_copy(&mut self, source: u8) {
+        if self.behavior.materialization_copy_style
+            != mwcc_versions::MaterializationCopyStyle::AddImmediateZero
+        {
+            return;
+        }
+        rewrite_sparse_switch_tail_argument_copy(&mut self.output.instructions, source);
+    }
+}
+
+fn rewrite_sparse_switch_tail_argument_copy(
+    instructions: &mut [Instruction],
+    source: u8,
+) -> bool {
+    let Some(copy_index) = (0..instructions.len().saturating_sub(3)).rev().find(|index| {
+        matches!(
+            instructions[*index],
+            Instruction::Or { a: 3, s, b } if s == source && b == source
+        ) && matches!(
+            instructions[*index + 1],
+            Instruction::AddImmediate { d: 4, a: 0, .. }
+        ) && matches!(
+            instructions[*index + 2],
+            Instruction::Or { a: 5, s, b } if s == b
+        ) && matches!(
+            instructions[*index + 3],
+            Instruction::BranchAndLink { .. }
+        )
+    }) else {
+        return false;
+    };
+    instructions[copy_index] = Instruction::AddImmediate {
+        d: 3,
+        a: source,
+        immediate: 0,
+    };
+    true
 }
 
 fn shared_case_ranges(arms: &[mwcc_syntax_trees::SwitchArm]) -> Vec<CaseRange> {
@@ -95,8 +159,10 @@ fn dispatch_range_is_supported(
     lo: usize,
     hi: usize,
     upper_bound: Option<i64>,
+    prefer_lower_root: bool,
 ) -> bool {
-    lo == hi || shared_case_pivot(ranges, lo, hi, upper_bound).is_some()
+    lo == hi
+        || shared_case_pivot(ranges, lo, hi, upper_bound, prefer_lower_root).is_some()
 }
 
 fn shared_case_pivot(
@@ -104,9 +170,10 @@ fn shared_case_pivot(
     lo: usize,
     hi: usize,
     upper_bound: Option<i64>,
+    prefer_lower_root: bool,
 ) -> Option<usize> {
     let count = hi - lo + 1;
-    let preferred = if upper_bound.is_none() {
+    let preferred = if upper_bound.is_none() && !prefer_lower_root {
         lo + count / 2
     } else {
         lo + (count - 1) / 2
@@ -125,9 +192,16 @@ fn shared_case_pivot(
                         lo,
                         *index - 1,
                         Some(pivot.low - 1),
+                        false,
                     ))
                 && (*index == hi
-                    || dispatch_range_is_supported(ranges, *index + 1, hi, upper_bound))
+                    || dispatch_range_is_supported(
+                        ranges,
+                        *index + 1,
+                        hi,
+                        upper_bound,
+                        false,
+                    ))
         })
 }
 
@@ -145,7 +219,7 @@ impl Generator {
         pending_gotos: &mut Vec<(usize, String)>,
         entry_alias: &mut Option<EntryParameterAlias>,
     ) -> Compilation<()> {
-        if !is_sparse_shared_body_switch(arms) {
+        if !is_sparse_retained_switch(arms) {
             return Err(Diagnostic::error(
                 "structured switch was retained without a sparse shared-body plan",
             ));
@@ -160,6 +234,10 @@ impl Generator {
                     ));
                 }
                 location.register
+            }
+            Expression::Call { .. } => {
+                self.evaluate_general(scrutinee, Eabi::FIRST_GENERAL_ARGUMENT)?;
+                Eabi::FIRST_GENERAL_ARGUMENT
             }
             _ => {
                 self.evaluate_general(scrutinee, GENERAL_SCRATCH)?;
@@ -176,6 +254,7 @@ impl Generator {
             ranges.len() - 1,
             None,
             None,
+            !arms.iter().any(|arm| arm.falls_through),
             &mut dispatch_patches,
         );
 
@@ -293,6 +372,7 @@ impl Generator {
         hi: usize,
         lower_bound: Option<i64>,
         upper_bound: Option<i64>,
+        prefer_lower_root: bool,
         patches: &mut Vec<(usize, crate::switch::Target)>,
     ) {
         if lo == hi {
@@ -324,7 +404,7 @@ impl Generator {
             return;
         }
 
-        let mid = shared_case_pivot(ranges, lo, hi, upper_bound)
+        let mid = shared_case_pivot(ranges, lo, hi, upper_bound, prefer_lower_root)
             .expect("a retained shared-body range has a supported pivot");
         let pivot = ranges[mid];
         debug_assert_eq!(pivot.low, pivot.high);
@@ -354,6 +434,7 @@ impl Generator {
                 mid - 1,
                 lower_bound,
                 Some(pivot.low - 1),
+                false,
                 patches,
             );
         }
@@ -382,6 +463,7 @@ impl Generator {
                 hi,
                 Some(pivot.high + 1),
                 upper_bound,
+                false,
                 patches,
             );
         }
@@ -398,7 +480,9 @@ impl Generator {
         let body = crate::switch::Target::Body(range.body);
         if range.low == range.high {
             let value = range.low;
-            if upper_bound == Some(value) {
+            if lower_bound == Some(value) && upper_bound == Some(value) {
+                self.push_sparse_branch(patches, body);
+            } else if upper_bound == Some(value) {
                 self.push_sparse_compare(register, value);
                 self.push_sparse_conditional(patches, (4, 0), body);
                 self.push_sparse_branch(patches, crate::switch::Target::Default);
@@ -487,7 +571,69 @@ mod tests {
             },
         ];
 
-        assert!(is_sparse_shared_body_switch(&arms));
+        assert!(arms.iter().any(|arm| arm.falls_through));
+        assert!(is_sparse_retained_switch(&arms));
+    }
+
+    #[test]
+    fn recognizes_a_small_nonfallthrough_comparison_tree() {
+        let arms = [0, 1796, 1797, 1798]
+            .into_iter()
+            .map(|value| SwitchArm {
+                value,
+                body: ArmBody::Statements(vec![Statement::Return(None)]),
+                falls_through: false,
+            })
+            .collect::<Vec<_>>();
+        let ranges = shared_case_ranges(&arms);
+
+        assert!(is_sparse_retained_switch(&arms));
+        assert_eq!(shared_case_pivot(&ranges, 0, 3, None, true), Some(1));
+        assert_eq!(shared_case_pivot(&ranges, 2, 3, None, false), Some(3));
+    }
+
+    #[test]
+    fn leaves_dense_nonfallthrough_switches_to_the_jump_table_owner() {
+        let arms = [3, 4, 5, 6, 7, 8, 9]
+            .into_iter()
+            .map(|value| SwitchArm {
+                value,
+                body: ArmBody::Statements(vec![Statement::Return(None)]),
+                falls_through: false,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!is_sparse_retained_switch(&arms));
+    }
+
+    #[test]
+    fn materializes_the_saved_owner_for_a_sparse_switch_tail_call() {
+        let mut instructions = vec![
+            Instruction::Or { a: 3, s: 31, b: 31 },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 0,
+                immediate: 128,
+            },
+            Instruction::Or { a: 5, s: 30, b: 30 },
+            Instruction::BranchAndLink {
+                target: "reply".to_owned(),
+            },
+            Instruction::Branch { target: 4 },
+        ];
+
+        assert!(rewrite_sparse_switch_tail_argument_copy(
+            &mut instructions,
+            31,
+        ));
+        assert!(matches!(
+            instructions[0],
+            Instruction::AddImmediate {
+                d: 3,
+                a: 31,
+                immediate: 0,
+            }
+        ));
     }
 
     #[test]
@@ -523,10 +669,11 @@ mod tests {
             },
         ]);
 
-        assert!(is_sparse_shared_body_switch(&arms));
+        assert!(arms.iter().any(|arm| arm.falls_through));
+        assert!(is_sparse_retained_switch(&arms));
         let ranges = shared_case_ranges(&arms);
         assert_eq!(ranges.len(), 6);
-        assert_eq!(shared_case_pivot(&ranges, 4, 5, None), Some(4));
+        assert_eq!(shared_case_pivot(&ranges, 4, 5, None, false), Some(4));
     }
 
     #[test]
@@ -565,6 +712,7 @@ mod tests {
             0,
             ranges.len() - 1,
             None,
+            false,
         ));
     }
 }
