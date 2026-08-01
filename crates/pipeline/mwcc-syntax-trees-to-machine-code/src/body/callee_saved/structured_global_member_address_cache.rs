@@ -66,7 +66,7 @@ pub(super) fn plan(
             let (last, _) = *occurrences.last()?;
             if occurrences.len() < 2
                 || first >= last
-                || occurrences.iter().any(|(_, inside_loop)| *inside_loop)
+                || occurrences.iter().all(|(_, inside_loop)| *inside_loop)
             {
                 return None;
             }
@@ -330,6 +330,48 @@ mod tests {
                 &std::collections::HashMap::new(),
             ),
             None
+        );
+    }
+
+    #[test]
+    fn retains_a_preloop_member_address_reused_by_the_loop_condition() {
+        let function = function(vec![
+            Statement::Assign {
+                name: "initial".into(),
+                value: member(8),
+            },
+            Statement::Expression(Expression::Call {
+                name: "prepare".into(),
+                arguments: Vec::new(),
+            }),
+            Statement::Loop {
+                kind: LoopKind::For,
+                initializer: None,
+                condition: Some(Expression::Binary {
+                    operator: BinaryOperator::Less,
+                    left: Box::new(Expression::Variable("index".into())),
+                    right: Box::new(member(8)),
+                }),
+                step: None,
+                body: Vec::new(),
+            },
+        ]);
+
+        assert_eq!(
+            plan(
+                &function,
+                &std::collections::HashMap::from([(
+                    "record".into(),
+                    Type::Struct { size: 12, align: 4 },
+                )]),
+                &std::collections::HashMap::new(),
+            ),
+            Some(StructuredGlobalMemberAddressPlan {
+                global: "record".into(),
+                total_size: 12,
+                offset: 8,
+                defer_until_first_use: false,
+            })
         );
     }
 

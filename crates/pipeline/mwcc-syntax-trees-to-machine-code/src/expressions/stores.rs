@@ -925,6 +925,21 @@ impl Generator {
                         // member load; a non-zero offset materializes g's SDA base and
                         // stores at the displacement.
                         if let Some(size) = struct_value_size {
+                            if let Some(base_reg) = self
+                                .structured_global_base_cache
+                                .as_ref()
+                                .filter(|cache| cache.global == *name)
+                                .map(|cache| cache.register)
+                            {
+                                let source = self.place_store_value(value, pointee)?;
+                                self.output.instructions.push(displacement_store(
+                                    pointee,
+                                    source,
+                                    base_reg,
+                                    *offset as i16,
+                                )?);
+                                return Ok(());
+                            }
                             if size <= 8
                                 && matches!(
                                     self.behavior.global_addressing,

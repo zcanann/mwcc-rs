@@ -1296,6 +1296,14 @@ impl Generator {
                         Some(Type::Struct { .. })
                     ) =>
             {
+                if let Some(register) = self
+                    .structured_global_base_cache
+                    .as_ref()
+                    .filter(|cache| cache.global == *name)
+                    .map(|cache| cache.register)
+                {
+                    return Ok(register);
+                }
                 let register = self.fresh_virtual_general_preferring(3);
                 self.emit_address_of(base, register)?;
                 Ok(register)
@@ -1598,16 +1606,26 @@ impl Generator {
                     scaled,
                 )?);
             } else {
+                let retained_cache_base = self
+                    .structured_global_base_cache
+                    .as_ref()
+                    .is_some_and(|cache| cache.register == address);
+                let indexed_address = if retained_cache_base {
+                    self.fresh_virtual_general_avoiding(vec![GENERAL_SCRATCH])
+                } else {
+                    address
+                };
                 self.output.instructions.push(Instruction::Add {
-                    d: address,
+                    d: indexed_address,
                     a: address,
                     b: scaled,
                 });
-                let displacement = self.emit_member_base_adjustment(address, *offset);
+                let displacement =
+                    self.emit_member_base_adjustment(indexed_address, *offset);
                 self.output.instructions.push(displacement_load(
                     *element,
                     destination,
-                    address,
+                    indexed_address,
                     displacement,
                 )?);
             }
