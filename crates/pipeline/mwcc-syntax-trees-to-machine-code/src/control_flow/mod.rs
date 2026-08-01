@@ -6,6 +6,7 @@ mod absolute_value;
 mod bounded_array_value;
 mod branch_preserving_select;
 mod branches;
+mod call_result_error_select;
 mod callback_fallback_select;
 mod common_offset_select;
 mod compared_value_store_select;

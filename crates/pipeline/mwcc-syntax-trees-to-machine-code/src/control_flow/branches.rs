@@ -549,6 +549,15 @@ impl Generator {
             return Ok(());
         }
 
+        if self.try_emit_call_result_error_select(
+            condition,
+            when_true,
+            when_false,
+            destination,
+        )? {
+            return Ok(());
+        }
+
         // `cond ? c1 : c2` with consecutive non-zero constants is branchless: the
         // truth value (a -1/0 sign mask or a 0/1 bool) plus the lower constant.
         if self.try_emit_consecutive_constants(condition, when_true, when_false, destination)? {

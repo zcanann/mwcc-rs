@@ -1020,6 +1020,7 @@ fn lower_function_body(
     generator.finalize_exclusive_arm_copy_encodings();
     generator.schedule_linkage_first_function_address();
     generator.schedule_linkage_first_global_member_callback();
+    generator.schedule_linkage_first_global_member_forward();
     generator.schedule_direct_callback_wait_entry(function);
     generator.schedule_sequenced_callback_wait();
     generator.schedule_callback_publication_call();

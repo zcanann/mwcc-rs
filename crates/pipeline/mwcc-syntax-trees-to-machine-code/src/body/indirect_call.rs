@@ -10,6 +10,7 @@ use super::*;
 mod guarded_indexed;
 mod guarded_shared_global;
 mod global_member_callback;
+mod global_member_forward;
 mod indexed_frame;
 mod indexed_mixed_arguments;
 
@@ -273,6 +274,9 @@ impl Generator {
         target: &Expression,
         arguments: &[Expression],
     ) -> Compilation<()> {
+        if self.try_emit_global_member_forward_indirect_call(target, arguments)? {
+            return Ok(());
+        }
         if self.try_emit_global_member_callback_indirect_call(target, arguments)? {
             return Ok(());
         }
