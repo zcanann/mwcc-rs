@@ -1184,6 +1184,7 @@ fn lower_function_body(
     generator.finalize_structured_guarded_scalar_output_frame();
     generator.finalize_structured_shared_switch_scalar_frame();
     generator.finalize_structured_mixed_switch_scalar_frame();
+    generator.finalize_structured_write_register_frame();
     generator.finalize_structured_memory_transfer_frame();
     generator.finalize_structured_memory_write_frame();
     generator.finalize_linkage_first_forwarded_context_frame(function);

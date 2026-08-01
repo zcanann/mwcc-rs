@@ -37,7 +37,7 @@ impl Generator {
                 && matches!(window[2], Instruction::Or { a: 5, s, b }
                     if s == owner && b == owner)
                 && matches!(window[3], Instruction::AddImmediate { d: 6, a: 1, .. })
-                && matches!(window[4], Instruction::AddImmediate { d: 7, a: 0, immediate: 1 })
+                && matches!(window[4], Instruction::AddImmediate { d: 7, a: 0, immediate: 0 | 1 })
                 && matches!(window[5], Instruction::BranchAndLink { .. })
         }).count();
         if mask_count != 1 || access_call_count != 4 {
@@ -88,7 +88,7 @@ impl Generator {
                 && matches!(window[2], Instruction::Or { a: 5, s, b }
                     if s == owner && b == owner)
                 && matches!(window[3], Instruction::AddImmediate { d: 6, a: 1, .. })
-                && matches!(window[4], Instruction::AddImmediate { d: 7, a: 0, immediate: 1 })
+                && matches!(window[4], Instruction::AddImmediate { d: 7, a: 0, immediate: 0 | 1 })
                 && matches!(window[5], Instruction::BranchAndLink { .. }))
             .then_some(start)
         }).collect::<Vec<_>>();

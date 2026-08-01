@@ -49,8 +49,12 @@ impl StructuredCompactScalarFrame {
                 shared_switch_frame: false,
             });
         }
+        let packed_result = deferred_saved_locals.is_empty()
+            || matches!(deferred_saved_locals, [result]
+                if matches!(function.return_expression.as_ref(), Some(Expression::Variable(name))
+                    if name == &result.name));
         let packed_switch_frame = matches!(saved_parameters, [_])
-            && deferred_saved_locals.is_empty()
+            && packed_result
             && frame_scalar_locals.len() == 5
             && frame_scalar_locals.iter().all(|local| {
                 matches!(local.declared_type.width(), 8 | 16 | 32)
