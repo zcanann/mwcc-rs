@@ -1240,9 +1240,10 @@ impl Generator {
         let standalone_global_base_home = global_base_cache_plan
             .as_ref()
             .filter(|base| {
-                global_member_address_cache_plans
-                    .iter()
-                    .any(|member| member.global == base.global)
+                base.crosses_call
+                    || global_member_address_cache_plans
+                        .iter()
+                        .any(|member| member.global == base.global)
             })
             .map(|_| {
                 let preferred = if standalone_data_anchor_home.is_some() {

@@ -13,6 +13,9 @@ use super::structured_expression_visit::{visit_expression, visit_statement};
 pub(super) struct StructuredGlobalBasePlan {
     pub(super) global: String,
     pub(super) total_size: u32,
+    /// The shared address is referenced again after the first call and therefore
+    /// needs a declared callee-saved home, not merely an allocator preference.
+    pub(super) crosses_call: bool,
 }
 
 pub(super) fn plan(
@@ -150,7 +153,7 @@ pub(super) fn plan(
         });
     }
 
-    let (global, _) = total
+    let (global, count) = total
         .into_iter()
         .filter(|(global, count)| {
             let leading_count = leading.get(global).copied().unwrap_or(0);
@@ -162,9 +165,11 @@ pub(super) fn plan(
                 .cmp(right_count)
                 .then_with(|| right_name.cmp(left_name))
         })?;
+    let leading_count = leading.get(&global).copied().unwrap_or(0);
     Some(StructuredGlobalBasePlan {
         total_size: global_size(&global)?,
         global,
+        crosses_call: count > leading_count,
     })
 }
 
@@ -244,6 +249,7 @@ mod tests {
             Some(StructuredGlobalBasePlan {
                 global: "pads".into(),
                 total_size: 272,
+                crosses_call: true,
             })
         );
         assert_eq!(
@@ -261,6 +267,7 @@ mod tests {
             Some(StructuredGlobalBasePlan {
                 global: "pads".into(),
                 total_size: 272,
+                crosses_call: true,
             })
         );
     }
@@ -294,6 +301,7 @@ mod tests {
             Some(StructuredGlobalBasePlan {
                 global: "pads".into(),
                 total_size: 272,
+                crosses_call: true,
             })
         );
     }
@@ -342,6 +350,7 @@ mod tests {
             Some(StructuredGlobalBasePlan {
                 global: "pads".into(),
                 total_size: 272,
+                crosses_call: true,
             })
         );
     }
@@ -369,6 +378,34 @@ mod tests {
                 &std::collections::HashMap::from([("pads".into(), 272)])
             ),
             None
+        );
+    }
+
+    #[test]
+    fn leading_only_cluster_does_not_claim_a_saved_home() {
+        let function = function(vec![Statement::Assign {
+            name: "value".into(),
+            value: Expression::Binary {
+                operator: BinaryOperator::Add,
+                left: Box::new(member(None, 48)),
+                right: Box::new(Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(member(Some(1), 48)),
+                    right: Box::new(member(Some(2), 48)),
+                }),
+            },
+        }]);
+        assert_eq!(
+            plan(
+                &function,
+                &std::collections::HashMap::new(),
+                &std::collections::HashMap::from([("pads".into(), 272)])
+            ),
+            Some(StructuredGlobalBasePlan {
+                global: "pads".into(),
+                total_size: 272,
+                crosses_call: false,
+            })
         );
     }
 }
