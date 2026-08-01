@@ -241,7 +241,8 @@ impl SwitchLowering {
                         && ((self.control_depth == 0
                             && (is_dense_structured_switch(arms)
                                 || shared_base_comparison_switch(arms).is_some()))
-                            || (self.control_depth == 0
+                            || ((self.control_depth == 0
+                                || arms.iter().any(|arm| arm.falls_through))
                                 && super::structured_sparse_switch::is_sparse_retained_switch(arms)))
                     {
                         let switch_has_break = arms.iter().any(|arm| {
@@ -628,6 +629,50 @@ mod tests {
             [Statement::Assign { .. }, Statement::If { then_body, .. }]
                 if then_body.is_empty()
         ));
+    }
+
+    #[test]
+    fn retains_a_nested_sparse_shared_body_switch_for_emission() {
+        let switch = Statement::Switch {
+            scrutinee: Expression::Variable("kind".into()),
+            arms: vec![
+                SwitchArm {
+                    value: 0,
+                    body: ArmBody::Statements(Vec::new()),
+                    falls_through: true,
+                },
+                SwitchArm {
+                    value: 16,
+                    body: ArmBody::Statements(vec![Statement::Expression(Expression::Call {
+                        name: "count".into(),
+                        arguments: Vec::new(),
+                    })]),
+                    falls_through: false,
+                },
+                SwitchArm {
+                    value: 1,
+                    body: ArmBody::Statements(Vec::new()),
+                    falls_through: true,
+                },
+                SwitchArm {
+                    value: 17,
+                    body: ArmBody::Statements(vec![Statement::Expression(Expression::Call {
+                        name: "range".into(),
+                        arguments: Vec::new(),
+                    })]),
+                    falls_through: false,
+                },
+            ],
+            default: None,
+        };
+        let function = function(vec![Statement::If {
+            condition: Expression::Variable("ready".into()),
+            then_body: vec![switch],
+            else_body: Vec::new(),
+        }]);
+
+        assert!(lower_structured_switches(&function).is_some());
+        assert!(lower_structured_switches_for_emission(&function).is_none());
     }
 
     #[test]
