@@ -484,16 +484,6 @@ impl Generator {
         let frame_arrays = &frame_array_plan.arrays;
         let frame_array_image_sources = &frame_array_plan.image_sources;
         let frame_array_bytes = frame_array_plan.total_bytes;
-        let frame_scalar_prefix = (self.behavior.frame_convention
-            == FrameConvention::LinkageFirst
-            && !frame_arrays.is_empty())
-            .then(|| {
-                StructuredFrameScalarPrefix::plan(
-                    &frame_scalar_parameters,
-                    &frame_scalar_locals,
-                )
-            })
-            .flatten();
         let array_pool_plan = (self.behavior.frame_convention == FrameConvention::Predecrement)
             .then(|| plan_structured_array_pool(frame_arrays, frame_array_image_sources))
             .flatten();
@@ -989,6 +979,20 @@ impl Generator {
                 &saved_parameters,
                 &deferred_saved_locals,
             );
+        let frame_scalar_prefix = (self.behavior.frame_convention
+            == FrameConvention::LinkageFirst
+            && (!frame_arrays.is_empty() || compact_narrow_scalar_frame.is_some()))
+            .then(|| {
+                StructuredFrameScalarPrefix::plan(
+                    &frame_scalar_parameters,
+                    &frame_scalar_locals,
+                )
+            })
+            .flatten();
+        let guarded_call_output_frame = compact_narrow_scalar_frame
+            .as_ref()
+            .is_some_and(|plan| plan.is_guarded_call_output_frame());
+        self.structured_guarded_scalar_output_frame = guarded_call_output_frame;
         if compact_narrow_scalar_frame
             .as_ref()
             .is_some_and(|plan| plan.owns_link_register_schedule())
@@ -2320,6 +2324,8 @@ impl Generator {
             .any(|plan| plan.defer_until_first_use)
         {
             LegacyCalleeSavedFrameLayout::RetainDeferredGlobalMemberAddressLane
+        } else if guarded_call_output_frame {
+            LegacyCalleeSavedFrameLayout::CompactValueHomes
         } else if retains_unobserved_local_lane {
             // An optimizer-only scalar can disappear from the emitted value
             // graph while its logical local-table lane still contributes to

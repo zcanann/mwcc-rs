@@ -516,7 +516,21 @@ impl Generator {
         // saved GPRs, rounded to a doubleword. Retained optimizer lanes are
         // added independently below.
         let compact_saved_size = compact_linkage_first_saved_frame_size(physical_saved.len());
-        let physical_base_size = if self.frame_slots.is_empty()
+        let packed_scalar_size = self
+            .frame_slots
+            .values()
+            .map(|slot| {
+                slot.offset
+                    .saturating_add(i16::try_from(slot.size).unwrap_or(i16::MAX))
+            })
+            .max()
+            .unwrap_or(8)
+            .saturating_add(i16::try_from(physical_saved.len() * 4).unwrap_or(i16::MAX))
+            .saturating_add(7)
+            & !7;
+        let physical_base_size = if self.structured_guarded_scalar_output_frame {
+            packed_scalar_size
+        } else if self.frame_slots.is_empty()
             && self.callee_saved_conversion_bytes == 0
             && !has_planned_conversion_scratch
         {

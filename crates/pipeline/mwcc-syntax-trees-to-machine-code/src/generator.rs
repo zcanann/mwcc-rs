@@ -623,6 +623,9 @@ pub(crate) struct Generator {
     /// Source-proven build-163 frame that overlaps one narrow scratch slot
     /// with the logical local table and owns its final linkage schedule.
     pub(crate) structured_compact_narrow_scalar_frame: bool,
+    /// A guarded call chain whose packed address-taken outputs occupy the low
+    /// frame prefix before two saved GPRs.
+    pub(crate) structured_guarded_scalar_output_frame: bool,
     /// Outgoing by-value aggregate copies owned by the allocator-backed
     /// structured body. Source object slots remain in `frame_slots`; this plan
     /// describes the separate caller-owned copies below them.

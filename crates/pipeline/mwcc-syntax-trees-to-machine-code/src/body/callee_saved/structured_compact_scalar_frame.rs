@@ -10,6 +10,7 @@ use super::*;
 
 pub(super) struct StructuredCompactScalarFrame {
     owns_link_register_schedule: bool,
+    guarded_call_output_frame: bool,
 }
 
 impl StructuredCompactScalarFrame {
@@ -40,6 +41,7 @@ impl StructuredCompactScalarFrame {
         {
             return Some(Self {
                 owns_link_register_schedule: false,
+                guarded_call_output_frame: false,
             });
         }
         let ([parameter], [result]) = (saved_parameters, deferred_saved_locals) else {
@@ -73,17 +75,70 @@ impl StructuredCompactScalarFrame {
                 name,
                 value: Expression::Call { .. },
             }) if name == &result.name);
-        if !narrow_dispatch && !call_output_frame {
+        let guarded_call_output_frame = frame_scalar_locals.len() == 4
+            && frame_scalar_locals
+                .iter()
+                .filter(|local| local.declared_type.width() == 32)
+                .count()
+                == 2
+            && frame_scalar_locals
+                .iter()
+                .filter(|local| local.declared_type.width() == 8)
+                .count()
+                == 2
+            && matches!(function.statements.as_slice(), [
+                Statement::If {
+                    then_body,
+                    else_body,
+                    ..
+                },
+                Statement::Expression(Expression::Call { .. }),
+                Statement::Assign {
+                    name,
+                    value: Expression::Call { .. },
+                },
+                ..
+            ] if else_body.is_empty()
+                && then_body.iter().any(|statement| matches!(statement, Statement::Return(_)))
+                && name == &result.name)
+            && assigned_result_call_count(&function.statements, &result.name) >= 4;
+        if !narrow_dispatch && !call_output_frame && !guarded_call_output_frame {
             return None;
         }
         Some(Self {
-            owns_link_register_schedule: true,
+            owns_link_register_schedule: !guarded_call_output_frame,
+            guarded_call_output_frame,
         })
     }
 
     pub(super) fn owns_link_register_schedule(&self) -> bool {
         self.owns_link_register_schedule
     }
+
+    pub(super) fn is_guarded_call_output_frame(&self) -> bool {
+        self.guarded_call_output_frame
+    }
+}
+
+fn assigned_result_call_count(statements: &[Statement], result: &str) -> usize {
+    statements
+        .iter()
+        .map(|statement| match statement {
+            Statement::Assign {
+                name,
+                value: Expression::Call { .. },
+            } => usize::from(name == result),
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                assigned_result_call_count(then_body, result)
+                    + assigned_result_call_count(else_body, result)
+            }
+            _ => 0,
+        })
+        .sum()
 }
 
 fn guarded_status_call_chain(
@@ -422,6 +477,64 @@ mod tests {
         )
         .expect("the guarded chain should overlap its scalar table");
 
+        assert!(!plan.owns_link_register_schedule());
+    }
+
+    #[test]
+    fn recognizes_guarded_mixed_width_scalar_outputs_independent_of_declaration_order() {
+        let mut function = function();
+        function.locals = vec![
+            local("error", Type::Int),
+            local("end", Type::UnsignedInt),
+            local("start", Type::UnsignedInt),
+            local("options", Type::UnsignedChar),
+            local("command", Type::UnsignedChar),
+        ];
+        function.return_expression = Some(Expression::Variable("error".into()));
+        function.statements = vec![
+            Statement::If {
+                condition: Expression::IntegerLiteral(1),
+                then_body: vec![Statement::Return(Some(Expression::Variable("error".into())))],
+                else_body: Vec::new(),
+            },
+            Statement::Expression(Expression::Call {
+                name: "position".into(),
+                arguments: Vec::new(),
+            }),
+            Statement::Assign {
+                name: "error".into(),
+                value: Expression::Call {
+                    name: "read_command".into(),
+                    arguments: Vec::new(),
+                },
+            },
+            guarded_status_call("read_options"),
+            guarded_status_call("read_start"),
+            guarded_status_call("read_end"),
+        ];
+        let scratch = [
+            &function.locals[1],
+            &function.locals[2],
+            &function.locals[3],
+            &function.locals[4],
+        ];
+        let saved = [&function.parameters[0]];
+        let deferred = [&function.locals[0]];
+
+        let plan = StructuredCompactScalarFrame::plan(
+            &function,
+            FrameConvention::LinkageFirst,
+            true,
+            &scratch,
+            &[],
+            &[],
+            &[],
+            &saved,
+            &deferred,
+        )
+        .expect("the guarded scalar outputs should share their physical frame");
+
+        assert!(plan.is_guarded_call_output_frame());
         assert!(!plan.owns_link_register_schedule());
     }
 

@@ -178,6 +178,7 @@ mod structured_guarded_float_argument_schedule;
 mod structured_guarded_float_member_update_schedule;
 mod structured_guarded_item_attach_schedule;
 mod structured_guarded_scaled_item_schedule;
+mod structured_guarded_scalar_output_schedule;
 mod structured_guarded_mutating_inline_linkage;
 mod structured_guarded_mutating_inline_schedule;
 mod structured_expression_visit;
