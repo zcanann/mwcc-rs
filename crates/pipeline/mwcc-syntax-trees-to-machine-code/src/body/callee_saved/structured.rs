@@ -49,6 +49,7 @@ use super::structured_frame_arrays::{
     align_offset, array_stack_alignment, plan_structured_frame_arrays,
     structured_array_placement_order,
 };
+use super::structured_frame_scalar_prefix::StructuredFrameScalarPrefix;
 
 use super::structured_array_pool::plan_structured_array_pool;
 use super::structured_frame_entry::structured_dense_frame_entry_index;
@@ -436,7 +437,10 @@ impl Generator {
         let float_to_int_conversion_count =
             self.count_float_to_integer_conversions(function);
         let frame_array_plan = if with_frame_array {
-            let Some(plan) = plan_structured_frame_arrays(function) else {
+            let Some(plan) = plan_structured_frame_arrays(
+                function,
+                self.behavior.dynamic_local_alignment,
+            ) else {
                 decline!("automatic array shape is unsupported");
             };
             if plan.arrays.is_empty()
@@ -464,6 +468,16 @@ impl Generator {
         let frame_arrays = &frame_array_plan.arrays;
         let frame_array_image_sources = &frame_array_plan.image_sources;
         let frame_array_bytes = frame_array_plan.total_bytes;
+        let frame_scalar_prefix = (self.behavior.frame_convention
+            == FrameConvention::LinkageFirst
+            && !frame_arrays.is_empty())
+            .then(|| {
+                StructuredFrameScalarPrefix::plan(
+                    &frame_scalar_parameters,
+                    &frame_scalar_locals,
+                )
+            })
+            .flatten();
         let array_pool_plan = (self.behavior.frame_convention == FrameConvention::Predecrement)
             .then(|| plan_structured_array_pool(frame_arrays, frame_array_image_sources))
             .flatten();
@@ -1951,9 +1965,12 @@ impl Generator {
                                 + extra_scalar_words
                                 + 2 * usize::from(guarded_structured_constant_return)
                         };
-                        8 + i16::try_from(words * 4).map_err(|_| {
+                        let table_end = 8 + i16::try_from(words * 4).map_err(|_| {
                             Diagnostic::error("structured legacy local table is too large")
-                        })?
+                        })?;
+                        frame_scalar_prefix
+                            .as_ref()
+                            .map_or(table_end, |prefix| table_end.max(prefix.end_offset()))
                     }
                 }
             };
@@ -2123,6 +2140,11 @@ impl Generator {
                         })?;
                 }
             }
+            let use_scalar_prefix = frame_scalar_prefix.as_ref().filter(|_| {
+                variadic_output_frame.is_none()
+                    && interleaved_frame_layout.is_none()
+                    && dense_retained_local_table_bytes == 0
+            });
             let mut scalar_offset =
                 if let Some(frame) = &variadic_output_frame {
                     frame.scalar_offset
@@ -2178,38 +2200,48 @@ impl Generator {
                     .get(&parameter.name)
                     .expect("address-taken parameter was assigned")
                     .register;
+                let (slot_offset, slot_size) = use_scalar_prefix
+                    .and_then(|prefix| prefix.slot(&parameter.name))
+                    .map_or((scalar_offset, 4), |slot| (slot.offset, slot.size));
                 self.frame_slots.insert(
                     parameter.name.clone(),
                     FrameSlot {
-                        offset: scalar_offset,
+                        offset: slot_offset,
                         class: class_of(parameter.parameter_type)
                             .expect("frame scalar parameter class was checked"),
-                        size: 4,
+                        size: u32::from(slot_size),
                         value_type: parameter.parameter_type,
                         parameter_register: Some(incoming),
                         is_array: false,
                     },
                 );
-                scalar_offset = scalar_offset
-                    .checked_add(4)
-                    .ok_or_else(|| Diagnostic::error("structured scalar frame is too large"))?;
+                if use_scalar_prefix.is_none() {
+                    scalar_offset = scalar_offset
+                        .checked_add(4)
+                        .ok_or_else(|| Diagnostic::error("structured scalar frame is too large"))?;
+                }
             }
             for local in frame_scalar_locals.iter().rev() {
+                let (slot_offset, slot_size) = use_scalar_prefix
+                    .and_then(|prefix| prefix.slot(&local.name))
+                    .map_or((scalar_offset, 4), |slot| (slot.offset, slot.size));
                 self.frame_slots.insert(
                     local.name.clone(),
                     FrameSlot {
-                        offset: scalar_offset,
+                        offset: slot_offset,
                         class: class_of(local.declared_type)
                             .expect("address-taken scalar class was checked"),
-                        size: 4,
+                        size: u32::from(slot_size),
                         value_type: local.declared_type,
                         parameter_register: None,
                         is_array: false,
                     },
                 );
-                scalar_offset = scalar_offset
-                    .checked_add(4)
-                    .ok_or_else(|| Diagnostic::error("structured scalar frame is too large"))?;
+                if use_scalar_prefix.is_none() {
+                    scalar_offset = scalar_offset
+                        .checked_add(4)
+                        .ok_or_else(|| Diagnostic::error("structured scalar frame is too large"))?;
+                }
             }
             if let Some(publication) = &frame_publication {
                 self.frame_slots.insert(

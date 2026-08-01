@@ -526,6 +526,10 @@ pub struct Behavior {
     /// below, but source-local allocation is itself observable at `-O0` and needs
     /// the actual stage boundary rather than inferring it from an unrelated knob.
     pub optimization: Optimization,
+    /// Whether an over-aligned automatic forces a dynamically realigned stack
+    /// frame. The 2.3.3 compilers accept GNU `aligned` syntax on locals but
+    /// ignore it; 2.4.2 and later preserve it with a variable-size prologue.
+    pub dynamic_local_alignment: bool,
     /// Whether whole-file IPA transformations are active after optimization
     /// flags have been resolved. Call-site owners use this to distinguish an
     /// emitted local call from the same-TU body substituted by IPA.
@@ -908,6 +912,7 @@ impl Behavior {
     pub fn resolve(config: &CompilerConfig) -> Self {
         Behavior {
             optimization: config.flags.optimization,
+            dynamic_local_alignment: config.build.version >= (2, 4, 2),
             whole_file_optimization: config.flags.whole_file_optimization_enabled(),
             optimization_goal: config.flags.optimization_goal,
             string_literals_packed: config.flags.string_literals_packed,
@@ -1699,6 +1704,28 @@ impl Behavior {
 mod tests {
     use super::*;
     use crate::{build, flags::CharDefault};
+
+    #[test]
+    fn dynamic_local_alignment_begins_with_the_242_generation() {
+        for compiler_build in [
+            build::GC_1_1,
+            build::GC_1_1P1,
+            build::GC_1_2_5,
+            build::GC_1_2_5N,
+        ] {
+            assert!(!Behavior::resolve(&CompilerConfig::new(compiler_build))
+                .dynamic_local_alignment);
+        }
+        for compiler_build in [
+            build::GC_1_3,
+            build::GC_1_3_2,
+            build::GC_2_6,
+            build::GC_3_0A3,
+        ] {
+            assert!(Behavior::resolve(&CompilerConfig::new(compiler_build))
+                .dynamic_local_alignment);
+        }
+    }
 
     #[test]
     fn optimization_level_selects_each_pointer_walker_schedule() {

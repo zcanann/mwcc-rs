@@ -17,6 +17,7 @@ pub(super) struct StructuredFrameArrays<'a> {
 
 pub(super) fn plan_structured_frame_arrays<'a>(
     function: &'a Function,
+    dynamic_local_alignment: bool,
 ) -> Option<StructuredFrameArrays<'a>> {
     let source_arrays: Vec<_> = function
         .locals
@@ -27,12 +28,10 @@ pub(super) fn plan_structured_frame_arrays<'a>(
         if array.is_static || array.initializer.is_some() {
             return None;
         }
-        // The structured frame computes its local-region extent before its
-        // final array base is known. A widened declarator alignment therefore
-        // needs base-aware padding, not merely a wider slot displacement; let
-        // the generic frame owner handle simple bodies until that planner owns
-        // the complete aligned region.
-        if array.attribute_alignment.is_some_and(|requested| {
+        // GC 2.3.3 accepts this GNU attribute but ignores it. Mainline uses a
+        // dynamically realigned stack frame, which the structured fixed-frame
+        // owner must decline until it owns that variable-size prologue.
+        if dynamic_local_alignment && array.attribute_alignment.is_some_and(|requested| {
             i16::try_from(requested)
                 .map(|requested| requested > array_stack_alignment(array))
                 .unwrap_or(true)
@@ -179,7 +178,7 @@ mod tests {
         ];
 
         let function = function_with_locals(locals);
-        let plan = plan_structured_frame_arrays(&function).expect("valid byte arrays");
+        let plan = plan_structured_frame_arrays(&function, false).expect("valid byte arrays");
 
         assert_eq!(plan.arrays.len(), 2);
         assert_eq!(plan.total_bytes, 24);
@@ -193,7 +192,7 @@ mod tests {
         ];
 
         let function = function_with_locals(locals);
-        let plan = plan_structured_frame_arrays(&function).expect("valid byte arrays");
+        let plan = plan_structured_frame_arrays(&function, false).expect("valid byte arrays");
 
         assert_eq!(plan.total_bytes, 7);
         assert_eq!(
@@ -210,7 +209,7 @@ mod tests {
         let locals = vec![byte_array("words", Type::UnsignedInt, 4)];
 
         let function = function_with_locals(locals);
-        let plan = plan_structured_frame_arrays(&function).expect("unused padding");
+        let plan = plan_structured_frame_arrays(&function, false).expect("unused padding");
 
         assert_eq!(plan.total_bytes, 16);
     }
@@ -223,7 +222,7 @@ mod tests {
             .statements
             .push(Statement::Expression(Expression::Variable("words".into())));
 
-        let plan = plan_structured_frame_arrays(&function).expect("typed array");
+        let plan = plan_structured_frame_arrays(&function, false).expect("typed array");
         assert_eq!(plan.total_bytes, 16);
     }
 
@@ -236,17 +235,18 @@ mod tests {
         )];
 
         let function = function_with_locals(locals);
-        let plan = plan_structured_frame_arrays(&function).expect("large node stack");
+        let plan = plan_structured_frame_arrays(&function, false).expect("large node stack");
         assert_eq!(plan.total_bytes, 264);
     }
 
     #[test]
-    fn declines_widened_alignment_until_the_array_base_is_known() {
+    fn distinguishes_legacy_ignored_and_mainline_dynamic_local_alignment() {
         let mut buffer = byte_array("buffer", Type::UnsignedChar, 2048);
         buffer.attribute_alignment = Some(32);
         let function = function_with_locals(vec![buffer]);
 
-        assert!(plan_structured_frame_arrays(&function).is_none());
+        assert!(plan_structured_frame_arrays(&function, false).is_some());
+        assert!(plan_structured_frame_arrays(&function, true).is_none());
     }
 
     #[test]
@@ -257,7 +257,7 @@ mod tests {
         time.data_bytes = Some(vec![0]);
 
         let function = function_with_locals(vec![date, time]);
-        let plan = plan_structured_frame_arrays(&function).expect("initialized arrays");
+        let plan = plan_structured_frame_arrays(&function, false).expect("initialized arrays");
 
         assert!(plan.arrays.is_empty());
         assert_eq!(plan.image_sources.len(), 2);
@@ -280,7 +280,7 @@ mod tests {
             .statements
             .push(Statement::Expression(Expression::Variable("buffer".into())));
 
-        let plan = plan_structured_frame_arrays(&function).expect("initialized arrays");
+        let plan = plan_structured_frame_arrays(&function, false).expect("initialized arrays");
 
         assert_eq!(
             plan.arrays

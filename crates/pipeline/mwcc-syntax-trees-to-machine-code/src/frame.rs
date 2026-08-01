@@ -890,7 +890,16 @@ impl Generator {
                     Some(length) => (local.declared_type.width() as u16 / 8) * length,
                     None => slot_size(local.declared_type) as u16,
                 };
-                offset = align_to(offset, local_slot_align(local)?);
+                let Some(alignment) = local_slot_align(
+                    local,
+                    self.behavior.dynamic_local_alignment,
+                )? else {
+                    // Mainline MWCC uses a dynamically realigned frame for an
+                    // over-aligned automatic. The fixed-displacement owner must
+                    // not approximate that prologue with static slot padding.
+                    return Ok(false);
+                };
+                offset = align_to(offset, alignment);
                 self.frame_slots.insert(
                     local.name.clone(),
                     FrameSlot {
@@ -2707,7 +2716,7 @@ mod frame_member_address_tests {
     }
 
     #[test]
-    fn explicit_local_alignment_widens_the_natural_slot_alignment() {
+    fn legacy_builds_ignore_local_alignment_attributes() {
         let local = LocalDeclaration {
             declared_type: Type::UnsignedChar,
             name: "buffer".into(),
@@ -2721,7 +2730,25 @@ mod frame_member_address_tests {
             attribute_alignment: Some(32),
             row_bytes: None,
         };
-        assert_eq!(local_slot_align(&local).unwrap(), 32);
+        assert_eq!(local_slot_align(&local, false).unwrap(), Some(4));
+    }
+
+    #[test]
+    fn mainline_builds_require_a_dynamic_frame_for_widened_local_alignment() {
+        let local = LocalDeclaration {
+            declared_type: Type::UnsignedChar,
+            name: "buffer".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: Some(64),
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: Some(32),
+            row_bytes: None,
+        };
+        assert_eq!(local_slot_align(&local, true).unwrap(), None);
     }
 }
 
@@ -2744,16 +2771,26 @@ fn slot_align(declared: Type) -> u8 {
     }
 }
 
-/// Resolve the physical alignment of an automatic local. Declarator alignment
-/// is a minimum, so it can widen but never weaken the type's natural alignment.
-fn local_slot_align(local: &mwcc_syntax_trees::LocalDeclaration) -> Compilation<u8> {
+/// Resolve the fixed-frame alignment of an automatic local. Legacy 2.3.3
+/// ignores a widened attribute; mainline returns `None` so the caller does not
+/// imitate its dynamic stack realignment with incorrect static padding.
+fn local_slot_align(
+    local: &mwcc_syntax_trees::LocalDeclaration,
+    dynamic_local_alignment: bool,
+) -> Compilation<Option<u8>> {
     let requested = local
         .attribute_alignment
         .map(u8::try_from)
         .transpose()
         .map_err(|_| Diagnostic::error("local alignment exceeds frame range"))?
         .unwrap_or(1);
-    Ok(slot_align(local.declared_type).max(requested))
+    let natural = slot_align(local.declared_type);
+    if dynamic_local_alignment && requested > natural {
+        return Ok(None);
+    }
+    // GC 2.3.3 accepts the attribute grammar but ignores widened local
+    // alignment. Mainline's widened case returned above for its dynamic owner.
+    Ok(Some(natural))
 }
 
 /// Round `offset` up to a multiple of `align`.

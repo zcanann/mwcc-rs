@@ -158,6 +158,7 @@ mod structured_frame_ordinals;
 mod structured_frame_packet_call_schedule;
 mod structured_frame_preloop_packet_schedule;
 mod structured_frame_publication;
+mod structured_frame_scalar_prefix;
 mod structured_frame_storage_identity;
 mod structured_frame_value_forwarding;
 mod structured_frame_pointer_update_reuse;
