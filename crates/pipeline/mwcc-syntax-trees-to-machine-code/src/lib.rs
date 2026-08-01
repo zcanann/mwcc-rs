@@ -1027,6 +1027,7 @@ fn lower_function_body(
     generator.normalize_linkage_first_conversion_frame();
     generator.hoist_normalized_linkage_first_arg_moves();
     generator.schedule_linkage_first_variadic_frame_entry();
+    generator.schedule_linkage_first_variadic_leaf_call();
     generator.schedule_linkage_first_float_result_latency();
     generator.schedule_linkage_first_global_float_arguments();
     generator.reuse_linkage_first_narrow_conversion_value();
