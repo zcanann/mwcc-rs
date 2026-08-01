@@ -30,6 +30,7 @@ mod global_array_decay;
 mod global_array_element_address;
 mod global_array_index;
 mod global_pointer_array_member_load;
+mod global_pointer_table_member_store;
 mod globals;
 mod global_member_pointer_indexed_store;
 mod implicit_narrow_store;

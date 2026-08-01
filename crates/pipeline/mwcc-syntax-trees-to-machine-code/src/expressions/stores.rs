@@ -759,6 +759,13 @@ impl Generator {
                 let pointee = pointee_of_type(*member_type).ok_or_else(|| {
                     Diagnostic::error("struct member store of this type is not supported yet")
                 })?;
+                if let Expression::Variable(name) = array.as_ref() {
+                    if self.try_emit_global_pointer_table_member_store(
+                        name, index, *offset, pointee, value,
+                    )? {
+                        return Ok(());
+                    }
+                }
                 // A file-scope struct array `arr[i].field = v`: materialize the base
                 // with the interleaved schedule, then store at the member offset.
                 if let Expression::Variable(name) = array.as_ref() {
@@ -1336,9 +1343,19 @@ impl Generator {
                 // stored directly (`li r0,0; stbx r0,base,index`). Wider stores
                 // retain the leaf-only rule because their index shift uses r0.
                 let byte_literal = size == 1 && constant_value(value).is_some();
+                let simple_pointer_cast = matches!(
+                    value,
+                    Expression::Cast {
+                        target_type: Type::Pointer(_) | Type::StructPointer { .. },
+                        operand,
+                    } if matches!(operand.as_ref(), Expression::Variable(name)
+                        if self.locations.get(name).and_then(|location| location.pointee).is_some()
+                            || matches!(self.globals.get(name), Some(Type::Pointer(_) | Type::StructPointer { .. })))
+                );
                 if !matches!(value, Expression::Variable(_))
                     && !indexed_source
                     && !byte_literal
+                    && !simple_pointer_cast
                 {
                     return Err(Diagnostic::error(
                         "store with a variable index needs a simple value (roadmap)",
@@ -1443,7 +1460,7 @@ impl Generator {
                         }
                     }
                 }
-                let index_register = self.general_register_of_leaf(index)?;
+                let index_register = self.materialize_index_operand(index)?;
                 let scaled = if size == 1 {
                     index_register
                 } else {

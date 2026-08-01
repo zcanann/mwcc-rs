@@ -489,3 +489,131 @@ fn indexes_through_a_memory_backed_global_pointer_table() {
         machine.instructions
     );
 }
+
+#[test]
+fn a_call_ends_variable_index_store_lookahead() {
+    let parameters = [
+        ("first", Type::Pointer(mwcc_syntax_trees::Pointee::Pointer)),
+        (
+            "first_value",
+            Type::Pointer(mwcc_syntax_trees::Pointee::UnsignedChar),
+        ),
+        ("second", Type::Pointer(mwcc_syntax_trees::Pointee::Pointer)),
+        (
+            "second_value",
+            Type::Pointer(mwcc_syntax_trees::Pointee::UnsignedChar),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, parameter_type)| Parameter {
+        parameter_type,
+        name: name.into(),
+    })
+    .collect();
+    let indexed_store = |base: &str, index: &str, value: &str| Statement::Store {
+        target: Expression::Index {
+            base: Box::new(Expression::Variable(base.into())),
+            index: Box::new(Expression::Variable(index.into())),
+        },
+        value: Expression::Cast {
+            target_type: Type::StructPointer { element_size: 32 },
+            operand: Box::new(Expression::Variable(value.into())),
+        },
+    };
+    let function = Function {
+        return_type: Type::Void,
+        name: "separated_stores".into(),
+        is_static: false,
+        is_weak: false,
+        parameters,
+        locals: Vec::new(),
+        statements: vec![
+            indexed_store("first", "first_index", "first_value"),
+            Statement::Expression(Expression::Call {
+                name: "barrier".into(),
+                arguments: Vec::new(),
+            }),
+            indexed_store("second", "second_index", "second_value"),
+        ],
+        guards: Vec::new(),
+        return_expression: None,
+        section: None,
+        preceded_by_asm: false,
+        asm_body: None,
+        inline_asm_blocks: Vec::new(),
+        force_active: false,
+        text_deferred: false,
+        peephole_disabled: false,
+    };
+
+    let machine = lower_with_globals(
+        &function,
+        &[
+            typed_global("first_index", Type::UnsignedInt),
+            typed_global("second_index", Type::UnsignedInt),
+        ],
+    );
+    assert_eq!(
+        machine
+            .instructions
+            .iter()
+            .filter(|instruction| matches!(instruction, Instruction::StoreWordIndexed { .. }))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn stores_a_member_through_a_global_pointer_table_entry() {
+    let function = Function {
+        return_type: Type::Void,
+        name: "publish_member".into(),
+        is_static: false,
+        is_weak: false,
+        parameters: vec![Parameter {
+            parameter_type: Type::Pointer(mwcc_syntax_trees::Pointee::UnsignedChar),
+            name: "value".into(),
+        }],
+        locals: Vec::new(),
+        statements: vec![Statement::Store {
+            target: Expression::Member {
+                base: Box::new(Expression::Index {
+                    base: Box::new(Expression::Variable("table".into())),
+                    index: Box::new(Expression::Variable("index".into())),
+                }),
+                offset: 8,
+                member_type: Type::Pointer(mwcc_syntax_trees::Pointee::UnsignedChar),
+                index_stride: Some(32),
+            },
+            value: Expression::Variable("value".into()),
+        }],
+        guards: Vec::new(),
+        return_expression: None,
+        section: None,
+        preceded_by_asm: false,
+        asm_body: None,
+        inline_asm_blocks: Vec::new(),
+        force_active: false,
+        text_deferred: false,
+        peephole_disabled: false,
+    };
+    let machine = lower_with_globals(
+        &function,
+        &[
+            typed_global(
+                "table",
+                Type::Pointer(mwcc_syntax_trees::Pointee::Pointer),
+            ),
+            typed_global("index", Type::UnsignedInt),
+        ],
+    );
+
+    assert!(machine
+        .instructions
+        .iter()
+        .any(|instruction| matches!(instruction, Instruction::LoadWordIndexed { .. })));
+    assert!(machine.instructions.iter().any(|instruction| matches!(
+        instruction,
+        Instruction::StoreWord { offset: 8, .. }
+    )));
+}

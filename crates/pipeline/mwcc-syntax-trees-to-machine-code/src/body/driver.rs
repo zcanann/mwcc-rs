@@ -4505,6 +4505,20 @@ impl Generator {
 
     /// Emit a body statement.
     pub(crate) fn emit_statement(&mut self, statement: &Statement) -> Compilation<()> {
+        // Variable-index store look-ahead is scoped to one uninterrupted run
+        // of such stores. Calls, control flow, and ordinary stores terminate
+        // the run; carrying the flag across them turns unrelated later stores
+        // into false DEFERs.
+        let continues_variable_index_store_run = matches!(
+            statement,
+            Statement::Store {
+                target: Expression::Index { index, .. },
+                ..
+            } if crate::analysis::constant_value(index).is_none()
+        );
+        if !continues_variable_index_store_run {
+            self.emitted_leaf_variable_index_store_since_scratch_barrier = false;
+        }
         match statement {
             Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {
                 Err(Diagnostic::error(
