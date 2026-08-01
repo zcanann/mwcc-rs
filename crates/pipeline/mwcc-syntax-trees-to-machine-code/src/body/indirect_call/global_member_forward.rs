@@ -66,11 +66,8 @@ impl Generator {
 
 fn global_member_forward_call<'a>(
     target: &'a Expression,
-    arguments: &[Expression],
+    _arguments: &[Expression],
 ) -> Option<(&'a str, u32)> {
-    if arguments.is_empty() {
-        return None;
-    }
     let Expression::Member {
         base,
         offset,
@@ -149,6 +146,10 @@ mod tests {
 
         assert_eq!(
             global_member_forward_call(&target, &arguments),
+            Some(("table", 12))
+        );
+        assert_eq!(
+            global_member_forward_call(&target, &[]),
             Some(("table", 12))
         );
     }
