@@ -353,6 +353,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         cxx_virtual_destructor_classes: std::collections::HashSet::new(),
         counted_nested_virtual_positions: std::collections::HashSet::new(),
         cxx_template_virtual_methods: HashMap::new(),
+        cxx_template_virtual_definitions: HashMap::new(),
         template_aliases: HashMap::new(),
         variable_structs: HashMap::new(),
         cxx_reference_variables: std::collections::HashSet::new(),
@@ -7758,6 +7759,48 @@ blr\n\
             } if matches!(operand.as_ref(), mwcc_syntax_trees::Expression::Variable(vtable)
                 if vtable == "__vt__4Rope")
         )));
+    }
+
+    #[test]
+    fn owned_vtable_materializes_concrete_template_virtual_leaves() {
+        let source = r#"
+            struct Msg {};
+            template <typename T> struct Receiver {
+                virtual void receive(T*) {}
+                virtual void bounce(T*, Msg*) {}
+            };
+            struct Action : public Receiver<int> {
+                virtual void run();
+            };
+            void Action::run() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let targets = [
+            "receive__11Receiver<i>FPi",
+            "bounce__11Receiver<i>FPiP3Msg",
+        ];
+        let vtable = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__6Action")
+            .expect("Action's key function owns the complete vtable");
+        for target in targets {
+            assert!(vtable
+                .data_relocations
+                .iter()
+                .any(|(_, candidate, _)| candidate == target));
+            assert!(unit
+                .functions
+                .iter()
+                .any(|function| function.name == target && function.is_weak));
+        }
     }
 
     #[test]

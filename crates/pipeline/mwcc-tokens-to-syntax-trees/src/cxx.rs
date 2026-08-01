@@ -16,7 +16,7 @@ use crate::cxx_analysis_facts::{
     nested_explicit_virtual_declarations,
 };
 use crate::items::{pointee_of, type_alignment, type_size};
-use crate::parser::{Parser, StructField, StructLayout};
+use crate::parser::{Parser, StructField, StructLayout, TemplateVirtualParameter};
 
 /// Give inline special members identities that cannot collide with one
 /// another. Their source spellings both contain the class name (`C()` and
@@ -3907,6 +3907,92 @@ impl Parser {
         Ok(None)
     }
 
+    fn instantiate_template_virtual_definitions(
+        &mut self,
+        concrete_owner: &str,
+        template_primary: &str,
+    ) -> Compilation<Vec<(u16, String)>> {
+        let qualified_primary = self.qualify_cxx_class_name(template_primary);
+        let definitions = self
+            .cxx_template_virtual_definitions
+            .get(template_primary)
+            .or_else(|| {
+                self.cxx_template_virtual_definitions
+                    .get(&qualified_primary)
+            })
+            .cloned()
+            .unwrap_or_default();
+        let arguments = encoded_template_arguments(concrete_owner).ok_or_else(|| {
+            Diagnostic::error(format!(
+                "concrete template base '{concrete_owner}' has no ABI arguments"
+            ))
+        })?;
+        let owner = encode_qualified_scope(&[concrete_owner])?;
+        let mut relocations = Vec::with_capacity(definitions.len());
+
+        for definition in definitions {
+            let mut parameter_code = String::new();
+            for parameter in &definition.parameters {
+                parameter_code.push('P');
+                match parameter {
+                    TemplateVirtualParameter::TemplatePointer(index) => {
+                        parameter_code.push_str(arguments.get(*index).ok_or_else(|| {
+                            Diagnostic::error(format!(
+                                "template virtual '{}::{}' references missing argument {index}",
+                                template_primary, definition.member
+                            ))
+                        })?);
+                    }
+                    TemplateVirtualParameter::NamedPointer(name) => {
+                        parameter_code.push_str(&encode_qualified_type_name(name)?);
+                    }
+                }
+            }
+            if parameter_code.is_empty() {
+                parameter_code.push('v');
+            }
+            let target = format!("{}__{}F{}", definition.member, owner, parameter_code);
+            relocations.push((definition.dispatch.slot_offset, target.clone()));
+
+            if definition.empty_body
+                && !self
+                    .cxx_inline_materializations
+                    .iter()
+                    .any(|function| function.name == target)
+            {
+                let mut parameters = vec![Parameter {
+                    parameter_type: Type::StructPointer { element_size: 0 },
+                    name: "this".to_string(),
+                }];
+                parameters.extend(definition.parameters.iter().enumerate().map(
+                    |(index, _)| Parameter {
+                        parameter_type: Type::StructPointer { element_size: 0 },
+                        name: format!("argument{index}"),
+                    },
+                ));
+                self.cxx_inline_materializations.push(Function {
+                    return_type: definition.dispatch.return_type,
+                    name: target,
+                    is_static: false,
+                    is_weak: true,
+                    parameters,
+                    locals: Vec::new(),
+                    statements: Vec::new(),
+                    guards: Vec::new(),
+                    return_expression: None,
+                    section: None,
+                    preceded_by_asm: false,
+                    asm_body: None,
+                    inline_asm_blocks: Vec::new(),
+                    force_active: false,
+                    text_deferred: false,
+                    peephole_disabled: false,
+                });
+            }
+        }
+        Ok(relocations)
+    }
+
     fn parse_class_definition_body(
         &mut self,
         name: String,
@@ -4082,6 +4168,12 @@ impl Parser {
                         class.has_virtual_destructor = base_class.has_virtual_destructor;
                         class.virtual_destructor_slot = base_class.virtual_destructor_slot;
                         class.virtual_destructor_is_pure = base_class.virtual_destructor_is_pure;
+                    } else if template_virtual_slots.is_some() {
+                        class.virtual_definitions = self
+                            .instantiate_template_virtual_definitions(
+                                &base_name,
+                                template_primary,
+                            )?;
                     }
                 }
                 if let Some(base_class) = base_class {
@@ -5992,6 +6084,27 @@ pub(crate) fn mangle_member_function(
     explicit_parameters: &[Type],
 ) -> Compilation<String> {
     mangle_qualified_member_function(&[scope], function, explicit_parameters)
+}
+
+fn encoded_template_arguments(concrete_owner: &str) -> Option<Vec<String>> {
+    let open = concrete_owner.find('<')?;
+    let body = concrete_owner.strip_suffix('>')?.get(open + 1..)?;
+    let mut arguments = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0i32;
+    for (index, byte) in body.bytes().enumerate() {
+        match byte {
+            b'<' => depth += 1,
+            b'>' => depth -= 1,
+            b',' if depth == 0 => {
+                arguments.push(body[start..index].to_string());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    arguments.push(body[start..].to_string());
+    (!arguments.iter().any(String::is_empty)).then_some(arguments)
 }
 
 /// Mangle a class member qualified by one or more scopes. CodeWarrior encodes

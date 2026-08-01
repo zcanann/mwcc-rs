@@ -11,7 +11,7 @@ use crate::parser::{
     ConcreteIteratorArrow, InlineTemplateFieldProjection, InlineTemplateFieldValue,
     IteratorArrowAssertion, Parser, StructField, StructLayout, StructTemplate, TemplateField,
     TemplateFieldType, TemplateInstantiationKey, TemplateIteratorArrowSummary,
-    TemplateTypePattern,
+    TemplateTypePattern, TemplateVirtualDefinition, TemplateVirtualParameter,
 };
 use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type};
 use mwcc_tokens::Token;
@@ -169,6 +169,60 @@ struct ResolvedTemplateType {
     tag: Option<String>,
     layout: Option<StructLayout>,
     constant: Option<u32>,
+}
+
+fn template_type_parameter_names(tokens: &[Token]) -> Vec<String> {
+    tokens
+        .windows(2)
+        .filter_map(|window| match window {
+            [Token::Identifier(kind), Token::Identifier(name)]
+                if matches!(kind.as_str(), "typename" | "class") =>
+            {
+                Some(name.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn capture_template_virtual_parameters(
+    tokens: &[Token],
+    template_parameters: &[String],
+) -> Option<Vec<TemplateVirtualParameter>> {
+    let mut ranges = Vec::new();
+    let mut start = 0usize;
+    let mut angles = 0i32;
+    let mut parens = 0i32;
+    for (index, token) in tokens.iter().enumerate() {
+        match token {
+            Token::Less => angles += 1,
+            Token::Greater => angles -= 1,
+            Token::ParenOpen => parens += 1,
+            Token::ParenClose => parens -= 1,
+            Token::Comma if angles == 0 && parens == 0 => {
+                ranges.push(&tokens[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    ranges.push(&tokens[start..]);
+    ranges
+        .into_iter()
+        .map(|parameter| {
+            let [Token::Identifier(type_name), Token::Star, ..] = parameter else {
+                return None;
+            };
+            if let Some(index) = template_parameters
+                .iter()
+                .position(|candidate| candidate == type_name)
+            {
+                Some(TemplateVirtualParameter::TemplatePointer(index))
+            } else {
+                Some(TemplateVirtualParameter::NamedPointer(type_name.clone()))
+            }
+        })
+        .collect()
 }
 
 impl Parser {
@@ -1565,6 +1619,9 @@ impl Parser {
             }
             cursor += 1;
         }
+        let template_parameters = template_type_parameter_names(
+            &self.tokens[start + 2..cursor.saturating_sub(1)],
+        );
         if !matches!(self.tokens.get(cursor), Some(Token::KeywordStruct))
             && !matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if word == "class")
         {
@@ -1638,9 +1695,38 @@ impl Parser {
                         let empty = parameter_start == parameter_end
                             || (parameter_end == parameter_start + 1
                                 && probe.tokens.get(parameter_start) == Some(&Token::KeywordVoid));
-                        Some((member, return_type, if empty { 0 } else { commas + 1 }))
+                        let parameters = if empty {
+                            Some(Vec::new())
+                        } else {
+                            capture_template_virtual_parameters(
+                                &probe.tokens[parameter_start..parameter_end],
+                                &template_parameters,
+                            )
+                        };
+                        let mut tail = scan;
+                        while matches!(probe.tokens.get(tail), Some(Token::Identifier(word))
+                            if matches!(word.as_str(), "const" | "volatile" | "override" | "final"))
+                        {
+                            tail += 1;
+                        }
+                        let empty_body = probe.tokens.get(tail) == Some(&Token::BraceOpen)
+                            && probe.tokens.get(tail + 1) == Some(&Token::BraceClose);
+                        Some((
+                            member,
+                            return_type,
+                            if empty { 0 } else { commas + 1 },
+                            parameters,
+                            empty_body,
+                        ))
                     })();
-                    if let Some((member, return_type, argument_count)) = recovered {
+                    if let Some((
+                        member,
+                        return_type,
+                        argument_count,
+                        parameters,
+                        empty_body,
+                    )) = recovered
+                    {
                         let dispatch = crate::cxx::VirtualDispatch {
                             vptr_offset: 0,
                             slot_offset: next_slot,
@@ -1653,7 +1739,7 @@ impl Parser {
                         {
                             let methods = self
                                 .cxx_template_virtual_methods
-                                .entry((owner, member.clone()))
+                                .entry((owner.clone(), member.clone()))
                                 .or_default();
                             if !methods.iter().any(|(arity, existing)| {
                                 *arity == argument_count
@@ -1661,6 +1747,24 @@ impl Parser {
                                     && existing.slot_offset == dispatch.slot_offset
                             }) {
                                 methods.push((argument_count, dispatch));
+                            }
+                            if let Some(parameters) = &parameters {
+                                let definitions = self
+                                    .cxx_template_virtual_definitions
+                                    .entry(owner)
+                                    .or_default();
+                                if !definitions.iter().any(|definition| {
+                                    definition.member == member
+                                        && definition.dispatch.slot_offset
+                                            == dispatch.slot_offset
+                                }) {
+                                    definitions.push(TemplateVirtualDefinition {
+                                        member: member.clone(),
+                                        parameters: parameters.clone(),
+                                        dispatch,
+                                        empty_body,
+                                    });
+                                }
                             }
                         }
                     }

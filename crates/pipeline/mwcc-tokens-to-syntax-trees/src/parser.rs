@@ -156,6 +156,20 @@ pub(crate) enum TemplateTypePattern {
 }
 
 #[derive(Clone)]
+pub(crate) enum TemplateVirtualParameter {
+    TemplatePointer(usize),
+    NamedPointer(String),
+}
+
+#[derive(Clone)]
+pub(crate) struct TemplateVirtualDefinition {
+    pub(crate) member: String,
+    pub(crate) parameters: Vec<TemplateVirtualParameter>,
+    pub(crate) dispatch: crate::cxx::VirtualDispatch,
+    pub(crate) empty_body: bool,
+}
+
+#[derive(Clone)]
 pub(crate) enum TemplateFieldType {
     Parameter(usize),
     TemplateValue(TemplateTypePattern),
@@ -450,6 +464,12 @@ pub(crate) struct Parser {
     /// vptr is provable without instantiating a concrete object layout.
     pub(crate) cxx_template_virtual_methods:
         HashMap<(String, String), Vec<(usize, crate::cxx::VirtualDispatch)>>,
+    /// Concrete symbol ingredients for virtuals declared by a primary class
+    /// template. Slot-only dispatch metadata is enough for calls, but an owned
+    /// derived vtable also needs substituted ABI signatures and weak leaf
+    /// bodies from its concrete zero-offset template base.
+    pub(crate) cxx_template_virtual_definitions:
+        HashMap<String, Vec<TemplateVirtualDefinition>>,
     /// Concrete template typedef alias -> primary template name. This is kept
     /// separately from layout aliases because nested/multi-argument templates
     /// may be opaque for layout while still carrying inline-member semantics.
