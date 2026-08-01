@@ -135,9 +135,23 @@ impl Generator {
                     "a postfix member step requires a register-local base",
                 ));
             };
-            let Some(base_register) = self.lookup_general(base_name) else {
+            let base_register = if let Some(register) = self.lookup_general(base_name) {
+                register
+            } else if let Some(slot) = self.frame_slots.get(base_name).copied() {
+                let register = self.fresh_virtual_general();
+                let base_pointee = frame_value_pointee(slot.value_type).ok_or_else(|| {
+                    Diagnostic::error("a postfix member step requires a scalar pointer base")
+                })?;
+                self.output.instructions.push(displacement_load(
+                    base_pointee,
+                    register,
+                    1,
+                    slot.offset,
+                )?);
+                register
+            } else {
                 return Err(Diagnostic::error(
-                    "a postfix member step requires a register-local base",
+                    "a postfix member step requires a local base",
                 ));
             };
             let pointee = pointee_of_type(*member_type).ok_or_else(|| {

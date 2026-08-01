@@ -534,10 +534,17 @@ pub(super) fn expand_expression(
                         &argument,
                         Expression::Variable(name) if function_symbols.contains(name)
                     );
+                let read_only_variable = matches!(argument, Expression::Variable(_))
+                    && !super::safety::parameter_requires_materialization(
+                        &body.source,
+                        &parameter.name,
+                    )
+                    && !crate::analysis::expression_has_call(&body.expression);
                 if forwards_once_in_order
                     || pure_single_use
                     || guarded_transaction_single_use
                     || known_function_designator
+                    || read_only_variable
                     || stable_argument(&argument, stable_variables)
                 {
                     replacements.insert(parameter.name.clone(), argument);

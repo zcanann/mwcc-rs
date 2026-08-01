@@ -1,9 +1,9 @@
-//! Compact linkage-first frames for a call-filled narrow scalar scratch slot.
+//! Compact linkage-first frames for call-filled scalar scratch slots.
 //!
-//! Build 163 overlaps the logical local-table lane with the physical byte or
-//! halfword slot when a retained entry receiver and a returned status value are
-//! the only other survivors.  Keeping that source proof out of generic frame
-//! reconciliation prevents unrelated address-taken locals from being shrunk.
+//! Build 163 overlaps the logical local-table lane with physical address-taken
+//! scalar slots when a retained entry value and returned status are the only
+//! other survivors. Keeping that source proof out of generic reconciliation
+//! prevents unrelated address-taken locals from being shrunk.
 
 #[allow(unused_imports)]
 use super::*;
@@ -31,15 +31,6 @@ impl StructuredCompactScalarFrame {
         {
             return None;
         }
-        let [scratch] = frame_scalar_locals else {
-            return None;
-        };
-        if !matches!(
-            scratch.declared_type,
-            Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort
-        ) {
-            return None;
-        }
         let ([parameter], [result]) = (saved_parameters, deferred_saved_locals) else {
             return None;
         };
@@ -49,20 +40,29 @@ impl StructuredCompactScalarFrame {
         ) {
             return None;
         }
-        let [
+        let narrow_dispatch = matches!(frame_scalar_locals,
+            [scratch] if matches!(
+                scratch.declared_type,
+                Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort
+            )) && matches!(function.statements.as_slice(), [
             Statement::Assign {
                 name,
                 value: Expression::IntegerLiteral(_),
             },
             Statement::Expression(Expression::Call { arguments, .. }),
             ..
-        ] = function.statements.as_slice()
-        else {
-            return None;
-        };
-        if name != &result.name
-            || !matches!(arguments.first(), Some(Expression::Variable(name)) if name == &parameter.name)
-        {
+        ] if name == &result.name
+            && matches!(arguments.first(), Some(Expression::Variable(name)) if name == &parameter.name));
+        let call_output_frame = frame_scalar_locals.len() >= 2
+            && frame_scalar_locals.len() <= 4
+            && frame_scalar_locals
+                .iter()
+                .all(|local| local.declared_type.width() <= 32)
+            && matches!(function.statements.first(), Some(Statement::Assign {
+                name,
+                value: Expression::Call { .. },
+            }) if name == &result.name);
+        if !narrow_dispatch && !call_output_frame {
             return None;
         }
         Some(Self)
@@ -281,5 +281,46 @@ mod tests {
             &deferred,
         )
         .is_none());
+    }
+
+    #[test]
+    fn recognizes_a_call_output_scalar_frame() {
+        let mut function = function();
+        function.locals = vec![
+            local("result", Type::Int),
+            local("buffer_index", Type::Int),
+            local("message", Type::StructPointer { element_size: 32 }),
+            local("request_index", Type::Int),
+        ];
+        function.statements[0] = Statement::Assign {
+            name: "result".into(),
+            value: Expression::Call {
+                name: "acquire".into(),
+                arguments: vec![
+                    Expression::AddressOf {
+                        operand: Box::new(Expression::Variable("buffer_index".into())),
+                    },
+                    Expression::AddressOf {
+                        operand: Box::new(Expression::Variable("message".into())),
+                    },
+                ],
+            },
+        };
+        let scratch = [&function.locals[1], &function.locals[2], &function.locals[3]];
+        let saved = [&function.parameters[0]];
+        let deferred = [&function.locals[0]];
+
+        assert!(StructuredCompactScalarFrame::plan(
+            &function,
+            FrameConvention::LinkageFirst,
+            true,
+            &scratch,
+            &[],
+            &[],
+            &[],
+            &saved,
+            &deferred,
+        )
+        .is_some());
     }
 }

@@ -1064,7 +1064,7 @@ fn expression_modifies_or_escapes(expression: &Expression, name: &str) -> bool {
         }
         Expression::PostStep {
             target: operand, ..
-        } => expression_mentions(operand, name),
+        } => matches!(operand.as_ref(), Expression::Variable(variable) if variable == name),
         Expression::Assign { target, value } => {
             matches!(target.as_ref(), Expression::Variable(variable) if variable == name)
                 || expression_modifies_or_escapes(target, name)

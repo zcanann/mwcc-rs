@@ -833,7 +833,11 @@ impl Generator {
         } = target
         {
             if let Expression::Variable(name) = base.as_ref() {
-                if self.frame_slots.contains_key(name) {
+                if self
+                    .frame_slots
+                    .get(name)
+                    .is_some_and(|slot| matches!(slot.value_type, Type::Struct { .. }))
+                {
                     return Err(Diagnostic::error("a frame-struct member store before a call is not supported yet (needs the call-argument scheduler)"));
                 }
             }

@@ -535,12 +535,37 @@ impl Generator {
             _ => None,
         };
         if let Some(name) = frame_aggregate_name {
-            if let Some(slot) = self.frame_slots.get(name) {
+            if let Some(slot) = self.frame_slots.get(name).copied() {
                 let pointee = pointee_of_type(member_type).ok_or_else(|| {
                     Diagnostic::error(format!(
                         "unsupported frame member load type {member_type:?} at +{offset}"
                     ))
                 })?;
+                if matches!(slot.value_type, Type::Pointer(_) | Type::StructPointer { .. }) {
+                    let base = if destination == GENERAL_SCRATCH
+                        || matches!(pointee, Pointee::Float | Pointee::Double)
+                    {
+                        self.fresh_virtual_general_preferring(3)
+                    } else {
+                        destination
+                    };
+                    let stored_pointer = frame_value_pointee(slot.value_type)
+                        .expect("pointer frame slot has scalar storage");
+                    self.output.instructions.push(displacement_load(
+                        stored_pointer,
+                        base,
+                        1,
+                        slot.offset,
+                    )?);
+                    let displacement = self.emit_member_base_adjustment(base, offset);
+                    self.output.instructions.push(displacement_load(
+                        pointee,
+                        destination,
+                        base,
+                        displacement,
+                    )?);
+                    return Ok(());
+                }
                 let displacement = i16::try_from(i64::from(slot.offset) + i64::from(offset))
                     .map_err(|_| {
                         Diagnostic::error("frame struct member offset out of range (roadmap)")
@@ -1359,7 +1384,23 @@ impl Generator {
                     self.general_register_of(name)
                 }
             }
-            Expression::Variable(name) => self.general_register_of(name),
+            Expression::Variable(name) => {
+                if let Some(slot) = self.frame_slots.get(name).copied() {
+                    let pointee = frame_value_pointee(slot.value_type).ok_or_else(|| {
+                        Diagnostic::error("a frame-resident member base requires pointer storage")
+                    })?;
+                    let register = self.fresh_virtual_general_preferring(3);
+                    self.output.instructions.push(displacement_load(
+                        pointee,
+                        register,
+                        1,
+                        slot.offset,
+                    )?);
+                    Ok(register)
+                } else {
+                    self.general_register_of(name)
+                }
+            }
             // A source-proven one-word wrapper member denotes the wrapper's
             // complete pointer value. When that member becomes the base of a
             // later access (for example `iterator.operator->()->field`), keep
