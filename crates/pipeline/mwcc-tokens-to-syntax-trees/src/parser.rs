@@ -162,11 +162,28 @@ pub(crate) enum TemplateVirtualParameter {
 }
 
 #[derive(Clone)]
+pub(crate) struct TemplateVirtualSwitchArm {
+    pub(crate) value: i64,
+    pub(crate) member: String,
+}
+
+#[derive(Clone)]
+pub(crate) enum TemplateVirtualBody {
+    Unmaterialized,
+    Empty,
+    DenseVirtualSwitch {
+        scrutinee_parameter: usize,
+        scrutinee_member: String,
+        arms: Vec<TemplateVirtualSwitchArm>,
+    },
+}
+
+#[derive(Clone)]
 pub(crate) struct TemplateVirtualDefinition {
     pub(crate) member: String,
     pub(crate) parameters: Vec<TemplateVirtualParameter>,
     pub(crate) dispatch: crate::cxx::VirtualDispatch,
-    pub(crate) empty_body: bool,
+    pub(crate) body: TemplateVirtualBody,
 }
 
 #[derive(Clone)]

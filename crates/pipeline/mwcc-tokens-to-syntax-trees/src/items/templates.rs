@@ -11,7 +11,8 @@ use crate::parser::{
     ConcreteIteratorArrow, InlineTemplateFieldProjection, InlineTemplateFieldValue,
     IteratorArrowAssertion, Parser, StructField, StructLayout, StructTemplate, TemplateField,
     TemplateFieldType, TemplateInstantiationKey, TemplateIteratorArrowSummary,
-    TemplateTypePattern, TemplateVirtualDefinition, TemplateVirtualParameter,
+    TemplateTypePattern, TemplateVirtualBody, TemplateVirtualDefinition, TemplateVirtualParameter,
+    TemplateVirtualSwitchArm,
 };
 use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type};
 use mwcc_tokens::Token;
@@ -223,6 +224,163 @@ fn capture_template_virtual_parameters(
             }
         })
         .collect()
+}
+
+fn capture_template_virtual_parameter_names(tokens: &[Token]) -> Option<Vec<String>> {
+    let mut ranges = Vec::new();
+    let mut start = 0usize;
+    let mut angles = 0i32;
+    let mut parens = 0i32;
+    for (index, token) in tokens.iter().enumerate() {
+        match token {
+            Token::Less => angles += 1,
+            Token::Greater => angles -= 1,
+            Token::ParenOpen => parens += 1,
+            Token::ParenClose => parens -= 1,
+            Token::Comma if angles == 0 && parens == 0 => {
+                ranges.push(&tokens[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    ranges.push(&tokens[start..]);
+    ranges
+        .into_iter()
+        .map(|parameter| {
+            parameter.iter().rev().find_map(|token| match token {
+                Token::Identifier(name)
+                    if !matches!(name.as_str(), "const" | "volatile" | "immut") =>
+                {
+                    Some(name.clone())
+                }
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+fn capture_dense_template_virtual_switch(
+    tokens: &[Token],
+    body_start: usize,
+    parameter_names: &[String],
+    enum_constants: &HashMap<String, i64>,
+) -> Option<TemplateVirtualBody> {
+    let [
+        Token::BraceOpen,
+        Token::Identifier(switch),
+        Token::ParenOpen,
+        Token::Identifier(scrutinee),
+        Token::Arrow,
+        Token::Identifier(scrutinee_member),
+        Token::ParenClose,
+        Token::BraceOpen,
+        ..
+    ] = tokens.get(body_start..)?
+    else {
+        return None;
+    };
+    if switch != "switch" {
+        return None;
+    }
+    let scrutinee_parameter = parameter_names
+        .iter()
+        .position(|parameter| parameter == scrutinee)?;
+    let mut arms = Vec::new();
+    let mut cursor = body_start + 8;
+    let mut switch_depth = 1i32;
+    while switch_depth > 0 {
+        match tokens.get(cursor)? {
+            Token::BraceOpen => {
+                switch_depth += 1;
+                cursor += 1;
+            }
+            Token::BraceClose => {
+                switch_depth -= 1;
+                cursor += 1;
+            }
+            Token::Identifier(word) if switch_depth == 1 && word == "case" => {
+                let value = match tokens.get(cursor + 1)? {
+                    Token::IntegerLiteral(value) => *value,
+                    Token::Identifier(name) => *enum_constants.get(name)?,
+                    _ => return None,
+                };
+                if tokens.get(cursor + 2) != Some(&Token::Colon) {
+                    return None;
+                }
+                cursor += 3;
+                let braced_arm = tokens.get(cursor) == Some(&Token::BraceOpen);
+                if braced_arm {
+                    cursor += 1;
+                }
+                let Token::Identifier(member) = tokens.get(cursor)? else {
+                    return None;
+                };
+                if tokens.get(cursor + 1) != Some(&Token::ParenOpen) {
+                    return None;
+                }
+                let call_start = cursor;
+                let mut call_depth = 0i32;
+                let mut saw_scrutinee = false;
+                loop {
+                    match tokens.get(cursor)? {
+                        Token::ParenOpen => call_depth += 1,
+                        Token::ParenClose => {
+                            call_depth -= 1;
+                            if call_depth == 0 {
+                                cursor += 1;
+                                break;
+                            }
+                        }
+                        Token::Identifier(name) if name == scrutinee => saw_scrutinee = true,
+                        _ => {}
+                    }
+                    cursor += 1;
+                }
+                let forwarded = parameter_names
+                    .iter()
+                    .enumerate()
+                    .find(|(index, _)| *index != scrutinee_parameter)
+                    .map(|(_, name)| name)?;
+                if !tokens[call_start + 2..cursor]
+                    .iter()
+                    .any(|token| token == &Token::Identifier(forwarded.clone()))
+                    || !saw_scrutinee
+                    || tokens.get(cursor) != Some(&Token::Semicolon)
+                {
+                    return None;
+                }
+                arms.push(TemplateVirtualSwitchArm {
+                    value,
+                    member: member.clone(),
+                });
+                cursor += 1;
+                if !matches!(tokens.get(cursor), Some(Token::Identifier(word)) if word == "break")
+                    || tokens.get(cursor + 1) != Some(&Token::Semicolon)
+                {
+                    return None;
+                }
+                cursor += 2;
+                if braced_arm {
+                    if tokens.get(cursor) != Some(&Token::BraceClose) {
+                        return None;
+                    }
+                    cursor += 1;
+                }
+            }
+            Token::Identifier(word) if switch_depth == 1 && word == "default" => return None,
+            Token::EndOfFile => return None,
+            _ => cursor += 1,
+        }
+    }
+    if arms.len() < 7 {
+        return None;
+    }
+    Some(TemplateVirtualBody::DenseVirtualSwitch {
+        scrutinee_parameter,
+        scrutinee_member: scrutinee_member.clone(),
+        arms,
+    })
 }
 
 impl Parser {
@@ -1695,13 +1853,19 @@ impl Parser {
                         let empty = parameter_start == parameter_end
                             || (parameter_end == parameter_start + 1
                                 && probe.tokens.get(parameter_start) == Some(&Token::KeywordVoid));
+                        let parameter_tokens = &probe.tokens[parameter_start..parameter_end];
                         let parameters = if empty {
                             Some(Vec::new())
                         } else {
                             capture_template_virtual_parameters(
-                                &probe.tokens[parameter_start..parameter_end],
+                                parameter_tokens,
                                 &template_parameters,
                             )
+                        };
+                        let parameter_names = if empty {
+                            Some(Vec::new())
+                        } else {
+                            capture_template_virtual_parameter_names(parameter_tokens)
                         };
                         let mut tail = scan;
                         while matches!(probe.tokens.get(tail), Some(Token::Identifier(word))
@@ -1709,14 +1873,27 @@ impl Parser {
                         {
                             tail += 1;
                         }
-                        let empty_body = probe.tokens.get(tail) == Some(&Token::BraceOpen)
-                            && probe.tokens.get(tail + 1) == Some(&Token::BraceClose);
+                        let body = if probe.tokens.get(tail) == Some(&Token::BraceOpen)
+                            && probe.tokens.get(tail + 1) == Some(&Token::BraceClose)
+                        {
+                            TemplateVirtualBody::Empty
+                        } else if let Some(parameter_names) = parameter_names.as_deref() {
+                            capture_dense_template_virtual_switch(
+                                &probe.tokens,
+                                tail,
+                                parameter_names,
+                                &self.enum_constants,
+                            )
+                            .unwrap_or(TemplateVirtualBody::Unmaterialized)
+                        } else {
+                            TemplateVirtualBody::Unmaterialized
+                        };
                         Some((
                             member,
                             return_type,
                             if empty { 0 } else { commas + 1 },
                             parameters,
-                            empty_body,
+                            body,
                         ))
                     })();
                     if let Some((
@@ -1724,7 +1901,7 @@ impl Parser {
                         return_type,
                         argument_count,
                         parameters,
-                        empty_body,
+                        body,
                     )) = recovered
                     {
                         let dispatch = crate::cxx::VirtualDispatch {
@@ -1762,7 +1939,7 @@ impl Parser {
                                         member: member.clone(),
                                         parameters: parameters.clone(),
                                         dispatch,
-                                        empty_body,
+                                        body: body.clone(),
                                     });
                                 }
                             }

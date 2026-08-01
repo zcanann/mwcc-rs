@@ -3274,6 +3274,11 @@ impl Generator {
         if self.try_device_registration_event_switch(function)? {
             return Ok(());
         }
+        // A dense switch whose arms forward the same arguments through virtual
+        // slots owns its compact linkage frame and jump-table layout.
+        if self.try_dense_virtual_switch_dispatch(function)? {
+            return Ok(());
+        }
         // A dense table dispatcher whose arms assign one callee result while
         // preserving both the forwarded parameter and result across calls.
         if self.try_switch_call_dispatcher(function)? {

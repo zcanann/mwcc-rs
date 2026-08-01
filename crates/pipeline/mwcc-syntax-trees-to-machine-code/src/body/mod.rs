@@ -74,6 +74,7 @@ mod display_list_packet_runs;
 mod display_list_framebuffer_setup;
 mod device_registration_event_switch;
 mod doubly_linked_list_extract;
+mod dense_virtual_switch_dispatch;
 mod global_doubly_linked_remove;
 mod global_doubly_linked_append_trace;
 mod global_status_snapshot_access;

@@ -6,8 +6,8 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{
-    BinaryOperator, Expression, Function, Parameter, Pointee, SourceFundamentalType, Statement,
-    Type,
+    ArmBody, BinaryOperator, Expression, Function, Parameter, Pointee, SourceFundamentalType,
+    Statement, SwitchArm, Type,
 };
 use mwcc_tokens::{LocatedToken, Token};
 
@@ -16,7 +16,9 @@ use crate::cxx_analysis_facts::{
     nested_explicit_virtual_declarations,
 };
 use crate::items::{pointee_of, type_alignment, type_size};
-use crate::parser::{Parser, StructField, StructLayout, TemplateVirtualParameter};
+use crate::parser::{
+    Parser, StructField, StructLayout, TemplateVirtualBody, TemplateVirtualParameter,
+};
 
 /// Give inline special members identities that cannot collide with one
 /// another. Their source spellings both contain the class name (`C()` and
@@ -3930,7 +3932,7 @@ impl Parser {
         let owner = encode_qualified_scope(&[concrete_owner])?;
         let mut relocations = Vec::with_capacity(definitions.len());
 
-        for definition in definitions {
+        for definition in &definitions {
             let mut parameter_code = String::new();
             for parameter in &definition.parameters {
                 parameter_code.push('P');
@@ -3954,7 +3956,7 @@ impl Parser {
             let target = format!("{}__{}F{}", definition.member, owner, parameter_code);
             relocations.push((definition.dispatch.slot_offset, target.clone()));
 
-            if definition.empty_body
+            if !matches!(definition.body, TemplateVirtualBody::Unmaterialized)
                 && !self
                     .cxx_inline_materializations
                     .iter()
@@ -3970,6 +3972,88 @@ impl Parser {
                         name: format!("argument{index}"),
                     },
                 ));
+                let statements = match &definition.body {
+                    TemplateVirtualBody::Empty => Vec::new(),
+                    TemplateVirtualBody::DenseVirtualSwitch {
+                        scrutinee_parameter,
+                        scrutinee_member,
+                        arms,
+                    } => {
+                        let parameter = definition.parameters.get(*scrutinee_parameter).ok_or_else(
+                            || {
+                                Diagnostic::error(format!(
+                                    "template virtual '{}::{}' switch references missing parameter {scrutinee_parameter}",
+                                    template_primary, definition.member
+                                ))
+                            },
+                        )?;
+                        let TemplateVirtualParameter::NamedPointer(struct_name) = parameter else {
+                            return Err(Diagnostic::error(format!(
+                                "template virtual '{}::{}' switches through a dependent parameter (roadmap)",
+                                template_primary, definition.member
+                            )));
+                        };
+                        let qualified_struct = self.qualify_cxx_class_name(struct_name);
+                        let field = self
+                            .structs
+                            .get(struct_name)
+                            .or_else(|| self.structs.get(&qualified_struct))
+                            .and_then(|layout| layout.fields.get(scrutinee_member))
+                            .ok_or_else(|| {
+                                Diagnostic::error(format!(
+                                    "template virtual '{}::{}' cannot resolve '{}::{}'",
+                                    template_primary,
+                                    definition.member,
+                                    struct_name,
+                                    scrutinee_member
+                                ))
+                            })?;
+                        let mut switch_arms = Vec::with_capacity(arms.len());
+                        for arm in arms {
+                            let dispatch = definitions
+                                .iter()
+                                .find(|candidate| candidate.member == arm.member)
+                                .map(|candidate| candidate.dispatch)
+                                .ok_or_else(|| {
+                                    Diagnostic::error(format!(
+                                        "template virtual '{}::{}' calls unknown virtual '{}'",
+                                        template_primary, definition.member, arm.member
+                                    ))
+                                })?;
+                            switch_arms.push(SwitchArm {
+                                value: arm.value,
+                                body: ArmBody::Statements(vec![Statement::Expression(
+                                    Expression::VirtualCall {
+                                        object: Box::new(Expression::Variable("this".to_string())),
+                                        vptr_offset: dispatch.vptr_offset,
+                                        slot_offset: dispatch.slot_offset,
+                                        return_type: dispatch.return_type,
+                                        variadic: dispatch.variadic,
+                                        arguments: (0..definition.parameters.len())
+                                            .map(|index| {
+                                                Expression::Variable(format!("argument{index}"))
+                                            })
+                                            .collect(),
+                                    },
+                                )]),
+                                falls_through: false,
+                            });
+                        }
+                        vec![Statement::Switch {
+                            scrutinee: Expression::Member {
+                                base: Box::new(Expression::Variable(format!(
+                                    "argument{scrutinee_parameter}"
+                                ))),
+                                offset: field.offset,
+                                member_type: field.member_type,
+                                index_stride: None,
+                            },
+                            arms: switch_arms,
+                            default: None,
+                        }]
+                    }
+                    TemplateVirtualBody::Unmaterialized => unreachable!(),
+                };
                 self.cxx_inline_materializations.push(Function {
                     return_type: definition.dispatch.return_type,
                     name: target,
@@ -3977,7 +4061,7 @@ impl Parser {
                     is_weak: true,
                     parameters,
                     locals: Vec::new(),
-                    statements: Vec::new(),
+                    statements,
                     guards: Vec::new(),
                     return_expression: None,
                     section: None,

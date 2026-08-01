@@ -7804,6 +7804,66 @@ blr\n\
     }
 
     #[test]
+    fn concrete_template_virtual_retains_dense_virtual_switch_body() {
+        let source = r#"
+            enum MsgType { MSG_First = 0, MSG_Second = 1, MSG_Third = 2,
+                MSG_Fourth = 3, MSG_Fifth = 4, MSG_Sixth = 5, MSG_Seventh = 6 };
+            struct Msg { int kind; };
+            struct MsgFirst : Msg {};
+            template <typename T> struct Receiver {
+                virtual void dispatch(T* target, Msg* msg) {
+                    switch (msg->kind) {
+                    case MSG_First: { first(target, static_cast<MsgFirst*>(msg)); break; }
+                    case MSG_Second: { second(target, static_cast<Msg*>(msg)); break; }
+                    case MSG_Third: { third(target, static_cast<Msg*>(msg)); break; }
+                    case MSG_Fourth: { fourth(target, static_cast<Msg*>(msg)); break; }
+                    case MSG_Fifth: { fifth(target, static_cast<Msg*>(msg)); break; }
+                    case MSG_Sixth: { sixth(target, static_cast<Msg*>(msg)); break; }
+                    case MSG_Seventh: { seventh(target, static_cast<Msg*>(msg)); break; }
+                    }
+                }
+                virtual void first(T*, MsgFirst*) {}
+                virtual void second(T*, Msg*) {}
+                virtual void third(T*, Msg*) {}
+                virtual void fourth(T*, Msg*) {}
+                virtual void fifth(T*, Msg*) {}
+                virtual void sixth(T*, Msg*) {}
+                virtual void seventh(T*, Msg*) {}
+            };
+            struct Action : Receiver<int> { virtual void run(); };
+            void Action::run() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let dispatch = unit
+            .functions
+            .iter()
+            .find(|function| function.name == "dispatch__11Receiver<i>FPiP3Msg")
+            .expect("the concrete dispatch body should be materialized");
+        let [Statement::Switch {
+            scrutinee: Expression::Member { offset: 0, .. },
+            arms,
+            default: None,
+        }] = dispatch.statements.as_slice()
+        else {
+            panic!("expected one member-switch body: {:#?}", dispatch.statements)
+        };
+        assert_eq!(arms.len(), 7);
+        assert!(matches!(
+            arms[6].body,
+            mwcc_syntax_trees::ArmBody::Statements(ref statements)
+                if matches!(statements.as_slice(),
+                    [Statement::Expression(Expression::VirtualCall { slot_offset: 36, .. })])
+        ));
+    }
+
+    #[test]
     fn recovers_class_layout_with_function_pointer_constructor_parameters() {
         let source = r#"
             class Tween {
