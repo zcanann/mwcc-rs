@@ -9,6 +9,7 @@ use super::*;
 
 mod guarded_indexed;
 mod guarded_shared_global;
+mod global_member_callback;
 mod indexed_frame;
 mod indexed_mixed_arguments;
 
@@ -16,6 +17,7 @@ mod indexed_mixed_arguments;
 enum ArgumentPlacement {
     Register { source: u8, target: u8 },
     Constant { value: i64, target: u8 },
+    FunctionAddress { target: u8 },
 }
 
 fn placement_overwrites_later_source(placements: &[ArgumentPlacement]) -> bool {
@@ -25,7 +27,8 @@ fn placement_overwrites_later_source(placements: &[ArgumentPlacement]) -> bool {
         .any(|(index, placement)| {
             let target = match placement {
                 ArgumentPlacement::Register { source, target } if source != target => *target,
-                ArgumentPlacement::Constant { target, .. } => *target,
+                ArgumentPlacement::Constant { target, .. }
+                | ArgumentPlacement::FunctionAddress { target } => *target,
                 ArgumentPlacement::Register { .. } => return false,
             };
             placements[index + 1..].iter().any(|later| {
@@ -210,6 +213,11 @@ impl Generator {
                         target,
                     });
                 }
+                if let Expression::Variable(name) = argument {
+                    if self.is_direct_function_symbol(name) {
+                        return Ok(ArgumentPlacement::FunctionAddress { target });
+                    }
+                }
                 let (source, width, _) = self.leaf_info(argument)?;
                 if width != 32 || source == 12 {
                     return Err(Diagnostic::error(
@@ -240,6 +248,12 @@ impl Generator {
                 ArgumentPlacement::Constant { value, target } => {
                     self.load_integer_constant(target, value);
                 }
+                ArgumentPlacement::FunctionAddress { target } => {
+                    let Expression::Variable(name) = argument else {
+                        unreachable!("a function-address placement came from a designator")
+                    };
+                    self.emit_function_address_value(name, target);
+                }
                 ArgumentPlacement::Register { .. } => {}
             }
         }
@@ -259,6 +273,9 @@ impl Generator {
         target: &Expression,
         arguments: &[Expression],
     ) -> Compilation<()> {
+        if self.try_emit_global_member_callback_indirect_call(target, arguments)? {
+            return Ok(());
+        }
         if self.try_emit_frame_indexed_global_indirect_call(target, arguments)? {
             return Ok(());
         }

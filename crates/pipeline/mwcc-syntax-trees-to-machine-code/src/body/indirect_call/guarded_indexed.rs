@@ -38,7 +38,7 @@ impl Generator {
             self.output
                 .instructions
                 .push(Instruction::MoveToLinkRegister { s: 12 });
-            for placement in &placements {
+            for (argument, placement) in arguments.iter().zip(&placements) {
                 match *placement {
                     ArgumentPlacement::Register { source, target } if source != target => {
                         self.output.instructions.push(Instruction::AddImmediate {
@@ -49,6 +49,12 @@ impl Generator {
                     }
                     ArgumentPlacement::Constant { value, target } => {
                         self.load_integer_constant(target, value);
+                    }
+                    ArgumentPlacement::FunctionAddress { target } => {
+                        let Expression::Variable(name) = argument else {
+                            unreachable!("a function-address placement came from a designator")
+                        };
+                        self.emit_function_address_value(name, target);
                     }
                     ArgumentPlacement::Register { .. } => {}
                 }

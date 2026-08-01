@@ -3,6 +3,23 @@
 use super::*;
 
 impl Generator {
+    pub(crate) fn is_direct_function_symbol(&self, name: &str) -> bool {
+        self.call_return_types.contains_key(name)
+            && !self.globals.contains_key(name)
+            && !self.locations.contains_key(name)
+    }
+
+    /// Materialize a bare function designator directly in an ABI value lane.
+    pub(crate) fn emit_function_address_value(&mut self, name: &str, destination: u8) {
+        self.emit_address_high(destination, name);
+        self.record_relocation(RelocationKind::Addr16Lo, name);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: destination,
+            a: destination,
+            immediate: 0,
+        });
+    }
+
     /// Materialize a bare function designator for a pointer store.
     ///
     /// Functions always use an absolute address pair. GC 1.x/2.x completes

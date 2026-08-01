@@ -1019,6 +1019,7 @@ fn lower_function_body(
     generator.schedule_saved_base_call_argument();
     generator.finalize_exclusive_arm_copy_encodings();
     generator.schedule_linkage_first_function_address();
+    generator.schedule_linkage_first_global_member_callback();
     generator.schedule_direct_callback_wait_entry(function);
     generator.schedule_sequenced_callback_wait();
     generator.schedule_callback_publication_call();

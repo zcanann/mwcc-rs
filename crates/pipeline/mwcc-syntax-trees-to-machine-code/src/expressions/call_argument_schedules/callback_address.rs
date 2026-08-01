@@ -162,12 +162,6 @@ impl Generator {
         Ok(true)
     }
 
-    fn is_direct_function_symbol(&self, name: &str) -> bool {
-        self.call_return_types.contains_key(name)
-            && !self.globals.contains_key(name)
-            && !self.locations.contains_key(name)
-    }
-
     fn emit_split_callback_address(&mut self, name: &str, high: u8, destination: u8) {
         self.emit_address_high(high, name);
         self.record_relocation(RelocationKind::Addr16Lo, name);
