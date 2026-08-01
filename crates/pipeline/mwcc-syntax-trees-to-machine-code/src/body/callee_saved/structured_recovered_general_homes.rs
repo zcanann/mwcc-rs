@@ -209,6 +209,44 @@ impl StructuredRecoveredGeneralHomes {
                 direct_paired_single_restores: nested_void_recovered_loop,
             });
         }
+        // Three or more recovered local names can describe an entire saved-GPR
+        // window with one hole. When exactly one general parameter is also live,
+        // that hole is direct evidence for its home even in a large mixed-loop
+        // body: `var_r28`, `var_r30`, `var_r31` leaves r29 for the parameter.
+        // Keep home indices in parameter/deferred-group order, while saving the
+        // resolved physical window from high to low as MWCC does.
+        if names.len() >= 3
+            && all_recovered
+            && used_parameters.len() == 1
+            && names.iter().all(|name| {
+                super::structured_locals::body_uses_local(&function.statements, name)
+            })
+        {
+            if let Some(parameter_homes) =
+                sparse_window_parameter_homes(&recovered_registers, 1)
+            {
+                let mut home_names = vec![used_parameters[0].name.clone()];
+                home_names.extend(names.iter().cloned());
+                let mut preferences = parameter_homes;
+                preferences.extend(recovered_registers.iter().copied());
+                let save_order = recovered_registers
+                    .windows(2)
+                    .all(|pair| pair[0] < pair[1])
+                    .then(|| {
+                        let mut order: Vec<_> = (0..preferences.len()).collect();
+                        order.sort_by_key(|index| std::cmp::Reverse(preferences[*index]));
+                        order
+                    });
+                return Some(Self {
+                    names: home_names,
+                    preferences,
+                    parameter_count: 1,
+                    save_order,
+                    preferences_follow_groups: true,
+                    direct_paired_single_restores: false,
+                });
+            }
+        }
         let missing = single_missing_register(&recovered_registers);
         if function.return_type != Type::Void
             || !has_loop
@@ -257,6 +295,9 @@ impl StructuredRecoveredGeneralHomes {
             return None;
         }
         if self.preferences_follow_groups {
+            if home_index < parameter_count {
+                return self.preferences.get(home_index).copied();
+            }
             let group = home_index.checked_sub(parameter_count)?;
             return deferred.members(group).find_map(|member| {
                 self.names
@@ -469,6 +510,21 @@ fn sparse_window_parameter_homes(
 mod tests {
     use super::*;
 
+    fn local(name: &str) -> LocalDeclaration {
+        LocalDeclaration {
+            declared_type: Type::Int,
+            name: name.into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        }
+    }
+
     #[test]
     fn parses_only_saved_general_register_suffixes() {
         assert_eq!(recovered_register("var_r30"), Some(30));
@@ -496,6 +552,63 @@ mod tests {
         );
         assert_eq!(sparse_window_parameter_homes(&[27, 31], 2), None);
         assert_eq!(sparse_window_parameter_homes(&[26, 29, 31], 2), None);
+    }
+
+    #[test]
+    fn recovers_the_parameter_hole_in_a_four_home_window() {
+        let function = Function {
+            return_type: Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![mwcc_syntax_trees::Parameter {
+                parameter_type: Type::Pointer(mwcc_syntax_trees::Pointee::Int),
+                name: "object".into(),
+            }],
+            locals: vec![local("var_r28"), local("var_r30"), local("var_r31")],
+            statements: vec![
+                Statement::Assign {
+                    name: "var_r28".into(),
+                    value: Expression::Call {
+                        name: "create".into(),
+                        arguments: Vec::new(),
+                    },
+                },
+                Statement::Assign {
+                    name: "var_r30".into(),
+                    value: Expression::IntegerLiteral(0),
+                },
+                Statement::Assign {
+                    name: "var_r31".into(),
+                    value: Expression::IntegerLiteral(0),
+                },
+                Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: vec![
+                        Expression::Variable("object".into()),
+                        Expression::Variable("var_r28".into()),
+                        Expression::Variable("var_r30".into()),
+                        Expression::Variable("var_r31".into()),
+                    ],
+                }),
+            ],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        let plan = StructuredRecoveredGeneralHomes::plan(&function, &[])
+            .expect("the recovered window should resolve the parameter hole");
+        assert_eq!(plan.names, ["object", "var_r28", "var_r30", "var_r31"]);
+        assert_eq!(plan.preferences, [29, 28, 30, 31]);
+        assert_eq!(plan.parameter_count, 1);
+        assert_eq!(plan.save_order(), Some([3, 2, 0, 1].as_slice()));
     }
 
     #[test]
