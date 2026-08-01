@@ -158,7 +158,7 @@ impl Generator {
                 // addi/subfic/neg) is ordered COMPUTED-FIRST by mwcc (`mullw r3, r0(a-1), r4(b)`),
                 // like the shift above; a two-register computed left (a product/sum) stays leaf-first.
                 // `+` is EXCLUDED — a `var±const` left there is REASSOCIATED (`(a-1)+b` -> `(a+b)-1`),
-                // not merely reordered, so it keeps deferring via analysis::is_constant_hoist_add.
+                // not merely reordered, and the general add lowering owns that schedule.
                 if matches!(
                     operator,
                     BinaryOperator::Multiply
@@ -172,7 +172,7 @@ impl Generator {
                 // `(2-a)+b`: a `const - variable` (subfic) left is ordered computed-first in an ADD
                 // too (`subfic r0,r3,2; add r3,r0,r4`). Only this ADD sub-shape — a `-a+b` negate-left
                 // strength-reduces to `subf` before this point, and a `var±const` left reassociates
-                // (`(a-1)+b` -> `(a+b)-1`) and defers via is_constant_hoist_add.
+                // (`(a-1)+b` -> `(a+b)-1`) and remains with the general add lowering.
                 if operator == BinaryOperator::Add
                     && matches!(left, Expression::Binary { operator: BinaryOperator::Subtract, left: subtrahend_from, right: subtrahend }
                         if matches!(subtrahend_from.as_ref(), Expression::IntegerLiteral(_)) && matches!(subtrahend.as_ref(), Expression::Variable(_)))
@@ -298,12 +298,12 @@ impl Generator {
                 Operands::ordered(anchor, GENERAL_SCRATCH)
             }
             (Some(left_pointer), None) => {
-                let right_register = self.wide_leaf_register(right)?;
+                let right_register = self.place_located_sibling(right, left_pointer)?;
                 self.emit_load_from_pointer(left_pointer, GENERAL_SCRATCH)?;
                 Operands::ordered(GENERAL_SCRATCH, right_register)
             }
             (None, Some(right_pointer)) => {
-                let left_register = self.wide_leaf_register(left)?;
+                let left_register = self.place_located_sibling(left, right_pointer)?;
                 self.emit_load_from_pointer(right_pointer, GENERAL_SCRATCH)?;
                 Operands::ordered(left_register, GENERAL_SCRATCH)
             }

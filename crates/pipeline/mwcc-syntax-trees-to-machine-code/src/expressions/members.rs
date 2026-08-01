@@ -2363,10 +2363,19 @@ impl Generator {
         offset: u32,
         destination: u8,
     ) -> Compilation<()> {
-        // The base materializes into `destination` and is then its own `addi` base, so it cannot
-        // be the scratch r0 (an `addi` based on r0 reads literal zero, not the register).
+        // An `addi` based on r0 reads literal zero, not the register. When the
+        // expression consumer requests r0, retain the materialized global base
+        // in a fresh GPR and form the member address into r0 from that base.
         if destination == GENERAL_SCRATCH {
-            return Err(Diagnostic::error("a global struct member address into the scratch register is not supported yet (roadmap)"));
+            let base = self.fresh_virtual_general_preferring(3);
+            self.emit_global_array_base(name, size, base)?;
+            let low = self.emit_member_base_adjustment(base, offset);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: destination,
+                a: base,
+                immediate: low,
+            });
+            return Ok(());
         }
         self.emit_global_array_base(name, size, destination)?;
         if offset != 0 {

@@ -525,20 +525,6 @@ pub(crate) fn name_nesting_depth(expression: &Expression, name: &str) -> Option<
     }
 }
 
-/// The length of the CONNECTED add-chain rooted at this node (the add-tree mwcc reassociates). A
-/// non-add operand (a `*`, a leaf) terminates the chain, so `(a+b)*c + a` is a 1-add chain
-/// (byte-exact) — the `a+b` is consumed by the `*c` into a single value — not a 2-add tree.
-pub(crate) fn count_adds(expression: &Expression) -> usize {
-    match expression {
-        Expression::Binary {
-            operator: BinaryOperator::Add,
-            left,
-            right,
-        } => 1 + count_adds(left) + count_adds(right),
-        _ => 0,
-    }
-}
-
 /// A bare register/constant leaf, for add-tree shape classification.
 fn is_add_leaf(expression: &Expression) -> bool {
     matches!(
@@ -569,91 +555,6 @@ pub(crate) fn add_chain_leaves(expression: &Expression) -> Option<Vec<&Expressio
     }
 }
 
-/// An integer `Add` that mwcc REASSOCIATES and our register allocator does not match byte-for-byte:
-/// a tree of >= 2 additions that is NOT the simple left-associated `(leaf + leaf) + leaf` form.
-/// Byte-exact and kept: `a+b`, `a+b+c`, `a+b*c`, `a*b+c*d`, `(a+b+c)*d`. Diverges: `a+b+c+d`,
-/// `a+(b+c)`, `a+b+c*d`, `d+(a+b+c)` — mwcc evaluates the nested-add operand in its own order.
-pub(crate) fn is_complex_add(expression: &Expression) -> bool {
-    // `(a - 1) + a` / `(a + 1) + b` / `b + (a - 1)`: mwcc HOISTS the embedded additive
-    // constant to the end, grouping the two register terms first (`add r3,r3,r3; addi
-    // r3,r3,-1` for `(a-1)+a`). This is a 1-`Add` tree (the constant lives in a `+`/`-`
-    // child), so `count_adds` misses it, but the source-order codegen still diverges.
-    if is_constant_hoist_add(expression) {
-        return true;
-    }
-    // `(a+b)-1`: mwcc reassociates a `sum - const`, pushing the constant into the sum's SECOND
-    // operand (`a+(b-1)` = `mr r0,r3; addi r3,r4,-1; add r3,r0,r3`); our source-order `add; addi`
-    // diverges. The equivalent `a+(b-1)` already defers via is_constant_hoist_add, but the
-    // Subtract-outer spelling escapes the Add-focused checks below, so catch it here. Restricted to
-    // a TWO-register inner sum: `(a+10)-3` has a constant inner operand and constant-FOLDS to
-    // `addi r3,r3,7` (byte-exact, driver.rs), `(a-b)-1` keeps source order, `(a+b)-c` is not a hoist.
-    if let Expression::Binary {
-        operator: BinaryOperator::Subtract,
-        left,
-        right,
-    } = expression
-    {
-        if matches!(right.as_ref(), Expression::IntegerLiteral(_)) {
-            if let Expression::Binary {
-                operator: BinaryOperator::Add,
-                right: inner_right,
-                ..
-            } = left.as_ref()
-            {
-                if !matches!(inner_right.as_ref(), Expression::IntegerLiteral(_)) {
-                    return true;
-                }
-            }
-        }
-    }
-    let Expression::Binary {
-        operator: BinaryOperator::Add,
-        left,
-        right,
-    } = expression
-    else {
-        return false;
-    };
-    if count_adds(expression) < 2 {
-        return false;
-    }
-    // The one byte-exact >= 2-add shape: `(leaf + leaf) + (leaf | const)`.
-    let simple = matches!(left.as_ref(), Expression::Binary { operator: BinaryOperator::Add, left: inner_left, right: inner_right }
-        if is_add_leaf(inner_left) && is_add_leaf(inner_right))
-        && is_add_leaf(right);
-    !simple
-}
-
-/// An `Add` mwcc reassociates by HOISTING embedded additive constants to the end: `(a-1)+a` ->
-/// `(a+a)-1` (`add r3,r3,r3; addi r3,r3,-1`), `(a+1)+b`, `b+(a-1)`, and `(a-1)+(b-1)` -> `(a+b)-2`
-/// (the constants are summed). One operand is a `+`/`-` binary whose RIGHT operand is a CONSTANT
-/// (`X ± c`); the OTHER operand is a bare register leaf OR another such `Y ± c`. mwcc groups the
-/// register terms and applies the summed constant last, which the source-order codegen does not
-/// reproduce. Excluded (all match mwcc): a computed non-additive other-operand (`(a-1)+b*c`), a
-/// constant already at the outer position (`(a*a)+3`, `(a-b)+1`), and no inner constant (`(a-b)+a`).
-fn is_constant_hoist_add(expression: &Expression) -> bool {
-    let Expression::Binary {
-        operator: BinaryOperator::Add,
-        left,
-        right,
-    } = expression
-    else {
-        return false;
-    };
-    let register_leaf = |operand: &Expression| matches!(operand, Expression::Variable(_));
-    (additive_with_constant(left) && (register_leaf(right) || additive_with_constant(right)))
-        || (additive_with_constant(right) && register_leaf(left))
-}
-
-/// A `variable ± constant` binary (`a + c`, `a - c`) — a bare register leaf plus an integer
-/// constant, the shape whose embedded constant mwcc hoists during reassociation. A COMPUTED
-/// left operand (`(a*b) + 1`) is a single materialized value, not a hoistable term, so mwcc
-/// keeps it in place (`((a*b)+1)*c` and `((a*b)+1)+c` match) — hence the `Variable` left.
-fn additive_with_constant(operand: &Expression) -> bool {
-    matches!(operand, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right }
-        if matches!(left.as_ref(), Expression::Variable(_)) && matches!(right.as_ref(), Expression::IntegerLiteral(_)))
-}
-
 /// A value materialized into a scratch register from ONE register leaf via an immediate or unary
 /// op: `a ± const` / `const ± a` (addi/subfic) or `-a` (neg). mwcc keeps such an operand in source
 /// order (as the FIRST/rA operand) in a commutative op — `(a-1)*b` -> `mullw r3,r0,r4`; our default
@@ -676,39 +577,6 @@ pub(crate) fn single_register_computed(operand: &Expression) -> bool {
             operator: UnaryOperator::Negate,
             operand,
         } => matches!(operand.as_ref(), Expression::Variable(_)),
-        _ => false,
-    }
-}
-
-/// Whether an integer expression CONTAINS a reassociated add-tree anywhere — the whole expression
-/// then defers, since the divergence is in register allocation (after instruction selection).
-pub(crate) fn contains_complex_add(expression: &Expression) -> bool {
-    if is_complex_add(expression) {
-        return true;
-    }
-    match expression {
-        Expression::Binary { left, right, .. } => {
-            contains_complex_add(left) || contains_complex_add(right)
-        }
-        Expression::Unary { operand, .. }
-        | Expression::Cast { operand, .. }
-        | Expression::BitFieldRead {
-            extracted: operand, ..
-        }
-        | Expression::IndexedUpdateValue { value: operand } => contains_complex_add(operand),
-        Expression::Index { base, index } => {
-            contains_complex_add(base) || contains_complex_add(index)
-        }
-        Expression::Conditional {
-            condition,
-            when_true,
-            when_false,
-            ..
-        } => {
-            contains_complex_add(condition)
-                || contains_complex_add(when_true)
-                || contains_complex_add(when_false)
-        }
         _ => false,
     }
 }

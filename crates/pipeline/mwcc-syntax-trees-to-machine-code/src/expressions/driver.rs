@@ -315,13 +315,10 @@ impl Generator {
                 }
             }
         }
-        // Other reassociated add-trees (nested non-leaf operands, mixed with `*`) still diverge in
-        // register allocation — defer rather than emit wrong bytes (#20 allocator).
-        if crate::analysis::contains_complex_add(expression) {
-            return Err(Diagnostic::error(
-                "a reassociated integer add-tree needs the keystone allocator (roadmap)",
-            ));
-        }
+        // Other reassociated add-trees continue through general lowering. The
+        // allocator may choose a non-MWCC schedule, but emitting them keeps the
+        // mismatch visible to the parity harness instead of hiding it as a
+        // feature defer.
         // `(g+h)+x` — a two-GLOBAL inner sum plus a register leaf: mwcc reassociates
         // the register operand INTO the first add (`lwz g; lwz h; add r3,g,x; add
         // r3,h,r3`) while source order sums the globals first — wrong bytes. The
