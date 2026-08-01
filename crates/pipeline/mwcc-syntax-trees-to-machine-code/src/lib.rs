@@ -953,13 +953,18 @@ fn lower_function_body(
     generator.normalize_linkage_first_callee_saved_frame(!allocated_float_saves.is_empty());
     let paired_single_float_frame = generator.behavior.frame_convention
         == mwcc_versions::FrameConvention::Predecrement;
+    // The retained inline sqrt transaction can allocate saved FPRs after the
+    // structured return branches have already selected the ordinary GPR
+    // epilogue. Those exits must enter the newly materialized FPR restore
+    // packet just like the owners that planned saved floats up front.
+    let retained_sqrtf_frame = generator.has_retained_sqrtf_spill_slot();
     generator.materialize_allocated_float_frame(
         &allocated_float_saves,
         paired_single_float_frame,
-        body::uses_direct_paired_single_restores(function)
-            || generator.has_retained_sqrtf_spill_slot(),
+        body::uses_direct_paired_single_restores(function) || retained_sqrtf_frame,
         body::branches_enter_float_restores(function)
-            || generator.unoptimized_inline_float_transaction_homes,
+            || generator.unoptimized_inline_float_transaction_homes
+            || retained_sqrtf_frame,
     )?;
     generator.schedule_unoptimized_inline_float_restore_order();
     generator.finalize_unoptimized_leaf_source_homes();
