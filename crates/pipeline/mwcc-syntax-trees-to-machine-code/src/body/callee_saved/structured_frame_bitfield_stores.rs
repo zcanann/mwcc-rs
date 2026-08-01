@@ -8,6 +8,10 @@
 #[allow(unused_imports)]
 use super::*;
 
+fn is_byte_array_element(value_type: Type) -> bool {
+    matches!(value_type, Type::Char | Type::UnsignedChar)
+}
+
 impl Generator {
     pub(super) fn schedule_frame_store_before_if_branch(&mut self, branch: usize) {
         if branch < 2 {
@@ -47,7 +51,7 @@ impl Generator {
                 .frame_slots
                 .get(array)
                 .copied()
-                .filter(|slot| slot.is_array)
+                .filter(|slot| slot.is_array && is_byte_array_element(slot.value_type))
             else {
                 return Ok(false);
             };
@@ -124,5 +128,19 @@ impl Generator {
             offset,
         });
         self.written_slots.insert(offset);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_byte_array_element;
+    use mwcc_syntax_trees::Type;
+
+    #[test]
+    fn confines_byte_store_scheduling_to_byte_arrays() {
+        assert!(is_byte_array_element(Type::Char));
+        assert!(is_byte_array_element(Type::UnsignedChar));
+        assert!(!is_byte_array_element(Type::UnsignedShort));
+        assert!(!is_byte_array_element(Type::UnsignedInt));
     }
 }
