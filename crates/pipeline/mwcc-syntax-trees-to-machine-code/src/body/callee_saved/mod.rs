@@ -303,6 +303,7 @@ mod structured_state_transfer_pointer_schedule;
 mod structured_state_transfer_scale_schedule;
 mod structured_state_transfer_status_schedule;
 mod structured_state_transfer_tail_schedule;
+mod status_initialization_chain_schedule;
 mod structured_compact_queue_transaction_schedule;
 mod structured_priority_queue_transaction_schedule;
 mod structured_recycled_entry_queue_schedule;

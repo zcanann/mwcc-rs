@@ -1180,6 +1180,7 @@ fn lower_function_body(
     }
     generator.normalize_patched_build159_pointer_difference_call();
     generator.schedule_legacy_member_constant_store_run();
+    generator.schedule_patched_status_initialization_chain();
     generator.canonicalize_patched_build159_post_asm_linkage();
 
     // Debug lowering consumes final physical allocation, not the frontend's
