@@ -367,8 +367,8 @@ pub(crate) struct Generator {
     /// The virtual register's last member load ends the live range before calls.
     pub(crate) structured_global_base_cache: Option<StructuredGlobalBaseCache>,
     /// Exact scalar-global member address retained across a possible call.
-    pub(crate) structured_global_member_address_cache:
-        Option<StructuredGlobalMemberAddressCache>,
+    pub(crate) structured_global_member_address_caches:
+        Vec<StructuredGlobalMemberAddressCache>,
     pub(crate) data_section_anchor: Option<DataSectionAnchorPlan>,
     /// The `.data` anchor occupies a deferred value's home before that value is
     /// defined. Linkage-first frame normalization shifts the retained entry
@@ -401,6 +401,10 @@ pub(crate) struct Generator {
     /// MWCC removes their pre-test fallthrough branches without applying the
     /// generic eight-byte alignment used by standalone polling loops.
     pub(crate) structured_repeated_call_poll_owner: bool,
+    /// Structured control flow proved that no execution edge reaches a return
+    /// epilogue. Late physical schedules use this to preserve the copy spelling
+    /// of linkage-first infinite loops after all entry rewrites are complete.
+    pub(crate) structured_nonreturning: bool,
     /// A nonvolatile global pointer loaded immediately before a guarded switch
     /// and consumed at the start of several mutually exclusive arms.
     pub(crate) structured_shared_switch_global_value: Option<(String, u8)>,

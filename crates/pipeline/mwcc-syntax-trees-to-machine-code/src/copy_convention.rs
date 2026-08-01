@@ -5,6 +5,26 @@ use mwcc_machine_code::Instruction;
 use mwcc_versions::MaterializationCopyStyle;
 
 impl Generator {
+    /// Nonreturning linkage-first functions keep register copies in their `mr`
+    /// form. Some ordered structured-entry paths initially use `addi d,s,0`
+    /// before tail reachability is known; normalize those once the function
+    /// proves to have no return edge. Relocated zero-offset additions are
+    /// symbol address materializations and must retain `addi`.
+    pub(crate) fn normalize_nonreturning_materialization_copies(&mut self) {
+        if self.behavior.frame_convention
+            != mwcc_versions::FrameConvention::LinkageFirst
+        {
+            return;
+        }
+        let relocated = self
+            .output
+            .relocations
+            .iter()
+            .map(|relocation| relocation.instruction_index)
+            .collect::<std::collections::HashSet<_>>();
+        normalize_nonreturning_copies(&mut self.output.instructions, &relocated);
+    }
+
     /// Schedule a saved-base call argument before an independent derived alias.
     /// Linkage-first MWCC uses its materialization-copy spelling for the ABI
     /// argument and fills that copy's issue slot with the alias computation.
@@ -147,6 +167,23 @@ fn normalize_saved_literal_call_arguments(instructions: &mut [Instruction]) {
     }
 }
 
+fn normalize_nonreturning_copies(
+    instructions: &mut [Instruction],
+    relocated: &std::collections::HashSet<usize>,
+) {
+    for (index, instruction) in instructions.iter_mut().enumerate() {
+        let (destination, source) = match *instruction {
+            Instruction::AddImmediate {
+                d,
+                a,
+                immediate: 0,
+            } if a != 0 && !relocated.contains(&index) => (d, a),
+            _ => continue,
+        };
+        *instruction = Instruction::move_register(destination, source);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,6 +245,35 @@ mod tests {
             Instruction::AddImmediate {
                 d: 3,
                 a: 31,
+                immediate: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn nonreturning_copies_preserve_relocated_address_additions() {
+        let mut instructions = [
+            Instruction::AddImmediate {
+                d: 31,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 30,
+                a: 30,
+                immediate: 0,
+            },
+        ];
+        let relocated = std::collections::HashSet::from([1]);
+
+        normalize_nonreturning_copies(&mut instructions, &relocated);
+
+        assert_eq!(instructions[0], Instruction::move_register(31, 3));
+        assert!(matches!(
+            instructions[1],
+            Instruction::AddImmediate {
+                d: 30,
+                a: 30,
                 immediate: 0
             }
         ));

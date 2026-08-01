@@ -58,12 +58,19 @@ pub(super) fn plan(
     }
 
     let mut leading = std::collections::HashMap::<String, usize>::new();
-    for statement in function
-        .statements
+    let initializers_have_call = function.locals.iter().any(|local| {
+        local
+            .initializer
+            .as_ref()
+            .is_some_and(crate::analysis::expression_has_call)
+    });
+    for initializer in function
+        .locals
         .iter()
-        .take_while(|statement| !crate::analysis::statement_has_call(statement))
+        .filter_map(|local| local.initializer.as_ref())
+        .take_while(|initializer| !crate::analysis::expression_has_call(initializer))
     {
-        visit_statement(statement, &mut |expression| {
+        visit_expression(initializer, &mut |expression| {
             collect(
                 expression,
                 addressable_globals,
@@ -72,8 +79,38 @@ pub(super) fn plan(
             )
         });
     }
+    if !initializers_have_call {
+        for statement in function
+            .statements
+            .iter()
+            .take_while(|statement| !crate::analysis::statement_has_call(statement))
+        {
+            visit_statement(statement, &mut |expression| {
+                collect(
+                    expression,
+                    addressable_globals,
+                    global_array_sizes,
+                    &mut leading,
+                )
+            });
+        }
+    }
 
     let mut total = std::collections::HashMap::<String, usize>::new();
+    for initializer in function
+        .locals
+        .iter()
+        .filter_map(|local| local.initializer.as_ref())
+    {
+        visit_expression(initializer, &mut |expression| {
+            collect(
+                expression,
+                addressable_globals,
+                global_array_sizes,
+                &mut total,
+            )
+        });
+    }
     for statement in &function.statements {
         visit_statement(statement, &mut |expression| {
             collect(
@@ -134,7 +171,7 @@ pub(super) fn plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{BinaryOperator, Statement, Type};
+    use mwcc_syntax_trees::{BinaryOperator, LocalDeclaration, Statement, Type};
 
     fn member(index: Option<i64>, offset: u32) -> Expression {
         let base = index.map_or_else(
@@ -253,6 +290,54 @@ mod tests {
                 &function,
                 &std::collections::HashMap::new(),
                 &std::collections::HashMap::from([("pads".into(), 272)])
+            ),
+            Some(StructuredGlobalBasePlan {
+                global: "pads".into(),
+                total_size: 272,
+            })
+        );
+    }
+
+    #[test]
+    fn counts_a_local_initializer_as_the_pre_call_base_use() {
+        let mut function = function(vec![
+            Statement::Expression(Expression::Call {
+                name: "sink".into(),
+                arguments: Vec::new(),
+            }),
+            Statement::Assign {
+                name: "later".into(),
+                value: Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(member(None, 80)),
+                    right: Box::new(member(None, 167)),
+                },
+            },
+        ]);
+        function.locals.push(LocalDeclaration {
+            declared_type: Type::Int,
+            name: "initial".into(),
+            initializer: Some(member(None, 216)),
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+
+        assert_eq!(
+            plan(
+                &function,
+                &std::collections::HashMap::from([(
+                    "pads".into(),
+                    Type::Struct {
+                        size: 272,
+                        align: 4,
+                    },
+                )]),
+                &std::collections::HashMap::new(),
             ),
             Some(StructuredGlobalBasePlan {
                 global: "pads".into(),

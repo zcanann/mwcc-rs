@@ -570,7 +570,7 @@ fn lower_function_body(
             .collect(),
         structured_global_index_cache: None,
         structured_global_base_cache: None,
-        structured_global_member_address_cache: None,
+        structured_global_member_address_caches: Vec::new(),
         data_section_anchor: body::plan_linkage_first_data_anchor(
             function,
             globals,
@@ -585,6 +585,7 @@ fn lower_function_body(
         structured_switch_dispatch_conditionals: HashSet::new(),
         structured_cfg_cleanup_owner: false,
         structured_repeated_call_poll_owner: false,
+        structured_nonreturning: false,
         structured_shared_switch_global_value: None,
         transient_global_index_base: None,
         full_bss_globals: globals
@@ -1155,6 +1156,9 @@ fn lower_function_body(
     }
     generator.schedule_structured_inlined_preloaded_retained_guarded_value_transaction();
     generator.schedule_global_queue_pointer_send();
+    if generator.structured_nonreturning {
+        generator.normalize_nonreturning_materialization_copies();
+    }
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for

@@ -596,9 +596,9 @@ impl Generator {
                         ))
                     })?;
                     if let Some((register, total_size, cache_offset, initialized)) = self
-                        .structured_global_member_address_cache
-                        .as_ref()
-                        .filter(|cache| {
+                        .structured_global_member_address_caches
+                        .iter()
+                        .find(|cache| {
                             cache.global == *name
                                 && i16::try_from(offset).ok() == Some(cache.offset)
                         })
@@ -619,8 +619,13 @@ impl Generator {
                                 a: base,
                                 immediate: cache_offset,
                             });
-                            if let Some(cache) =
-                                self.structured_global_member_address_cache.as_mut()
+                            if let Some(cache) = self
+                                .structured_global_member_address_caches
+                                .iter_mut()
+                                .find(|cache| {
+                                    cache.global == *name
+                                        && i16::try_from(offset).ok() == Some(cache.offset)
+                                })
                             {
                                 cache.initialized = true;
                             }

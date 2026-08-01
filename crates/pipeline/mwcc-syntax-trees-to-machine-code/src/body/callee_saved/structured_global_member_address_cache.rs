@@ -27,11 +27,22 @@ enum Event {
     Call,
 }
 
+#[cfg(test)]
 pub(super) fn plan(
     function: &Function,
     addressable_globals: &std::collections::HashMap<String, Type>,
     global_array_sizes: &std::collections::HashMap<String, u32>,
 ) -> Option<StructuredGlobalMemberAddressPlan> {
+    plans(function, addressable_globals, global_array_sizes)
+        .into_iter()
+        .next()
+}
+
+pub(super) fn plans(
+    function: &Function,
+    addressable_globals: &std::collections::HashMap<String, Type>,
+    global_array_sizes: &std::collections::HashMap<String, u32>,
+) -> Vec<StructuredGlobalMemberAddressPlan> {
     let struct_sizes = addressable_globals
         .iter()
         .filter_map(|(name, declared_type)| match declared_type {
@@ -42,6 +53,13 @@ pub(super) fn plan(
         })
         .collect::<std::collections::HashMap<_, _>>();
     let mut events = Vec::new();
+    for initializer in function
+        .locals
+        .iter()
+        .filter_map(|local| local.initializer.as_ref())
+    {
+        collect_expression_events(initializer, &struct_sizes, false, &mut events);
+    }
     collect_statement_events(&function.statements, &struct_sizes, false, &mut events);
     let mut positions =
         std::collections::HashMap::<(String, u32), Vec<(usize, bool)>>::new();
@@ -59,15 +77,12 @@ pub(super) fn plan(
         }
     }
 
-    positions
+    let mut candidates = positions
         .into_iter()
         .filter_map(|((global, offset), occurrences)| {
             let (first, _) = *occurrences.first()?;
             let (last, _) = *occurrences.last()?;
-            if occurrences.len() < 2
-                || first >= last
-                || occurrences.iter().all(|(_, inside_loop)| *inside_loop)
-            {
+            if occurrences.len() < 2 || first >= last {
                 return None;
             }
             let call_between = events[first + 1..last]
@@ -89,13 +104,14 @@ pub(super) fn plan(
                 })
                 .flatten()
         })
-        .max_by(|(left_count, left), (right_count, right)| {
-            left_count
-                .cmp(right_count)
-                .then_with(|| right.global.cmp(&left.global))
-                .then_with(|| right.offset.cmp(&left.offset))
-        })
-        .map(|(_, plan)| plan)
+        .collect::<Vec<_>>();
+    candidates.sort_by(|(left_count, left), (right_count, right)| {
+        right_count
+            .cmp(left_count)
+            .then_with(|| left.global.cmp(&right.global))
+            .then_with(|| left.offset.cmp(&right.offset))
+    });
+    candidates.into_iter().map(|(_, plan)| plan).collect()
 }
 
 fn collect_statement_events(
@@ -212,7 +228,7 @@ fn collect_arm_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{BinaryOperator, LoopKind, Statement};
+    use mwcc_syntax_trees::{BinaryOperator, LocalDeclaration, LoopKind, Statement};
 
     fn member(offset: u32) -> Expression {
         Expression::Member {
@@ -334,6 +350,88 @@ mod tests {
     }
 
     #[test]
+    fn retains_a_loop_member_when_a_call_separates_its_uses() {
+        let function = function(vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(member(8)),
+            step: None,
+            body: vec![
+                Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: Vec::new(),
+                }),
+                Statement::Assign {
+                    name: "later".into(),
+                    value: member(8),
+                },
+            ],
+        }]);
+
+        assert_eq!(
+            plan(
+                &function,
+                &std::collections::HashMap::from([(
+                    "record".into(),
+                    Type::Struct { size: 12, align: 4 },
+                )]),
+                &std::collections::HashMap::new(),
+            ),
+            Some(StructuredGlobalMemberAddressPlan {
+                global: "record".into(),
+                total_size: 12,
+                offset: 8,
+                defer_until_first_use: false,
+            })
+        );
+    }
+
+    #[test]
+    fn returns_every_member_address_worth_retaining() {
+        let function = function(vec![
+            Statement::Assign {
+                name: "first".into(),
+                value: Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(member(8)),
+                    right: Box::new(member(4)),
+                },
+            },
+            Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: Vec::new(),
+            }),
+            Statement::Assign {
+                name: "later".into(),
+                value: Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(member(8)),
+                    right: Box::new(Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left: Box::new(member(8)),
+                        right: Box::new(member(4)),
+                    }),
+                },
+            },
+        ]);
+
+        assert_eq!(
+            plans(
+                &function,
+                &std::collections::HashMap::from([(
+                    "record".into(),
+                    Type::Struct { size: 12, align: 4 },
+                )]),
+                &std::collections::HashMap::new(),
+            )
+            .into_iter()
+            .map(|plan| plan.offset)
+            .collect::<Vec<_>>(),
+            [8, 4]
+        );
+    }
+
+    #[test]
     fn retains_a_preloop_member_address_reused_by_the_loop_condition() {
         let function = function(vec![
             Statement::Assign {
@@ -356,6 +454,55 @@ mod tests {
                 body: Vec::new(),
             },
         ]);
+
+        assert_eq!(
+            plan(
+                &function,
+                &std::collections::HashMap::from([(
+                    "record".into(),
+                    Type::Struct { size: 12, align: 4 },
+                )]),
+                &std::collections::HashMap::new(),
+            ),
+            Some(StructuredGlobalMemberAddressPlan {
+                global: "record".into(),
+                total_size: 12,
+                offset: 8,
+                defer_until_first_use: false,
+            })
+        );
+    }
+
+    #[test]
+    fn retains_an_initializer_member_address_across_a_loop_call() {
+        let mut function = function(vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(member(8)),
+            step: None,
+            body: vec![
+                Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: Vec::new(),
+                }),
+                Statement::Assign {
+                    name: "later".into(),
+                    value: member(8),
+                },
+            ],
+        }]);
+        function.locals.push(LocalDeclaration {
+            declared_type: Type::UnsignedInt,
+            name: "initial".into(),
+            initializer: Some(member(8)),
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
 
         assert_eq!(
             plan(

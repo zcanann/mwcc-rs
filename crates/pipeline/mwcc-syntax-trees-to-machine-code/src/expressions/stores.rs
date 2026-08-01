@@ -926,6 +926,25 @@ impl Generator {
                         // stores at the displacement.
                         if let Some(size) = struct_value_size {
                             if let Some(base_reg) = self
+                                .structured_global_member_address_caches
+                                .iter()
+                                .find(|cache| {
+                                    cache.initialized
+                                        && cache.global == *name
+                                        && i16::try_from(*offset).ok() == Some(cache.offset)
+                                })
+                                .map(|cache| cache.register)
+                            {
+                                let source = self.place_store_value(value, pointee)?;
+                                self.output.instructions.push(displacement_store(
+                                    pointee,
+                                    source,
+                                    base_reg,
+                                    0,
+                                )?);
+                                return Ok(());
+                            }
+                            if let Some(base_reg) = self
                                 .structured_global_base_cache
                                 .as_ref()
                                 .filter(|cache| cache.global == *name)

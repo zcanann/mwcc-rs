@@ -56,7 +56,7 @@ use super::structured_frame_ordinals::pre_constant_label_count;
 use super::structured_global_index_cache::plan as plan_structured_global_index_cache;
 use super::structured_global_base_cache::plan as plan_structured_global_base_cache;
 use super::structured_global_member_address_cache::
-    plan as plan_structured_global_member_address_cache;
+    plans as plan_structured_global_member_address_caches;
 use super::structured_frame_publication::{
     StructuredFramePublication, CURSOR_OFFSET, LOCAL_REGION_BYTES, OWNER_OFFSET,
 };
@@ -69,6 +69,7 @@ use super::structured_home_layout::{
     uses_rounded_pointer_dense_layout,
 };
 use super::structured_deferred_local_layout::retains_deferred_saved_local_lane;
+use super::structured_dense_switch::statements_fall_through;
 use super::structured_indirect_call_home::promote_cost_free_indirect_call_locals;
 use super::structured_interleaved_frame_layout::StructuredInterleavedFrameLayout;
 use super::structured_liveness::{
@@ -482,7 +483,7 @@ impl Generator {
         if capture {
             eprintln!("structured entry call forwarding: {entry_call_forwarding:?}");
         }
-        let global_member_address_cache_plan = plan_structured_global_member_address_cache(
+        let global_member_address_cache_plans = plan_structured_global_member_address_caches(
             function,
             &self.addressable_globals,
             &self.global_array_sizes,
@@ -572,11 +573,27 @@ impl Generator {
             decline!("statement or return shape is unsupported");
         }
 
+        let eliminated_unobserved_locals: std::collections::HashSet<&str> = function
+            .locals
+            .iter()
+            .filter(|local| {
+                is_unobserved_local_assignment(function, &local.name)
+                    && local.initializer.as_ref().is_none_or(|initializer| {
+                        !crate::analysis::expression_has_side_effect(initializer)
+                            && self.volatile_globals.iter().all(|global| {
+                                !crate::analysis::expression_reads_name(initializer, global)
+                            })
+                    })
+            })
+            .map(|local| local.name.as_str())
+            .collect();
         let candidates: Vec<&str> = function
             .locals
             .iter()
             .filter(|local| {
-                local.array_length.is_none() && !address_taken.contains(local.name.as_str())
+                local.array_length.is_none()
+                    && !address_taken.contains(local.name.as_str())
+                    && !eliminated_unobserved_locals.contains(local.name.as_str())
             })
             .map(|local| local.name.as_str())
             .chain(
@@ -651,6 +668,7 @@ impl Generator {
             .filter(|local| {
                 local.array_length.is_none()
                     && survivors.contains(local.name.as_str())
+                    && !eliminated_unobserved_locals.contains(local.name.as_str())
                     && !call_accumulators.contains(local.name.as_str())
                     && (self.one_word_aggregate_locals.contains(&local.name)
                         || unoptimized_frame_call_homes
@@ -717,6 +735,7 @@ impl Generator {
                 .filter(|local| {
                     local.array_length.is_none()
                         && survivors.contains(local.name.as_str())
+                        && !eliminated_unobserved_locals.contains(local.name.as_str())
                         && !call_accumulators.contains(local.name.as_str())
                         && (self.one_word_aggregate_locals.contains(&local.name)
                             || unoptimized_frame_call_homes
@@ -780,7 +799,12 @@ impl Generator {
                     .join(", ")
             ));
         }
-        let Some(ephemeral_locals) = plan_ephemeral_locals(function, &survivors, &address_taken)
+        let Some(ephemeral_locals) = plan_ephemeral_locals(
+            function,
+            &survivors,
+            &address_taken,
+            &eliminated_unobserved_locals,
+        )
         else {
             decline!("ephemeral-local planning rejected the body");
         };
@@ -1166,16 +1190,20 @@ impl Generator {
                     .map_or(31, ExclusiveArmHomeLayout::data_anchor_preference),
             )
         });
-        let standalone_global_member_address_home =
-            global_member_address_cache_plan.as_ref().map(|_| {
-                self.fresh_virtual_general_preferring(if standalone_data_anchor_home.is_some() {
+        let standalone_global_member_address_homes = global_member_address_cache_plans
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let first: u8 = if standalone_data_anchor_home.is_some() {
                     30
                 } else {
                     31
-                })
-            });
+                };
+                self.fresh_virtual_general_preferring(first.saturating_sub(index as u8))
+            })
+            .collect::<Vec<_>>();
         let saved_home_slot_base = usize::from(standalone_data_anchor_home.is_some())
-            + usize::from(standalone_global_member_address_home.is_some());
+            + standalone_global_member_address_homes.len();
         let total_home_count = count + saved_home_slot_base;
         let first_saved = 32usize.saturating_sub(total_home_count);
         let frame_first_saved = array_pool_plan
@@ -1596,7 +1624,7 @@ impl Generator {
         }
         let mut logical_saved_homes = Vec::with_capacity(total_home_count);
         logical_saved_homes.extend(standalone_data_anchor_home);
-        logical_saved_homes.extend(standalone_global_member_address_home);
+        logical_saved_homes.extend(standalone_global_member_address_homes.iter().copied());
         if let Some(reused) = reused_data_anchor_home_index {
             logical_saved_homes.push(homes[reused]);
             logical_saved_homes.extend(
@@ -2059,12 +2087,18 @@ impl Generator {
         } else {
             logical_saved_homes
         };
-        self.legacy_callee_saved_frame_layout = if global_member_address_cache_plan
-            .as_ref()
-            .is_some_and(|plan| plan.defer_until_first_use)
+        self.legacy_callee_saved_frame_layout = if global_member_address_cache_plans
+            .iter()
+            .any(|plan| plan.defer_until_first_use)
         {
             LegacyCalleeSavedFrameLayout::RetainDeferredGlobalMemberAddressLane
-        } else if global_member_address_cache_plan.is_some()
+        } else if retains_unobserved_local_lane {
+            // An optimizer-only scalar can disappear from the emitted value
+            // graph while its logical local-table lane still contributes to
+            // the legacy frame.  Retain that lane even when the body also
+            // materializes global member addresses in saved registers.
+            LegacyCalleeSavedFrameLayout::RetainEntryParameterTableAndDeferredLocalLane
+        } else if !global_member_address_cache_plans.is_empty()
             || unused_frame_array
             || !frame_scalar_parameters.is_empty()
             || !frame_scalar_locals.is_empty()
@@ -2087,8 +2121,6 @@ impl Generator {
             // A store constant which lost its fifth saved home still retains
             // its optimizer value lane in build 163's logical frame.
             LegacyCalleeSavedFrameLayout::RetainDeferredLocalLane
-        } else if retains_unobserved_local_lane {
-            LegacyCalleeSavedFrameLayout::RetainEntryParameterTableAndDeferredLocalLane
         } else if is_plain_short_circuit_call_if(function)
             && self.entry_parameter_words <= 2
         {
@@ -2232,10 +2264,10 @@ impl Generator {
                     register,
                 });
         }
-        if let (Some(cache), Some(register)) = (
-            global_member_address_cache_plan,
-            standalone_global_member_address_home,
-        ) {
+        for (cache, register) in global_member_address_cache_plans
+            .into_iter()
+            .zip(standalone_global_member_address_homes)
+        {
             let initialized = !cache.defer_until_first_use;
             if initialized {
                 let base = if let Some(base) = self
@@ -2256,8 +2288,8 @@ impl Generator {
                     immediate: cache.offset,
                 });
             }
-            self.structured_global_member_address_cache =
-                Some(crate::generator::StructuredGlobalMemberAddressCache {
+            self.structured_global_member_address_caches.push(
+                crate::generator::StructuredGlobalMemberAddressCache {
                     global: cache.global,
                     total_size: cache.total_size,
                     offset: cache.offset,
@@ -2266,7 +2298,9 @@ impl Generator {
                 });
             self.emit_structured_saved_home_store(
                 register,
-                usize::from(standalone_data_anchor_home.is_some()),
+                usize::from(standalone_data_anchor_home.is_some())
+                    + self.structured_global_member_address_caches.len()
+                    - 1,
                 plan.frame_size,
             );
         }
@@ -3396,7 +3430,13 @@ impl Generator {
         self.schedule_loop_assertion_entry_alias();
         self.schedule_loop_assertion_string_highs();
         self.schedule_loop_assertion_body();
-        if let Some(return_expression) = function.return_expression.as_ref() {
+        let implicit_tail_reachable =
+            statements_fall_through(&structured_function.statements);
+        if let Some(return_expression) = function
+            .return_expression
+            .as_ref()
+            .filter(|_| implicit_tail_reachable)
+        {
             let result = match function.return_type {
                 Type::Float | Type::Double => Eabi::float_result().number,
                 _ => Eabi::general_result().number,
@@ -3486,7 +3526,12 @@ impl Generator {
                 self.output.anonymous_label_bump += 2;
             }
         }
-        if dense_inline_save || pooled_dense_inline_save {
+        let needs_epilogue = implicit_tail_reachable || !return_branches.is_empty();
+        if !needs_epilogue {
+            // An always-true loop with no reachable source return has no edge
+            // into the shared function tail.  MWCC omits both the implicit
+            // return value and the otherwise-unreachable restore sequence.
+        } else if dense_inline_save || pooled_dense_inline_save {
             self.output.instructions.extend([
                 Instruction::LoadMultipleWord {
                     d: frame_first_saved as u8,
@@ -3581,6 +3626,12 @@ impl Generator {
             function,
             recovered_general_homes.is_some(),
         )?;
+        if !needs_epilogue {
+            // Run after every structured scheduler: some entry owners choose
+            // their final copy spelling only while completing the prologue.
+            self.structured_nonreturning = true;
+            self.normalize_nonreturning_materialization_copies();
+        }
         Ok(true)
     }
 
@@ -4794,6 +4845,13 @@ impl Generator {
                         })?;
                     }
                 }
+                Statement::Expression(Expression::Assign { target, value })
+                    if matches!(target.as_ref(), Expression::Variable(name)
+                        if is_unobserved_local_assignment(function, name))
+                        && !crate::analysis::expression_has_side_effect(value)
+                        && self.volatile_globals.iter().all(|global| {
+                            !crate::analysis::expression_reads_name(value, global)
+                        }) => {}
                 Statement::Expression(
                     expression @ (Expression::Comma { .. } | Expression::Assign { .. }),
                 ) => self.emit_comma_side_effect(expression).map_err(|mut diagnostic| {

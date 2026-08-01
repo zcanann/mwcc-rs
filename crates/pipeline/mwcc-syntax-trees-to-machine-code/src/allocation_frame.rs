@@ -81,6 +81,11 @@ impl Generator {
             return Ok(());
         }
 
+        let nonreturning = !self
+            .output
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::BranchToLinkRegister));
         let mut save_indices = Vec::with_capacity(declared.len());
         let mut restore_indices = Vec::with_capacity(declared.len());
         for (slot, home) in declared.iter().copied().enumerate() {
@@ -113,7 +118,7 @@ impl Generator {
                     .then_some(index)
                 })
                 .collect();
-            let ([save], [restore]) = (saves.as_slice(), restores.as_slice()) else {
+            let [save] = saves.as_slice() else {
                 return Err(Diagnostic::error(
                     format!(
                         "allocated callee-saved values need canonical individual save/restore slots \
@@ -122,7 +127,16 @@ impl Generator {
                 ));
             };
             save_indices.push(*save);
-            restore_indices.push(*restore);
+            match restores.as_slice() {
+                [restore] => restore_indices.push(*restore),
+                [] if nonreturning => {}
+                _ => {
+                    return Err(Diagnostic::error(format!(
+                        "allocated callee-saved values need canonical individual save/restore slots \
+                         (declared {declared:?}, required {required:?})"
+                    )))
+                }
+            }
         }
 
         // Logical-home saves may be interleaved with the moves that define
@@ -158,6 +172,11 @@ impl Generator {
                     offset: self.frame_size - 4 * (slot as i16 + 1),
                 },
             );
+        }
+
+        if nonreturning {
+            self.callee_saved = required;
+            return Ok(());
         }
 
         let lr_restore = self

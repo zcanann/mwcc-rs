@@ -513,6 +513,7 @@ pub(super) fn plan_ephemeral_locals<'a>(
     function: &'a Function,
     survivors: &std::collections::HashSet<&str>,
     frame_locals: &std::collections::HashSet<String>,
+    ignored_locals: &std::collections::HashSet<&str>,
 ) -> Option<Vec<&'a LocalDeclaration>> {
     let mut live: std::collections::HashSet<&str> = function
         .locals
@@ -550,6 +551,7 @@ pub(super) fn plan_ephemeral_locals<'a>(
                 && live.contains(local.name.as_str())
                 && !survivors.contains(local.name.as_str())
                 && !frame_locals.contains(local.name.as_str())
+                && !ignored_locals.contains(local.name.as_str())
         })
         .collect();
     let unsupported: Vec<_> = ephemeral
@@ -1154,9 +1156,15 @@ pub(super) fn body_reads_local(statements: &[Statement], name: &str) -> bool {
         Statement::Store { target, value } => {
             expression_reads_name(target, name) || expression_reads_name(value, name)
         }
-        Statement::Assign { value, .. }
-        | Statement::Expression(value)
-        | Statement::Return(Some(value)) => expression_reads_name(value, name),
+        Statement::Assign {
+            name: assigned,
+            value,
+        } => assigned != name && expression_reads_name(value, name),
+        Statement::Expression(value) => {
+            self_assignment_value(value, name).is_none()
+                && expression_reads_name(value, name)
+        }
+        Statement::Return(Some(value)) => expression_reads_name(value, name),
         Statement::If {
             condition,
             then_body,
@@ -1177,7 +1185,10 @@ pub(super) fn body_reads_local(statements: &[Statement], name: &str) -> bool {
                 .iter()
                 .chain(condition)
                 .chain(step)
-                .any(|expression| expression_reads_name(expression, name))
+                .any(|expression| {
+                    self_assignment_value(expression, name).is_none()
+                        && expression_reads_name(expression, name)
+                })
                 || body_reads_local(body, name)
         }
         Statement::Switch {
@@ -1234,6 +1245,14 @@ fn has_only_side_effect_free_assignments(statements: &[Statement], name: &str) -
                         return false;
                     }
                 }
+                Statement::Expression(expression) => {
+                    if let Some(value) = self_assignment_value(expression, name) {
+                        *found = true;
+                        if crate::analysis::expression_has_side_effect(value) {
+                            return false;
+                        }
+                    }
+                }
                 Statement::If {
                     then_body,
                     else_body,
@@ -1245,7 +1264,21 @@ fn has_only_side_effect_free_assignments(statements: &[Statement], name: &str) -
                         return false;
                     }
                 }
-                Statement::Loop { body, .. } => {
+                Statement::Loop {
+                    initializer,
+                    condition,
+                    step,
+                    body,
+                    ..
+                } => {
+                    for expression in [initializer, condition, step].into_iter().flatten() {
+                        if let Some(value) = self_assignment_value(expression, name) {
+                            *found = true;
+                            if crate::analysis::expression_has_side_effect(value) {
+                                return false;
+                            }
+                        }
+                    }
                     if !inspect(body, name, found) {
                         return false;
                     }
@@ -1267,6 +1300,17 @@ fn has_only_side_effect_free_assignments(statements: &[Statement], name: &str) -
 
     let mut found = false;
     inspect(statements, name, &mut found) && found
+}
+
+fn self_assignment_value<'a>(expression: &'a Expression, name: &str) -> Option<&'a Expression> {
+    match expression {
+        Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name) =>
+        {
+            Some(value)
+        }
+        _ => None,
+    }
 }
 
 /// Recognize a pointer phi whose true arm selects a frame aggregate and whose
@@ -1398,6 +1442,31 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_an_unobserved_loop_step_self_update() {
+        let function = function_with_local(
+            local("counter", Expression::IntegerLiteral(5)),
+            vec![Statement::Loop {
+                kind: LoopKind::For,
+                initializer: None,
+                condition: Some(Expression::IntegerLiteral(1)),
+                step: Some(Expression::Assign {
+                    target: Box::new(Expression::Variable("counter".into())),
+                    value: Box::new(Expression::Binary {
+                        operator: BinaryOperator::Subtract,
+                        left: Box::new(Expression::Variable("counter".into())),
+                        right: Box::new(Expression::IntegerLiteral(1)),
+                    }),
+                }),
+                body: Vec::new(),
+            }],
+        );
+
+        assert!(body_uses_local(&function.statements, "counter"));
+        assert!(!body_reads_local(&function.statements, "counter"));
+        assert!(is_unobserved_local_assignment(&function, "counter"));
+    }
+
+    #[test]
     fn retains_transitive_ephemeral_initializer_dependencies() {
         let function = Function {
             return_type: Type::Void,
@@ -1424,9 +1493,13 @@ mod tests {
             peephole_disabled: false,
         };
         let survivors = std::collections::HashSet::new();
-        let planned =
-            plan_ephemeral_locals(&function, &survivors, &std::collections::HashSet::new())
-                .unwrap();
+        let planned = plan_ephemeral_locals(
+            &function,
+            &survivors,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
         assert_eq!(
             planned
                 .iter()
@@ -1472,6 +1545,7 @@ mod tests {
 
         let planned = plan_ephemeral_locals(
             &function,
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
         )
@@ -1524,6 +1598,7 @@ mod tests {
 
         let planned = plan_ephemeral_locals(
             &function,
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
         )
@@ -1893,6 +1968,7 @@ mod tests {
 
         assert!(plan_ephemeral_locals(
             &function,
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
         )

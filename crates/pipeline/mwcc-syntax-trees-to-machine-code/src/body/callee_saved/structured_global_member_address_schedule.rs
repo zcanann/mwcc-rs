@@ -1,6 +1,6 @@
 //! Build-163 issue order for a retained global-member address.
 //!
-//! The semantic planner establishes the one saved address. This late physical
+//! The semantic planner establishes the primary saved address. This late physical
 //! pass interleaves its materialization with linkage setup and schedules the
 //! assertion plus terminal four-argument call after allocation has fixed the
 //! argument registers.
@@ -21,7 +21,7 @@ const DEFERRED_GUARDED_SCHEDULE: [usize; 54] = [
 
 impl Generator {
     pub(crate) fn schedule_structured_global_member_address(&mut self) {
-        let Some(cache) = self.structured_global_member_address_cache.as_ref() else {
+        let Some(cache) = self.structured_global_member_address_caches.first() else {
             return;
         };
         if is_serial_member_address_body(
