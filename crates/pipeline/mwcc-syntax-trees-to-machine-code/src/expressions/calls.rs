@@ -1195,11 +1195,7 @@ impl Generator {
                     next_float += 1;
                     continue;
                 }
-                let constant = folded_integer.or_else(|| match argument {
-                    Expression::FloatLiteral(value) => Some(*value),
-                    _ => None,
-                });
-                if let Some(value) = constant {
+                if let Some(value) = folded_integer {
                     let double = parameter_type == Type::Double;
                     let bits = if double {
                         value.to_bits()
@@ -1221,6 +1217,17 @@ impl Generator {
                         self.load_float_literal(next_float, value, double);
                         folded_float_arguments.push((bits, double, next_float));
                     }
+                } else if let Expression::FloatLiteral(value) = argument {
+                    // Source floating literals remain distinct argument nodes at
+                    // O0, even when their bits repeat. Integer constants folded
+                    // to a floating parameter use the optimizer's load-once
+                    // path above; an explicitly written `g(2.0f, 2.0f)` instead
+                    // materializes both pool loads independently.
+                    self.load_float_literal(
+                        next_float,
+                        *value,
+                        parameter_type == Type::Double,
+                    );
                 } else {
                     // General arguments already materialized to the left remain
                     // live until the call. A float/global-member load still
