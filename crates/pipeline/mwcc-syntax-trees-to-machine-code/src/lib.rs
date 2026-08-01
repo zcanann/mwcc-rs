@@ -631,6 +631,7 @@ fn lower_function_body(
         call_return_fundamentals: call_return_fundamentals.clone(),
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
+        artificial_structured_leaf_frame: false,
         preceded_by_asm: function.preceded_by_asm,
         callee_saved_float: 0,
         unoptimized_inline_float_loop_homes: false,

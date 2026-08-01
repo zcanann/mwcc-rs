@@ -466,6 +466,10 @@ pub(crate) struct Generator {
     /// Whether the function makes a call: it then saves/restores the link register
     /// around a stack frame (the non-leaf prologue/epilogue).
     pub(crate) non_leaf: bool,
+    /// A frameless leaf admitted through the structured CFG emitter. That
+    /// emitter begins with its ordinary linkage shell; post-allocation cleanup
+    /// removes the shell once no saved register or stack object needs it.
+    pub(crate) artificial_structured_leaf_frame: bool,
     /// Whether an inline-assembly definition appeared before this function.
     ///
     /// Build 163 carries scheduler state across that source-order boundary:

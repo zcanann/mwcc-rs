@@ -2837,6 +2837,14 @@ impl Generator {
         if self.try_fixed_port_replay_update(function)? {
             return Ok(());
         }
+        // Residual frameless leaf loops can still require a persistent local
+        // home across iterations. Specialized loop schedules above retain
+        // first refusal; this gate admits only genuine loop-carried locals to
+        // the general structured CFG emitter before value tracking dissolves
+        // their iteration boundary.
+        if self.try_loop_carried_structured_leaf_body(function)? {
+            return Ok(());
+        }
         // A function's value-tracked locals are folded into its stores and trailing return,
         // then recompiled — `int x = a; gi = x; x = b; gj = x;` becomes `gi = a; gj = b;`,
         // and `int x = a; gi = x; return x;` becomes `gi = a; return a;`. The store paths

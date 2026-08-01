@@ -23,30 +23,99 @@ impl Generator {
         if !has_linkage_state {
             return Ok(());
         }
-        if len < 7
-            || !matches!(
+        let common_prefix = len >= 7
+            && matches!(
                 self.output.instructions.as_slice(),
                 [
                     Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
                     Instruction::MoveFromLinkRegister { d: 0 },
                     Instruction::StoreWord { s: 0, a: 1, .. },
-                    ..,
+                    ..
+                ]
+            );
+        let reload_before_stack_restore = common_prefix
+            && matches!(
+                &self.output.instructions[len - 4..],
+                [
                     Instruction::LoadWord { d: 0, a: 1, .. },
                     Instruction::MoveToLinkRegister { s: 0 },
                     Instruction::AddImmediate { d: 1, a: 1, .. },
                     Instruction::BranchToLinkRegister,
                 ]
-            )
+            );
+        let stack_restore_before_reload = common_prefix
+            && matches!(
+                &self.output.instructions[len - 4..],
+                [
+                    Instruction::AddImmediate { d: 1, a: 1, .. },
+                    Instruction::LoadWord { d: 0, a: 1, .. },
+                    Instruction::MoveToLinkRegister { s: 0 },
+                    Instruction::BranchToLinkRegister,
+                ]
+            );
+        let stack_restore_between_reload_and_link = common_prefix
+            && matches!(
+                &self.output.instructions[len - 4..],
+                [
+                    Instruction::LoadWord { d: 0, a: 1, .. },
+                    Instruction::AddImmediate { d: 1, a: 1, .. },
+                    Instruction::MoveToLinkRegister { s: 0 },
+                    Instruction::BranchToLinkRegister,
+                ]
+            );
+        if !reload_before_stack_restore
+            && !stack_restore_before_reload
+            && !stack_restore_between_reload_and_link
         {
+            if std::env::var_os("MWCC_CAPTURE_FUNCTION")
+                .is_some_and(|name| name == std::ffi::OsStr::new(&self.output.name))
+            {
+                eprintln!(
+                    "unexpected artificial leaf linkage stream: {:#?}",
+                    self.output.instructions
+                );
+            }
             return Err(Diagnostic::error(
                 "inlined leaf has an unexpected linkage frame",
             ));
         }
 
-        crate::remove_instruction_retargeting_to_next(self, len - 3);
-        crate::remove_instruction_retargeting_to_next(self, len - 4);
+        if reload_before_stack_restore {
+            crate::remove_instruction_retargeting_to_next(self, len - 3);
+            crate::remove_instruction_retargeting_to_next(self, len - 4);
+        } else if stack_restore_between_reload_and_link {
+            crate::remove_instruction_retargeting_to_next(self, len - 2);
+            crate::remove_instruction_retargeting_to_next(self, len - 4);
+        } else {
+            crate::remove_instruction_retargeting_to_next(self, len - 2);
+            crate::remove_instruction_retargeting_to_next(self, len - 3);
+        }
         crate::remove_instruction_retargeting_to_next(self, 2);
         crate::remove_instruction_retargeting_to_next(self, 1);
+        if self.artificial_structured_leaf_frame {
+            let len = self.output.instructions.len();
+            if len < 3
+                || !matches!(
+                    self.output.instructions.first(),
+                    Some(Instruction::StoreWordWithUpdate { s: 1, a: 1, .. })
+                )
+                || !matches!(
+                    &self.output.instructions[len - 2..],
+                    [
+                        Instruction::AddImmediate { d: 1, a: 1, .. },
+                        Instruction::BranchToLinkRegister,
+                    ]
+                )
+            {
+                return Err(Diagnostic::error(
+                    "structured leaf has an unexpected empty frame",
+                ));
+            }
+            crate::remove_instruction_retargeting_to_next(self, len - 2);
+            crate::remove_instruction_retargeting_to_next(self, 0);
+            self.frame_size = 0;
+            self.non_leaf = false;
+        }
         Ok(())
     }
 

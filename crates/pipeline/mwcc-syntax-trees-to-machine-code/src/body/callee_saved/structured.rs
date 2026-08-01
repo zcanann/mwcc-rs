@@ -156,6 +156,33 @@ use super::*;
 use mwcc_syntax_trees::ArmBody;
 
 impl Generator {
+    /// Admit residual frameless leaf loops to the general structured CFG path
+    /// when a source local genuinely carries a value across iterations. Exact
+    /// semantic loop owners run before this fallback in the body driver.
+    pub(crate) fn try_loop_carried_structured_leaf_body(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !super::structured_loop_carried_leaf::contains_loop_carried_local(function) {
+            return Ok(false);
+        }
+        let claimed = self.try_callee_saved_structured_body(function)?;
+        if claimed
+            && self.frame_slots.is_empty()
+            && self.callee_saved.is_empty()
+            && function
+                .locals
+                .iter()
+                .all(|local| !matches!(local.declared_type, Type::Float | Type::Double))
+            && function.parameters.iter().all(|parameter| {
+                !matches!(parameter.parameter_type, Type::Float | Type::Double)
+            })
+        {
+            self.artificial_structured_leaf_frame = true;
+        }
+        Ok(claimed)
+    }
+
     pub(crate) fn try_unoptimized_source_home_leaf_body(
         &mut self,
         function: &Function,
