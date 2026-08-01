@@ -959,12 +959,7 @@ impl Generator {
                                     .remaining_uses -= 1;
                                 return Ok(());
                             }
-                            if let Some(base_reg) = self
-                                .structured_global_base_cache
-                                .as_ref()
-                                .filter(|cache| cache.global == *name)
-                                .map(|cache| cache.register)
-                            {
+                            if let Some(base_reg) = self.structured_global_base_register(name) {
                                 let source = self.place_store_value(value, pointee)?;
                                 self.output.instructions.push(displacement_store(
                                     pointee,
@@ -972,6 +967,7 @@ impl Generator {
                                     base_reg,
                                     *offset as i16,
                                 )?);
+                                self.consume_structured_global_base_use(name);
                                 return Ok(());
                             }
                             if size <= 8
@@ -1007,10 +1003,47 @@ impl Generator {
                             // register value matches mwcc; a *constant* value is a known
                             // latent diff — mwcc folds `@l` into the store and interleaves
                             // the `li` between `lis` and the store (a follow-up).
-                            let base_reg = self.fresh_virtual_general();
+                            let split_update_base = indexed_update_syntax
+                                && matches!(
+                                    value,
+                                    Expression::Binary {
+                                        operator:
+                                            BinaryOperator::Add | BinaryOperator::Subtract,
+                                        ..
+                                    }
+                                );
+                            let base_reg = if split_update_base {
+                                self.fresh_virtual_general_preferring(4)
+                            } else {
+                                self.fresh_virtual_general()
+                            };
                             let restore = self.reserved.insert(base_reg);
-                            self.emit_global_array_base(name, size, base_reg)?;
-                            let source = self.place_store_value(value, pointee)?;
+                            if split_update_base {
+                                let high = self.fresh_virtual_general_preferring(3);
+                                self.emit_global_array_base_through(
+                                    name,
+                                    size,
+                                    base_reg,
+                                    high,
+                                )?;
+                            } else {
+                                self.emit_global_array_base(name, size, base_reg)?;
+                            }
+                            let previous_base_cache = indexed_update_syntax.then(|| {
+                                std::mem::replace(
+                                    &mut self.structured_global_base_cache,
+                                    Some(crate::generator::StructuredGlobalBaseCache {
+                                        global: name.clone(),
+                                        register: base_reg,
+                                        remaining_uses: 1,
+                                    }),
+                                )
+                            });
+                            let source_result = self.place_store_value(value, pointee);
+                            if let Some(previous) = previous_base_cache {
+                                self.structured_global_base_cache = previous;
+                            }
+                            let source = source_result?;
                             if restore {
                                 self.reserved.remove(&base_reg);
                             }

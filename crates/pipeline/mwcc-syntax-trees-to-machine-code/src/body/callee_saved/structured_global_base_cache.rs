@@ -5,7 +5,8 @@
 //! allocator naturally colors the former into a volatile register and the
 //! latter into a callee-saved register.
 
-use mwcc_syntax_trees::{Expression, Function, Type};
+use crate::generator::Generator;
+use mwcc_syntax_trees::{Expression, Function, Statement, Type};
 
 use super::structured_expression_visit::{visit_expression, visit_statement};
 
@@ -16,6 +17,9 @@ pub(super) struct StructuredGlobalBasePlan {
     /// The shared address is referenced again after the first call and therefore
     /// needs a declared callee-saved home, not merely an allocator preference.
     pub(super) crosses_call: bool,
+    /// Source accesses on the function's linear statement spine. Nested arm
+    /// bodies begin distinct address live ranges and rematerialize their base.
+    pub(super) use_count: usize,
 }
 
 pub(super) fn plan(
@@ -57,6 +61,36 @@ pub(super) fn plan(
                 || matches!(addressable_globals.get(*name), Some(Type::Struct { .. }))
         }) {
             *occurrences.entry(global.clone()).or_default() += 1;
+        }
+    }
+
+    fn visit_linear_statement(statement: &Statement, visit: &mut impl FnMut(&Expression)) {
+        match statement {
+            Statement::Store { target, value } => {
+                visit_expression(target, visit);
+                visit_expression(value, visit);
+            }
+            Statement::Assign { value, .. }
+            | Statement::Expression(value)
+            | Statement::Return(Some(value)) => visit_expression(value, visit),
+            Statement::If { condition, .. } => visit_expression(condition, visit),
+            Statement::Switch { scrutinee, .. } => visit_expression(scrutinee, visit),
+            Statement::Loop {
+                initializer,
+                condition,
+                step,
+                ..
+            } => {
+                for expression in [initializer, condition, step].into_iter().flatten() {
+                    visit_expression(expression, visit);
+                }
+            }
+            Statement::Return(None)
+            | Statement::InlineAsm(_)
+            | Statement::Break
+            | Statement::Continue
+            | Statement::Goto(_)
+            | Statement::Label(_) => {}
         }
     }
 
@@ -153,6 +187,54 @@ pub(super) fn plan(
         });
     }
 
+    let mut linear_total = std::collections::HashMap::<String, usize>::new();
+    for initializer in function
+        .locals
+        .iter()
+        .filter_map(|local| local.initializer.as_ref())
+    {
+        visit_expression(initializer, &mut |expression| {
+            collect(
+                expression,
+                addressable_globals,
+                global_array_sizes,
+                &mut linear_total,
+            )
+        });
+    }
+    for statement in &function.statements {
+        visit_linear_statement(statement, &mut |expression| {
+            collect(
+                expression,
+                addressable_globals,
+                global_array_sizes,
+                &mut linear_total,
+            )
+        });
+    }
+    for guard in &function.guards {
+        for expression in [&guard.condition, &guard.value] {
+            visit_expression(expression, &mut |expression| {
+                collect(
+                    expression,
+                    addressable_globals,
+                    global_array_sizes,
+                    &mut linear_total,
+                )
+            });
+        }
+    }
+    if let Some(expression) = &function.return_expression {
+        visit_expression(expression, &mut |expression| {
+            collect(
+                expression,
+                addressable_globals,
+                global_array_sizes,
+                &mut linear_total,
+            )
+        });
+    }
+
     let (global, count) = total
         .into_iter()
         .filter(|(global, count)| {
@@ -168,9 +250,29 @@ pub(super) fn plan(
     let leading_count = leading.get(&global).copied().unwrap_or(0);
     Some(StructuredGlobalBasePlan {
         total_size: global_size(&global)?,
+        use_count: linear_total.get(&global).copied().unwrap_or(leading_count),
         global,
         crosses_call: count > leading_count,
     })
+}
+
+impl Generator {
+    pub(crate) fn structured_global_base_register(&self, name: &str) -> Option<u8> {
+        self.structured_global_base_cache
+            .as_ref()
+            .filter(|cache| cache.global == name && cache.remaining_uses != 0)
+            .map(|cache| cache.register)
+    }
+
+    pub(crate) fn consume_structured_global_base_use(&mut self, name: &str) {
+        if let Some(cache) = self
+            .structured_global_base_cache
+            .as_mut()
+            .filter(|cache| cache.global == name && cache.remaining_uses != 0)
+        {
+            cache.remaining_uses -= 1;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -250,6 +352,7 @@ mod tests {
                 global: "pads".into(),
                 total_size: 272,
                 crosses_call: true,
+                use_count: 4,
             })
         );
         assert_eq!(
@@ -268,6 +371,7 @@ mod tests {
                 global: "pads".into(),
                 total_size: 272,
                 crosses_call: true,
+                use_count: 4,
             })
         );
     }
@@ -302,6 +406,57 @@ mod tests {
                 global: "pads".into(),
                 total_size: 272,
                 crosses_call: true,
+                use_count: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn ends_the_shared_base_before_a_nested_guard_body() {
+        let function = function(vec![
+            Statement::Assign {
+                name: "first".into(),
+                value: member(None, 48),
+            },
+            Statement::Expression(Expression::Call {
+                name: "sink".into(),
+                arguments: Vec::new(),
+            }),
+            Statement::If {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::LogicalOr,
+                    left: Box::new(member(None, 80)),
+                    right: Box::new(member(None, 80)),
+                },
+                then_body: vec![Statement::Assign {
+                    name: "nested".into(),
+                    value: Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left: Box::new(member(None, 167)),
+                        right: Box::new(member(None, 216)),
+                    },
+                }],
+                else_body: Vec::new(),
+            },
+        ]);
+
+        assert_eq!(
+            plan(
+                &function,
+                &std::collections::HashMap::from([(
+                    "pads".into(),
+                    Type::Struct {
+                        size: 272,
+                        align: 4,
+                    },
+                )]),
+                &std::collections::HashMap::new(),
+            ),
+            Some(StructuredGlobalBasePlan {
+                global: "pads".into(),
+                total_size: 272,
+                crosses_call: true,
+                use_count: 3,
             })
         );
     }
@@ -351,6 +506,7 @@ mod tests {
                 global: "pads".into(),
                 total_size: 272,
                 crosses_call: true,
+                use_count: 3,
             })
         );
     }
@@ -405,6 +561,7 @@ mod tests {
                 global: "pads".into(),
                 total_size: 272,
                 crosses_call: false,
+                use_count: 3,
             })
         );
     }

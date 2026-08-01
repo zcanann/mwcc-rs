@@ -292,6 +292,7 @@ pub(crate) struct StructuredGlobalIndexCache {
 pub(crate) struct StructuredGlobalBaseCache {
     pub(crate) global: String,
     pub(crate) register: u8,
+    pub(crate) remaining_uses: usize,
 }
 
 #[derive(Debug, Clone)]

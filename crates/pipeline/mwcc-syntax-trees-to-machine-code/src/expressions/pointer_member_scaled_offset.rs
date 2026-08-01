@@ -86,7 +86,7 @@ impl Generator {
             } => match base.as_ref() {
                 Expression::Variable(name)
                     if self.addressable_globals.contains_key(name.as_str())
-                        && self.structured_global_base_cache.is_none()
+                        && self.structured_global_base_register(name).is_none()
                         && self.data_section_anchor.is_none()
                         && self.behavior.global_addressing == GlobalAddressing::Absolute
                         && self.behavior.absolute_access_style

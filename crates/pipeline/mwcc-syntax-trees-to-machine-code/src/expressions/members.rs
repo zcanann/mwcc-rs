@@ -695,12 +695,7 @@ impl Generator {
                             1;
                         return Ok(());
                     }
-                    if let Some(base) = self
-                        .structured_global_base_cache
-                        .as_ref()
-                        .filter(|cache| cache.global == *name)
-                        .map(|cache| cache.register)
-                    {
+                    if let Some(base) = self.structured_global_base_register(name) {
                         let displacement = i16::try_from(offset).map_err(|_| {
                             Diagnostic::error(
                                 "cached global member displacement is out of range",
@@ -712,6 +707,7 @@ impl Generator {
                             base,
                             displacement,
                         )?);
+                        self.consume_structured_global_base_use(name);
                         return Ok(());
                     }
                     if let Some(base) = self
@@ -1041,18 +1037,14 @@ impl Generator {
             let total = i16::try_from(total).map_err(|_| {
                 Diagnostic::error("struct-array member offset out of range (roadmap)")
             })?;
-            if let Some(base) = self
-                .structured_global_base_cache
-                .as_ref()
-                .filter(|cache| cache.global == name)
-                .map(|cache| cache.register)
-            {
+            if let Some(base) = self.structured_global_base_register(name) {
                 self.output.instructions.push(displacement_load(
                     pointee,
                     destination,
                     base,
                     total,
                 )?);
+                self.consume_structured_global_base_use(name);
                 return Ok(());
             }
             if destination == GENERAL_SCRATCH {
@@ -1358,12 +1350,8 @@ impl Generator {
                         Some(Type::Struct { .. })
                     ) =>
             {
-                if let Some(register) = self
-                    .structured_global_base_cache
-                    .as_ref()
-                    .filter(|cache| cache.global == *name)
-                    .map(|cache| cache.register)
-                {
+                if let Some(register) = self.structured_global_base_register(name) {
+                    self.consume_structured_global_base_use(name);
                     return Ok(register);
                 }
                 let register = self.fresh_virtual_general_preferring(3);
@@ -1687,7 +1675,9 @@ impl Generator {
                 let retained_cache_base = self
                     .structured_global_base_cache
                     .as_ref()
-                    .is_some_and(|cache| cache.register == address);
+                    .is_some_and(|cache| {
+                        cache.remaining_uses != 0 && cache.register == address
+                    });
                 let indexed_address = if retained_cache_base {
                     self.fresh_virtual_general_avoiding(vec![GENERAL_SCRATCH])
                 } else {

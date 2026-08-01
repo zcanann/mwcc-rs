@@ -2423,6 +2423,7 @@ impl Generator {
                 Some(crate::generator::StructuredGlobalBaseCache {
                     global: cache.global,
                     register,
+                    remaining_uses: cache.use_count,
                 });
             if standalone_global_base_home.is_some() && !dense_saved_range {
                 self.emit_structured_saved_home_store(
@@ -4227,6 +4228,7 @@ impl Generator {
                                     }
                                 }
                             }
+                            let mut condition_term_index = or_plan.prefix.len();
                             for (group_index, group) in or_plan.groups.iter().enumerate() {
                                 let last_group = group_index + 1 == or_plan.groups.len();
                                 let mut advance_group = Vec::new();
@@ -4241,7 +4243,11 @@ impl Generator {
                                             ));
                                             diagnostic
                                         })?;
-                                    self.reuse_short_circuit_member_base(term_index, term_start);
+                                    self.reuse_short_circuit_member_base(
+                                        condition_term_index,
+                                        term_start,
+                                    );
+                                    condition_term_index += 1;
                                     if or_plan.prefix.is_empty()
                                         && group_index == 0
                                         && term_index == 0

@@ -296,6 +296,30 @@ impl Generator {
         term_index: usize,
         term_start: usize,
     ) {
+        if term_index != 0 {
+            if let Some((retained, redundant)) =
+                repeated_narrow_member_load(&self.output.instructions, term_start)
+            {
+                if !self
+                    .output
+                    .relocations
+                    .iter()
+                    .any(|relocation| relocation.instruction_index == term_start)
+                {
+                    match &mut self.output.instructions[term_start + 1] {
+                        Instruction::CompareLogicalWordImmediate { a, .. }
+                        | Instruction::CompareWordImmediate { a, .. }
+                            if *a == redundant =>
+                        {
+                            *a = retained;
+                        }
+                        _ => return,
+                    }
+                    self.remove_structured_condition_instruction(term_start);
+                    return;
+                }
+            }
+        }
         if term_index != 0
             && reuses_preceding_bitfield_storage(&self.output.instructions, term_start)
             && !self.output.relocations.iter().any(|relocation| {
@@ -602,6 +626,39 @@ fn reuses_preceding_member_load(instructions: &[Instruction], term_start: usize)
         && previous_base == current_base
         && previous_offset == current_offset
         && tested_base == previous_result
+}
+
+fn repeated_narrow_member_load(
+    instructions: &[Instruction],
+    term_start: usize,
+) -> Option<(u8, u8)> {
+    let previous = term_start.checked_sub(3)?;
+    let [
+        Instruction::LoadByteZero {
+            d: previous_result,
+            a: previous_base,
+            offset: previous_offset,
+        },
+        Instruction::CompareLogicalWordImmediate { a: previous_test, .. }
+        | Instruction::CompareWordImmediate { a: previous_test, .. },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::LoadByteZero {
+            d: current_result,
+            a: current_base,
+            offset: current_offset,
+        },
+        Instruction::CompareLogicalWordImmediate { a: current_test, .. }
+        | Instruction::CompareWordImmediate { a: current_test, .. },
+        ..
+    ] = instructions.get(previous..)?
+    else {
+        return None;
+    };
+    (previous_base == current_base
+        && previous_offset == current_offset
+        && previous_result == previous_test
+        && current_result == current_test)
+        .then_some((*previous_result, *current_result))
 }
 
 fn reuses_preceding_bitfield_storage(instructions: &[Instruction], term_start: usize) -> bool {
@@ -937,6 +994,18 @@ mod tests {
             Instruction::RotateAndMaskRecord { a: 0, s: 0, shift: 30, begin: 31, end: 31 },
         ];
         assert!(reuses_preceding_bitfield_storage(&instructions, 3));
+    }
+
+    #[test]
+    fn recognizes_a_repeated_narrow_member_on_the_short_circuit_edge() {
+        let instructions = [
+            Instruction::LoadByteZero { d: 0, a: 31, offset: 4 },
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 },
+            Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 6 },
+            Instruction::LoadByteZero { d: 3, a: 31, offset: 4 },
+            Instruction::CompareLogicalWordImmediate { a: 3, immediate: 16 },
+        ];
+        assert_eq!(repeated_narrow_member_load(&instructions, 3), Some((0, 3)));
     }
 
     #[test]
