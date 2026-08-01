@@ -5,7 +5,9 @@
 //! temporary crosses a call and colors into a callee-saved register.  Canonical
 //! individual-save frames can absorb that change when their existing aligned
 //! frame has unused save-slot capacity; specialized and dense frames retain
-//! their explicit owners.
+//! their explicit owners. Linkage-first dense ranges may temporarily outgrow
+//! the selected frame: the convention normalizer runs after allocation and
+//! owns their final frame size.
 
 use crate::generator::Generator;
 use mwcc_core::{Compilation, Diagnostic};
@@ -43,6 +45,17 @@ impl Generator {
             ));
         }
 
+        // A linkage-first `stmw`/`lmw` range is self-describing. Repaint it to
+        // the allocator's complete dense suffix now; the later convention
+        // normalizer grows the frame and moves every save/local displacement.
+        // Requiring the OLD frame to have room here prevents that normalizer
+        // from ever seeing precisely the range it is designed to size.
+        if self.behavior.frame_convention == mwcc_versions::FrameConvention::LinkageFirst
+            && self.grow_dense_general_save_range(&declared, &required)?
+        {
+            return Ok(());
+        }
+
         let local_end = self
             .frame_slots
             .values()
@@ -51,7 +64,10 @@ impl Generator {
             .unwrap_or(8);
         let lowest_save =
             i32::from(self.frame_size) - 4 * i32::try_from(required.len()).unwrap_or(i32::MAX);
-        if lowest_save < local_end {
+        if lowest_save < local_end
+            && self.behavior.frame_convention
+                != mwcc_versions::FrameConvention::LinkageFirst
+        {
             return Err(Diagnostic::error(format!(
                 "allocation needs {} callee-saved slots but the existing frame has capacity for {} \
                  (declared {declared:?}, required {required:?}, frame size {}, local end {local_end}; \

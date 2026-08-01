@@ -451,8 +451,11 @@ impl Generator {
                 &self.global_array_sizes,
             )
         });
-        let global_base_cache_plan =
-            plan_structured_global_base_cache(function, &self.global_array_sizes);
+        let global_base_cache_plan = plan_structured_global_base_cache(
+            function,
+            &self.addressable_globals,
+            &self.global_array_sizes,
+        );
         let entry_call_forwarding = ((global_base_cache_plan.is_some()
             || self.data_section_anchor.is_some())
             && frame_arrays.is_empty()
