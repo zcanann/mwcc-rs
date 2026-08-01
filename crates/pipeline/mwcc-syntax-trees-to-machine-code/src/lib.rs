@@ -632,6 +632,7 @@ fn lower_function_body(
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
         artificial_structured_leaf_frame: false,
+        structured_pointer_table_index_cursor: false,
         preceded_by_asm: function.preceded_by_asm,
         callee_saved_float: 0,
         unoptimized_inline_float_loop_homes: false,
@@ -944,6 +945,7 @@ fn lower_function_body(
     // pre-allocation pass until generic scheduling removes that branch.
     generator.schedule_saved_return_epilogue(function);
     generator.schedule_post_call_zero_global_publication();
+    generator.schedule_scaled_global_allocation_publications();
     generator.strip_artificial_leaf_linkage()?;
     generator.schedule_unoptimized_inline_float_transaction_handoffs();
     generator.schedule_unoptimized_inline_float_loop_handoffs();
@@ -1197,6 +1199,9 @@ fn lower_function_body(
     generator.schedule_patched_status_initialization_chain();
     generator.canonicalize_patched_build159_post_asm_linkage();
     generator.schedule_structured_repeated_value_inlined_byte_appends();
+    generator.schedule_indexed_allocation_pair();
+    generator.schedule_pointer_table_index_cursor_publication();
+    generator.schedule_pointer_table_index_cursor_epilogue();
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for

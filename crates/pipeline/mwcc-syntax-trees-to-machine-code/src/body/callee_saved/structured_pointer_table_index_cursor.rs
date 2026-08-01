@@ -38,26 +38,39 @@ pub(super) fn strength_reduce_pointer_table_indices(
                 break candidate;
             }
         };
-        declarations.push(LocalDeclaration {
-            declared_type: Type::UnsignedInt,
-            name: cursor.clone(),
-            initializer: None,
-            is_volatile: false,
-            array_length: None,
-            is_static: false,
-            data_bytes: None,
-            data_relocations: Vec::new(),
-            is_const: false,
-            attribute_alignment: None,
-            row_bytes: None,
-        });
+        declarations.push((
+            index.clone(),
+            LocalDeclaration {
+                declared_type: Type::UnsignedInt,
+                name: cursor.clone(),
+                initializer: None,
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                attribute_alignment: None,
+                row_bytes: None,
+            },
+        ));
         statements.push(rewrite_loop(statement, &index, &cursor));
         changed = true;
     }
 
     changed.then(|| {
         let mut reduced = function.clone();
-        reduced.locals.extend(declarations);
+        reduced.locals = function
+            .locals
+            .iter()
+            .flat_map(|local| {
+                declarations
+                    .iter()
+                    .filter(|(index, _)| index == &local.name)
+                    .map(|(_, declaration)| declaration.clone())
+                    .chain(std::iter::once(local.clone()))
+            })
+            .collect();
         reduced.statements = statements;
         reduced
     })

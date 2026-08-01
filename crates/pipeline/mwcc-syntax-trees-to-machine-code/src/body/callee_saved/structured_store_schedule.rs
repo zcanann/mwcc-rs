@@ -13,6 +13,46 @@ use mwcc_machine_code::{MachineFunction, RelocationKind, RelocationTarget};
 use mwcc_machine_code::Relocation;
 
 impl Generator {
+    /// Fill the interval between repeated scaled allocation calls. The next
+    /// count load and zero argument are independent of the previous result,
+    /// so MWCC issues them before publishing that result to its global:
+    /// `bl; lwz count; li zero; stw result; lwz heap; slwi; bl`.
+    pub(crate) fn schedule_scaled_global_allocation_publications(&mut self) {
+        while let Some(start) = scaled_global_allocation_publication_start(
+            &self.output.instructions,
+        ) {
+            self.move_instruction_before(start + 3, start + 1);
+            self.move_instruction_before(start + 3, start + 2);
+        }
+    }
+
+    /// Schedule two indexed allocation-result publications sharing a retained
+    /// zero argument. The second zero is issued in the first result store's
+    /// latency interval, while the second size literal precedes its heap load:
+    /// `lwz table; li zero; stwx; li size; lwz heap; bl`.
+    pub(crate) fn schedule_indexed_allocation_pair(&mut self) {
+        let Some(start) = indexed_allocation_pair_start(&self.output.instructions) else {
+            return;
+        };
+        self.move_instruction_before(start + 4, start + 1);
+        self.move_instruction_before(start + 4, start + 3);
+    }
+
+    /// Fill the indexed store's table-load latency slot with the independent
+    /// source induction increment. The byte cursor remains after the store
+    /// because it supplies that store's indexed address.
+    pub(crate) fn schedule_pointer_table_index_cursor_publication(&mut self) {
+        if !self.structured_pointer_table_index_cursor {
+            return;
+        }
+        let Some(start) = pointer_table_index_cursor_publication_start(
+            &self.output.instructions,
+        ) else {
+            return;
+        };
+        self.move_instruction_before(start + 2, start + 1);
+    }
+
     /// After a call, issue a later independent global load before publishing a
     /// zero and retain the zero in r3. This fills the load latency while keeping
     /// r0 available for the loaded value's following global publication.
@@ -235,6 +275,115 @@ impl Generator {
     }
 }
 
+fn scaled_global_allocation_publication_start(
+    instructions: &[Instruction],
+) -> Option<usize> {
+    instructions.windows(7).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::BranchAndLink { .. },
+                Instruction::StoreWord {
+                    s: 3,
+                    a: 0,
+                    offset: 0,
+                },
+                Instruction::AddImmediate {
+                    d: 5,
+                    a: 0,
+                    immediate: 0,
+                },
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 0,
+                    offset: 0,
+                },
+                Instruction::LoadWord {
+                    d: 4,
+                    a: 0,
+                    offset: 0,
+                },
+                Instruction::ShiftLeftImmediate {
+                    a: 3,
+                    s: 0,
+                    shift: 2,
+                },
+                Instruction::BranchAndLink { .. },
+            ]
+        )
+    })
+}
+
+fn indexed_allocation_pair_start(instructions: &[Instruction]) -> Option<usize> {
+    instructions.windows(6).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::LoadWord {
+                    d: table,
+                    a: 0,
+                    offset: 0,
+                },
+                Instruction::StoreWordIndexed {
+                    s: 3,
+                    a: table_base,
+                    ..
+                },
+                Instruction::LoadWord {
+                    d: 4,
+                    a: 0,
+                    offset: 0,
+                },
+                Instruction::AddImmediate { d: 3, a: 0, .. },
+                Instruction::AddImmediate {
+                    d: 5,
+                    a: 0,
+                    immediate: 0,
+                },
+                Instruction::BranchAndLink { .. },
+            ] if table == table_base
+        )
+    })
+}
+
+fn pointer_table_index_cursor_publication_start(
+    instructions: &[Instruction],
+) -> Option<usize> {
+    instructions.windows(4).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::LoadWord {
+                    d: table,
+                    a: 0,
+                    offset: 0,
+                },
+                Instruction::StoreWordIndexed {
+                    s: 3,
+                    a: table_base,
+                    b: cursor,
+                },
+                Instruction::AddImmediate {
+                    d: induction,
+                    a: induction_source,
+                    immediate: 1,
+                },
+                Instruction::AddImmediate {
+                    d: advanced_cursor,
+                    a: cursor_source,
+                    immediate: 4,
+                },
+            ] if table == table_base
+                && induction == induction_source
+                && advanced_cursor == cursor
+                && cursor_source == cursor
+                && induction != table
+                && induction != cursor
+                && induction != &3
+        )
+    })
+}
+
 fn post_call_zero_global_publication_start(
     output: &MachineFunction,
 ) -> Option<usize> {
@@ -389,6 +538,57 @@ fn truth_test_variable(expression: &Expression) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_an_indexed_allocation_pair_with_a_virtual_table_home() {
+        let instructions = [
+            Instruction::LoadWord {
+                d: 40,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::StoreWordIndexed { s: 3, a: 40, b: 31 },
+            Instruction::LoadWord {
+                d: 4,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::load_immediate(3, 32),
+            Instruction::load_immediate(5, 0),
+            Instruction::BranchAndLink {
+                target: "allocate".into(),
+            },
+        ];
+
+        assert_eq!(indexed_allocation_pair_start(&instructions), Some(0));
+    }
+
+    #[test]
+    fn recognizes_an_independent_pointer_table_induction_increment() {
+        let instructions = [
+            Instruction::LoadWord {
+                d: 4,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::StoreWordIndexed { s: 3, a: 4, b: 31 },
+            Instruction::AddImmediate {
+                d: 30,
+                a: 30,
+                immediate: 1,
+            },
+            Instruction::AddImmediate {
+                d: 31,
+                a: 31,
+                immediate: 4,
+            },
+        ];
+
+        assert_eq!(
+            pointer_table_index_cursor_publication_start(&instructions),
+            Some(0)
+        );
+    }
 
     #[test]
     fn recognizes_a_post_call_zero_and_distinct_global_copy() {

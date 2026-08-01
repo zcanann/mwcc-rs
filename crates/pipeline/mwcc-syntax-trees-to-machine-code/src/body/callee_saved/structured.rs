@@ -314,6 +314,7 @@ impl Generator {
                 function,
                 &self.globals,
             );
+        self.structured_pointer_table_index_cursor = reduced_pointer_table_indices.is_some();
         let function = reduced_pointer_table_indices.as_ref().unwrap_or(function);
         // Macro-expanded display-list packets are an input normalization for
         // this general structured path. More exact semantic owners run before

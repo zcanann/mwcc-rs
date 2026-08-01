@@ -4,6 +4,32 @@
 use super::*;
 
 impl Generator {
+    /// Register-only pointer-table cursor loops restore LR before releasing
+    /// their compact frame, matching the measured legacy optimized loop form.
+    pub(crate) fn schedule_pointer_table_index_cursor_epilogue(&mut self) {
+        if !self.structured_pointer_table_index_cursor
+            || self.behavior.frame_convention != FrameConvention::LinkageFirst
+        {
+            return;
+        }
+        let Some(stack_restore) = self.output.instructions.windows(2).rposition(|window| {
+            matches!(
+                window,
+                [
+                    Instruction::AddImmediate {
+                        d: 1,
+                        a: 1,
+                        immediate,
+                    },
+                    Instruction::MoveToLinkRegister { s: 0 },
+                ] if *immediate == self.frame_size
+            )
+        }) else {
+            return;
+        };
+        crate::move_instruction_before_retargeting(self, stack_restore + 1, stack_restore);
+    }
+
     /// Emit the policy-owned linkage-first teardown after a generic body.
     ///
     /// Build 163 moves the saved return address back to LR before restoring the

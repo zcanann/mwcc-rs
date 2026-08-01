@@ -470,6 +470,10 @@ pub(crate) struct Generator {
     /// emitter begins with its ordinary linkage shell; post-allocation cleanup
     /// removes the shell once no saved register or stack object needs it.
     pub(crate) artificial_structured_leaf_frame: bool,
+    /// Structured lowering introduced a loop-carried byte offset for a
+    /// file-scope pointer table. Legacy MWCC gives this register-only loop its
+    /// own indexed-publication and teardown schedules.
+    pub(crate) structured_pointer_table_index_cursor: bool,
     /// Whether an inline-assembly definition appeared before this function.
     ///
     /// Build 163 carries scheduler state across that source-order boundary:

@@ -827,6 +827,17 @@ impl Generator {
                     (true, Some((global_position, global_name)))
                         if constants.len() + 1 == arguments.len() =>
                     {
+                        let pointer_middle = global_position == 1
+                            && matches!(
+                                self.globals.get(&global_name),
+                                Some(Type::Pointer(_) | Type::StructPointer { .. })
+                            );
+                        if pointer_middle {
+                            self.emit_global_load(
+                                &global_name,
+                                Eabi::FIRST_GENERAL_ARGUMENT + global_position as u8,
+                            )?;
+                        }
                         for &(position, value) in &constants {
                             self.output.instructions.push(Instruction::AddImmediate {
                                 d: Eabi::FIRST_GENERAL_ARGUMENT + position as u8,
@@ -834,10 +845,12 @@ impl Generator {
                                 immediate: value,
                             });
                         }
-                        self.emit_global_load(
-                            &global_name,
-                            Eabi::FIRST_GENERAL_ARGUMENT + global_position as u8,
-                        )?;
+                        if !pointer_middle {
+                            self.emit_global_load(
+                                &global_name,
+                                Eabi::FIRST_GENERAL_ARGUMENT + global_position as u8,
+                            )?;
+                        }
                         return Ok(());
                     }
                     _ => {
