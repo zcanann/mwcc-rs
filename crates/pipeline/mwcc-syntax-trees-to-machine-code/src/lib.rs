@@ -493,6 +493,10 @@ fn lower_function_body(
     };
     let variadic_definition = variadic_definitions.contains(&function.name);
     let behavior = Behavior::resolve(&config);
+    let initial_inline_expansion_frame_bytes = inline_expansion::legacy_frame_residue_bytes(
+        function,
+        inline_expansion_facts,
+    );
     let mut generator = Generator {
         variadic_definition,
         variadic_callees: variadic_definitions.clone(),
@@ -694,10 +698,9 @@ fn lower_function_body(
         legacy_callee_saved_frame_layout:
             generator::LegacyCalleeSavedFrameLayout::InferFromValueOrigin,
         legacy_discarded_call_locals: 0,
-        legacy_inline_expansion_frame_bytes: inline_expansion::legacy_frame_residue_bytes(
-            function,
-            inline_expansion_facts,
-        ),
+        legacy_inline_expansion_frame_bytes: initial_inline_expansion_frame_bytes,
+        initial_inline_expansion_frame_bytes,
+        linkage_first_inline_aggregate_frame: false,
         inline_statement_body_substitutions: 0,
         late_inline_statement_body_substitutions: 0,
         inline_source_call_survivors: HashSet::new(),
@@ -974,6 +977,7 @@ fn lower_function_body(
     // its compact 8-byte FPR save lanes. Newer builds add their 16-byte Gekko
     // lanes directly to the predecrement frame.
     generator.normalize_linkage_first_callee_saved_frame(!allocated_float_saves.is_empty());
+    generator.schedule_linkage_first_inline_aggregate_frame();
     let paired_single_float_frame = generator.behavior.frame_convention
         == mwcc_versions::FrameConvention::Predecrement;
     // The retained inline sqrt transaction can allocate saved FPRs after the
@@ -1011,6 +1015,7 @@ fn lower_function_body(
     generator.compact_exclusive_inline_conversion_frame();
     generator.schedule_structured_conversion_following_call();
     generator.schedule_structured_argument_load_latency();
+    generator.schedule_linkage_first_inline_aggregate_frame();
     generator.schedule_structured_conversion_member_stores();
     generator.normalize_linkage_first_plain_nonleaf_frame();
     generator.schedule_retained_guarded_constant();
@@ -1099,6 +1104,7 @@ fn lower_function_body(
     generator.schedule_retained_item_ratio();
     generator.reuse_absolute_pooled_float_literals();
     generator.reuse_small_data_pooled_float_literals();
+    generator.schedule_linkage_first_inline_aggregate_frame();
     generator.forward_adjacent_pointer_global_copy();
     generator.schedule_linkage_first_pointer_publication();
     generator.reuse_linkage_first_guarded_global_member_base();

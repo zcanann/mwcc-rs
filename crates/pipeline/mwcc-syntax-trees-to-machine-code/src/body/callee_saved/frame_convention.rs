@@ -513,6 +513,16 @@ impl Generator {
         } else {
             i16::try_from(self.legacy_inline_expansion_frame_bytes).unwrap_or(i16::MAX)
         };
+        let inline_aggregate_frame = super::linkage_first_inline_aggregate_frame::plan(
+            &self.frame_slots,
+            self.initial_inline_expansion_frame_bytes,
+            self.legacy_inline_expansion_frame_bytes,
+            entry_lane_bytes,
+            physical_saved.len(),
+            self.float_to_int_scratch_end,
+            self.int_to_float_scratch_next,
+            self.int_to_float_scratch_end,
+        );
         // A single inlined aggregate setter reuses the retained two-parameter
         // entry-table lane as the anonymous slot below its frame-resident
         // aggregate. The lane therefore moves the aggregate up by one word
@@ -563,7 +573,7 @@ impl Generator {
             self.data_section_anchor_reuses_deferred_home
                 && entry_lane_bytes != 0
                 && !self.frame_slots.is_empty();
-        let retained_frame_bytes = (if shifts_reused_anchor_entry_lane {
+        let ordinary_retained_frame_bytes = if shifts_reused_anchor_entry_lane {
             // The deferred home has already collapsed one saved-register lane.
             // The retained entry table therefore occupies alignment slack in
             // the selected frame: move explicit locals above it without
@@ -575,7 +585,10 @@ impl Generator {
             entry_lane_bytes.max(inline_lane_bytes)
         } else {
             entry_lane_bytes.saturating_add(inline_lane_bytes)
-        })
+        };
+        let retained_frame_bytes = inline_aggregate_frame
+            .as_ref()
+            .map_or(ordinary_retained_frame_bytes, |plan| plan.prefix_bytes)
         // A guarded nested value-inline conversion retains one additional
         // optimizer lane beyond the ordinary entry table. Its stack image is
         // displaced across both retained tables below.
@@ -641,10 +654,12 @@ impl Generator {
                 .is_some_and(|requested| requested == std::ffi::OsStr::new(&self.output.name))
         {
             eprintln!(
-                "frame reconciliation for {}: old={old_size} new={new_size} saved={physical_saved:?} entry_words={} materialized_before_call={materialized_home_before_call} loaded_before_call={loaded_home_before_call} parameter_derived_before_call={parameter_derived_home_before_call} promoted_parameters={promoted_parameter_count} layout={:?} entry_lane={entry_lane_bytes} inline_lane={inline_lane_bytes} retained={retained_frame_bytes} growth={retained_frame_growth} conversion_bytes={} float_to_int=({}, {}) int_to_float=({}, {}) frame_slots={:?}",
+                "frame reconciliation for {}: old={old_size} new={new_size} saved={physical_saved:?} entry_words={} materialized_before_call={materialized_home_before_call} loaded_before_call={loaded_home_before_call} parameter_derived_before_call={parameter_derived_home_before_call} promoted_parameters={promoted_parameter_count} layout={:?} entry_lane={entry_lane_bytes} initial_inline={} inline_lane={inline_lane_bytes} retained={retained_frame_bytes} growth={retained_frame_growth} inline_aggregate={} conversion_bytes={} float_to_int=({}, {}) int_to_float=({}, {}) frame_slots={:?}",
                 self.output.name,
                 self.entry_parameter_words,
                 self.legacy_callee_saved_frame_layout,
+                self.initial_inline_expansion_frame_bytes,
+                inline_aggregate_frame.is_some(),
                 self.callee_saved_conversion_bytes,
                 self.float_to_int_scratch_next,
                 self.float_to_int_scratch_end,
@@ -655,6 +670,33 @@ impl Generator {
                     .map(|(name, slot)| (name.as_str(), slot.offset, slot.size))
                     .collect::<Vec<_>>()
             );
+        }
+        if let Some(plan) = &inline_aggregate_frame {
+            self.linkage_first_inline_aggregate_frame = true;
+            let mut moves = plan
+                .slot_moves
+                .iter()
+                .map(|(_, old_offset, size, new_offset)| {
+                    (*old_offset, *size, *new_offset)
+                })
+                .collect::<Vec<_>>();
+            moves.push((
+                plan.scratch_start,
+                plan.scratch_end.saturating_sub(plan.scratch_start),
+                plan.scratch_start.saturating_add(plan.prefix_bytes),
+            ));
+            relayout_frame_slot_mappings(&mut self.output.instructions, &moves);
+            for (name, _, _, new_offset) in &plan.slot_moves {
+                if let Some(slot) = self.frame_slots.get_mut(name) {
+                    slot.offset = *new_offset;
+                }
+            }
+            self.int_to_float_scratch_next = self
+                .int_to_float_scratch_next
+                .saturating_add(plan.prefix_bytes);
+            self.int_to_float_scratch_end = self
+                .int_to_float_scratch_end
+                .saturating_add(plan.prefix_bytes);
         }
         if shared_inline_aggregate_offset == Some(8) {
             let slots: Vec<_> = self
@@ -1756,6 +1798,46 @@ fn relayout_frame_slot_displacements(
         };
         if let Some(displacement) = displacement.filter(|offset| belongs_to_slot(**offset)) {
             *displacement = displacement.saturating_add(shift);
+        }
+    }
+}
+
+/// Move several frame-local regions to independently selected destinations.
+/// All matches use the old snapshot, so swapping adjacent generated slots
+/// cannot cause a moved displacement to be classified twice.
+fn relayout_frame_slot_mappings(
+    instructions: &mut [Instruction],
+    mappings: &[(i16, i16, i16)],
+) {
+    for instruction in instructions {
+        let displacement = match instruction {
+            Instruction::StoreWord { a: 1, offset, .. }
+            | Instruction::StoreByte { a: 1, offset, .. }
+            | Instruction::StoreHalfword { a: 1, offset, .. }
+            | Instruction::StoreFloatSingle { a: 1, offset, .. }
+            | Instruction::StoreFloatDouble { a: 1, offset, .. }
+            | Instruction::LoadWord { a: 1, offset, .. }
+            | Instruction::LoadByteZero { a: 1, offset, .. }
+            | Instruction::LoadHalfwordZero { a: 1, offset, .. }
+            | Instruction::LoadHalfwordAlgebraic { a: 1, offset, .. }
+            | Instruction::LoadFloatSingle { a: 1, offset, .. }
+            | Instruction::LoadFloatDouble { a: 1, offset, .. }
+            | Instruction::PairedSingleQuantizedLoad { a: 1, offset, .. }
+            | Instruction::PairedSingleQuantizedStore { a: 1, offset, .. } => Some(offset),
+            Instruction::AddImmediate {
+                a: 1, immediate, ..
+            } => Some(immediate),
+            _ => None,
+        };
+        let Some(displacement) = displacement else {
+            continue;
+        };
+        if let Some((old_start, _, new_start)) = mappings.iter().find(|(start, size, _)| {
+            start
+                .checked_add(*size)
+                .is_some_and(|end| (*start..end).contains(displacement))
+        }) {
+            *displacement = new_start.saturating_add(displacement.saturating_sub(*old_start));
         }
     }
 }

@@ -712,6 +712,12 @@ pub(crate) struct Generator {
     /// Allocator bookkeeping retained after value-returning inline calls have
     /// been expanded away. The linkage-first frame policy owns its placement.
     pub(crate) legacy_inline_expansion_frame_bytes: usize,
+    /// The portion already established by frontend substitutions before the
+    /// semantic body composer adds its later value-call residue.
+    pub(crate) initial_inline_expansion_frame_bytes: usize,
+    /// Frame reconciliation selected the linkage-first aggregate-inline lane;
+    /// its physical stream is eligible for the companion reuse schedule.
+    pub(crate) linkage_first_inline_aggregate_frame: bool,
     /// Statement-body substitutions composed into this function. General
     /// inline residue is charged at expansion time; structured frames retain
     /// an additional binding block for each substitution.
