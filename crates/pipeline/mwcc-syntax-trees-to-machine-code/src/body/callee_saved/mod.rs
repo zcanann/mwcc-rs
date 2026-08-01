@@ -304,6 +304,7 @@ mod structured_recycled_entry_queue_schedule;
 mod structured_void_queue_transaction_schedule;
 mod structured_queue_transaction_schedule;
 mod structured_switch_lowering;
+mod structured_switch_result_schedule;
 mod structured_dense_switch;
 mod structured_comparison_switch;
 mod structured_tail_result_guard;

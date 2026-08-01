@@ -206,6 +206,9 @@ pub(crate) struct FrameSlot {
 pub(crate) enum LegacyCalleeSavedFrameLayout {
     #[default]
     InferFromValueOrigin,
+    /// A literal-initialized scalar lives entirely in its saved GPR. It has no
+    /// retained optimizer lane beyond the physical save slot.
+    CompactLiteralHome,
     RetainEntryParameterTable,
     /// A source guard that records one saved entry parameter before a call and
     /// retains another parameter across that call. Build 163 keeps both the

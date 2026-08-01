@@ -394,7 +394,11 @@ impl Generator {
         // case exposes the pairwise lane count; ordinary promoted values retain
         // the established single inferred lane regardless of their count.
         let inferred_entry_lane_count = || {
-            if self.entry_parameter_words != 0
+            if self.legacy_callee_saved_frame_layout
+                == LegacyCalleeSavedFrameLayout::CompactLiteralHome
+            {
+                0
+            } else if self.entry_parameter_words != 0
                 && (materialized_home_before_call
                     || parameter_derived_home_before_call
                     || anchored_entry_parameter_guard)

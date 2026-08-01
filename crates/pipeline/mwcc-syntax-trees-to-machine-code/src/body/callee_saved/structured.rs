@@ -3671,6 +3671,7 @@ impl Generator {
         // resolved; its general instruction-index helper owns finalized branch
         // destinations from here onward.
         self.schedule_entry_member_saved_home(function);
+        self.schedule_compact_switch_result(&structured_switch_source);
         self.schedule_saved_parameter_derived_initializer();
         self.schedule_post_call_jump_state_reset();
         self.schedule_guarded_saved_receiver_float_call();
