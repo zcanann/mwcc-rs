@@ -121,9 +121,9 @@ pub(super) fn plans(
 pub(super) fn retain_hottest_for_cached_global(
     plans: &mut Vec<StructuredGlobalMemberAddressPlan>,
     cached_global: Option<&str>,
-) {
+) -> bool {
     let Some(cached_global) = cached_global else {
-        return;
+        return false;
     };
     // Small member sets retain independent addresses; only a broad aggregate
     // fanout makes the shared base the cheaper representation.
@@ -133,7 +133,7 @@ pub(super) fn retain_hottest_for_cached_global(
         .count()
         < 4
     {
-        return;
+        return false;
     }
     let selected_offset = plans
         .iter()
@@ -147,6 +147,7 @@ pub(super) fn retain_hottest_for_cached_global(
         }
         plan.offset == selected_offset
     });
+    true
 }
 
 fn collect_statement_events(

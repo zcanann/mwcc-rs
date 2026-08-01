@@ -547,6 +547,8 @@ impl Generator {
         let new_size = base_size.max(conversion_size);
         if std::env::var_os("MWCC_DIAGNOSTIC_FRAME")
             .is_some_and(|requested| requested == std::ffi::OsStr::new(&self.output.name))
+            || std::env::var_os("MWCC_CAPTURE_FUNCTION")
+                .is_some_and(|requested| requested == std::ffi::OsStr::new(&self.output.name))
         {
             eprintln!(
                 "frame reconciliation for {}: old={old_size} new={new_size} saved={physical_saved:?} entry_words={} materialized_before_call={materialized_home_before_call} loaded_before_call={loaded_home_before_call} parameter_derived_before_call={parameter_derived_home_before_call} promoted_parameters={promoted_parameter_count} layout={:?} entry_lane={entry_lane_bytes} inline_lane={inline_lane_bytes} retained={retained_frame_bytes} growth={retained_frame_growth} conversion_bytes={} float_to_int=({}, {}) int_to_float=({}, {}) frame_slots={:?}",

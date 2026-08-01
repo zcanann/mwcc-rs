@@ -405,6 +405,9 @@ pub(crate) struct Generator {
     /// A normalized counted loop owns MWCC's dense global-byte decoder window.
     /// Its final physical issue order is selected only after saved-home coloring.
     pub(crate) structured_global_byte_loop_layout_owner: bool,
+    /// A broad global aggregate loop selected source-ordered saved homes and
+    /// retains an additional linkage lane for its addressable cursor record.
+    pub(crate) structured_broad_global_base_layout_owner: bool,
     /// A nonvolatile global pointer loaded immediately before a guarded switch
     /// and consumed at the start of several mutually exclusive arms.
     pub(crate) structured_shared_switch_global_value: Option<(String, u8)>,

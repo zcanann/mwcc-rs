@@ -80,6 +80,7 @@ use super::structured_loop_invariants::hoist_iterator_end_sentinels;
 use super::structured_loop_address_invariants::hoist_loop_address_invariants;
 use super::structured_loop_global_byte_cursor::strength_reduce_global_byte_loop_cursor;
 use super::structured_global_byte_loop_layout::StructuredGlobalByteLoopLayout;
+use super::structured_broad_global_base_layout::StructuredBroadGlobalBaseLayout;
 use super::structured_loop_packet_invariants::hoist_repeated_packet_words;
 use super::structured_loop_member_cache::cache_repeated_loop_members;
 use super::structured_loop_assertion_strings::plan_loop_assertion_strings;
@@ -495,7 +496,8 @@ impl Generator {
             &self.addressable_globals,
             &self.global_array_sizes,
         );
-        super::structured_global_member_address_cache::retain_hottest_for_cached_global(
+        let broad_global_base_cache =
+            super::structured_global_member_address_cache::retain_hottest_for_cached_global(
             &mut global_member_address_cache_plans,
             global_base_cache_plan.as_ref().map(|plan| plan.global.as_str()),
         );
@@ -869,6 +871,18 @@ impl Generator {
         let (eager_saved_locals, deferred_saved_locals): (Vec<_>, Vec<_>) = saved_locals
             .into_iter()
             .partition(|local| local.initializer.is_some());
+        let broad_global_base_layout = StructuredBroadGlobalBaseLayout::plan(
+            broad_global_base_cache,
+            eager_saved_locals.len(),
+            saved_parameters.len(),
+            &deferred_saved_locals,
+        );
+        if capture {
+            eprintln!(
+                "structured broad global base layout: cache={broad_global_base_cache} layout={}",
+                broad_global_base_layout.is_some()
+            );
+        }
         let precomposition_home_layout = StructuredPrecompositionHomeLayout::plan(
             &deferred_saved_locals,
             &self.inline_source_call_survivors,
@@ -1644,6 +1658,16 @@ impl Generator {
                 self.prefer_virtual_general(home, preferred);
             }
         }
+        if let Some(layout) = &broad_global_base_layout {
+            for local in &deferred_saved_locals {
+                let Some(preferred) = layout.preference(&local.name) else {
+                    continue;
+                };
+                let group = deferred_home_plan.group(&local.name);
+                let home = homes[parameter_home_reuse.home_index(group)];
+                self.prefer_virtual_general(home, preferred);
+            }
+        }
         let data_section_anchor_home = reused_data_anchor_home_index
             .map(|home_index| homes[home_index])
             .or(standalone_data_anchor_home);
@@ -1734,8 +1758,9 @@ impl Generator {
         let mut frame_homes = logical_saved_homes.clone();
         frame_homes.resize(frame_saved_count, frame_first_saved as u8);
         let mut plan = mwcc_vreg::FramePlan::with_local_region(frame_homes, local_region_bytes);
-        if dense_frame
-            && !with_frame_array
+        let base_frame_size = plan.frame_size;
+        let retained_linkage_lanes = usize::from(dense_frame && !with_frame_array);
+        if retained_linkage_lanes != 0
             && self.behavior.frame_convention == FrameConvention::LinkageFirst
         {
             // Once a register-only legacy frame crosses MWCC's dense-save
@@ -1744,9 +1769,18 @@ impl Generator {
             // one linkage pair; add and doubleword-align the retained lane.
             plan.frame_size = plan
                 .frame_size
-                .checked_add(8)
+                .checked_add(
+                    i16::try_from(retained_linkage_lanes * 8)
+                        .map_err(|_| Diagnostic::error("too many retained linkage lanes"))?,
+                )
                 .map(|size| (size + 7) / 8 * 8)
                 .ok_or_else(|| Diagnostic::error("structured dense frame is too large"))?;
+        }
+        if capture {
+            eprintln!(
+                "structured frame plan: base={base_frame_size} retained_linkage_lanes={retained_linkage_lanes} planned={}",
+                plan.frame_size
+            );
         }
         plan.frame_size = plan
             .frame_size
@@ -2158,8 +2192,19 @@ impl Generator {
                 );
             }
         }
+        if broad_global_base_layout
+            .as_ref()
+            .is_some_and(StructuredBroadGlobalBaseLayout::retains_linkage_lane)
+        {
+            plan.frame_size = plan
+                .frame_size
+                .checked_add(8)
+                .map(|size| (size + 7) / 8 * 8)
+                .ok_or_else(|| Diagnostic::error("structured broad global frame is too large"))?;
+        }
         self.non_leaf = true;
         self.structured_global_byte_loop_layout_owner = global_byte_loop_layout.is_some();
+        self.structured_broad_global_base_layout_owner = broad_global_base_layout.is_some();
         self.frame_size = plan.frame_size;
         self.callee_saved = if array_pool_plan.is_some() {
             (frame_first_saved as u8..=31).rev().collect()

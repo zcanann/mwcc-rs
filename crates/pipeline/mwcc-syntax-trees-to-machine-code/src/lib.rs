@@ -587,6 +587,7 @@ fn lower_function_body(
         structured_repeated_call_poll_owner: false,
         structured_nonreturning: false,
         structured_global_byte_loop_layout_owner: false,
+        structured_broad_global_base_layout_owner: false,
         structured_shared_switch_global_value: None,
         transient_global_index_base: None,
         full_bss_globals: globals
@@ -1161,6 +1162,7 @@ fn lower_function_body(
     generator.fold_structured_call_result_assignment_zero_tests();
     generator.reuse_structured_modulo_bound_loads();
     generator.reuse_structured_frame_pointer_updates();
+    generator.schedule_structured_broad_global_base_loop();
     generator.schedule_structured_global_byte_loop();
     if generator.structured_nonreturning {
         generator.normalize_nonreturning_materialization_copies();
