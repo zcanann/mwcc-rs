@@ -1196,6 +1196,9 @@ impl Generator {
         if self.try_extended_register_access(function)? {
             return Ok(());
         }
+        if self.try_fp_register_access(function)? {
+            return Ok(());
+        }
         if self.try_support_file_request(function)? {
             return Ok(());
         }

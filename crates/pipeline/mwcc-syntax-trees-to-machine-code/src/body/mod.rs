@@ -103,6 +103,7 @@ mod guarded_integer_constant_reuse;
 mod float_friction_select;
 mod float_call_guard_return;
 mod fp_register_transfer;
+mod fp_register_access;
 mod float_octant_table_dispatch;
 mod forwarded_member_initialization_schedule;
 mod friction_limited_acceleration_clamp;
