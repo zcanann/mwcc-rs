@@ -1903,11 +1903,16 @@ impl Generator {
                 // allocator's physical saved-register count.
                 extra_scalar_words += deferred_saved_locals.len();
             }
+            let aggregate_only_frame = frame_arrays.is_empty()
+                && !aggregate_frame_locals.is_empty()
+                && frame_scalar_parameters.is_empty()
+                && frame_scalar_locals.is_empty();
             let array_offset = if let Some(frame) = &variadic_output_frame {
                 frame.array_offset
             } else {
                 match self.behavior.frame_convention {
                     FrameConvention::Predecrement => 8,
+                    FrameConvention::LinkageFirst if aggregate_only_frame => 8,
                     FrameConvention::LinkageFirst => {
                         let words = if global_member_search_entry {
                             extra_scalar_words
@@ -1972,11 +1977,12 @@ impl Generator {
                 };
                 let occupied = i32::from(occupied_base)
                     + i32::from(local_region_bytes)
-                    + i32::try_from(4 * count).unwrap_or(i32::MAX);
+                    + i32::try_from(4 * frame_saved_count).unwrap_or(i32::MAX);
                 // The legacy value graph retains the terminal pointer alias as
                 // one scalar slot but only rounds this frame to a doubleword.
                 // Ordinary structured frames retain their 16-byte rounding.
                 let alignment = if variadic_output_frame.is_some()
+                    || aggregate_only_frame
                     || folded_terminal_pointer_alias
                     || saved_float_count != 0
                     || (unused_frame_array && !aggregate_frame_locals.is_empty())
@@ -2016,7 +2022,7 @@ impl Generator {
                             Diagnostic::error("structured retained local table is too large")
                         })?;
                     let occupied = i32::from(retained_end)
-                        + i32::try_from(4 * count).unwrap_or(i32::MAX);
+                        + i32::try_from(4 * frame_saved_count).unwrap_or(i32::MAX);
                     (occupied + 7) / 8 * 8
                 } else if dense_frame && !eager_saved_locals.is_empty() {
                     // A dense legacy frame retains the caller-linkage word
