@@ -3243,6 +3243,12 @@ impl Generator {
         if self.try_switch_call_return(function)? {
             return Ok(());
         }
+        // A default-true local guarded by a switch of conditional false
+        // assignments is one shared-result control-flow graph. Keep the result
+        // in r3 and join every failed guard at the leaf return.
+        if self.try_guarded_result_switch(function)? {
+            return Ok(());
+        }
         // A leaf state machine commonly guards the entire update with an early
         // return, then dispatches terminal case arms containing nested ifs.
         if self.try_leading_return_statement_switch(function)? {
@@ -4587,7 +4593,7 @@ impl Generator {
                 scrutinee,
                 arms,
                 default,
-            } => self.emit_joined_call_switch(scrutinee, arms, default.as_ref()),
+            } => self.emit_joined_statement_switch(scrutinee, arms, default.as_ref()),
             // A general if-statement (non-trailing, non-leaf, or with an else) needs
             // forward branches and basic-block scheduling — deferred for now.
             Statement::If { .. } => Err(Diagnostic::error(format!(

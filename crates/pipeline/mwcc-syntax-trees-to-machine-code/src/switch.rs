@@ -18,6 +18,7 @@
 //! value order, with the default last.
 
 mod shared_result;
+mod guarded_result;
 
 use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
@@ -43,52 +44,38 @@ enum SwitchCompareOperand {
 }
 
 impl Generator {
-    /// Emit a statement-bodied comparison-tree switch whose case bodies each
-    /// make one call and then join the function's ordinary continuation.
+    /// Emit a statement-bodied comparison-tree switch whose case bodies join
+    /// the function's ordinary continuation.
     ///
     /// Unlike [`Self::emit_statement_switch`], a source `break` here is not a
     /// function return: every case branches to the code following the switch.
     /// Keeping this join topology in the shared switch lowerer lets non-leaf
     /// functions reuse the measured comparison tree without inventing a
     /// function-specific dispatcher.
-    pub(crate) fn emit_joined_call_switch(
+    pub(crate) fn emit_joined_statement_switch(
         &mut self,
         scrutinee: &Expression,
         arms: &[SwitchArm],
         default: Option<&ArmBody>,
     ) -> Compilation<()> {
-        let call_statement = |statement: &Statement| {
-            matches!(
-                statement,
-                Statement::Expression(
-                    Expression::Call { .. } | Expression::CallThrough { .. }
-                )
-            )
-        };
         for arm in arms {
-            let ArmBody::Statements(statements) = &arm.body else {
+            let ArmBody::Statements(_) = &arm.body else {
                 return Err(Diagnostic::error(
                     "a value-returning joined switch arm is not supported yet (roadmap)",
                 ));
             };
-            if arm.falls_through
-                || !matches!(statements.as_slice(), [statement] if call_statement(statement))
-            {
+            if arm.falls_through {
                 return Err(Diagnostic::error(
-                    "a joined switch arm must be one non-fallthrough call (roadmap)",
+                    "a fall-through joined switch arm is not supported yet (roadmap)",
                 ));
             }
         }
         let default_statements = match default {
-            Some(ArmBody::Statements(statements))
-                if matches!(statements.as_slice(), [statement] if call_statement(statement)) =>
-            {
-                Some(statements.as_slice())
-            }
+            Some(ArmBody::Statements(statements)) => Some(statements.as_slice()),
             None => None,
-            Some(_) => {
+            Some(ArmBody::Return(_)) => {
                 return Err(Diagnostic::error(
-                    "a joined switch default must be one call (roadmap)",
+                    "a value-returning joined switch default is not supported yet (roadmap)",
                 ))
             }
         };
@@ -166,7 +153,9 @@ impl Generator {
             let ArmBody::Statements(statements) = &arm.body else {
                 unreachable!()
             };
-            self.emit_statement(&statements[0])?;
+            for statement in statements {
+                self.emit_statement(statement)?;
+            }
             join_branches.push(self.output.instructions.len());
             self.output
                 .instructions
@@ -175,7 +164,9 @@ impl Generator {
 
         let default_start = self.output.instructions.len();
         if let Some(statements) = default_statements {
-            self.emit_statement(&statements[0])?;
+            for statement in statements {
+                self.emit_statement(statement)?;
+            }
         }
         let continuation = self.output.instructions.len();
 
@@ -201,7 +192,7 @@ impl Generator {
         // They are invisible in the instruction stream but advance later
         // static-local and anonymous symbol ordinals.
         self.output.anonymous_label_bump +=
-            joined_call_hidden_labels(arms.len(), default_statements.is_some());
+            joined_statement_hidden_labels(arms.len(), default_statements.is_some());
         Ok(())
     }
 
@@ -1380,21 +1371,21 @@ fn terminal_hidden_if_labels(statements: &[Statement]) -> u32 {
         .sum()
 }
 
-fn joined_call_hidden_labels(arm_count: usize, _has_default: bool) -> u32 {
+fn joined_statement_hidden_labels(arm_count: usize, _has_default: bool) -> u32 {
     2 * arm_count as u32 + 2
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        joined_call_hidden_labels, shared_base_compare_instructions,
+        joined_statement_hidden_labels, shared_base_compare_instructions,
     };
     use mwcc_machine_code::Instruction;
 
     #[test]
     fn joined_call_switch_accounts_arms_default_and_join() {
-        assert_eq!(joined_call_hidden_labels(2, true), 6);
-        assert_eq!(joined_call_hidden_labels(2, false), 6);
+        assert_eq!(joined_statement_hidden_labels(2, true), 6);
+        assert_eq!(joined_statement_hidden_labels(2, false), 6);
     }
 
     #[test]
