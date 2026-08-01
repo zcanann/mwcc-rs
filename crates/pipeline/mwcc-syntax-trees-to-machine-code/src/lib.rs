@@ -1085,6 +1085,8 @@ fn lower_function_body(
     generator.reuse_small_data_pooled_float_literals();
     generator.forward_adjacent_pointer_global_copy();
     generator.schedule_linkage_first_pointer_publication();
+    generator.reuse_linkage_first_guarded_global_member_base();
+    generator.pack_linkage_first_disjoint_scratch_frame();
     generator.reuse_linkage_first_condition_member();
     generator.reuse_guarded_integer_constant();
     generator.reuse_repeated_integer_constants();
