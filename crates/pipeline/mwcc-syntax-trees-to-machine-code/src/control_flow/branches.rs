@@ -1494,6 +1494,11 @@ impl Generator {
                     return Ok(false_branch_bo_bi(*operator)
                         .expect("is_comparison restricts the operator"));
                 }
+                if let Some(branch) =
+                    self.try_emit_frame_global_compare(*operator, left, right)?
+                {
+                    return Ok(branch);
+                }
                 // Two member loads need distinct temporaries. Keep r3 for the
                 // left value and reserve it while selecting the right member's
                 // address, which naturally gives a global pointer base r4 and

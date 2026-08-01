@@ -366,9 +366,14 @@ impl Generator {
             Expression::CompoundLiteral { .. } => Err(Diagnostic::error(
                 "a compound-literal argument needs the frame-temporary schedule (roadmap)",
             )),
-            Expression::CallThrough { .. } => Err(Diagnostic::error(
-                "an indirect call through a member function pointer is not supported here (captures only)",
-            )),
+            Expression::CallThrough { target, arguments } => {
+                self.emit_bare_indirect_call_statement(target, arguments)?;
+                let result = Eabi::general_result().number;
+                if destination != result {
+                    self.emit_integer_materialization_copy(destination, result);
+                }
+                Ok(())
+            }
             Expression::VirtualCall {
                 object,
                 vptr_offset,
