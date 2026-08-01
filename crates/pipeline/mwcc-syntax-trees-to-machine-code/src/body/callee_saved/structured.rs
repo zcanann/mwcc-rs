@@ -266,6 +266,9 @@ impl Generator {
         with_frame_array: bool,
         suppressed_constant_lane: bool,
     ) -> Compilation<bool> {
+        let terminal_branch_result =
+            super::structured_terminal_branch_result::fold(function);
+        let function = terminal_branch_result.as_ref().unwrap_or(function);
         // Macro-expanded display-list packets are an input normalization for
         // this general structured path. More exact semantic owners run before
         // reaching here and retain their original packet statements.
@@ -3851,8 +3854,34 @@ impl Generator {
         let mut carried_condition_cache_restore = None;
         let mut carried_assignment_member_cache_restore = None;
         let mut carried_adjacent_assignment_member_cache_end = None;
+        let mut adjacent_global_store_base_restore = None;
         let mut scheduled_float_store = None;
         for (statement_index, statement) in statements.iter().enumerate() {
+            if adjacent_global_store_base_restore.is_none() {
+                if let Some(plan) =
+                    super::structured_adjacent_global_store_base::plan(
+                        statement,
+                        statements.get(statement_index + 1),
+                        &self.addressable_globals,
+                    )
+                {
+                    let register = self.fresh_virtual_general_preferring(4);
+                    self.emit_global_array_base(
+                        &plan.global,
+                        plan.total_size,
+                        register,
+                    )?;
+                    let previous = self.structured_global_base_cache.replace(
+                        crate::generator::StructuredGlobalBaseCache {
+                            global: plan.global,
+                            register,
+                            remaining_uses: 2,
+                        },
+                    );
+                    adjacent_global_store_base_restore =
+                        Some((statement_index + 1, previous));
+                }
+            }
             if shared_switch_global_plan
                 .as_ref()
                 .is_some_and(|plan| plan.activation_index == statement_index)
@@ -5184,6 +5213,15 @@ impl Generator {
                     .expect("adjacent assignment member cache must be active");
                 self.restore_condition_member_cache(previous);
                 carried_adjacent_assignment_member_cache_end = None;
+            }
+            if adjacent_global_store_base_restore
+                .as_ref()
+                .is_some_and(|(completion, _)| *completion == statement_index)
+            {
+                let (_, previous) = adjacent_global_store_base_restore
+                    .take()
+                    .expect("adjacent global-store base cache must be active");
+                self.structured_global_base_cache = previous;
             }
         }
         self.reuse_scratch_constant = false;
