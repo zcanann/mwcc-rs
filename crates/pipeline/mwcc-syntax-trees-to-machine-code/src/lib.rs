@@ -1169,6 +1169,7 @@ fn lower_function_body(
     generator.schedule_structured_broad_global_base_loop();
     generator.schedule_structured_global_byte_loop();
     generator.finalize_structured_compact_narrow_scalar_frame();
+    generator.finalize_linkage_first_forwarded_context_frame(function);
     if generator.structured_nonreturning {
         generator.normalize_nonreturning_materialization_copies();
     }
