@@ -81,6 +81,22 @@ pub(crate) fn literal_address_table(
             .all(|element| matches!(element, PointerElement::Null | PointerElement::Scalar(_)))
 }
 
+/// Physical storage reserved for an address-bearing initializer. The parsed
+/// element sequence contains only source-written slots, while C zero-fills the
+/// remainder of an explicitly sized array or aggregate. Preserve the declared
+/// extent so a partial table initializer does not shrink the ELF object.
+pub(crate) fn storage_size(
+    global: &GlobalDeclaration,
+    elements: &[PointerElement],
+) -> u32 {
+    match global.declared_type {
+        Type::Struct { size, .. } => {
+            u32::from(size) * global.array_length.map_or(1, u32::from)
+        }
+        _ => 4 * global.array_length.map_or(elements.len() as u32, u32::from),
+    }
+}
+
 /// Whole-file IPA removes an internal, read-only section registration when
 /// nothing in the unit names the registration object. The section attribute
 /// itself is not a liveness root in the 4.x optimizer: measured `.dtors$10`
@@ -219,6 +235,25 @@ mod tests {
         global.declared_type = Type::Struct { size: 16, align: 4 };
 
         assert!(literal_address_table(&global, &elements));
+    }
+
+    #[test]
+    fn partial_struct_tables_keep_their_declared_zero_filled_tail() {
+        let elements = vec![PointerElement::Symbol("callback".into()); 32];
+        let mut global = private_table(elements.clone());
+        global.declared_type = Type::Struct { size: 4, align: 4 };
+        global.array_length = Some(33);
+
+        assert_eq!(storage_size(&global, &elements), 132);
+    }
+
+    #[test]
+    fn inferred_pointer_tables_use_the_parsed_element_count() {
+        let elements = vec![PointerElement::Null, PointerElement::Null];
+        let mut global = private_table(elements.clone());
+        global.array_length = None;
+
+        assert_eq!(storage_size(&global, &elements), 8);
     }
 
     #[test]

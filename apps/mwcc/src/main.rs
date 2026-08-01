@@ -1693,18 +1693,7 @@ fn compile(
                     "a static/const pointer-address global is not supported yet (roadmap)",
                 ));
             }
-            // A struct-table initializer (declared type is a struct) has one element
-            // per FIELD, so its slot count is the flattened length; a plain pointer
-            // array's length is the (possibly partially initialized) array length.
-            let count = if matches!(global.declared_type, mwcc_syntax_trees::Type::Struct { .. }) {
-                elements.len() as u32
-            } else {
-                global
-                    .array_length
-                    .map(u32::from)
-                    .unwrap_or(elements.len() as u32)
-            };
-            let size = count * 4;
+            let size = global_initializers::storage_size(global, elements);
             let mut bytes = vec![0u8; size as usize];
             let mut relocations = Vec::new();
             for (index, element) in elements.iter().enumerate() {
