@@ -733,6 +733,7 @@ impl Generator {
         remap_prefix_rotate_left(&mut self.output.relocations, link_store);
         self.schedule_linkage_first_entry_arguments(&physical_saved);
         self.schedule_linkage_first_asm_barrier_byte_stores();
+        self.schedule_linkage_first_asm_barrier_status_calls();
         self.schedule_linkage_first_addressable_parameter_calls();
         // The same linkage-first convention tears down in the inverse order:
         // restore SP before writing LR. Most allocator-owned epilogues already

@@ -1160,6 +1160,10 @@ fn lower_function_body(
         );
         remap_instruction_indices(&mut generator, &address);
     }
+    // Word-load narrowing participates in the generic global-address latency
+    // pass above. Reapply the idempotent assembly-barrier packet owner after
+    // that pass so its final saved-buffer forwarding order remains canonical.
+    generator.schedule_linkage_first_asm_barrier_status_calls();
     generator.schedule_structured_inlined_preloaded_retained_guarded_value_transaction();
     generator.schedule_global_queue_pointer_send();
     generator.schedule_structured_multi_member_cache_entry();
