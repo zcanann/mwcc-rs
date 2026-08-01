@@ -1098,13 +1098,33 @@ impl Generator {
                         .push(displacement_store(*element, source, address, total)?);
                     return Ok(());
                 }
-                if !matches!(value, Expression::Variable(_)) {
+                let indexed_source = matches!(value, Expression::Index { .. })
+                    && !matches!(element, Pointee::Float | Pointee::Double);
+                if !matches!(value, Expression::Variable(_)) && !indexed_source {
                     return Err(Diagnostic::error(
                         "array store with a variable index needs a simple value (roadmap)",
                     ));
                 }
-                let source = self.place_store_value(value, *element)?;
-                let index_register = self.general_register_of_leaf(index)?;
+                let loaded_index = !matches!(index.as_ref(), Expression::Variable(_));
+                let index_register = if loaded_index {
+                    self.evaluate_general(index, GENERAL_SCRATCH)?;
+                    GENERAL_SCRATCH
+                } else {
+                    self.general_register_of_leaf(index)?
+                };
+                // An indexed byte source may use r0 directly because a byte
+                // destination needs no target-index scaling. Wider member
+                // arrays preserve the loaded value in its own virtual while
+                // r0 scales the destination, matching the ordinary indexed
+                // store path's scratch-barrier transaction.
+                let source = if indexed_source && (loaded_index || element.size() > 1) {
+                    let source = self
+                        .fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT + 2);
+                    self.evaluate_general(value, source)?;
+                    source
+                } else {
+                    self.place_store_value(value, *element)?
+                };
                 let size = element.size();
                 let scaled = if size == 1 {
                     index_register
@@ -1123,15 +1143,17 @@ impl Generator {
                         .instructions
                         .push(indexed_store(*element, source, address, scaled)?);
                 } else {
+                    let indexed_base = self
+                        .fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
                     self.output.instructions.push(Instruction::Add {
-                        d: address,
+                        d: indexed_base,
                         a: address,
                         b: scaled,
                     });
                     self.output.instructions.push(displacement_store(
                         *element,
                         source,
-                        address,
+                        indexed_base,
                         *offset as i16,
                     )?);
                 }
