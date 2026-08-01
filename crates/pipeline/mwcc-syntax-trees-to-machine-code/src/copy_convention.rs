@@ -5,6 +5,47 @@ use mwcc_machine_code::Instruction;
 use mwcc_versions::MaterializationCopyStyle;
 
 impl Generator {
+    /// Patched build 159 forwards the first pointer argument as an address copy
+    /// and lets the adjacent pointer-difference argument consume the second
+    /// source directly. Build 163's general materialization policy otherwise
+    /// leaves a redundant r0 snapshot in this four-instruction call packet.
+    pub(crate) fn normalize_patched_build159_pointer_difference_call(&mut self) {
+        if self.behavior.frame_convention != mwcc_versions::FrameConvention::LinkageFirst
+            || self.behavior.plain_linkage_epilogue_style
+                != mwcc_versions::PlainLinkageEpilogueStyle::StackRestoreBeforeReload
+        {
+            return;
+        }
+        let relocated: std::collections::HashSet<usize> = self
+            .output
+            .relocations
+            .iter()
+            .map(|relocation| relocation.instruction_index)
+            .collect();
+        let Some((start, start_source, end_source)) = self
+            .output
+            .instructions
+            .windows(4)
+            .enumerate()
+            .find_map(|(index, window)| {
+                (!relocated.contains(&index)
+                    && !relocated.contains(&(index + 1))
+                    && !relocated.contains(&(index + 2)))
+                    .then(|| patched_pointer_difference_call(window).map(|pair| (index, pair.0, pair.1)))
+                    .flatten()
+            })
+        else {
+            return;
+        };
+        self.output.instructions[start] = Instruction::move_register(3, start_source);
+        self.output.instructions[start + 2] = Instruction::SubtractFrom {
+            d: 4,
+            a: start_source,
+            b: end_source,
+        };
+        crate::remove_instruction_retargeting_to_next(self, start + 1);
+    }
+
     /// Nonreturning linkage-first functions keep register copies in their `mr`
     /// form. Some ordered structured-entry paths initially use `addi d,s,0`
     /// before tail reachability is known; normalize those once the function
@@ -115,6 +156,27 @@ impl Generator {
     }
 }
 
+fn patched_pointer_difference_call(window: &[Instruction]) -> Option<(u8, u8)> {
+    let [
+        Instruction::AddImmediate {
+            d: 3,
+            a: start,
+            immediate: 0,
+        },
+        Instruction::AddImmediate {
+            d: 0,
+            a: end,
+            immediate: 0,
+        },
+        Instruction::SubtractFrom { d: 4, a, b: 0 },
+        Instruction::BranchAndLink { .. },
+    ] = window
+    else {
+        return None;
+    };
+    (*start != 0 && *end != 0 && start != end && a == start).then_some((*start, *end))
+}
+
 /// A retained object forwarded beside an address-taken frame aggregate is a
 /// value materialization, not an address-preservation copy. Build 163 spells
 /// each such first argument as `addi r3,saved,0`.
@@ -187,6 +249,28 @@ fn normalize_nonreturning_copies(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_a_forwarded_pointer_difference_call_packet() {
+        let instructions = [
+            Instruction::AddImmediate {
+                d: 3,
+                a: 4,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 0,
+                a: 5,
+                immediate: 0,
+            },
+            Instruction::SubtractFrom { d: 4, a: 4, b: 0 },
+            Instruction::BranchAndLink {
+                target: "flush".into(),
+            },
+        ];
+
+        assert_eq!(patched_pointer_difference_call(&instructions), Some((4, 5)));
+    }
 
     #[test]
     fn materializes_a_saved_object_beside_a_frame_argument() {

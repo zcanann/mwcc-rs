@@ -1173,6 +1173,7 @@ fn lower_function_body(
     if generator.structured_nonreturning {
         generator.normalize_nonreturning_materialization_copies();
     }
+    generator.normalize_patched_build159_pointer_difference_call();
     generator.schedule_legacy_member_constant_store_run();
     generator.canonicalize_patched_build159_plain_linkage();
 
