@@ -51,6 +51,9 @@ impl Generator {
         expression: &Expression,
         destination: u8,
     ) -> Compilation<()> {
+        if self.try_emit_spr_instruction_encoding(expression, destination)? {
+            return Ok(());
+        }
         if self.try_emit_packed_shift_mask(expression, destination)? {
             return Ok(());
         }

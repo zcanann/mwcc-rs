@@ -12,7 +12,9 @@ use mwcc_machine_code::RelocationTarget;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PhysicalPlan {
     condition: usize,
-    shifted_or_pairs: [usize; 2],
+    shifted_or_pairs: Vec<usize>,
+    spr_else_constant: Option<usize>,
+    spr_packets: Vec<(usize, u8)>,
 }
 
 fn relocation_target(
@@ -34,6 +36,47 @@ fn has_incoming_branch(instructions: &[Instruction], target: usize) -> bool {
             ..
         } => *branch_target == target,
         _ => false,
+    })
+}
+
+fn spr_packets(instructions: &[Instruction]) -> Vec<(usize, u8)> {
+    instructions
+        .windows(7)
+        .enumerate()
+        .filter_map(|(index, window)| {
+            match window {
+                [
+                    Instruction::RotateAndMask { a: 0, s: 4, shift: 0, begin: 20, end: 26 },
+                    Instruction::ShiftLeftImmediate { a: upper, s: 0, shift: 6 },
+                    Instruction::ClearLeftImmediate { a: 0, s: 4, clear: 27 },
+                    Instruction::OrImmediateShifted { a: 4, s: or_upper, immediate: 0x7c80 },
+                    Instruction::ShiftLeftImmediate { a: 0, s: 0, shift: 16 },
+                    Instruction::Or { a: 0, s: 4, b: 0 },
+                    Instruction::OrImmediate { a: 0, s: 0, .. },
+                ] if upper == or_upper && *upper >= 6 => Some((index, *upper)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn spr_else_constant_schedule(instructions: &[Instruction]) -> Option<usize> {
+    instructions.windows(10).enumerate().find_map(|(index, window)| {
+        match window {
+            [
+                Instruction::AddImmediateShifted { d: constant, a: 0, .. },
+                Instruction::StoreWord { s: stored_constant, a: 1, offset: 8 },
+                Instruction::RotateAndMask { a: 0, s: 4, shift: 0, begin: 20, end: 26 },
+                Instruction::ShiftLeftImmediate { a: upper, s: 0, shift: 6 },
+                Instruction::ClearLeftImmediate { a: 0, s: 4, clear: 27 },
+                Instruction::OrImmediateShifted { a: 4, s: or_upper, immediate: 0x7c80 },
+                Instruction::ShiftLeftImmediate { a: 0, s: 0, shift: 16 },
+                Instruction::Or { a: 0, s: 4, b: 0 },
+                Instruction::OrImmediate { a: 0, s: 0, .. },
+                Instruction::StoreWord { s: 0, a: 1, offset: 12 },
+            ] if constant == stored_constant && upper == or_upper && *upper >= 6 => Some(index),
+            _ => None,
+        }
     })
 }
 
@@ -162,11 +205,19 @@ fn physical_plan(output: &mwcc_machine_code::MachineFunction) -> Option<Physical
             _ => None,
         })
         .collect();
-    let [first_pair, second_pair] = shifted_or_pairs.as_slice() else {
-        return None;
-    };
-    if *first_pair <= 16 || *second_pair <= first_pair + 2 {
-        return None;
+    let spr_else_constant = spr_else_constant_schedule(instructions);
+    let spr_packets = spr_packets(instructions);
+    match shifted_or_pairs.as_slice() {
+        [first_pair, second_pair]
+            if *first_pair > 16
+                && *second_pair > first_pair + 2
+                && spr_else_constant.is_none()
+                && spr_packets.is_empty() => {}
+        [] if spr_else_constant.is_some_and(|constant| {
+            matches!(spr_packets.as_slice(), [(first, _), (second, _)]
+                if *first > 16 && *second == constant + 2)
+        }) => {}
+        _ => return None,
     }
 
     let epilogue = instructions.len().checked_sub(4)?;
@@ -192,7 +243,9 @@ fn physical_plan(output: &mwcc_machine_code::MachineFunction) -> Option<Physical
 
     Some(PhysicalPlan {
         condition: 15,
-        shifted_or_pairs: [*first_pair, *second_pair],
+        shifted_or_pairs,
+        spr_else_constant,
+        spr_packets,
     })
 }
 
@@ -229,6 +282,54 @@ impl Generator {
             };
             *immediate |= second_immediate;
             crate::remove_instruction_retargeting_to_next(self, first + 1);
+        }
+
+        for (start, upper) in &plan.spr_packets {
+            if *upper == 6 {
+                continue;
+            }
+            let Instruction::ShiftLeftImmediate { a, .. } =
+                &mut self.output.instructions[start + 1]
+            else {
+                unreachable!("the instruction-array plan owns its SPR upper shift")
+            };
+            *a = 6;
+            let Instruction::OrImmediateShifted { s, .. } =
+                &mut self.output.instructions[start + 3]
+            else {
+                unreachable!("the instruction-array plan owns its SPR upper merge")
+            };
+            *s = 6;
+        }
+
+        if let Some(constant) = plan.spr_else_constant {
+            // Generic arm emission completes the leading constant store before
+            // starting the second SPR word. Build 163 instead issues the three
+            // source-dependent mask operations, fills their latency with the
+            // independent `lis`, then commits that constant between `oris` and
+            // the remaining low-field operations.
+            let Instruction::AddImmediateShifted { d, .. } =
+                &mut self.output.instructions[constant]
+            else {
+                unreachable!("the instruction-array plan owns its else constant")
+            };
+            *d = 7;
+            let Instruction::StoreWord { s, .. } =
+                &mut self.output.instructions[constant + 1]
+            else {
+                unreachable!("the instruction-array plan owns its else constant store")
+            };
+            *s = 7;
+            crate::move_instruction_before_retargeting(self, constant + 2, constant);
+            crate::move_instruction_before_retargeting(self, constant + 3, constant + 1);
+            crate::move_instruction_before_retargeting(self, constant + 4, constant + 2);
+            crate::move_instruction_before_retargeting(self, constant + 5, constant + 4);
+            let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[16]
+            else {
+                unreachable!("the instruction-array plan owns its diamond branch")
+            };
+            *target = constant;
         }
 
         let Instruction::StoreWord { offset, .. } = &mut self.output.instructions[3] else {
@@ -392,13 +493,103 @@ mod tests {
         }
     }
 
+    fn spr_word(low_bits: u16) -> Vec<Instruction> {
+        vec![
+            Instruction::RotateAndMask {
+                a: 0,
+                s: 4,
+                shift: 0,
+                begin: 20,
+                end: 26,
+            },
+            Instruction::ShiftLeftImmediate {
+                a: 6,
+                s: 0,
+                shift: 6,
+            },
+            Instruction::ClearLeftImmediate {
+                a: 0,
+                s: 4,
+                clear: 27,
+            },
+            Instruction::OrImmediateShifted {
+                a: 4,
+                s: 6,
+                immediate: 0x7c80,
+            },
+            Instruction::ShiftLeftImmediate {
+                a: 0,
+                s: 0,
+                shift: 16,
+            },
+            Instruction::Or {
+                a: 0,
+                s: 4,
+                b: 0,
+            },
+            Instruction::OrImmediate {
+                a: 0,
+                s: 0,
+                immediate: low_bits,
+            },
+        ]
+    }
+
+    fn spr_candidate() -> MachineFunction {
+        let mut output = candidate();
+        let mut body = spr_word(0x2a6);
+        body.extend([
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 8,
+            },
+            Instruction::AddImmediateShifted {
+                d: 0,
+                a: 0,
+                immediate: -28541,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 12,
+            },
+            Instruction::Branch { target: 38 },
+            Instruction::AddImmediateShifted {
+                d: 7,
+                a: 0,
+                immediate: -32637,
+            },
+            Instruction::StoreWord {
+                s: 7,
+                a: 1,
+                offset: 8,
+            },
+        ]);
+        body.extend(spr_word(0x3a6));
+        body.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 12,
+        });
+        output.instructions.splice(17..26, body);
+        output.instructions[16] = Instruction::BranchConditionalForward {
+            options: 12,
+            condition_bit: 2,
+            target: 28,
+        };
+        output
+    }
+
     #[test]
     fn recognizes_the_complete_pool_copy_and_diamond() {
         assert_eq!(
             physical_plan(&candidate()),
             Some(PhysicalPlan {
                 condition: 15,
-                shifted_or_pairs: [18, 23],
+                shifted_or_pairs: vec![18, 23],
+                spr_else_constant: None,
+                spr_packets: vec![],
             })
         );
     }
@@ -413,5 +604,18 @@ mod tests {
         };
 
         assert_eq!(physical_plan(&output), None);
+    }
+
+    #[test]
+    fn recognizes_the_spr_packet_with_a_leading_else_constant() {
+        assert_eq!(
+            physical_plan(&spr_candidate()),
+            Some(PhysicalPlan {
+                condition: 15,
+                shifted_or_pairs: vec![],
+                spr_else_constant: Some(28),
+                spr_packets: vec![(17, 6), (30, 6)],
+            })
+        );
     }
 }

@@ -44,6 +44,7 @@ mod member_array_constant_store;
 mod member_indexed_global_array_store;
 mod retained_global_pointer_store;
 mod scaled_integer_call_narrow_store;
+mod spr_instruction_encoding;
 mod members;
 mod narrow_compound;
 mod nested_global_pointer_float_store;
