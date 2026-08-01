@@ -4586,6 +4586,7 @@ impl Parser {
                                 signature.variadic,
                             )?
                         };
+                        let key_function = mangled.clone();
                         if let Some((_, target)) = class
                             .virtual_definitions
                             .iter_mut()
@@ -4600,10 +4601,12 @@ impl Parser {
                                 .push((dispatch.slot_offset, mangled));
                         }
                         if !is_inline && class.vtable_key_function.is_none() {
-                            class.vtable_key_function = class
-                                .virtual_definitions
-                                .last()
-                                .map(|(_, name)| name.clone());
+                            // The first non-inline virtual DECLARED by this
+                            // class owns its vtable. An override can replace an
+                            // inherited slot before later inherited entries,
+                            // so the table's last relocation is unrelated to
+                            // the derived key-function decision.
+                            class.vtable_key_function = Some(key_function);
                         }
                     }
                     Some(dispatch)

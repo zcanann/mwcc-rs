@@ -2994,6 +2994,44 @@ blr\n\
     }
 
     #[test]
+    fn inherited_non_tail_override_owns_the_derived_vtable() {
+        let source = r#"
+            class Base {
+            public:
+                virtual void first();
+                virtual void tail();
+            };
+            class Derived : public Base {
+            public:
+                void first();
+            };
+            void Derived::first() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        let derived_table = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__7Derived")
+            .expect("the first derived override owns the derived vtable");
+        assert!(!derived_table.is_weak);
+        assert_eq!(
+            derived_table.data_relocations,
+            vec![
+                (8, "first__7DerivedFv".to_string(), 0),
+                (12, "tail__4BaseFv".to_string(), 0),
+            ]
+        );
+    }
+
+    #[test]
     fn destructor_owned_vtable_precedes_its_inline_base_dependency() {
         let source = r#"
             class Base {
