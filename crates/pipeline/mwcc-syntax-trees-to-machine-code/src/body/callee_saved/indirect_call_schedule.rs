@@ -9,6 +9,9 @@ impl Generator {
     /// store before or after argument setup, so identify the semantic pieces
     /// instead of depending on their incoming indices.
     pub(crate) fn normalize_linkage_first_indirect_call_schedule(&mut self) {
+        if self.schedule_linkage_first_asm_barrier_indirect_call() {
+            return;
+        }
         if self.behavior.frame_convention != FrameConvention::LinkageFirst
             || !self.non_leaf
             || self.frame_size != 8

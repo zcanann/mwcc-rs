@@ -2283,6 +2283,20 @@ impl Generator {
             LegacyCalleeSavedFrameLayout::InferFromValueOrigin
         } else if guarded_structured_constant_return {
             LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable
+        } else if function.locals.is_empty()
+            && !saved_parameters.is_empty()
+            && saved_float_parameters.is_empty()
+            && eager_saved_locals.is_empty()
+            && deferred_saved_locals.is_empty()
+            && saved_home_slot_base == 0
+            && count == saved_parameters.len()
+            && self.legacy_inline_expansion_frame_bytes == 0
+        {
+            // Straight-line parameter survivors already own physical saved
+            // homes. With no source locals, cache homes, inline residue, or
+            // dense register window, build 163 does not retain a second copy
+            // of the incoming value table in the frame.
+            LegacyCalleeSavedFrameLayout::CompactValueHomes
         } else if deferred_saved_locals.len() >= 2
             && eager_saved_locals.is_empty()
             && saved_parameters.is_empty()

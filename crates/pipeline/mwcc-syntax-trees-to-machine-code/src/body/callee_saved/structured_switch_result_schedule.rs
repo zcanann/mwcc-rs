@@ -49,7 +49,7 @@ impl Generator {
         crate::move_instruction_before_retargeting(self, scrutinee, initializer);
         self.output.instructions[result_copy] = Instruction::move_register(home, 3);
         self.legacy_callee_saved_frame_layout =
-            LegacyCalleeSavedFrameLayout::CompactLiteralHome;
+            LegacyCalleeSavedFrameLayout::CompactValueHomes;
         self.structured_cfg_cleanup_owner = true;
     }
 }

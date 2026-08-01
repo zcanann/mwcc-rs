@@ -395,7 +395,7 @@ impl Generator {
         // the established single inferred lane regardless of their count.
         let inferred_entry_lane_count = || {
             if self.legacy_callee_saved_frame_layout
-                == LegacyCalleeSavedFrameLayout::CompactLiteralHome
+                == LegacyCalleeSavedFrameLayout::CompactValueHomes
             {
                 0
             } else if self.entry_parameter_words != 0
@@ -731,7 +731,7 @@ impl Generator {
         // [mflr, scheduled gap..., stw LR, stwu].
         self.output.instructions[..=link_store].rotate_left(1);
         remap_prefix_rotate_left(&mut self.output.relocations, link_store);
-        self.schedule_linkage_first_entry_arguments();
+        self.schedule_linkage_first_entry_arguments(&physical_saved);
         self.schedule_linkage_first_addressable_parameter_calls();
         // The same linkage-first convention tears down in the inverse order:
         // restore SP before writing LR. Most allocator-owned epilogues already

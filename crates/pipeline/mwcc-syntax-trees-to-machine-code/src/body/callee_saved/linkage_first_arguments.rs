@@ -7,7 +7,10 @@ impl Generator {
     /// Fill build 163's three linkage latency slots after physical allocation.
     /// Allocator-owned callee-saved bodies cannot use the ordinary pre-allocation
     /// call-prologue scheduler, so their final machine stream is normalized here.
-    pub(crate) fn schedule_linkage_first_entry_arguments(&mut self) {
+    pub(crate) fn schedule_linkage_first_entry_arguments(&mut self, physical_saved: &[u8]) {
+        if self.schedule_linkage_first_asm_barrier_entry(physical_saved) {
+            return;
+        }
         let function_symbols = &self.call_return_types;
         let is_function_symbol = |name: &str| function_symbols.contains_key(name);
         schedule_guarded_saved_entry_copies(&mut self.output);
