@@ -56,6 +56,10 @@ impl Generator {
         target: &Expression,
         value: &Expression,
     ) -> Compilation<bool> {
+        let materialized_product_result = matches!(
+            value,
+            Expression::Variable(name) if name.starts_with("__mwcc_vec3_result")
+        );
         let source = match value {
             Expression::Member {
                 base,
@@ -102,7 +106,21 @@ impl Generator {
             }
             _ => return Ok(false),
         };
+        let first = if materialized_product_result
+            || self.reserved.contains(&Eabi::general_result().number)
+        {
+            4
+        } else {
+            Eabi::general_result().number
+        };
+        if materialized_product_result {
+            // The inlined operator's return object copies through r4 while
+            // its destination pointer occupies r5. Preserve r3 for the
+            // enclosing method's `this` value or integer return.
+            self.avoid_virtual_general(target_register, &[3, first]);
+        }
         self.emit_vec3_word_copy(
+            first,
             source_register,
             source_offset,
             target_register,
@@ -191,6 +209,7 @@ impl Generator {
             return Ok(false);
         };
         self.emit_vec3_word_copy(
+            Eabi::general_result().number,
             source_register,
             source_offset,
             target_register,
@@ -223,12 +242,12 @@ impl Generator {
 
     fn emit_vec3_word_copy(
         &mut self,
+        first: u8,
         source_register: u8,
         source_offset: i16,
         target_register: u8,
         target_offset: i16,
     ) -> Compilation<bool> {
-        let first = Eabi::general_result().number;
         if source_register == first || target_register == first {
             return Ok(false);
         }

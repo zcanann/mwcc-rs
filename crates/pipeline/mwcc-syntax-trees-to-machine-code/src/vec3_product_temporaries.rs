@@ -12,6 +12,23 @@ use mwcc_syntax_trees::{
 };
 use std::collections::HashSet;
 
+const SCALE_PREFIX: &str = "__mwcc_vec3_scale";
+const RESULT_PREFIX: &str = "__mwcc_vec3_result";
+const SCRATCH_PREFIX: &str = "__mwcc_vec3_scratch";
+
+/// Whether lowering introduced the paired scratch/return-object frame used by
+/// the legacy inline operator. Unlike an ordinary aggregate-only frame, this
+/// frame retains the ABI's sixteen-byte local-table prefix.
+pub(crate) fn owns_materialized_frame(function: &Function) -> bool {
+    let has = |prefix: &str| {
+        function
+            .locals
+            .iter()
+            .any(|local| local.name.starts_with(prefix))
+    };
+    has(SCALE_PREFIX) && has(RESULT_PREFIX) && has(SCRATCH_PREFIX)
+}
+
 pub(crate) fn materialize(function: &Function) -> Option<Function> {
     let mut output = function.clone();
     let mut occupied = output
@@ -160,9 +177,9 @@ fn materialize_store(
         return None;
     };
     source_offset.checked_add(8)?;
-    let scale = unique_name("__mwcc_vec3_scale", occupied, next_id);
-    let result = unique_name("__mwcc_vec3_result", occupied, next_id);
-    let scratch = unique_name("__mwcc_vec3_scratch", occupied, next_id);
+    let scale = unique_name(SCALE_PREFIX, occupied, next_id);
+    let result = unique_name(RESULT_PREFIX, occupied, next_id);
+    let scratch = unique_name(SCRATCH_PREFIX, occupied, next_id);
     // Reverse-declaration frame layout places the eight-byte scratch below the
     // result object: scratch@24 and result@32 in the measured mainline frame.
     locals.push(local(result.clone(), Type::Struct { size: 12, align: 4 }));
@@ -282,6 +299,7 @@ mod tests {
         };
         let materialized = materialize(&function).unwrap();
         function = materialized;
+        assert!(owns_materialized_frame(&function));
         assert_eq!(function.locals.len(), 3);
         assert_eq!(function.statements.len(), 6);
         assert!(matches!(

@@ -1218,6 +1218,7 @@ fn lower_function_body(
     generator.schedule_pointer_table_index_cursor_epilogue();
     generator.schedule_prescaled_pointer_table_index();
     generator.schedule_polymorphic_zero_constructor();
+    generator.schedule_materialized_vec3_product(function);
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for

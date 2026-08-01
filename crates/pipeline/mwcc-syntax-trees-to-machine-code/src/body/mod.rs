@@ -186,6 +186,7 @@ mod register_inline_asm;
 mod schedule_relocations;
 mod scaled_angle_call;
 mod variadic_report_member_schedule;
+mod vec3_product_schedule;
 mod wide_call_result_mask_chain;
 mod sorted_intrusive_global_insert;
 mod sorted_intrusive_insert;

@@ -595,6 +595,8 @@ impl Generator {
                 || aggregate_by_value_plan.as_ref().map_or(0, |plan| plan.total_bytes),
                 |plan| plan.total_bytes,
             );
+        let materialized_vec3_frame =
+            crate::vec3_product_temporaries::owns_materialized_frame(function);
         let unused_frame_array = !frame_arrays.is_empty()
             && frame_arrays
                 .iter()
@@ -2046,6 +2048,7 @@ impl Generator {
             } else {
                 match self.behavior.frame_convention {
                     FrameConvention::Predecrement => 8,
+                    FrameConvention::LinkageFirst if materialized_vec3_frame => 24,
                     FrameConvention::LinkageFirst
                         if compact_linkage_first_instruction_array =>
                     {
