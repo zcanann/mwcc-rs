@@ -93,6 +93,133 @@ fn frame_aggregate_array_element(slot: FrameSlot, index: i64) -> Compilation<Opt
 }
 
 impl Generator {
+    /// Copy a frame-resident aggregate back to a file-scope object. Large
+    /// aggregates have an ordinary absolute address even in a small-data
+    /// build. MWCC pipelines each pair of frame loads before the stores.
+    pub(crate) fn try_emit_frame_to_global_aggregate_copy(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+    ) -> Compilation<bool> {
+        let Expression::Variable(target_name) = target else {
+            return Ok(false);
+        };
+        let Some(Type::Struct {
+            size: target_size,
+            ..
+        }) = self.globals.get(target_name).copied()
+        else {
+            return Ok(false);
+        };
+        let Expression::Variable(source_name) = value else {
+            return Ok(false);
+        };
+        let Some(source) = self.frame_slots.get(source_name).copied() else {
+            return Ok(false);
+        };
+        let Type::Struct {
+            size: source_size, ..
+        } = source.value_type
+        else {
+            return Ok(false);
+        };
+        if source_size != target_size || source_size == 0 || source_size % 4 != 0 {
+            return Err(Diagnostic::error(
+                "a frame-to-global aggregate copy requires equal, word-sized objects (roadmap)",
+            ));
+        }
+        if target_size <= 8 && self.behavior.global_addressing == GlobalAddressing::SmallData {
+            return Ok(false);
+        }
+
+        let address_high = self.fresh_virtual_general_preferring(3);
+        let target_address = self.fresh_virtual_general_preferring(5);
+        let first_word = self.fresh_virtual_general_preferring(4);
+        self.emit_address_high(address_high, target_name);
+
+        self.output.instructions.push(Instruction::LoadWord {
+            d: first_word,
+            a: 1,
+            offset: source.offset,
+        });
+        let second_source_offset = source.offset.checked_add(4).ok_or_else(|| {
+            Diagnostic::error("frame-to-global aggregate source is out of range")
+        })?;
+        let second_word = (target_size >= 8).then(|| {
+            self.output.instructions.push(Instruction::LoadWord {
+                d: GENERAL_SCRATCH,
+                a: 1,
+                offset: second_source_offset,
+            });
+            GENERAL_SCRATCH
+        });
+
+        self.record_relocation(RelocationKind::Addr16Lo, target_name);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: target_address,
+            a: address_high,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: first_word,
+            a: target_address,
+            offset: 0,
+        });
+        if let Some(second_word) = second_word {
+            self.output.instructions.push(Instruction::StoreWord {
+                s: second_word,
+                a: target_address,
+                offset: 4,
+            });
+        }
+
+        for pair_start in (8..target_size).step_by(8) {
+            let source_offset = source
+                .offset
+                .checked_add(i16::try_from(pair_start).map_err(|_| {
+                    Diagnostic::error("frame-to-global aggregate offset is out of range")
+                })?)
+                .ok_or_else(|| {
+                    Diagnostic::error("frame-to-global aggregate source is out of range")
+                })?;
+            let target_offset = i16::try_from(pair_start).map_err(|_| {
+                Diagnostic::error("frame-to-global aggregate offset is out of range")
+            })?;
+            self.output.instructions.push(Instruction::LoadWord {
+                d: first_word,
+                a: 1,
+                offset: source_offset,
+            });
+            let has_second = pair_start + 4 < target_size;
+            if has_second {
+                let second_source_offset = source_offset.checked_add(4).ok_or_else(|| {
+                    Diagnostic::error("frame-to-global aggregate source is out of range")
+                })?;
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: GENERAL_SCRATCH,
+                    a: 1,
+                    offset: second_source_offset,
+                });
+            }
+            self.output.instructions.push(Instruction::StoreWord {
+                s: first_word,
+                a: target_address,
+                offset: target_offset,
+            });
+            if has_second {
+                let second_target_offset = target_offset.checked_add(4).ok_or_else(|| {
+                    Diagnostic::error("frame-to-global aggregate target is out of range")
+                })?;
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: GENERAL_SCRATCH,
+                    a: target_address,
+                    offset: second_target_offset,
+                });
+            }
+        }
+        Ok(true)
+    }
+
     /// Copy an aggregate from a frame slot or typed struct-pointer source into
     /// a frame-resident aggregate lvalue. A single word scratch is enough;
     /// overlap chooses the memmove-safe direction.

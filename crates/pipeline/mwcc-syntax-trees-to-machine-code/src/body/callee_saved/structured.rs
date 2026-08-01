@@ -3295,6 +3295,11 @@ impl Generator {
                 },
             );
         }
+        for local in &aggregate_frame_locals {
+            if let Some(initializer) = &local.initializer {
+                self.emit_store(&Expression::Variable(local.name.clone()), initializer)?;
+            }
+        }
         for local in &frame_scalar_locals {
             if frame_publication
                 .as_ref()

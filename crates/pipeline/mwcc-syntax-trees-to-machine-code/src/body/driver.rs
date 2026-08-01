@@ -2323,8 +2323,9 @@ impl Generator {
         {
             let mut total_store_count = 0u32;
             let mut has_base_addressed_aggregate_store = false;
+            let mut restores_saved_global_aggregate = false;
             for statement in &function.statements {
-                let Statement::Store { target, .. } = statement else {
+                let Statement::Store { target, value } = statement else {
                     continue;
                 };
                 total_store_count += 1;
@@ -2350,10 +2351,25 @@ impl Generator {
                             }
                         }
                     }
+                    Expression::Variable(global) => {
+                        restores_saved_global_aggregate |=
+                            matches!(self.globals.get(global), Some(Type::Struct { .. }))
+                                && matches!(value, Expression::Variable(local)
+                                    if function.locals.iter().any(|declaration| {
+                                        declaration.name == *local
+                                            && matches!(
+                                                declaration.initializer.as_ref(),
+                                                Some(Expression::Variable(source)) if source == global
+                                            )
+                                    }));
+                    }
                     _ => {}
                 }
             }
-            if has_base_addressed_aggregate_store && total_store_count >= 2 {
+            if has_base_addressed_aggregate_store
+                && total_store_count >= 2
+                && !restores_saved_global_aggregate
+            {
                 return Err(Diagnostic::error("a base-addressed global-aggregate store alongside another store needs the shared-base schedule (roadmap)"));
             }
         }
