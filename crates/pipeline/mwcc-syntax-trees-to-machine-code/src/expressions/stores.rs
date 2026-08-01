@@ -1760,7 +1760,21 @@ impl Generator {
             // Give the result a virtual home and let allocation coalesce it to
             // the measured free FPR; the ordinary single-operand store keeps
             // using f0.
-            let destination = if matches!(
+            let o0_literal_minus_memory = self.behavior.optimization
+                == mwcc_versions::Optimization::O0
+                && matches!(
+                    value,
+                    Expression::Binary {
+                        operator: BinaryOperator::Subtract,
+                        left,
+                        right,
+                    } if matches!(left.as_ref(), Expression::FloatLiteral(_))
+                        && matches!(right.as_ref(), Expression::Member { .. }
+                            | Expression::Dereference { .. }
+                            | Expression::Index { .. })
+                );
+            let destination = if !o0_literal_minus_memory
+                && matches!(
                 value,
                 Expression::Binary {
                     left,
@@ -1770,7 +1784,8 @@ impl Generator {
                     && matches!(right.as_ref(), Expression::FloatLiteral(_)))
                     || (matches!(right.as_ref(), Expression::Member { .. } | Expression::Dereference { .. } | Expression::Index { .. })
                         && matches!(left.as_ref(), Expression::FloatLiteral(_)))
-            ) {
+                )
+            {
                 self.fresh_virtual_float()
             } else {
                 FLOAT_SCRATCH
