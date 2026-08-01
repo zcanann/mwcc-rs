@@ -2095,9 +2095,10 @@ impl Generator {
         } else if retains_unobserved_local_lane {
             // An optimizer-only scalar can disappear from the emitted value
             // graph while its logical local-table lane still contributes to
-            // the legacy frame.  Retain that lane even when the body also
-            // materializes global member addresses in saved registers.
-            LegacyCalleeSavedFrameLayout::RetainEntryParameterTableAndDeferredLocalLane
+            // the legacy frame. A global-address materialization is not an
+            // incoming parameter use, so it must not also retain the unused
+            // parameter's entry table.
+            LegacyCalleeSavedFrameLayout::RetainDeferredLocalLane
         } else if !global_member_address_cache_plans.is_empty()
             || unused_frame_array
             || !frame_scalar_parameters.is_empty()

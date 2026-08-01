@@ -217,9 +217,6 @@ pub(crate) enum LegacyCalleeSavedFrameLayout {
     /// Build 163 reserves one optimizer lane even when the value stays in a
     /// saved register.
     RetainDeferredLocalLane,
-    /// Retain the ordinary incoming-value table and one additional optimizer
-    /// lane for a source local whose assignment was eliminated as unobserved.
-    RetainEntryParameterTableAndDeferredLocalLane,
     /// A global-member address first materialized inside a guarded arm remains
     /// live across a later call. Build 163 keeps the same optimizer lane as a
     /// deferred local, without enabling deferred-local issue-order schedules.
