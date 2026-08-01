@@ -2,7 +2,9 @@
 //!
 //! O0 keeps the aggregate base intact, materializes the stored value in r4,
 //! scales the index into r3, folds the member offset into r0, and finishes with
-//! an indexed store.
+//! an indexed store. Optimized builds also accept computed indices (notably
+//! `buffer->data[buffer->position++] = value`), preserving the old index in a
+//! virtual lane while the constant materializes in r0.
 
 use super::*;
 
@@ -30,9 +32,6 @@ fn classify<'a>(
     else {
         return None;
     };
-    if !matches!(index.as_ref(), Expression::Variable(_)) {
-        return None;
-    }
     let value = constant_value(value)?;
     Some(MemberArrayConstantStore {
         aggregate,
@@ -49,9 +48,6 @@ impl Generator {
         target: &Expression,
         value: &Expression,
     ) -> Compilation<bool> {
-        if self.behavior.optimization != mwcc_versions::Optimization::O0 {
-            return Ok(false);
-        }
         let Some(store) = classify(target, value) else {
             return Ok(false);
         };
@@ -59,6 +55,12 @@ impl Generator {
             store.element,
             Pointee::Float | Pointee::Double | Pointee::LongLong | Pointee::UnsignedLongLong
         ) {
+            return Ok(false);
+        }
+        if self.behavior.optimization != mwcc_versions::Optimization::O0 {
+            return self.emit_optimized_member_array_constant_store(store);
+        }
+        if !matches!(store.index, Expression::Variable(_)) {
             return Ok(false);
         }
         let aggregate = self.general_register_of_leaf(store.aggregate)?;
@@ -105,6 +107,73 @@ impl Generator {
         )?);
         Ok(true)
     }
+
+    fn emit_optimized_member_array_constant_store(
+        &mut self,
+        store: MemberArrayConstantStore<'_>,
+    ) -> Compilation<bool> {
+        let aggregate = self.member_base_register(store.aggregate)?;
+        let index = if matches!(store.index, Expression::Variable(_)) {
+            self.general_register_of_leaf(store.index)?
+        } else {
+            let index = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+            self.evaluate_general(store.index, index)?;
+            index
+        };
+        // Scale before loading the source constant: integer constants use r0,
+        // which is also the generic expression scratch lane. A dedicated
+        // virtual keeps both values live for word/halfword member arrays.
+        let scaled = if store.element.size() == 1 {
+            index
+        } else {
+            let scaled = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT + 1);
+            let size = store.element.size();
+            if size.is_power_of_two() {
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftLeftImmediate {
+                        a: scaled,
+                        s: index,
+                        shift: size.trailing_zeros() as u8,
+                    });
+            } else {
+                self.output
+                    .instructions
+                    .push(Instruction::MultiplyImmediate {
+                        d: scaled,
+                        a: index,
+                        immediate: i16::from(size),
+                    });
+            }
+            scaled
+        };
+        self.load_integer_constant(GENERAL_SCRATCH, store.value);
+        if store.member_offset == 0 {
+            self.output.instructions.push(indexed_store(
+                store.element,
+                GENERAL_SCRATCH,
+                aggregate,
+                scaled,
+            )?);
+        } else {
+            let indexed_base =
+                self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT + 1);
+            self.output.instructions.push(Instruction::Add {
+                d: indexed_base,
+                a: aggregate,
+                b: scaled,
+            });
+            let member_offset = i16::try_from(store.member_offset)
+                .map_err(|_| Diagnostic::error("member-array offset is out of range"))?;
+            self.output.instructions.push(displacement_store(
+                store.element,
+                GENERAL_SCRATCH,
+                indexed_base,
+                member_offset,
+            )?);
+        }
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -128,5 +197,34 @@ mod tests {
         assert_eq!(store.member_offset, 76);
         assert_eq!(store.value, 0);
         assert!(matches!(store.index, Expression::Variable(name) if name == "index"));
+    }
+
+    #[test]
+    fn recognizes_a_constant_store_to_a_post_incremented_member_index() {
+        let position = Expression::Member {
+            base: Box::new(Expression::Variable("buffer".into())),
+            offset: 12,
+            member_type: Type::UnsignedInt,
+            index_stride: None,
+        };
+        let target = Expression::Index {
+            base: Box::new(Expression::MemberAddress {
+                base: Box::new(Expression::Variable("buffer".into())),
+                offset: 16,
+                element: Pointee::UnsignedChar,
+                index_stride: None,
+            }),
+            index: Box::new(Expression::PostStep {
+                target: Box::new(position),
+                operator: BinaryOperator::Add,
+                pointer_link: None,
+            }),
+        };
+
+        let store = classify(&target, &Expression::IntegerLiteral(2))
+            .expect("post-incremented member-array constant store");
+        assert_eq!(store.member_offset, 16);
+        assert_eq!(store.value, 2);
+        assert!(matches!(store.index, Expression::PostStep { .. }));
     }
 }
