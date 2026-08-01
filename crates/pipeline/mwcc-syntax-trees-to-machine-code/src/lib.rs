@@ -1194,6 +1194,7 @@ fn lower_function_body(
     generator.schedule_legacy_member_constant_store_run();
     generator.schedule_patched_status_initialization_chain();
     generator.canonicalize_patched_build159_post_asm_linkage();
+    generator.schedule_structured_repeated_value_inlined_byte_appends();
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for
