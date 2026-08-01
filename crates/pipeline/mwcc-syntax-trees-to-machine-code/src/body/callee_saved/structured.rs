@@ -1190,19 +1190,33 @@ impl Generator {
                     .map_or(31, ExclusiveArmHomeLayout::data_anchor_preference),
             )
         });
-        let standalone_global_member_address_homes = global_member_address_cache_plans
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                let first: u8 = if standalone_data_anchor_home.is_some() {
+        let standalone_global_base_home = global_base_cache_plan
+            .as_ref()
+            .filter(|base| {
+                global_member_address_cache_plans
+                    .iter()
+                    .any(|member| member.global == base.global)
+            })
+            .map(|_| {
+                let preferred = if standalone_data_anchor_home.is_some() {
                     30
                 } else {
                     31
                 };
+                self.fresh_virtual_general_preferring(preferred)
+            });
+        let standalone_global_member_address_homes = global_member_address_cache_plans
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let preceding = u8::from(standalone_data_anchor_home.is_some())
+                    + u8::from(standalone_global_base_home.is_some());
+                let first = 31u8.saturating_sub(preceding);
                 self.fresh_virtual_general_preferring(first.saturating_sub(index as u8))
             })
             .collect::<Vec<_>>();
         let saved_home_slot_base = usize::from(standalone_data_anchor_home.is_some())
+            + usize::from(standalone_global_base_home.is_some())
             + standalone_global_member_address_homes.len();
         let total_home_count = count + saved_home_slot_base;
         let first_saved = 32usize.saturating_sub(total_home_count);
@@ -1549,6 +1563,16 @@ impl Generator {
                         first_saved + home_index
                     };
                     self.fresh_virtual_general_preferring(preferred as u8)
+                } else if standalone_global_base_home.is_some() {
+                    // Entry aggregate caches consume the high end of the saved
+                    // range in source-discovery order. Ordinary survivors
+                    // continue immediately below that prefix; pinning this
+                    // preference also prevents their prologue save uses from
+                    // outranking the cache definitions in linear scan.
+                    let preferred = 31usize
+                        .saturating_sub(saved_home_slot_base)
+                        .saturating_sub(home_index);
+                    self.fresh_virtual_general_preferring(preferred as u8)
                 } else {
                     self.fresh_virtual_general()
                 }
@@ -1624,6 +1648,7 @@ impl Generator {
         }
         let mut logical_saved_homes = Vec::with_capacity(total_home_count);
         logical_saved_homes.extend(standalone_data_anchor_home);
+        logical_saved_homes.extend(standalone_global_base_home);
         logical_saved_homes.extend(standalone_global_member_address_homes.iter().copied());
         if let Some(reused) = reused_data_anchor_home_index {
             logical_saved_homes.push(homes[reused]);
@@ -2257,13 +2282,21 @@ impl Generator {
             self.output.anonymous_label_bump += 1;
         }
         if let Some(cache) = global_base_cache_plan {
-            let register = self.fresh_virtual_general_preferring(4);
+            let register = standalone_global_base_home
+                .unwrap_or_else(|| self.fresh_virtual_general_preferring(4));
             self.emit_global_array_base(&cache.global, cache.total_size, register)?;
             self.structured_global_base_cache =
                 Some(crate::generator::StructuredGlobalBaseCache {
                     global: cache.global,
                     register,
                 });
+            if standalone_global_base_home.is_some() {
+                self.emit_structured_saved_home_store(
+                    register,
+                    usize::from(standalone_data_anchor_home.is_some()),
+                    plan.frame_size,
+                );
+            }
         }
         for (cache, register) in global_member_address_cache_plans
             .into_iter()
@@ -2300,6 +2333,7 @@ impl Generator {
             self.emit_structured_saved_home_store(
                 register,
                 usize::from(standalone_data_anchor_home.is_some())
+                    + usize::from(standalone_global_base_home.is_some())
                     + self.structured_global_member_address_caches.len()
                     - 1,
                 plan.frame_size,
