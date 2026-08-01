@@ -3,6 +3,14 @@
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type, UnaryOperator};
 use std::collections::HashSet;
 
+pub(crate) const PRESCALED_POINTER_TABLE_INDEX_PREFIX: &str =
+    "__mwcc_pointer_table_byte_offset_";
+
+pub(crate) fn is_prescaled_pointer_table_index(expression: &Expression) -> bool {
+    matches!(expression, Expression::Variable(name)
+        if name.starts_with(PRESCALED_POINTER_TABLE_INDEX_PREFIX))
+}
+
 /// Strip parser-only provenance from the value of a compound memory update.
 /// Semantic recognizers operate on the arithmetic expression; store lowering
 /// consumes the wrapper separately when it selects MWCC's update syntax.

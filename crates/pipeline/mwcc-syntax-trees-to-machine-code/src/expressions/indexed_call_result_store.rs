@@ -106,7 +106,11 @@ impl Generator {
         ) {
             return Ok(false);
         }
-        let size = pointee.size();
+        let size = if crate::analysis::is_prescaled_pointer_table_index(index) {
+            1
+        } else {
+            pointee.size()
+        };
         let scaled = if size == 1 {
             index_register
         } else {

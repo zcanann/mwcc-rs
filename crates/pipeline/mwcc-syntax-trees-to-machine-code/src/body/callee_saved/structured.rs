@@ -309,6 +309,12 @@ impl Generator {
         let terminal_branch_result =
             super::structured_terminal_branch_result::fold(function);
         let function = terminal_branch_result.as_ref().unwrap_or(function);
+        let reduced_pointer_table_indices =
+            super::structured_pointer_table_index_cursor::strength_reduce_pointer_table_indices(
+                function,
+                &self.globals,
+            );
+        let function = reduced_pointer_table_indices.as_ref().unwrap_or(function);
         // Macro-expanded display-list packets are an input normalization for
         // this general structured path. More exact semantic owners run before
         // reaching here and retain their original packet statements.
