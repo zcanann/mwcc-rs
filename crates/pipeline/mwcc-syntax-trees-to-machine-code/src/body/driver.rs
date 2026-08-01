@@ -1193,6 +1193,9 @@ impl Generator {
         if self.try_memory_access_transaction(function)? {
             return Ok(());
         }
+        if self.try_extended_register_access(function)? {
+            return Ok(());
+        }
         if self.try_support_file_request(function)? {
             return Ok(());
         }
