@@ -7861,6 +7861,29 @@ blr\n\
                 if matches!(statements.as_slice(),
                     [Statement::Expression(Expression::VirtualCall { slot_offset: 36, .. })])
         ));
+        let receiver = unit
+            .cxx_abi_classes
+            .iter()
+            .position(|class| class.source_name.starts_with("Receiver<"))
+            .expect("the concrete template base should participate in the ABI class graph");
+        let action = unit
+            .cxx_abi_classes
+            .iter()
+            .position(|class| class.source_name == "Action")
+            .expect("the derived class should participate in the ABI class graph");
+        assert!(receiver < action);
+        assert_eq!(unit.cxx_abi_classes[receiver].vtable_components[0].virtual_slots, 8);
+        let last_leaf = unit
+            .functions
+            .iter()
+            .position(|function| function.name == "seventh__11Receiver<i>FPiP3Msg")
+            .expect("the last empty leaf should be materialized");
+        let dispatch = unit
+            .functions
+            .iter()
+            .position(|function| function.name == "dispatch__11Receiver<i>FPiP3Msg")
+            .expect("the nontrivial dispatcher should be materialized");
+        assert!(last_leaf < dispatch);
     }
 
     #[test]
