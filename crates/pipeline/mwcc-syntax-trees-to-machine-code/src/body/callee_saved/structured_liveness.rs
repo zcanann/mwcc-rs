@@ -280,10 +280,19 @@ fn flow(
                     )
                     .read_after_call;
                 }
-                // The loop may not execute (except do/while), may break, or may
-                // complete an iteration. Preserve every possible call-bearing
-                // exit conservatively for the following statement.
-                prior_call |= statement_has_call(statement);
+                // A fallthrough do/while has executed its body at least once,
+                // so the state after its condition is the actual exit state.
+                // In particular, a final call-result assignment in the body
+                // defines a fresh value; the mere presence of that call must
+                // not make the value look clobbered at the following return.
+                // Other loop forms may skip their bodies, and non-fallthrough
+                // bodies may have break exits that are not represented by the
+                // single fallthrough state, so retain the conservative join.
+                if *kind == LoopKind::DoWhile && body_flow.falls_through {
+                    prior_call = iteration_call;
+                } else {
+                    prior_call |= statement_has_call(statement);
+                }
             }
             Statement::Switch { .. } => {
                 prior_call |= statement_has_call(statement);
@@ -730,6 +739,53 @@ mod tests {
             Statement::Expression(Expression::Variable("value".into())),
         ];
         assert!(read_after_possible_call(&statements, "value", false).read_after_call);
+    }
+
+    #[test]
+    fn a_do_while_final_call_result_is_fresh_at_the_loop_exit() {
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::DoWhile,
+            initializer: None,
+            condition: Some(Expression::Binary {
+                operator: mwcc_syntax_trees::BinaryOperator::LogicalAnd,
+                left: Box::new(Expression::Binary {
+                    operator: mwcc_syntax_trees::BinaryOperator::NotEqual,
+                    left: Box::new(Expression::Variable("result".into())),
+                    right: Box::new(Expression::IntegerLiteral(0)),
+                }),
+                right: Box::new(Expression::Binary {
+                    operator: mwcc_syntax_trees::BinaryOperator::Greater,
+                    left: Box::new(Expression::Variable("tries".into())),
+                    right: Box::new(Expression::IntegerLiteral(0)),
+                }),
+            }),
+            step: None,
+            body: vec![
+                Statement::Assign {
+                    name: "result".into(),
+                    value: Expression::Call {
+                        name: "send".into(),
+                        arguments: vec![Expression::Variable("buffer".into())],
+                    },
+                },
+                Statement::Assign {
+                    name: "tries".into(),
+                    value: Expression::Binary {
+                        operator: mwcc_syntax_trees::BinaryOperator::Subtract,
+                        left: Box::new(Expression::Variable("tries".into())),
+                        right: Box::new(Expression::IntegerLiteral(1)),
+                    },
+                },
+            ],
+        }];
+
+        assert!(!read_after_possible_call_in_return(
+            &statements,
+            Some(&Expression::Variable("result".into())),
+            "result",
+        ));
+        assert!(read_after_possible_call(&statements, "tries", false).read_after_call);
+        assert!(read_after_possible_call(&statements, "buffer", false).read_after_call);
     }
 
     #[test]

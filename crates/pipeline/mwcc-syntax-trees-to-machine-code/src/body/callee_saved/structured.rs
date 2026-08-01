@@ -113,6 +113,11 @@ use super::structured_shared_switch_global_value::{
 use super::structured_condition_join_cache::{
     followup_after_call_free_join, retained_values_after_join,
 };
+use super::structured_counted_call_retry::{
+    is_normalized as is_counted_call_retry,
+    normalize as normalize_counted_call_retry,
+    schedule as schedule_counted_call_retry,
+};
 use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
 };
@@ -166,14 +171,17 @@ impl Generator {
     ) -> Compilation<bool> {
         let suppressed_constant =
             repeated_store_constant_exceeds_home_capacity(function);
-        let mut rewritten = function.clone();
-        let mut retained_constant = false;
+        let counted_call_retry = normalize_counted_call_retry(function);
+        let mut rewritten = counted_call_retry
+            .clone()
+            .unwrap_or_else(|| function.clone());
+        let mut changed = counted_call_retry.is_some();
         while let Some(next) = retain_repeated_store_constant_across_call(&rewritten) {
             rewritten = next;
-            retained_constant = true;
+            changed = true;
         }
         self.try_callee_saved_structured_body_impl(
-            if retained_constant { &rewritten } else { function },
+            if changed { &rewritten } else { function },
             false,
             suppressed_constant,
         )
@@ -294,6 +302,7 @@ impl Generator {
         let function = stripped_empty_switches.as_ref().unwrap_or(function);
         let structured_switch_source = function.clone();
         let repeated_call_poll_transaction = is_repeated_call_poll_transaction(function);
+        let counted_call_retry = is_counted_call_retry(function);
         let injected_string_data_anchor = repeated_call_poll_transaction
             && self.data_section_anchor.is_none()
             && owns_long_string_data_anchor(function);
@@ -2343,6 +2352,16 @@ impl Generator {
             LegacyCalleeSavedFrameLayout::InferFromValueOrigin
         } else if guarded_structured_constant_return {
             LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable
+        } else if counted_call_retry
+            && saved_float_parameters.is_empty()
+            && eager_saved_locals.len() == 1
+            && saved_parameters.len() == 1
+            && deferred_saved_locals.is_empty()
+            && saved_home_slot_base == 0
+            && count == 2
+            && self.legacy_inline_expansion_frame_bytes == 0
+        {
+            LegacyCalleeSavedFrameLayout::CompactValueHomes
         } else if has_only_call_result_temporaries(function)
             && !saved_parameters.is_empty()
             && saved_float_parameters.is_empty()
@@ -3696,6 +3715,9 @@ impl Generator {
         }
         self.schedule_structured_signed_conversion_pair();
         self.reuse_structured_float_to_int_result();
+        if counted_call_retry {
+            schedule_counted_call_retry(&mut self.output.instructions);
+        }
         self.fold_structured_void_early_return_branches();
         self.schedule_loop_assertion_entry_alias();
         self.schedule_loop_assertion_string_highs();
