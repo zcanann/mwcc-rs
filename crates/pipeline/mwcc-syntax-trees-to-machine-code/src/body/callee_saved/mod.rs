@@ -198,6 +198,7 @@ mod structured_interleaved_frame_layout;
 mod structured_indexed_callback_schedule;
 mod structured_indirect_call_home;
 mod structured_inline_residue;
+mod structured_inlined_byte_append_schedule;
 mod structured_inlined_address_receiver_schedule;
 mod structured_inlined_guarded_value_diamond_schedule;
 mod structured_inlined_dynamic_guarded_value_diamond_schedule;
