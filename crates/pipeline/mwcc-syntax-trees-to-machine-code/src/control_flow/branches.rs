@@ -1262,6 +1262,22 @@ impl Generator {
                     }
                 }
             }
+            // Narrow storage masks are normalized to `BitFieldRead` before
+            // code generation. Their equality-to-zero form owns the same
+            // record mask as a direct `(value & mask) == 0`; evaluating them
+            // as an ordinary comparison would append a redundant `cmpwi`.
+            if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual)
+                && constant_value(right) == Some(0)
+            {
+                if let Expression::BitFieldRead { extracted, .. } = left.as_ref() {
+                    self.evaluate_bit_field_condition(extracted, GENERAL_SCRATCH)?;
+                    return Ok(if *operator == BinaryOperator::Equal {
+                        (4, 2) // bne — skip when the extracted field is nonzero
+                    } else {
+                        (12, 2) // beq — skip when the extracted field is zero
+                    });
+                }
+            }
             // `(a & C) != 0` is the positive form of the same record-mask
             // test. Tail-guard lowering can invert this `beq` directly into
             // MWCC's `bnelr`.

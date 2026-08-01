@@ -47,6 +47,9 @@ impl Generator {
         };
         let register_leaf = leaf_name(value).and_then(|name| self.lookup_general(name));
         let memory_value = self.is_word_load(value)
+            || self.is_byte_load(value)
+            || self.is_halfword_load(value)
+            || self.is_global(value)
             || matches!(value, Expression::Variable(name)
                 if self.frame_slots.get(name).is_some_and(|slot|
                     !slot.is_array && slot.class == ValueClass::General));
