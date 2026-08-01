@@ -621,7 +621,7 @@ impl Generator {
         left: &Expression,
         right: &Expression,
         destination: u8,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u8, u8, u8)>> {
         let Expression::Binary {
             operator: mwcc_syntax_trees::BinaryOperator::Add,
             left: first,
@@ -637,6 +637,30 @@ impl Generator {
             return Ok(None);
         }
 
+        if self.assignment_condition_reuses_member(right)
+            && !self.structured_global_member_address_caches.is_empty()
+        {
+            let right_register = self.fresh_virtual_general_preferring(5);
+            self.evaluate_general(right, right_register)?;
+            let second_register = self.fresh_virtual_general_preferring(3);
+            self.evaluate_general(second, second_register)?;
+            let left_register = self.fresh_virtual_general_preferring(4);
+            self.evaluate_general(first, left_register)?;
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: GENERAL_SCRATCH,
+                a: right_register,
+                immediate: -1,
+            });
+            self.record_assignment_condition_minus_one(right, GENERAL_SCRATCH);
+            self.output.instructions.push(Instruction::Add {
+                d: left_register,
+                a: left_register,
+                b: second_register,
+            });
+            self.prefer_virtual_general(destination, 3);
+            return Ok(Some((left_register, right_register, destination)));
+        }
+
         let second_register = self.fresh_virtual_general_preferring(5);
         self.evaluate_general(first, second_register)?;
         self.evaluate_general(second, GENERAL_SCRATCH)?;
@@ -648,7 +672,7 @@ impl Generator {
             a: second_register,
             b: GENERAL_SCRATCH,
         });
-        Ok(Some((left_register, right_register)))
+        Ok(Some((left_register, right_register, GENERAL_SCRATCH)))
     }
 
     /// Emit a remainder as `left - (left / right) * right` (leaf operands only for now).
@@ -814,36 +838,37 @@ impl Generator {
             }
         }
 
-        let (left_register, right_register) = match self
+        let (left_register, right_register, quotient_register) = match self
             .place_member_sum_modulo_operands(left, right, destination)?
         {
             Some(operands) => operands,
             None => (
                 self.place_retained_division_operand(left)?,
                 self.place_retained_division_operand(right)?,
+                GENERAL_SCRATCH,
             ),
         };
         self.output.instructions.push(if signed {
             Instruction::DivideWord {
-                d: GENERAL_SCRATCH,
+                d: quotient_register,
                 a: left_register,
                 b: right_register,
             }
         } else {
             Instruction::DivideWordUnsigned {
-                d: GENERAL_SCRATCH,
+                d: quotient_register,
                 a: left_register,
                 b: right_register,
             }
         });
         self.output.instructions.push(Instruction::MultiplyLow {
-            d: GENERAL_SCRATCH,
-            a: GENERAL_SCRATCH,
+            d: quotient_register,
+            a: quotient_register,
             b: right_register,
         });
         self.output.instructions.push(Instruction::SubtractFrom {
             d: destination,
-            a: GENERAL_SCRATCH,
+            a: quotient_register,
             b: left_register,
         });
         Ok(())

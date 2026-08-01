@@ -22,6 +22,8 @@ struct ConditionMemberValue {
 pub(crate) struct ConditionMemberCache {
     active: bool,
     values: Vec<ConditionMemberValue>,
+    assignment_reuse: Option<Expression>,
+    derived_minus_one: Option<ConditionMemberValue>,
 }
 
 impl Generator {
@@ -42,6 +44,16 @@ impl Generator {
     ) -> ConditionMemberCache {
         let previous = std::mem::take(&mut self.condition_member_cache);
         self.condition_member_cache.active = edge_reuse || is_short_circuit_chain(condition);
+        previous
+    }
+
+    pub(crate) fn begin_assignment_condition_member_cache(
+        &mut self,
+        member: Expression,
+    ) -> ConditionMemberCache {
+        let previous = std::mem::take(&mut self.condition_member_cache);
+        self.condition_member_cache.active = true;
+        self.condition_member_cache.assignment_reuse = Some(member);
         previous
     }
 
@@ -143,6 +155,56 @@ impl Generator {
             });
     }
 
+    pub(crate) fn assignment_condition_reuses_member(
+        &self,
+        operand: &Expression,
+    ) -> bool {
+        self.condition_member_cache
+            .assignment_reuse
+            .as_ref()
+            .is_some_and(|planned| same_member(planned, operand))
+    }
+
+    pub(crate) fn record_assignment_condition_minus_one(
+        &mut self,
+        member: &Expression,
+        register: u8,
+    ) {
+        if !self.assignment_condition_reuses_member(member) {
+            return;
+        }
+        self.condition_member_cache.derived_minus_one = Some(ConditionMemberValue {
+            expression: member.clone(),
+            register,
+            instruction_index: self.output.instructions.len(),
+        });
+    }
+
+    pub(crate) fn assignment_condition_minus_one_register(
+        &self,
+        expression: &Expression,
+    ) -> Option<u8> {
+        let Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left,
+            right,
+        } = expression
+        else {
+            return None;
+        };
+        if !matches!(right.as_ref(), Expression::IntegerLiteral(1)) {
+            return None;
+        }
+        self.condition_member_cache
+            .derived_minus_one
+            .as_ref()
+            .filter(|value| {
+                same_member(&value.expression, left)
+                    && self.condition_member_value_is_live(value)
+            })
+            .map(|value| value.register)
+    }
+
     fn condition_member_value_is_live(&self, value: &ConditionMemberValue) -> bool {
         self.output.instructions[value.instruction_index..]
             .iter()
@@ -169,7 +231,7 @@ fn is_short_circuit_chain(expression: &Expression) -> bool {
     )
 }
 
-fn cacheable_member(expression: &Expression, generator: &Generator) -> bool {
+pub(crate) fn cacheable_member(expression: &Expression, generator: &Generator) -> bool {
     let Expression::Member {
         base,
         member_type,
@@ -192,7 +254,7 @@ fn cacheable_member_type(member_type: Type) -> bool {
     )
 }
 
-fn same_member(left: &Expression, right: &Expression) -> bool {
+pub(crate) fn same_member(left: &Expression, right: &Expression) -> bool {
     let (
         Expression::Member {
             base: left_base,

@@ -535,7 +535,9 @@ impl Generator {
                         *member_type,
                         *index_stride,
                         destination,
-                    )
+                    )?;
+                    self.record_condition_member_value(expression, destination);
+                    Ok(())
                 }
             }
             Expression::MemberAddress { base, offset, .. } => self.emit_member_address(base, *offset, destination),

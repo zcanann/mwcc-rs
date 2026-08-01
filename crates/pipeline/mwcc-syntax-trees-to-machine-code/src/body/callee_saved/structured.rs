@@ -3656,6 +3656,7 @@ impl Generator {
         );
         let mut shared_switch_global_restore = None;
         let mut carried_condition_cache_restore = None;
+        let mut carried_assignment_member_cache_restore = None;
         let mut scheduled_float_store = None;
         for (statement_index, statement) in statements.iter().enumerate() {
             if shared_switch_global_plan
@@ -3689,6 +3690,17 @@ impl Generator {
                     self.structured_shared_switch_global_value.take();
                 shared_switch_global_restore =
                     Some((previous_cache, previous_shared));
+            }
+            if carried_assignment_member_cache_restore.is_none() {
+                if let Some(member) = super::structured_assignment_condition_member_cache::plan(
+                    self,
+                    statement,
+                    statements.get(statement_index + 1),
+                )
+                {
+                    carried_assignment_member_cache_restore =
+                        Some(self.begin_assignment_condition_member_cache(member));
+                }
             }
             let repeats_previous_scratch_constant = statement_index
                 .checked_sub(1)
@@ -3937,8 +3949,9 @@ impl Generator {
                                 },
                             )
                         };
-                    let previous_member_cache =
-                        self.begin_condition_member_cache(condition);
+                    let previous_member_cache = carried_assignment_member_cache_restore
+                        .take()
+                        .unwrap_or_else(|| self.begin_condition_member_cache(condition));
                     let or_plan = logical_or_plan(condition);
                     struct ConditionBranches {
                         skip_body: Vec<usize>,

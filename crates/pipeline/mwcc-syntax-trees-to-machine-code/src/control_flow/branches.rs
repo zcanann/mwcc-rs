@@ -2064,6 +2064,9 @@ impl Generator {
     /// The register holding a condition operand: a leaf variable stays in its home
     /// register; a struct member loads into the scratch (mwcc compares `r0`).
     pub(crate) fn condition_operand_register(&mut self, operand: &Expression) -> Compilation<u8> {
+        if let Some(register) = self.assignment_condition_minus_one_register(operand) {
+            return Ok(register);
+        }
         // Hidden aggregate-return materialization and inline composition can
         // prefix a comparison operand with an ordered side effect. Consume the
         // discarded value here, then place only the surviving right operand.

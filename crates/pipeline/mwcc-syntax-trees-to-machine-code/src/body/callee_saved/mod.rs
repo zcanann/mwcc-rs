@@ -132,6 +132,7 @@ mod structured_frame_arrays;
 mod structured_array_pool;
 mod structured_array_pool_schedule;
 mod structured_argument_latency_schedule;
+mod structured_assignment_condition_member_cache;
 mod retained_guarded_constant_schedule;
 mod retained_guarded_local_schedule;
 mod retained_deferred_local_entry_schedule;
