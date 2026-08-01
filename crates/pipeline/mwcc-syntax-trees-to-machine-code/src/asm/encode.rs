@@ -798,10 +798,35 @@ pub(super) fn assemble_line(
                 condition_bit: crf * 4 + base_bit,
             }
         }
-        // Indexed word load (`lwzx rD, rA, rB` — the ptmf vtable dispatch).
+        // Indexed integer loads and stores. These share the three-GPR X-form;
+        // the typed machine instruction owns the width and extension semantics.
         "lwzx" => {
             let [d, a, b] = gprs(mnemonic, operands)?;
             Instruction::LoadWordIndexed { d, a, b }
+        }
+        "lbzx" => {
+            let [d, a, b] = gprs(mnemonic, operands)?;
+            Instruction::LoadByteZeroIndexed { d, a, b }
+        }
+        "lhzx" => {
+            let [d, a, b] = gprs(mnemonic, operands)?;
+            Instruction::LoadHalfwordZeroIndexed { d, a, b }
+        }
+        "lhax" => {
+            let [d, a, b] = gprs(mnemonic, operands)?;
+            Instruction::LoadHalfwordAlgebraicIndexed { d, a, b }
+        }
+        "stwx" => {
+            let [s, a, b] = gprs(mnemonic, operands)?;
+            Instruction::StoreWordIndexed { s, a, b }
+        }
+        "stbx" => {
+            let [s, a, b] = gprs(mnemonic, operands)?;
+            Instruction::StoreByteIndexed { s, a, b }
+        }
+        "sthx" => {
+            let [s, a, b] = gprs(mnemonic, operands)?;
+            Instruction::StoreHalfwordIndexed { s, a, b }
         }
         // Branch to the count register (`mtctr r12; bctr` — the ptmf tail dispatch).
         "bctr" => {
@@ -1074,6 +1099,19 @@ mod tests {
         assert_eq!(
             assemble("blrl", vec![]).unwrap(),
             Instruction::BranchToLinkRegisterAndLink
+        );
+    }
+
+    #[test]
+    fn assembles_indexed_integer_memory_operations() {
+        let operands = vec![AsmOperand::Gpr(9), AsmOperand::Gpr(10), AsmOperand::Gpr(3)];
+        assert_eq!(
+            assemble("lbzx", operands.clone()).unwrap(),
+            Instruction::LoadByteZeroIndexed { d: 9, a: 10, b: 3 }
+        );
+        assert_eq!(
+            assemble("stbx", operands).unwrap(),
+            Instruction::StoreByteIndexed { s: 9, a: 10, b: 3 }
         );
     }
 
