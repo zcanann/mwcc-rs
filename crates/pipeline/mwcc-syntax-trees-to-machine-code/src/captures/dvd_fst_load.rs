@@ -98,6 +98,9 @@ impl Generator {
                 SavedGprEpilogueStyle::LinkRegisterAfterStackRestore => {
                     LoaderVariant::StaticSigned
                 }
+                SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload => {
+                    LoaderVariant::StaticSigned
+                }
             },
             (PIKMIN_AST_HASH, PIKMIN_CONTEXT) => LoaderVariant::StaticUnsigned,
             (MARIO_PARTY_4_AST_HASH, MARIO_PARTY_4_CONTEXT) => LoaderVariant::StaticSigned,

@@ -301,6 +301,9 @@ pub(crate) struct StructuredGlobalMemberAddressCache {
     pub(crate) offset: i16,
     pub(crate) register: u8,
     pub(crate) initialized: bool,
+    /// Source-level accesses covered by the planner. Expressions outside that
+    /// range, such as a separately lowered return expression, rematerialize.
+    pub(crate) remaining_uses: usize,
 }
 
 #[derive(Debug, Clone)]

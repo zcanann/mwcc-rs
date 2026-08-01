@@ -733,26 +733,87 @@ impl Generator {
         // restore SP before writing LR. Most allocator-owned epilogues already
         // arrive in that order; hand-emitted loop owners still carry the 2.4.x
         // `mtlr; addi r1` pair, so normalize every such final pair here.
-        if self.behavior.saved_gpr_epilogue_style
-            == mwcc_versions::SavedGprEpilogueStyle::LinkRegisterAfterStackRestore
-        {
-            for index in 0..self.output.instructions.len().saturating_sub(1) {
-                if matches!(
-                    self.output.instructions[index],
-                    Instruction::MoveToLinkRegister { s: 0 }
-                ) && matches!(
-                    self.output.instructions[index + 1],
-                    Instruction::AddImmediate {
-                        d: 1,
-                        a: 1,
-                        immediate
-                    } if immediate == new_size
-                ) {
-                    self.output.instructions.swap(index, index + 1);
+        match self.behavior.saved_gpr_epilogue_style {
+            mwcc_versions::SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved => {}
+            mwcc_versions::SavedGprEpilogueStyle::LinkRegisterAfterStackRestore => {
+                for index in 0..self.output.instructions.len().saturating_sub(1) {
+                    if matches!(
+                        self.output.instructions[index],
+                        Instruction::MoveToLinkRegister { s: 0 }
+                    ) && matches!(
+                        self.output.instructions[index + 1],
+                        Instruction::AddImmediate {
+                            d: 1,
+                            a: 1,
+                            immediate
+                        } if immediate == new_size
+                    ) {
+                        self.output.instructions.swap(index, index + 1);
+                    }
                 }
+            }
+            mwcc_versions::SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload => {
+                self.normalize_restored_stack_saved_gpr_epilogue(&physical_saved, new_size);
             }
         }
         self.frame_size = new_size;
+    }
+
+    fn normalize_restored_stack_saved_gpr_epilogue(
+        &mut self,
+        physical_saved: &[u8],
+        frame_size: i16,
+    ) {
+        let Some(mut link_reload) = self.output.instructions.iter().rposition(|instruction| {
+            matches!(instruction,
+                Instruction::LoadWord { d: 0, a: 1, offset }
+                    if *offset == frame_size + 4)
+        }) else {
+            return;
+        };
+        let first_restore = link_reload;
+        for register in physical_saved {
+            let Some(restore) = self.output.instructions[link_reload + 1..]
+                .iter()
+                .position(|instruction| {
+                    matches!(instruction,
+                        Instruction::LoadWord { d, a: 1, .. } if d == register)
+                })
+                .map(|offset| link_reload + 1 + offset)
+            else {
+                return;
+            };
+            crate::move_instruction_before_retargeting(self, restore, link_reload);
+            link_reload += 1;
+        }
+        let Some(stack_restore) = self.output.instructions[link_reload + 1..]
+            .iter()
+            .position(|instruction| {
+                matches!(instruction,
+                    Instruction::AddImmediate { d: 1, a: 1, immediate }
+                        if *immediate == frame_size)
+            })
+            .map(|offset| link_reload + 1 + offset)
+        else {
+            return;
+        };
+        crate::move_instruction_before_retargeting(self, stack_restore, link_reload);
+        link_reload += 1;
+        let Instruction::LoadWord { offset, .. } = &mut self.output.instructions[link_reload] else {
+            unreachable!("the saved-link reload was tracked through the permutation")
+        };
+        *offset = 4;
+        for instruction in &mut self.output.instructions {
+            match instruction {
+                Instruction::Branch { target }
+                | Instruction::BranchConditionalForward { target, .. }
+                    if *target == link_reload =>
+                {
+                    *target = first_restore;
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Normalize an owner-emitted plain 2.4.x call frame when it has no locals
@@ -1415,11 +1476,16 @@ fn linkage_first_saved_register_epilogue(
     saved_registers: &[u8],
     style: mwcc_versions::SavedGprEpilogueStyle,
 ) -> Vec<Instruction> {
-    let mut instructions = vec![Instruction::LoadWord {
-        d: 0,
-        a: 1,
-        offset: frame_size + 4,
-    }];
+    let restored_stack_reload = style
+        == mwcc_versions::SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload;
+    let mut instructions = Vec::new();
+    if !restored_stack_reload {
+        instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: frame_size + 4,
+        });
+    }
     instructions.extend(saved_registers.iter().enumerate().map(|(index, &register)| {
         Instruction::LoadWord {
             d: register,
@@ -1439,6 +1505,17 @@ fn linkage_first_saved_register_epilogue(
         }
         mwcc_versions::SavedGprEpilogueStyle::LinkRegisterAfterStackRestore => {
             instructions.extend([stack_restore, restore_link]);
+        }
+        mwcc_versions::SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload => {
+            instructions.extend([
+                stack_restore,
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 4,
+                },
+                restore_link,
+            ]);
         }
     }
     instructions.push(Instruction::BranchToLinkRegister);
@@ -1953,6 +2030,23 @@ mod tests {
                 Instruction::BranchToLinkRegister,
             ]
         ));
+    }
+
+    #[test]
+    fn patched_build_159_reloads_link_register_through_the_restored_stack() {
+        let instructions = linkage_first_saved_register_epilogue(
+            16,
+            &[31],
+            mwcc_versions::SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload,
+        );
+
+        assert!(matches!(instructions.as_slice(), [
+            Instruction::LoadWord { d: 31, a: 1, offset: 12 },
+            Instruction::AddImmediate { d: 1, a: 1, immediate: 16 },
+            Instruction::LoadWord { d: 0, a: 1, offset: 4 },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::BranchToLinkRegister,
+        ]));
     }
 
     #[test]

@@ -653,47 +653,46 @@ impl Generator {
                             "unsupported global-value member load type {member_type:?} at +{offset}"
                         ))
                     })?;
-                    if let Some((register, total_size, cache_offset, initialized)) = self
+                    if let Some(cache_index) = self
                         .structured_global_member_address_caches
                         .iter()
-                        .find(|cache| {
+                        .position(|cache| {
                             cache.global == *name
                                 && i16::try_from(offset).ok() == Some(cache.offset)
-                        })
-                        .map(|cache| {
-                            (
-                                cache.register,
-                                cache.total_size,
-                                cache.offset,
-                                cache.initialized,
-                            )
+                                && cache.remaining_uses != 0
                         })
                     {
-                        if !initialized {
-                            let base = self.fresh_virtual_general_preferring(3);
-                            self.emit_global_array_base(name, total_size, base)?;
-                            self.output.instructions.push(Instruction::AddImmediate {
-                                d: register,
-                                a: base,
-                                immediate: cache_offset,
-                            });
-                            if let Some(cache) = self
-                                .structured_global_member_address_caches
-                                .iter_mut()
-                                .find(|cache| {
-                                    cache.global == *name
-                                        && i16::try_from(offset).ok() == Some(cache.offset)
-                                })
-                            {
-                                cache.initialized = true;
+                        let cache =
+                            self.structured_global_member_address_caches[cache_index].clone();
+                        if !cache.initialized {
+                            if cache.offset == 0 {
+                                let high = self.fresh_virtual_general_preferring(3);
+                                self.emit_global_array_base_through(
+                                    name,
+                                    cache.total_size,
+                                    cache.register,
+                                    high,
+                                )?;
+                            } else {
+                                let base = self.fresh_virtual_general_preferring(3);
+                                self.emit_global_array_base(name, cache.total_size, base)?;
+                                self.output.instructions.push(Instruction::AddImmediate {
+                                    d: cache.register,
+                                    a: base,
+                                    immediate: cache.offset,
+                                });
                             }
+                            self.structured_global_member_address_caches[cache_index].initialized =
+                                true;
                         }
                         self.output.instructions.push(displacement_load(
                             pointee,
                             destination,
-                            register,
+                            cache.register,
                             0,
                         )?);
+                        self.structured_global_member_address_caches[cache_index].remaining_uses -=
+                            1;
                         return Ok(());
                     }
                     if let Some(base) = self

@@ -34,6 +34,9 @@ pub enum SavedGprEpilogueStyle {
     LinkRegisterBeforeFinalSaved,
     /// Restore every saved GPR and the stack before moving the saved LR to LR.
     LinkRegisterAfterStackRestore,
+    /// GC/1.1p1 restores every saved GPR and the stack, then reloads LR through
+    /// the caller linkage area before moving it back to LR.
+    StackRestoreBeforeLinkRegisterReload,
 }
 
 /// Restore order after a call result is stored through a saved pointer.
@@ -2112,7 +2115,7 @@ pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
 
 pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::StackRestoreBeforeReload,
-    saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved,
+    saved_gpr_epilogue_style: SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload,
 };
 
 impl CodegenProfile for Gc233Build163 {

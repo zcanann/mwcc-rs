@@ -2438,23 +2438,33 @@ impl Generator {
         {
             let initialized = !cache.defer_until_first_use;
             if initialized {
-                let base = if let Some(base) = self
-                    .structured_global_base_cache
-                    .as_ref()
-                    .filter(|base| base.global == cache.global)
-                    .map(|base| base.register)
-                {
-                    base
+                if cache.offset == 0 {
+                    let high = self.fresh_virtual_general_preferring(3);
+                    self.emit_global_array_base_through(
+                        &cache.global,
+                        cache.total_size,
+                        register,
+                        high,
+                    )?;
                 } else {
-                    let base = self.fresh_virtual_general_preferring(3);
-                    self.emit_global_array_base(&cache.global, cache.total_size, base)?;
-                    base
-                };
-                self.output.instructions.push(Instruction::AddImmediate {
-                    d: register,
-                    a: base,
-                    immediate: cache.offset,
-                });
+                    let base = if let Some(base) = self
+                        .structured_global_base_cache
+                        .as_ref()
+                        .filter(|base| base.global == cache.global)
+                        .map(|base| base.register)
+                    {
+                        base
+                    } else {
+                        let base = self.fresh_virtual_general_preferring(3);
+                        self.emit_global_array_base(&cache.global, cache.total_size, base)?;
+                        base
+                    };
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: register,
+                        a: base,
+                        immediate: cache.offset,
+                    });
+                }
             }
             self.structured_global_member_address_caches.push(
                 crate::generator::StructuredGlobalMemberAddressCache {
@@ -2463,6 +2473,7 @@ impl Generator {
                     offset: cache.offset,
                     register,
                     initialized,
+                    remaining_uses: cache.use_count,
                 });
             if !dense_saved_range {
                 self.emit_structured_saved_home_store(

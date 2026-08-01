@@ -15,6 +15,7 @@ pub(super) struct StructuredGlobalMemberAddressPlan {
     pub(super) total_size: u32,
     pub(super) offset: i16,
     pub(super) defer_until_first_use: bool,
+    pub(super) use_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +100,7 @@ pub(super) fn plans(
                             defer_until_first_use: events[..first]
                                 .iter()
                                 .any(|event| matches!(event, Event::Call)),
+                            use_count: occurrences.len(),
                         },
                     ))
                 })
@@ -298,7 +300,7 @@ mod tests {
 
     #[test]
     fn retains_only_the_repeated_member_address_across_the_call() {
-        let function = function(vec![
+        let mut function = function(vec![
             Statement::If {
                 condition: Expression::Binary {
                     operator: BinaryOperator::Equal,
@@ -316,6 +318,9 @@ mod tests {
                 arguments: vec![member(8), member(4)],
             }),
         ]);
+        // Return expressions are lowered after the planned statement range and
+        // must rematerialize rather than extending this cache's live range.
+        function.return_expression = Some(member(8));
 
         assert_eq!(
             plan(
@@ -331,6 +336,7 @@ mod tests {
                 total_size: 12,
                 offset: 8,
                 defer_until_first_use: false,
+                use_count: 2,
             })
         );
     }
@@ -418,6 +424,7 @@ mod tests {
                 total_size: 12,
                 offset: 8,
                 defer_until_first_use: false,
+                use_count: 2,
             })
         );
     }
@@ -505,6 +512,7 @@ mod tests {
                 total_size: 12,
                 offset: 8,
                 defer_until_first_use: false,
+                use_count: 2,
             })
         );
     }
@@ -554,6 +562,7 @@ mod tests {
                 total_size: 12,
                 offset: 8,
                 defer_until_first_use: false,
+                use_count: 3,
             })
         );
     }
@@ -603,6 +612,7 @@ mod tests {
                 total_size: 12,
                 offset: 8,
                 defer_until_first_use: true,
+                use_count: 2,
             })
         );
     }

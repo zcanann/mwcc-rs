@@ -2210,6 +2210,10 @@ mod tests {
             patched.plain_linkage_epilogue_style,
             PlainLinkageEpilogueStyle::StackRestoreBeforeReload
         );
+        assert_eq!(
+            patched.saved_gpr_epilogue_style,
+            SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload
+        );
         assert!(patched
             .active_quirks()
             .iter()

@@ -203,21 +203,49 @@ impl Generator {
             return Ok(());
         }
 
-        let lr_restore = self
-            .output
-            .instructions
-            .iter()
-            .rposition(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::LoadWord { d: 0, a: 1, offset }
-                        if *offset == self.frame_size + 4
-                )
-            })
-            .ok_or_else(|| Diagnostic::error("canonical frame is missing its LR restore"))?;
+        let restored_stack_link_reload = self.behavior.saved_gpr_epilogue_style
+            == mwcc_versions::SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload;
+        let restore_insertion = if restored_stack_link_reload {
+            let stack_restore = self
+                .output
+                .instructions
+                .iter()
+                .rposition(|instruction| {
+                    matches!(instruction,
+                        Instruction::AddImmediate { d: 1, a: 1, immediate }
+                            if *immediate == self.frame_size)
+                })
+                .ok_or_else(|| {
+                    Diagnostic::error("canonical frame is missing its stack restore")
+                })?;
+            let has_link_reload = self.output.instructions[stack_restore + 1..]
+                .iter()
+                .any(|instruction| {
+                    matches!(instruction, Instruction::LoadWord { d: 0, a: 1, offset: 4 })
+                });
+            if !has_link_reload {
+                return Err(Diagnostic::error(
+                    "canonical frame is missing its restored-stack LR reload",
+                ));
+            }
+            stack_restore
+        } else {
+            self.output
+                .instructions
+                .iter()
+                .rposition(|instruction| {
+                    matches!(
+                        instruction,
+                        Instruction::LoadWord { d: 0, a: 1, offset }
+                            if *offset == self.frame_size + 4
+                    )
+                })
+                .map(|lr_restore| lr_restore + 1)
+                .ok_or_else(|| Diagnostic::error("canonical frame is missing its LR restore"))?
+        };
         for (slot, register) in required.iter().copied().enumerate() {
             self.insert_frame_instruction(
-                lr_restore + 1 + slot,
+                restore_insertion + slot,
                 Instruction::LoadWord {
                     d: register,
                     a: 1,
