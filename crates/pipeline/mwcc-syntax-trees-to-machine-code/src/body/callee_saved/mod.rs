@@ -226,6 +226,7 @@ pub(crate) fn branches_enter_float_restores(function: &Function) -> bool {
         .is_some_and(|plan| plan.direct_paired_single_restores())
 }
 mod structured_unoptimized_leaf_homes;
+mod structured_unoptimized_frame_call_homes;
 mod structured_unoptimized_inline_float_loop_homes;
 mod structured_unoptimized_inline_float_transaction_homes;
 mod structured_unoptimized_leaf_schedule;

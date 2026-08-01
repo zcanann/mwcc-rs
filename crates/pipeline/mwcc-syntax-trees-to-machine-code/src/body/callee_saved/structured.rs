@@ -88,6 +88,7 @@ use super::structured_recovered_float_homes;
 use super::structured_recovered_general_homes::StructuredRecoveredGeneralHomes;
 use super::structured_periodic_float_normalization::StructuredPeriodicFloatNormalization;
 use super::structured_unoptimized_leaf_homes::StructuredUnoptimizedLeafHomes;
+use super::structured_unoptimized_frame_call_homes::StructuredUnoptimizedFrameCallHomes;
 use super::structured_unoptimized_inline_float_loop_homes::
     StructuredUnoptimizedInlineFloatLoopHomes;
 use super::structured_unoptimized_inline_float_transaction_homes::
@@ -580,10 +581,25 @@ impl Generator {
             .as_ref()
             .is_some_and(StructuredRecoveredGeneralHomes::source_order_parameter_copies);
         let unoptimized_leaf_homes = StructuredUnoptimizedLeafHomes::plan(function);
+        let unoptimized_frame_call_homes =
+            (self.behavior.optimization == mwcc_versions::Optimization::O0)
+                .then(|| {
+                    StructuredUnoptimizedFrameCallHomes::plan(
+                        function,
+                        &aggregate_frame_locals
+                            .iter()
+                            .map(|local| local.name.as_str())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .flatten();
         if let Some(plan) = &recovered_general_homes {
             survivors.extend(plan.names());
         }
         if let Some(plan) = &unoptimized_leaf_homes {
+            survivors.extend(plan.names());
+        }
+        if let Some(plan) = &unoptimized_frame_call_homes {
             survivors.extend(plan.names());
         }
         survivors.extend(
@@ -603,6 +619,9 @@ impl Generator {
                     && survivors.contains(local.name.as_str())
                     && !call_accumulators.contains(local.name.as_str())
                     && (self.one_word_aggregate_locals.contains(&local.name)
+                        || unoptimized_frame_call_homes
+                            .as_ref()
+                            .is_some_and(|plan| plan.contains(&local.name))
                         || !is_transient_direct_call_argument_local(
                             &function.statements,
                             function.return_expression.as_ref(),
@@ -666,6 +685,9 @@ impl Generator {
                         && survivors.contains(local.name.as_str())
                         && !call_accumulators.contains(local.name.as_str())
                         && (self.one_word_aggregate_locals.contains(&local.name)
+                            || unoptimized_frame_call_homes
+                                .as_ref()
+                                .is_some_and(|plan| plan.contains(&local.name))
                             || !is_transient_direct_call_argument_local(
                                 &function.statements,
                                 function.return_expression.as_ref(),
@@ -800,6 +822,7 @@ impl Generator {
         );
         let deferred_home_plan = if recovered_general_homes.is_some()
             || unoptimized_leaf_homes.is_some()
+            || unoptimized_frame_call_homes.is_some()
         {
             plan_distinct_deferred_saved_homes(function, &deferred_saved_locals)
         } else if self.inline_source_call_survivors.is_empty() {
