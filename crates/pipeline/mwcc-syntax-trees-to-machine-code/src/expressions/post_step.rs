@@ -166,7 +166,7 @@ impl Generator {
             let old_value = if destination == base_register {
                 self.fresh_virtual_general()
             } else {
-                destination
+                self.post_step_old_value_register(destination)
             };
             self.output.instructions.push(displacement_load(
                 pointee,
@@ -341,7 +341,15 @@ impl Generator {
     }
 
     fn post_step_old_value_register(&mut self, destination: u8) -> u8 {
-        let old_value = if destination >= 14 || mwcc_vreg::Reg::is_virtual_field(destination) {
+        // PowerPC treats r0 as the literal zero base for addi.  Retaining a
+        // postfix result in r0 and then using it as the source of the step
+        // would therefore materialize only the increment instead of old +
+        // increment.  Keep the old value in an allocatable lane just as we do
+        // for destinations whose lifetime cannot safely be extended.
+        let old_value = if destination == GENERAL_SCRATCH
+            || destination >= 14
+            || mwcc_vreg::Reg::is_virtual_field(destination)
+        {
             let mut avoid = Vec::with_capacity(self.reserved.len() + 1);
             avoid.push(GENERAL_SCRATCH);
             avoid.extend(self.reserved.iter().copied());
