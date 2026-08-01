@@ -238,9 +238,11 @@ impl SwitchLowering {
                     default,
                 } => {
                     if self.preserve_dense
-                        && ((self.control_depth == 0
+                        && (((self.control_depth == 0
+                            || is_dense_structured_switch(arms))
                             && (is_dense_structured_switch(arms)
-                                || shared_base_comparison_switch(arms).is_some()))
+                                || (self.control_depth == 0
+                                    && shared_base_comparison_switch(arms).is_some())))
                             || ((self.control_depth == 0
                                 || arms.iter().any(|arm| arm.falls_through)
                                 || arms.len() >= 4)
@@ -436,7 +438,7 @@ fn rewrite_current_switch_breaks(
 pub(super) fn is_dense_structured_switch(
     arms: &[mwcc_syntax_trees::SwitchArm],
 ) -> bool {
-    if arms.len() < 7 {
+    if arms.len() < 5 {
         return false;
     }
     let mut values = HashSet::with_capacity(arms.len());
@@ -456,12 +458,9 @@ pub(super) fn is_dense_structured_switch(
     else {
         return false;
     };
-    let contiguous = span == arms.len() as i64;
     span > 6
         && span <= i64::from(u16::MAX) + 1
-        && (contiguous
-            || (arms.len() >= 8
-                && span <= (arms.len() as i64).saturating_mul(2)))
+        && span <= (arms.len() as i64).saturating_mul(2)
 }
 
 /// Return the low-half-zero anchor used by MWCC's comparison tree for a small
@@ -547,6 +546,16 @@ mod tests {
             Some(0xdcd1_0000)
         );
         assert!(!is_dense_structured_switch(&arms));
+    }
+
+    #[test]
+    fn recognizes_a_five_case_seven_entry_jump_table() {
+        let arms = [0x700, 0x702, 0x704, 0x705, 0x706]
+            .into_iter()
+            .map(arm)
+            .collect::<Vec<_>>();
+
+        assert!(is_dense_structured_switch(&arms));
     }
 
     #[test]
@@ -835,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn emission_lowers_a_sparse_seven_case_switch() {
+    fn emission_retains_a_dense_seven_case_switch_with_one_hole() {
         let switch = Statement::Switch {
             scrutinee: Expression::Variable("kind".into()),
             arms: [0, 1, 2, 3, 4, 5, 7]
@@ -848,16 +857,15 @@ mod tests {
                 .collect(),
             default: None,
         };
-        let lowered = lower_structured_switches_for_emission(&function(vec![switch]))
-            .expect("a non-table switch should use the analysis lowering");
-        assert!(matches!(
-            lowered.statements.as_slice(),
-            [Statement::Assign { .. }, Statement::If { .. }]
-        ));
+        assert!(
+            lower_structured_switches_for_emission(&function(vec![switch]))
+                .is_none(),
+            "a dense source switch retains its one default table entry"
+        );
     }
 
     #[test]
-    fn emission_lowers_a_dense_switch_nested_in_an_if() {
+    fn emission_retains_a_dense_switch_nested_in_an_if() {
         let switch = Statement::Switch {
             scrutinee: Expression::Variable("kind".into()),
             arms: (0..8)
@@ -874,17 +882,11 @@ mod tests {
             then_body: vec![switch],
             else_body: Vec::new(),
         };
-        let lowered =
+        assert!(
             lower_structured_switches_for_emission(&function(vec![nested]))
-                .expect("nested switches use the comparison-tree view");
-        assert!(matches!(
-            lowered.statements.as_slice(),
-            [Statement::If { then_body, .. }]
-                if matches!(
-                    then_body.as_slice(),
-                    [Statement::Assign { .. }, Statement::If { .. }]
-                )
-        ));
+                .is_none(),
+            "nested dense switches retain the source topology for dispatch"
+        );
     }
 
     #[test]
