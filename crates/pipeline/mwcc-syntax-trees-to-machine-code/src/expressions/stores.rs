@@ -198,6 +198,9 @@ impl Generator {
                 self.unpromoted_integer_width(value),
                 self.signedness_of(value)?,
             )
+                .filter(|_| !matches!(value, Expression::IndexedUpdateValue { .. }))
+                .filter(|_| !narrow_assignment_is_self_step(target, value))
+                .filter(|_| !integer_constant_fits_type(value, *member_type))
                 .map(|(width, signed)| {
                     let converted = if destination == GENERAL_SCRATCH {
                         destination
@@ -1054,7 +1057,11 @@ impl Generator {
             let source = if self.try_emit_aliasing_member_field_merge(base, value)? {
                 GENERAL_SCRATCH
             } else {
-                self.place_store_value(value, pointee)?
+                self.place_store_value_with_update_syntax(
+                    value,
+                    pointee,
+                    indexed_update_syntax || narrow_assignment_is_self_step(target, value),
+                )?
             };
             if restore {
                 self.reserved.remove(&address);
@@ -1441,6 +1448,19 @@ impl Generator {
         value: &Expression,
         pointee: Pointee,
     ) -> Compilation<u8> {
+        self.place_store_value_with_update_syntax(value, pointee, false)
+    }
+
+    /// Place a stored value while retaining whether it came from compound or
+    /// increment/decrement syntax. At O0/O1 MWCC preserves implicit narrowing
+    /// for an explicit assignment expression, but lets the narrow store itself
+    /// truncate an update expression.
+    fn place_store_value_with_update_syntax(
+        &mut self,
+        value: &Expression,
+        pointee: Pointee,
+        update_syntax: bool,
+    ) -> Compilation<u8> {
         // `&p->first` at offset zero and `&*p` are the already-resident pointer
         // value. Preserve its home register instead of manufacturing a scratch
         // move; absolute stores rely on this being an instruction-free source.
@@ -1453,7 +1473,7 @@ impl Generator {
         // which keeps its own register — `gi = (a, b)` is `stw b,gi`, no scratch move.
         if let Expression::Comma { left, right } = value {
             self.emit_comma_side_effect(left)?;
-            return self.place_store_value(right, pointee);
+            return self.place_store_value_with_update_syntax(right, pointee, update_syntax);
         }
         if matches!(value, Expression::IntegerLiteral(0))
             && !matches!(pointee, Pointee::Float | Pointee::Double)
@@ -1699,8 +1719,10 @@ impl Generator {
                 return Ok(GENERAL_SCRATCH);
             }
         }
-        if let Some(source) = self.try_place_implicit_narrow_store_value(value, pointee)? {
-            return Ok(source);
+        if !update_syntax {
+            if let Some(source) = self.try_place_implicit_narrow_store_value(value, pointee)? {
+                return Ok(source);
+            }
         }
         if let Expression::Variable(name) = value {
             // An address-taken scalar has a frame home rather than a register
@@ -2063,6 +2085,39 @@ fn assignment_narrowing(
         .then_some((target_width, target.is_signed()))
 }
 
+fn integer_constant_fits_type(expression: &Expression, target: Type) -> bool {
+    let Some(value) = constant_value(expression) else {
+        return false;
+    };
+    let width = target.width();
+    if width == 0 || width >= 32 || matches!(target, Type::Float | Type::Double) {
+        return false;
+    }
+    if target.is_signed() {
+        let bound = 1i64 << (width - 1);
+        (-bound..bound).contains(&value)
+    } else {
+        (0..(1i64 << width)).contains(&value)
+    }
+}
+
+/// Prefix-step provenance can be normalized away while composing a condition.
+/// Recognize its semantic shape as a fallback: MWCC stores the promoted result
+/// first and only then extends the yielded narrow assignment value.
+fn narrow_assignment_is_self_step(target: &Expression, value: &Expression) -> bool {
+    let value = match value {
+        Expression::IndexedUpdateValue { value } => value.as_ref(),
+        value => value,
+    };
+    matches!(value,
+        Expression::Binary {
+            operator: BinaryOperator::Add | BinaryOperator::Subtract,
+            left,
+            right,
+        } if structurally_equal(target, left) && constant_value(right) == Some(1)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2118,5 +2173,37 @@ mod tests {
             assignment_narrowing(Type::UnsignedChar, Some(8), false),
             None
         );
+    }
+
+    #[test]
+    fn representable_assignment_constants_need_no_runtime_narrowing() {
+        assert!(integer_constant_fits_type(
+            &Expression::IntegerLiteral(0),
+            Type::UnsignedChar,
+        ));
+        assert!(integer_constant_fits_type(
+            &Expression::IntegerLiteral(-1),
+            Type::Char,
+        ));
+        assert!(!integer_constant_fits_type(
+            &Expression::IntegerLiteral(256),
+            Type::UnsignedChar,
+        ));
+    }
+
+    #[test]
+    fn narrow_self_steps_defer_conversion_until_after_the_store() {
+        let target = Expression::Member {
+            base: Box::new(Expression::Variable("p".into())),
+            offset: 2,
+            member_type: Type::Short,
+            index_stride: None,
+        };
+        let value = Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left: Box::new(target.clone()),
+            right: Box::new(Expression::IntegerLiteral(1)),
+        };
+        assert!(narrow_assignment_is_self_step(&target, &value));
     }
 }

@@ -69,20 +69,17 @@ fn store_or_assign(
     }
 }
 
-/// Retain the frontend provenance of a variable-indexed update while leaving
-/// constant-index hardware-register and array accesses in their established
-/// lowering paths.
-fn indexed_update_value(target: &Expression, value: Expression) -> Expression {
-    let variable_index = matches!(target,
-        Expression::Index { index, .. }
-            if crate::expressions::fold_constant_expression(index).is_err()
-    );
-    if variable_index {
+/// Retain the frontend provenance of update syntax. C's implicit conversion
+/// scheduling can distinguish `lvalue op= rhs`/`lvalue++` from an explicitly
+/// spelled `lvalue = lvalue op rhs`, even when their value trees are otherwise
+/// identical after desugaring.
+fn update_value(target: &Expression, value: Expression) -> Expression {
+    if matches!(target, Expression::Variable(_)) {
+        value
+    } else {
         Expression::IndexedUpdateValue {
             value: Box::new(value),
         }
-    } else {
-        value
     }
 }
 
@@ -5822,7 +5819,7 @@ fn lower_discarded_post_step(expression: Expression) -> Expression {
                 left: target.clone(),
                 right: Box::new(Expression::IntegerLiteral(1)),
             };
-            let value = indexed_update_value(&target, value);
+            let value = update_value(&target, value);
             Expression::Assign {
                 target,
                 value: Box::new(value),

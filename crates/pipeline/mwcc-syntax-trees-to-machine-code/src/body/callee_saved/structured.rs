@@ -4600,7 +4600,11 @@ impl Generator {
                         self.locations
                             .get_mut(name)
                             .expect("structured assignment home")
-                            .width = assigned_register_width(declared_type, value);
+                            .width = assigned_register_width(
+                                declared_type,
+                                value,
+                                &self.call_return_types,
+                            );
                         if terminal_result
                             || separates_live_alias
                             || terminal_argument.is_some()

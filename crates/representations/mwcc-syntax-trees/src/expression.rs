@@ -70,10 +70,11 @@ pub enum Expression {
         /// Number of field bits retained after the shift.
         width: u8,
     },
-    /// The desugared value of indexed update syntax (`a[i] op= x` or a
-    /// value-discarded `a[i]++`). The wrapper retains frontend provenance for
-    /// versions whose instruction selection distinguishes those forms from an
-    /// explicitly spelled `a[i] = a[i] op x`.
+    /// The desugared value of update syntax (`a[i] op= x`, `member++`, and so
+    /// on). The wrapper retains frontend provenance for versions whose
+    /// instruction selection distinguishes those forms from an explicitly
+    /// spelled `lvalue = lvalue op x`. The historical variant name reflects
+    /// the indexed RMW case that first required this distinction.
     IndexedUpdateValue {
         value: Box<Expression>,
     },

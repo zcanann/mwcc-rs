@@ -60,41 +60,43 @@ impl Generator {
         Some(GENERAL_SCRATCH)
     }
 
-    /// Preserve build 163's implicit signed narrowing before a byte/halfword store.
+    /// Preserve an implicit narrowing before a byte/halfword store when the
+    /// resolved optimization policy keeps the assignment conversion.
     ///
     /// C assignment converts the right-hand value to the lvalue's type even when
     /// the parser does not need an explicit [`Expression::Cast`] node. Modern mwcc
-    /// observes that `stb`/`sth` already performs that truncation. Build 163's older
-    /// pass removes it only for low-bit-preserving binary ALU expressions; wider
-    /// leaves, loads, calls, shifts, unary expressions, division, and remainder keep
-    /// an `extsb`/`extsh`. Same-width sources and unsigned destinations never need it.
+    /// observes that `stb`/`sth` already performs that truncation. O0/O1 preserve
+    /// both signed and unsigned conversions. Build 163's older optimized pass removes
+    /// signed conversions only for low-bit-preserving binary ALU expressions.
     pub(crate) fn try_place_implicit_narrow_store_value(
         &mut self,
         value: &Expression,
         pointee: Pointee,
     ) -> Compilation<Option<u8>> {
-        if self.behavior.narrow_store_conversion_style
-            != mwcc_versions::NarrowStoreConversionStyle::PreserveOutsideBinaryAlu
-        {
+        let style = self.behavior.narrow_store_conversion_style;
+        if style == mwcc_versions::NarrowStoreConversionStyle::ElideRedundantConversion {
             return Ok(None);
         }
 
         let target = pointee.element();
         let target_width = target.width();
         if target_width >= 32
-            || !self.signed_of(target)
             || self.is_float_value(value)
             || self.is_float_operand(value)
             || constant_value(value).is_some()
             || matches!(value, Expression::Cast { .. })
-            || legacy_narrow_store_binary_alu(value)
+            || narrow_memory_step(value)
+        {
+            return Ok(None);
+        }
+        if style == mwcc_versions::NarrowStoreConversionStyle::PreserveOutsideBinaryAlu
+            && (!self.signed_of(target) || legacy_narrow_store_binary_alu(value))
         {
             return Ok(None);
         }
 
-        if self
-            .implicit_store_source_width(value)
-            .is_some_and(|source_width| source_width <= target_width)
+        let source_width = self.implicit_store_source_width(value);
+        if source_width.is_some_and(|source_width| source_width <= target_width)
         {
             return Ok(None);
         }
@@ -123,6 +125,27 @@ impl Generator {
             _ => self.cast_operand_width(value).map(|width| width as u8),
         }
     }
+}
+
+/// A prefix/postfix step can lose its syntax wrapper while its lvalue is
+/// canonicalized from a member into an indexed member-address. MWCC still lets
+/// the store perform the narrowing and extends only the yielded value afterward.
+fn narrow_memory_step(value: &Expression) -> bool {
+    let value = match value {
+        Expression::IndexedUpdateValue { value } => value.as_ref(),
+        value => value,
+    };
+    matches!(value,
+        Expression::Binary {
+            operator: BinaryOperator::Add | BinaryOperator::Subtract,
+            left,
+            right,
+        } if matches!(left.as_ref(),
+            Expression::Member { .. }
+                | Expression::Index { .. }
+                | Expression::Dereference { .. }
+        ) && constant_value(right) == Some(1)
+    )
 }
 
 fn fold_representable_float_to_integer(value: f64, width: u8, signed: bool) -> Option<i64> {
@@ -158,7 +181,8 @@ pub(super) fn legacy_narrow_store_binary_alu(expression: &Expression) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::fold_representable_float_to_integer;
+    use super::{fold_representable_float_to_integer, narrow_memory_step};
+    use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee};
 
     #[test]
     fn folds_representable_float_assignment_constants_toward_zero() {
@@ -181,5 +205,23 @@ mod tests {
             fold_representable_float_to_integer(f64::NAN, 16, true),
             None
         );
+    }
+
+    #[test]
+    fn memory_steps_use_the_narrow_store_as_the_conversion() {
+        let value = Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left: Box::new(Expression::Index {
+                base: Box::new(Expression::MemberAddress {
+                    base: Box::new(Expression::Variable("p".into())),
+                    offset: 112,
+                    element: Pointee::Short,
+                    index_stride: None,
+                }),
+                index: Box::new(Expression::IntegerLiteral(2)),
+            }),
+            right: Box::new(Expression::IntegerLiteral(1)),
+        };
+        assert!(narrow_memory_step(&value));
     }
 }

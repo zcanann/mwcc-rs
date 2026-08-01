@@ -699,7 +699,7 @@ pub struct Behavior {
     pub signed_power_of_two_division_style: SignedPowerOfTwoDivisionStyle,
     /// Address-materialization schedule for switch jump tables.
     pub jump_table_base_style: JumpTableBaseStyle,
-    /// Elimination policy for redundant signed narrow conversions before narrow stores.
+    /// Elimination policy for redundant narrow conversions before narrow stores.
     pub narrow_store_conversion_style: NarrowStoreConversionStyle,
     /// Placement of the containing-unit load for source-level bit-field reads.
     pub bit_field_load_placement: BitFieldLoadPlacement,
@@ -1146,7 +1146,11 @@ impl Behavior {
                 .profile
                 .signed_power_of_two_division_style(),
             jump_table_base_style: config.build.profile.jump_table_base_style(),
-            narrow_store_conversion_style: config.build.profile.narrow_store_conversion_style(),
+            narrow_store_conversion_style: if config.flags.optimization <= Optimization::O1 {
+                NarrowStoreConversionStyle::PreserveAll
+            } else {
+                config.build.profile.narrow_store_conversion_style()
+            },
             bit_field_load_placement: config.build.profile.bit_field_load_placement(),
             constant_store_schedule_style: config.build.profile.constant_store_schedule_style(),
             computed_store_issue_style: config.build.profile.computed_store_issue_style(),
@@ -1739,6 +1743,25 @@ mod tests {
             assert_eq!(
                 behavior.narrow_call_zero_test_style,
                 narrow_call_zero_test_style
+            );
+        }
+    }
+
+    #[test]
+    fn low_optimization_preserves_narrow_store_conversions() {
+        let mut config = CompilerConfig::new(build::GC_1_3_2);
+        for optimization in [Optimization::O0, Optimization::O1] {
+            config.flags.optimization = optimization;
+            assert_eq!(
+                Behavior::resolve(&config).narrow_store_conversion_style,
+                NarrowStoreConversionStyle::PreserveAll,
+            );
+        }
+        for optimization in [Optimization::O2, Optimization::O3, Optimization::O4] {
+            config.flags.optimization = optimization;
+            assert_eq!(
+                Behavior::resolve(&config).narrow_store_conversion_style,
+                NarrowStoreConversionStyle::ElideRedundantConversion,
             );
         }
     }

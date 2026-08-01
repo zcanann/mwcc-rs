@@ -2190,13 +2190,22 @@ fn iterator_pointer_storage(expression: Expression, offset: u32) -> Expression {
 }
 
 fn increment_assignment(target: Expression, operator: BinaryOperator) -> Expression {
+    let assignment_target = crate::lvalues::canonical_assignment_target(target.clone());
+    let value = Expression::Binary {
+        operator,
+        left: Box::new(target),
+        right: Box::new(Expression::IntegerLiteral(1)),
+    };
+    let value = if matches!(&assignment_target, Expression::Variable(_)) {
+        value
+    } else {
+        Expression::IndexedUpdateValue {
+            value: Box::new(value),
+        }
+    };
     Expression::Assign {
-        target: Box::new(crate::lvalues::canonical_assignment_target(target.clone())),
-        value: Box::new(Expression::Binary {
-            operator,
-            left: Box::new(target),
-            right: Box::new(Expression::IntegerLiteral(1)),
-        }),
+        target: Box::new(assignment_target),
+        value: Box::new(value),
     }
 }
 

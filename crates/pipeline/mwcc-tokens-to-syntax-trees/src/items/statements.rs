@@ -118,7 +118,7 @@ impl Parser {
                 left: Box::new(first.clone()),
                 right: Box::new(rhs),
             };
-            let value = super::indexed_update_value(&first, value);
+            let value = super::update_value(&first, value);
             if self.eat_keyword(Token::Comma) {
                 let assignment = Expression::Assign {
                     target: Box::new(crate::lvalues::canonical_assignment_target(first)),

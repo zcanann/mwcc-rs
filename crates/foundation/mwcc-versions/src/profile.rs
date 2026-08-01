@@ -297,10 +297,13 @@ pub enum JumpTableBaseStyle {
     EarlyInPlace,
 }
 
-/// Elimination policy for an explicit or implicit signed narrowing conversion
+/// Elimination policy for an explicit or implicit narrowing conversion
 /// immediately consumed by a byte/halfword store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NarrowStoreConversionStyle {
+    /// O0/O1 preserve the C assignment conversion for both signed and unsigned
+    /// destinations, even though the following store truncates to the same width.
+    PreserveAll,
     /// 2.4.x recognizes the store itself truncates and removes the conversion.
     ElideRedundantConversion,
     /// 2.3.3 removes the cast only after truncation-safe binary ALU operators;
