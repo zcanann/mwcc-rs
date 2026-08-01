@@ -2136,6 +2136,15 @@ impl Generator {
             self.evaluate_general(operand, GENERAL_SCRATCH)?;
             return Ok(GENERAL_SCRATCH);
         }
+        // An address-taken scalar has no register leaf: an escaped pointer may
+        // have replaced its value. Reload the frame slot for a comparison just
+        // as ordinary expression placement does.
+        if matches!(operand, Expression::Variable(name)
+            if self.frame_slots.get(name).is_some_and(|slot| !slot.is_array))
+        {
+            self.evaluate_general(operand, GENERAL_SCRATCH)?;
+            return Ok(GENERAL_SCRATCH);
+        }
         // A global has no home register: load it into the scratch (`lwz r0,gv@sda21`)
         // and let the caller compare, like a memory load.
         if self.is_global(operand) {
