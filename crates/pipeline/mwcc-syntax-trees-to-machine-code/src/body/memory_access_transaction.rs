@@ -424,6 +424,7 @@ impl Generator {
 
     fn emit_memory_access_transaction(&mut self, access: MemoryAccessTransaction) {
         const SNAPSHOT_OFFSET: i16 = 8;
+        self.output.pre_scheduled = true;
         self.non_leaf = true;
         self.frame_size = 56;
         self.callee_saved = vec![31, 30, 29, 28, 27, 26, 25];
