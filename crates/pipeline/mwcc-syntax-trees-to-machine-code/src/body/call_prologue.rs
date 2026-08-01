@@ -4,13 +4,15 @@
 use super::*;
 
 impl Generator {
-    /// Restore patched build 159's strict plain-linkage prefix after generic
-    /// whole-stream scheduling. Other linkage-first profiles intentionally
-    /// retain their latency-filled build-163 issue order.
-    pub(crate) fn canonicalize_patched_build159_plain_linkage(&mut self) {
+    /// Restore patched build 159's strict plain-linkage prefix after an earlier
+    /// inline-assembly definition carried scheduler state into this function.
+    /// Ordinary functions in the same build still fill the linkage latency
+    /// slots with ready call-argument setup.
+    pub(crate) fn canonicalize_patched_build159_post_asm_linkage(&mut self) {
         if self.behavior.frame_convention != FrameConvention::LinkageFirst
             || self.behavior.plain_linkage_epilogue_style
                 != PlainLinkageEpilogueStyle::StackRestoreBeforeReload
+            || !self.preceded_by_asm
             || !self.non_leaf
             || !self.callee_saved.is_empty()
             || self.callee_saved_float != 0
@@ -108,13 +110,10 @@ impl Generator {
     /// linkage-write hazards.
     pub(crate) fn hoist_leading_arg_moves(&mut self, lr_store_index: Option<usize>) {
         let Some(store) = lr_store_index else { return };
-        // GC/1.1p1's patched build 159 owns a linkage-first frame but retains
-        // the strict `mflr; stw; stwu` prefix. Its restored-stack LR reload is
-        // the profile-level marker that distinguishes it from build 163's
-        // latency-filled linkage-first schedule.
         if self.behavior.frame_convention == FrameConvention::LinkageFirst
             && self.behavior.plain_linkage_epilogue_style
                 == PlainLinkageEpilogueStyle::StackRestoreBeforeReload
+            && self.preceded_by_asm
         {
             return;
         }

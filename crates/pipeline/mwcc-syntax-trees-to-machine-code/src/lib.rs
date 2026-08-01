@@ -1180,7 +1180,7 @@ fn lower_function_body(
     }
     generator.normalize_patched_build159_pointer_difference_call();
     generator.schedule_legacy_member_constant_store_run();
-    generator.canonicalize_patched_build159_plain_linkage();
+    generator.canonicalize_patched_build159_post_asm_linkage();
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for
