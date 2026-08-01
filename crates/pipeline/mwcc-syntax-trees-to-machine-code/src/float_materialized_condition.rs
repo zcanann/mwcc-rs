@@ -41,7 +41,7 @@ fn is_zero_literal(expression: &Expression) -> bool {
         || matches!(expression, Expression::FloatLiteral(value) if *value == 0.0)
 }
 
-fn is_three_component_squared_sum(expression: &Expression) -> bool {
+pub(crate) fn is_three_component_squared_sum(expression: &Expression) -> bool {
     let mut terms = Vec::new();
     collect_additive_terms(expression, &mut terms);
     terms.len() == 3 && terms.into_iter().all(is_squared_term)
@@ -72,7 +72,7 @@ fn is_squared_term(expression: &Expression) -> bool {
     )
 }
 
-fn same_scalar_expression(left: &Expression, right: &Expression) -> bool {
+pub(crate) fn same_scalar_expression(left: &Expression, right: &Expression) -> bool {
     match (left, right) {
         (Expression::Variable(left), Expression::Variable(right)) => left == right,
         (

@@ -363,11 +363,22 @@ impl Generator {
             {
                 return match class {
                     ValueClass::General => self.evaluate_general(value, register),
-                    ValueClass::Float => self.evaluate(
-                        value,
-                        if width == 64 { Type::Double } else { Type::Float },
-                        register,
-                    ),
+                    ValueClass::Float => {
+                        let value_type = if width == 64 {
+                            Type::Double
+                        } else {
+                            Type::Float
+                        };
+                        if self.try_evaluate_materialized_float_projection(
+                            value,
+                            value_type,
+                            register,
+                        )? {
+                            Ok(())
+                        } else {
+                            self.evaluate(value, value_type, register)
+                        }
+                    }
                 };
             }
         }

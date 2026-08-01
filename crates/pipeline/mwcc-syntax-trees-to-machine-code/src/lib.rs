@@ -46,6 +46,7 @@ mod float_integer_affine;
 mod float_integer_fraction;
 mod float_memory_conditional;
 mod float_materialized_condition;
+mod float_materialized_projection;
 mod float_negated_add;
 mod float_negated_product;
 mod float_product_condition;
@@ -956,7 +957,8 @@ fn lower_function_body(
         paired_single_float_frame,
         body::uses_direct_paired_single_restores(function)
             || generator.has_retained_sqrtf_spill_slot(),
-        body::branches_enter_float_restores(function),
+        body::branches_enter_float_restores(function)
+            || generator.unoptimized_inline_float_transaction_homes,
     )?;
     generator.schedule_unoptimized_inline_float_restore_order();
     generator.finalize_unoptimized_leaf_source_homes();

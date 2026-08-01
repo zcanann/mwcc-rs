@@ -189,6 +189,7 @@ fn materialize_predecrement_frame(
             new_size,
             frame_growth,
             saved_gpr_count,
+            branches_enter_float_restores,
         );
     }
     let link_offset = old_size
@@ -395,6 +396,7 @@ fn materialize_leaf_predecrement_frame(
     new_size: i16,
     frame_growth: i16,
     _saved_gpr_count: usize,
+    branches_enter_float_restores: bool,
 ) -> Result<(Vec<usize>, i16), &'static str> {
     if leaf_retains_linkage_state(instructions, old_size) {
         return Err("allocator-selected leaf FPR frame retains linkage state");
@@ -453,10 +455,12 @@ fn materialize_leaf_predecrement_frame(
         if index == frame_push + 1 {
             rebuilt.append(&mut saves);
         }
+        let restore_entry =
+            (branches_enter_float_restores && index == frame_pop).then_some(rebuilt.len());
         if index == frame_pop {
             rebuilt.append(&mut restores);
         }
-        permutation[index] = rebuilt.len();
+        permutation[index] = restore_entry.unwrap_or(rebuilt.len());
         rebuilt.push(instruction);
     }
     *instructions = rebuilt;
@@ -483,7 +487,8 @@ fn leaf_retains_linkage_state(instructions: &[Instruction], frame_size: i16) -> 
 
 #[cfg(test)]
 mod declared_range_tests {
-    use super::required_float_save_range;
+    use super::{materialize_leaf_predecrement_frame, required_float_save_range};
+    use mwcc_machine_code::Instruction;
 
     #[test]
     fn expands_an_allocator_subset_to_the_declared_contiguous_range() {
@@ -504,6 +509,42 @@ mod declared_range_tests {
     #[test]
     fn rejects_an_allocator_lane_outside_the_saved_fpr_bank() {
         assert!(required_float_save_range(2, &[31, 13]).is_err());
+    }
+
+    #[test]
+    fn leaf_early_returns_can_enter_before_allocated_float_restores() {
+        let mut instructions = vec![
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            },
+            Instruction::Branch { target: 2 },
+            Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+        let (permutation, growth) = materialize_leaf_predecrement_frame(
+            &mut instructions,
+            &[31],
+            true,
+            0,
+            16,
+            32,
+            16,
+            0,
+            true,
+        )
+        .expect("the leaf float frame should materialize");
+
+        assert_eq!(growth, 16);
+        assert!(matches!(
+            instructions[permutation[2]],
+            Instruction::PairedSingleQuantizedLoad { d: 31, .. }
+        ));
     }
 }
 

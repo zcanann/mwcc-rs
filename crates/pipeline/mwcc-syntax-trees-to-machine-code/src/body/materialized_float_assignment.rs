@@ -235,6 +235,21 @@ impl Generator {
         let Some(window) = self.materialized_float_window_plan(value) else {
             return self.evaluate_register_store_value(value, value_type, destination);
         };
+        self.evaluate_materialized_float_assignment_value_in_window(
+            value,
+            value_type,
+            destination,
+            window,
+        )
+    }
+
+    pub(crate) fn evaluate_materialized_float_assignment_value_in_window(
+        &mut self,
+        value: &Expression,
+        value_type: Type,
+        destination: u8,
+        window: (u8, u8),
+    ) -> Compilation<()> {
         let previous = self.begin_materialized_float_window(window);
         let previous_active = self.materialized_float_assignment_active;
         self.materialized_float_assignment_active = true;
