@@ -56,13 +56,24 @@ impl Generator {
         target: &Expression,
         value: &Expression,
     ) -> Compilation<bool> {
-        let Expression::Member {
-            base: source_base,
-            offset: source_offset,
-            member_type: Type::Struct { size: 12, .. },
-            index_stride: None,
-        } = value
-        else {
+        let source = match value {
+            Expression::Member {
+                base,
+                offset,
+                member_type: Type::Struct { size: 12, .. },
+                index_stride: None,
+            } => Some(self.vec3_member_storage_base(base, *offset)?),
+            Expression::Variable(name) => self
+                .frame_slots
+                .get(name)
+                .filter(|slot| {
+                    !slot.is_array
+                        && matches!(slot.value_type, Type::Struct { size: 12, .. })
+                })
+                .map(|slot| (1, slot.offset)),
+            _ => None,
+        };
+        let Some((source_register, source_offset)) = source else {
             return Ok(false);
         };
         let target = match target {
@@ -73,8 +84,6 @@ impl Generator {
             target => target,
         };
 
-        let (source_register, source_offset) =
-            self.vec3_member_storage_base(source_base, *source_offset)?;
         let (target_register, target_offset) = match target {
             Expression::Member {
                 base,

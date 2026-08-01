@@ -4408,6 +4408,16 @@ impl Generator {
                     let previous_member_cache = carried_assignment_member_cache_restore
                         .take()
                         .unwrap_or_else(|| self.begin_condition_member_cache(condition));
+                    // A fallthrough value may still live in its incoming
+                    // physical register even when the condition has no call.
+                    // Keep condition temporaries out of those homes until the
+                    // selected edge has been emitted. This is particularly
+                    // important for an early-return guard whose condition and
+                    // continuation both dereference `this`.
+                    let reserved_fallthrough_homes = self.reserve_live_physical_homes(
+                        function,
+                        &statements[statement_index + 1..],
+                    );
                     let or_plan = logical_or_plan(condition);
                     struct ConditionBranches {
                         skip_body: Vec<usize>,
@@ -4645,6 +4655,7 @@ impl Generator {
                             grouped_equality: false,
                         })
                     })();
+                    self.release_reserved_physical_homes(reserved_fallthrough_homes);
                     self.restore_condition_member_cache(previous_member_cache);
                     let carry_fallthrough_cache = matches!(
                         then_body.last(),

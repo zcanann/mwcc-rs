@@ -73,6 +73,7 @@ mod shared_global_array_store_base;
 mod switch;
 mod symbol_order;
 mod value_tracking;
+mod vec3_product_temporaries;
 mod wide_local_scalarization;
 
 use generator::Generator;
@@ -367,6 +368,8 @@ fn lower_function_body(
         call_parameter_types,
     );
     let function = materialized_temporaries.as_ref().unwrap_or(function);
+    let materialized_vec3_products = vec3_product_temporaries::materialize(function);
+    let function = materialized_vec3_products.as_ref().unwrap_or(function);
     // A `static` local has STATIC storage — an anonymous `<name>$N` object in `.sdata`/`.sbss`,
     // codegen'd like a file-scope global, not a frame slot. That path (the `$N = @N-1` numbering, the
     // per-function symbol, global-style access) is not built yet, so defer rather than mis-treat it as

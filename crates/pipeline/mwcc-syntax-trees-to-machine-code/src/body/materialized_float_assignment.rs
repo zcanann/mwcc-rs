@@ -18,7 +18,9 @@ pub(crate) fn materialized_float_assignment_names<'a>(
         .statements
         .iter()
         .filter_map(|statement| match statement {
-            Statement::Assign { name, .. } if assigned_float_local(function, name).is_some() => {
+            Statement::Assign { name, value }
+                if assigned_float_local(function, name).is_some() && is_complex(value) =>
+            {
                 Some(name.as_str())
             }
             _ => None,
@@ -392,6 +394,50 @@ mod tests {
         };
 
         assert!(has_computed_float_assignment(&function));
+    }
+
+    #[test]
+    fn does_not_promote_a_plain_float_load_to_a_saved_home() {
+        let function = Function {
+            return_type: Type::Void,
+            name: "load_scale".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![LocalDeclaration {
+                declared_type: Type::Float,
+                name: "scale".into(),
+                initializer: None,
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                attribute_alignment: None,
+                row_bytes: None,
+            }],
+            statements: vec![Statement::Assign {
+                name: "scale".into(),
+                value: Expression::Member {
+                    base: Box::new(Expression::Variable("this".into())),
+                    offset: 20,
+                    member_type: Type::Float,
+                    index_stride: None,
+                },
+            }],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        assert!(materialized_float_assignment_names(&function).is_empty());
     }
 
     #[test]
