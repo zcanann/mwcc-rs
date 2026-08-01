@@ -1243,8 +1243,10 @@ impl Generator {
                 } else {
                     self.place_store_value(value, pointee)?
                 };
-                // `a[i + const] = v` / `a[i - const] = v`: scale the variable index, add it to the base,
-                // and fold the constant into the store displacement (`slwi r0,i,k; add a,a,r0; stw v,off(a)`).
+                // `a[i + const] = v` / `a[i - const] = v`: O0 adjusts a
+                // multi-byte element index before scaling and keeps the final
+                // store indexed (`addi; slwi; stwx`). Optimized lowering scales
+                // the variable index and folds the constant into a displacement.
                 if let Expression::Binary {
                     operator: operator @ (BinaryOperator::Add | BinaryOperator::Subtract),
                     left,
@@ -1258,12 +1260,53 @@ impl Generator {
                             } else {
                                 constant
                             };
+                            let index_register = self.general_register_of_leaf(left)?;
+                            let size = pointee.size();
+                            if self.behavior.optimization == mwcc_versions::Optimization::O0 {
+                                let index_offset = i16::try_from(signed).map_err(|_| {
+                                    Diagnostic::error("store index offset out of range (roadmap)")
+                                })?;
+                                if size == 1 {
+                                    let indexed_base = self.fresh_virtual_general_preferring(
+                                        Eabi::FIRST_GENERAL_ARGUMENT + 3,
+                                    );
+                                    self.output.instructions.push(Instruction::Add {
+                                        d: indexed_base,
+                                        a: index_register,
+                                        b: address,
+                                    });
+                                    self.output.instructions.push(displacement_store(
+                                        pointee,
+                                        source,
+                                        indexed_base,
+                                        index_offset,
+                                    )?);
+                                    return Ok(());
+                                }
+                                self.output.instructions.push(Instruction::AddImmediate {
+                                    d: GENERAL_SCRATCH,
+                                    a: index_register,
+                                    immediate: index_offset,
+                                });
+                                self.output
+                                    .instructions
+                                    .push(Instruction::ShiftLeftImmediate {
+                                        a: GENERAL_SCRATCH,
+                                        s: GENERAL_SCRATCH,
+                                        shift: size.trailing_zeros() as u8,
+                                    });
+                                self.output.instructions.push(indexed_store(
+                                    pointee,
+                                    source,
+                                    address,
+                                    GENERAL_SCRATCH,
+                                )?);
+                                return Ok(());
+                            }
                             let offset =
                                 i16::try_from(signed * pointee.size() as i64).map_err(|_| {
                                     Diagnostic::error("store offset out of range (roadmap)")
                                 })?;
-                            let index_register = self.general_register_of_leaf(left)?;
-                            let size = pointee.size();
                             let scaled = if size == 1 {
                                 index_register
                             } else {
