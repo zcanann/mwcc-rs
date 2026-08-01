@@ -626,6 +626,9 @@ pub(crate) struct Generator {
     /// A guarded call chain whose packed address-taken outputs occupy the low
     /// frame prefix before two saved GPRs.
     pub(crate) structured_guarded_scalar_output_frame: bool,
+    /// Packed address-taken scalar outputs shared by two retained sparse
+    /// dispatches and one saved owner.
+    pub(crate) structured_shared_switch_scalar_frame: bool,
     /// Outgoing by-value aggregate copies owned by the allocator-backed
     /// structured body. Source object slots remain in `frame_slots`; this plan
     /// describes the separate caller-owned copies below them.

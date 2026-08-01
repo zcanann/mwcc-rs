@@ -42,6 +42,7 @@ pub(super) fn is_sparse_retained_switch(arms: &[mwcc_syntax_trees::SwitchArm]) -
             ranges.len() - 1,
             None,
             !has_fallthrough,
+            has_fallthrough,
         )
 }
 
@@ -160,9 +161,18 @@ fn dispatch_range_is_supported(
     hi: usize,
     upper_bound: Option<i64>,
     prefer_lower_root: bool,
+    prefer_upper_pair: bool,
 ) -> bool {
     lo == hi
-        || shared_case_pivot(ranges, lo, hi, upper_bound, prefer_lower_root).is_some()
+        || shared_case_pivot(
+            ranges,
+            lo,
+            hi,
+            upper_bound,
+            prefer_lower_root,
+            prefer_upper_pair,
+        )
+        .is_some()
 }
 
 fn shared_case_pivot(
@@ -171,9 +181,12 @@ fn shared_case_pivot(
     hi: usize,
     upper_bound: Option<i64>,
     prefer_lower_root: bool,
+    prefer_upper_pair: bool,
 ) -> Option<usize> {
     let count = hi - lo + 1;
-    let preferred = if upper_bound.is_none() && !prefer_lower_root {
+    let preferred = if prefer_upper_pair && count == 2 && upper_bound.is_some() {
+        hi
+    } else if upper_bound.is_none() && !prefer_lower_root {
         lo + count / 2
     } else {
         lo + (count - 1) / 2
@@ -193,6 +206,7 @@ fn shared_case_pivot(
                         *index - 1,
                         Some(pivot.low - 1),
                         false,
+                        prefer_upper_pair,
                     ))
                 && (*index == hi
                     || dispatch_range_is_supported(
@@ -201,6 +215,7 @@ fn shared_case_pivot(
                         hi,
                         upper_bound,
                         false,
+                        prefer_upper_pair,
                     ))
         })
 }
@@ -255,6 +270,7 @@ impl Generator {
             None,
             None,
             !arms.iter().any(|arm| arm.falls_through),
+            arms.iter().any(|arm| arm.falls_through),
             &mut dispatch_patches,
         );
 
@@ -373,6 +389,7 @@ impl Generator {
         lower_bound: Option<i64>,
         upper_bound: Option<i64>,
         prefer_lower_root: bool,
+        prefer_upper_pair: bool,
         patches: &mut Vec<(usize, crate::switch::Target)>,
     ) {
         if lo == hi {
@@ -404,7 +421,14 @@ impl Generator {
             return;
         }
 
-        let mid = shared_case_pivot(ranges, lo, hi, upper_bound, prefer_lower_root)
+        let mid = shared_case_pivot(
+            ranges,
+            lo,
+            hi,
+            upper_bound,
+            prefer_lower_root,
+            prefer_upper_pair,
+        )
             .expect("a retained shared-body range has a supported pivot");
         let pivot = ranges[mid];
         debug_assert_eq!(pivot.low, pivot.high);
@@ -435,6 +459,7 @@ impl Generator {
                 lower_bound,
                 Some(pivot.low - 1),
                 false,
+                prefer_upper_pair,
                 patches,
             );
         }
@@ -464,6 +489,7 @@ impl Generator {
                 Some(pivot.high + 1),
                 upper_bound,
                 false,
+                prefer_upper_pair,
                 patches,
             );
         }
@@ -576,6 +602,26 @@ mod tests {
     }
 
     #[test]
+    fn chooses_the_upper_pair_pivot_for_shared_fallthrough_bodies() {
+        let arms = [0, 16, 1, 17]
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| SwitchArm {
+                value,
+                body: ArmBody::Statements((index % 2 == 1)
+                    .then(|| Statement::Return(None))
+                    .into_iter()
+                    .collect()),
+                falls_through: index % 2 == 0,
+            })
+            .collect::<Vec<_>>();
+        let ranges = shared_case_ranges(&arms);
+
+        assert_eq!(shared_case_pivot(&ranges, 0, 3, None, false, true), Some(2));
+        assert_eq!(shared_case_pivot(&ranges, 0, 1, Some(15), false, true), Some(1));
+    }
+
+    #[test]
     fn recognizes_a_small_nonfallthrough_comparison_tree() {
         let arms = [0, 1796, 1797, 1798]
             .into_iter()
@@ -588,8 +634,8 @@ mod tests {
         let ranges = shared_case_ranges(&arms);
 
         assert!(is_sparse_retained_switch(&arms));
-        assert_eq!(shared_case_pivot(&ranges, 0, 3, None, true), Some(1));
-        assert_eq!(shared_case_pivot(&ranges, 2, 3, None, false), Some(3));
+        assert_eq!(shared_case_pivot(&ranges, 0, 3, None, true, false), Some(1));
+        assert_eq!(shared_case_pivot(&ranges, 2, 3, None, false, false), Some(3));
     }
 
     #[test]
@@ -673,7 +719,7 @@ mod tests {
         assert!(is_sparse_retained_switch(&arms));
         let ranges = shared_case_ranges(&arms);
         assert_eq!(ranges.len(), 6);
-        assert_eq!(shared_case_pivot(&ranges, 4, 5, None, false), Some(4));
+        assert_eq!(shared_case_pivot(&ranges, 4, 5, None, false, true), Some(4));
     }
 
     #[test]
@@ -713,6 +759,7 @@ mod tests {
             ranges.len() - 1,
             None,
             false,
+            true,
         ));
     }
 }

@@ -11,12 +11,14 @@ use super::*;
 pub(super) struct StructuredCompactScalarFrame {
     owns_link_register_schedule: bool,
     guarded_call_output_frame: bool,
+    shared_switch_frame: bool,
 }
 
 impl StructuredCompactScalarFrame {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn plan(
         function: &Function,
+        switch_source: &Function,
         convention: FrameConvention,
         frame_arrays_empty: bool,
         frame_scalar_locals: &[&LocalDeclaration],
@@ -42,6 +44,31 @@ impl StructuredCompactScalarFrame {
             return Some(Self {
                 owns_link_register_schedule: false,
                 guarded_call_output_frame: false,
+                shared_switch_frame: false,
+            });
+        }
+        let shared_switch_frame = matches!(saved_parameters, [_])
+            && deferred_saved_locals.is_empty()
+            && frame_scalar_locals.len() == 5
+            && frame_scalar_locals
+                .iter()
+                .filter(|local| local.declared_type.width() == 32)
+                .count()
+                == 2
+            && frame_scalar_locals
+                .iter()
+                .filter(|local| local.declared_type.width() == 8)
+                .count()
+                == 3
+            && matches!(function.return_expression.as_ref(), Some(Expression::Variable(name))
+                if function.locals.iter().any(|local| local.name == *name
+                    && matches!(local.declared_type, Type::Int | Type::UnsignedInt)))
+            && retained_sparse_switch_count(&switch_source.statements) >= 2;
+        if shared_switch_frame {
+            return Some(Self {
+                owns_link_register_schedule: false,
+                guarded_call_output_frame: false,
+                shared_switch_frame: true,
             });
         }
         let ([parameter], [result]) = (saved_parameters, deferred_saved_locals) else {
@@ -108,6 +135,7 @@ impl StructuredCompactScalarFrame {
         Some(Self {
             owns_link_register_schedule: !guarded_call_output_frame,
             guarded_call_output_frame,
+            shared_switch_frame: false,
         })
     }
 
@@ -118,6 +146,46 @@ impl StructuredCompactScalarFrame {
     pub(super) fn is_guarded_call_output_frame(&self) -> bool {
         self.guarded_call_output_frame
     }
+
+    pub(super) fn is_shared_switch_frame(&self) -> bool {
+        self.shared_switch_frame
+    }
+}
+
+fn retained_sparse_switch_count(statements: &[Statement]) -> usize {
+    statements
+        .iter()
+        .map(|statement| match statement {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                retained_sparse_switch_count(then_body)
+                    + retained_sparse_switch_count(else_body)
+            }
+            Statement::Loop { body, .. } => retained_sparse_switch_count(body),
+            Statement::Switch { arms, default, .. } => {
+                usize::from(super::structured_sparse_switch::is_sparse_retained_switch(arms))
+                    + arms
+                        .iter()
+                        .map(|arm| match &arm.body {
+                            mwcc_syntax_trees::ArmBody::Statements(body) => {
+                                retained_sparse_switch_count(body)
+                            }
+                            mwcc_syntax_trees::ArmBody::Return(_) => 0,
+                        })
+                        .sum::<usize>()
+                    + default.as_ref().map_or(0, |body| match body {
+                        mwcc_syntax_trees::ArmBody::Statements(body) => {
+                            retained_sparse_switch_count(body)
+                        }
+                        mwcc_syntax_trees::ArmBody::Return(_) => 0,
+                    })
+            }
+            _ => 0,
+        })
+        .sum()
 }
 
 fn assigned_result_call_count(statements: &[Statement], result: &str) -> usize {
@@ -307,7 +375,7 @@ impl Generator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{LocalDeclaration, Parameter};
+    use mwcc_syntax_trees::{ArmBody, LocalDeclaration, Parameter, SwitchArm};
 
     fn local(name: &str, declared_type: Type) -> LocalDeclaration {
         LocalDeclaration {
@@ -370,6 +438,7 @@ mod tests {
 
         assert!(StructuredCompactScalarFrame::plan(
             &function,
+            &function,
             FrameConvention::LinkageFirst,
             true,
             &scratch,
@@ -391,6 +460,7 @@ mod tests {
         let deferred = [&function.locals[0]];
 
         assert!(StructuredCompactScalarFrame::plan(
+            &function,
             &function,
             FrameConvention::LinkageFirst,
             true,
@@ -433,6 +503,7 @@ mod tests {
 
         assert!(StructuredCompactScalarFrame::plan(
             &function,
+            &function,
             FrameConvention::LinkageFirst,
             true,
             &scratch,
@@ -465,6 +536,7 @@ mod tests {
         let saved = [&function.parameters[0]];
 
         let plan = StructuredCompactScalarFrame::plan(
+            &function,
             &function,
             FrameConvention::LinkageFirst,
             true,
@@ -523,6 +595,7 @@ mod tests {
 
         let plan = StructuredCompactScalarFrame::plan(
             &function,
+            &function,
             FrameConvention::LinkageFirst,
             true,
             &scratch,
@@ -536,6 +609,90 @@ mod tests {
 
         assert!(plan.is_guarded_call_output_frame());
         assert!(!plan.owns_link_register_schedule());
+    }
+
+    #[test]
+    fn recognizes_packed_outputs_shared_by_two_sparse_switches() {
+        let mut function = function();
+        function.locals = vec![
+            local("error", Type::Int),
+            local("end", Type::UnsignedInt),
+            local("start", Type::UnsignedInt),
+            local("count", Type::UnsignedChar),
+            local("options", Type::UnsignedChar),
+            local("command", Type::UnsignedChar),
+        ];
+        function.return_expression = Some(Expression::Variable("error".into()));
+        let first = shared_sparse_switch();
+        let second = shared_sparse_switch();
+        function.statements = vec![
+            first,
+            Statement::If {
+                condition: Expression::Variable("error".into()),
+                then_body: vec![second],
+                else_body: Vec::new(),
+            },
+        ];
+        let scratch = [
+            &function.locals[1],
+            &function.locals[2],
+            &function.locals[3],
+            &function.locals[4],
+            &function.locals[5],
+        ];
+        let saved = [&function.parameters[0]];
+
+        let plan = StructuredCompactScalarFrame::plan(
+            &function,
+            &function,
+            FrameConvention::LinkageFirst,
+            true,
+            &scratch,
+            &[],
+            &[],
+            &[],
+            &saved,
+            &[],
+        )
+        .expect("shared sparse switches should retain a packed scalar frame");
+
+        assert!(plan.is_shared_switch_frame());
+        assert!(!plan.owns_link_register_schedule());
+    }
+
+    fn shared_sparse_switch() -> Statement {
+        Statement::Switch {
+            scrutinee: Expression::Variable("options".into()),
+            arms: vec![
+                SwitchArm {
+                    value: 0,
+                    body: ArmBody::Statements(Vec::new()),
+                    falls_through: true,
+                },
+                SwitchArm {
+                    value: 16,
+                    body: ArmBody::Statements(vec![Statement::Expression(Expression::Call {
+                        name: "count".into(),
+                        arguments: Vec::new(),
+                    })]),
+                    falls_through: false,
+                },
+                SwitchArm {
+                    value: 1,
+                    body: ArmBody::Statements(Vec::new()),
+                    falls_through: true,
+                },
+                SwitchArm {
+                    value: 17,
+                    body: ArmBody::Statements(vec![Statement::Expression(Expression::Call {
+                        name: "range".into(),
+                        arguments: Vec::new(),
+                    })]),
+                    falls_through: false,
+                },
+            ],
+            default: None,
+        }
     }
 
     fn guarded_status_call(name: &str) -> Statement {

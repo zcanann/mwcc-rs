@@ -528,7 +528,9 @@ impl Generator {
             .saturating_add(i16::try_from(physical_saved.len() * 4).unwrap_or(i16::MAX))
             .saturating_add(7)
             & !7;
-        let physical_base_size = if self.structured_guarded_scalar_output_frame {
+        let physical_base_size = if self.structured_guarded_scalar_output_frame
+            || self.structured_shared_switch_scalar_frame
+        {
             packed_scalar_size
         } else if self.frame_slots.is_empty()
             && self.callee_saved_conversion_bytes == 0
