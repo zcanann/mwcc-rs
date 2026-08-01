@@ -1918,8 +1918,7 @@ impl Generator {
             )));
         }
         // A whole-array float/double constant-init run (`g[0]=1.0f; g[1]=2.0f; …`) uses mwcc's
-        // shared-base `stfsu` schedule — claim it before the base-addressed-aggregate pre-check
-        // below would defer it as an unscheduled multi-store.
+        // shared-base `stfsu` schedule, so claim its exact form before general lowering.
         if self.try_float_array_store_fill(function)? {
             return Ok(());
         }
@@ -1932,13 +1931,15 @@ impl Generator {
         // materialization emits it between the stores, so the bytes differ. Defer when such a
         // base-addressed aggregate store is present and the function has two-plus stores of any kind —
         // a lone store, all-offset-0 small-struct fields (direct SDA21), a pointer's members, and scalar
-        // globals (no base register) stay byte-exact.
+        // globals (no base register) stay byte-exact. Specialized exact forms
+        // are claimed here; other shapes continue through general lowering so
+        // the parity harness can measure their actual mismatch.
         // THREE-TO-FIVE int-literal member stores into ONE large (ADDR16) struct
         // global, ascending offset order. The register rule (measured N=3/4/5):
         // v0 = r(N+2), the base MIGRATES to r(N+1) (`addi base,r3,@lo`), the
         // remaining values DESCEND from r(N) with r3 recycled after the addi and
         // the LAST value always r0; loads batch, then the stores. Other source
-        // orders and 6+ stores keep the shared-base defer.
+        // orders and 6+ stores fall through to general lowering.
         if function.statements.len() >= 3
             && function.statements.len() <= 5
             && function.return_type == Type::Void
@@ -2320,68 +2321,9 @@ impl Generator {
                 }
             }
         }
-        {
-            let mut total_store_count = 0u32;
-            let mut has_base_addressed_aggregate_store = false;
-            let mut restores_saved_global_aggregate = false;
-            for statement in &function.statements {
-                let Statement::Store { target, value } = statement else {
-                    continue;
-                };
-                total_store_count += 1;
-                match target {
-                    // A struct VALUE global's field: offset 0 of a SMALL struct is a direct SDA21 store
-                    // (no base register); a non-zero offset or a LARGE (ADDR16) struct needs the base.
-                    Expression::Member { base, offset, .. } => {
-                        if let Expression::Variable(name) = base.as_ref() {
-                            if let Some(Type::Struct { size, .. }) = self.globals.get(name.as_str())
-                            {
-                                if *offset != 0 || *size > 8 {
-                                    has_base_addressed_aggregate_store = true;
-                                }
-                            }
-                        }
-                    }
-                    // An array global's element always addresses through a base register (a pointer base
-                    // is register-resident already, so it is excluded here).
-                    Expression::Index { base, .. } => {
-                        if let Expression::Variable(name) = base.as_ref() {
-                            if self.global_array_sizes.contains_key(name.as_str()) {
-                                has_base_addressed_aggregate_store = true;
-                            }
-                        }
-                    }
-                    Expression::Variable(global) => {
-                        restores_saved_global_aggregate |=
-                            matches!(self.globals.get(global), Some(Type::Struct { .. }))
-                                && matches!(value, Expression::Variable(local)
-                                    if function.locals.iter().any(|declaration| {
-                                        declaration.name == *local
-                                            && matches!(
-                                                declaration.initializer.as_ref(),
-                                                Some(Expression::Variable(source)) if source == global
-                                            )
-                                    }) || function.statements.iter().any(|statement| {
-                                        matches!(statement,
-                                            Statement::Assign {
-                                                name,
-                                                value: Expression::Variable(source),
-                                            } if name == local && source == global)
-                                    }));
-                    }
-                    _ => {}
-                }
-            }
-            if has_base_addressed_aggregate_store
-                && total_store_count >= 2
-                && !restores_saved_global_aggregate
-            {
-                return Err(Diagnostic::error("a base-addressed global-aggregate store alongside another store needs the shared-base schedule (roadmap)"));
-            }
-        }
         // `void f(){ if (g REL C) { ext(g); g = C2; } }` — a global reused across the branch
-        // (loaded once into r3, tested, then passed to the call). Handled before the pre-check
-        // below defers it. See body/callee_saved/conditional.rs.
+        // (loaded once into r3, tested, then passed to the call). See
+        // body/callee_saved/conditional.rs.
         if self.try_guarded_global_reuse_call(function)? {
             return Ok(());
         }
