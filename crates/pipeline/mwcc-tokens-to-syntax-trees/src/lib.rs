@@ -7409,6 +7409,49 @@ blr\n\
     }
 
     #[test]
+    fn recovers_nested_inline_template_field_predicates() {
+        let source = r#"
+            template <typename T> struct SmartPtr {
+                T* pointer;
+                bool isNull() { return pointer == 0; }
+            };
+            struct Creature {
+                SmartPtr<Creature> held;
+                bool isHolding() { return !held.isNull(); }
+            };
+            bool compiled(Creature* creature) { return creature->isHolding(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let holding = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "isHolding__8CreatureFv")
+            .expect("outer inline body should survive nested template expansion");
+        assert!(matches!(
+            holding.return_expression.as_ref(),
+            Some(Expression::Unary {
+                operator: mwcc_syntax_trees::UnaryOperator::LogicalNot,
+                operand,
+            }) if matches!(
+                operand.as_ref(),
+                Expression::Binary {
+                    operator: mwcc_syntax_trees::BinaryOperator::Equal,
+                    left,
+                    right,
+                } if matches!(left.as_ref(), Expression::Member { offset: 0, .. })
+                    && matches!(right.as_ref(), Expression::IntegerLiteral(0))
+            )
+        ));
+    }
+
+    #[test]
     fn recovers_template_value_constructor_initializers() {
         let source = r#"
             template <typename T> struct Vec3 {

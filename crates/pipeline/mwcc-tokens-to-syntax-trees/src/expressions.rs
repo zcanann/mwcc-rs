@@ -1404,16 +1404,29 @@ impl Parser {
                         }
                     }
                     self.expect(Token::ParenClose)?;
-                    if let Some(field) =
+                    if let Some((field, projection)) =
                         self.resolve_inline_template_accessor(&tag, "__cl", arguments.len())
                     {
-                        expression = Expression::Member {
+                        let field_expression = Expression::Member {
                             base: Box::new(expression),
                             offset: field.offset,
                             member_type: field.member_type,
                             index_stride: None,
                         };
-                        struct_tag = field.struct_tag;
+                        expression = match projection {
+                            crate::parser::InlineTemplateFieldProjection::Identity => {
+                                struct_tag = field.struct_tag;
+                                field_expression
+                            }
+                            crate::parser::InlineTemplateFieldProjection::CompareInteger {
+                                operator,
+                                value,
+                            } => Expression::Binary {
+                                operator,
+                                left: Box::new(field_expression),
+                                right: Box::new(Expression::IntegerLiteral(value)),
+                            },
+                        };
                     } else {
                         self.expression_struct_tag = None;
                         expression = self
@@ -1908,6 +1921,36 @@ impl Parser {
         ) || matches!(&object, Expression::Index { .. })
             && self.cxx_expression_struct_tag(&object).is_some();
         if arguments.is_empty() {
+            if let Some((field, projection)) =
+                self.resolve_inline_template_accessor(class, member, 0)
+            {
+                self.record_inline_template_member_instantiation(class, member);
+                let object = concrete_object
+                    .then(|| Expression::AddressOf {
+                        operand: Box::new(object.clone()),
+                    })
+                    .unwrap_or(object);
+                let field_expression = Expression::Member {
+                    base: Box::new(object),
+                    offset: field.offset,
+                    member_type: field.member_type,
+                    index_stride: None,
+                };
+                return Ok(match projection {
+                    crate::parser::InlineTemplateFieldProjection::Identity => {
+                        self.expression_struct_tag = field.struct_tag;
+                        field_expression
+                    }
+                    crate::parser::InlineTemplateFieldProjection::CompareInteger {
+                        operator,
+                        value,
+                    } => Expression::Binary {
+                        operator,
+                        left: Box::new(field_expression),
+                        right: Box::new(Expression::IntegerLiteral(value)),
+                    },
+                });
+            }
             if let Some((endpoint, return_tag, return_type)) =
                 self.resolve_inline_iterator_endpoint(class, member)
             {

@@ -1,7 +1,7 @@
 //! The token cursor: the `Parser` state and its primitive operations.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Pointee, SourceFundamentalType, Type};
+use mwcc_syntax_trees::{BinaryOperator, Pointee, SourceFundamentalType, Type};
 use mwcc_tokens::{SourceLocation, Token};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -37,6 +37,24 @@ pub(crate) struct StructField {
     /// (which begins at byte `offset`). `None` for an ordinary member. Member access
     /// of a bit-field defers until the extract/insert codegen lands.
     pub(crate) bit_field: Option<(u8, u8)>,
+}
+
+/// A source-proven zero-argument value projection from an inline primary-
+/// template member. Concrete instantiation supplies the field layout while the
+/// captured body supplies the operation applied to that field.
+#[derive(Clone, Copy)]
+pub(crate) enum InlineTemplateFieldProjection {
+    Identity,
+    CompareInteger {
+        operator: BinaryOperator,
+        value: i64,
+    },
+}
+
+#[derive(Clone)]
+pub(crate) struct InlineTemplateFieldValue {
+    pub(crate) field: String,
+    pub(crate) projection: InlineTemplateFieldProjection,
 }
 
 /// A struct's layout: members by name, plus the total size (for `sizeof`/arrays,
@@ -286,7 +304,8 @@ pub(crate) struct Parser {
     /// keyed by `(template, ABI member name, explicit arity)`. These summaries
     /// let callable objects and ordinary trivial accessors inline after a
     /// concrete layout has supplied the field offset.
-    pub(crate) inline_template_accessors: HashMap<(String, String, usize), String>,
+    pub(crate) inline_template_accessors:
+        HashMap<(String, String, usize), InlineTemplateFieldValue>,
     /// Exact one-line primary-template wrappers of a recovered base method:
     /// `(template, member, arity) -> (base owner, base member, value wrapper)`.
     ///

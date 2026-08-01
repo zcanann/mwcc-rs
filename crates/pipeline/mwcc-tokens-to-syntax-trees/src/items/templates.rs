@@ -8,11 +8,12 @@
 use super::{type_alignment, type_size};
 use crate::cxx_analysis_facts::inline_control_flow_labels;
 use crate::parser::{
-    ConcreteIteratorArrow, IteratorArrowAssertion, Parser, StructField, StructLayout,
-    StructTemplate, TemplateField, TemplateFieldType, TemplateInstantiationKey,
-    TemplateIteratorArrowSummary, TemplateTypePattern,
+    ConcreteIteratorArrow, InlineTemplateFieldProjection, InlineTemplateFieldValue,
+    IteratorArrowAssertion, Parser, StructField, StructLayout, StructTemplate, TemplateField,
+    TemplateFieldType, TemplateInstantiationKey, TemplateIteratorArrowSummary,
+    TemplateTypePattern,
 };
-use mwcc_syntax_trees::{Expression, Pointee, Type};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type};
 use mwcc_tokens::Token;
 use std::collections::HashMap;
 
@@ -2481,13 +2482,53 @@ impl Parser {
                                 (class_name.clone(), member_name.clone()),
                                 control_flow_labels,
                             );
-                            if let Some(
-                                [Token::KeywordReturn, Token::Identifier(field), Token::Semicolon, Token::BraceClose],
-                            ) = self.tokens.get(body_open + 1..body_open + 5)
-                            {
+                            let field_value = match self.tokens.get(body_open + 1..body_close) {
+                                Some([
+                                    Token::KeywordReturn,
+                                    Token::Identifier(field),
+                                    Token::Semicolon,
+                                ]) => {
+                                    Some(InlineTemplateFieldValue {
+                                        field: field.clone(),
+                                        projection: InlineTemplateFieldProjection::Identity,
+                                    })
+                                }
+                                Some([
+                                    Token::KeywordReturn,
+                                    Token::Identifier(field),
+                                    Token::EqualEqual,
+                                    Token::IntegerLiteral(value),
+                                    Token::Semicolon,
+                                ]) => {
+                                    Some(InlineTemplateFieldValue {
+                                        field: field.clone(),
+                                        projection: InlineTemplateFieldProjection::CompareInteger {
+                                            operator: BinaryOperator::Equal,
+                                            value: value.to_owned(),
+                                        },
+                                    })
+                                }
+                                Some([
+                                    Token::KeywordReturn,
+                                    Token::Identifier(field),
+                                    Token::BangEqual,
+                                    Token::IntegerLiteral(value),
+                                    Token::Semicolon,
+                                ]) => {
+                                    Some(InlineTemplateFieldValue {
+                                        field: field.clone(),
+                                        projection: InlineTemplateFieldProjection::CompareInteger {
+                                            operator: BinaryOperator::NotEqual,
+                                            value: value.to_owned(),
+                                        },
+                                    })
+                                }
+                                _ => None,
+                            };
+                            if let Some(field_value) = field_value {
                                 self.inline_template_accessors.insert(
                                     (class_name.clone(), member_name.clone(), arity),
-                                    field.clone(),
+                                    field_value,
                                 );
                             }
                             let return_wrapper = index.checked_sub(1).and_then(|return_type| {
@@ -2687,7 +2728,7 @@ impl Parser {
         instance: &str,
         member: &str,
         arity: usize,
-    ) -> Option<StructField> {
+    ) -> Option<(StructField, InlineTemplateFieldProjection)> {
         // Substituting an accessor with explicit arguments would also have to
         // preserve every argument's side effects. Zero-argument summaries are
         // complete as-is; richer inline substitution remains a separate step.
@@ -2695,10 +2736,11 @@ impl Parser {
             return None;
         }
         let primary = instance.split('<').next().unwrap_or(instance);
-        let field =
+        let value =
             self.inline_template_accessors
                 .get(&(primary.to_owned(), member.to_owned(), arity))?;
-        self.structs.get(instance)?.fields.get(field).cloned()
+        let field = self.structs.get(instance)?.fields.get(&value.field).cloned()?;
+        Some((field, value.projection))
     }
 
     /// Resolve an exact wrapper summary captured from a primary-template body.
