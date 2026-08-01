@@ -242,6 +242,8 @@ mod structured_branch_work_homes;
 mod structured_loop_lowering;
 mod structured_loop_carried_leaf;
 mod structured_pointer_table_index_cursor;
+mod structured_pointer_table_index_offset;
+mod structured_pointer_table_index_offset_schedule;
 mod structured_repeated_call_poll;
 mod structured_recovered_general_homes;
 mod structured_recovered_narrow_parameter_image;

@@ -633,6 +633,7 @@ fn lower_function_body(
         non_leaf: false,
         artificial_structured_leaf_frame: false,
         structured_pointer_table_index_cursor: false,
+        structured_prescaled_pointer_table_index: false,
         preceded_by_asm: function.preceded_by_asm,
         callee_saved_float: 0,
         unoptimized_inline_float_loop_homes: false,
@@ -1204,6 +1205,7 @@ fn lower_function_body(
     generator.schedule_pointer_table_index_cursor_publication();
     generator.schedule_pointer_table_index_cursor_lookup();
     generator.schedule_pointer_table_index_cursor_epilogue();
+    generator.schedule_prescaled_pointer_table_index();
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for

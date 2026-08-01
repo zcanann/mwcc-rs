@@ -246,7 +246,7 @@ fn rewrite_loop(statement: &Statement, index: &str, cursor: &str) -> Statement {
     }
 }
 
-fn substitute_statement(
+pub(super) fn substitute_statement(
     statement: &Statement,
     values: &std::collections::HashMap<String, Expression>,
 ) -> Statement {

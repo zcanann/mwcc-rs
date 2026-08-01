@@ -21,15 +21,18 @@ impl Generator {
 
         let table = self.fresh_virtual_general_preferring(4);
         self.emit_global_load(name, table)?;
-        let index = self.materialize_index_operand(index)?;
-        let scaled = self.fresh_virtual_general_preferring(5);
-        self.output
-            .instructions
-            .push(Instruction::ShiftLeftImmediate {
+        let index_register = self.materialize_index_operand(index)?;
+        let scaled = if crate::analysis::is_prescaled_pointer_table_index(index) {
+            index_register
+        } else {
+            let scaled = self.fresh_virtual_general_preferring(5);
+            self.output.instructions.push(Instruction::ShiftLeftImmediate {
                 a: scaled,
-                s: index,
+                s: index_register,
                 shift: 2,
             });
+            scaled
+        };
         self.output.instructions.push(Instruction::LoadWordIndexed {
             d: table,
             a: table,

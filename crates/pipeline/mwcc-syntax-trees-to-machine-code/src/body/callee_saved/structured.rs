@@ -316,6 +316,14 @@ impl Generator {
             );
         self.structured_pointer_table_index_cursor = reduced_pointer_table_indices.is_some();
         let function = reduced_pointer_table_indices.as_ref().unwrap_or(function);
+        let prescaled_pointer_table_index =
+            super::structured_pointer_table_index_offset::prescale_repeated_pointer_table_index(
+                function,
+                &self.globals,
+            );
+        self.structured_prescaled_pointer_table_index =
+            prescaled_pointer_table_index.is_some();
+        let function = prescaled_pointer_table_index.as_ref().unwrap_or(function);
         // Macro-expanded display-list packets are an input normalization for
         // this general structured path. More exact semantic owners run before
         // reaching here and retain their original packet statements.
@@ -763,16 +771,23 @@ impl Generator {
                         .any(|framed| framed.name == parameter.name)
             })
             .collect();
+        let has_prescaled_pointer_table_index = function.locals.iter().any(|local| {
+            local
+                .name
+                .starts_with(crate::analysis::PRESCALED_POINTER_TABLE_INDEX_PREFIX)
+        });
         // A parameter returned after the call graph owns the longest visible
         // lifetime. MWCC gives it the highest callee-saved home even when a
         // later parameter is also live to the final call (notably `this` in a
         // complete-object deleting destructor).
-        if let Some(Expression::Variable(returned)) = function.return_expression.as_ref() {
-            if let Some(index) = saved_parameters
-                .iter()
-                .position(|parameter| parameter.name == *returned)
-            {
-                saved_parameters[..=index].rotate_right(1);
+        if !has_prescaled_pointer_table_index {
+            if let Some(Expression::Variable(returned)) = function.return_expression.as_ref() {
+                if let Some(index) = saved_parameters
+                    .iter()
+                    .position(|parameter| parameter.name == *returned)
+                {
+                    saved_parameters[..=index].rotate_right(1);
+                }
             }
         }
         if saved_parameters.iter().any(|parameter| {
@@ -1185,6 +1200,7 @@ impl Generator {
         let eager_home_reuse =
             StructuredEagerHomeReuse::plan(function, &eager_saved_locals, &deferred_home_plan);
         let parameter_home_reuse = if recovered_general_homes.is_some()
+            || has_prescaled_pointer_table_index
             || unoptimized_frame_call_homes
                 .as_ref()
                 .is_some_and(|plan| plan.retains_distinct_parameter_home())

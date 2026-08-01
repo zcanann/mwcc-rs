@@ -474,6 +474,9 @@ pub(crate) struct Generator {
     /// file-scope pointer table. Legacy MWCC gives this register-only loop its
     /// own indexed-publication and teardown schedules.
     pub(crate) structured_pointer_table_index_cursor: bool,
+    /// Structured lowering retained one byte offset shared by repeated
+    /// file-scope pointer-table accesses across calls.
+    pub(crate) structured_prescaled_pointer_table_index: bool,
     /// Whether an inline-assembly definition appeared before this function.
     ///
     /// Build 163 carries scheduler state across that source-order boundary:
