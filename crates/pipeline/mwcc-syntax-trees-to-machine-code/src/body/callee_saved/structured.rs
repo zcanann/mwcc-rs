@@ -33,6 +33,7 @@ use super::structured_condition_schedule::thread_forward_unconditional_branch_ch
 use super::structured_entry_alias::{
     fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
 };
+use super::structured_entry_call_forwarding::EntryCallForwarding;
 use super::structured_early_return_schedule::{
     resolve_structured_epilogue_branches, STRUCTURED_EPILOGUE_PLACEHOLDER,
 };
@@ -452,6 +453,22 @@ impl Generator {
         });
         let global_base_cache_plan =
             plan_structured_global_base_cache(function, &self.global_array_sizes);
+        let entry_call_forwarding = ((global_base_cache_plan.is_some()
+            || self.data_section_anchor.is_some())
+            && frame_arrays.is_empty()
+            && self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && self.behavior.optimization != mwcc_versions::Optimization::O0)
+            .then(|| {
+                EntryCallForwarding::plan(
+                    function,
+                    &self.locations,
+                    &self.call_parameter_types,
+                )
+            })
+            .flatten();
+        if capture {
+            eprintln!("structured entry call forwarding: {entry_call_forwarding:?}");
+        }
         let global_member_address_cache_plan = plan_structured_global_member_address_cache(
             function,
             &self.addressable_globals,
@@ -2089,6 +2106,10 @@ impl Generator {
         } else {
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
         };
+        if entry_call_forwarding.is_some() {
+            self.legacy_callee_saved_frame_layout =
+                LegacyCalleeSavedFrameLayout::ReserveForwardedParameterLane;
+        }
         let pooled_dense_inline_save = array_pool_plan.is_some();
         let dense_save_helper = dense_saved_range
             && self.behavior.frame_convention == FrameConvention::Predecrement
@@ -2183,6 +2204,12 @@ impl Generator {
                 },
             ]);
         }
+        if let Some(forwarding) = &entry_call_forwarding {
+            forwarding.emit(self);
+            // The entry guard's record-form forwarding consumes one optimizer
+            // label before either arm creates its first string literal.
+            self.output.anonymous_label_bump += 1;
+        }
         if let Some(cache) = global_base_cache_plan {
             let register = self.fresh_virtual_general_preferring(4);
             self.emit_global_array_base(&cache.global, cache.total_size, register)?;
@@ -2225,7 +2252,11 @@ impl Generator {
                 let save_slot = reused_data_anchor_slot.unwrap_or(0);
                 self.emit_structured_saved_home_store(register, save_slot, plan.frame_size);
             }
-            let high = self.fresh_virtual_general_preferring(5);
+            let high = self.fresh_virtual_general_preferring(if entry_call_forwarding.is_some() {
+                4
+            } else {
+                5
+            });
             let anchor_symbol = self
                 .data_section_anchor
                 .as_ref()
@@ -3251,6 +3282,9 @@ impl Generator {
                 } => *branch_target = target,
                 _ => {}
             }
+        }
+        if let Some(forwarding) = &entry_call_forwarding {
+            forwarding.fold_guard_compare(self);
         }
         self.fold_structured_conditional_gotos();
         resolve_structured_switch_joins(&mut self.output.instructions);
