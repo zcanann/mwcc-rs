@@ -1539,6 +1539,22 @@ impl Generator {
                 self.emit_global_array_element_address(name, total_size, index, register)?;
                 Ok(register)
             }
+            // `global_table[i]->field` reaches member-address formation with
+            // the selected pointer as its base. A scalar `T**` global is not a
+            // struct array: load the table, scale by pointer width, and chase
+            // the selected entry before applying the outer member offset.
+            Expression::Index { base, index } => {
+                if let Expression::Variable(name) = base.as_ref() {
+                    if let Some(register) =
+                        self.try_emit_global_pointer_table_entry(name, index)?
+                    {
+                        return Ok(register);
+                    }
+                }
+                Err(Diagnostic::error(format!(
+                    "struct member base must be a supported indexed pointer (roadmap): {base:?}[{index:?}]"
+                )))
+            }
             // A bare `get()->field` is handled in emit_member_load (single-load, byte-exact); any
             // OTHER call context reaching here (a nested `get()->b->c`, an indexed `get()->a[i]`, a
             // member store) has a post-call schedule mwcc places differently — defer.

@@ -18,33 +18,12 @@ impl Generator {
         pointee: Pointee,
         value: &Expression,
     ) -> Compilation<bool> {
-        if !matches!(
-            self.globals.get(name),
-            Some(Type::Pointer(Pointee::Pointer | Pointee::WordPointer))
-        ) || self.locations.contains_key(name)
-        {
+        let Some(table) = self.try_emit_global_pointer_table_entry(name, index)? else {
             return Ok(false);
-        }
+        };
         let member_offset = i16::try_from(member_offset).map_err(|_| {
             Diagnostic::error("global pointer-table member displacement is out of range")
         })?;
-
-        let table = self.fresh_virtual_general_preferring(4);
-        self.emit_global_load(name, table)?;
-        let index = self.materialize_index_operand(index)?;
-        let scaled = self.fresh_virtual_general_preferring(5);
-        self.output
-            .instructions
-            .push(Instruction::ShiftLeftImmediate {
-                a: scaled,
-                s: index,
-                shift: 2,
-            });
-        self.output.instructions.push(Instruction::LoadWordIndexed {
-            d: table,
-            a: table,
-            b: scaled,
-        });
 
         let restore = self.reserved.insert(table);
         let source = self.place_store_value(value, pointee)?;
