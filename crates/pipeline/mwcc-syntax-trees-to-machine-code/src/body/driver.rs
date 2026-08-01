@@ -1190,6 +1190,9 @@ impl Generator {
         if self.try_global_status_snapshot_access(function)? {
             return Ok(());
         }
+        if self.try_support_file_request(function)? {
+            return Ok(());
+        }
         // A default-initialized result conditionally replaced by switch arms is
         // already one complete control-flow graph. Let its strict switch owner
         // retain the local and shared return before broad branch/value owners
