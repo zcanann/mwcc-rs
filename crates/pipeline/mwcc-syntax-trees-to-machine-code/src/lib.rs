@@ -658,6 +658,7 @@ fn lower_function_body(
         structured_shared_switch_scalar_frame: false,
         structured_packed_switch_scalar_frame: false,
         structured_memory_transfer_frame: false,
+        structured_memory_write_frame: false,
         structured_aggregate_call_copy_plan: None,
         structured_by_value_aggregate_plan: None,
         written_slots: HashSet::new(),
@@ -1184,6 +1185,7 @@ fn lower_function_body(
     generator.finalize_structured_shared_switch_scalar_frame();
     generator.finalize_structured_mixed_switch_scalar_frame();
     generator.finalize_structured_memory_transfer_frame();
+    generator.finalize_structured_memory_write_frame();
     generator.finalize_linkage_first_forwarded_context_frame(function);
     if generator.structured_nonreturning {
         generator.normalize_nonreturning_materialization_copies();

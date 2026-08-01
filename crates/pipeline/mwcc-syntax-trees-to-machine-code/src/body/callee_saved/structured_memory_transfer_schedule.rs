@@ -18,6 +18,41 @@ pub(super) fn is_memory_transfer_frame(
     saved_parameters: &[&Parameter],
     deferred_saved_locals: &[&LocalDeclaration],
 ) -> bool {
+    is_memory_transfer_frame_with_direction(
+        function,
+        frame_arrays,
+        frame_scalar_locals,
+        saved_parameters,
+        deferred_saved_locals,
+        1,
+    )
+}
+
+pub(super) fn is_memory_write_frame(
+    function: &Function,
+    frame_arrays: &[&LocalDeclaration],
+    frame_scalar_locals: &[&LocalDeclaration],
+    saved_parameters: &[&Parameter],
+    deferred_saved_locals: &[&LocalDeclaration],
+) -> bool {
+    is_memory_transfer_frame_with_direction(
+        function,
+        frame_arrays,
+        frame_scalar_locals,
+        saved_parameters,
+        deferred_saved_locals,
+        0,
+    )
+}
+
+fn is_memory_transfer_frame_with_direction(
+    function: &Function,
+    frame_arrays: &[&LocalDeclaration],
+    frame_scalar_locals: &[&LocalDeclaration],
+    saved_parameters: &[&Parameter],
+    deferred_saved_locals: &[&LocalDeclaration],
+    direction: i64,
+) -> bool {
     if frame_arrays.len() != 1
         || frame_arrays[0].declared_type != Type::UnsignedChar
         || frame_arrays[0].array_length != Some(2048)
@@ -80,12 +115,13 @@ pub(super) fn is_memory_transfer_frame(
                 _,
                 Expression::AddressOf { .. },
                 _,
-                Expression::IntegerLiteral(1),
+                Expression::IntegerLiteral(transfer_direction),
             ] = arguments.as_slice()
             else {
                 return;
             };
-            reads_into_transfer_buffer |= buffer == transfer_buffer;
+            reads_into_transfer_buffer |=
+                buffer == transfer_buffer && *transfer_direction == direction;
         });
     }
 
@@ -134,35 +170,8 @@ impl Generator {
         }
         canonicalize_unsigned_transfer_bound(&mut self.output.instructions);
 
-        let Some(initial_calls) = initial_output_calls(&self.output.instructions) else {
+        if !retain_initial_results(self, result) {
             return false;
-        };
-        for (ordinal, call) in initial_calls.into_iter().enumerate().rev() {
-            if ordinal == 0 {
-                self.output.instructions[call + 1] = Instruction::OrRecord {
-                    a: result,
-                    s: 3,
-                    b: 3,
-                };
-            } else {
-                crate::insert_instruction_retargeting(
-                    self,
-                    call + 1,
-                    Instruction::Or {
-                        a: result,
-                        s: 3,
-                        b: 3,
-                    },
-                );
-                if ordinal < 3 {
-                    let Instruction::CompareWordImmediate { a, immediate: 0 } =
-                        &mut self.output.instructions[call + 2]
-                    else {
-                        return false;
-                    };
-                    *a = result;
-                }
-            }
         }
 
         if let Some(compare) = self.output.instructions.windows(4).position(|window| {
@@ -252,7 +261,7 @@ impl Generator {
     }
 }
 
-fn allocated_transfer_frame(instructions: &[Instruction]) -> Option<(usize, usize)> {
+pub(super) fn allocated_transfer_frame(instructions: &[Instruction]) -> Option<(usize, usize)> {
     let frame = instructions.windows(4).position(|window| {
         matches!(window[0], Instruction::StoreWordWithUpdate { s: 1, a: 1, .. })
             && matches!(window[1], Instruction::StoreWord { s: 31, a: 1, .. })
@@ -283,6 +292,40 @@ fn initial_output_calls(instructions: &[Instruction]) -> Option<Vec<usize>> {
     (calls.len() == 4).then_some(calls)
 }
 
+pub(super) fn retain_initial_results(generator: &mut Generator, result: u8) -> bool {
+    let Some(initial_calls) = initial_output_calls(&generator.output.instructions) else {
+        return false;
+    };
+    for (ordinal, call) in initial_calls.into_iter().enumerate().rev() {
+        if ordinal == 0 {
+            generator.output.instructions[call + 1] = Instruction::OrRecord {
+                a: result,
+                s: 3,
+                b: 3,
+            };
+        } else {
+            crate::insert_instruction_retargeting(
+                generator,
+                call + 1,
+                Instruction::Or {
+                    a: result,
+                    s: 3,
+                    b: 3,
+                },
+            );
+            if ordinal < 3 {
+                let Instruction::CompareWordImmediate { a, immediate: 0 } =
+                    &mut generator.output.instructions[call + 2]
+                else {
+                    return false;
+                };
+                *a = result;
+            }
+        }
+    }
+    true
+}
+
 fn target_access_call(instructions: &[Instruction]) -> Option<usize> {
     instructions.windows(2).position(|window| {
         matches!(window[0], Instruction::AddImmediate { d: 7, a: 0, immediate: 1 })
@@ -290,7 +333,7 @@ fn target_access_call(instructions: &[Instruction]) -> Option<usize> {
     }).map(|start| start + 1)
 }
 
-fn dense_error_dispatch(instructions: &[Instruction]) -> Option<usize> {
+pub(super) fn dense_error_dispatch(instructions: &[Instruction]) -> Option<usize> {
     instructions.iter().position(|instruction| {
         matches!(instruction, Instruction::AddImmediate { d: 0, a: 3 | 30, immediate: -1792 })
     })
@@ -371,7 +414,7 @@ fn schedule_target_access_packet(instructions: &mut [Instruction]) -> bool {
     true
 }
 
-fn canonicalize_owner_copies(instructions: &mut [Instruction], owner: u8) {
+pub(super) fn canonicalize_owner_copies(instructions: &mut [Instruction], owner: u8) {
     let copies = instructions.iter().enumerate().filter_map(|(index, instruction)| {
         matches!(instruction, Instruction::Or { a: 3, s, b } if *s == owner && *b == owner)
             .then_some(index)

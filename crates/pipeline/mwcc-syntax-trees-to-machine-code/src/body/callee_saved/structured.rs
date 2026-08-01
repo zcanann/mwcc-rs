@@ -903,6 +903,14 @@ impl Generator {
                 &saved_parameters,
                 &deferred_saved_locals,
             );
+        self.structured_memory_write_frame =
+            super::structured_memory_transfer_schedule::is_memory_write_frame(
+                &structured_switch_source,
+                frame_arrays,
+                &frame_scalar_locals,
+                &saved_parameters,
+                &deferred_saved_locals,
+            );
         let broad_global_base_layout = StructuredBroadGlobalBaseLayout::plan(
             broad_global_base_cache,
             eager_saved_locals.len(),
