@@ -114,6 +114,41 @@ pub(super) fn plans(
     candidates.into_iter().map(|(_, plan)| plan).collect()
 }
 
+/// A retained whole-aggregate base subsumes the colder member-address live
+/// ranges. MWCC still gives the hottest repeated member its own address home,
+/// which shortens the loop dependency chain, but accesses every other member
+/// directly from the shared base.
+pub(super) fn retain_hottest_for_cached_global(
+    plans: &mut Vec<StructuredGlobalMemberAddressPlan>,
+    cached_global: Option<&str>,
+) {
+    let Some(cached_global) = cached_global else {
+        return;
+    };
+    // Small member sets retain independent addresses; only a broad aggregate
+    // fanout makes the shared base the cheaper representation.
+    if plans
+        .iter()
+        .filter(|plan| plan.global == cached_global)
+        .count()
+        < 4
+    {
+        return;
+    }
+    let selected_offset = plans
+        .iter()
+        .find(|plan| plan.global == cached_global && !plan.defer_until_first_use)
+        .or_else(|| plans.iter().find(|plan| plan.global == cached_global))
+        .map(|plan| plan.offset)
+        .expect("the broad cached-global member set is nonempty");
+    plans.retain(|plan| {
+        if plan.global != cached_global {
+            return true;
+        }
+        plan.offset == selected_offset
+    });
+}
+
 fn collect_statement_events(
     statements: &[Statement],
     struct_sizes: &std::collections::HashMap<String, u32>,

@@ -490,10 +490,14 @@ impl Generator {
         if capture {
             eprintln!("structured entry call forwarding: {entry_call_forwarding:?}");
         }
-        let global_member_address_cache_plans = plan_structured_global_member_address_caches(
+        let mut global_member_address_cache_plans = plan_structured_global_member_address_caches(
             function,
             &self.addressable_globals,
             &self.global_array_sizes,
+        );
+        super::structured_global_member_address_cache::retain_hottest_for_cached_global(
+            &mut global_member_address_cache_plans,
+            global_base_cache_plan.as_ref().map(|plan| plan.global.as_str()),
         );
         let aggregate_call_copy_plan =
             (frame_arrays.is_empty()
