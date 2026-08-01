@@ -1965,9 +1965,9 @@ fn compile(
         };
         // Section routing for a writable global:
         //   * a NON-zero initializer is always initialized data (`.sdata`/`.data`);
-        //   * an all-zero ARRAY initializer stays MATERIALIZED zero bytes in `.sdata`/`.data` — mwcc
-        //     does NOT coalesce a zeroed array into `.sbss`/`.bss` (`int a[2]={0,0};` -> `.sdata`,
-        //     `int a[3]={0,0,0};` -> `.data`), regardless of size;
+        //   * an all-zero ARRAY or STRUCT initializer stays MATERIALIZED zero bytes in
+        //     `.sdata`/`.data` — mwcc does NOT coalesce an explicitly initialized aggregate into
+        //     `.sbss`/`.bss` (`int a[2]={0,0};`, `struct S s={};`), regardless of size;
         //   * an all-zero SCALAR initializer coalesces to `.sbss` with no file bytes — an EXPLICIT
         //     zero, laid out in declaration order ahead of the reversed uninitialized run
         //     (`int a=0;`, `double d=0;`);
@@ -1986,7 +1986,11 @@ fn compile(
             // A pure-virtual table can be an all-zero scalar aggregate, but it
             // remains a materialized ABI data image rather than tentative BSS.
             Some(bytes) if global.name.starts_with("__vt__") => (Some(bytes), false),
-            Some(bytes) if is_array => (Some(bytes), false),
+            Some(bytes)
+                if is_array || matches!(global.declared_type, Type::Struct { .. }) =>
+            {
+                (Some(bytes), false)
+            }
             Some(_) => (None, true),
             None => (None, false),
         };
