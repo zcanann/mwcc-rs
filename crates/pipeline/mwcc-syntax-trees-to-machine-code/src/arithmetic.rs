@@ -1437,7 +1437,11 @@ impl Generator {
         // (A call operand of any immediate op is kept in its r3 home centrally by
         // place_operand, so it needs no special case here.)
         let operand_target = if matches!(kind, Immediate::Add) && destination == GENERAL_SCRATCH {
-            self.fresh_virtual_general()
+            if self.reserved.is_empty() {
+                self.fresh_virtual_general()
+            } else {
+                self.fresh_virtual_general_avoiding(self.reserved.iter().copied().collect())
+            }
         } else {
             destination
         };

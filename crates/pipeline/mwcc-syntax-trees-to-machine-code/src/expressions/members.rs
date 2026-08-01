@@ -2317,6 +2317,29 @@ impl Generator {
         total_size: u32,
         dest: u8,
     ) -> Compilation<()> {
+        self.emit_global_array_base_with_high(name, total_size, dest, dest)
+    }
+
+    /// Materialize a file-scope array global through a distinct high-half
+    /// temporary. Retained aggregate bases use this form so the short-lived
+    /// volatile high half does not inherit the saved base's register home.
+    pub(crate) fn emit_global_array_base_through(
+        &mut self,
+        name: &str,
+        total_size: u32,
+        dest: u8,
+        high: u8,
+    ) -> Compilation<()> {
+        self.emit_global_array_base_with_high(name, total_size, dest, high)
+    }
+
+    fn emit_global_array_base_with_high(
+        &mut self,
+        name: &str,
+        total_size: u32,
+        dest: u8,
+        high: u8,
+    ) -> Compilation<()> {
         if let Some(base) = self
             .data_section_anchor
             .as_ref()
@@ -2341,11 +2364,11 @@ impl Generator {
                 immediate: 0,
             });
         } else {
-            self.emit_address_high(dest, name);
+            self.emit_address_high(high, name);
             self.record_relocation(RelocationKind::Addr16Lo, name);
             self.output.instructions.push(Instruction::AddImmediate {
                 d: dest,
-                a: dest,
+                a: high,
                 immediate: 0,
             });
         }

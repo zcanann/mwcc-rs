@@ -2284,7 +2284,17 @@ impl Generator {
         if let Some(cache) = global_base_cache_plan {
             let register = standalone_global_base_home
                 .unwrap_or_else(|| self.fresh_virtual_general_preferring(4));
-            self.emit_global_array_base(&cache.global, cache.total_size, register)?;
+            if standalone_global_base_home.is_some() {
+                let high = self.fresh_virtual_general_preferring(3);
+                self.emit_global_array_base_through(
+                    &cache.global,
+                    cache.total_size,
+                    register,
+                    high,
+                )?;
+            } else {
+                self.emit_global_array_base(&cache.global, cache.total_size, register)?;
+            }
             self.structured_global_base_cache =
                 Some(crate::generator::StructuredGlobalBaseCache {
                     global: cache.global,
@@ -4908,8 +4918,24 @@ impl Generator {
                     ));
                     diagnostic
                 })?,
-                Statement::Store { target, value }
-                    if self.try_emit_materialized_float_store(target, value)? => {}
+                Statement::Store { target, value } => {
+                    let reserved_live_homes = self.reserve_live_physical_homes(
+                        function,
+                        &statements[statement_index + 1..],
+                    );
+                    let result = match self.try_emit_materialized_float_store(target, value) {
+                        Ok(true) => Ok(()),
+                        Ok(false) => self.emit_statement(statement),
+                        Err(diagnostic) => Err(diagnostic),
+                    };
+                    self.release_reserved_physical_homes(reserved_live_homes);
+                    result.map_err(|mut diagnostic| {
+                        diagnostic.message.push_str(&format!(
+                            " (in structured body statement {statement_index}: {statement:?})"
+                        ));
+                        diagnostic
+                    })?;
+                }
                 _ => self.emit_statement(statement).map_err(|mut diagnostic| {
                     diagnostic.message.push_str(&format!(
                         " (in structured body statement {statement_index}: {statement:?})"
@@ -5114,7 +5140,7 @@ fn pure_local_alias(local: &LocalDeclaration) -> Option<&str> {
     }
 }
 
-fn value_read_before_redefinition(statements: &[Statement], name: &str) -> bool {
+pub(super) fn value_read_before_redefinition(statements: &[Statement], name: &str) -> bool {
     for statement in statements {
         match statement {
             Statement::InlineAsm(_) => {}
