@@ -19,6 +19,30 @@ enum ArgumentPlacement {
     Register { source: u8, target: u8 },
     Constant { value: i64, target: u8 },
     FunctionAddress { target: u8 },
+    GlobalAddress { target: u8 },
+}
+
+fn transparent_pointer_cast(expression: &Expression) -> &Expression {
+    match expression {
+        Expression::Cast {
+            target_type: Type::Pointer(_) | Type::StructPointer { .. },
+            operand,
+        } => transparent_pointer_cast(operand),
+        _ => expression,
+    }
+}
+
+fn supported_bare_indirect_target(target: &Expression) -> bool {
+    if matches!(target, Expression::Dereference { .. } | Expression::Member { .. }) {
+        return true;
+    }
+    matches!(
+        target,
+        Expression::Cast {
+            target_type: Type::Pointer(_) | Type::StructPointer { .. },
+            operand,
+        } if matches!(transparent_pointer_cast(operand), Expression::Variable(_))
+    )
 }
 
 fn placement_overwrites_later_source(placements: &[ArgumentPlacement]) -> bool {
@@ -29,7 +53,8 @@ fn placement_overwrites_later_source(placements: &[ArgumentPlacement]) -> bool {
             let target = match placement {
                 ArgumentPlacement::Register { source, target } if source != target => *target,
                 ArgumentPlacement::Constant { target, .. }
-                | ArgumentPlacement::FunctionAddress { target } => *target,
+                | ArgumentPlacement::FunctionAddress { target }
+                | ArgumentPlacement::GlobalAddress { target } => *target,
                 ArgumentPlacement::Register { .. } => return false,
             };
             placements[index + 1..].iter().any(|later| {
@@ -208,18 +233,24 @@ impl Generator {
             .enumerate()
             .map(|(index, argument)| {
                 let target = Eabi::FIRST_GENERAL_ARGUMENT + index as u8;
-                if let Expression::IntegerLiteral(value) = argument {
+                let transparent = transparent_pointer_cast(argument);
+                if let Expression::IntegerLiteral(value) = transparent {
                     return Ok(ArgumentPlacement::Constant {
                         value: *value,
                         target,
                     });
                 }
-                if let Expression::Variable(name) = argument {
+                if let Expression::Variable(name) = transparent {
                     if self.is_direct_function_symbol(name) {
                         return Ok(ArgumentPlacement::FunctionAddress { target });
                     }
                 }
-                let (source, width, _) = self.leaf_info(argument)?;
+                if let Expression::AddressOf { operand } = transparent {
+                    if matches!(operand.as_ref(), Expression::Variable(name) if self.globals.contains_key(name)) {
+                        return Ok(ArgumentPlacement::GlobalAddress { target });
+                    }
+                }
+                let (source, width, _) = self.leaf_info(transparent)?;
                 if width != 32 || source == 12 {
                     return Err(Diagnostic::error(
                         "arguments to a bare indirect call need dependency-aware marshaling (roadmap)",
@@ -250,10 +281,13 @@ impl Generator {
                     self.load_integer_constant(target, value);
                 }
                 ArgumentPlacement::FunctionAddress { target } => {
-                    let Expression::Variable(name) = argument else {
+                    let Expression::Variable(name) = transparent_pointer_cast(argument) else {
                         unreachable!("a function-address placement came from a designator")
                     };
                     self.emit_function_address_value(name, target);
+                }
+                ArgumentPlacement::GlobalAddress { target } => {
+                    self.evaluate_general(argument, target)?;
                 }
                 ArgumentPlacement::Register { .. } => {}
             }
@@ -298,10 +332,7 @@ impl Generator {
         )? {
             return Ok(());
         }
-        if !matches!(
-            target,
-            Expression::Dereference { .. } | Expression::Member { .. }
-        ) {
+        if !supported_bare_indirect_target(target) {
             return Err(Diagnostic::error(
                 "this bare indirect-call target is not supported yet (roadmap)",
             ));
@@ -459,7 +490,7 @@ fn shared_global_base_member_call<'a>(
 mod tests {
     use super::{
         placement_overwrites_later_source, shared_global_base_member_call,
-        ArgumentPlacement,
+        supported_bare_indirect_target, transparent_pointer_cast, ArgumentPlacement,
     };
     use mwcc_syntax_trees::{Expression, Pointee, Type};
 
@@ -522,5 +553,19 @@ mod tests {
         let arguments = [Expression::Variable("other".into())];
 
         assert_eq!(shared_global_base_member_call(&target, &arguments), None);
+    }
+
+    #[test]
+    fn accepts_a_casted_register_as_an_indirect_target() {
+        let target = Expression::Cast {
+            target_type: Type::Pointer(Pointee::Int),
+            operand: Box::new(Expression::Variable("access_func".into())),
+        };
+
+        assert!(supported_bare_indirect_target(&target));
+        assert!(matches!(
+            transparent_pointer_cast(&target),
+            Expression::Variable(name) if name == "access_func"
+        ));
     }
 }

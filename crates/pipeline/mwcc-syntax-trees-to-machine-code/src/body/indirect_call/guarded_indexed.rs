@@ -51,10 +51,13 @@ impl Generator {
                         self.load_integer_constant(target, value);
                     }
                     ArgumentPlacement::FunctionAddress { target } => {
-                        let Expression::Variable(name) = argument else {
+                        let Expression::Variable(name) = transparent_pointer_cast(argument) else {
                             unreachable!("a function-address placement came from a designator")
                         };
                         self.emit_function_address_value(name, target);
+                    }
+                    ArgumentPlacement::GlobalAddress { target } => {
+                        self.evaluate_general(argument, target)?;
                     }
                     ArgumentPlacement::Register { .. } => {}
                 }
