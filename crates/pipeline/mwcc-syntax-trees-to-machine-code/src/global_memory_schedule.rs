@@ -155,7 +155,9 @@ pub(crate) fn hoist_address_highs_over_stores(
 ///
 /// The complete four-instruction dataflow and matching relocation pair prove
 /// both the independence of the first two instructions and their ownership by
-/// one address computation. Control-flow entry points remain immovable.
+/// one address computation. When the address high is a control-flow entry, the
+/// block boundary stays in place: incoming branches are transferred to the
+/// scale before the ordinary owner permutation follows both instructions.
 pub(crate) fn hoist_integer_scales_over_address_highs(
     instructions: &mut [Instruction],
     relocations: &[Relocation],
@@ -179,7 +181,7 @@ pub(crate) fn hoist_integer_scales_over_address_highs(
         let scale = high + 1;
         let low = high + 2;
         let sum = high + 3;
-        if [high, scale, low, sum]
+        if [scale, low, sum]
             .iter()
             .any(|index| control_entries.contains(index))
         {
@@ -236,6 +238,19 @@ pub(crate) fn hoist_integer_scales_over_address_highs(
             continue;
         }
 
+        if control_entries.contains(&high) {
+            for instruction in instructions.iter_mut() {
+                match instruction {
+                    Instruction::BranchConditionalForward { target, .. }
+                    | Instruction::Branch { target }
+                        if *target == high =>
+                    {
+                        *target = scale;
+                    }
+                    _ => {}
+                }
+            }
+        }
         instructions.swap(high, scale);
         permutation[high] = scale;
         permutation[scale] = high;
@@ -559,5 +574,46 @@ mod tests {
         assert!(matches!(instructions[0], Instruction::MultiplyImmediate { .. }));
         assert!(matches!(instructions[1], Instruction::AddImmediateShifted { .. }));
         assert_eq!(permutation, [1, 0, 2, 3]);
+    }
+
+    #[test]
+    fn integer_scale_keeps_an_entered_address_block_boundary() {
+        let mut instructions = vec![
+            Instruction::Branch { target: 2 },
+            Instruction::BranchToLinkRegister,
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::MultiplyImmediate {
+                d: 4,
+                a: 28,
+                immediate: 80,
+            },
+            Instruction::AddImmediate {
+                d: 0,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::Add {
+                d: 29,
+                a: 0,
+                b: 4,
+            },
+        ];
+        let relocations = [
+            address_relocation(2, RelocationKind::Addr16Ha, "records"),
+            address_relocation(4, RelocationKind::Addr16Lo, "records"),
+        ];
+
+        let permutation =
+            hoist_integer_scales_over_address_highs(&mut instructions, &relocations);
+
+        assert!(matches!(instructions[2], Instruction::MultiplyImmediate { .. }));
+        assert!(matches!(instructions[3], Instruction::AddImmediateShifted { .. }));
+        assert!(matches!(instructions[0], Instruction::Branch { target: 3 }));
+        assert_eq!(permutation, [0, 1, 3, 2, 4, 5]);
+        assert_eq!(permutation[3], 2);
     }
 }
