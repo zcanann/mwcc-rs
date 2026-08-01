@@ -20,6 +20,10 @@ struct VariadicPrefix<'a> {
     name: &'a [u8],
 }
 
+fn complete_object_vptr_offset(offset: u16) -> Option<i16> {
+    i16::try_from(offset).ok()
+}
+
 fn recognize_prefix<'a>(
     statement: &'a Statement,
     stream: &str,
@@ -218,6 +222,9 @@ impl Generator {
         let Some(plan) = VariadicBufferPrint::recognize(function) else {
             return Ok(false);
         };
+        let Some(vptr_offset) = complete_object_vptr_offset(plan.vptr_offset) else {
+            return Ok(false);
+        };
 
         const BUFFER_OFFSET: i16 = 108;
         const VA_LIST_BYTES: i16 = 12;
@@ -227,7 +234,6 @@ impl Generator {
         let frame_size = (va_list_offset + VA_LIST_BYTES + callee_save_bytes + 7) & !7;
         if frame_size <= 108
             || frame_size.checked_add(8).is_none()
-            || plan.vptr_offset > (i16::MAX - 4) as u16
             || plan.slot_offset > i16::MAX as u16
         {
             return Ok(false);
@@ -435,9 +441,10 @@ impl Generator {
         self.output.instructions.push(Instruction::LoadWord {
             d: 12,
             a: 3,
-            // MWCC's primary-object ABI keeps the vptr after the leading
-            // runtime/type word; the AST offset is relative to that vptr slot.
-            offset: plan.vptr_offset as i16 + 4,
+            // Class layout recovery records the complete-object byte offset.
+            // A leading data word is therefore already reflected here (for
+            // example Stream::mPath at 0 followed by its vptr at 4).
+            offset: vptr_offset,
         });
         self.output.instructions.push(Instruction::LoadWord {
             d: 12,
@@ -483,5 +490,11 @@ mod tests {
             recognize_prefix(&statement, "stream"),
             Some(None)
         ));
+    }
+
+    #[test]
+    fn recovered_vptr_offsets_are_complete_object_offsets() {
+        assert_eq!(complete_object_vptr_offset(4), Some(4));
+        assert_eq!(complete_object_vptr_offset(u16::MAX), None);
     }
 }
