@@ -145,6 +145,7 @@ use super::structured_variadic_output_frame::StructuredVariadicOutputFrame;
 use super::structured_unobserved_scalar_table::UnobservedScalarTable;
 #[allow(unused_imports)]
 use super::*;
+use mwcc_syntax_trees::ArmBody;
 
 impl Generator {
     pub(crate) fn try_unoptimized_source_home_leaf_body(
@@ -2342,7 +2343,7 @@ impl Generator {
             LegacyCalleeSavedFrameLayout::InferFromValueOrigin
         } else if guarded_structured_constant_return {
             LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable
-        } else if function.locals.is_empty()
+        } else if has_only_call_result_temporaries(function)
             && !saved_parameters.is_empty()
             && saved_float_parameters.is_empty()
             && eager_saved_locals.is_empty()
@@ -5484,6 +5485,48 @@ fn is_call_result_local(statements: &[Statement], candidate: &str) -> bool {
     })
 }
 
+fn has_only_call_result_temporaries(function: &Function) -> bool {
+    fn inspect(
+        statements: &[Statement],
+        candidate: &str,
+        seen: &mut bool,
+    ) -> bool {
+        statements.iter().all(|statement| match statement {
+            Statement::Assign { name, value } if name == candidate => {
+                *seen = true;
+                expression_ends_in_call(value)
+            }
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                inspect(then_body, candidate, seen)
+                    && inspect(else_body, candidate, seen)
+            }
+            Statement::Loop { body, .. } => inspect(body, candidate, seen),
+            Statement::Switch { arms, default, .. } => {
+                arms.iter().all(|arm| match &arm.body {
+                    ArmBody::Statements(body) => inspect(body, candidate, seen),
+                    ArmBody::Return(_) => true,
+                }) && default.as_ref().is_none_or(|body| match body {
+                    ArmBody::Statements(body) => inspect(body, candidate, seen),
+                    ArmBody::Return(_) => true,
+                })
+            }
+            _ => true,
+        })
+    }
+
+    function.locals.iter().all(|local| {
+        if local.initializer.is_some() {
+            return false;
+        }
+        let mut seen = false;
+        inspect(&function.statements, &local.name, &mut seen) && seen
+    })
+}
+
 fn is_sequenced_call_result_local(statements: &[Statement], candidate: &str) -> bool {
     statements.iter().any(|statement| match statement {
         Statement::Assign {
@@ -5657,6 +5700,67 @@ pub(super) fn logical_or_groups(expression: &Expression) -> Option<Vec<Vec<&Expr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn call_result_temporary_function(terminal_value: Expression) -> Function {
+        Function {
+            return_type: Type::Int,
+            name: "status".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![LocalDeclaration {
+                declared_type: Type::Int,
+                name: "error".into(),
+                initializer: None,
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                attribute_alignment: None,
+                row_bytes: None,
+            }],
+            statements: vec![
+                Statement::Assign {
+                    name: "error".into(),
+                    value: Expression::Call {
+                        name: "first".into(),
+                        arguments: Vec::new(),
+                    },
+                },
+                Statement::If {
+                    condition: Expression::Variable("retry".into()),
+                    then_body: vec![Statement::Assign {
+                        name: "error".into(),
+                        value: terminal_value,
+                    }],
+                    else_body: Vec::new(),
+                },
+            ],
+            guards: Vec::new(),
+            return_expression: Some(Expression::Variable("error".into())),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
+
+    #[test]
+    fn distinguishes_call_result_temporaries_from_stored_local_values() {
+        let call_only = call_result_temporary_function(Expression::Call {
+            name: "second".into(),
+            arguments: Vec::new(),
+        });
+        let stored_value = call_result_temporary_function(Expression::IntegerLiteral(1));
+
+        assert!(has_only_call_result_temporaries(&call_only));
+        assert!(!has_only_call_result_temporaries(&stored_value));
+    }
 
     #[test]
     fn decomposes_a_disjunction_into_ordered_conjunction_groups() {
