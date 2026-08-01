@@ -1393,6 +1393,9 @@ impl Generator {
         if self.try_captures(function)? {
             return Ok(());
         }
+        if self.try_global_pointer_table_link_search(function)? {
+            return Ok(());
+        }
         if self.try_float_friction_select(function)? {
             return Ok(());
         }
