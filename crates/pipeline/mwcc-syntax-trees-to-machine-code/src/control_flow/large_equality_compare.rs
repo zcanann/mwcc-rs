@@ -27,12 +27,20 @@ impl Generator {
         }
 
         // r0 cannot be the source of addis: an r0 base encodes literal zero.
-        // Leaves and call results already have a suitable home. Evaluate other
-        // computed/memory values directly into a non-r0 temporary rather than
-        // first loading r0 and copying it.
+        // Register leaves and call results already have a suitable home. An
+        // address-taken scalar leaf is memory-backed, so evaluate it with the
+        // other computed/memory values directly into a non-r0 temporary rather
+        // than first loading r0 and copying it.
         let source = match left {
-            Expression::Variable(_)
-            | Expression::Call { .. }
+            Expression::Variable(name)
+                if !self
+                    .frame_slots
+                    .get(name)
+                    .is_some_and(|slot| !slot.is_array) =>
+            {
+                self.condition_operand_register(left)?
+            }
+            Expression::Call { .. }
             | Expression::CallThrough { .. } => self.condition_operand_register(left)?,
             _ => {
                 let register = self.lowest_free_general()?;

@@ -8,6 +8,7 @@
 use mwcc_syntax_trees::{ArmBody, Expression, Function, Statement, Type};
 
 use super::structured_expression_visit::visit_expression;
+use super::structured_reference_call_span::member_references_span_call;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct StructuredGlobalMemberAddressPlan {
@@ -81,6 +82,9 @@ pub(super) fn plans(
     let mut candidates = positions
         .into_iter()
         .filter_map(|((global, offset), occurrences)| {
+            if !member_references_span_call(function, &global, offset) {
+                return None;
+            }
             let (first, _) = *occurrences.first()?;
             let (last, _) = *occurrences.last()?;
             if occurrences.len() < 2 || first >= last {
@@ -266,7 +270,9 @@ fn collect_arm_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{BinaryOperator, LocalDeclaration, LoopKind, Statement};
+    use mwcc_syntax_trees::{
+        BinaryOperator, LocalDeclaration, LoopKind, Statement, SwitchArm,
+    };
 
     fn member(offset: u32) -> Expression {
         Expression::Member {
@@ -614,6 +620,44 @@ mod tests {
                 defer_until_first_use: true,
                 use_count: 2,
             })
+        );
+    }
+
+    #[test]
+    fn rejects_one_use_in_each_exclusive_switch_arm() {
+        let consume = |value| {
+            ArmBody::Statements(vec![Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![value],
+            })])
+        };
+        let function = function(vec![Statement::Switch {
+            scrutinee: Expression::Variable("kind".into()),
+            arms: vec![
+                SwitchArm {
+                    value: 1,
+                    body: consume(member(8)),
+                    falls_through: false,
+                },
+                SwitchArm {
+                    value: 2,
+                    body: consume(member(8)),
+                    falls_through: false,
+                },
+            ],
+            default: None,
+        }]);
+
+        assert_eq!(
+            plan(
+                &function,
+                &std::collections::HashMap::from([(
+                    "record".into(),
+                    Type::Struct { size: 12, align: 4 },
+                )]),
+                &std::collections::HashMap::new(),
+            ),
+            None
         );
     }
 }

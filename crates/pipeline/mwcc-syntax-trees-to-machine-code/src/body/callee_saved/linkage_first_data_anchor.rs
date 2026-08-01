@@ -15,6 +15,7 @@ use crate::InlineBodySet;
 
 use super::structured_expression_visit::{visit_expression, visit_statement};
 use super::structured_locals::DeferredSavedHomePlan;
+use super::structured_reference_call_span::references_span_call;
 
 pub(crate) fn plan(
     function: &Function,
@@ -42,7 +43,7 @@ pub(crate) fn plan(
         behavior.inferred_array_uses_full_data_section,
     );
     let (data_references, _) = referenced_symbols(function, &data_symbols);
-    if data_references.len() >= 3 {
+    if data_references.len() >= 3 && references_span_call(function, &data_references) {
         return Some(DataSectionAnchorPlan {
             symbols: data_references,
             anchor_symbol: "...data.0".into(),
@@ -56,7 +57,9 @@ pub(crate) fn plan(
     );
     let (bss_references, bss_reference_count) =
         referenced_symbols(function, &bss_symbols);
-    (bss_references.len() >= 2 || bss_reference_count >= 4).then(|| {
+    ((bss_references.len() >= 2 || bss_reference_count >= 4)
+        && references_span_call(function, &bss_references))
+    .then(|| {
         DataSectionAnchorPlan {
             symbols: bss_references,
             anchor_symbol: "...bss.0".into(),
@@ -486,5 +489,39 @@ mod tests {
         assert_eq!(anchor.anchor_symbol, "...bss.0");
         assert_eq!(anchor.symbols.len(), 1);
         assert!(anchor.symbols.contains("Command"));
+    }
+
+    #[test]
+    fn rejects_globals_consumed_before_the_first_call() {
+        let mut state = global("State", Vec::new());
+        state.data_bytes = None;
+        let mut cpu = global("CPU", Vec::new());
+        cpu.data_bytes = None;
+        let caller = function(
+            "caller",
+            vec![Statement::If {
+                condition: Expression::Variable("State".into()),
+                then_body: vec![Statement::Store {
+                    target: Expression::Variable("State".into()),
+                    value: Expression::IntegerLiteral(0),
+                }],
+                else_body: vec![
+                    call(
+                        "read_instruction",
+                        vec![Expression::Variable("CPU".into())],
+                    ),
+                    call("post_event", Vec::new()),
+                ],
+            }],
+        );
+        let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
+
+        assert!(plan(
+            &caller,
+            &[state, cpu],
+            behavior,
+            &InlineBodySet::default(),
+        )
+        .is_none());
     }
 }

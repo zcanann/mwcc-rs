@@ -178,6 +178,7 @@ mod structured_guarded_scaled_item_schedule;
 mod structured_guarded_mutating_inline_linkage;
 mod structured_guarded_mutating_inline_schedule;
 mod structured_expression_visit;
+mod structured_reference_call_span;
 mod structured_guard_cache_schedule;
 mod structured_deferred_local_layout;
 mod structured_async_callback_switch_layout;

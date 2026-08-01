@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use mwcc_machine_code::{Instruction, MachineFunction};
 use mwcc_syntax_trees::{
-    BinaryOperator, Expression, Function, GlobalDeclaration, InlineExpansionFacts, Parameter,
-    SourceFundamentalType, Statement, Type,
+    BinaryOperator, Expression, Function, GlobalDeclaration, InlineExpansionFacts,
+    LocalDeclaration, Parameter, SourceFundamentalType, Statement, Type,
 };
 use mwcc_versions::{CompilerConfig, GC_1_2_5N};
 
@@ -345,6 +345,79 @@ fn shifted_wide_add_compares_from_the_scratch() {
                 ]
         }),
         "the shifted add must remain directly comparable in r0: {:?}",
+        machine.instructions
+    );
+}
+
+#[test]
+fn address_taken_scalar_large_equality_uses_a_nonzero_addis_source() {
+    let function = Function {
+        return_type: Type::Void,
+        name: "f".into(),
+        is_static: false,
+        is_weak: false,
+        parameters: Vec::new(),
+        locals: vec![LocalDeclaration {
+            declared_type: Type::UnsignedInt,
+            name: "word".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        }],
+        statements: vec![
+            Statement::Expression(Expression::Call {
+                name: "fill".into(),
+                arguments: vec![Expression::AddressOf {
+                    operand: Box::new(Expression::Variable("word".into())),
+                }],
+            }),
+            Statement::If {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::Equal,
+                    left: Box::new(Expression::Variable("word".into())),
+                    right: Box::new(Expression::IntegerLiteral(0x0fe0_0000)),
+                },
+                then_body: vec![Statement::Expression(Expression::Call {
+                    name: "matched".into(),
+                    arguments: Vec::new(),
+                })],
+                else_body: Vec::new(),
+            },
+        ],
+        guards: Vec::new(),
+        return_expression: None,
+        section: None,
+        preceded_by_asm: false,
+        asm_body: None,
+        inline_asm_blocks: Vec::new(),
+        force_active: false,
+        text_deferred: false,
+        peephole_disabled: false,
+    };
+    let machine = lower(&function);
+
+    assert!(
+        machine.instructions.windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::LoadWord { d: 3, a: 1, .. },
+                Instruction::AddImmediateShifted {
+                    d: 0,
+                    a: 3,
+                    immediate: -4064,
+                },
+                Instruction::CompareLogicalWordImmediate {
+                    a: 0,
+                    immediate: 0,
+                },
+            ]
+        )),
+        "the frame reload must feed addis through a non-r0 source: {:?}",
         machine.instructions
     );
 }
