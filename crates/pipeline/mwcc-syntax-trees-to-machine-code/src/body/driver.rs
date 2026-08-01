@@ -1187,6 +1187,9 @@ impl Generator {
         // local-pointer aliases are not later mistaken for entry parameters.
         self.known_locals
             .extend(function.locals.iter().map(|local| local.name.clone()));
+        if self.try_global_status_snapshot_access(function)? {
+            return Ok(());
+        }
         // EABI startup walks the ROM-copy and BSS linker tables as one
         // allocation/scheduling transaction. Recognize the two sentinel loops
         // and validate both inline helper bodies before generic inlining splits
