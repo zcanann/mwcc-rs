@@ -284,6 +284,9 @@ impl Generator {
                 return self.emit_store(base, value);
             }
         }
+        if self.try_emit_wide_pointer_mask_store(target, value)? {
+            return Ok(());
+        }
         let (value, indexed_update_syntax) = match value {
             Expression::IndexedUpdateValue { value } => (value.as_ref(), true),
             value => (value, false),
