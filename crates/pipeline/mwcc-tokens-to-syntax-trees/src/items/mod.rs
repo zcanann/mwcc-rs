@@ -4763,6 +4763,7 @@ impl Parser {
                 }
                 loop {
                     let name = self.parse_identifier()?;
+                    let attribute_alignment = self.skip_attributes()?;
                     if matches!(
                         self.peek(),
                         Token::BracketOpen | Token::Equals | Token::Star
@@ -4779,6 +4780,7 @@ impl Parser {
                         data_bytes: None,
                         data_relocations: Vec::new(),
                         is_const: false,
+                        attribute_alignment,
                         row_bytes: (_inner > 1).then(|| _inner * (element.width() as u16 / 8)),
                     });
                     local_lines.push(Some(declaration_line));
@@ -4838,6 +4840,7 @@ impl Parser {
                         data_bytes: None,
                         data_relocations: Vec::new(),
                         is_const: false,
+                        attribute_alignment: None,
                         row_bytes: None,
                     });
                     local_lines.push(Some(declaration_line));
@@ -4863,6 +4866,7 @@ impl Parser {
                     }
                 }
                 let name = self.parse_identifier()?;
+                let mut attribute_alignment = self.skip_attributes()?;
                 if let Some(tag) = &struct_tag {
                     self.variable_structs.insert(name.clone(), tag.clone());
                     self.function_local_structs
@@ -4897,6 +4901,10 @@ impl Parser {
                     let (explicit, parsed_inner_elements) =
                         self.parse_local_array_dimensions()?;
                     inner_elements = parsed_inner_elements;
+                    if let Some(alignment) = self.skip_attributes()? {
+                        attribute_alignment =
+                            Some(attribute_alignment.unwrap_or(1).max(alignment));
+                    }
                     if *self.peek() == Token::Equals {
                         self.advance();
                         if is_static
@@ -5163,6 +5171,7 @@ impl Parser {
                     data_bytes,
                     data_relocations,
                     is_const: self.last_type_was_const,
+                    attribute_alignment,
                     row_bytes: (inner_elements > 1)
                         .then(|| inner_elements * (declared_type.width() as u16 / 8)),
                 });

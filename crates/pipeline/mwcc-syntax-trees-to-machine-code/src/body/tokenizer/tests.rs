@@ -88,6 +88,7 @@ fn local(name: &str, declared_type: Type, array_length: Option<u16>) -> LocalDec
         data_bytes: None,
         data_relocations: Vec::new(),
         is_const: false,
+        attribute_alignment: None,
         row_bytes: None,
     }
 }

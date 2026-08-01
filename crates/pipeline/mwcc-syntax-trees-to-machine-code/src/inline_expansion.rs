@@ -1290,6 +1290,7 @@ impl InlineBodySet {
                 data_bytes: None,
                 data_relocations: Vec::new(),
                 is_const: false,
+                attribute_alignment: None,
                 row_bytes: None,
             });
             substituted.push(Statement::Assign {
@@ -1993,6 +1994,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         }
     }
@@ -2331,6 +2333,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         }];
         let caller = function(
@@ -2447,6 +2450,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         }];
         let caller = function(
@@ -3265,6 +3269,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         transaction.return_expression = Some(Expression::Variable("idle".into()));
@@ -3523,6 +3528,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         };
         let mut helper = function(
@@ -4403,6 +4409,7 @@ mod tests {
                 data_bytes: None,
                 data_relocations: Vec::new(),
                 is_const: false,
+                attribute_alignment: None,
                 row_bytes: None,
             },
             LocalDeclaration {
@@ -4415,6 +4422,7 @@ mod tests {
                 data_bytes: None,
                 data_relocations: Vec::new(),
                 is_const: false,
+                attribute_alignment: None,
                 row_bytes: None,
             },
         ];

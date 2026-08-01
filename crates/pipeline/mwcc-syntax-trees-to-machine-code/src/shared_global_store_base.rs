@@ -42,6 +42,7 @@ pub(crate) fn materialize_consecutive_global_struct_store_base(
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         changed = true;

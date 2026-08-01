@@ -58,6 +58,7 @@ pub(crate) fn materialize_guarded_global_member_update(
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         return Some(rewritten);

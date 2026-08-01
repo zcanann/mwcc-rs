@@ -45,6 +45,7 @@ pub(crate) fn materialize_consecutive_global_array_store_base(
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         debug_assert!(globals.contains_key(&global));

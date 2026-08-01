@@ -1310,6 +1310,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         function.statements = vec![
@@ -1367,6 +1368,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         function.statements = vec![Statement::If {
@@ -1413,6 +1415,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         function.statements = vec![Statement::Switch {
@@ -1461,6 +1464,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         };
         function.locals = vec![local("enabled"), local("item"), local("result")];

@@ -890,7 +890,7 @@ impl Generator {
                     Some(length) => (local.declared_type.width() as u16 / 8) * length,
                     None => slot_size(local.declared_type) as u16,
                 };
-                offset = align_to(offset, slot_align(local.declared_type));
+                offset = align_to(offset, local_slot_align(local)?);
                 self.frame_slots.insert(
                     local.name.clone(),
                     FrameSlot {
@@ -2696,13 +2696,32 @@ impl Generator {
 
 #[cfg(test)]
 mod frame_member_address_tests {
-    use super::checked_frame_member_offset;
+    use super::{checked_frame_member_offset, local_slot_align};
+    use mwcc_syntax_trees::{LocalDeclaration, Type};
 
     #[test]
     fn composes_frame_slot_and_member_displacements() {
         assert_eq!(checked_frame_member_offset(8, 20).unwrap(), 28);
         assert!(checked_frame_member_offset(i16::MAX, 1).is_err());
         assert!(checked_frame_member_offset(0, u32::MAX).is_err());
+    }
+
+    #[test]
+    fn explicit_local_alignment_widens_the_natural_slot_alignment() {
+        let local = LocalDeclaration {
+            declared_type: Type::UnsignedChar,
+            name: "buffer".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: Some(2048),
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: Some(32),
+            row_bytes: None,
+        };
+        assert_eq!(local_slot_align(&local).unwrap(), 32);
     }
 }
 
@@ -2723,6 +2742,18 @@ fn slot_align(declared: Type) -> u8 {
         Type::Struct { align, .. } => align,
         other => u8::try_from(slot_size(other)).unwrap_or(4),
     }
+}
+
+/// Resolve the physical alignment of an automatic local. Declarator alignment
+/// is a minimum, so it can widen but never weaken the type's natural alignment.
+fn local_slot_align(local: &mwcc_syntax_trees::LocalDeclaration) -> Compilation<u8> {
+    let requested = local
+        .attribute_alignment
+        .map(u8::try_from)
+        .transpose()
+        .map_err(|_| Diagnostic::error("local alignment exceeds frame range"))?
+        .unwrap_or(1);
+    Ok(slot_align(local.declared_type).max(requested))
 }
 
 /// Round `offset` up to a multiple of `align`.

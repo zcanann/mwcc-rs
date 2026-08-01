@@ -436,6 +436,7 @@ fn pointer_local(name: &str) -> LocalDeclaration {
         data_bytes: None,
         data_relocations: Vec::new(),
         is_const: false,
+        attribute_alignment: None,
         row_bytes: None,
     }
 }
@@ -464,6 +465,7 @@ mod tests {
                     data_bytes: None,
                     data_relocations: Vec::new(),
                     is_const: false,
+                    attribute_alignment: None,
                     row_bytes: None,
                 },
                 pointer_local("list"),

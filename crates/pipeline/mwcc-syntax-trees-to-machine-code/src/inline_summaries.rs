@@ -1235,6 +1235,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         function.statements.push(Statement::Loop {

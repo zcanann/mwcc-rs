@@ -367,6 +367,7 @@ fn address_taken_scalar_large_equality_uses_a_nonzero_addis_source() {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         }],
         statements: vec![

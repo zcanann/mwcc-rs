@@ -27,6 +27,18 @@ pub(super) fn plan_structured_frame_arrays<'a>(
         if array.is_static || array.initializer.is_some() {
             return None;
         }
+        // The structured frame computes its local-region extent before its
+        // final array base is known. A widened declarator alignment therefore
+        // needs base-aware padding, not merely a wider slot displacement; let
+        // the generic frame owner handle simple bodies until that planner owns
+        // the complete aligned region.
+        if array.attribute_alignment.is_some_and(|requested| {
+            i16::try_from(requested)
+                .map(|requested| requested > array_stack_alignment(array))
+                .unwrap_or(true)
+        }) {
+            return None;
+        }
         let element_bytes = match array.declared_type {
             Type::Struct { size, .. } => size,
             value_type => u32::from(value_type.width() / 8),
@@ -154,6 +166,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         }
     }
@@ -225,6 +238,15 @@ mod tests {
         let function = function_with_locals(locals);
         let plan = plan_structured_frame_arrays(&function).expect("large node stack");
         assert_eq!(plan.total_bytes, 264);
+    }
+
+    #[test]
+    fn declines_widened_alignment_until_the_array_base_is_known() {
+        let mut buffer = byte_array("buffer", Type::UnsignedChar, 2048);
+        buffer.attribute_alignment = Some(32);
+        let function = function_with_locals(vec![buffer]);
+
+        assert!(plan_structured_frame_arrays(&function).is_none());
     }
 
     #[test]

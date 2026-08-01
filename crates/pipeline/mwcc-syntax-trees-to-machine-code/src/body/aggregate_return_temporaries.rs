@@ -414,6 +414,7 @@ fn rewrite_expression(
                 data_bytes: None,
                 data_relocations: Vec::new(),
                 is_const: false,
+                attribute_alignment: None,
                 row_bytes: None,
             });
             let call = base.as_ref().clone();

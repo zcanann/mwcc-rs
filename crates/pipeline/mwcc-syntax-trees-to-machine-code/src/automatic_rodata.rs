@@ -102,6 +102,7 @@ mod tests {
             data_bytes: Some(vec![0; usize::from(size)]),
             data_relocations: Vec::new(),
             is_const: true,
+            attribute_alignment: None,
             row_bytes: None,
         }
     }

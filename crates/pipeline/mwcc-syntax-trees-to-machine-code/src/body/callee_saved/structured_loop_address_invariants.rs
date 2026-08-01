@@ -54,6 +54,7 @@ pub(super) fn hoist_loop_address_invariants(function: &Function) -> Option<Funct
                     data_bytes: None,
                     data_relocations: Vec::new(),
                     is_const: false,
+                    attribute_alignment: None,
                     row_bytes: None,
                 });
                 statements.push(Statement::Assign {

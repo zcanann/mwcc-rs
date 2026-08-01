@@ -623,6 +623,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         assert_eq!(legacy_value_body_frame_residue_bytes(&function, 1), 8);
@@ -701,6 +702,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         assert_eq!(

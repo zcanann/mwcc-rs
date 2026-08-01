@@ -43,6 +43,10 @@ pub struct LocalDeclaration {
     pub data_relocations: Vec<LocalDataRelocation>,
     /// Whether the static local was declared `const` (routes .sdata2/.rodata).
     pub is_const: bool,
+    /// An explicit minimum alignment from `__attribute__((aligned(n)))` on this
+    /// declarator. Automatic storage uses it when laying out the frame slot;
+    /// static storage lowerers retain it for their eventual object layout.
+    pub attribute_alignment: Option<u16>,
     /// For a flattened MULTI-DIMENSIONAL array local (`float m[3][4];` / `Mtx m;`):
     /// the byte stride of one row (`m[k]` is the ADDRESS `slot + k*row_bytes`).
     /// `None` for scalars and one-dimensional arrays (whose `m[k]` is a VALUE).

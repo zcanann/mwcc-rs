@@ -1493,6 +1493,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         function.statements = vec![
@@ -1602,6 +1603,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         function.statements = vec![
@@ -1643,6 +1645,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         function.statements = (0..6)
@@ -1702,6 +1705,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         function.statements = vec![Statement::If {
@@ -1759,6 +1763,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         let inert = Statement::Expression(Expression::Cast {
@@ -1896,6 +1901,7 @@ mod tests {
                 data_bytes: None,
                 data_relocations: Vec::new(),
                 is_const: false,
+                attribute_alignment: None,
                 row_bytes: None,
             }],
             statements: vec![

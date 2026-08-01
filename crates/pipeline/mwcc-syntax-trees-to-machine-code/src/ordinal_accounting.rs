@@ -546,6 +546,7 @@ mod tests {
                 data_bytes: Some(vec![0; usize::from(size)]),
                 data_relocations: Vec::new(),
                 is_const: false,
+                attribute_alignment: None,
                 row_bytes: None,
             });
             function
@@ -594,6 +595,7 @@ mod tests {
                     data_bytes: Some(Vec::new()),
                     data_relocations: Vec::new(),
                     is_const: false,
+                    attribute_alignment: None,
                     row_bytes: None,
                 });
             }
@@ -672,6 +674,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         assert_eq!(mainline_call_ladder_labels(&function, &output), 0);
@@ -701,6 +704,7 @@ mod tests {
                 },
             ],
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         function

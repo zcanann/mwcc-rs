@@ -1373,6 +1373,7 @@ mod tests {
             is_volatile: false,
             is_const: false,
             array_length: None,
+            attribute_alignment: None,
             row_bytes: None,
             data_bytes: None,
             data_relocations: Vec::new(),

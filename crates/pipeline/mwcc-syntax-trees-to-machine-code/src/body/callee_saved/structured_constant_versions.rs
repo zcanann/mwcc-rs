@@ -48,6 +48,7 @@ pub(super) fn retain_repeated_store_constant_across_call(function: &Function) ->
         data_bytes: None,
         data_relocations: Vec::new(),
         is_const: false,
+        attribute_alignment: None,
         row_bytes: None,
     });
     debug_assert!(i32::try_from(constant).is_ok());

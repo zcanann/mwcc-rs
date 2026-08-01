@@ -8598,6 +8598,26 @@ blr\n\
     }
 
     #[test]
+    fn retains_alignment_attributes_after_local_declarators() {
+        let source = r#"
+            void transfer(void) {
+                unsigned char buffer[2048] __attribute__((aligned(32)));
+                int status __attribute__((aligned(16)));
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions[0].locals[0].attribute_alignment, Some(32));
+        assert_eq!(unit.functions[0].locals[1].attribute_alignment, Some(16));
+    }
+
+    #[test]
     fn lays_out_adjacent_bit_fields_with_different_storage_types() {
         let source = r#"
             typedef struct {

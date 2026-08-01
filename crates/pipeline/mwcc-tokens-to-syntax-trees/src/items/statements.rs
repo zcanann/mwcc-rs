@@ -644,6 +644,7 @@ impl Parser {
                 }
                 loop {
                     let name = self.parse_identifier()?;
+                    let attribute_alignment = self.skip_attributes()?;
                     let name = if local_names.contains(&name) {
                         self.rename_counter += 1;
                         let internal = format!("{name}@{}", self.rename_counter);
@@ -668,6 +669,7 @@ impl Parser {
                         data_bytes: None,
                         data_relocations: Vec::new(),
                         is_const: false,
+                        attribute_alignment,
                         row_bytes: (_inner > 1).then(|| _inner * (element.width() as u16 / 8)),
                     });
                     local_names.insert(name.clone());
@@ -710,6 +712,7 @@ impl Parser {
                 }
                 first_declarator = false;
                 let name = self.parse_identifier()?;
+                let mut attribute_alignment = self.skip_attributes()?;
                 // A shadowing declaration hoists under a fresh internal name
                 // (`i@2`); references inside the block resolve to it via the
                 // rename stack (mwcc gives the shadow its own value/slot).
@@ -724,6 +727,10 @@ impl Parser {
                 if *self.peek() == Token::BracketOpen {
                     let (explicit, inner_elements) =
                         self.parse_local_array_dimensions()?;
+                    if let Some(alignment) = self.skip_attributes()? {
+                        attribute_alignment =
+                            Some(attribute_alignment.unwrap_or(1).max(alignment));
+                    }
                     if !is_static {
                         // `u8 text[36];` — an automatic block-scoped array
                         // hoists exactly like a function-level local array:
@@ -767,6 +774,7 @@ impl Parser {
                             data_bytes,
                             data_relocations: Vec::new(),
                             is_const: false,
+                            attribute_alignment,
                             row_bytes: (inner_elements > 1)
                                 .then(|| inner_elements.saturating_mul(element_bytes as u16)),
                         });
@@ -850,6 +858,7 @@ impl Parser {
                         data_bytes: Some(bytes),
                         data_relocations: Vec::new(),
                         is_const: self.last_type_was_const,
+                        attribute_alignment,
                         row_bytes: (inner_elements > 1)
                             .then(|| inner_elements.saturating_mul(element_bytes as u16)),
                     });
@@ -990,6 +999,7 @@ impl Parser {
                     data_bytes,
                     data_relocations,
                     is_const: false,
+                    attribute_alignment,
                     row_bytes: None,
                 });
                 if let Some(call) = constructor_call {

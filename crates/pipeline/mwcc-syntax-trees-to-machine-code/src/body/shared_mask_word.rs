@@ -184,6 +184,7 @@ pub(crate) fn materialize_leading_shared_mask_word(function: &Function) -> Optio
         data_bytes: None,
         data_relocations: Vec::new(),
         is_const: false,
+        attribute_alignment: None,
         row_bytes: None,
     });
     let [Statement::Assign { value: first, .. }, Statement::Assign { value: second, .. }, ..] =
@@ -229,6 +230,7 @@ mod tests {
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         }
     }

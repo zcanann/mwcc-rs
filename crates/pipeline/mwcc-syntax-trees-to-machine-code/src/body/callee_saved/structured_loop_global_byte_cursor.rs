@@ -38,6 +38,7 @@ pub(super) fn strength_reduce_global_byte_loop_cursor(
             data_bytes: None,
             data_relocations: Vec::new(),
             is_const: false,
+            attribute_alignment: None,
             row_bytes: None,
         });
         statements.push(Statement::Assign {

@@ -751,11 +751,13 @@ pub(crate) fn ast_hash(function: &Function) -> u64 {
         Some(index) => format!("{} }}", &debug[..index]),
         None => debug,
     };
-    // `row_bytes` (a multi-dim local's row stride) is likewise EXCLUDED: it is `None`
-    // for every capturable function (the baked templates predate the field, and a
-    // multi-dim local has no template), so stripping it preserves all ~130 hashes —
-    // the same fire-465 re-bake hazard the `section` strip above avoids.
-    let key = key.replace(", row_bytes: None", "");
+    // Optional local-storage metadata is likewise excluded when absent. The baked
+    // templates predate these fields, while a function carrying either fact has no
+    // historical template, so removing only `None` preserves strict identity for
+    // all existing captures without hiding a meaningful alignment/row stride.
+    let key = key
+        .replace(", attribute_alignment: None", "")
+        .replace(", row_bytes: None", "");
     // Conditional source provenance guides generic instruction selection but is
     // not part of a capture's historical identity. Strip every variant so adding
     // the metadata does not invalidate the baked hashes of captured functions.
