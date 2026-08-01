@@ -6,7 +6,7 @@
 //! AST out of `Generator` also avoids turning instruction selection into an
 //! ad-hoc interprocedural analyzer as more inline families are added.
 
-use crate::analysis::constant_value;
+use crate::analysis::{constant_value, peel_indexed_update_provenance};
 use crate::inline_source_order::DefinitionOrder;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LoopKind, Statement, Type};
 use std::collections::{HashMap, HashSet};
@@ -937,14 +937,7 @@ fn summarize_byte_append(function: &Function) -> Option<ByteAppendSummary> {
     let Statement::Store { target, value } = length_store else {
         return None;
     };
-    // Parser update provenance wraps compound member increments so store
-    // lowering can preserve MWCC's indexed-update syntax. It does not change
-    // the helper's value semantics and therefore is transparent to the IPA
-    // summary.
-    let value = match value {
-        Expression::IndexedUpdateValue { value } => value.as_ref(),
-        value => value,
-    };
+    let value = peel_indexed_update_provenance(value);
     let (length_offset, length_type) = struct_member(target, &buffer.name)?;
     if length_type != Type::UnsignedInt
         || !matches!(value, Expression::Binary {

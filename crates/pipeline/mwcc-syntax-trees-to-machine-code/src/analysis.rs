@@ -3,6 +3,33 @@
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type, UnaryOperator};
 use std::collections::HashSet;
 
+/// Strip parser-only provenance from the value of a compound memory update.
+/// Semantic recognizers operate on the arithmetic expression; store lowering
+/// consumes the wrapper separately when it selects MWCC's update syntax.
+pub(crate) fn peel_indexed_update_provenance(expression: &Expression) -> &Expression {
+    match expression {
+        Expression::IndexedUpdateValue { value } => value,
+        expression => expression,
+    }
+}
+
+#[cfg(test)]
+mod indexed_update_provenance_tests {
+    use super::*;
+
+    #[test]
+    fn exposes_the_compound_updates_semantic_value() {
+        let expression = Expression::IndexedUpdateValue {
+            value: Box::new(Expression::IntegerLiteral(7)),
+        };
+
+        assert!(matches!(
+            peel_indexed_update_provenance(&expression),
+            Expression::IntegerLiteral(7)
+        ));
+    }
+}
+
 /// Whether the function reads a register-resident value (a parameter or a
 /// register local) at a point where a call has already run — which would read it
 /// from a caller-saved register the call clobbered. mwcc spills such a value to a

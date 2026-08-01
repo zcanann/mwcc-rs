@@ -170,6 +170,7 @@ fn classify(function: &Function) -> Option<ReadPlan<'_>> {
     let Statement::Store { target, value } = advance else {
         return None;
     };
+    let value = peel_indexed_update_provenance(value);
     if member(target, &buffer.name) != Some((position_offset, Type::UnsignedInt))
         || !matches!(value, Expression::Binary {
             operator: BinaryOperator::Add, left, right

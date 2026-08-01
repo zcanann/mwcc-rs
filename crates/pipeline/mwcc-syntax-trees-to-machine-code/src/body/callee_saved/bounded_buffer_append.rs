@@ -38,7 +38,11 @@ fn member_target<'a>(statement: &'a Statement, base: &str) -> Option<(i16, Type,
         return None;
     };
     let (offset, member_type) = member(target, base)?;
-    Some((offset, member_type, value))
+    Some((
+        offset,
+        member_type,
+        peel_indexed_update_provenance(value),
+    ))
 }
 
 fn classify(function: &Function) -> Option<AppendPlan<'_>> {
