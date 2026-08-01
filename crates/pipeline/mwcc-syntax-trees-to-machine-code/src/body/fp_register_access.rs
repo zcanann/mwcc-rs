@@ -333,7 +333,9 @@ impl Generator {
             .push(mwcc_machine_code::AnonymousRodata {
                 bytes: access.image,
                 static_slot_prefix_bump: None,
-                anonymous_offset: -1,
+                // Eleven optimizer labels precede the image's source slot;
+                // eight remain outside the ordinary running counter here.
+                anonymous_offset: -9,
             });
         self.output.post_constant_label_bump += 1;
         let image = self.output.anonymous_rodata.len() - 1;

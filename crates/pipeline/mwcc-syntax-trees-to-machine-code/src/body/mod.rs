@@ -78,6 +78,7 @@ mod global_doubly_linked_remove;
 mod global_doubly_linked_append_trace;
 mod global_status_snapshot_access;
 mod memory_access_transaction;
+mod memory_map_validation;
 mod extended_register_access;
 mod support_file_request;
 mod driver;

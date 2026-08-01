@@ -8,13 +8,67 @@
 #[allow(unused_imports)]
 use super::*;
 
+/// Hidden-label accounting for a five-word runtime instruction trampoline.
+///
+/// The optimizer owns the patch diamond as part of the array copy transaction:
+/// one-word arms consume eight fewer ordinary structured labels, while the
+/// two-word SPR arms consume three fewer. This is structural because the array
+/// image, call forwarding, and complete arm store counts must all agree.
+pub(super) fn instruction_array_hidden_label_discount(function: &Function) -> u32 {
+    let [array] = function.locals.as_slice() else {
+        return 0;
+    };
+    if array.declared_type != Type::UnsignedInt
+        || array.array_length != Some(5)
+        || array.data_bytes.as_ref().is_none_or(|image| {
+            image.len() != 20 || !image.chunks_exact(4).all(|word| word == [0x60, 0, 0, 0])
+        })
+    {
+        return 0;
+    }
+    let [Statement::If {
+        condition,
+        then_body,
+        else_body,
+    }] = function.statements.as_slice()
+    else {
+        return 0;
+    };
+    let Some(read) = function.parameters.get(2) else {
+        return 0;
+    };
+    if !matches!(condition, Expression::Variable(name) if name == &read.name)
+        || then_body.len() != else_body.len()
+        || !then_body.iter().chain(else_body).all(|statement| {
+            matches!(statement,
+                Statement::Store {
+                    target: Expression::Index { base, index },
+                    ..
+                } if matches!(base.as_ref(), Expression::Variable(name) if name == &array.name)
+                    && constant_value(index).is_some_and(|value| (0..2).contains(&value)))
+        })
+        || !matches!(function.return_expression.as_ref(),
+            Some(Expression::Call { arguments, .. })
+                if matches!(arguments.as_slice(), [_, Expression::Variable(name), _]
+                    if name == &array.name))
+    {
+        return 0;
+    }
+    match then_body.len() {
+        1 => 8,
+        2 => 3,
+        _ => 0,
+    }
+}
+
 impl Generator {
     pub(super) fn emit_structured_frame_array_initializers(
         &mut self,
+        function: &Function,
         arrays: &[&LocalDeclaration],
         image_sources: &[&LocalDeclaration],
     ) -> Compilation<()> {
-        if self.emit_linkage_first_instruction_array_image(arrays, image_sources)? {
+        if self.emit_linkage_first_instruction_array_image(function, arrays, image_sources)? {
             return Ok(());
         }
         if self.behavior.frame_convention == FrameConvention::Predecrement {
@@ -59,6 +113,7 @@ impl Generator {
     /// words as independent constants loses both the pool shape and schedule.
     fn emit_linkage_first_instruction_array_image(
         &mut self,
+        function: &Function,
         arrays: &[&LocalDeclaration],
         image_sources: &[&LocalDeclaration],
     ) -> Compilation<bool> {
@@ -93,7 +148,13 @@ impl Generator {
             .push(mwcc_machine_code::AnonymousRodata {
                 bytes: explicit.clone(),
                 static_slot_prefix_bump: None,
-                anonymous_offset: -1,
+                // Runtime instruction-patch diamonds number the image three
+                // slots after the discounted structured-label counter.
+                anonymous_offset: if instruction_array_hidden_label_discount(function) > 0 {
+                    2
+                } else {
+                    -1
+                },
             });
         self.output.post_constant_label_bump += 1;
         let image = self.output.anonymous_rodata.len() - 1;

@@ -3388,6 +3388,7 @@ impl Generator {
             }
         }
         self.emit_structured_frame_array_initializers(
+            &structured_function,
             frame_arrays,
             frame_array_image_sources,
         )?;
@@ -3743,13 +3744,18 @@ impl Generator {
             &function.statements,
             self.inline_statement_body_substitutions,
         );
+        let instruction_array_discount =
+            structured_frame_initializers::instruction_array_hidden_label_discount(
+                &structured_function,
+            );
         if aggregate_call_copy_plan.is_some() {
             // Declaration-time aggregate images are pooled before the body
             // creates its branch labels. Those labels still precede unwind and
             // later-function ordinals, but must not renumber these constants.
             self.output.post_constant_label_bump += structured_labels;
         } else {
-            self.output.anonymous_label_bump += structured_labels + frame_prefix_labels;
+            self.output.anonymous_label_bump += (structured_labels + frame_prefix_labels)
+                .saturating_sub(instruction_array_discount);
         }
         if !call_accumulators.is_empty() {
             // Each normalized call result leaves one optimizer-only label. The
