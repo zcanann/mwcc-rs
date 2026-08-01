@@ -40,6 +40,15 @@ impl Generator {
         };
         let owner = 30;
         let owner_home = 31;
+        let Some(last_value_offset) = repeated_value_appends(&self.output.instructions, owner)
+            .map(|window| window.value_offset)
+            .max()
+        else {
+            return false;
+        };
+        let Some(compact_frame_size) = compact_frame_size(last_value_offset) else {
+            return false;
+        };
         for instruction in &mut self.output.instructions[frame + 4..epilogue] {
             mwcc_vreg::for_each_register(instruction, |_, class, register| {
                 if class == mwcc_vreg::Class::General && *register == owner {
@@ -63,12 +72,12 @@ impl Generator {
         self.output.instructions[frame] = Instruction::StoreWordWithUpdate {
             s: 1,
             a: 1,
-            offset: -16,
+            offset: -compact_frame_size,
         };
         self.output.instructions[frame + 1] = Instruction::StoreWord {
             s: owner_home,
             a: 1,
-            offset: 12,
+            offset: compact_frame_size - 4,
         };
         crate::remove_instruction_retargeting_to_next(self, frame + 2);
         self.output.instructions[frame + 2] = Instruction::Or {
@@ -81,16 +90,16 @@ impl Generator {
         self.output.instructions[epilogue] = Instruction::LoadWord {
             d: owner_home,
             a: 1,
-            offset: 12,
+            offset: compact_frame_size - 4,
         };
         crate::remove_instruction_retargeting_to_next(self, epilogue + 1);
         self.output.instructions[epilogue + 1] = Instruction::AddImmediate {
             d: 1,
             a: 1,
-            immediate: 16,
+            immediate: compact_frame_size,
         };
 
-        self.frame_size = 16;
+        self.frame_size = compact_frame_size;
         self.callee_saved.retain(|register| *register != owner);
         for location in self.locations.values_mut() {
             if location.class == ValueClass::General && location.register == owner {
@@ -99,6 +108,12 @@ impl Generator {
         }
         true
     }
+}
+
+fn compact_frame_size(last_value_offset: i16) -> Option<i16> {
+    let local_end = last_value_offset.checked_add(1)?;
+    let frame_with_saved = local_end.checked_add(4)?;
+    Some(frame_with_saved.max(16).checked_add(7)? & !7)
 }
 
 fn repeated_append_frame(instructions: &[Instruction]) -> Option<(usize, usize)> {
@@ -275,5 +290,11 @@ mod tests {
         assert_eq!(plan.value_offset, 8);
         assert_eq!(plan.cursor_offset, 12);
         assert_eq!(plan.length_offset, 8);
+    }
+
+    #[test]
+    fn keeps_the_saved_owner_above_the_last_aggregate_byte() {
+        assert_eq!(compact_frame_size(11), Some(16));
+        assert_eq!(compact_frame_size(14), Some(24));
     }
 }
