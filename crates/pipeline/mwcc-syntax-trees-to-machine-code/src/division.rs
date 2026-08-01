@@ -257,7 +257,7 @@ impl Generator {
         destination: u8,
     ) -> Compilation<()> {
         let (magic, shift) = signed_magic(divisor);
-        let dividend_register = self.place_magic_dividend(dividend)?;
+        let dividend_register = self.place_retained_division_operand(dividend)?;
         // The lowest free general register holds the materialized magic's high
         // half. The destination counts as free here — its incoming value is dead
         // and the divide writes its result there only at the very end — but the
@@ -357,7 +357,7 @@ impl Generator {
         destination: u8,
     ) -> Compilation<()> {
         let (magic, add, shift) = unsigned_magic(divisor);
-        let dividend_register = self.place_magic_dividend(dividend)?;
+        let dividend_register = self.place_retained_division_operand(dividend)?;
         let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
         else {
             return Err(Diagnostic::error(
@@ -443,7 +443,7 @@ impl Generator {
         signed: bool,
         destination: u8,
     ) -> Compilation<()> {
-        let dividend_register = self.place_magic_dividend(dividend)?;
+        let dividend_register = self.place_retained_division_operand(dividend)?;
         let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
         else {
             return Err(Diagnostic::error(
@@ -598,19 +598,57 @@ impl Generator {
         Ok(())
     }
 
-    /// Keep a computed dividend live across magic materialization and the
-    /// multiply-high sequence. Leaves retain their established home; richer
-    /// expressions receive a virtual home so evaluating them may use r0
-    /// without colliding with the magic constant that subsequently occupies it.
-    fn place_magic_dividend(&mut self, dividend: &Expression) -> Compilation<u8> {
+    /// Keep a computed division operand live across the remaining operand and
+    /// quotient/remainder sequence. Leaves retain their established home;
+    /// richer expressions receive a virtual home so evaluation scratch cannot
+    /// collide with the later divide or magic-constant transaction.
+    fn place_retained_division_operand(&mut self, operand: &Expression) -> Compilation<u8> {
         if let Some(register) =
-            leaf_name(dividend).and_then(|name| self.lookup_general(name))
+            leaf_name(operand).and_then(|name| self.lookup_general(name))
         {
             return Ok(register);
         }
         let register = self.fresh_virtual_general();
-        self.evaluate_general(dividend, register)?;
+        self.evaluate_general(operand, register)?;
         Ok(register)
+    }
+
+    /// Interleave a member-sum dividend with its member divisor. MWCC keeps
+    /// the second addend in r0, loads the divisor after both addends, then
+    /// completes the sum into the divisor base's newly dead register.
+    fn place_member_sum_modulo_operands(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<Option<(u8, u8)>> {
+        let Expression::Binary {
+            operator: mwcc_syntax_trees::BinaryOperator::Add,
+            left: first,
+            right: second,
+        } = left
+        else {
+            return Ok(None);
+        };
+        if !matches!(first.as_ref(), Expression::Member { index_stride: None, .. })
+            || !matches!(second.as_ref(), Expression::Member { index_stride: None, .. })
+            || !matches!(right, Expression::Member { index_stride: None, .. })
+        {
+            return Ok(None);
+        }
+
+        let second_register = self.fresh_virtual_general_preferring(5);
+        self.evaluate_general(first, second_register)?;
+        self.evaluate_general(second, GENERAL_SCRATCH)?;
+        let right_register = self.fresh_virtual_general_preferring(destination);
+        self.evaluate_general(right, right_register)?;
+        let left_register = self.fresh_virtual_general_preferring(4);
+        self.output.instructions.push(Instruction::Add {
+            d: left_register,
+            a: second_register,
+            b: GENERAL_SCRATCH,
+        });
+        Ok(Some((left_register, right_register)))
     }
 
     /// Emit a remainder as `left - (left / right) * right` (leaf operands only for now).
@@ -776,8 +814,15 @@ impl Generator {
             }
         }
 
-        let left_register = self.general_register_of_leaf(left)?;
-        let right_register = self.general_register_of_leaf(right)?;
+        let (left_register, right_register) = match self
+            .place_member_sum_modulo_operands(left, right, destination)?
+        {
+            Some(operands) => operands,
+            None => (
+                self.place_retained_division_operand(left)?,
+                self.place_retained_division_operand(right)?,
+            ),
+        };
         self.output.instructions.push(if signed {
             Instruction::DivideWord {
                 d: GENERAL_SCRATCH,
