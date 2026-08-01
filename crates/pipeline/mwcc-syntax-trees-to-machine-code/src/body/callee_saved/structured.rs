@@ -958,7 +958,10 @@ impl Generator {
                 &saved_parameters,
                 &deferred_saved_locals,
             );
-        if compact_narrow_scalar_frame.is_some() {
+        if compact_narrow_scalar_frame
+            .as_ref()
+            .is_some_and(|plan| plan.owns_link_register_schedule())
+        {
             self.owns_link_register_schedule = true;
             self.structured_compact_narrow_scalar_frame = true;
         }

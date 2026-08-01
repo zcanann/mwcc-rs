@@ -8,7 +8,9 @@
 #[allow(unused_imports)]
 use super::*;
 
-pub(super) struct StructuredCompactScalarFrame;
+pub(super) struct StructuredCompactScalarFrame {
+    owns_link_register_schedule: bool,
+}
 
 impl StructuredCompactScalarFrame {
     #[allow(clippy::too_many_arguments)]
@@ -30,6 +32,15 @@ impl StructuredCompactScalarFrame {
             || !eager_saved_locals.is_empty()
         {
             return None;
+        }
+        if eager_saved_locals.is_empty()
+            && deferred_saved_locals.is_empty()
+            && matches!(saved_parameters, [_])
+            && guarded_status_call_chain(function, frame_scalar_locals)
+        {
+            return Some(Self {
+                owns_link_register_schedule: false,
+            });
         }
         let ([parameter], [result]) = (saved_parameters, deferred_saved_locals) else {
             return None;
@@ -65,8 +76,62 @@ impl StructuredCompactScalarFrame {
         if !narrow_dispatch && !call_output_frame {
             return None;
         }
-        Some(Self)
+        Some(Self {
+            owns_link_register_schedule: true,
+        })
     }
+
+    pub(super) fn owns_link_register_schedule(&self) -> bool {
+        self.owns_link_register_schedule
+    }
+}
+
+fn guarded_status_call_chain(
+    function: &Function,
+    frame_scalar_locals: &[&LocalDeclaration],
+) -> bool {
+    let [scratch] = frame_scalar_locals else {
+        return false;
+    };
+    if scratch.declared_type.width() != 32 {
+        return false;
+    }
+    let Some(Expression::Variable(result)) = function.return_expression.as_ref() else {
+        return false;
+    };
+    let Some((first, guarded)) = function.statements.split_first() else {
+        return false;
+    };
+    if guarded.len() < 2
+        || !matches!(first,
+            Statement::Assign {
+                name,
+                value: Expression::Call { .. },
+            } if name == result)
+    {
+        return false;
+    }
+    guarded.iter().all(|statement| {
+        matches!(statement,
+            Statement::If {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::Equal,
+                    left,
+                    right,
+                },
+                then_body,
+                else_body,
+            } if else_body.is_empty()
+                && matches!((&**left, &**right),
+                    (Expression::Variable(name), Expression::IntegerLiteral(0))
+                        if name == result)
+                && matches!(then_body.as_slice(), [
+                    Statement::Assign {
+                        name,
+                        value: Expression::Call { .. },
+                    }
+                ] if name == result))
+    })
 }
 
 impl Generator {
@@ -322,5 +387,58 @@ mod tests {
             &deferred,
         )
         .is_some());
+    }
+
+    #[test]
+    fn recognizes_a_guarded_status_chain_with_one_word_scratch() {
+        let mut function = function();
+        function.locals = vec![local("error", Type::Int), local("word", Type::UnsignedInt)];
+        function.return_expression = Some(Expression::Variable("error".into()));
+        function.statements = vec![
+            Statement::Assign {
+                name: "error".into(),
+                value: Expression::Call {
+                    name: "append".into(),
+                    arguments: vec![Expression::Variable("buffer".into())],
+                },
+            },
+            guarded_status_call("read"),
+            guarded_status_call("append_word"),
+        ];
+        let scratch = [&function.locals[1]];
+        let saved = [&function.parameters[0]];
+
+        let plan = StructuredCompactScalarFrame::plan(
+            &function,
+            FrameConvention::LinkageFirst,
+            true,
+            &scratch,
+            &[],
+            &[],
+            &[],
+            &saved,
+            &[],
+        )
+        .expect("the guarded chain should overlap its scalar table");
+
+        assert!(!plan.owns_link_register_schedule());
+    }
+
+    fn guarded_status_call(name: &str) -> Statement {
+        Statement::If {
+            condition: Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left: Box::new(Expression::Variable("error".into())),
+                right: Box::new(Expression::IntegerLiteral(0)),
+            },
+            then_body: vec![Statement::Assign {
+                name: "error".into(),
+                value: Expression::Call {
+                    name: name.into(),
+                    arguments: Vec::new(),
+                },
+            }],
+            else_body: Vec::new(),
+        }
     }
 }
