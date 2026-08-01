@@ -1286,6 +1286,23 @@ impl Generator {
                 first_saved.min(usize::from(plan.first_saved_register))
             });
         let frame_saved_count = 32usize.saturating_sub(frame_first_saved);
+        // A five-instruction runtime trampoline is copied into one automatic
+        // word array and passed to a call. Build 163 keeps that array directly
+        // above the linkage area: entry arguments remain live only until the
+        // call and therefore do not acquire legacy local-table lanes.
+        let compact_linkage_first_instruction_array = self.behavior.frame_convention
+            == FrameConvention::LinkageFirst
+            && frame_saved_count == 0
+            && frame_arrays.len() == 1
+            && frame_arrays[0].array_length == Some(5)
+            && frame_arrays[0].data_bytes.as_ref().is_some_and(|image| image.len() == 20)
+            && matches!(frame_arrays[0].declared_type, Type::Int | Type::UnsignedInt)
+            && frame_scalar_parameters.is_empty()
+            && frame_scalar_locals.is_empty()
+            && aggregate_frame_locals.is_empty()
+            && int_to_float_conversion_count == 0
+            && float_to_int_conversion_count == 0
+            && path_reuse_frame_bytes == 0;
         let loop_assertion_saved_range = loop_assertion_strings.is_some();
         let dense_unused_array_state_transfer =
             unused_array_state_transfer && count == 5;
@@ -1919,6 +1936,11 @@ impl Generator {
             } else {
                 match self.behavior.frame_convention {
                     FrameConvention::Predecrement => 8,
+                    FrameConvention::LinkageFirst
+                        if compact_linkage_first_instruction_array =>
+                    {
+                        8
+                    }
                     FrameConvention::LinkageFirst if aggregate_only_frame => 8,
                     FrameConvention::LinkageFirst => {
                         let words = if global_member_search_entry {
@@ -1990,6 +2012,7 @@ impl Generator {
                 // Ordinary structured frames retain their 16-byte rounding.
                 let alignment = if variadic_output_frame.is_some()
                     || aggregate_only_frame
+                    || compact_linkage_first_instruction_array
                     || folded_terminal_pointer_alias
                     || saved_float_count != 0
                     || (unused_frame_array && !aggregate_frame_locals.is_empty())

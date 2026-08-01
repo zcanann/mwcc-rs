@@ -51,6 +51,7 @@ mod linkage_first_data_anchor;
 mod linkage_first_anchor_only_schedule;
 mod linkage_first_data_anchor_schedule;
 mod linkage_first_inlined_switch_schedule;
+mod linkage_first_instruction_array_schedule;
 mod linkage_first_float_result_schedule;
 mod linkage_first_forwarded_context_frame;
 mod linkage_first_global_float_argument_schedule;

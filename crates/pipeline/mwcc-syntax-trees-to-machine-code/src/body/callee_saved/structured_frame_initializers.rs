@@ -14,6 +14,9 @@ impl Generator {
         arrays: &[&LocalDeclaration],
         image_sources: &[&LocalDeclaration],
     ) -> Compilation<()> {
+        if self.emit_linkage_first_instruction_array_image(arrays, image_sources)? {
+            return Ok(());
+        }
         if self.behavior.frame_convention == FrameConvention::Predecrement {
             if let Some(plan) =
                 super::structured_array_pool::plan_structured_array_pool(arrays, image_sources)
@@ -48,6 +51,109 @@ impl Generator {
             self.emit_structured_array_image(slot, &image)?;
         }
         Ok(())
+    }
+
+    /// Copy a five-word executable trampoline from one contiguous anonymous
+    /// image. Legacy MWCC alternates two scratch registers so each pair of
+    /// loads is followed immediately by its pair of stores; treating equal
+    /// words as independent constants loses both the pool shape and schedule.
+    fn emit_linkage_first_instruction_array_image(
+        &mut self,
+        arrays: &[&LocalDeclaration],
+        image_sources: &[&LocalDeclaration],
+    ) -> Compilation<bool> {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst {
+            return Ok(false);
+        }
+        let [array] = arrays else {
+            return Ok(false);
+        };
+        let [image_source] = image_sources else {
+            return Ok(false);
+        };
+        let Some(explicit) = image_source.data_bytes.as_ref() else {
+            return Ok(false);
+        };
+        let Some(slot) = self.frame_slots.get(&array.name).copied() else {
+            return Ok(false);
+        };
+        if image_source.name != array.name
+            || array.array_length != Some(5)
+            || !matches!(array.declared_type, Type::Int | Type::UnsignedInt)
+            || !array.data_relocations.is_empty()
+            || slot.offset != 8
+            || slot.size != 20
+            || explicit.len() != 20
+        {
+            return Ok(false);
+        }
+
+        self.output
+            .anonymous_rodata
+            .push(mwcc_machine_code::AnonymousRodata {
+                bytes: explicit.clone(),
+                static_slot_prefix_bump: None,
+                anonymous_offset: -1,
+            });
+        self.output.post_constant_label_bump += 1;
+        let image = self.output.anonymous_rodata.len() - 1;
+        self.record_target(
+            RelocationKind::Addr16Ha,
+            mwcc_machine_code::RelocationTarget::AnonymousRodataAt(image),
+        );
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: 6,
+                a: 0,
+                immediate: 0,
+            });
+        self.record_target(
+            RelocationKind::Addr16Lo,
+            mwcc_machine_code::RelocationTarget::AnonymousRodataAt(image),
+        );
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 7,
+            a: 6,
+            immediate: 0,
+        });
+        for pair in 0..2i16 {
+            self.output.instructions.extend([
+                Instruction::LoadWord {
+                    d: 6,
+                    a: 7,
+                    offset: pair * 8,
+                },
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 7,
+                    offset: pair * 8 + 4,
+                },
+                Instruction::StoreWord {
+                    s: 6,
+                    a: 1,
+                    offset: slot.offset + pair * 8,
+                },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: slot.offset + pair * 8 + 4,
+                },
+            ]);
+        }
+        self.output.instructions.extend([
+            Instruction::LoadWord {
+                d: 0,
+                a: 7,
+                offset: 16,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: slot.offset + 16,
+            },
+        ]);
+        Ok(true)
     }
 
     fn emit_structured_zero_array(&mut self, slot: FrameSlot) -> Compilation<()> {
