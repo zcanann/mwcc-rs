@@ -996,8 +996,12 @@ impl Generator {
         let shared_switch_frame = compact_narrow_scalar_frame
             .as_ref()
             .is_some_and(|plan| plan.is_shared_switch_frame());
+        let packed_switch_frame = compact_narrow_scalar_frame
+            .as_ref()
+            .is_some_and(|plan| plan.is_packed_switch_frame());
         self.structured_guarded_scalar_output_frame = guarded_call_output_frame;
         self.structured_shared_switch_scalar_frame = shared_switch_frame;
+        self.structured_packed_switch_scalar_frame = packed_switch_frame;
         if compact_narrow_scalar_frame
             .as_ref()
             .is_some_and(|plan| plan.owns_link_register_schedule())
@@ -2329,7 +2333,7 @@ impl Generator {
             .any(|plan| plan.defer_until_first_use)
         {
             LegacyCalleeSavedFrameLayout::RetainDeferredGlobalMemberAddressLane
-        } else if guarded_call_output_frame || shared_switch_frame {
+        } else if guarded_call_output_frame || packed_switch_frame {
             LegacyCalleeSavedFrameLayout::CompactValueHomes
         } else if retains_unobserved_local_lane {
             // An optimizer-only scalar can disappear from the emitted value

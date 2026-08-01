@@ -629,6 +629,8 @@ pub(crate) struct Generator {
     /// Packed address-taken scalar outputs shared by two retained sparse
     /// dispatches and one saved owner.
     pub(crate) structured_shared_switch_scalar_frame: bool,
+    /// Packed address-taken scalars used by multiple source switches.
+    pub(crate) structured_packed_switch_scalar_frame: bool,
     /// Outgoing by-value aggregate copies owned by the allocator-backed
     /// structured body. Source object slots remain in `frame_slots`; this plan
     /// describes the separate caller-owned copies below them.

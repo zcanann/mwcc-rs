@@ -529,7 +529,7 @@ impl Generator {
             .saturating_add(7)
             & !7;
         let physical_base_size = if self.structured_guarded_scalar_output_frame
-            || self.structured_shared_switch_scalar_frame
+            || self.structured_packed_switch_scalar_frame
         {
             packed_scalar_size
         } else if self.frame_slots.is_empty()

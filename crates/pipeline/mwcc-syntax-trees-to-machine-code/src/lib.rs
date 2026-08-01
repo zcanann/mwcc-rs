@@ -656,6 +656,7 @@ fn lower_function_body(
         structured_compact_narrow_scalar_frame: false,
         structured_guarded_scalar_output_frame: false,
         structured_shared_switch_scalar_frame: false,
+        structured_packed_switch_scalar_frame: false,
         structured_aggregate_call_copy_plan: None,
         structured_by_value_aggregate_plan: None,
         written_slots: HashSet::new(),

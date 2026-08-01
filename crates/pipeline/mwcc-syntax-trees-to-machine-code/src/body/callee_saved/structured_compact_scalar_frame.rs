@@ -11,6 +11,7 @@ use super::*;
 pub(super) struct StructuredCompactScalarFrame {
     owns_link_register_schedule: bool,
     guarded_call_output_frame: bool,
+    packed_switch_frame: bool,
     shared_switch_frame: bool,
 }
 
@@ -44,12 +45,21 @@ impl StructuredCompactScalarFrame {
             return Some(Self {
                 owns_link_register_schedule: false,
                 guarded_call_output_frame: false,
+                packed_switch_frame: false,
                 shared_switch_frame: false,
             });
         }
-        let shared_switch_frame = matches!(saved_parameters, [_])
+        let packed_switch_frame = matches!(saved_parameters, [_])
             && deferred_saved_locals.is_empty()
             && frame_scalar_locals.len() == 5
+            && frame_scalar_locals.iter().all(|local| {
+                matches!(local.declared_type.width(), 8 | 16 | 32)
+            })
+            && matches!(function.return_expression.as_ref(), Some(Expression::Variable(name))
+                if function.locals.iter().any(|local| local.name == *name
+                    && matches!(local.declared_type, Type::Int | Type::UnsignedInt)))
+            && switch_count(&switch_source.statements) >= 2;
+        let shared_switch_frame = packed_switch_frame
             && frame_scalar_locals
                 .iter()
                 .filter(|local| local.declared_type.width() == 32)
@@ -60,15 +70,13 @@ impl StructuredCompactScalarFrame {
                 .filter(|local| local.declared_type.width() == 8)
                 .count()
                 == 3
-            && matches!(function.return_expression.as_ref(), Some(Expression::Variable(name))
-                if function.locals.iter().any(|local| local.name == *name
-                    && matches!(local.declared_type, Type::Int | Type::UnsignedInt)))
             && retained_sparse_switch_count(&switch_source.statements) >= 2;
-        if shared_switch_frame {
+        if packed_switch_frame {
             return Some(Self {
                 owns_link_register_schedule: false,
                 guarded_call_output_frame: false,
-                shared_switch_frame: true,
+                packed_switch_frame: true,
+                shared_switch_frame,
             });
         }
         let ([parameter], [result]) = (saved_parameters, deferred_saved_locals) else {
@@ -135,6 +143,7 @@ impl StructuredCompactScalarFrame {
         Some(Self {
             owns_link_register_schedule: !guarded_call_output_frame,
             guarded_call_output_frame,
+            packed_switch_frame: false,
             shared_switch_frame: false,
         })
     }
@@ -150,6 +159,38 @@ impl StructuredCompactScalarFrame {
     pub(super) fn is_shared_switch_frame(&self) -> bool {
         self.shared_switch_frame
     }
+
+    pub(super) fn is_packed_switch_frame(&self) -> bool {
+        self.packed_switch_frame
+    }
+}
+
+fn switch_count(statements: &[Statement]) -> usize {
+    statements
+        .iter()
+        .map(|statement| match statement {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => switch_count(then_body) + switch_count(else_body),
+            Statement::Loop { body, .. } => switch_count(body),
+            Statement::Switch { arms, default, .. } => {
+                1 + arms
+                    .iter()
+                    .map(|arm| match &arm.body {
+                        mwcc_syntax_trees::ArmBody::Statements(body) => switch_count(body),
+                        mwcc_syntax_trees::ArmBody::Return(_) => 0,
+                    })
+                    .sum::<usize>()
+                    + default.as_ref().map_or(0, |body| match body {
+                        mwcc_syntax_trees::ArmBody::Statements(body) => switch_count(body),
+                        mwcc_syntax_trees::ArmBody::Return(_) => 0,
+                    })
+            }
+            _ => 0,
+        })
+        .sum()
 }
 
 fn retained_sparse_switch_count(statements: &[Statement]) -> usize {
@@ -657,7 +698,55 @@ mod tests {
         .expect("shared sparse switches should retain a packed scalar frame");
 
         assert!(plan.is_shared_switch_frame());
+        assert!(plan.is_packed_switch_frame());
         assert!(!plan.owns_link_register_schedule());
+    }
+
+    #[test]
+    fn recognizes_a_mixed_width_multi_switch_frame() {
+        let mut function = function();
+        function.locals = vec![
+            local("error", Type::Int),
+            local("length", Type::UnsignedInt),
+            local("last", Type::UnsignedShort),
+            local("first", Type::UnsignedShort),
+            local("options", Type::UnsignedChar),
+            local("command", Type::UnsignedChar),
+        ];
+        function.return_expression = Some(Expression::Variable("error".into()));
+        function.statements = vec![
+            shared_sparse_switch(),
+            Statement::If {
+                condition: Expression::Variable("error".into()),
+                then_body: vec![shared_sparse_switch()],
+                else_body: Vec::new(),
+            },
+        ];
+        let scratch = [
+            &function.locals[1],
+            &function.locals[2],
+            &function.locals[3],
+            &function.locals[4],
+            &function.locals[5],
+        ];
+        let saved = [&function.parameters[0]];
+
+        let plan = StructuredCompactScalarFrame::plan(
+            &function,
+            &function,
+            FrameConvention::LinkageFirst,
+            true,
+            &scratch,
+            &[],
+            &[],
+            &[],
+            &saved,
+            &[],
+        )
+        .expect("multiple switches should share the mixed-width scalar frame");
+
+        assert!(plan.is_packed_switch_frame());
+        assert!(!plan.is_shared_switch_frame());
     }
 
     fn shared_sparse_switch() -> Statement {
