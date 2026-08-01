@@ -4098,6 +4098,19 @@ impl Parser {
                                 virtual_destructor_is_pure: component.virtual_destructor_is_pure,
                             }),
                     );
+                } else if base_is_polymorphic {
+                    // A fieldless polymorphic primary template has a complete
+                    // physical base layout even though it has no ordinary
+                    // ClassLayout entry. Its inherited primary address point
+                    // still becomes this class's first vtable component, so
+                    // every derived constructor installs the derived table.
+                    class.vtable_components.push(VtableComponent {
+                        object_offset: base_offset,
+                        vptr_offset: base_offset + base_vptr_offset.unwrap_or(0),
+                        virtual_slots: base_virtual_slots,
+                        virtual_destructor_slot: None,
+                        virtual_destructor_is_pure: false,
+                    });
                 }
                 for inherited in inherited_virtual_bases {
                     if !class.virtual_bases.contains(&inherited) {

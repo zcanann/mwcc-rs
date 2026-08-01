@@ -7663,10 +7663,19 @@ blr\n\
             3,
         )
         .unwrap();
-        assert!(unit
+        let constructor = unit
             .functions
             .iter()
-            .any(|function| function.name == "__ct__4RopeFPi"));
+            .find(|function| function.name == "__ct__4RopeFPi")
+            .expect("the derived constructor should be recovered");
+        assert!(constructor.statements.iter().any(|statement| matches!(
+            statement,
+            mwcc_syntax_trees::Statement::Store {
+                value: mwcc_syntax_trees::Expression::AddressOf { operand },
+                ..
+            } if matches!(operand.as_ref(), mwcc_syntax_trees::Expression::Variable(vtable)
+                if vtable == "__vt__4Rope")
+        )));
     }
 
     #[test]
