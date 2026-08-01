@@ -1287,7 +1287,7 @@ impl Generator {
                 if let Some(parameter_type) = parameter_type {
                     if let Ok((register, width, _)) = self.leaf_info(general_argument) {
                         if width < 32
-                            && (parameter_type.width() as u32) <= width as u32
+                            && width as u32 <= parameter_type.width() as u32
                             && register == next_general
                         {
                             next_general += 1;
@@ -1306,40 +1306,10 @@ impl Generator {
                     if (parameter_type.width() as u32) < 32
                         && constant_value(general_argument).is_none()
                     {
-                        let argument_is_narrow = match general_argument {
-                            Expression::Variable(variable)
-                                if self.locations.contains_key(variable.as_str()) =>
-                            {
-                                self.leaf_info(general_argument)
-                                    .map(|(_, width, _)| width < 32)
-                                    .unwrap_or(false)
-                            }
-                            Expression::Variable(variable) => self
-                                .globals
-                                .get(variable.as_str())
-                                .map(|global| global.width() < 32)
-                                .unwrap_or(false),
-                            Expression::Dereference { pointer } => self
-                                .dereferenced_width(pointer)
-                                .is_some_and(|width| width < 32),
-                            Expression::Index { base, .. } => self
-                                .dereferenced_width(base)
-                                .is_some_and(|width| width < 32),
-                            Expression::Member { member_type, .. } => member_type.width() < 32,
-                            Expression::Assign { .. } => self
-                                .unpromoted_integer_width(general_argument)
-                                .is_some_and(|width| width < 32),
-                            // A narrow-returning callee has already produced an
-                            // ABI-canonical narrow value in r3. Passing that
-                            // result directly to another narrow parameter does
-                            // not add a caller-side extension, even when the
-                            // signedness differs (`u8 inner(); s8 outer(s8)`).
-                            Expression::Call { name, .. } => self
-                                .call_return_types
-                                .get(name)
-                                .is_some_and(|return_type| return_type.width() < 32),
-                            _ => false,
-                        };
+                        let source_width = self.unpromoted_integer_width(general_argument);
+                        let argument_is_narrow = source_width.is_some_and(|width| {
+                            width < 32 && u32::from(width) <= parameter_type.width() as u32
+                        });
                         if !argument_is_narrow {
                             // `callee(saved = narrow_load)` first commits the
                             // assignment to its allocator-owned saved home, then
@@ -1385,6 +1355,40 @@ impl Generator {
                                         next_general += 1;
                                         continue;
                                     }
+                                }
+                            }
+                            // A memory operand narrower than a word can still
+                            // be wider than its formal parameter. Load the
+                            // source through r0, then perform the prototype
+                            // conversion into its ABI home (`lha r0; clrlwi
+                            // r5,r0,24` for an s16 member passed as u8).
+                            if source_width.is_some_and(|width| {
+                                width < 32 && u32::from(width) > parameter_type.width() as u32
+                            }) && matches!(
+                                general_argument,
+                                Expression::Variable(_)
+                                    | Expression::Dereference { .. }
+                                    | Expression::Index { .. }
+                                    | Expression::Member { .. }
+                            ) {
+                                let newly_reserved: Vec<_> =
+                                    (Eabi::FIRST_GENERAL_ARGUMENT..next_general)
+                                        .filter(|register| self.reserved.insert(*register))
+                                        .collect();
+                                let evaluated =
+                                    self.evaluate_general(general_argument, GENERAL_SCRATCH);
+                                for register in newly_reserved {
+                                    self.reserved.remove(&register);
+                                }
+                                evaluated?;
+                                if let Some(narrow) = narrow_general_argument(
+                                    parameter_type,
+                                    next_general,
+                                    GENERAL_SCRATCH,
+                                ) {
+                                    self.output.instructions.push(narrow);
+                                    next_general += 1;
+                                    continue;
                                 }
                             }
                             // A register leaf narrows directly into its ABI argument home.
