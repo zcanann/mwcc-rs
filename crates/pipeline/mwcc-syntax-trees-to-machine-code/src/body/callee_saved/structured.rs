@@ -108,6 +108,7 @@ use super::structured_switch_lowering::{
 use super::structured_sparse_switch::{
     has_direct_call_sparse_switch, is_sparse_retained_switch,
 };
+use super::structured_single_inlined_byte_append::has_single_value_inlined_byte_append;
 use super::structured_shared_switch_global_value::{
     plan as plan_structured_shared_switch_global_value,
     SharedSwitchGlobalValueHome,
@@ -305,6 +306,8 @@ impl Generator {
         let structured_switch_source = function.clone();
         let repeated_call_poll_transaction = is_repeated_call_poll_transaction(function);
         let direct_call_sparse_switch = has_direct_call_sparse_switch(function);
+        let single_value_inlined_byte_append =
+            has_single_value_inlined_byte_append(function);
         let counted_call_retry = is_counted_call_retry(function);
         let injected_string_data_anchor = repeated_call_poll_transaction
             && self.data_section_anchor.is_none()
@@ -1969,6 +1972,7 @@ impl Generator {
                     {
                         8
                     }
+                    FrameConvention::LinkageFirst if single_value_inlined_byte_append => 8,
                     FrameConvention::LinkageFirst if aggregate_only_frame => 8,
                     FrameConvention::LinkageFirst => {
                         let words = if global_member_search_entry {
@@ -2355,6 +2359,19 @@ impl Generator {
             LegacyCalleeSavedFrameLayout::InferFromValueOrigin
         } else if guarded_structured_constant_return {
             LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable
+        } else if single_value_inlined_byte_append
+            && matches!(frame_arrays.as_slice(), [array]
+                if array.declared_type == Type::UnsignedChar
+                    && array.array_length == Some(32))
+            && saved_float_parameters.is_empty()
+            && eager_saved_locals.is_empty()
+            && saved_parameters.len() == 1
+            && deferred_saved_locals.is_empty()
+            && saved_home_slot_base == 0
+            && count == 1
+            && self.legacy_inline_expansion_frame_bytes == 0
+        {
+            LegacyCalleeSavedFrameLayout::CompactValueHomes
         } else if direct_call_sparse_switch
             && saved_float_parameters.is_empty()
             && eager_saved_locals.is_empty()
@@ -3776,6 +3793,11 @@ impl Generator {
         if direct_call_sparse_switch {
             if let [(_, home, _)] = saved_parameter_homes.as_slice() {
                 self.schedule_sparse_switch_tail_argument_copy(*home);
+            }
+        }
+        if single_value_inlined_byte_append {
+            if let [(_, home, _)] = saved_parameter_homes.as_slice() {
+                self.schedule_single_inlined_byte_append_owner_argument(*home);
             }
         }
         let lowered_accumulator_return =

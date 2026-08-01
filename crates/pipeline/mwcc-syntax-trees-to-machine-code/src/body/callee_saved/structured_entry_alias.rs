@@ -74,15 +74,11 @@ pub(super) fn plan_first_call_alias(
 
     let Statement::If {
         condition,
-        else_body,
         ..
     } = statements.first()?
     else {
         return None;
     };
-    if !else_body.is_empty() {
-        return None;
-    }
     let terms = logical_and_terms(condition);
     let [first, ..] = terms.as_slice() else {
         return None;
@@ -301,6 +297,31 @@ mod tests {
 
         assert_eq!(alias.name, "object");
         assert_eq!(alias.home, 31);
+        assert_eq!(alias.boundary, EntryAliasBoundary::AfterFirstConditionTerm);
+    }
+
+    #[test]
+    fn preserves_an_entry_alias_through_an_if_else_member_guard() {
+        let statements = vec![Statement::If {
+            condition: Expression::Binary {
+                operator: BinaryOperator::NotEqual,
+                left: Box::new(Expression::Member {
+                    base: Box::new(Expression::Variable("object".to_string())),
+                    offset: 8,
+                    member_type: Type::UnsignedInt,
+                    index_stride: None,
+                }),
+                right: Box::new(Expression::IntegerLiteral(1)),
+            },
+            then_body: call(vec![Expression::Variable("object".to_string())]),
+            else_body: call(vec![Expression::Variable("object".to_string())]),
+        }];
+        let saved = vec![("object".to_string(), 31, 3)];
+
+        let alias = plan_first_call_alias(&statements, &saved, &[pointer_parameter("object")])
+            .expect("the condition runs before either call-bearing arm");
+
+        assert_eq!(alias.name, "object");
         assert_eq!(alias.boundary, EntryAliasBoundary::AfterFirstConditionTerm);
     }
 
