@@ -1454,6 +1454,13 @@ impl Generator {
         {
             return Ok(pointee);
         }
+        // A scalar global pointer is an address VALUE loaded from global
+        // storage before dereference/subscript. It is not a global array (whose
+        // symbol itself is the address), but type classification still comes
+        // from the declared pointer element.
+        if let Some(Type::Pointer(pointee)) = self.globals.get(name).copied() {
+            return Ok(pointee);
+        }
         // A global ARRAY's name classifies by its element type (`map[i]` over
         // `unsigned char map[256]` reads a byte) — the subscript emitters carry
         // the addressing; this is only the width/signedness classification.

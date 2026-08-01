@@ -247,6 +247,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         nested_anonymous_aggregate_definition_label_weight,
         last_member_array_bytes: None,
         global_structs: std::collections::HashMap::new(),
+        global_nested_pointer_pointees: std::collections::HashMap::new(),
         block_renames: Vec::new(),
         rename_counter: 0,
         defer_codegen: false,
@@ -9826,6 +9827,63 @@ blr\n\
         assert!(matches!(
             unit.functions[0].return_expression.as_ref(),
             Some(mwcc_syntax_trees::Expression::Variable(name)) if name == "value__3std"
+        ));
+    }
+
+    #[test]
+    fn qualified_nested_namespace_definitions_use_the_nested_lexical_scope() {
+        let source = r#"
+            namespace Outer {
+                namespace Data {
+                    struct Item { int value; };
+                    char** names = 0;
+                    unsigned int index = 0;
+                    Item** items = 0;
+                }
+                int Data::copy() {
+                    strcpy(names[index], "/");
+                    return items[index]->value;
+                }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.globals[0].name, "names__Q25Outer4Data");
+        assert_eq!(unit.globals[1].name, "index__Q25Outer4Data");
+        assert_eq!(unit.globals[2].name, "items__Q25Outer4Data");
+        assert_eq!(unit.functions[0].name, "copy__Q25Outer4DataFv");
+        assert!(unit.functions[0].parameters.is_empty());
+        assert_eq!(
+            unit.global_aggregate_tags
+                .get("items__Q25Outer4Data")
+                .map(String::as_str),
+            Some("Outer::Data::Item")
+        );
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { arguments, .. }
+            )] if matches!(
+                arguments.as_slice(),
+                [mwcc_syntax_trees::Expression::Cast {
+                    target_type: mwcc_syntax_trees::Type::Pointer(
+                        mwcc_syntax_trees::Pointee::Char
+                    ),
+                    operand,
+                }, _]
+                    if matches!(operand.as_ref(), mwcc_syntax_trees::Expression::Index { base, index }
+                        if matches!(base.as_ref(), mwcc_syntax_trees::Expression::Variable(name)
+                            if name == "names__Q25Outer4Data")
+                        && matches!(index.as_ref(), mwcc_syntax_trees::Expression::Variable(name)
+                            if name == "index__Q25Outer4Data"))
+            )
         ));
     }
 

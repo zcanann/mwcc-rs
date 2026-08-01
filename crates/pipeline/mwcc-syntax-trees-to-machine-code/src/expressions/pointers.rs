@@ -740,6 +740,17 @@ impl Generator {
                     return Ok((pointee, register));
                 }
             }
+            // A file-scope pointer object is memory-backed just like a spilled
+            // pointer local: first load the pointer value from the global, then
+            // use that value as the subscript/dereference base. Global arrays
+            // remain on their separate symbol-address path in `emit_subscript`.
+            if !self.locations.contains_key(name) {
+                if let Some(Type::Pointer(pointee)) = self.globals.get(name).copied() {
+                    let register = self.fresh_virtual_general_preferring(3);
+                    self.emit_global_load(name, register)?;
+                    return Ok((pointee, register));
+                }
+            }
         }
         // `**pp` — a double dereference through a word-pointer-to-pointer (`int **`,
         // `unsigned **`). The inner `*pp` loads the inner pointer VALUE (a word) into

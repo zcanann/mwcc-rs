@@ -1900,7 +1900,11 @@ impl Generator {
                 return Ok(());
             }
         }
-        let index_register = self.general_register_of_leaf(index)?;
+        // The index may itself be memory-backed (for example a file-scope
+        // cursor indexing a file-scope pointer table). Materialize computed and
+        // global scalar indices through the shared index policy; register-local
+        // indices retain their existing home without an extra move.
+        let index_register = self.materialize_index_operand(index)?;
         let size = pointee.size();
         let scaled = if size == 1 {
             index_register

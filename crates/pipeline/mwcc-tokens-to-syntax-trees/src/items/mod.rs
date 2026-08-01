@@ -24,7 +24,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{
     ConditionalOrigin, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration,
     LocalDataRelocation, LocalDataRelocationTarget, LoopKind, Parameter, Pointee, PointerElement,
-    Statement, SwitchArm, TranslationUnit, Type,
+    SourceFundamentalType, Statement, SwitchArm, TranslationUnit, Type,
 };
 use mwcc_tokens::Token;
 
@@ -105,6 +105,29 @@ pub(crate) fn pointee_of(base: Type) -> Compilation<Pointee> {
             "pointer to {other:?} is not supported yet"
         ))),
     }
+}
+
+fn source_fundamental_pointee(
+    source: SourceFundamentalType,
+    char_is_signed: bool,
+) -> Option<Pointee> {
+    Some(match source {
+        SourceFundamentalType::PlainChar if char_is_signed => Pointee::Char,
+        SourceFundamentalType::PlainChar => Pointee::UnsignedChar,
+        SourceFundamentalType::SignedChar => Pointee::Char,
+        SourceFundamentalType::UnsignedChar => Pointee::UnsignedChar,
+        SourceFundamentalType::SignedShort => Pointee::Short,
+        SourceFundamentalType::UnsignedShort => Pointee::UnsignedShort,
+        SourceFundamentalType::SignedInteger | SourceFundamentalType::SignedLong => Pointee::Int,
+        SourceFundamentalType::UnsignedInteger | SourceFundamentalType::UnsignedLong => {
+            Pointee::UnsignedInt
+        }
+        SourceFundamentalType::Float => Pointee::Float,
+        SourceFundamentalType::Double => Pointee::Double,
+        SourceFundamentalType::SignedLongLong => Pointee::LongLong,
+        SourceFundamentalType::UnsignedLongLong => Pointee::UnsignedLongLong,
+        SourceFundamentalType::Boolean | SourceFundamentalType::Void => return None,
+    })
 }
 
 /// Size in bytes of a scalar or pointer type, for laying out struct members.
@@ -2498,6 +2521,7 @@ impl Parser {
             self.last_type_was_const |= declaration_const;
             self.last_type_was_volatile |= declaration_volatile;
             let declared_source_fundamental = self.last_source_fundamental;
+            let declared_pointer_depth = self.last_cxx_pointer_depth;
             let declared_is_volatile = self.last_type_was_volatile;
             let parsed_aggregate_reference = self.last_type_was_aggregate_reference;
             let declared_function_type = self.last_cxx_function_type.clone();
@@ -2663,9 +2687,8 @@ impl Parser {
                 name = crate::cxx::parse_arithmetic_operator_name(self)?;
             }
             let namespace_scope = qualified_scope
-                .as_ref()
-                .filter(|scope| self.cxx_namespaces.contains(scope.as_str()))
-                .cloned();
+                .as_deref()
+                .and_then(|scope| self.resolve_scoped_cxx_namespace_name(scope));
             let member_scope = qualified_scope.filter(|_| namespace_scope.is_none());
             let member_layout_scope = member_scope.as_deref().and_then(|scope| {
                 self.resolve_scoped_cxx_class_name(scope)
@@ -2806,9 +2829,6 @@ impl Parser {
                 // resolve the member layout. Codegen handles the struct-pointer base
                 // and defers the value/array bases (no miscompile).
                 let global_struct_tag = declared_struct_tag.clone();
-                if let Some(tag) = &global_struct_tag {
-                    self.global_structs.insert(name.clone(), tag.clone());
-                }
                 let mut declarator_name = name.clone();
                 loop {
                     let emitted_declarator_name = if self.cplusplus && member_scope.is_none() {
@@ -2816,6 +2836,27 @@ impl Parser {
                     } else {
                         declarator_name.clone()
                     };
+                    // Semantic parsing sees both the source spelling and the ABI
+                    // spelling after namespace lookup. Keep aggregate identity on
+                    // both keys so `Namespace::T **objects; objects[i]->field`
+                    // retains T after the source name is resolved to its mangled
+                    // object symbol.
+                    if let Some(tag) = &global_struct_tag {
+                        self.global_structs
+                            .insert(declarator_name.clone(), tag.clone());
+                        self.global_structs
+                            .insert(emitted_declarator_name.clone(), tag.clone());
+                    }
+                    if declared_pointer_depth >= 2 {
+                        if let Some(pointee) = declared_source_fundamental
+                            .and_then(|source| source_fundamental_pointee(source, self.char_is_signed))
+                        {
+                            self.global_nested_pointer_pointees
+                                .insert(declarator_name.clone(), pointee);
+                            self.global_nested_pointer_pointees
+                                .insert(emitted_declarator_name.clone(), pointee);
+                        }
+                    }
                     // Array dimensions `[A][B]…`: each `[N]` is an explicit length,
                     // `[]` (only the first dimension) is inferred from the
                     // initializer; no brackets is a scalar. A multi-dimensional array
@@ -3019,8 +3060,14 @@ impl Parser {
                     let array_element = array_length.map(|_| element_bytes);
                     self.global_sizes
                         .insert(declarator_name.clone(), (total_bytes, array_element));
+                    self.global_sizes.insert(
+                        emitted_declarator_name.clone(),
+                        (total_bytes, array_element),
+                    );
                     self.global_types
                         .insert(declarator_name.clone(), return_type);
+                    self.global_types
+                        .insert(emitted_declarator_name.clone(), return_type);
                     // For a POINTER declarator, a LEADING `const` binds the
                     // POINTEE (`const char* dummy = "C"` is a WRITABLE pointer
                     // in `.sdata` — measured: locale) — the object itself is
@@ -3619,6 +3666,25 @@ impl Parser {
             let previous_member_class = self.current_cxx_member_class.clone();
             let previous_member_is_const = self.current_cxx_member_is_const;
             let previous_this_struct = self.variable_structs.get("this").cloned();
+            // A qualified namespace definition may be written from its enclosing
+            // namespace (`namespace A { void B::f() { use_b_data(); } }`). The
+            // body has A::B lexical lookup even though the source did not open a
+            // second namespace block around it. Extend the active namespace stack
+            // for the body so unqualified data and function names resolve at their
+            // declaration scope, then restore the surrounding top-level scope.
+            let body_namespace_depth = self.namespace_stack.len();
+            if let Some(scope) = namespace_scope.as_deref() {
+                let active = self
+                    .named_namespace_scopes()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                let desired = scope.split("::").map(str::to_owned).collect::<Vec<_>>();
+                if desired.starts_with(&active) {
+                    self.namespace_stack
+                        .extend(desired[active.len()..].iter().cloned());
+                }
+            }
             self.current_cxx_member_class = member_declaration_scope.clone();
             self.current_cxx_member_is_const =
                 (!member_definition_is_static && member_declaration_scope.is_some())
@@ -3644,6 +3710,7 @@ impl Parser {
                 cxx_reference_parameters,
                 cxx_const_object_parameters,
             );
+            self.namespace_stack.truncate(body_namespace_depth);
             self.current_member_scope = previous_member_scope;
             self.current_cxx_member_class = previous_member_class;
             self.current_cxx_member_is_const = previous_member_is_const;

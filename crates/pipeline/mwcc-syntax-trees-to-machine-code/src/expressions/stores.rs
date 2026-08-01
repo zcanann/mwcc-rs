@@ -1330,7 +1330,16 @@ impl Generator {
                 if restore {
                     self.reserved.remove(&address);
                 }
-                if !matches!(value, Expression::Variable(_)) && !indexed_source {
+                let size = pointee.size();
+                // A byte store does not consume the scratch register to scale
+                // its index, so a literal value can be materialized in r0 and
+                // stored directly (`li r0,0; stbx r0,base,index`). Wider stores
+                // retain the leaf-only rule because their index shift uses r0.
+                let byte_literal = size == 1 && constant_value(value).is_some();
+                if !matches!(value, Expression::Variable(_))
+                    && !indexed_source
+                    && !byte_literal
+                {
                     return Err(Diagnostic::error(
                         "store with a variable index needs a simple value (roadmap)",
                     ));
@@ -1365,7 +1374,6 @@ impl Generator {
                                 constant
                             };
                             let index_register = self.general_register_of_leaf(left)?;
-                            let size = pointee.size();
                             if self.behavior.optimization == mwcc_versions::Optimization::O0 {
                                 let index_offset = i16::try_from(signed).map_err(|_| {
                                     Diagnostic::error("store index offset out of range (roadmap)")
@@ -1436,7 +1444,6 @@ impl Generator {
                     }
                 }
                 let index_register = self.general_register_of_leaf(index)?;
-                let size = pointee.size();
                 let scaled = if size == 1 {
                     index_register
                 } else {

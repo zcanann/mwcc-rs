@@ -1513,6 +1513,12 @@ impl Parser {
                             continue;
                         }
                     }
+                    let nested_pointer_pointee = match &expression {
+                        Expression::Variable(name) => {
+                            self.global_nested_pointer_pointees.get(name).copied()
+                        }
+                        _ => None,
+                    };
                     self.advance();
                     let index = self.expression()?;
                     self.expect(Token::BracketClose)?;
@@ -1520,6 +1526,12 @@ impl Parser {
                         base: Box::new(expression),
                         index: Box::new(index),
                     };
+                    if let Some(pointee) = nested_pointer_pointee {
+                        expression = Expression::Cast {
+                            target_type: Type::Pointer(pointee),
+                            operand: Box::new(expression),
+                        };
+                    }
                     // Indexing a struct pointer/array yields a struct element of the
                     // same tag (so `a[i].field` resolves); a non-struct base already
                     // carries no tag, so this leaves it `None`.

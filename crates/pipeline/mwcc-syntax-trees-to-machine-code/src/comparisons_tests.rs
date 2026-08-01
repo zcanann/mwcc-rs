@@ -422,3 +422,70 @@ fn address_taken_scalar_large_equality_uses_a_nonzero_addis_source() {
         machine.instructions
     );
 }
+
+#[test]
+fn indexes_through_a_memory_backed_global_pointer_table() {
+    let function = Function {
+        return_type: Type::Pointer(mwcc_syntax_trees::Pointee::Char),
+        name: "lookup".into(),
+        is_static: false,
+        is_weak: false,
+        parameters: vec![Parameter {
+            parameter_type: Type::UnsignedInt,
+            name: "offset".into(),
+        }],
+        locals: Vec::new(),
+        statements: vec![Statement::Store {
+            target: Expression::Index {
+                base: Box::new(Expression::Cast {
+                    target_type: Type::Pointer(mwcc_syntax_trees::Pointee::Char),
+                    operand: Box::new(Expression::Index {
+                        base: Box::new(Expression::Variable("table".into())),
+                        index: Box::new(Expression::Variable("index".into())),
+                    }),
+                }),
+                index: Box::new(Expression::Variable("offset".into())),
+            },
+            value: Expression::IntegerLiteral(0),
+        }],
+        guards: Vec::new(),
+        return_expression: Some(Expression::Index {
+            base: Box::new(Expression::Variable("table".into())),
+            index: Box::new(Expression::Variable("index".into())),
+        }),
+        section: None,
+        preceded_by_asm: false,
+        asm_body: None,
+        inline_asm_blocks: Vec::new(),
+        force_active: false,
+        text_deferred: false,
+        peephole_disabled: false,
+    };
+    let machine = lower_with_globals(
+        &function,
+        &[
+            typed_global(
+                "table",
+                Type::Pointer(mwcc_syntax_trees::Pointee::Pointer),
+            ),
+            typed_global("index", Type::UnsignedInt),
+        ],
+    );
+
+    assert!(
+        machine
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::LoadWordIndexed { .. })),
+        "the loaded global pointer must feed an indexed word load: {:?}",
+        machine.instructions
+    );
+    assert!(
+        machine
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::StoreByteIndexed { .. })),
+        "the intermediate char pointer must support a variable-index zero store: {:?}",
+        machine.instructions
+    );
+}

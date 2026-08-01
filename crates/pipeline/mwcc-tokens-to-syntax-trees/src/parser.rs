@@ -489,6 +489,12 @@ pub(crate) struct Parser {
     /// unevaluated expressions such as `sizeof(*global_pointer)` recover the
     /// pointee size without pretending a pointer global is an array.
     pub(crate) global_types: HashMap<String, Type>,
+    /// Inner scalar pointee for a flattened multi-level global pointer. The
+    /// compact executable type records `T**` as `Pointer(Pointer)`; postfix
+    /// parsing uses this side identity to type the intermediate `T*` produced
+    /// by `table[index]`, allowing a following subscript/dereference to choose
+    /// the correct narrow or floating access.
+    pub(crate) global_nested_pointer_pointees: HashMap<String, Pointee>,
     /// `typedef`-declared type aliases (e.g. `u32` -> `unsigned int`).
     pub(crate) typedefs: HashMap<String, Type>,
     /// Typedef names whose aliased object type is volatile. Executable layout
