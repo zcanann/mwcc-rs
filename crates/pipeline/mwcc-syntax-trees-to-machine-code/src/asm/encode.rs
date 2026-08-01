@@ -892,8 +892,18 @@ pub(super) fn assemble_line(
             let (base_options, base_bit) = conditional_branch_fields(mnemonic);
             let (crf, operands) = take_cr_field(operands);
             let condition_bit = crf * 4 + base_bit;
-            let target = label_target(mnemonic, operands, labels)?;
-            let forward = target >= instruction_index;
+            let (target, local) = conditional_branch_target(
+                mnemonic,
+                operands,
+                labels,
+                instruction_index,
+            )?;
+            if !local && hint != BranchHint::None {
+                return Err(Diagnostic::error(format!(
+                    "inline-asm prediction hint on external branch '{mnemonic}' is not supported yet"
+                )));
+            }
+            let forward = local && target >= instruction_index;
             let options = base_options | hint_bit(hint, forward);
             Instruction::BranchConditionalForward {
                 options,
@@ -912,7 +922,12 @@ pub(super) fn assemble_line(
             };
             let options = branch_field(&operands[0], "BO")?;
             let condition_bit = branch_field(&operands[1], "BI")?;
-            let target = label_target(mnemonic, &operands[2..], labels)?;
+            let (target, _) = conditional_branch_target(
+                mnemonic,
+                &operands[2..],
+                labels,
+                instruction_index,
+            )?;
             Instruction::BranchConditionalForward {
                 options,
                 condition_bit,
@@ -964,16 +979,19 @@ fn conditional_branch_fields(mnemonic: &str) -> (u8, u8) {
 }
 
 /// Resolve a branch's single label operand to its instruction index.
-fn label_target(
+fn conditional_branch_target(
     mnemonic: &str,
     operands: &[AsmOperand],
     labels: &HashMap<&str, usize>,
-) -> Compilation<usize> {
+    instruction_index: usize,
+) -> Compilation<(usize, bool)> {
     expect_operand_count(mnemonic, operands, 1)?;
     match &operands[0] {
-        AsmOperand::Label(name) => labels.get(name.as_str()).copied().ok_or_else(|| {
-            Diagnostic::error(format!("inline-asm branch to undefined label '{name}'"))
-        }),
+        AsmOperand::Label(name) => Ok(labels
+            .get(name.as_str())
+            .copied()
+            .map(|target| (target, true))
+            .unwrap_or((instruction_index, false))),
         _ => Err(Diagnostic::error(format!(
             "inline-asm '{mnemonic}' expected a label operand"
         ))),
@@ -1235,6 +1253,18 @@ mod tests {
                 options: 12,
                 condition_bit: 2,
                 target: 9,
+            }
+        );
+    }
+
+    #[test]
+    fn assembles_external_conditional_branch_as_zero_displacement() {
+        assert_eq!(
+            assemble("bne", vec![AsmOperand::Label("handler".into())]).unwrap(),
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 0,
             }
         );
     }

@@ -92,20 +92,13 @@ pub(crate) fn append_embedded_asm(
                 }
             }
         }
-        if matches!(line.mnemonic.as_str(), "b" | "bl") {
-            if let Some(AsmOperand::Label(name)) = line.operands.first() {
-                if !labels.contains_key(name.as_str()) {
-                    output.relocations.push(Relocation {
-                        instruction_index,
-                        kind: RelocationKind::Rel24,
-                        target: RelocationTarget::External(name.clone()),
-                    });
-                    if !output.symbol_order.contains(name) {
-                        output.symbol_order.push(name.clone());
-                    }
-                }
-            }
-        }
+        record_external_branch_relocation(
+            line,
+            &labels,
+            instruction_index,
+            &mut output.relocations,
+            &mut output.symbol_order,
+        );
     }
     Ok(())
 }
@@ -184,20 +177,13 @@ pub(crate) fn assemble_inline_block(
                 }
             }
         }
-        if matches!(line.mnemonic.as_str(), "b" | "bl") {
-            if let Some(AsmOperand::Label(name)) = line.operands.first() {
-                if !labels.contains_key(name.as_str()) {
-                    relocations.push(Relocation {
-                        instruction_index,
-                        kind: RelocationKind::Rel24,
-                        target: RelocationTarget::External(name.clone()),
-                    });
-                    if !symbol_order.contains(name) {
-                        symbol_order.push(name.clone());
-                    }
-                }
-            }
-        }
+        record_external_branch_relocation(
+            line,
+            &labels,
+            instruction_index,
+            &mut relocations,
+            &mut symbol_order,
+        );
     }
     if behavior.asm_branch_optimization_style
         == AsmBranchOptimizationStyle::ChaseAndCollapseReturns
@@ -302,23 +288,13 @@ pub(crate) fn assemble_asm_function(
                         }
                     }
                 }
-                // A `b func` / `bl func` whose target is not a local label is a tail branch or
-                // call to an external function: record its `R_PPC_REL24` relocation (the word
-                // itself is assembled as an offset-0 placeholder).
-                if matches!(line.mnemonic.as_str(), "b" | "bl") {
-                    if let Some(AsmOperand::Label(name)) = line.operands.first() {
-                        if !labels.contains_key(name.as_str()) {
-                            relocations.push(Relocation {
-                                instruction_index,
-                                kind: RelocationKind::Rel24,
-                                target: RelocationTarget::External(name.clone()),
-                            });
-                            if !symbol_order.contains(name) {
-                                symbol_order.push(name.clone());
-                            }
-                        }
-                    }
-                }
+                record_external_branch_relocation(
+                    line,
+                    &labels,
+                    instruction_index,
+                    &mut relocations,
+                    &mut symbol_order,
+                );
             }
         }
     }
@@ -397,7 +373,10 @@ fn order_asm_symbols(
                 | RelocationTarget::ExternalWithAddend(target, _) => target,
                 _ => return None,
             };
-            (target == &name).then_some(relocation.kind == RelocationKind::Rel24)
+            (target == &name).then_some(matches!(
+                relocation.kind,
+                RelocationKind::Rel24 | RelocationKind::Rel14
+            ))
         });
         if is_call == Some(true) {
             calls.push(name);
@@ -501,6 +480,50 @@ fn relocation_kind(suffix: AsmRelocSuffix) -> RelocationKind {
     }
 }
 
+/// Record the linker-resolved form of an asm branch whose label is not local to
+/// the current asm body. Both unconditional/call branches and conditional
+/// branches encode a zero displacement; the linker distinguishes their fields
+/// through REL24 and REL14 respectively.
+fn record_external_branch_relocation(
+    line: &AsmInstruction,
+    labels: &HashMap<&str, usize>,
+    instruction_index: usize,
+    relocations: &mut Vec<Relocation>,
+    symbol_order: &mut Vec<String>,
+) {
+    let mnemonic = line
+        .mnemonic
+        .strip_suffix('+')
+        .or_else(|| line.mnemonic.strip_suffix('-'))
+        .unwrap_or(line.mnemonic.as_str());
+    let kind = match mnemonic {
+        "b" | "bl" => RelocationKind::Rel24,
+        "beq" | "bne" | "blt" | "bge" | "bgt" | "ble" | "bdnz" | "bc" => {
+            RelocationKind::Rel14
+        }
+        _ => return,
+    };
+    let target_operand = if mnemonic == "bc" {
+        line.operands.get(2)
+    } else {
+        line.operands.last()
+    };
+    let Some(AsmOperand::Label(name)) = target_operand else {
+        return;
+    };
+    if labels.contains_key(name.as_str()) {
+        return;
+    }
+    relocations.push(Relocation {
+        instruction_index,
+        kind,
+        target: RelocationTarget::External(name.clone()),
+    });
+    if !symbol_order.contains(name) {
+        symbol_order.push(name.clone());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,5 +568,31 @@ mod tests {
             ),
             ["state", "save", "stack"]
         );
+    }
+
+    #[test]
+    fn records_external_conditional_branch_as_rel14() {
+        let line = AsmInstruction {
+            mnemonic: "bne".into(),
+            operands: vec![AsmOperand::Label("handler".into())],
+            source_line: 1,
+        };
+        let mut relocations = Vec::new();
+        let mut symbols = Vec::new();
+        record_external_branch_relocation(
+            &line,
+            &HashMap::new(),
+            7,
+            &mut relocations,
+            &mut symbols,
+        );
+        assert_eq!(relocations.len(), 1);
+        assert_eq!(relocations[0].instruction_index, 7);
+        assert_eq!(relocations[0].kind, RelocationKind::Rel14);
+        assert!(matches!(
+            &relocations[0].target,
+            RelocationTarget::External(name) if name == "handler"
+        ));
+        assert_eq!(symbols, ["handler"]);
     }
 }

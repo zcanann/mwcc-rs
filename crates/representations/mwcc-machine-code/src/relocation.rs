@@ -11,6 +11,8 @@ pub enum RelocationKind {
     EmbSda21,
     /// `R_PPC_REL24` (10) — the 24-bit branch displacement of a `bl` (a call).
     Rel24,
+    /// `R_PPC_REL14` (11) — the 14-bit displacement of a conditional branch.
+    Rel14,
     /// `R_PPC_ADDR16_HA` (6) — the high-adjusted 16 bits of an absolute address,
     /// patched into the immediate of a `lis` (the `-sdata 0` addressing mode).
     Addr16Ha,
@@ -28,6 +30,7 @@ impl RelocationKind {
         match self {
             RelocationKind::EmbSda21 => 109,
             RelocationKind::Rel24 => 10,
+            RelocationKind::Rel14 => 11,
             RelocationKind::Addr16Ha => 6,
             RelocationKind::Addr16Hi => 5,
             RelocationKind::Addr16Lo => 4,
@@ -36,11 +39,11 @@ impl RelocationKind {
 
     /// Byte offset of the patched field within the 4-byte instruction. The 16-bit
     /// ADDR16 fields live in the instruction's low halfword (offset 2, big-endian);
-    /// SDA21 and REL24 are described from the instruction start (offset 0).
+    /// SDA21, REL24, and REL14 are described from the instruction start (offset 0).
     pub fn field_offset(self) -> u32 {
         match self {
             RelocationKind::Addr16Ha | RelocationKind::Addr16Hi | RelocationKind::Addr16Lo => 2,
-            RelocationKind::EmbSda21 | RelocationKind::Rel24 => 0,
+            RelocationKind::EmbSda21 | RelocationKind::Rel24 | RelocationKind::Rel14 => 0,
         }
     }
 }
