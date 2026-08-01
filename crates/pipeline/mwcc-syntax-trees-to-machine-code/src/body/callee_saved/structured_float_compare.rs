@@ -22,6 +22,12 @@ impl Generator {
         condition: &Expression,
         body: &[Statement],
     ) {
+        // At O0 MWCC keeps the comparison and guarded store as distinct
+        // source-value nodes, reloading the pool literal on the taken edge.
+        // Only the O4 scheduler extends the comparison literal into the body.
+        if !self.behavior.schedule_latency_slots {
+            return;
+        }
         let Expression::Binary {
             operator,
             left,

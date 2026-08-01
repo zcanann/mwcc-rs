@@ -135,17 +135,22 @@ impl Generator {
         self.condition_float_cache = previous;
     }
 
-    /// Retain only immutable pool literals on a selected condition edge.
+    /// Retain only immutable pool literals on a selected optimized condition edge.
     ///
     /// Memory-derived values require alias proof before crossing body
-    /// statements. Pool literals do not: their register remains reusable until
-    /// an emitted instruction overwrites it or a call clobbers its volatile
-    /// FPR.
+    /// statements. At O4, pool literals do not: their register remains reusable
+    /// until an emitted instruction overwrites it or a call clobbers its
+    /// volatile FPR. O0 instead preserves distinct comparison and store nodes,
+    /// so the selected edge deliberately carries no literal values.
     pub(crate) fn condition_float_literal_edge_cache(&self) -> ConditionFloatCache {
         ConditionFloatCache {
             active: self.condition_float_cache.active,
             recording_allowed: self.condition_float_cache.recording_allowed,
-            literals: self.condition_float_cache.literals.clone(),
+            literals: self
+                .behavior
+                .schedule_latency_slots
+                .then(|| self.condition_float_cache.literals.clone())
+                .unwrap_or_default(),
             ..ConditionFloatCache::default()
         }
     }
