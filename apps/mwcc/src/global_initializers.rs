@@ -67,6 +67,20 @@ pub(crate) fn owned_string_table(
             .all(|element| matches!(element, PointerElement::Str(_) | PointerElement::Null))
 }
 
+/// An address-shaped aggregate containing only integer bit patterns and null
+/// pointers needs no relocation policy at all. The parser preserves pointer
+/// casts as scalar slots, so records such as `{ (u8*)0, (u8*)-1, 1, 1 }` can
+/// be serialized directly into their ordinary writable/read-only section.
+pub(crate) fn literal_address_table(
+    global: &GlobalDeclaration,
+    elements: &[PointerElement],
+) -> bool {
+    (global.is_static || global.is_const)
+        && elements
+            .iter()
+            .all(|element| matches!(element, PointerElement::Null | PointerElement::Scalar(_)))
+}
+
 /// Whole-file IPA removes an internal, read-only section registration when
 /// nothing in the unit names the registration object. The section attribute
 /// itself is not a liveness root in the 4.x optimizer: measured `.dtors$10`
@@ -189,6 +203,22 @@ mod tests {
         global.is_const = true;
 
         assert!(owned_string_table(&global, &elements));
+    }
+
+    #[test]
+    fn accepts_a_const_record_of_literal_pointer_bits_and_scalars() {
+        let elements = vec![
+            PointerElement::Null,
+            PointerElement::Scalar(-1),
+            PointerElement::Scalar(1),
+            PointerElement::Scalar(1),
+        ];
+        let mut global = private_table(elements.clone());
+        global.is_static = false;
+        global.is_const = true;
+        global.declared_type = Type::Struct { size: 16, align: 4 };
+
+        assert!(literal_address_table(&global, &elements));
     }
 
     #[test]

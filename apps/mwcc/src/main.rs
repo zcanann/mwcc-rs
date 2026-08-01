@@ -1674,6 +1674,8 @@ fn compile(
                 global_initializers::private_unit_data_table(global, elements, &unit.globals);
             let owned_string_table =
                 global_initializers::owned_string_table(global, elements);
+            let literal_address_table =
+                global_initializers::literal_address_table(global, elements);
             if (global.is_static || global.is_const)
                 && global.section.is_none()
                 && !single_target
@@ -1681,6 +1683,7 @@ fn compile(
                 && !static_function_table
                 && !static_unit_data_table
                 && !owned_string_table
+                && !literal_address_table
             {
                 if parity_keep_going {
                     eprintln!(
@@ -1819,7 +1822,8 @@ fn compile(
                         || all_null
                         || static_function_table
                         || static_unit_data_table
-                        || owned_string_table),
+                        || owned_string_table
+                        || literal_address_table),
                 is_explicit_zero,
                 preassigned_anonymous_ordinal: None,
                 preassigned_ordinal_advances_counter: false,
