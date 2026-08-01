@@ -238,6 +238,9 @@ impl Generator {
         if self.try_long_long_serial_fold(function)? {
             return Ok(());
         }
+        if self.try_fp_register_transfer(function)? {
+            return Ok(());
+        }
         // Other long-long LOCALS (which need pair spills), guards, and statements are not modeled yet.
         if !function.locals.is_empty()
             || !function.guards.is_empty()
