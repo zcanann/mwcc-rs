@@ -22,11 +22,22 @@ pub(super) fn strength_reduce_pointer_table_indices(
     let mut statements = Vec::with_capacity(function.statements.len());
     let mut changed = false;
 
-    for statement in &function.statements {
-        let Some(index) = recognized_index(statement, globals) else {
+    for (position, statement) in function.statements.iter().enumerate() {
+        let previous = position
+            .checked_sub(1)
+            .and_then(|previous| function.statements.get(previous));
+        let Some(index) = recognized_index(statement, previous, &function.locals, globals) else {
             statements.push(statement.clone());
             continue;
         };
+        let local_initializer = function.locals.iter().any(|local| {
+            local.name == index
+                && local
+                    .initializer
+                    .as_ref()
+                    .and_then(constant_value)
+                    == Some(0)
+        });
         let cursor = loop {
             let candidate = format!(
                 "{}{}",
@@ -43,7 +54,7 @@ pub(super) fn strength_reduce_pointer_table_indices(
             LocalDeclaration {
                 declared_type: Type::UnsignedInt,
                 name: cursor.clone(),
-                initializer: None,
+                initializer: local_initializer.then(|| Expression::IntegerLiteral(0)),
                 is_volatile: false,
                 array_length: None,
                 is_static: false,
@@ -54,6 +65,15 @@ pub(super) fn strength_reduce_pointer_table_indices(
                 row_bytes: None,
             },
         ));
+        if matches!(statement, Statement::Loop { initializer: None, .. })
+            && !local_initializer
+        {
+            let previous = statements
+                .pop()
+                .expect("a detached pointer-table loop initializer was recognized");
+            statements.push(zero_assignment_like(&previous, &cursor));
+            statements.push(previous);
+        }
         statements.push(rewrite_loop(statement, &index, &cursor));
         changed = true;
     }
@@ -78,11 +98,13 @@ pub(super) fn strength_reduce_pointer_table_indices(
 
 fn recognized_index(
     statement: &Statement,
+    previous: Option<&Statement>,
+    locals: &[LocalDeclaration],
     globals: &std::collections::HashMap<String, Type>,
 ) -> Option<String> {
     let Statement::Loop {
         kind: LoopKind::For,
-        initializer: Some(Expression::Assign { target, value }),
+        initializer,
         condition: Some(_),
         step: Some(step),
         body,
@@ -90,11 +112,21 @@ fn recognized_index(
     else {
         return None;
     };
-    let Expression::Variable(index) = target.as_ref() else {
-        return None;
-    };
-    if constant_value(value) != Some(0) || !is_unit_step(step, index) {
-        return None;
+    let index = unit_step_index(step)?;
+    match initializer {
+        Some(Expression::Assign { target, value })
+            if matches!(target.as_ref(), Expression::Variable(name) if name == index)
+                && constant_value(value) == Some(0) => {}
+        None if previous.is_some_and(|statement| initializes_zero(statement, index))
+            || locals.iter().any(|local| {
+                local.name == index
+                    && local
+                        .initializer
+                        .as_ref()
+                        .and_then(constant_value)
+                        == Some(0)
+            }) => {}
+        _ => return None,
     }
 
     let mut reads = 0usize;
@@ -120,21 +152,55 @@ fn recognized_index(
             _ => {}
         });
     }
-    (pointer_indices != 0 && pointer_indices == reads).then(|| index.clone())
+    (pointer_indices != 0 && pointer_indices == reads).then(|| index.to_owned())
 }
 
-fn is_unit_step(step: &Expression, index: &str) -> bool {
+fn unit_step_index(step: &Expression) -> Option<&str> {
+    let Expression::Assign { target, value } = step else {
+        return None;
+    };
+    let Expression::Variable(index) = target.as_ref() else {
+        return None;
+    };
     matches!(
-        step,
-        Expression::Assign { target, value }
-            if matches!(target.as_ref(), Expression::Variable(name) if name == index)
-                && matches!(value.as_ref(), Expression::Binary {
-                    operator: BinaryOperator::Add,
-                    left,
-                    right,
-                } if matches!(left.as_ref(), Expression::Variable(name) if name == index)
-                    && constant_value(right) == Some(1))
+        value.as_ref(),
+        Expression::Binary {
+            operator: BinaryOperator::Add,
+            left,
+            right,
+        } if matches!(left.as_ref(), Expression::Variable(name) if name == index)
+            && constant_value(right) == Some(1)
     )
+    .then_some(index)
+}
+
+fn initializes_zero(statement: &Statement, index: &str) -> bool {
+    matches!(
+        statement,
+        Statement::Assign { name, value }
+            if name == index && constant_value(value) == Some(0)
+    ) || matches!(
+        statement,
+        Statement::Expression(Expression::Assign { target, value })
+            if matches!(target.as_ref(), Expression::Variable(name) if name == index)
+                && constant_value(value) == Some(0)
+    )
+}
+
+fn zero_assignment_like(statement: &Statement, name: &str) -> Statement {
+    match statement {
+        Statement::Assign { .. } => Statement::Assign {
+            name: name.to_owned(),
+            value: Expression::IntegerLiteral(0),
+        },
+        Statement::Expression(Expression::Assign { .. }) => {
+            Statement::Expression(Expression::Assign {
+                target: Box::new(Expression::Variable(name.to_owned())),
+                value: Box::new(Expression::IntegerLiteral(0)),
+            })
+        }
+        _ => unreachable!("detached zero initializer shape was checked"),
+    }
 }
 
 fn rewrite_loop(statement: &Statement, index: &str, cursor: &str) -> Statement {
@@ -154,8 +220,8 @@ fn rewrite_loop(statement: &Statement, index: &str, cursor: &str) -> Statement {
     )]);
     Statement::Loop {
         kind: *kind,
-        initializer: Some(Expression::Comma {
-            left: Box::new(initializer.clone().expect("recognized initializer")),
+        initializer: initializer.as_ref().map(|initializer| Expression::Comma {
+            left: Box::new(initializer.clone()),
             right: Box::new(Expression::Assign {
                 target: Box::new(Expression::Variable(cursor.to_owned())),
                 value: Box::new(Expression::IntegerLiteral(0)),
@@ -264,7 +330,52 @@ mod tests {
     #[test]
     fn recognizes_an_index_used_only_for_pointer_table_accesses() {
         assert_eq!(
-            recognized_index(&pointer_table_loop(Vec::new()), &globals()),
+            recognized_index(&pointer_table_loop(Vec::new()), None, &[], &globals()),
+            Some("i".into())
+        );
+    }
+
+    #[test]
+    fn recognizes_an_immediately_preceding_zero_initializer() {
+        let mut loop_statement = pointer_table_loop(Vec::new());
+        let Statement::Loop { initializer, .. } = &mut loop_statement else {
+            unreachable!()
+        };
+        *initializer = None;
+        let previous = Statement::Assign {
+            name: "i".into(),
+            value: Expression::IntegerLiteral(0),
+        };
+
+        assert_eq!(
+            recognized_index(&loop_statement, Some(&previous), &[], &globals()),
+            Some("i".into())
+        );
+    }
+
+    #[test]
+    fn recognizes_a_local_declaration_zero_initializer() {
+        let mut loop_statement = pointer_table_loop(Vec::new());
+        let Statement::Loop { initializer, .. } = &mut loop_statement else {
+            unreachable!()
+        };
+        *initializer = None;
+        let local = LocalDeclaration {
+            declared_type: Type::UnsignedInt,
+            name: "i".into(),
+            initializer: Some(Expression::IntegerLiteral(0)),
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        };
+
+        assert_eq!(
+            recognized_index(&loop_statement, None, &[local], &globals()),
             Some("i".into())
         );
     }
@@ -276,6 +387,8 @@ mod tests {
                 &pointer_table_loop(vec![Statement::Expression(Expression::Variable(
                     "i".into(),
                 ))]),
+                None,
+                &[],
                 &globals(),
             ),
             None

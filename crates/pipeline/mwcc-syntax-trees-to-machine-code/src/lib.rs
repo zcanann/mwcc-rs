@@ -1199,8 +1199,10 @@ fn lower_function_body(
     generator.schedule_patched_status_initialization_chain();
     generator.canonicalize_patched_build159_post_asm_linkage();
     generator.schedule_structured_repeated_value_inlined_byte_appends();
+    generator.schedule_pointer_table_index_cursor_prologue();
     generator.schedule_indexed_allocation_pair();
     generator.schedule_pointer_table_index_cursor_publication();
+    generator.schedule_pointer_table_index_cursor_lookup();
     generator.schedule_pointer_table_index_cursor_epilogue();
 
     // Debug lowering consumes final physical allocation, not the frontend's

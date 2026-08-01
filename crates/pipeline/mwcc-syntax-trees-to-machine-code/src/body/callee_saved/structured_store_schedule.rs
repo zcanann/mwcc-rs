@@ -53,6 +53,39 @@ impl Generator {
         self.move_instruction_before(start + 2, start + 1);
     }
 
+    /// Issue the pointer-table base load before copying the retained search
+    /// argument into r3, filling the base load's latency before the indexed load.
+    pub(crate) fn schedule_pointer_table_index_cursor_lookup(&mut self) {
+        if !self.structured_pointer_table_index_cursor {
+            return;
+        }
+        let Some(start) = self.output.instructions.windows(4).position(|window| {
+            matches!(
+                window,
+                [
+                    Instruction::Or { a: 3, s: argument, b },
+                    Instruction::LoadWord { d: 4, a: 0, offset: 0 },
+                    Instruction::LoadWordIndexed { d: 4, a: 4, .. },
+                    Instruction::BranchAndLink { .. },
+                ] if argument == b
+            )
+        }) else {
+            return;
+        };
+        self.move_instruction_before(start + 1, start);
+        for instruction in &mut self.output.instructions {
+            match instruction {
+                Instruction::Branch { target }
+                | Instruction::BranchConditionalForward { target, .. }
+                    if *target == start + 1 =>
+                {
+                    *target = start;
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// After a call, issue a later independent global load before publishing a
     /// zero and retain the zero in r3. This fills the load latency while keeping
     /// r0 available for the loaded value's following global publication.

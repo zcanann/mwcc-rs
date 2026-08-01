@@ -4,6 +4,36 @@
 use super::*;
 
 impl Generator {
+    /// Interleave the three saved-home stores with independent zero materialization
+    /// for a pointer-table search whose source index has a separate byte cursor.
+    pub(crate) fn schedule_pointer_table_index_cursor_prologue(&mut self) {
+        if !self.structured_pointer_table_index_cursor || self.callee_saved.len() != 3 {
+            return;
+        }
+        let Some(start) = self.output.instructions.windows(6).position(|window| {
+            matches!(
+                window,
+                [
+                    Instruction::StoreWord { s: 31, a: 1, .. },
+                    Instruction::StoreWord { s: 30, a: 1, .. },
+                    Instruction::AddImmediate { d: 30, a: 0, immediate: 0 },
+                    Instruction::AddImmediate { d: 31, a: 30, immediate: 0 },
+                    Instruction::StoreWord { s: 29, a: 1, .. },
+                    Instruction::Or { a: 29, s: 3, b: 3 },
+                ]
+            )
+        }) else {
+            return;
+        };
+        self.output.instructions[start + 3] = Instruction::load_immediate(31, 0);
+        crate::move_instruction_before_retargeting(self, start + 3, start + 1);
+        self.output.instructions[start + 5] = Instruction::AddImmediate {
+            d: 29,
+            a: 3,
+            immediate: 0,
+        };
+    }
+
     /// Register-only pointer-table cursor loops restore LR before releasing
     /// their compact frame, matching the measured legacy optimized loop form.
     pub(crate) fn schedule_pointer_table_index_cursor_epilogue(&mut self) {
@@ -12,7 +42,7 @@ impl Generator {
         {
             return;
         }
-        let Some(stack_restore) = self.output.instructions.windows(2).rposition(|window| {
+        if let Some(stack_restore) = self.output.instructions.windows(2).rposition(|window| {
             matches!(
                 window,
                 [
@@ -24,10 +54,24 @@ impl Generator {
                     Instruction::MoveToLinkRegister { s: 0 },
                 ] if *immediate == self.frame_size
             )
-        }) else {
-            return;
-        };
-        crate::move_instruction_before_retargeting(self, stack_restore + 1, stack_restore);
+        }) {
+            crate::move_instruction_before_retargeting(self, stack_restore + 1, stack_restore);
+        }
+        if self.callee_saved.len() == 3 {
+            if let Some(start) = self.output.instructions.windows(4).rposition(|window| {
+                matches!(
+                    window,
+                    [
+                        Instruction::LoadWord { d: 31, a: 1, .. },
+                        Instruction::LoadWord { d: 30, a: 1, .. },
+                        Instruction::LoadWord { d: 29, a: 1, .. },
+                        Instruction::MoveToLinkRegister { s: 0 },
+                    ]
+                )
+            }) {
+                crate::move_instruction_before_retargeting(self, start + 3, start + 2);
+            }
+        }
     }
 
     /// Emit the policy-owned linkage-first teardown after a generic body.
