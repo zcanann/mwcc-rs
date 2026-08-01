@@ -821,10 +821,11 @@ impl Generator {
                 Type::Pointer(pointee) => pointee,
                 _ => return Err(Diagnostic::error("dereferenced member is not a pointer")),
             };
-            let register = self.member_base_register(member_base)?;
+            let base_register = self.member_base_register(member_base)?;
+            let register = self.fresh_virtual_general();
             self.output.instructions.push(Instruction::LoadWord {
                 d: register,
-                a: register,
+                a: base_register,
                 offset: offset as i16,
             });
             return Ok((pointee, register));
