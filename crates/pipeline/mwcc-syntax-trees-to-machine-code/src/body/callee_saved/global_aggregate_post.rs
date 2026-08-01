@@ -34,6 +34,13 @@ fn member_increment(statement: &Statement, global: &str, expected: u16) -> bool 
     let Statement::Store { target, value } = statement else {
         return false;
     };
+    // Postfix member updates retain their value-result marker in the shared
+    // syntax tree even when the enclosing expression statement discards that
+    // result.  Queue-post recognition only needs the stored update semantics.
+    let value = match value {
+        Expression::IndexedUpdateValue { value } => value.as_ref(),
+        other => other,
+    };
     let Expression::Binary {
         operator: BinaryOperator::Add,
         left,
