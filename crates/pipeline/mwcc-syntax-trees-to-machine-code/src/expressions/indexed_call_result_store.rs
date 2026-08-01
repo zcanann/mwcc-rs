@@ -8,33 +8,40 @@
 #[allow(unused_imports)]
 use super::*;
 
-fn indexed_member_pointer_call<'a>(
+enum IndexedCallBase<'a> {
+    Direct(&'a Expression),
+    Member {
+        base: &'a Expression,
+        offset: u32,
+        pointee: Pointee,
+    },
+}
+
+fn indexed_pointer_call<'a>(
     target: &'a Expression,
     value: &'a Expression,
-) -> Option<(
-    &'a Expression,
-    u32,
-    &'a Expression,
-    Pointee,
-    &'a str,
-    &'a [Expression],
-)> {
+) -> Option<(IndexedCallBase<'a>, &'a Expression, &'a str, &'a [Expression])> {
     let Expression::Index { base, index } = target else {
         return None;
     };
-    let Expression::Member {
-        base: member_base,
-        offset,
-        member_type: Type::Pointer(pointee),
-        index_stride: None,
-    } = base.as_ref()
-    else {
-        return None;
+    let store_base = match base.as_ref() {
+        Expression::Member {
+            base,
+            offset,
+            member_type: Type::Pointer(pointee),
+            index_stride: None,
+        } => IndexedCallBase::Member {
+            base,
+            offset: *offset,
+            pointee: *pointee,
+        },
+        direct @ Expression::Variable(_) => IndexedCallBase::Direct(direct),
+        _ => return None,
     };
     let Expression::Call { name, arguments } = value else {
         return None;
     };
-    Some((member_base, *offset, index, *pointee, name, arguments))
+    Some((store_base, index, name, arguments))
 }
 
 impl Generator {
@@ -43,8 +50,7 @@ impl Generator {
         target: &Expression,
         value: &Expression,
     ) -> Compilation<bool> {
-        let Some((member_base, member_offset, index, pointee, callee, arguments)) =
-            indexed_member_pointer_call(target, value)
+        let Some((store_base, index, callee, arguments)) = indexed_pointer_call(target, value)
         else {
             return Ok(false);
         };
@@ -58,12 +64,6 @@ impl Generator {
                     | Type::UnsignedLongLong
                     | Type::Struct { .. }
             )
-        ) {
-            return Ok(false);
-        }
-        if matches!(
-            pointee,
-            Pointee::Float | Pointee::Double | Pointee::LongLong | Pointee::UnsignedLongLong
         ) {
             return Ok(false);
         }
@@ -82,14 +82,30 @@ impl Generator {
         self.emit_call(callee, arguments, Some(result), false)?;
 
         let restore = self.reserved.insert(result);
-        let address = self.fresh_virtual_general_preferring(4);
-        self.emit_member_load(
-            member_base,
-            member_offset,
-            Type::Pointer(pointee),
-            None,
-            address,
-        )?;
+        let (pointee, address) = match store_base {
+            IndexedCallBase::Direct(base) => self.resolve_pointer(base)?,
+            IndexedCallBase::Member {
+                base,
+                offset,
+                pointee,
+            } => {
+                let address = self.fresh_virtual_general_preferring(4);
+                self.emit_member_load(
+                    base,
+                    offset,
+                    Type::Pointer(pointee),
+                    None,
+                    address,
+                )?;
+                (pointee, address)
+            }
+        };
+        if matches!(
+            pointee,
+            Pointee::Float | Pointee::Double | Pointee::LongLong | Pointee::UnsignedLongLong
+        ) {
+            return Ok(false);
+        }
         let size = pointee.size();
         let scaled = if size == 1 {
             index_register
@@ -118,7 +134,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recognizes_only_a_call_stored_through_an_indexed_member_pointer() {
+    fn recognizes_a_call_stored_through_an_indexed_member_pointer() {
         let member = Expression::Member {
             base: Box::new(Expression::Variable("object".into())),
             offset: 72,
@@ -134,7 +150,25 @@ mod tests {
             arguments: Vec::new(),
         };
 
-        assert!(indexed_member_pointer_call(&target, &call).is_some());
-        assert!(indexed_member_pointer_call(&target, &Expression::IntegerLiteral(0)).is_none());
+        assert!(indexed_pointer_call(&target, &call).is_some());
+        assert!(indexed_pointer_call(&target, &Expression::IntegerLiteral(0)).is_none());
+    }
+
+    #[test]
+    fn recognizes_a_call_stored_through_a_direct_pointer() {
+        let target = Expression::Index {
+            base: Box::new(Expression::Variable("table".into())),
+            index: Box::new(Expression::Variable("index".into())),
+        };
+        let call = Expression::Call {
+            name: "allocate".into(),
+            arguments: vec![Expression::IntegerLiteral(32)],
+        };
+
+        assert!(matches!(
+            indexed_pointer_call(&target, &call),
+            Some((IndexedCallBase::Direct(Expression::Variable(name)), _, "allocate", _))
+                if name == "table"
+        ));
     }
 }

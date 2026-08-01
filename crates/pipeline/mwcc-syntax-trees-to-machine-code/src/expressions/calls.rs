@@ -692,6 +692,13 @@ impl Generator {
         if self.try_emit_saved_global_constant_arguments(arguments, name, direct_call)? {
             return Ok(());
         }
+        if self.try_emit_scaled_global_global_constant_arguments(
+            arguments,
+            name,
+            direct_call,
+        )? {
+            return Ok(());
+        }
         if self.try_emit_dependency_ordered_general_arguments(arguments, name, direct_call)? {
             return Ok(());
         }
@@ -795,7 +802,12 @@ impl Generator {
                             if global_argument.is_some()
                                 || !matches!(
                                     self.globals.get(variable.as_str()),
-                                    Some(Type::Int | Type::UnsignedInt)
+                                    Some(
+                                        Type::Int
+                                            | Type::UnsignedInt
+                                            | Type::Pointer(_)
+                                            | Type::StructPointer { .. }
+                                    )
                                 )
                             {
                                 simple = false;

@@ -327,6 +327,94 @@ impl Generator {
         Ok(true)
     }
 
+    /// Marshal `(word_global * scale, word_global, i16)` while exposing the
+    /// independent literal to the linkage scheduler.
+    ///
+    /// MWCC keeps the first scalar load in r0, issues the second load into its
+    /// ABI argument home, and only then scales the first value into r3. The
+    /// leading literal can consequently fill the LR-store latency slot:
+    /// `li r5,k; lwz r0,count; lwz r4,heap; slwi r3,r0,n`.
+    pub(crate) fn try_emit_scaled_global_global_constant_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [scaled, second @ Expression::Variable(second_global), Expression::IntegerLiteral(third)] =
+            arguments
+        else {
+            return Ok(false);
+        };
+        let Expression::Binary {
+            operator: BinaryOperator::Multiply,
+            left,
+            right,
+        } = scaled
+        else {
+            return Ok(false);
+        };
+        let (first_global, scale) = match (left.as_ref(), right.as_ref()) {
+            (Expression::Variable(global), Expression::IntegerLiteral(scale))
+            | (Expression::IntegerLiteral(scale), Expression::Variable(global)) => {
+                (global, *scale)
+            }
+            _ => return Ok(false),
+        };
+        let (Ok(scale), Ok(third)) = (i16::try_from(scale), i16::try_from(*third)) else {
+            return Ok(false);
+        };
+        let all_general = self.call_parameter_types.get(name).is_none_or(|types| {
+            types.len() >= 3
+                && types[..3]
+                    .iter()
+                    .all(|ty| !matches!(ty, Type::Float | Type::Double))
+        });
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || !all_general
+            || !matches!(
+                self.globals.get(first_global.as_str()),
+                Some(Type::Int | Type::UnsignedInt)
+            )
+            || !matches!(
+                self.globals.get(second_global.as_str()),
+                Some(
+                    Type::Int
+                        | Type::UnsignedInt
+                        | Type::Pointer(_)
+                        | Type::StructPointer { .. }
+                )
+            )
+            || scale <= 0
+        {
+            return Ok(false);
+        }
+
+        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(first + 2, third));
+        self.emit_global_load(first_global, GENERAL_SCRATCH)?;
+        self.evaluate_general(second, first + 1)?;
+        let scale = u32::try_from(scale).expect("positive i16 scale checked above");
+        if scale.is_power_of_two() {
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: first,
+                    s: GENERAL_SCRATCH,
+                    shift: scale.trailing_zeros() as u8,
+                });
+        } else {
+            self.output.instructions.push(Instruction::MultiplyImmediate {
+                d: first,
+                a: GENERAL_SCRATCH,
+                immediate: scale as i16,
+            });
+        }
+        Ok(true)
+    }
+
     /// Marshal a reloadable general prefix after evaluating a call-bearing
     /// floating tail argument.
     ///
