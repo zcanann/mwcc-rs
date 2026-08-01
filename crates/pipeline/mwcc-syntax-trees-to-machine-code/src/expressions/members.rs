@@ -113,6 +113,23 @@ fn embedded_aggregate_address_tail(
             b: scaled_index,
         }];
     }
+    // r0 is a valid indexed-add operand, but `addi ...,r0,offset` interprets
+    // r0 as literal zero.  Add the aggregate base first and fold the member
+    // displacement into the completed address instead.
+    if scaled_index == GENERAL_SCRATCH {
+        return vec![
+            Instruction::Add {
+                d: destination,
+                a: base,
+                b: scaled_index,
+            },
+            Instruction::AddImmediate {
+                d: destination,
+                a: destination,
+                immediate: offset,
+            },
+        ];
+    }
     let mut instructions = Vec::with_capacity(if base == destination { 3 } else { 2 });
     let retained_base = if base == destination {
         instructions.push(Instruction::AddImmediate {
@@ -168,11 +185,27 @@ impl Generator {
         let offset = i16::try_from(*offset).map_err(|_| {
             Diagnostic::error("embedded aggregate array offset out of range (roadmap)")
         })?;
-        let index_register = self.general_register_of_leaf(index)?;
+        // A member array is often indexed by another member of the same
+        // aggregate (`queue.events[queue.next]`).  That index is a load, not a
+        // register leaf.  Materialize such an expression in r0; because the
+        // value is a one-use temporary, its scale can safely overwrite r0.
+        // Register leaves retain the allocator path below so a still-live
+        // source index is not destroyed.
+        let (index_register, disposable_index) =
+            if let Ok(register) = self.general_register_of_leaf(index) {
+                (register, false)
+            } else {
+                self.evaluate_general(index, GENERAL_SCRATCH)?;
+                (GENERAL_SCRATCH, true)
+            };
         let scaled = if *size == 1 {
             index_register
         } else {
-            let scaled = self.fresh_virtual_general_preferring(index_register);
+            let scaled = if disposable_index {
+                index_register
+            } else {
+                self.fresh_virtual_general_preferring(index_register)
+            };
             if size.is_power_of_two() {
                 self.output
                     .instructions
@@ -3310,6 +3343,21 @@ mod tests {
                     immediate: 4,
                 },
                 Instruction::Add { d: 3, a: 0, b: 3 },
+            ]
+        );
+    }
+
+    #[test]
+    fn adds_a_scratch_index_before_folding_the_member_offset() {
+        assert_eq!(
+            embedded_aggregate_address_tail(31, GENERAL_SCRATCH, 4, 12),
+            vec![
+                Instruction::Add { d: 4, a: 31, b: 0 },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: 12,
+                },
             ]
         );
     }
