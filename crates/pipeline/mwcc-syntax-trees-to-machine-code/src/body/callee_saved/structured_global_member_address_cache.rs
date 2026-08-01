@@ -19,7 +19,11 @@ pub(super) struct StructuredGlobalMemberAddressPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Event {
-    Member(String, u32),
+    Member {
+        global: String,
+        offset: u32,
+        inside_loop: bool,
+    },
     Call,
 }
 
@@ -38,23 +42,32 @@ pub(super) fn plan(
         })
         .collect::<std::collections::HashMap<_, _>>();
     let mut events = Vec::new();
-    collect_statement_events(&function.statements, &struct_sizes, &mut events);
-    let mut positions = std::collections::HashMap::<(String, u32), Vec<usize>>::new();
+    collect_statement_events(&function.statements, &struct_sizes, false, &mut events);
+    let mut positions =
+        std::collections::HashMap::<(String, u32), Vec<(usize, bool)>>::new();
     for (position, event) in events.iter().enumerate() {
-        if let Event::Member(global, offset) = event {
+        if let Event::Member {
+            global,
+            offset,
+            inside_loop,
+        } = event
+        {
             positions
                 .entry((global.clone(), *offset))
                 .or_default()
-                .push(position);
+                .push((position, *inside_loop));
         }
     }
 
     positions
         .into_iter()
-        .filter_map(|((global, offset), positions)| {
-            let first = *positions.first()?;
-            let last = *positions.last()?;
-            if positions.len() < 2 || first >= last {
+        .filter_map(|((global, offset), occurrences)| {
+            let (first, _) = *occurrences.first()?;
+            let (last, _) = *occurrences.last()?;
+            if occurrences.len() < 2
+                || first >= last
+                || occurrences.iter().any(|(_, inside_loop)| *inside_loop)
+            {
                 return None;
             }
             let call_between = events[first + 1..last]
@@ -63,7 +76,7 @@ pub(super) fn plan(
             call_between
                 .then(|| {
                     Some((
-                        positions.len(),
+                        occurrences.len(),
                         StructuredGlobalMemberAddressPlan {
                             total_size: struct_sizes[&global],
                             global,
@@ -88,29 +101,30 @@ pub(super) fn plan(
 fn collect_statement_events(
     statements: &[Statement],
     struct_sizes: &std::collections::HashMap<String, u32>,
+    inside_loop: bool,
     events: &mut Vec<Event>,
 ) {
     for statement in statements {
         match statement {
             Statement::Store { target, value } => {
-                collect_expression_events(target, struct_sizes, events);
-                collect_expression_events(value, struct_sizes, events);
+                collect_expression_events(target, struct_sizes, inside_loop, events);
+                collect_expression_events(value, struct_sizes, inside_loop, events);
             }
             Statement::Assign { value, .. } | Statement::Expression(value) => {
-                collect_expression_events(value, struct_sizes, events);
+                collect_expression_events(value, struct_sizes, inside_loop, events);
             }
             Statement::If {
                 condition,
                 then_body,
                 else_body,
             } => {
-                collect_expression_events(condition, struct_sizes, events);
-                collect_statement_events(then_body, struct_sizes, events);
-                collect_statement_events(else_body, struct_sizes, events);
+                collect_expression_events(condition, struct_sizes, inside_loop, events);
+                collect_statement_events(then_body, struct_sizes, inside_loop, events);
+                collect_statement_events(else_body, struct_sizes, inside_loop, events);
             }
             Statement::Return(value) => {
                 if let Some(value) = value {
-                    collect_expression_events(value, struct_sizes, events);
+                    collect_expression_events(value, struct_sizes, inside_loop, events);
                 }
             }
             Statement::Switch {
@@ -118,12 +132,12 @@ fn collect_statement_events(
                 arms,
                 default,
             } => {
-                collect_expression_events(scrutinee, struct_sizes, events);
+                collect_expression_events(scrutinee, struct_sizes, inside_loop, events);
                 for arm in arms {
-                    collect_arm_events(&arm.body, struct_sizes, events);
+                    collect_arm_events(&arm.body, struct_sizes, inside_loop, events);
                 }
                 if let Some(default) = default {
-                    collect_arm_events(default, struct_sizes, events);
+                    collect_arm_events(default, struct_sizes, inside_loop, events);
                 }
             }
             Statement::Loop {
@@ -134,9 +148,9 @@ fn collect_statement_events(
                 ..
             } => {
                 for expression in [initializer, condition, step].into_iter().flatten() {
-                    collect_expression_events(expression, struct_sizes, events);
+                    collect_expression_events(expression, struct_sizes, true, events);
                 }
-                collect_statement_events(body, struct_sizes, events);
+                collect_statement_events(body, struct_sizes, true, events);
             }
             Statement::InlineAsm(_)
             | Statement::Break
@@ -150,6 +164,7 @@ fn collect_statement_events(
 fn collect_expression_events(
     expression: &Expression,
     struct_sizes: &std::collections::HashMap<String, u32>,
+    inside_loop: bool,
     events: &mut Vec<Event>,
 ) {
     visit_expression(expression, &mut |expression| {
@@ -166,7 +181,11 @@ fn collect_expression_events(
             return;
         };
         if struct_sizes.contains_key(global) {
-            events.push(Event::Member(global.clone(), *offset));
+            events.push(Event::Member {
+                global: global.clone(),
+                offset: *offset,
+                inside_loop,
+            });
         }
     });
     if crate::analysis::expression_has_call(expression) {
@@ -177,12 +196,15 @@ fn collect_expression_events(
 fn collect_arm_events(
     body: &ArmBody,
     struct_sizes: &std::collections::HashMap<String, u32>,
+    inside_loop: bool,
     events: &mut Vec<Event>,
 ) {
     match body {
-        ArmBody::Return(expression) => collect_expression_events(expression, struct_sizes, events),
+        ArmBody::Return(expression) => {
+            collect_expression_events(expression, struct_sizes, inside_loop, events)
+        }
         ArmBody::Statements(statements) => {
-            collect_statement_events(statements, struct_sizes, events)
+            collect_statement_events(statements, struct_sizes, inside_loop, events)
         }
     }
 }
@@ -190,7 +212,7 @@ fn collect_arm_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{BinaryOperator, Statement};
+    use mwcc_syntax_trees::{BinaryOperator, LoopKind, Statement};
 
     fn member(offset: u32) -> Expression {
         Expression::Member {
@@ -270,6 +292,32 @@ mod tests {
                 left: Box::new(member(8)),
                 right: Box::new(member(8)),
             },
+        }]);
+
+        assert_eq!(
+            plan(
+                &function,
+                &std::collections::HashMap::from([(
+                    "record".into(),
+                    Type::Struct { size: 12, align: 4 },
+                )]),
+                &std::collections::HashMap::new(),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_a_repeated_member_inside_a_loop() {
+        let function = function(vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::Variable("running".into())),
+            step: None,
+            body: vec![Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![member(8), member(8)],
+            })],
         }]);
 
         assert_eq!(
