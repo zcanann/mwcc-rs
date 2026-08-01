@@ -937,6 +937,14 @@ fn summarize_byte_append(function: &Function) -> Option<ByteAppendSummary> {
     let Statement::Store { target, value } = length_store else {
         return None;
     };
+    // Parser update provenance wraps compound member increments so store
+    // lowering can preserve MWCC's indexed-update syntax. It does not change
+    // the helper's value semantics and therefore is transparent to the IPA
+    // summary.
+    let value = match value {
+        Expression::IndexedUpdateValue { value } => value.as_ref(),
+        value => value,
+    };
     let (length_offset, length_type) = struct_member(target, &buffer.name)?;
     if length_type != Type::UnsignedInt
         || !matches!(value, Expression::Binary {
