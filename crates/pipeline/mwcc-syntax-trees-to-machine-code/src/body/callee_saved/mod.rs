@@ -62,6 +62,7 @@ mod guarded_indexed_call_sequence;
 mod global_call_result_guard;
 mod global_queue_pointer_send_schedule;
 mod global_aggregate_initialization;
+mod global_function_table_selection;
 mod global_aggregate_pop;
 mod global_aggregate_post;
 mod global_state_initialization;

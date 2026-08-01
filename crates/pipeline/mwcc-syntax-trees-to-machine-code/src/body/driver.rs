@@ -1456,6 +1456,9 @@ impl Generator {
         if self.try_dual_conditional_member_callbacks(function)? {
             return Ok(());
         }
+        if self.try_global_function_table_selection(function)? {
+            return Ok(());
+        }
         if self.try_global_aggregate_call_initialization(function)? {
             return Ok(());
         }
