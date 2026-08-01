@@ -57,6 +57,7 @@ mod mixed_conversion_entry_schedule;
 mod nested_reset_callback_schedule;
 mod linkage_first_variadic_frame_schedule;
 mod linkage_first_addressable_parameters;
+mod linkage_first_addressable_scalar_frame;
 mod global_swap;
 mod guarded_indexed_call_sequence;
 mod global_call_result_guard;

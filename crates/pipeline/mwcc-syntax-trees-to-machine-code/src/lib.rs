@@ -953,6 +953,7 @@ fn lower_function_body(
     schedule_link_register_save(&mut generator);
     generator.schedule_guarded_return_address_frame();
     generator.schedule_addressable_return_frame();
+    generator.normalize_linkage_first_addressable_scalar_frame();
     // Build 163 lays out GPR homes and retained entry lanes before reserving
     // its compact 8-byte FPR save lanes. Newer builds add their 16-byte Gekko
     // lanes directly to the predecrement frame.
