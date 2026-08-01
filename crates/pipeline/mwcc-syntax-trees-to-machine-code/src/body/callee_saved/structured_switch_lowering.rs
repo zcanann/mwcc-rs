@@ -15,7 +15,12 @@ use std::collections::HashSet;
 // instruction index, and MachineFunction's encoder rejects any tag that leaks
 // past the dedicated resolver.
 const STRUCTURED_SWITCH_JOIN_PLACEHOLDER: usize = usize::MAX / 4;
-const STRUCTURED_SWITCH_JOIN_LIMIT: usize = usize::MAX / 2;
+// Keep the tag well below the early-return placeholder at `usize::MAX / 2`.
+// Instruction scheduling can shift either tagged target by a small amount;
+// claiming the entire interval between them would misidentify a shifted
+// epilogue branch as a switch join.
+const STRUCTURED_SWITCH_JOIN_LIMIT: usize =
+    STRUCTURED_SWITCH_JOIN_PLACEHOLDER + usize::MAX / 16;
 
 pub(super) fn lower_structured_switches(function: &Function) -> Option<Function> {
     lower_structured_switches_with_mode(function, false)
@@ -142,9 +147,14 @@ pub(super) fn is_lowered_switch_guard(condition: &Expression) -> bool {
 }
 
 pub(super) fn structured_switch_join_placeholder(join: usize) -> usize {
-    STRUCTURED_SWITCH_JOIN_PLACEHOLDER
+    let placeholder = STRUCTURED_SWITCH_JOIN_PLACEHOLDER
         .checked_add(join)
-        .expect("a structured switch join fits in the placeholder range")
+        .expect("a structured switch join fits in the placeholder range");
+    assert!(
+        placeholder < STRUCTURED_SWITCH_JOIN_LIMIT,
+        "a structured switch join fits in the reserved tag band"
+    );
+    placeholder
 }
 
 pub(super) fn is_structured_switch_join_placeholder(target: usize) -> bool {
@@ -233,24 +243,40 @@ impl SwitchLowering {
                                 || shared_base_comparison_switch(arms).is_some()))
                             || super::structured_sparse_switch::is_sparse_shared_body_switch(arms))
                     {
+                        let switch_has_break = arms.iter().any(|arm| {
+                            matches!(&arm.body, ArmBody::Statements(body) if current_switch_has_break(body))
+                        }) || matches!(default, Some(ArmBody::Statements(body)) if current_switch_has_break(body));
+                        let join_label = switch_has_break.then(|| self.fresh_name());
                         let arms = arms
                             .iter()
                             .map(|arm| mwcc_syntax_trees::SwitchArm {
                                 value: arm.value,
                                 body: ArmBody::Statements(
-                                    self.lower_arm(&arm.body),
+                                    self.lower_canonical_arm(
+                                        &arm.body,
+                                        join_label.as_deref(),
+                                    ),
                                 ),
                                 falls_through: arm.falls_through,
                             })
                             .collect();
                         let default = default
                             .as_ref()
-                            .map(|body| self.lower_arm(body));
+                            .map(|body| {
+                                self.lower_canonical_arm(
+                                    body,
+                                    join_label.as_deref(),
+                                )
+                            });
                         lowered.push(Statement::Switch {
                             scrutinee: scrutinee.clone(),
                             arms,
                             default: default.map(ArmBody::Statements),
                         });
+                        if let Some(join_label) = join_label {
+                            lowered.push(Statement::Label(join_label));
+                            self.changed = true;
+                        }
                         continue;
                     }
                     let mut seen = HashSet::new();
@@ -324,15 +350,6 @@ impl SwitchLowering {
             }
         }
         lowered
-    }
-
-    fn lower_arm(&mut self, body: &ArmBody) -> Vec<Statement> {
-        match body {
-            ArmBody::Statements(statements) => {
-                self.lower_nested_statements(statements)
-            }
-            ArmBody::Return(value) => vec![Statement::Return(Some(value.clone()))],
-        }
     }
 
     fn lower_canonical_arm(
@@ -504,6 +521,16 @@ mod tests {
             body: ArmBody::Statements(vec![Statement::Break]),
             falls_through: false,
         }
+    }
+
+    #[test]
+    fn switch_join_tag_does_not_claim_a_shifted_epilogue_placeholder() {
+        let shifted_epilogue = usize::MAX / 2 - 4;
+
+        assert!(!is_structured_switch_join_placeholder(shifted_epilogue));
+        assert!(is_structured_switch_join_placeholder(
+            structured_switch_join_placeholder(12)
+        ));
     }
 
     #[test]
@@ -841,5 +868,48 @@ mod tests {
             lower_structured_switches_for_emission(&function(vec![nested])).is_none(),
             "the emission view must not clone a nested shared body"
         );
+    }
+
+    #[test]
+    fn emission_rewrites_breaks_in_a_retained_shared_body_switch() {
+        let switch = Statement::Switch {
+            scrutinee: Expression::Variable("kind".into()),
+            arms: vec![
+                SwitchArm {
+                    value: 4,
+                    body: ArmBody::Statements(Vec::new()),
+                    falls_through: true,
+                },
+                SwitchArm {
+                    value: 5,
+                    body: ArmBody::Statements(vec![Statement::If {
+                        condition: Expression::Variable("done".into()),
+                        then_body: vec![Statement::Break],
+                        else_body: Vec::new(),
+                    }]),
+                    falls_through: false,
+                },
+            ],
+            default: None,
+        };
+
+        let lowered = lower_structured_switches_for_emission(&function(vec![switch]))
+            .expect("a retained switch break needs an explicit join");
+        assert!(matches!(
+            lowered.statements.as_slice(),
+            [Statement::Switch { arms, .. }, Statement::Label(join)]
+                if matches!(
+                    &arms[1].body,
+                    ArmBody::Statements(body)
+                        if matches!(
+                            body.as_slice(),
+                            [Statement::If { then_body, .. }]
+                                if matches!(
+                                    then_body.as_slice(),
+                                    [Statement::Goto(target)] if target == join
+                                )
+                        )
+                )
+        ));
     }
 }

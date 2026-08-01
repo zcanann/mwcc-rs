@@ -762,18 +762,19 @@ fn assignment_flow(
                 let else_flow =
                     assignment_flow(else_body, name, initialized, pending_gotos, seen_labels)?;
                 assigned |= then_flow.assigned || else_flow.assigned;
-                initialized = match (then_flow.falls_through, else_flow.falls_through) {
-                    (true, true) => then_flow.initialized && else_flow.initialized,
-                    (true, false) => then_flow.initialized,
-                    (false, true) => else_flow.initialized,
-                    (false, false) => {
-                        return Some(AssignmentFlow {
-                            initialized,
-                            assigned,
-                            falls_through: false,
-                        });
+                match (then_flow.falls_through, else_flow.falls_through) {
+                    (true, true) => {
+                        initialized = then_flow.initialized && else_flow.initialized;
                     }
-                };
+                    (true, false) => initialized = then_flow.initialized,
+                    (false, true) => initialized = else_flow.initialized,
+                    (false, false) => {
+                        // Both lexical arms may still converge through forward
+                        // gotos. Keep scanning unreachable statements so a
+                        // later label can merge those pending incoming states.
+                        falls_through = false;
+                    }
+                }
             }
             Statement::Goto(label) => {
                 if seen_labels.contains(label) {
@@ -2012,6 +2013,46 @@ mod tests {
             Statement::Expression(Expression::Variable("card".into())),
         ];
         assert!(is_definitely_assigned_before_reads(&statements, "card"));
+    }
+
+    #[test]
+    fn merges_forward_gotos_when_neither_branch_falls_through() {
+        let statements = vec![
+            Statement::Assign {
+                name: "card".into(),
+                value: Expression::IntegerLiteral(1),
+            },
+            Statement::If {
+                condition: Expression::Variable("take_left".into()),
+                then_body: vec![Statement::Goto("joined".into())],
+                else_body: vec![Statement::Goto("joined".into())],
+            },
+            Statement::Label("joined".into()),
+            Statement::Expression(Expression::Variable("card".into())),
+        ];
+
+        assert!(is_definitely_assigned_before_reads(&statements, "card"));
+    }
+
+    #[test]
+    fn rejects_an_uninitialized_forward_goto_at_a_shared_join() {
+        let statements = vec![
+            Statement::If {
+                condition: Expression::Variable("take_left".into()),
+                then_body: vec![
+                    Statement::Assign {
+                        name: "card".into(),
+                        value: Expression::IntegerLiteral(1),
+                    },
+                    Statement::Goto("joined".into()),
+                ],
+                else_body: vec![Statement::Goto("joined".into())],
+            },
+            Statement::Label("joined".into()),
+            Statement::Expression(Expression::Variable("card".into())),
+        ];
+
+        assert!(!is_definitely_assigned_before_reads(&statements, "card"));
     }
 
     #[test]

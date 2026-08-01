@@ -7,6 +7,19 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Type};
 
+fn frame_scalar_load_width(
+    value: &Expression,
+    frame_slots: &std::collections::HashMap<String, FrameSlot>,
+) -> Option<u8> {
+    let Expression::Variable(name) = value else {
+        return None;
+    };
+    frame_slots
+        .get(name)
+        .filter(|slot| !slot.is_array && slot.class == ValueClass::General)
+        .map(|slot| slot.value_type.width())
+}
+
 impl Generator {
     /// Materialize `unsigned narrow < C` as the sign bit of `value - C`.
     /// A zero-extended byte/halfword never reaches bit 31, so subtraction by a
@@ -1826,6 +1839,9 @@ impl Generator {
     /// index, or struct member — which can be evaluated into a register and used
     /// as a comparison operand without narrow extension.
     pub(crate) fn is_word_load(&self, value: &Expression) -> bool {
+        if frame_scalar_load_width(value, &self.frame_slots) == Some(32) {
+            return true;
+        }
         match value {
             Expression::Dereference { pointer } => self.dereferenced_width(pointer) == Some(32),
             Expression::Index { base, .. } => self.dereferenced_width(base) == Some(32),
@@ -1851,6 +1867,9 @@ impl Generator {
     /// already contains the exact unsigned-byte value even when the source type
     /// is signed.
     pub(crate) fn is_byte_load(&self, value: &Expression) -> bool {
+        if frame_scalar_load_width(value, &self.frame_slots) == Some(8) {
+            return true;
+        }
         let width = match value {
             Expression::Variable(name) if unshadowed_global_byte_load(
                 value,
@@ -1869,6 +1888,9 @@ impl Generator {
     /// halfword loads yield an ordinary GPR comparison operand; instruction
     /// selection preserves the source signedness with `lha` versus `lhz`.
     pub(crate) fn is_halfword_load(&self, value: &Expression) -> bool {
+        if frame_scalar_load_width(value, &self.frame_slots) == Some(16) {
+            return true;
+        }
         let width = match value {
             Expression::Variable(name)
                 if !self.locations.contains_key(name)
@@ -2047,7 +2069,8 @@ fn unshadowed_global_byte_load(
 
 #[cfg(test)]
 mod tests {
-    use super::unshadowed_global_byte_load;
+    use super::{frame_scalar_load_width, unshadowed_global_byte_load};
+    use crate::generator::{FrameSlot, ValueClass};
     use mwcc_syntax_trees::{Expression, Type};
     use std::collections::HashMap;
 
@@ -2065,5 +2088,25 @@ mod tests {
         let expression = Expression::Variable("flag".into());
 
         assert!(!unshadowed_global_byte_load(&expression, &globals, true));
+    }
+
+    #[test]
+    fn classifies_addressable_scalar_widths_without_treating_arrays_as_loads() {
+        let expression = Expression::Variable("flag".into());
+        let mut slots = HashMap::from([(
+            "flag".into(),
+            FrameSlot {
+                offset: 8,
+                class: ValueClass::General,
+                size: 1,
+                value_type: Type::UnsignedChar,
+                parameter_register: None,
+                is_array: false,
+            },
+        )]);
+
+        assert_eq!(frame_scalar_load_width(&expression, &slots), Some(8));
+        slots.get_mut("flag").unwrap().is_array = true;
+        assert_eq!(frame_scalar_load_width(&expression, &slots), None);
     }
 }
