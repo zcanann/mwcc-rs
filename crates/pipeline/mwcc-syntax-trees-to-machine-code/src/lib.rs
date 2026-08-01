@@ -1181,6 +1181,7 @@ fn lower_function_body(
     generator.finalize_structured_compact_narrow_scalar_frame();
     generator.finalize_structured_guarded_scalar_output_frame();
     generator.finalize_structured_shared_switch_scalar_frame();
+    generator.finalize_structured_mixed_switch_scalar_frame();
     generator.finalize_linkage_first_forwarded_context_frame(function);
     if generator.structured_nonreturning {
         generator.normalize_nonreturning_materialization_copies();

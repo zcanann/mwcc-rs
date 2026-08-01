@@ -242,7 +242,8 @@ impl SwitchLowering {
                             && (is_dense_structured_switch(arms)
                                 || shared_base_comparison_switch(arms).is_some()))
                             || ((self.control_depth == 0
-                                || arms.iter().any(|arm| arm.falls_through))
+                                || arms.iter().any(|arm| arm.falls_through)
+                                || arms.len() >= 4)
                                 && super::structured_sparse_switch::is_sparse_retained_switch(arms)))
                     {
                         let switch_has_break = arms.iter().any(|arm| {

@@ -35,13 +35,14 @@ pub(super) fn is_sparse_retained_switch(arms: &[mwcc_syntax_trees::SwitchArm]) -
         return false;
     }
     let ranges = shared_case_ranges(arms);
+    let prefer_lower_root = !has_fallthrough && !case_ranges_are_contiguous(&ranges);
     ranges.len() <= 6
         && dispatch_range_is_supported(
             &ranges,
             0,
             ranges.len() - 1,
             None,
-            !has_fallthrough,
+            prefer_lower_root,
             has_fallthrough,
         )
 }
@@ -155,6 +156,12 @@ fn shared_case_ranges(arms: &[mwcc_syntax_trees::SwitchArm]) -> Vec<CaseRange> {
     ranges
 }
 
+fn case_ranges_are_contiguous(ranges: &[CaseRange]) -> bool {
+    ranges.windows(2).all(|pair| {
+        pair[0].high.checked_add(1) == Some(pair[1].low)
+    })
+}
+
 fn dispatch_range_is_supported(
     ranges: &[CaseRange],
     lo: usize,
@@ -261,6 +268,8 @@ impl Generator {
         };
 
         let ranges = shared_case_ranges(arms);
+        let prefer_lower_root = !arms.iter().any(|arm| arm.falls_through)
+            && !case_ranges_are_contiguous(&ranges);
         let mut dispatch_patches = Vec::new();
         self.lower_shared_case_range(
             register,
@@ -269,7 +278,7 @@ impl Generator {
             ranges.len() - 1,
             None,
             None,
-            !arms.iter().any(|arm| arm.falls_through),
+            prefer_lower_root,
             arms.iter().any(|arm| arm.falls_through),
             &mut dispatch_patches,
         );
@@ -636,6 +645,21 @@ mod tests {
         assert!(is_sparse_retained_switch(&arms));
         assert_eq!(shared_case_pivot(&ranges, 0, 3, None, true, false), Some(1));
         assert_eq!(shared_case_pivot(&ranges, 2, 3, None, false, false), Some(3));
+    }
+
+    #[test]
+    fn chooses_the_upper_root_for_contiguous_nonfallthrough_cases() {
+        let arms = (0..4)
+            .map(|value| SwitchArm {
+                value,
+                body: ArmBody::Statements(vec![Statement::Return(None)]),
+                falls_through: false,
+            })
+            .collect::<Vec<_>>();
+        let ranges = shared_case_ranges(&arms);
+
+        assert!(case_ranges_are_contiguous(&ranges));
+        assert_eq!(shared_case_pivot(&ranges, 0, 3, None, false, false), Some(2));
     }
 
     #[test]
