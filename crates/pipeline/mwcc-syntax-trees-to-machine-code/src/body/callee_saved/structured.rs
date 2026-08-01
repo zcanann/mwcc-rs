@@ -895,6 +895,14 @@ impl Generator {
         let (eager_saved_locals, deferred_saved_locals): (Vec<_>, Vec<_>) = saved_locals
             .into_iter()
             .partition(|local| local.initializer.is_some());
+        self.structured_memory_transfer_frame =
+            super::structured_memory_transfer_schedule::is_memory_transfer_frame(
+                &structured_switch_source,
+                frame_arrays,
+                &frame_scalar_locals,
+                &saved_parameters,
+                &deferred_saved_locals,
+            );
         let broad_global_base_layout = StructuredBroadGlobalBaseLayout::plan(
             broad_global_base_cache,
             eager_saved_locals.len(),

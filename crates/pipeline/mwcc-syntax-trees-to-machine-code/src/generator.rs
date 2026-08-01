@@ -631,6 +631,9 @@ pub(crate) struct Generator {
     pub(crate) structured_shared_switch_scalar_frame: bool,
     /// Packed address-taken scalars used by multiple source switches.
     pub(crate) structured_packed_switch_scalar_frame: bool,
+    /// A large byte transfer buffer paired with packed request scalars and a
+    /// retained dense error dispatch.
+    pub(crate) structured_memory_transfer_frame: bool,
     /// Outgoing by-value aggregate copies owned by the allocator-backed
     /// structured body. Source object slots remain in `frame_slots`; this plan
     /// describes the separate caller-owned copies below them.
