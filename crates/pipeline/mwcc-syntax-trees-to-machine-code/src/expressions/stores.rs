@@ -1677,6 +1677,39 @@ impl Generator {
                     return Ok(result);
                 }
             }
+            // At O0, compound addition to a floating memory lvalue preserves
+            // the source update order: load the old value into f1, load the
+            // literal into f0, add into f0, then store f0. The ordinary
+            // memory-plus-literal value path leads with the literal and owns a
+            // virtual result, which is correct for explicit assignment but not
+            // for `member += literal`.
+            if update_syntax
+                && self.behavior.optimization == mwcc_versions::Optimization::O0
+            {
+                if let Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left,
+                    right,
+                } = value
+                {
+                    if let Expression::FloatLiteral(literal) = right.as_ref() {
+                        if self.is_float_located(left) {
+                            let old_value = self.fresh_virtual_float_preferring(1);
+                            self.emit_located_operand(left, old_value)?;
+                            let double = pointee == Pointee::Double;
+                            self.load_float_literal(FLOAT_SCRATCH, *literal, double);
+                            let operands = Operands::ordered(old_value, FLOAT_SCRATCH)?;
+                            self.output.instructions.push(float_combine(
+                                BinaryOperator::Add,
+                                FLOAT_SCRATCH,
+                                operands,
+                                double,
+                            )?);
+                            return Ok(FLOAT_SCRATCH);
+                        }
+                    }
+                }
+            }
             // A memory operand combined with a literal needs two FPRs: the
             // computed value cannot share f0 with the pool constant/load.
             // Give the result a virtual home and let allocation coalesce it to
