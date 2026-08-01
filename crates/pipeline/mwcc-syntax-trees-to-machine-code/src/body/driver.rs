@@ -2361,6 +2361,12 @@ impl Generator {
                                                 declaration.initializer.as_ref(),
                                                 Some(Expression::Variable(source)) if source == global
                                             )
+                                    }) || function.statements.iter().any(|statement| {
+                                        matches!(statement,
+                                            Statement::Assign {
+                                                name,
+                                                value: Expression::Variable(source),
+                                            } if name == local && source == global)
                                     }));
                     }
                     _ => {}
