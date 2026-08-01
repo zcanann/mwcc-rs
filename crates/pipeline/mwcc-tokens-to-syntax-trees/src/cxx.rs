@@ -186,6 +186,7 @@ pub(crate) struct VtableComponent {
 pub(crate) struct MemberMethod {
     pub(crate) parameters: Vec<Type>,
     cxx_parameters: Vec<CxxParameterType>,
+    variadic: bool,
     return_struct_tag: Option<String>,
     pub(crate) is_inline: bool,
     is_const_member: bool,
@@ -196,6 +197,7 @@ pub(crate) struct MemberMethod {
 pub(crate) struct ClassParameterTypes {
     pub(crate) parameters: Vec<Type>,
     pub(crate) cxx_parameters: Vec<CxxParameterType>,
+    pub(crate) variadic: bool,
     /// Number of arguments that must be written at the call site. The
     /// remaining trailing parameters have source default arguments.
     pub(crate) required_parameter_count: usize,
@@ -233,12 +235,22 @@ fn mangle_layout_member_method(
     member: &str,
     method: &MemberMethod,
 ) -> Compilation<String> {
-    mangle_qualified_member_function_cv_typed(
-        &class.split("::").collect::<Vec<_>>(),
-        member,
-        &method.cxx_parameters,
-        method.is_const_member,
-    )
+    let scopes = class.split("::").collect::<Vec<_>>();
+    if method.is_const_member && !method.variadic {
+        mangle_qualified_member_function_cv_typed(
+            &scopes,
+            member,
+            &method.cxx_parameters,
+            true,
+        )
+    } else {
+        mangle_qualified_member_function_variadic_typed(
+            &scopes,
+            member,
+            &method.cxx_parameters,
+            method.variadic,
+        )
+    }
 }
 
 /// One entry in CodeWarrior's primary virtual table. Slot offsets include the
@@ -2092,15 +2104,18 @@ impl Parser {
         };
         self.merge_named_parameter_positions_from(&probe);
         let scopes: Vec<&str> = class.split("::").collect();
-        let Ok(mangled) =
-            mangle_qualified_member_function_typed(&scopes, "__ct", &signature.cxx_parameters)
-        else {
+        let Ok(mangled) = mangle_qualified_member_function_variadic_typed(
+            &scopes,
+            "__ct",
+            &signature.cxx_parameters,
+            signature.variadic,
+        ) else {
             return;
         };
         let method = RecoveredCxxMethod {
             mangled: mangled.clone(),
             fixed_parameter_count: signature.parameters.len(),
-            variadic: false,
+            variadic: signature.variadic,
             parameters: signature.parameters,
             cxx_parameters: signature.cxx_parameters,
             is_const_member: false,
@@ -3506,7 +3521,10 @@ impl Parser {
         {
             let candidates: Vec<&MemberMethod> = methods
                 .iter()
-                .filter(|method| method.parameters.len() == argument_count)
+                .filter(|method| {
+                    method.parameters.len() == argument_count
+                        || (method.variadic && argument_count >= method.parameters.len())
+                })
                 .collect();
             let candidates =
                 retain_receiver_viable(candidates, receiver, |method| method.is_const_member);
@@ -3517,7 +3535,7 @@ impl Parser {
                         self.cxx_arguments_exactly_match(
                             &method.parameters,
                             &method.cxx_parameters,
-                            false,
+                            method.variadic,
                             arguments,
                         )
                     })
@@ -3588,7 +3606,10 @@ impl Parser {
             if let Some(methods) = class.methods.get(function) {
                 let candidates: Vec<&MemberMethod> = methods
                     .iter()
-                    .filter(|method| method.parameters.len() == argument_count)
+                    .filter(|method| {
+                        method.parameters.len() == argument_count
+                            || (method.variadic && argument_count >= method.parameters.len())
+                    })
                     .collect();
                 let candidates =
                     retain_receiver_viable(candidates, receiver, |method| method.is_const_member);
@@ -3599,7 +3620,7 @@ impl Parser {
                             self.cxx_arguments_exactly_match(
                                 &method.parameters,
                                 &method.cxx_parameters,
-                                false,
+                                method.variadic,
                                 arguments,
                             )
                         })
@@ -3835,6 +3856,7 @@ impl Parser {
         class: &ClassLayout,
         member: &str,
         parameters: &[CxxParameterType],
+        variadic: bool,
         is_const_member: bool,
     ) -> Compilation<Option<VirtualDispatch>> {
         let mut primary = class
@@ -3862,6 +3884,7 @@ impl Parser {
                                 .zip(parameters)
                                 .all(|(left, right)| left.same_declaration_identity(right))
                             && method.is_const_member == is_const_member
+                            && method.variadic == variadic
                             && method.virtual_dispatch.is_some()
                     })
                     .collect::<Vec<_>>();
@@ -3909,16 +3932,45 @@ impl Parser {
                         break;
                     }
                 }
-                let source_base_name = self.parse_cxx_qualified_identifier()?;
+                let source_base_name = if matches!(self.peek(), Token::Identifier(_))
+                    && self.tokens.get(self.position + 1) == Some(&Token::Less)
+                {
+                    self.parse_template_instance_type()
+                        .and_then(|_| self.last_struct_tag.clone())
+                        .ok_or_else(|| {
+                            Diagnostic::error(
+                                "concrete template base layout was not recovered",
+                            )
+                        })?
+                } else {
+                    self.parse_cxx_qualified_identifier()?
+                };
                 let base_name = self
                     .resolve_scoped_cxx_class_name(&source_base_name)
                     .or_else(|| self.struct_typedefs.get(&source_base_name).cloned())
                     .unwrap_or(source_base_name);
                 let base_class = self.cxx_classes.get(&base_name).cloned();
+                let template_primary = base_name.split('<').next().unwrap_or(&base_name);
+                let qualified_template_primary = self.qualify_cxx_class_name(template_primary);
+                let template_virtual_slots = self
+                    .cxx_template_virtual_methods
+                    .iter()
+                    .filter(|((owner, _), _)| {
+                        owner == template_primary || owner == &qualified_template_primary
+                    })
+                    .flat_map(|(_, methods)| {
+                        methods.iter().map(|(_, dispatch)| dispatch.slot_offset)
+                    })
+                    .max()
+                    .map(|last| usize::from(last.saturating_sub(4) / 4));
                 let (base_is_polymorphic, base_vptr_offset, base_virtual_slots) =
-                    base_class.as_ref().map_or((false, None, 0), |base| {
-                        (base.is_polymorphic, base.vptr_offset, base.virtual_slots)
-                    });
+                    base_class.as_ref().map_or_else(
+                        || {
+                            template_virtual_slots
+                                .map_or((false, None, 0), |slots| (true, Some(0), slots))
+                        },
+                        |base| (base.is_polymorphic, base.vptr_offset, base.virtual_slots),
+                    );
                 let base = self
                     .structs
                     .get(&base_name)
@@ -4472,6 +4524,7 @@ impl Parser {
                     &class,
                     &field_name,
                     &signature.cxx_parameters,
+                    signature.variadic,
                     is_const_member,
                 )?;
                 let virtual_dispatch = if is_virtual || inherited_virtual.is_some() {
@@ -4499,13 +4552,13 @@ impl Parser {
                             vptr_offset,
                             slot_offset,
                             return_type: field_type,
-                            variadic: false,
+                            variadic: signature.variadic,
                         }
                     };
                     if !is_pure {
                         let qualified = self.qualify_cxx_class_name(&name);
                         let scopes: Vec<&str> = qualified.split("::").collect();
-                        let mangled = if is_const_member {
+                        let mangled = if is_const_member && !signature.variadic {
                             mangle_qualified_member_function_cv_typed(
                                 &scopes,
                                 &field_name,
@@ -4517,7 +4570,7 @@ impl Parser {
                                 &scopes,
                                 &field_name,
                                 &signature.cxx_parameters,
-                                false,
+                                signature.variadic,
                             )?
                         };
                         if let Some((_, target)) = class
@@ -4551,6 +4604,7 @@ impl Parser {
                     .push(MemberMethod {
                         parameters: signature.parameters,
                         cxx_parameters: signature.cxx_parameters,
+                        variadic: signature.variadic,
                         return_struct_tag: struct_tag,
                         is_inline,
                         is_const_member,
@@ -5238,12 +5292,21 @@ impl Parser {
         self.expect(Token::ParenOpen)?;
         let mut parameters = Vec::new();
         let mut cxx_parameters = Vec::new();
+        let mut variadic = false;
         let mut required_parameter_count = 0;
         let mut default_arguments = Vec::new();
         if *self.peek() == Token::KeywordVoid && *self.peek_at(1) == Token::ParenClose {
             self.advance();
         } else {
             while *self.peek() != Token::ParenClose {
+                if matches!(
+                    self.tokens.get(self.position..self.position + 3),
+                    Some([Token::Dot, Token::Dot, Token::Dot])
+                ) {
+                    self.position += 3;
+                    variadic = true;
+                    break;
+                }
                 let mut parameter_type = self.parse_type()?;
                 let source_type = parameter_type;
                 self.last_array_typedef.take();
@@ -5294,6 +5357,7 @@ impl Parser {
         Ok(ClassParameterTypes {
             parameters,
             cxx_parameters,
+            variadic,
             required_parameter_count,
             default_arguments,
         })

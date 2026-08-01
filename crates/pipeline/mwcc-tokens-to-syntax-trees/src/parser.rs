@@ -165,6 +165,9 @@ pub(crate) struct TemplateField {
 pub(crate) struct StructTemplate {
     pub(crate) parameters: Vec<String>,
     pub(crate) base: Option<TemplateTypePattern>,
+    /// A base-free primary template whose first ABI feature is a virtual
+    /// declaration owns a vptr even when it has no ordinary data fields.
+    pub(crate) owns_vptr: bool,
     pub(crate) fields: Vec<TemplateField>,
     /// Fields whose primary-template zero-argument constructor explicitly
     /// initializes them with `0` or `false`, in initializer-list order.

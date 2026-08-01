@@ -1116,8 +1116,8 @@ impl Parser {
         if arguments.len() > template.parameters.len() {
             return None;
         }
-        let mut offset = 0u32;
-        let mut max_alignment = 1u32;
+        let mut offset = if template.owns_vptr { 4 } else { 0 };
+        let mut max_alignment = if template.owns_vptr { 4 } else { 1 };
         let mut fields = HashMap::new();
         let mut field_order = Vec::new();
         let mut function_pointer_fields = std::collections::HashSet::new();
@@ -1840,7 +1840,12 @@ impl Parser {
             }
         }
         self.capture_template_iterator_arrow_summary(body_open + 1, cursor - 1, &name, &parameters);
-        if !fields.is_empty() || base.is_some() {
+        let qualified = self.qualify_cxx_class_name(&name);
+        let owns_vptr = self
+            .cxx_template_virtual_methods
+            .keys()
+            .any(|(owner, _)| owner == &name || owner == &qualified);
+        if !fields.is_empty() || base.is_some() || owns_vptr {
             let default_constructor_zero_fields =
                 capture_default_constructor_zero_fields(&self.tokens, body_open, cursor - 1, &name);
             self.struct_templates.insert(
@@ -1848,6 +1853,7 @@ impl Parser {
                 StructTemplate {
                     parameters,
                     base,
+                    owns_vptr,
                     fields,
                     default_constructor_zero_fields,
                 },

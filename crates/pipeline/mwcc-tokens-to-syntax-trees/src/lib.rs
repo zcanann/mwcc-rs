@@ -5928,7 +5928,7 @@ blr\n\
     }
 
     #[test]
-    fn rejects_opaque_template_specializations_passed_by_value() {
+    fn accepts_fieldless_polymorphic_template_specializations_passed_by_value() {
         let source = r#"
             namespace zen {
                 struct particleMdl;
@@ -5937,14 +5937,21 @@ blr\n\
             }
             int use(zen::CallBack1<zen::particleMdl*> callback) { return 0; }
         "#;
-        assert!(parse_translation_unit(
+        let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(source).unwrap(),
             true,
             true,
             1,
             3,
         )
-        .is_err());
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].parameters.as_slice(),
+            [mwcc_syntax_trees::Parameter {
+                parameter_type: mwcc_syntax_trees::Type::Struct { size: 4, align: 4 },
+                ..
+            }]
+        ));
     }
 
     #[test]
@@ -7628,6 +7635,38 @@ blr\n\
         )
         .unwrap();
         assert!(unit.functions[0].return_expression.is_some());
+    }
+
+    #[test]
+    fn recovers_fieldless_polymorphic_template_as_a_concrete_base() {
+        let source = r#"
+            template <typename T> struct Receiver {
+                virtual void receive(T*) { }
+            };
+            struct Action : public Receiver<int> {
+                Action(int*);
+                virtual int run();
+                void setChildren(int, ...);
+                int* object;
+            };
+            struct Rope : public Action {
+                Rope(int*);
+                float speed;
+            };
+            Rope::Rope(int* value) : Action(value) { speed = 1.0f; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit
+            .functions
+            .iter()
+            .any(|function| function.name == "__ct__4RopeFPi"));
     }
 
     #[test]
