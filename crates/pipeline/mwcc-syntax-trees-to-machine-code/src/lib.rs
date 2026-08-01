@@ -1186,7 +1186,7 @@ fn lower_function_body(
     generator.finalize_structured_mixed_switch_scalar_frame();
     generator.finalize_structured_write_register_frame();
     generator.finalize_structured_memory_transfer_frame();
-    generator.finalize_structured_memory_write_frame();
+    generator.finalize_structured_memory_write_frame(function);
     generator.finalize_linkage_first_forwarded_context_frame(function);
     if generator.structured_nonreturning {
         generator.normalize_nonreturning_materialization_copies();
@@ -1802,6 +1802,7 @@ pub(crate) fn insert_instruction_retargeting(
             displacement.instruction_index += 1;
         }
     }
+    retarget_jump_table_entries_after_insertion(&mut generator.output.jump_tables, index);
     for instruction in &mut generator.output.instructions {
         let target = match instruction {
             Instruction::BranchConditionalForward { target, .. }
@@ -1810,6 +1811,19 @@ pub(crate) fn insert_instruction_retargeting(
         };
         if *target >= index {
             *target += 1;
+        }
+    }
+}
+
+fn retarget_jump_table_entries_after_insertion(
+    tables: &mut [mwcc_machine_code::JumpTable],
+    index: usize,
+) {
+    for table in tables {
+        for entry in &mut table.entries {
+            if *entry as usize / 4 >= index {
+                *entry = entry.saturating_add(4);
+            }
         }
     }
 }
@@ -2031,6 +2045,18 @@ mod instruction_index_tests {
 
         assert_eq!(instructions[0], Instruction::Branch { target: 1 });
         assert_eq!(instructions[3], Instruction::Branch { target: 2 });
+    }
+
+    #[test]
+    fn inserting_an_instruction_preserves_jump_table_destinations() {
+        let mut tables = [mwcc_machine_code::JumpTable {
+            entries: vec![4, 12, 20],
+            anonymous_offset: 7,
+        }];
+
+        retarget_jump_table_entries_after_insertion(&mut tables, 3);
+
+        assert_eq!(tables[0].entries, [4, 16, 24]);
     }
 
     #[test]

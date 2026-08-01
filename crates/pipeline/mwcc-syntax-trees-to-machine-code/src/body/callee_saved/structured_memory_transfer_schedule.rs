@@ -79,30 +79,6 @@ fn is_memory_transfer_frame_with_direction(
         return false;
     }
 
-    fn owns_compact_error_dispatch(statements: &[Statement]) -> bool {
-        statements.iter().any(|statement| match statement {
-            Statement::If {
-                then_body,
-                else_body,
-                ..
-            } => {
-                owns_compact_error_dispatch(then_body)
-                    || owns_compact_error_dispatch(else_body)
-            }
-            Statement::Loop { body, .. } => owns_compact_error_dispatch(body),
-            Statement::Switch { arms, default, .. } => {
-                let minimum = arms.iter().map(|arm| arm.value).min();
-                let maximum = arms.iter().map(|arm| arm.value).max();
-                arms.len() == 5
-                    && default.is_some()
-                    && minimum.zip(maximum).is_some_and(|(minimum, maximum)| {
-                        maximum.checked_sub(minimum) == Some(6)
-                    })
-            }
-            _ => false,
-        })
-    }
-
     let transfer_buffer = &frame_arrays[0].name;
     let mut reads_into_transfer_buffer = false;
     for statement in &function.statements {
@@ -125,7 +101,46 @@ fn is_memory_transfer_frame_with_direction(
         });
     }
 
-    reads_into_transfer_buffer && owns_compact_error_dispatch(&function.statements)
+    reads_into_transfer_buffer
+        && compact_error_dispatch_container_label_count(function).is_some()
+}
+
+/// Hidden labels belonging to the top-level container of the compact error
+/// table. A buffered write allocates its nested table before these labels, so
+/// its physical scheduler moves this amount behind the table in the ordinal
+/// walk. Returning `Some(0)` distinguishes a top-level table from no table.
+pub(super) fn compact_error_dispatch_container_label_count(
+    function: &Function,
+) -> Option<u32> {
+    function.statements.iter().find_map(|statement| {
+        contains_compact_error_dispatch(std::slice::from_ref(statement)).then(|| {
+            super::structured::structured_hidden_label_count(std::slice::from_ref(statement))
+        })
+    })
+}
+
+fn contains_compact_error_dispatch(statements: &[Statement]) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            contains_compact_error_dispatch(then_body)
+                || contains_compact_error_dispatch(else_body)
+        }
+        Statement::Loop { body, .. } => contains_compact_error_dispatch(body),
+        Statement::Switch { arms, default, .. } => {
+            let minimum = arms.iter().map(|arm| arm.value).min();
+            let maximum = arms.iter().map(|arm| arm.value).max();
+            arms.len() == 5
+                && default.is_some()
+                && minimum.zip(maximum).is_some_and(|(minimum, maximum)| {
+                    maximum.checked_sub(minimum) == Some(6)
+                })
+        }
+        _ => false,
+    })
 }
 
 impl Generator {
@@ -455,4 +470,84 @@ fn schedule_append_buffer_packet(instructions: &mut [Instruction], owner: u8) ->
     instructions[start + 1] = owner_copy;
     instructions[start + 2] = buffer;
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mwcc_syntax_trees::{ArmBody, SwitchArm};
+
+    fn function(statements: Vec<Statement>) -> Function {
+        Function {
+            return_type: Type::Void,
+            name: "transfer".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements,
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
+
+    fn compact_dispatch() -> Statement {
+        Statement::Switch {
+            scrutinee: Expression::IntegerLiteral(0),
+            arms: [10, 11, 12, 14, 16]
+                .into_iter()
+                .map(|value| SwitchArm {
+                    value,
+                    body: ArmBody::Statements(vec![Statement::Break]),
+                    falls_through: false,
+                })
+                .collect(),
+            default: Some(ArmBody::Statements(Vec::new())),
+        }
+    }
+
+    fn conditional(then_body: Vec<Statement>, else_body: Vec<Statement>) -> Statement {
+        Statement::If {
+            condition: Expression::IntegerLiteral(1),
+            then_body,
+            else_body,
+        }
+    }
+
+    #[test]
+    fn counts_the_hidden_labels_of_the_dispatch_container() {
+        let transaction = conditional(
+            Vec::new(),
+            vec![
+                conditional(Vec::new(), Vec::new()),
+                conditional(vec![compact_dispatch()], Vec::new()),
+            ],
+        );
+        assert_eq!(
+            compact_error_dispatch_container_label_count(&function(vec![transaction])),
+            Some(7),
+        );
+    }
+
+    #[test]
+    fn distinguishes_a_top_level_dispatch_from_no_dispatch() {
+        assert_eq!(
+            compact_error_dispatch_container_label_count(&function(vec![compact_dispatch()])),
+            Some(0),
+        );
+        assert_eq!(
+            compact_error_dispatch_container_label_count(&function(vec![conditional(
+                Vec::new(),
+                Vec::new(),
+            )])),
+            None,
+        );
+    }
 }

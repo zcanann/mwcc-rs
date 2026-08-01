@@ -7,22 +7,22 @@
 
 use super::*;
 use super::structured_memory_transfer_schedule::{
-    allocated_transfer_frame, canonicalize_owner_copies, dense_error_dispatch,
-    retain_initial_results,
+    allocated_transfer_frame, canonicalize_owner_copies,
+    compact_error_dispatch_container_label_count, dense_error_dispatch, retain_initial_results,
 };
 
 impl Generator {
-    pub(crate) fn finalize_structured_memory_write_frame(&mut self) {
+    pub(crate) fn finalize_structured_memory_write_frame(&mut self, function: &Function) {
         if !self.structured_memory_write_frame {
             return;
         }
         let original = self.clone();
-        if !self.try_finalize_structured_memory_write_frame() {
+        if !self.try_finalize_structured_memory_write_frame(function) {
             *self = original;
         }
     }
 
-    fn try_finalize_structured_memory_write_frame(&mut self) -> bool {
+    fn try_finalize_structured_memory_write_frame(&mut self, function: &Function) -> bool {
         let Some((frame, epilogue)) = allocated_transfer_frame(&self.output.instructions) else {
             return false;
         };
@@ -86,6 +86,18 @@ impl Generator {
         *a = result;
 
         canonicalize_owner_copies(&mut self.output.instructions, owner_home);
+        let Some(deferred_labels) = compact_error_dispatch_container_label_count(function) else {
+            return false;
+        };
+        let Some(front_labels) = self.output.anonymous_label_bump.checked_sub(deferred_labels)
+        else {
+            return false;
+        };
+        self.output.anonymous_label_bump = front_labels;
+        self.output.post_constant_label_bump = self
+            .output
+            .post_constant_label_bump
+            .saturating_add(deferred_labels);
         true
     }
 }
