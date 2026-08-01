@@ -1711,10 +1711,23 @@ impl Generator {
                 }
             };
             if !aggregate_frame_locals.is_empty() {
+                // Predecrement frames without arrays place address-taken
+                // scalar words in the low local prefix before ordinary
+                // aggregates. `local_region_bytes` already reserves both
+                // families; carry the same boundary into their concrete slot
+                // placement so they cannot alias at offset 8.
+                let scalar_prefix_bytes = if frame_arrays.is_empty()
+                    && self.behavior.frame_convention == FrameConvention::Predecrement
+                {
+                    scalar_only_frame_bytes
+                } else {
+                    0
+                };
                 let aggregate_base = u32::try_from(
                     array_offset
                         .checked_add(frame_array_bytes)
                         .and_then(|offset| offset.checked_add(aggregate_call_copy_bytes))
+                        .and_then(|offset| offset.checked_add(scalar_prefix_bytes))
                         .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?,
                 )
                 .map_err(|_| Diagnostic::error("structured local frame is out of range"))?;
