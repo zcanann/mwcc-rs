@@ -55,6 +55,7 @@ mod non_power_struct_member_store;
 mod operands;
 mod passes;
 mod pointer_alignment;
+mod pointer_member_scaled_offset;
 mod pointer_spans;
 mod pointers;
 mod post_step;

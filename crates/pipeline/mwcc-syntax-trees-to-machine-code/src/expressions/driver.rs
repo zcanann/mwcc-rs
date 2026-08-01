@@ -63,6 +63,9 @@ impl Generator {
         if self.try_emit_biased_scaled_member_sum(expression, destination)? {
             return Ok(());
         }
+        if self.try_emit_pointer_member_scaled_offset(expression, destination)? {
+            return Ok(());
+        }
         if self.try_emit_shifted_member_high_mask(expression, destination)? {
             return Ok(());
         }
