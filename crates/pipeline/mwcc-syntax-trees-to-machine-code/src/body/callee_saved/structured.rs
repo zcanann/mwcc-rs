@@ -79,6 +79,7 @@ use super::structured_liveness::{
 use super::structured_loop_invariants::hoist_iterator_end_sentinels;
 use super::structured_loop_address_invariants::hoist_loop_address_invariants;
 use super::structured_loop_global_byte_cursor::strength_reduce_global_byte_loop_cursor;
+use super::structured_global_byte_loop_layout::StructuredGlobalByteLoopLayout;
 use super::structured_loop_packet_invariants::hoist_repeated_packet_words;
 use super::structured_loop_member_cache::cache_repeated_loop_members;
 use super::structured_loop_assertion_strings::plan_loop_assertion_strings;
@@ -897,6 +898,11 @@ impl Generator {
         let Some(deferred_home_plan) = deferred_home_plan else {
             decline!("deferred saved-home planning rejected the body");
         };
+        let global_byte_loop_layout = StructuredGlobalByteLoopLayout::plan(
+            &structured_switch_source,
+            &saved_parameters,
+            &deferred_saved_locals,
+        );
         let unused_array_state_transfer = unused_frame_array
             && is_unused_array_state_transfer(function)
             && eager_saved_locals.len() == 3
@@ -1215,6 +1221,12 @@ impl Generator {
             .iter()
             .enumerate()
             .map(|(index, _)| {
+                if let Some(preferred) = global_byte_loop_layout
+                    .as_ref()
+                    .and_then(|layout| layout.member_cache_preference(index))
+                {
+                    return self.fresh_virtual_general_preferring(preferred);
+                }
                 let preceding = u8::from(standalone_data_anchor_home.is_some())
                     + u8::from(standalone_global_base_home.is_some());
                 let first = 31u8.saturating_sub(preceding);
@@ -1602,6 +1614,23 @@ impl Generator {
             }
         }
         if let Some(layout) = &precomposition_home_layout {
+            for local in &deferred_saved_locals {
+                let Some(preferred) = layout.preference(&local.name) else {
+                    continue;
+                };
+                let group = deferred_home_plan.group(&local.name);
+                let home = homes[parameter_home_reuse.home_index(group)];
+                self.prefer_virtual_general(home, preferred);
+            }
+        }
+        if let Some(layout) = &global_byte_loop_layout {
+            for (parameter_index, parameter) in saved_parameters.iter().enumerate() {
+                let Some(preferred) = layout.preference(&parameter.name) else {
+                    continue;
+                };
+                let home = homes[eager_saved_locals.len() + parameter_index];
+                self.prefer_virtual_general(home, preferred);
+            }
             for local in &deferred_saved_locals {
                 let Some(preferred) = layout.preference(&local.name) else {
                     continue;
@@ -2126,6 +2155,7 @@ impl Generator {
             }
         }
         self.non_leaf = true;
+        self.structured_global_byte_loop_layout_owner = global_byte_loop_layout.is_some();
         self.frame_size = plan.frame_size;
         self.callee_saved = if array_pool_plan.is_some() {
             (frame_first_saved as u8..=31).rev().collect()

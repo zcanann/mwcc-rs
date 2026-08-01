@@ -402,6 +402,9 @@ pub(crate) struct Generator {
     /// epilogue. Late physical schedules use this to preserve the copy spelling
     /// of linkage-first infinite loops after all entry rewrites are complete.
     pub(crate) structured_nonreturning: bool,
+    /// A normalized counted loop owns MWCC's dense global-byte decoder window.
+    /// Its final physical issue order is selected only after saved-home coloring.
+    pub(crate) structured_global_byte_loop_layout_owner: bool,
     /// A nonvolatile global pointer loaded immediately before a guarded switch
     /// and consumed at the start of several mutually exclusive arms.
     pub(crate) structured_shared_switch_global_value: Option<(String, u8)>,

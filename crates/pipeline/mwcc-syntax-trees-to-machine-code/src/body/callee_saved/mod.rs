@@ -249,6 +249,8 @@ mod structured_loop_member_cache;
 mod structured_loop_invariants;
 mod structured_loop_address_invariants;
 mod structured_loop_global_byte_cursor;
+mod structured_global_byte_loop_layout;
+mod structured_global_byte_loop_schedule;
 mod structured_loop_float_zero;
 mod structured_loop_packet_algebra;
 mod structured_loop_packet_immediates;
