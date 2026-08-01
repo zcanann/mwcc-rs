@@ -2197,7 +2197,10 @@ impl Generator {
                         | BinaryOperator::BitAnd
                         | BinaryOperator::BitOr
                         | BinaryOperator::Add
-                        | BinaryOperator::Subtract,
+                        | BinaryOperator::Subtract
+                        | BinaryOperator::Multiply
+                        | BinaryOperator::ShiftLeft
+                        | BinaryOperator::ShiftRight,
                     ..
                 }
         ) {

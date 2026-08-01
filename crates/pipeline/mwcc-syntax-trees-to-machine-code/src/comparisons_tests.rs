@@ -350,6 +350,52 @@ fn shifted_wide_add_compares_from_the_scratch() {
 }
 
 #[test]
+fn shifted_parameter_compares_with_a_global_from_the_scratch() {
+    let function = Function {
+        return_type: Type::Void,
+        name: "range_check".into(),
+        is_static: false,
+        is_weak: false,
+        parameters: vec![Parameter {
+            parameter_type: Type::UnsignedInt,
+            name: "handle".into(),
+        }],
+        locals: Vec::new(),
+        statements: vec![Statement::If {
+            condition: Expression::Binary {
+                operator: BinaryOperator::GreaterEqual,
+                left: Box::new(Expression::Binary {
+                    operator: BinaryOperator::ShiftRight,
+                    left: Box::new(Expression::Variable("handle".into())),
+                    right: Box::new(Expression::IntegerLiteral(16)),
+                }),
+                right: Box::new(Expression::Variable("count".into())),
+            },
+            then_body: vec![Statement::Expression(Expression::Call {
+                name: "out_of_range".into(),
+                arguments: Vec::new(),
+            })],
+            else_body: Vec::new(),
+        }],
+        guards: Vec::new(),
+        return_expression: None,
+        section: None,
+        preceded_by_asm: false,
+        asm_body: None,
+        inline_asm_blocks: Vec::new(),
+        force_active: false,
+        text_deferred: false,
+        peephole_disabled: false,
+    };
+    let machine = lower_with_globals(&function, &[typed_global("count", Type::UnsignedInt)]);
+
+    assert!(machine.instructions.iter().any(|instruction| matches!(
+        instruction,
+        Instruction::ShiftRightLogicalImmediate { a: 0, shift: 16, .. }
+    )));
+}
+
+#[test]
 fn address_taken_scalar_large_equality_uses_a_nonzero_addis_source() {
     let function = Function {
         return_type: Type::Void,
