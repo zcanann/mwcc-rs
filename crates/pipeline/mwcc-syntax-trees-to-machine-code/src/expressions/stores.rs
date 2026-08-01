@@ -1677,6 +1677,51 @@ impl Generator {
                     return Ok(result);
                 }
             }
+            // An uncontracted O0 store of `literal + loaded * register`
+            // materializes the addend first, then evaluates the product in f0
+            // and leaves the sum there for the store. Use an allocator-owned
+            // literal lane because an incoming float parameter may still own
+            // f1; a larger framed body can reuse f1 when it is free.
+            if self.behavior.optimization == mwcc_versions::Optimization::O0
+                && !self.behavior.contract_floating_point
+            {
+                if let Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left,
+                    right,
+                } = value
+                {
+                    if let (
+                        Expression::FloatLiteral(literal),
+                        Expression::Binary {
+                            operator: BinaryOperator::Multiply,
+                            left: factor,
+                            right: multiplier,
+                        },
+                    ) = (left.as_ref(), right.as_ref())
+                    {
+                        if self.is_float_located(factor)
+                            && self.float_register_of_leaf(multiplier).is_ok()
+                        {
+                            let addend = self.fresh_materialized_float_temporary();
+                            self.load_float_literal(
+                                addend,
+                                *literal,
+                                pointee == Pointee::Double,
+                            );
+                            self.evaluate_float(right, FLOAT_SCRATCH)?;
+                            let operands = Operands::ordered(addend, FLOAT_SCRATCH)?;
+                            self.output.instructions.push(float_combine(
+                                BinaryOperator::Add,
+                                FLOAT_SCRATCH,
+                                operands,
+                                pointee == Pointee::Double,
+                            )?);
+                            return Ok(FLOAT_SCRATCH);
+                        }
+                    }
+                }
+            }
             // At O0, compound addition to a floating memory lvalue preserves
             // the source update order: load the old value into f1, load the
             // literal into f0, add into f0, then store f0. The ordinary
