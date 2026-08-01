@@ -65,6 +65,7 @@ fn member_update(
         return None;
     };
     let target_offset = member_offset(target, global)?;
+    let value = peel_indexed_update_provenance(value);
     let Expression::Binary {
         operator: actual,
         left,
