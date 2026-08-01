@@ -1105,6 +1105,7 @@ fn lower_function_body(
     generator.reuse_absolute_pooled_float_literals();
     generator.reuse_small_data_pooled_float_literals();
     generator.schedule_linkage_first_inline_aggregate_frame();
+    generator.finalize_linkage_first_inline_aggregate_homes();
     generator.forward_adjacent_pointer_global_copy();
     generator.schedule_linkage_first_pointer_publication();
     generator.reuse_linkage_first_guarded_global_member_base();
