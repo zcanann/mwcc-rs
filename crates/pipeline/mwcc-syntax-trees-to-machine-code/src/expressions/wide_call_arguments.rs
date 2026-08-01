@@ -57,6 +57,45 @@ fn fixed_clock_scale(expression: &Expression) -> Option<i16> {
 }
 
 impl Generator {
+    /// Load one native 64-bit lvalue into an aligned EABI GPR pair.
+    ///
+    /// PowerPC is big-endian, so the high word occupies displacement zero and
+    /// the low word displacement four. Materialize the address in the high
+    /// destination, load the low word first, then replace the address with the
+    /// high word. This needs no extra scratch register and keeps earlier call
+    /// arguments reserved.
+    fn try_emit_native_wide_call_argument(
+        &mut self,
+        argument: &Expression,
+        high: u8,
+        low: u8,
+    ) -> Compilation<bool> {
+        let Expression::Dereference { pointer } = argument else {
+            return Ok(false);
+        };
+        if !matches!(
+            pointer.as_ref(),
+            Expression::Cast {
+                target_type: Type::Pointer(Pointee::LongLong | Pointee::UnsignedLongLong),
+                ..
+            }
+        ) {
+            return Ok(false);
+        }
+        self.evaluate_general(pointer, high)?;
+        self.output.instructions.push(Instruction::LoadWord {
+            d: low,
+            a: high,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: high,
+            a: high,
+            offset: 0,
+        });
+        Ok(true)
+    }
+
     /// Schedule `(anchored address, widened fixed-clock ticks, callback)`.
     ///
     /// The first address is deliberately reloadable: MWCC borrows r3 while
@@ -241,14 +280,9 @@ impl Generator {
                 "floating-to-64-bit call argument conversion is not supported yet (roadmap)",
             ));
         }
-        if self
+        let native_wide = self
             .unpromoted_integer_width(argument)
-            .is_some_and(|width| width > 32)
-        {
-            return Err(Diagnostic::error(
-                "a native 64-bit call argument needs pair evaluation (roadmap)",
-            ));
-        }
+            .is_some_and(|width| width > 32);
         if next_general % 2 == 0 {
             next_general += 1;
         }
@@ -268,6 +302,20 @@ impl Generator {
         let newly_reserved: Vec<_> = (Eabi::FIRST_GENERAL_ARGUMENT..high)
             .filter(|register| self.reserved.insert(*register))
             .collect();
+        if native_wide {
+            let emitted = self.try_emit_native_wide_call_argument(argument, high, low);
+            for register in newly_reserved {
+                self.reserved.remove(&register);
+            }
+            if emitted? {
+                return low
+                    .checked_add(1)
+                    .ok_or_else(|| Diagnostic::error("a wide call argument pair overflowed"));
+            }
+            return Err(Diagnostic::error(
+                "a native 64-bit call argument needs pair evaluation (roadmap)",
+            ));
+        }
         let evaluated = self.evaluate_general(argument, low);
         for register in newly_reserved {
             self.reserved.remove(&register);
