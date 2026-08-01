@@ -724,13 +724,17 @@ impl ConstructorTail {
 
 /// Lower a complete-object deleting destructor with explicit reverse-order
 /// base calls. The frontend supplies the C++ lifetime semantics; this owner
-/// supplies the two saved homes and the measured predecrement-frame schedule.
+/// supplies the two saved homes and the measured frame schedule.
 pub(crate) fn lower_composed_destructor(
     function: &Function,
     inline_summaries: &InlineSummaries,
     config: CompilerConfig,
 ) -> Option<MachineFunction> {
-    if Behavior::resolve(&config).frame_convention != FrameConvention::Predecrement
+    let behavior = Behavior::resolve(&config);
+    if !matches!(
+        behavior.frame_convention,
+        FrameConvention::Predecrement | FrameConvention::LinkageFirst
+    )
         || !function.name.starts_with("__dt__")
         || function.parameters.len() != 2
         || function.parameters[0].name != "this"
@@ -806,13 +810,32 @@ pub(crate) fn lower_composed_destructor(
         _ => return None,
     };
 
+    if behavior.frame_convention == FrameConvention::LinkageFirst {
+        let [(base_callee, 0)] = base_calls.as_slice() else {
+            return None;
+        };
+        let (own_vtable, 0, own_offset) = own_vptr? else {
+            return None;
+        };
+        if delete_size.is_some() {
+            return None;
+        }
+        return virtual_destructor::lower_linkage_first_composed(
+            function,
+            own_vtable,
+            own_offset,
+            base_callee,
+            &delete_callee,
+            config.flags.cpp_exceptions,
+        );
+    }
+
     // File IPA erases a base destructor whose complete lifetime body contains
     // no user-visible work. The 4.x optimizer performs the same elimination at
     // O2 and above without file IPA. This includes the transient vptr
     // installation in a trivial virtual destructor: once every base edge
     // disappears, the derived vptr installation is dead too and only the
     // deleting shell remains.
-    let behavior = Behavior::resolve(&config);
     let later_empty_lifetime_elision = behavior.optimization >= mwcc_versions::Optimization::O2
         && behavior.cxx_trivial_destructor_style
             == mwcc_versions::CxxTrivialDestructorStyle::ExplicitTests;
