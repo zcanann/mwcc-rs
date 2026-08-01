@@ -5,7 +5,6 @@
 //! f1, and then emits separate multiply/add instructions when contraction is
 //! disabled.
 
-use crate::casts::IntToFloatSchedule;
 use crate::generator::{Generator, FLOAT_SCRATCH};
 use mwcc_core::Compilation;
 use mwcc_machine_code::Instruction;
@@ -52,13 +51,10 @@ impl Generator {
         let promoted = self.fresh_virtual_float_preferring(FLOAT_SCRATCH);
         let bias = self.fresh_virtual_float_preferring(1);
         let scratch = self.claim_int_to_float_scratch()?;
-        self.emit_int_to_float_body_at(
+        self.emit_preserved_signed_int_to_float_body_at(
             conversion_source,
             promoted,
-            false,
-            true,
             bias,
-            IntToFloatSchedule::LeafValue,
             scratch,
         );
         self.output
