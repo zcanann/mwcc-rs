@@ -123,6 +123,62 @@ impl Generator {
                 "an overloaded iterator postfix step used as a value needs iterator lowering",
             ));
         }
+        if let Expression::Member {
+            base,
+            offset,
+            member_type,
+            index_stride: None,
+        } = target
+        {
+            let Expression::Variable(base_name) = base.as_ref() else {
+                return Err(Diagnostic::error(
+                    "a postfix member step requires a register-local base",
+                ));
+            };
+            let Some(base_register) = self.lookup_general(base_name) else {
+                return Err(Diagnostic::error(
+                    "a postfix member step requires a register-local base",
+                ));
+            };
+            let pointee = pointee_of_type(*member_type).ok_or_else(|| {
+                Diagnostic::error("a postfix member step requires scalar storage")
+            })?;
+            if pointee.size() != 4 {
+                return Err(Diagnostic::error(
+                    "a postfix member step value requires a word-sized member",
+                ));
+            }
+            let amount = step_amount_for_type(*member_type, operator)?;
+            let old_value = if destination == base_register {
+                self.fresh_virtual_general()
+            } else {
+                destination
+            };
+            self.output.instructions.push(displacement_load(
+                pointee,
+                old_value,
+                base_register,
+                i16::try_from(*offset)
+                    .map_err(|_| Diagnostic::error("postfix member offset is out of range"))?,
+            )?);
+            let stepped = self.fresh_virtual_general();
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: stepped,
+                a: old_value,
+                immediate: amount,
+            });
+            self.output.instructions.push(displacement_store(
+                pointee,
+                stepped,
+                base_register,
+                i16::try_from(*offset)
+                    .map_err(|_| Diagnostic::error("postfix member offset is out of range"))?,
+            )?);
+            if old_value != destination {
+                self.emit_integer_materialization_copy(destination, old_value);
+            }
+            return Ok(());
+        }
         let Expression::Variable(name) = target else {
             return Err(Diagnostic::error(
                 "a postfix step on this lvalue is not supported yet (roadmap)",

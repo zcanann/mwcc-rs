@@ -171,6 +171,13 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
             },
         );
     }
+    if let Some(expression) = summarize_guarded_effect_tail(function) {
+        return Some(ValueInlineBody {
+            source: function.clone(),
+            expression,
+            automatic_transaction: false,
+        });
+    }
     if let Some(expression) = summarize_guard_chain(function) {
         return Some(ValueInlineBody {
             source: function.clone(),
@@ -219,6 +226,55 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
             expression,
             automatic_transaction: false,
         }
+    })
+}
+
+/// Preserve a guarded early return followed by an ordered side-effect tail.
+///
+/// `if (overflow) return error; write(); advance(); return ok;` becomes a
+/// conditional whose false arm owns the complete effect sequence. This keeps
+/// the tail out of the early-return edge while allowing value-position inline
+/// composition at an assignment or comparison call site.
+fn summarize_guarded_effect_tail(function: &Function) -> Option<Expression> {
+    if !function.locals.is_empty()
+        || !function.guards.is_empty()
+        || function.asm_body.is_some()
+    {
+        return None;
+    }
+    let [
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        },
+        tail @ ..,
+    ] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    let [Statement::Return(Some(early))] = then_body.as_slice() else {
+        return None;
+    };
+    if !else_body.is_empty() || tail.is_empty() {
+        return None;
+    }
+    let mut fallback = tail
+        .iter()
+        .map(statement_expression)
+        .collect::<Option<Vec<_>>>()?;
+    fallback.push(normalize_reference_result(
+        function.return_type,
+        function.return_expression.clone()?,
+    ));
+    Some(Expression::Conditional {
+        condition: Box::new(condition.clone()),
+        when_true: Box::new(normalize_reference_result(
+            function.return_type,
+            early.clone(),
+        )),
+        when_false: Box::new(sequence(fallback)),
+        origin: ConditionalOrigin::IfReturns,
     })
 }
 
@@ -1953,6 +2009,50 @@ mod tests {
             } if matches!(left.as_ref(), Expression::Assign { .. })
                 && matches!(right.as_ref(), Expression::IntegerLiteral(1)))
                 && matches!(when_false.as_ref(), Expression::IntegerLiteral(0))
+        ));
+    }
+
+    #[test]
+    fn summarizes_an_early_return_before_an_effect_tail() {
+        let mut function = empty_function("append", Type::Int);
+        function.parameters.push(Parameter {
+            parameter_type: Type::Pointer(Pointee::UnsignedInt),
+            name: "cursor".into(),
+        });
+        function.statements = vec![
+            Statement::If {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::GreaterEqual,
+                    left: Box::new(Expression::Dereference {
+                        pointer: Box::new(Expression::Variable("cursor".into())),
+                    }),
+                    right: Box::new(Expression::IntegerLiteral(2176)),
+                },
+                then_body: vec![Statement::Return(Some(Expression::IntegerLiteral(769)))],
+                else_body: Vec::new(),
+            },
+            Statement::Store {
+                target: Expression::Dereference {
+                    pointer: Box::new(Expression::Variable("cursor".into())),
+                },
+                value: Expression::IntegerLiteral(1),
+            },
+        ];
+        function.return_expression = Some(Expression::IntegerLiteral(0));
+
+        let summary = summarize(&function).expect("guarded effect tail should summarize");
+
+        assert!(matches!(
+            summary.expression,
+            Expression::Conditional {
+                when_true,
+                when_false,
+                origin: ConditionalOrigin::IfReturns,
+                ..
+            } if matches!(when_true.as_ref(), Expression::IntegerLiteral(769))
+                && matches!(when_false.as_ref(), Expression::Comma { left, right }
+                    if matches!(left.as_ref(), Expression::Assign { .. })
+                        && matches!(right.as_ref(), Expression::IntegerLiteral(0)))
         ));
     }
 

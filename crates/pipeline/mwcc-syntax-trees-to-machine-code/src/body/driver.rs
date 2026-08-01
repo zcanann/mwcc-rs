@@ -1167,6 +1167,14 @@ impl Generator {
             if let Some(expanded) = self.inline_bodies.expand_calls(function) {
                 eprintln!("expanded function: {expanded:#?}");
             }
+            for name in &self.skipped_inline_names {
+                let singleton = std::collections::HashSet::from([name.clone()]);
+                if function_calls_any(function, &singleton) {
+                    if let Some(body) = self.inline_bodies.retained_body(name) {
+                        eprintln!("retained inline body {name}: {body:#?}");
+                    }
+                }
+            }
         }
         if self.try_inlined_quadratic_float_map_loop(function)? {
             return Ok(());
@@ -1849,6 +1857,11 @@ impl Generator {
                 if result.is_ok() {
                     *self = trial;
                     return result;
+                }
+                if std::env::var_os("MWCC_CAPTURE_FUNCTION")
+                    .is_some_and(|name| name == std::ffi::OsStr::new(&function.name))
+                {
+                    eprintln!("expanded inline lowering declined: {result:?}");
                 }
             }
             if calls_skipped_inline {

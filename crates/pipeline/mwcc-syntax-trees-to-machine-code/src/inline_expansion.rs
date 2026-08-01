@@ -1152,11 +1152,7 @@ impl InlineBodySet {
             collect_function_calls(&expanded, &mut calls);
             let mut retained = calls
                 .into_keys()
-                .filter(|name| {
-                    required_scope.bodies.contains_key(name)
-                        || required_scope.statement_value_bodies.contains_key(name)
-                        || required_scope.values.contains_key(name)
-                })
+                .filter(|name| required_scope.required.contains(name))
                 .collect::<Vec<_>>();
             retained.sort();
             eprintln!("unexpanded retained inline calls: {}", retained.join(", "));

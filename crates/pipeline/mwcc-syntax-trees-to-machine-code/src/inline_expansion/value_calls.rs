@@ -45,10 +45,15 @@ pub(super) fn expand_statement(
             target: expression(target, active, changed, value_body_substitutions),
             value: expression(value, active, changed, value_body_substitutions),
         },
-        Statement::Assign { name, value } => Statement::Assign {
-            name: name.clone(),
-            value: expression(value, active, changed, value_body_substitutions),
-        },
+        Statement::Assign { name, value } => {
+            let value = expression(value, active, changed, value_body_substitutions);
+            compose_conditional_assignment(name, &value, bodies).unwrap_or_else(|| {
+                Statement::Assign {
+                    name: name.clone(),
+                    value,
+                }
+            })
+        }
         Statement::Expression(value) => {
             Statement::Expression(expression(value, active, changed, value_body_substitutions))
         }
@@ -168,6 +173,62 @@ pub(super) fn expand_statement(
             statement.clone()
         }
     }
+}
+
+/// Turn a value-inline early-return selection back into an assignment diamond.
+/// Prefix effects (normally hygienic argument captures) remain sequenced in
+/// the condition, while each arm owns its effects and final destination value.
+fn compose_conditional_assignment(
+    destination: &str,
+    value: &Expression,
+    bodies: &HashMap<String, ValueInlineBody>,
+) -> Option<Statement> {
+    let mut prefix = Vec::new();
+    let mut selection = value;
+    while let Expression::Comma { left, right } = selection {
+        prefix.push(left.as_ref().clone());
+        selection = right;
+    }
+    let Expression::Conditional {
+        condition,
+        when_true,
+        when_false,
+        origin: mwcc_syntax_trees::ConditionalOrigin::IfReturns,
+    } = selection
+    else {
+        return None;
+    };
+    let condition = prefix.into_iter().rev().fold(
+        condition.as_ref().clone(),
+        |right, left| Expression::Comma {
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+    );
+    Some(Statement::If {
+        condition,
+        then_body: assignment_arm_statements(destination, when_true, bodies)?,
+        else_body: assignment_arm_statements(destination, when_false, bodies)?,
+    })
+}
+
+fn assignment_arm_statements(
+    destination: &str,
+    expression: &Expression,
+    bodies: &HashMap<String, ValueInlineBody>,
+) -> Option<Vec<Statement>> {
+    let mut sequence = Vec::new();
+    flatten_sequence(expression, &mut sequence);
+    let value = sequence.pop()?;
+    let mut statements = sequence
+        .into_iter()
+        .map(|effect| effect_statement(effect, bodies))
+        .collect::<Option<Vec<_>>>()?;
+    statements.push(Statement::Assign {
+        name: destination.to_owned(),
+        value,
+    });
+    Some(statements)
 }
 
 /// Turn an expression-valued flag consumer back into the source-level branch
