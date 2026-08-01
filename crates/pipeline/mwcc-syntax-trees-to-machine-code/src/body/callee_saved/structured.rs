@@ -3860,8 +3860,7 @@ impl Generator {
             if adjacent_global_store_base_restore.is_none() {
                 if let Some(plan) =
                     super::structured_adjacent_global_store_base::plan(
-                        statement,
-                        statements.get(statement_index + 1),
+                        &statements[statement_index..],
                         &self.addressable_globals,
                     )
                 {
@@ -3875,11 +3874,11 @@ impl Generator {
                         crate::generator::StructuredGlobalBaseCache {
                             global: plan.global,
                             register,
-                            remaining_uses: 2,
+                            remaining_uses: plan.use_count,
                         },
                     );
                     adjacent_global_store_base_restore =
-                        Some((statement_index + 1, previous));
+                        Some((statement_index + plan.use_count - 1, previous));
                 }
             }
             if shared_switch_global_plan
