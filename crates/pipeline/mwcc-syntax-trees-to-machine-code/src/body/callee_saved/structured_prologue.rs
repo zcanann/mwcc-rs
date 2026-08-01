@@ -44,7 +44,7 @@ pub(super) fn uses_dense_saved_register_range(
     global_member_search_entry: bool,
     reuses_parameter_home: bool,
 ) -> bool {
-    with_frame_array
+    (with_frame_array || saved_home_count >= 9)
         && saved_home_count <= 18
         && (saved_home_count >= 5 || (global_member_search_entry && saved_home_count >= 4))
         && (eager_local_count == 0 || reuses_parameter_home)

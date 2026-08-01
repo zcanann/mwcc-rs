@@ -77,6 +77,8 @@ use super::structured_liveness::{
     transient_condition_call_result_callee,
 };
 use super::structured_loop_invariants::hoist_iterator_end_sentinels;
+use super::structured_loop_address_invariants::hoist_loop_address_invariants;
+use super::structured_loop_global_byte_cursor::strength_reduce_global_byte_loop_cursor;
 use super::structured_loop_packet_invariants::hoist_repeated_packet_words;
 use super::structured_loop_member_cache::cache_repeated_loop_members;
 use super::structured_loop_assertion_strings::plan_loop_assertion_strings;
@@ -272,6 +274,10 @@ impl Generator {
         let function = hoisted_packet_words.as_ref().unwrap_or(function);
         let cached_loop_members = cache_repeated_loop_members(function);
         let function = cached_loop_members.as_ref().unwrap_or(function);
+        let hoisted_loop_addresses = hoist_loop_address_invariants(function);
+        let function = hoisted_loop_addresses.as_ref().unwrap_or(function);
+        let reduced_global_byte_cursor = strength_reduce_global_byte_loop_cursor(function);
+        let function = reduced_global_byte_cursor.as_ref().unwrap_or(function);
         let hoisted_iterator_end =
             hoist_iterator_end_sentinels(function, &self.one_word_aggregate_locals);
         let function = hoisted_iterator_end.as_ref().unwrap_or(function);
@@ -1232,7 +1238,7 @@ impl Generator {
         let dense_frame = uses_dense_saved_register_range(
             with_frame_array,
             eager_saved_locals.len(),
-            count,
+            total_home_count,
             global_member_search_entry,
             parameter_home_reuse
                 .reuses_parameter_home(eager_saved_locals.len(), saved_parameters.len()),
@@ -1695,6 +1701,20 @@ impl Generator {
         let mut frame_homes = logical_saved_homes.clone();
         frame_homes.resize(frame_saved_count, frame_first_saved as u8);
         let mut plan = mwcc_vreg::FramePlan::with_local_region(frame_homes, local_region_bytes);
+        if dense_frame
+            && !with_frame_array
+            && self.behavior.frame_convention == FrameConvention::LinkageFirst
+        {
+            // Once a register-only legacy frame crosses MWCC's dense-save
+            // threshold it retains a second caller-linkage lane below the
+            // contiguous saved-GPR image. The ordinary FramePlan accounts for
+            // one linkage pair; add and doubleword-align the retained lane.
+            plan.frame_size = plan
+                .frame_size
+                .checked_add(8)
+                .map(|size| (size + 7) / 8 * 8)
+                .ok_or_else(|| Diagnostic::error("structured dense frame is too large"))?;
+        }
         plan.frame_size = plan
             .frame_size
             .checked_add(path_reuse_frame_bytes)
@@ -2300,7 +2320,7 @@ impl Generator {
                     global: cache.global,
                     register,
                 });
-            if standalone_global_base_home.is_some() {
+            if standalone_global_base_home.is_some() && !dense_saved_range {
                 self.emit_structured_saved_home_store(
                     register,
                     usize::from(standalone_data_anchor_home.is_some()),
@@ -2340,14 +2360,16 @@ impl Generator {
                     register,
                     initialized,
                 });
-            self.emit_structured_saved_home_store(
-                register,
-                usize::from(standalone_data_anchor_home.is_some())
-                    + usize::from(standalone_global_base_home.is_some())
-                    + self.structured_global_member_address_caches.len()
-                    - 1,
-                plan.frame_size,
-            );
+            if !dense_saved_range {
+                self.emit_structured_saved_home_store(
+                    register,
+                    usize::from(standalone_data_anchor_home.is_some())
+                        + usize::from(standalone_global_base_home.is_some())
+                        + self.structured_global_member_address_caches.len()
+                        - 1,
+                    plan.frame_size,
+                );
+            }
         }
         if let Some(register) = data_section_anchor_home {
             if !dense_saved_range {
@@ -3702,6 +3724,7 @@ impl Generator {
         let mut shared_switch_global_restore = None;
         let mut carried_condition_cache_restore = None;
         let mut carried_assignment_member_cache_restore = None;
+        let mut carried_adjacent_assignment_member_cache_end = None;
         let mut scheduled_float_store = None;
         for (statement_index, statement) in statements.iter().enumerate() {
             if shared_switch_global_plan
@@ -3745,6 +3768,17 @@ impl Generator {
                 {
                     carried_assignment_member_cache_restore =
                         Some(self.begin_assignment_condition_member_cache(member));
+                } else if let Some(member) =
+                    super::structured_adjacent_assignment_member_cache::plan(
+                        self,
+                        statement,
+                        statements.get(statement_index + 1),
+                    )
+                {
+                    carried_assignment_member_cache_restore =
+                        Some(self.begin_assignment_condition_member_cache(member));
+                    carried_adjacent_assignment_member_cache_end =
+                        Some(statement_index + 1);
                 }
             }
             let repeats_previous_scratch_constant = statement_index
@@ -5005,6 +5039,13 @@ impl Generator {
                     );
                 self.restore_condition_global_cache(previous_cache);
                 self.structured_shared_switch_global_value = previous_shared;
+            }
+            if carried_adjacent_assignment_member_cache_end == Some(statement_index) {
+                let previous = carried_assignment_member_cache_restore
+                    .take()
+                    .expect("adjacent assignment member cache must be active");
+                self.restore_condition_member_cache(previous);
+                carried_adjacent_assignment_member_cache_end = None;
             }
         }
         self.reuse_scratch_constant = false;

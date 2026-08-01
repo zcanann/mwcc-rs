@@ -1157,6 +1157,7 @@ fn lower_function_body(
     generator.schedule_structured_inlined_preloaded_retained_guarded_value_transaction();
     generator.schedule_global_queue_pointer_send();
     generator.schedule_structured_multi_member_cache_entry();
+    generator.fold_structured_call_result_assignment_zero_tests();
     if generator.structured_nonreturning {
         generator.normalize_nonreturning_materialization_copies();
     }

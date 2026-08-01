@@ -2551,6 +2551,19 @@ impl Generator {
             // <=8 bytes may use SDA21, while a larger struct/array needs an
             // ADDR16_HA/LO pair even when small-data addressing is enabled.
             if !self.locations.contains_key(name) {
+                if let Some(register) = self
+                    .structured_global_base_cache
+                    .as_ref()
+                    .filter(|cache| cache.global == *name)
+                    .map(|cache| cache.register)
+                {
+                    if register != destination {
+                        self.output
+                            .instructions
+                            .push(Instruction::move_register(destination, register));
+                    }
+                    return Ok(());
+                }
                 if let Some(&global_type) = self.addressable_globals.get(name.as_str()) {
                     let total_size = self
                         .global_array_sizes
