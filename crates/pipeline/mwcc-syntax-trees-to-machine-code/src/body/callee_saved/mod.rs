@@ -39,6 +39,7 @@ mod frame_convention;
 mod later_call_arguments;
 mod linkage_first_arguments;
 mod linkage_first_asm_barrier;
+mod linkage_first_asm_barrier_byte_stores;
 mod linkage_first_cancel_completion_arms;
 mod linkage_first_callback_completion_arms;
 mod linkage_first_callback_state_arms;
