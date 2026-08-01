@@ -4,6 +4,67 @@
 use super::*;
 
 impl Generator {
+    /// Restore patched build 159's strict plain-linkage prefix after generic
+    /// whole-stream scheduling. Other linkage-first profiles intentionally
+    /// retain their latency-filled build-163 issue order.
+    pub(crate) fn canonicalize_patched_build159_plain_linkage(&mut self) {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst
+            || self.behavior.plain_linkage_epilogue_style
+                != PlainLinkageEpilogueStyle::StackRestoreBeforeReload
+            || !self.non_leaf
+            || !self.callee_saved.is_empty()
+            || self.callee_saved_float != 0
+            || self.frame_size != 8
+            || !matches!(
+                self.output.instructions.first(),
+                Some(Instruction::MoveFromLinkRegister { d: 0 })
+            )
+        {
+            return;
+        }
+        let first_call = self
+            .output
+            .instructions
+            .iter()
+            .position(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::BranchAndLink { .. }
+                        | Instruction::BranchToLinkRegisterAndLink
+                        | Instruction::BranchToCountRegisterAndLink
+                )
+            })
+            .unwrap_or(self.output.instructions.len());
+        let Some(link_store) = self.output.instructions[..first_call]
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::StoreWord { s: 0, a: 1, offset: 4 })
+            })
+        else {
+            return;
+        };
+        let Some(frame_update) = self.output.instructions[..first_call]
+            .iter()
+            .position(|instruction| {
+                matches!(instruction,
+                    Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -8 })
+            })
+        else {
+            return;
+        };
+        if link_store > 1 {
+            self.move_plain_linkage_instruction_before(link_store, 1);
+        }
+        let frame_update = if frame_update < link_store {
+            frame_update + 1
+        } else {
+            frame_update
+        };
+        if frame_update > 2 {
+            self.move_plain_linkage_instruction_before(frame_update, 2);
+        }
+    }
+
     /// Fill a linkage-first prologue that was produced by late frame
     /// normalization rather than emitted in its final convention.
     ///
@@ -47,6 +108,16 @@ impl Generator {
     /// linkage-write hazards.
     pub(crate) fn hoist_leading_arg_moves(&mut self, lr_store_index: Option<usize>) {
         let Some(store) = lr_store_index else { return };
+        // GC/1.1p1's patched build 159 owns a linkage-first frame but retains
+        // the strict `mflr; stw; stwu` prefix. Its restored-stack LR reload is
+        // the profile-level marker that distinguishes it from build 163's
+        // latency-filled linkage-first schedule.
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && self.behavior.plain_linkage_epilogue_style
+                == PlainLinkageEpilogueStyle::StackRestoreBeforeReload
+        {
+            return;
+        }
         if self.hoist_leading_int_to_float_argument(store) {
             return;
         }

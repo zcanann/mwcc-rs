@@ -1034,7 +1034,7 @@ impl Generator {
         }
     }
 
-    fn move_plain_linkage_instruction_before(&mut self, from: usize, to: usize) {
+    pub(crate) fn move_plain_linkage_instruction_before(&mut self, from: usize, to: usize) {
         debug_assert!(to < from);
         let old_len = self.output.instructions.len();
         let instruction = self.output.instructions.remove(from);

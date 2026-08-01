@@ -1173,6 +1173,7 @@ fn lower_function_body(
     if generator.structured_nonreturning {
         generator.normalize_nonreturning_materialization_copies();
     }
+    generator.canonicalize_patched_build159_plain_linkage();
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for
