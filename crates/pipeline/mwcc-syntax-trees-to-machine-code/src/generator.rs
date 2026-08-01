@@ -678,6 +678,7 @@ pub(crate) struct Generator {
     /// the call edge cannot reach the later read, but allocation precedes that
     /// simplification in MWCC.
     pub(crate) inline_source_call_survivors: HashSet<String>,
+    pub(crate) unoptimized_frame_call_home_names: HashSet<String>,
     /// Alpha-renamed result images introduced by composed global scalar
     /// helpers, in source-image then caller-use order.
     pub(crate) inline_global_transaction_result_homes: Vec<String>,

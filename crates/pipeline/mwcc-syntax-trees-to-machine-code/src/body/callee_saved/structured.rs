@@ -593,6 +593,10 @@ impl Generator {
                     )
                 })
                 .flatten();
+        self.unoptimized_frame_call_home_names = unoptimized_frame_call_homes
+            .as_ref()
+            .map(|plan| plan.names().map(str::to_owned).collect())
+            .unwrap_or_default();
         if let Some(plan) = &recovered_general_homes {
             survivors.extend(plan.names());
         }
@@ -979,7 +983,11 @@ impl Generator {
 
         let eager_home_reuse =
             StructuredEagerHomeReuse::plan(function, &eager_saved_locals, &deferred_home_plan);
-        let parameter_home_reuse = if recovered_general_homes.is_some() {
+        let parameter_home_reuse = if recovered_general_homes.is_some()
+            || unoptimized_frame_call_homes
+                .as_ref()
+                .is_some_and(|plan| plan.retains_distinct_parameter_home())
+        {
             StructuredParameterHomeReuse::retain_distinct(
                 eager_saved_locals.len(),
                 saved_parameters.len(),
@@ -1488,6 +1496,23 @@ impl Generator {
                 }
             })
             .collect();
+        if let Some(layout) = &unoptimized_frame_call_homes {
+            for (parameter_index, parameter) in saved_parameters.iter().enumerate() {
+                let Some(preferred) = layout.preference(&parameter.name) else {
+                    continue;
+                };
+                let home = homes[eager_saved_locals.len() + parameter_index];
+                self.prefer_virtual_general(home, preferred);
+            }
+            for local in &deferred_saved_locals {
+                let Some(preferred) = layout.preference(&local.name) else {
+                    continue;
+                };
+                let group = deferred_home_plan.group(&local.name);
+                let home = homes[parameter_home_reuse.home_index(group)];
+                self.prefer_virtual_general(home, preferred);
+            }
+        }
         if let Some(layout) = &precomposition_home_layout {
             for local in &deferred_saved_locals {
                 let Some(preferred) = layout.preference(&local.name) else {
@@ -2299,6 +2324,16 @@ impl Generator {
         let mut saved_parameter_homes = Vec::with_capacity(saved_parameters.len());
         for (parameter_index, parameter) in saved_parameters.iter().enumerate() {
             let home = homes[saved_parameter_base + parameter_index];
+            if self
+                .unoptimized_frame_call_home_names
+                .contains(&parameter.name)
+            {
+                if let mwcc_vreg::Reg::Virtual(register) =
+                    mwcc_vreg::Reg::from_field(home, mwcc_vreg::Class::General)
+                {
+                    self.forced_general_callee_saved.insert(register);
+                }
+            }
             let incoming = self
                 .locations
                 .get(&parameter.name)
@@ -2700,7 +2735,11 @@ impl Generator {
         for local in deferred_saved_locals {
             let group = deferred_home_plan.group(&local.name);
             let home = homes[parameter_home_reuse.home_index(group)];
-            if self.inline_source_call_survivors.contains(&local.name) {
+            if self.inline_source_call_survivors.contains(&local.name)
+                || self
+                    .unoptimized_frame_call_home_names
+                    .contains(&local.name)
+            {
                 if let mwcc_vreg::Reg::Virtual(register) =
                     mwcc_vreg::Reg::from_field(home, mwcc_vreg::Class::General)
                 {
@@ -4279,6 +4318,7 @@ impl Generator {
                         && !read_after_possible_call(remaining, name, false).read_after_call
                         && !returned_after_later_call
                         && !self.inline_source_call_survivors.contains(name)
+                        && !self.unoptimized_frame_call_home_names.contains(name)
                         && !self
                             .inline_global_transaction_result_homes
                             .contains(name);
@@ -4606,7 +4646,24 @@ impl Generator {
                             if name.starts_with("__mwcc_packet_word_") {
                                 self.packed_shift_mask_min_operations = 2;
                             }
-                            let result = if matches!(declared_type, Type::Float | Type::Double)
+                            let direct_zero_index_address = self
+                                .unoptimized_frame_call_home_names
+                                .contains(name)
+                                .then(|| match value {
+                                    Expression::AddressOf { operand } => match operand.as_ref() {
+                                        Expression::Index { base, index }
+                                            if matches!(
+                                                index.as_ref(),
+                                                Expression::IntegerLiteral(0)
+                                            ) => Some(base.as_ref()),
+                                        _ => None,
+                                    },
+                                    _ => None,
+                                })
+                                .flatten();
+                            let result = if let Some(base) = direct_zero_index_address {
+                                self.evaluate_general(base, destination)
+                            } else if matches!(declared_type, Type::Float | Type::Double)
                                 && !expression_has_call(value)
                             {
                                 self.evaluate_materialized_float_assignment_value(
@@ -4636,11 +4693,18 @@ impl Generator {
                         self.locations
                             .get_mut(name)
                             .expect("structured assignment home")
-                            .width = assigned_register_width(
-                                declared_type,
-                                value,
-                                &self.call_return_types,
-                            );
+                            .width = if self
+                                .unoptimized_frame_call_home_names
+                                .contains(name)
+                            {
+                                declared_type.width()
+                            } else {
+                                assigned_register_width(
+                                    declared_type,
+                                    value,
+                                    &self.call_return_types,
+                                )
+                            };
                         if terminal_result
                             || separates_live_alias
                             || terminal_argument.is_some()

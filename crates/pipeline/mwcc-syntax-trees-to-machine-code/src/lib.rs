@@ -678,6 +678,7 @@ fn lower_function_body(
         inline_statement_body_substitutions: 0,
         late_inline_statement_body_substitutions: 0,
         inline_source_call_survivors: HashSet::new(),
+        unoptimized_frame_call_home_names: HashSet::new(),
         inline_global_transaction_result_homes: Vec::new(),
         forced_general_callee_saved: HashSet::new(),
         inline_expansion_facts,
