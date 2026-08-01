@@ -259,6 +259,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         discarded_inline_aggregate_images: Vec::new(),
         cxx_nonvirtual_destructor_classes: std::collections::HashSet::new(),
         cxx_temporary_construction_targets: Vec::new(),
+        functional_constructor_references: Vec::new(),
         dropped_inline_class_automatic_groups: std::collections::HashSet::new(),
         counted_named_parameter_positions,
         named_prototype_parameters,
@@ -11616,5 +11617,53 @@ blr\n\
                 ("middle".to_owned(), 3),
             ]
         );
+    }
+
+    #[test]
+    fn resolves_and_exports_functional_temporary_constructors() {
+        let source = r#"
+            struct Info {
+                Info(int);
+                int value;
+            };
+            struct Owner {
+                void start(const Info&, const Info&);
+            };
+            void run(Owner* owner) {
+                owner->start(Info(1), Info(2));
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(unit.prototypes.iter().any(|(name, return_type, parameters)| {
+            name == "__ct__4InfoFi"
+                && *return_type == Type::StructPointer { element_size: 4 }
+                && parameters
+                    == &[
+                        Type::StructPointer { element_size: 4 },
+                        Type::Int,
+                    ]
+        }));
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [Statement::Expression(Expression::Call { arguments, .. })]
+                if matches!(arguments.as_slice(),
+                    [
+                        Expression::Variable(owner),
+                        Expression::Call { name: first, arguments: first_arguments },
+                        Expression::Call { name: second, arguments: second_arguments },
+                    ] if owner == "owner"
+                        && first == "__ct__4InfoFi"
+                        && second == "__ct__4InfoFi"
+                        && matches!(first_arguments.as_slice(), [Expression::IntegerLiteral(1)])
+                        && matches!(second_arguments.as_slice(), [Expression::IntegerLiteral(2)]))
+        ));
     }
 }

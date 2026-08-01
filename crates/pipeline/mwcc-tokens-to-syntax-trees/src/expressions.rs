@@ -969,21 +969,31 @@ impl Parser {
                         }
                     }
                     self.expect(Token::ParenClose)?;
-                    // A functional class construction inside an analysis-only
-                    // recovered inline (`return Vector3f(x, y, z)`) needs its
-                    // resolved constructor identity so later semantic passes can
-                    // observe reference-bound temporaries. Executable lowering
-                    // still owns temporary storage and the aggregate-return ABI;
-                    // this Call shape is deliberately confined to the discarded
-                    // inline probe.
-                    let analysis_constructor = if self.recover_skipped_inline_definition
-                        && self.resolve_scoped_cxx_class_name(&name).is_some()
+                    // A functional class construction (`Value(args)`) is not a
+                    // call to a function named `Value`: it is a constructor
+                    // invocation whose implicit placement address is supplied
+                    // by temporary materialization. Retain the resolved ABI
+                    // constructor in both emitted and analysis-only functions;
+                    // the machine-code pipeline owns storage, lifetime, and
+                    // argument-evaluation order for the anonymous object.
+                    let functional_constructor = if self
+                        .resolve_scoped_cxx_class_name(&name)
+                        .is_some()
                     {
                         Some(self.resolve_placement_constructor(&name, &arguments)?)
                     } else {
                         None
                     };
-                    if let Some(constructor) = analysis_constructor {
+                    if let Some(constructor) = functional_constructor {
+                        if !self.recover_skipped_inline_definition
+                            && !self
+                                .functional_constructor_references
+                                .iter()
+                                .any(|name| name == &constructor)
+                        {
+                            self.functional_constructor_references
+                                .push(constructor.clone());
+                        }
                         Expression::Call {
                             name: constructor,
                             arguments,

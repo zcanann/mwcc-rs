@@ -31,6 +31,7 @@ mod condition_member_cache;
 mod control_flow;
 mod copy_convention;
 mod cxx_abi;
+mod cxx_temporary_arguments;
 mod dag_emitter;
 mod division;
 mod expressions;
@@ -360,6 +361,12 @@ fn lower_function_body(
     // name shadowed by a parameter or local is left alone).
     let substituted = body::substitute_const_float_globals(function, globals);
     let function = substituted.as_ref().unwrap_or(function);
+    let materialized_temporaries = cxx_temporary_arguments::materialize(
+        function,
+        call_return_types,
+        call_parameter_types,
+    );
+    let function = materialized_temporaries.as_ref().unwrap_or(function);
     // A `static` local has STATIC storage — an anonymous `<name>$N` object in `.sdata`/`.sbss`,
     // codegen'd like a file-scope global, not a frame slot. That path (the `$N = @N-1` numbering, the
     // per-function symbol, global-style access) is not built yet, so defer rather than mis-treat it as

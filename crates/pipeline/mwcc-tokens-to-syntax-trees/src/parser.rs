@@ -623,6 +623,11 @@ pub(crate) struct Parser {
     pub(crate) cxx_nonvirtual_destructor_classes: std::collections::HashSet<String>,
     /// Constructor targets observed inside dropped in-class inline bodies.
     pub(crate) cxx_temporary_construction_targets: Vec<String>,
+    /// Out-of-line constructors selected by executable functional temporary
+    /// expressions, in first-use order. Class declarations are recovered
+    /// outside the ordinary prototype stream; referenced constructors must be
+    /// exported there so ABI lowering knows their implicit `this` parameter.
+    pub(crate) functional_constructor_references: Vec<String>,
     /// Return classes whose reusable automatic-construction analysis has
     /// already been charged by a dropped inline.
     pub(crate) dropped_inline_class_automatic_groups: std::collections::HashSet<String>,

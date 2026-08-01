@@ -1213,6 +1213,35 @@ impl Parser {
             self.function_sources.len(),
             "every parsed function must retain one source-provenance slot"
         );
+        // Constructor declarations live in the C++ class side graph instead
+        // of the ordinary file-scope prototype stream. A functional temporary
+        // selected in executable code is nevertheless a real external call:
+        // publish only those referenced constructors, preserving first-use
+        // order and supplying the implicit placement pointer as parameter 0.
+        for constructor in std::mem::take(&mut self.functional_constructor_references) {
+            if prototypes.iter().any(|(name, _, _)| name == &constructor) {
+                continue;
+            }
+            let selected = self.cxx_constructors.iter().find_map(|(class, methods)| {
+                methods
+                    .iter()
+                    .find(|method| method.mangled == constructor)
+                    .map(|method| (class, method))
+            });
+            let Some((class, method)) = selected else {
+                continue;
+            };
+            let Some(layout) = self.structs.get(class) else {
+                continue;
+            };
+            let this_type = Type::StructPointer {
+                element_size: layout.size,
+            };
+            let mut parameters = Vec::with_capacity(method.parameters.len() + 1);
+            parameters.push(this_type);
+            parameters.extend(method.parameters.iter().copied());
+            prototypes.push((constructor, this_type, parameters));
+        }
         let aggregate_definitions = self
             .structs
             .iter()
