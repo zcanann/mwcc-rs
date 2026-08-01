@@ -416,6 +416,12 @@ pub struct TranslationUnit {
     /// result type (e.g. a `double`-returning math routine) and its parameter
     /// types (so an argument's int<->float register placement is correct).
     pub prototypes: Vec<(String, Type, Vec<Type>)>,
+    /// File-scope `static` function prototypes paired with the number of
+    /// function definitions preceding each declaration. Object symbol creation
+    /// follows this source event: a prototype before its definition creates the
+    /// LOCAL FUNC symbol before deferred body emission, while a redundant
+    /// declaration after the definition does not move the existing symbol.
+    pub static_function_prototype_positions: Vec<(String, usize)>,
     /// C++ member declarations recovered by class analysis rather than the
     /// ordinary top-level prototype parser, stored by emitted ABI identity.
     pub cxx_declared_function_names: std::collections::HashSet<String>,

@@ -660,6 +660,9 @@ pub(crate) struct Parser {
     /// A later definition may legally omit `static`; C keeps the prior internal
     /// linkage (`static void f(void); void f(void) {}`).
     pub(crate) static_functions: std::collections::HashSet<String>,
+    /// Static function prototype declarations and their position in the
+    /// file-scope function-definition stream.
+    pub(crate) static_function_prototype_positions: Vec<(String, usize)>,
     /// Source names whose prior declaration had C language linkage inside an
     /// otherwise-C++ translation unit. A later definition outside the linkage
     /// block inherits that declaration's unmangled linkage.

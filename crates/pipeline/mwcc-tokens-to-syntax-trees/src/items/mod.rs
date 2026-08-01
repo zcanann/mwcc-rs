@@ -1306,6 +1306,9 @@ impl Parser {
             function_return_enumeration_tags: std::mem::take(&mut self.function_return_enums),
             function_return_fundamentals: std::mem::take(&mut self.function_return_fundamentals),
             prototypes,
+            static_function_prototype_positions: std::mem::take(
+                &mut self.static_function_prototype_positions,
+            ),
             cxx_declared_function_names: std::mem::take(&mut self.cxx_declared_function_names),
             named_prototype_parameters: self.named_prototype_parameters,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
@@ -3486,6 +3489,8 @@ impl Parser {
                 }
                 if is_static {
                     self.static_functions.insert(name.clone());
+                    self.static_function_prototype_positions
+                        .push((name.clone(), functions.len()));
                 }
                 if let Some(section) = &declspec_section {
                     if self.plain_function_prototypes.contains(&name) {

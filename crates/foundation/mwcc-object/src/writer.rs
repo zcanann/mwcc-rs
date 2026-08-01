@@ -902,7 +902,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // in reverse declaration order. Small-data `.sbss` has its own rules below.
     let mut bss_size = 0u32;
     let mut placed_bss: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
-    if input.object_format.local_data_symbols_in_declaration_order {
+    // The early grouped-data convention applies its `.sbss` tentative-definition
+    // order to the full `.bss` run when `-sdata 0` redirects every object there:
+    // file-scope statics first, then exported objects in reverse declaration
+    // order. First text reference does not affect physical placement.
+    let reverse_large_zero_run = !input.small_data;
+    if reverse_large_zero_run || input.object_format.local_data_symbols_in_declaration_order {
         for object in input
             .data_objects
             .iter()
@@ -913,53 +918,66 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
     }
-    for function in &input.functions {
-        // A capture-emitted function has an EMPTY symbol_order — its `.text`
-        // relocations carry the reference order instead (measured: wind_waker
-        // abort_exit, whose __atexit_funcs places by first reference).
-        let relocation_names =
-            function
-                .relocations
-                .iter()
-                .filter_map(|relocation| match &relocation.target {
-                    RelocationTarget::External(name)
-                    | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
-                    _ => None,
-                });
-        let displaced_names =
-            function
-                .data_section_displacements
-                .iter()
-                .filter_map(|(_, target)| match target {
-                    DataSectionDisplacementTarget::Symbol(name) => Some(name.as_str()),
-                    DataSectionDisplacementTarget::AnonymousRodata(_) => None,
-                });
-        for name in function
-            .symbol_order
+    if reverse_large_zero_run {
+        for object in input
+            .data_objects
             .iter()
-            .map(|name| name.as_str())
-            .chain(relocation_names)
-            .chain(displaced_names)
+            .rev()
+            .filter(|object| !object.is_static && section_of(object) == ".bss")
         {
-            if let Some(object) = input
-                .data_objects
+            if placed_bss.insert(object.name) {
+                place(object, ".bss", &mut bss_size);
+            }
+        }
+    } else {
+        for function in &input.functions {
+            // A capture-emitted function has an EMPTY symbol_order — its `.text`
+            // relocations carry the reference order instead (measured: wind_waker
+            // abort_exit, whose __atexit_funcs places by first reference).
+            let relocation_names =
+                function
+                    .relocations
+                    .iter()
+                    .filter_map(|relocation| match &relocation.target {
+                        RelocationTarget::External(name)
+                        | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
+                        _ => None,
+                    });
+            let displaced_names =
+                function
+                    .data_section_displacements
+                    .iter()
+                    .filter_map(|(_, target)| match target {
+                        DataSectionDisplacementTarget::Symbol(name) => Some(name.as_str()),
+                        DataSectionDisplacementTarget::AnonymousRodata(_) => None,
+                    });
+            for name in function
+                .symbol_order
                 .iter()
-                .find(|object| object.name == name && section_of(object) == ".bss")
+                .map(|name| name.as_str())
+                .chain(relocation_names)
+                .chain(displaced_names)
             {
-                if placed_bss.insert(object.name) {
-                    place(object, ".bss", &mut bss_size);
+                if let Some(object) = input
+                    .data_objects
+                    .iter()
+                    .find(|object| object.name == name && section_of(object) == ".bss")
+                {
+                    if placed_bss.insert(object.name) {
+                        place(object, ".bss", &mut bss_size);
+                    }
                 }
             }
         }
-    }
-    for object in input
-        .data_objects
-        .iter()
-        .rev()
-        .filter(|object| section_of(object) == ".bss")
-    {
-        if placed_bss.insert(object.name) {
-            place(object, ".bss", &mut bss_size);
+        for object in input
+            .data_objects
+            .iter()
+            .rev()
+            .filter(|object| section_of(object) == ".bss")
+        {
+            if placed_bss.insert(object.name) {
+                place(object, ".bss", &mut bss_size);
+            }
         }
     }
     // Small initialized data follows the same creation timeline as `.data`.

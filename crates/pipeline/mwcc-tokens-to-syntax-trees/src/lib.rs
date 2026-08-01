@@ -272,6 +272,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         immediate_weak_materializations: Vec::new(),
         weak_functions: std::collections::HashSet::new(),
         static_functions: std::collections::HashSet::new(),
+        static_function_prototype_positions: Vec::new(),
         c_linkage_functions: std::collections::HashSet::new(),
         section_functions: std::collections::HashMap::new(),
         section_prototype_order: Vec::new(),
@@ -11459,6 +11460,35 @@ blr\n\
             unit.static_local_prebumps
                 .get(&("second__Fv".to_owned(), "buffer".to_owned())),
             Some(&8)
+        );
+    }
+
+    #[test]
+    fn records_static_prototypes_at_their_source_function_frontier() {
+        let source = r#"
+            static void early(void);
+            void first(void) {}
+            static void middle(void);
+            static void early(void) {}
+            static void middle(void) {}
+            static void middle(void);
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.static_function_prototype_positions,
+            [
+                ("early".to_owned(), 0),
+                ("middle".to_owned(), 1),
+                ("middle".to_owned(), 3),
+            ]
         );
     }
 }

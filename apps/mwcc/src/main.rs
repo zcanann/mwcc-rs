@@ -685,10 +685,7 @@ fn global_alignments(
     .max(requested_alignment);
     let comment = if unoptimized && struct_alignment.is_none() {
         element_size.max(requested_alignment)
-    } else if !is_read_only
-        && struct_alignment.is_some_and(|alignment| alignment >= 4)
-        && element_size > 8
-    {
+    } else if !is_read_only && struct_alignment.is_some() && element_size > 8 {
         // A build may give writable full-section aggregate symbols a metadata
         // alignment larger than their actual member layout. Read-only
         // aggregates retain their declared alignment even in `.rodata`.
@@ -2566,13 +2563,11 @@ fn compile(
     defined_globals.extend(function_string_objects);
     defined_globals.extend(static_local_globals);
 
-    // A `static` function whose ADDRESS is taken by a data initializer gets its
-    // LOCAL FUNC symbol created while that initializer is analyzed, before deferred
-    // function code generation creates constants and unwind symbols. Data
-    // initializers are visited in their relocation-emission order (often reverse
-    // field order). Text-body address references only hoist a symbol when a
-    // prototype made the function known before its definition; a static that is
-    // only CALLED (REL24) keeps its symbol at the definition.
+    // A `static` function declared before its definition gets its LOCAL FUNC
+    // symbol at that declaration event, before deferred function code generation
+    // creates constants and unwind symbols. A data initializer can create the
+    // same symbol when it first resolves a forward target; initializers are
+    // visited in relocation-emission order (often reverse field order).
     //
     // Measured examples:
     // - Animal Crossing's iam_ef_kigae profile creates dw/mv/ct/init from its
@@ -2586,38 +2581,6 @@ fn compile(
             .enumerate()
             .filter(|(_, function)| function.is_static)
             .map(|(index, function)| (function.name.as_str(), index))
-            .collect();
-        let text_address_taken: std::collections::HashSet<&str> = machine_functions
-            .iter()
-            .flat_map(|function| function.relocations.iter())
-            .filter(|relocation| {
-                !matches!(relocation.kind, mwcc_machine_code::RelocationKind::Rel24)
-            })
-            .filter_map(|relocation| match &relocation.target {
-                mwcc_machine_code::RelocationTarget::External(name)
-                | mwcc_machine_code::RelocationTarget::ExternalWithAddend(name, _) => {
-                    Some(name.as_str())
-                }
-                _ => None,
-            })
-            .collect();
-        // Hand-written asm resolves every operand against declarations already
-        // visible to the assembler. A prototyped static target therefore gets
-        // its LOCAL FUNC symbol at the declaration transaction even for a
-        // direct branch; ordinary generated REL24 calls keep their definition
-        // position. The EABI startup's __init_registers/__init_data prototypes
-        // are the canonical measured case.
-        let asm_referenced: std::collections::HashSet<&str> = machine_functions
-            .iter()
-            .filter(|function| function.is_asm)
-            .flat_map(|function| function.relocations.iter())
-            .filter_map(|relocation| match &relocation.target {
-                mwcc_machine_code::RelocationTarget::External(name)
-                | mwcc_machine_code::RelocationTarget::ExternalWithAddend(name, _) => {
-                    Some(name.as_str())
-                }
-                _ => None,
-            })
             .collect();
         let mut seen = std::collections::HashSet::new();
         let mut symbols = Vec::new();
@@ -2650,12 +2613,27 @@ fn compile(
                 }
             }
         }
-        for (name, _, _) in &unit.prototypes {
-            if static_definition_index.contains_key(name.as_str())
-                && (text_address_taken.contains(name.as_str())
-                    || asm_referenced.contains(name.as_str()))
-                && seen.insert(name.clone())
+        // GC/1.1p1 assembles file-scope hand-written asm before beginning the
+        // deferred ordinary-function pass. Its static FUNC symbols therefore
+        // follow any symbols created by data initializers but precede symbols
+        // created from ordinary static prototypes (TRK's `TRK_ppc_memcpy`
+        // before `TRKTargetCheckStep`). Later compilers integrate asm bodies
+        // into the ordinary function-symbol schedule.
+        if config.build.label == "GC/1.1p1" {
+            for function in machine_functions
+                .iter()
+                .filter(|function| function.is_static && function.is_asm)
             {
+                if seen.insert(function.name.clone()) {
+                    symbols.push(function.name.clone());
+                }
+            }
+        }
+        for (name, functions_before) in &unit.static_function_prototype_positions {
+            let Some(&definition_index) = static_definition_index.get(name.as_str()) else {
+                continue;
+            };
+            if *functions_before <= definition_index && seen.insert(name.clone()) {
                 symbols.push(name.clone());
             }
         }
@@ -4773,7 +4751,7 @@ mod tests {
             global_alignments(14, Some(1), false, false, 1, false, 4),
             GlobalAlignments {
                 layout: 1,
-                comment: 1,
+                comment: 4,
             }
         );
         assert_eq!(

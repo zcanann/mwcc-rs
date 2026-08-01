@@ -131,10 +131,11 @@ pub struct ObjectInput<'a> {
     /// inline-asm helpers as deferred symbols even when unused).
     pub inline_asm_symbols: &'a [String],
     /// Names of `static` functions whose LOCAL FUNC symbols are created before
-    /// deferred per-function code generation. This includes functions address-taken
-    /// by data initializers and prototyped functions address-taken by earlier text
-    /// (measured: NMWException's handlers and OSAlarm's
-    /// `DecrementerExceptionHandler`).
+    /// deferred per-function code generation. This includes functions referenced
+    /// by data initializers, generation-specific early asm definitions, and static
+    /// functions declared before their definitions (measured: NMWException's
+    /// handlers, OSAlarm's `DecrementerExceptionHandler`, and TRK's
+    /// `TRKTargetCheckStep`).
     pub early_static_function_symbols: &'a [String],
     /// Unused section-attributed function prototypes retained as GLOBAL UND
     /// symbols by early compilers, in declaration order.
