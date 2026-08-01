@@ -36,7 +36,31 @@ impl Generator {
         required.sort_unstable_by(|left, right| right.cmp(left));
         required.dedup();
 
-        if required.len() <= declared.len() {
+        // A virtual declared home is only a logical slot request. Once colored,
+        // its save must move ahead of the instruction that defines that home;
+        // leaving the selection-time store in place would save the callee's new
+        // value instead of the caller's register. Physical homes already own
+        // canonical placement and need only the capacity check.
+        let declared_has_late_virtual_save = declared.iter().enumerate().any(|(slot, home)| {
+            if !matches!(Reg::from_field(*home, Class::General), Reg::Virtual(_)) {
+                return false;
+            }
+            let offset = self.frame_size - 4 * (slot as i16 + 1);
+            let save = self.output.instructions.iter().position(|instruction| {
+                matches!(instruction,
+                    Instruction::StoreWord { s, a: 1, offset: candidate }
+                        if s == home && *candidate == offset)
+            });
+            let definition = self.output.instructions.iter().position(|instruction| {
+                mwcc_vreg::register_operands(instruction).iter().any(|operand| {
+                    operand.role == mwcc_vreg::RegisterRole::Define
+                        && operand.class == Class::General
+                        && operand.register == *home
+                })
+            });
+            matches!((save, definition), (Some(save), Some(definition)) if save >= definition)
+        });
+        if required.len() <= declared.len() && !declared_has_late_virtual_save {
             return Ok(());
         }
         if self.frame_size == 0 || declared.is_empty() {
