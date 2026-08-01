@@ -327,14 +327,19 @@ fn schedule_entry_arguments(
     is_function_symbol: &dyn Fn(&str) -> bool,
 ) {
     // Moving instructions changes instruction-index branch targets. Structured
-    // control flow is deliberately left to its semantic owner until this pass
-    // also has a branch-target remapper.
-    if output.instructions.iter().any(|instruction| {
+    // control flow before the first call is deliberately left to its semantic
+    // owner. A branch after that call cannot be crossed by these prologue-only
+    // moves and leaves every branch instruction and target at the same index.
+    let first_call = output.instructions.iter().position(|instruction| {
+        matches!(instruction, Instruction::BranchAndLink { .. })
+    });
+    let first_control = output.instructions.iter().position(|instruction| {
         matches!(
             instruction,
             Instruction::Branch { .. } | Instruction::BranchConditionalForward { .. }
         )
-    }) {
+    });
+    if matches!((first_call, first_control), (Some(call), Some(control)) if control < call) {
         return;
     }
 
@@ -744,6 +749,47 @@ mod tests {
             }
         ));
         assert_eq!(output.relocations[0].instruction_index, 9);
+    }
+
+    #[test]
+    fn fills_literal_linkage_slots_before_later_control_flow() {
+        let mut output = mwcc_machine_code::MachineFunction::new("test");
+        output.instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -24 },
+            Instruction::StoreWord { s: 31, a: 1, offset: 20 },
+            Instruction::load_immediate(4, 128),
+            Instruction::load_immediate(5, 0),
+            Instruction::BranchAndLink { target: "ack".into() },
+            Instruction::AddImmediate { d: 31, a: 3, immediate: 0 },
+            Instruction::CompareWordImmediate { a: 31, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 10,
+            },
+        ];
+
+        schedule_entry_arguments(&mut output, &|_| true);
+
+        assert!(matches!(
+            output.instructions.as_slice(),
+            [
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::AddImmediate { d: 4, a: 0, immediate: 128 },
+                Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+                Instruction::AddImmediate { d: 5, a: 0, immediate: 0 },
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -24 },
+                Instruction::StoreWord { s: 31, a: 1, offset: 20 },
+                Instruction::BranchAndLink { .. },
+                ..
+            ]
+        ));
+        assert!(matches!(
+            output.instructions[9],
+            Instruction::BranchConditionalForward { target: 10, .. }
+        ));
     }
 
     #[test]

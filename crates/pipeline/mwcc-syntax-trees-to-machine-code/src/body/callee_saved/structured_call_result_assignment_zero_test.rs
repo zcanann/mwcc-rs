@@ -27,7 +27,51 @@ impl Generator {
             *a = Eabi::FIRST_GENERAL_ARGUMENT;
             crate::remove_instruction_retargeting_to_next(self, copy);
         }
+        while let Some((copy, compare)) =
+            find_saved_call_result_zero_test(&self.output.instructions)
+        {
+            let saved = match self.output.instructions[copy] {
+                Instruction::AddImmediate { d, .. }
+                | Instruction::Or { a: d, .. } => d,
+                _ => unreachable!("the saved call-result copy was matched"),
+            };
+            self.output.instructions[copy] = Instruction::OrRecord {
+                a: saved,
+                s: Eabi::FIRST_GENERAL_ARGUMENT,
+                b: Eabi::FIRST_GENERAL_ARGUMENT,
+            };
+            self.remove_structured_condition_instruction(compare);
+        }
     }
+}
+
+fn find_saved_call_result_zero_test(
+    instructions: &[Instruction],
+) -> Option<(usize, usize)> {
+    let mut matches = instructions.windows(4).enumerate().filter_map(|(call, window)| {
+        let [Instruction::BranchAndLink { .. }, copy, compare, branch] = window else {
+            return None;
+        };
+        let saved = match copy {
+            Instruction::AddImmediate {
+                d,
+                a: Eabi::FIRST_GENERAL_ARGUMENT,
+                immediate: 0,
+            } => *d,
+            Instruction::Or {
+                a,
+                s: Eabi::FIRST_GENERAL_ARGUMENT,
+                b: Eabi::FIRST_GENERAL_ARGUMENT,
+            } => *a,
+            _ => return None,
+        };
+        ((14..=31).contains(&saved)
+            && matches!(compare, Instruction::CompareWordImmediate { a, immediate: 0 } if *a == saved)
+            && matches!(branch, Instruction::BranchConditionalForward { condition_bit: 2, .. }))
+        .then_some((call + 1, call + 2))
+    });
+    let only = matches.next()?;
+    matches.next().is_none().then_some(only)
 }
 
 fn find_call_result_assignment_zero_test(instructions: &[Instruction]) -> Option<usize> {
@@ -112,5 +156,40 @@ mod tests {
         });
 
         assert_eq!(find_call_result_assignment_zero_test(&instructions), None);
+    }
+
+    #[test]
+    fn recognizes_a_saved_call_result_immediately_tested_for_zero() {
+        let instructions = vec![
+            Instruction::BranchAndLink { target: "ack".into() },
+            Instruction::AddImmediate { d: 31, a: 3, immediate: 0 },
+            Instruction::CompareWordImmediate { a: 31, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 5,
+            },
+        ];
+
+        assert_eq!(find_saved_call_result_zero_test(&instructions), Some((1, 2)));
+    }
+
+    #[test]
+    fn leaves_repeated_saved_call_result_tests_to_the_guard_chain_owner() {
+        let mut instructions = Vec::new();
+        for target in [5, 10] {
+            instructions.extend([
+                Instruction::BranchAndLink { target: "step".into() },
+                Instruction::AddImmediate { d: 31, a: 3, immediate: 0 },
+                Instruction::CompareWordImmediate { a: 31, immediate: 0 },
+                Instruction::BranchConditionalForward {
+                    options: 4,
+                    condition_bit: 2,
+                    target,
+                },
+            ]);
+        }
+
+        assert_eq!(find_saved_call_result_zero_test(&instructions), None);
     }
 }
