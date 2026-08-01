@@ -1357,13 +1357,14 @@ impl Generator {
                                     }
                                 }
                             }
-                            // A memory operand narrower than a word can still
-                            // be wider than its formal parameter. Load the
-                            // source through r0, then perform the prototype
-                            // conversion into its ABI home (`lha r0; clrlwi
-                            // r5,r0,24` for an s16 member passed as u8).
+                            // A memory operand can be wider than its formal
+                            // parameter. Load the source through r0, then
+                            // perform the prototype conversion into its ABI
+                            // home (`lwz r0; clrlwi r4,r0,16` for a u32 member
+                            // passed as u16, or `lha r0; clrlwi r5,r0,24` for
+                            // an s16 member passed as u8).
                             if source_width.is_some_and(|width| {
-                                width < 32 && u32::from(width) > parameter_type.width() as u32
+                                u32::from(width) > parameter_type.width() as u32
                             }) && matches!(
                                 general_argument,
                                 Expression::Variable(_)
