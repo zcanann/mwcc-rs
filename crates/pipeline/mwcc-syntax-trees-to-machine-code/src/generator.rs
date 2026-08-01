@@ -402,6 +402,10 @@ pub(crate) struct Generator {
     /// forwarding blocks and no-op fallthrough branches. Ordinary functions
     /// retain that optimizer residue.
     pub(crate) structured_cfg_cleanup_owner: bool,
+    /// The source graph owns a shared terminal return label. Some legacy
+    /// switches branch to that label even though it contains only `blr`, so the
+    /// ordinary conditional-return peephole must preserve those edges.
+    pub(crate) preserve_terminal_return_branches: bool,
     /// A structured sequence of direct sends followed by empty call-poll loops.
     /// MWCC removes their pre-test fallthrough branches without applying the
     /// generic eight-byte alignment used by standalone polling loops.

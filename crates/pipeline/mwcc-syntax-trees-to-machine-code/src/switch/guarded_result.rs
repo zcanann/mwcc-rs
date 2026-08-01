@@ -4,6 +4,8 @@
 //! register, the outer guard can skip the switch, and every case-local guard
 //! either replaces that register or joins the common leaf return.
 
+mod retained_global_range;
+
 use super::Target;
 use crate::analysis::constant_value;
 use crate::generator::*;
@@ -102,6 +104,15 @@ impl Generator {
             || sorted_values[sorted_values.len() - 1] - sorted_values[0] + 1 > 6
         {
             return Ok(false);
+        }
+
+        if self.try_emit_retained_global_range(
+            outer_condition,
+            scrutinee,
+            &result_arms,
+            initial,
+        ) {
+            return Ok(true);
         }
 
         let result = Eabi::general_result().number;

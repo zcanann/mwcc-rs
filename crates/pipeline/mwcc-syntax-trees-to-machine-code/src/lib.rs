@@ -584,6 +584,7 @@ fn lower_function_body(
         structured_sequenced_callback_wait_starter: None,
         structured_switch_dispatch_conditionals: HashSet::new(),
         structured_cfg_cleanup_owner: false,
+        preserve_terminal_return_branches: false,
         structured_repeated_call_poll_owner: false,
         structured_nonreturning: false,
         structured_global_byte_loop_layout_owner: false,
@@ -788,16 +789,12 @@ fn lower_function_body(
         }
     }
     collapse_conditional_skip_to_backward_branch(&mut generator);
-    // Peephole: a conditional forward branch whose target is the function's TERMINAL
-    // `blr` is byte-identical to `b<cc>lr` — mwcc always emits the branch-to-link form
-    // (`if(c) *p=x; return a;` -> `cmpwi;blelr;stw;blr`, never `ble .Lend`). Collapse it
-    // so any guarded tail matches, whichever handler emitted the forward branch. Safe
-    // ONLY for the terminal blr (a leaf epilogue is a bare `blr`): the fall-through always
-    // reaches it, so nothing is left dead; a mid-function blr or framed epilogue (whose
-    // target is the teardown, not a bare blr) is untouched. The forward branch's
-    // (options, condition_bit) already encode the same BO/BI, so reusing them yields the
-    // exact `b<cc>lr` mwcc emits.
-    collapse_forward_branch_to_terminal_blr(&mut generator.output.instructions);
+    // Most leaf guards collapse a conditional edge to the terminal `blr` into
+    // `b<cc>lr`. A retained source switch can instead own that terminal return
+    // as a shared label, in which case MWCC preserves every incoming edge.
+    if !generator.preserve_terminal_return_branches {
+        collapse_forward_branch_to_terminal_blr(&mut generator.output.instructions);
+    }
     // The names this function references, in mwcc's symbol-table discovery
     // order; the writer assigns its external/global symbols in this order.
     if generator.output.symbol_order.is_empty() {

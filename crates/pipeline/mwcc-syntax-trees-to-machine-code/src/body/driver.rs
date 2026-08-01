@@ -1190,6 +1190,13 @@ impl Generator {
         if self.try_global_status_snapshot_access(function)? {
             return Ok(());
         }
+        // A default-initialized result conditionally replaced by switch arms is
+        // already one complete control-flow graph. Let its strict switch owner
+        // retain the local and shared return before broad branch/value owners
+        // rewrite the assignments into independent expression trees.
+        if self.try_guarded_result_switch(function)? {
+            return Ok(());
+        }
         // EABI startup walks the ROM-copy and BSS linker tables as one
         // allocation/scheduling transaction. Recognize the two sentinel loops
         // and validate both inline helper bodies before generic inlining splits
@@ -3247,12 +3254,6 @@ impl Generator {
         // call per arm and returns an arm-specific constant through a shared
         // callee-saved epilogue (NW4R TagProcessorBase::Process).
         if self.try_switch_call_return(function)? {
-            return Ok(());
-        }
-        // A default-true local guarded by a switch of conditional false
-        // assignments is one shared-result control-flow graph. Keep the result
-        // in r3 and join every failed guard at the leaf return.
-        if self.try_guarded_result_switch(function)? {
             return Ok(());
         }
         // A leaf state machine commonly guards the entire update with an early
