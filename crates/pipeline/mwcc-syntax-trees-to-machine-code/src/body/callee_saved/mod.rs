@@ -59,6 +59,7 @@ mod linkage_first_addressable_parameters;
 mod global_swap;
 mod guarded_indexed_call_sequence;
 mod global_call_result_guard;
+mod global_queue_pointer_send_schedule;
 mod global_aggregate_initialization;
 mod global_aggregate_pop;
 mod global_aggregate_post;

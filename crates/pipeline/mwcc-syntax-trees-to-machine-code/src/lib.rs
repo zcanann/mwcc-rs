@@ -1154,6 +1154,7 @@ fn lower_function_body(
         remap_instruction_indices(&mut generator, &address);
     }
     generator.schedule_structured_inlined_preloaded_retained_guarded_value_transaction();
+    generator.schedule_global_queue_pointer_send();
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for
