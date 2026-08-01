@@ -95,7 +95,8 @@ const FSTLOAD_ANIMAL_CROSSING_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0xd46b_890b_5198_67af, 0xceae_496c_85d2_8266];
 const FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0x25c0_2884_9cb3_9a7e, 0x678c_f169_40af_a61c];
-const LOG10F_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0x54f8_e6dd_500b_dccc;
+const LOG10F_OCARINA_SOURCE_TEXT_FINGERPRINTS: &[u64] =
+    &[0x54f8_e6dd_500b_dccc, 0x73f2_0f1d_e0c7_5288];
 const FSTLOAD_STRIKERS_SOURCE_TEXT_FINGERPRINT: u64 = 0x26f1_ce4d_5592_d9b0;
 const FSTLOAD_TWILIGHT_PRINCESS_SOURCE_TEXT_FINGERPRINT: u64 = 0xee62_d13d_c9a5_faeb;
 const FSTLOAD_TWILIGHT_PRINCESS_DEBUG_SOURCE_TEXT_FINGERPRINT: u64 = 0x0366_a699_6f7c_e197;
@@ -223,7 +224,7 @@ pub(super) fn lookup(
     }
     if source_name == "log10f.c" && build.version == (2, 3, 3) && build.build == 163 {
         let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
-        if fingerprint == LOG10F_OCARINA_SOURCE_TEXT_FINGERPRINT {
+        if LOG10F_OCARINA_SOURCE_TEXT_FINGERPRINTS.contains(&fingerprint) {
             return decode(LOG10F_OCARINA_CAPTURE).map(Some);
         }
         if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
