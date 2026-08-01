@@ -1136,6 +1136,11 @@ impl Parser {
             std::mem::take(&mut self.cxx_deferred_weak_materialization_requests)
                 .into_iter()
                 .collect::<std::collections::HashSet<_>>();
+        cxx_vtables::order_owned_virtual_function_groups(
+            &mut self.cxx_inline_materializations,
+            &globals,
+            &self.cxx_classes,
+        )?;
         let mut early_materializations = Vec::new();
         for function in std::mem::take(&mut self.cxx_inline_materializations) {
             if referenced_functions.contains(&function.name)

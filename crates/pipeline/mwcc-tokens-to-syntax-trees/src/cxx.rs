@@ -3931,6 +3931,7 @@ impl Parser {
         })?;
         let owner = encode_qualified_scope(&[concrete_owner])?;
         let mut relocations = Vec::with_capacity(definitions.len());
+        let mut materializations = Vec::new();
 
         for definition in &definitions {
             let mut parameter_code = String::new();
@@ -3960,6 +3961,7 @@ impl Parser {
                 && !self
                     .cxx_inline_materializations
                     .iter()
+                    .chain(materializations.iter())
                     .any(|function| function.name == target)
             {
                 let mut parameters = vec![Parameter {
@@ -4054,7 +4056,7 @@ impl Parser {
                     }
                     TemplateVirtualBody::Unmaterialized => unreachable!(),
                 };
-                self.cxx_inline_materializations.push(Function {
+                materializations.push(Function {
                     return_type: definition.dispatch.return_type,
                     name: target,
                     is_static: false,
@@ -4074,6 +4076,12 @@ impl Parser {
                 });
             }
         }
+        // MWCC emits trivial weak leaves before a nontrivial inline virtual
+        // body from the same concrete template group, even when the dispatcher
+        // is the first source declaration. Preserve declaration order within
+        // each partition so vtable slot order and body order remain independent.
+        materializations.sort_by_key(|function| !function.statements.is_empty());
+        self.cxx_inline_materializations.extend(materializations);
         Ok(relocations)
     }
 
@@ -4119,7 +4127,7 @@ impl Parser {
                     .resolve_scoped_cxx_class_name(&source_base_name)
                     .or_else(|| self.struct_typedefs.get(&source_base_name).cloned())
                     .unwrap_or(source_base_name);
-                let base_class = self.cxx_classes.get(&base_name).cloned();
+                let mut base_class = self.cxx_classes.get(&base_name).cloned();
                 let template_primary = base_name.split('<').next().unwrap_or(&base_name);
                 let qualified_template_primary = self.qualify_cxx_class_name(template_primary);
                 let template_virtual_slots = self
@@ -4151,6 +4159,35 @@ impl Parser {
                             "base class '{base_name}' must be defined before '{name}'"
                         ))
                     })?;
+                if base_class.is_none() {
+                    if let Some(virtual_slots) = template_virtual_slots {
+                        let virtual_definitions = self.instantiate_template_virtual_definitions(
+                            &base_name,
+                            template_primary,
+                        )?;
+                        let concrete = ClassLayout {
+                            nonvirtual_size: base.size,
+                            is_polymorphic: true,
+                            vptr_offset: Some(0),
+                            virtual_slots,
+                            virtual_definitions,
+                            vtable_components: vec![VtableComponent {
+                                object_offset: 0,
+                                vptr_offset: 0,
+                                virtual_slots,
+                                virtual_destructor_slot: None,
+                                virtual_destructor_is_pure: false,
+                            }],
+                            ..ClassLayout::default()
+                        };
+                        if !self.cxx_class_declaration_order.contains(&base_name) {
+                            self.cxx_class_declaration_order.push(base_name.clone());
+                        }
+                        std::sync::Arc::make_mut(&mut self.cxx_classes)
+                            .insert(base_name.clone(), concrete.clone());
+                        base_class = Some(concrete);
+                    }
+                }
                 let inherited_virtual_bases = base_class
                     .as_ref()
                     .map(|base| base.virtual_bases.clone())
@@ -4252,12 +4289,6 @@ impl Parser {
                         class.has_virtual_destructor = base_class.has_virtual_destructor;
                         class.virtual_destructor_slot = base_class.virtual_destructor_slot;
                         class.virtual_destructor_is_pure = base_class.virtual_destructor_is_pure;
-                    } else if template_virtual_slots.is_some() {
-                        class.virtual_definitions = self
-                            .instantiate_template_virtual_definitions(
-                                &base_name,
-                                template_primary,
-                            )?;
                     }
                 }
                 if let Some(base_class) = base_class {

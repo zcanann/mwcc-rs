@@ -98,6 +98,74 @@ pub(super) fn position_after_functions(globals: &mut [GlobalDeclaration], functi
     }
 }
 
+/// Order late weak virtual bodies as the dependency closure of each owned
+/// vtable: most-derived class first, then its primary bases. Source order is
+/// retained inside a class group. This is distinct from symbol-table ordering;
+/// it controls the physical `.text` transaction emitted after ordinary bodies.
+pub(super) fn order_owned_virtual_function_groups(
+    functions: &mut Vec<Function>,
+    globals: &[GlobalDeclaration],
+    classes: &HashMap<String, ClassLayout>,
+) -> Compilation<()> {
+    let original = std::mem::take(functions);
+    let mut ordered = Vec::with_capacity(original.len());
+    let mut consumed = HashSet::new();
+
+    for vtable in globals
+        .iter()
+        .filter(|global| global.name.starts_with("__vt__") && !global.is_weak)
+    {
+        let Some((root_name, root)) = classes.iter().find(|(name, _)| {
+            vtable_name(name)
+                .ok()
+                .as_deref()
+                .is_some_and(|candidate| candidate == vtable.name)
+        }) else {
+            continue;
+        };
+        let targets = vtable
+            .data_relocations
+            .iter()
+            .map(|(_, target, _)| target.as_str())
+            .collect::<HashSet<_>>();
+        let mut chain = vec![(root_name.as_str(), root)];
+        let mut current = root;
+        while let Some(base) = current
+            .bases
+            .iter()
+            .find(|base| !base.is_virtual && base.offset == 0)
+        {
+            let Some(layout) = classes.get(&base.name) else {
+                break;
+            };
+            chain.push((base.name.as_str(), layout));
+            current = layout;
+        }
+
+        for (class_name, _) in chain {
+            let encoded = encode_qualified_scope(&class_name.split("::").collect::<Vec<_>>())?;
+            let owner_marker = format!("__{encoded}F");
+            for (index, function) in original.iter().enumerate() {
+                if !consumed.contains(&index)
+                    && targets.contains(function.name.as_str())
+                    && function.name.contains(&owner_marker)
+                {
+                    consumed.insert(index);
+                    ordered.push(function.clone());
+                }
+            }
+        }
+    }
+    ordered.extend(
+        original
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, function)| (!consumed.contains(&index)).then_some(function)),
+    );
+    *functions = ordered;
+    Ok(())
+}
+
 /// Materialize weak vtable groups needed by inline base destructors reached
 /// from an already-owned derived vtable. A deleting destructor restores each
 /// polymorphic base's address point while unwinding; the corresponding inline
