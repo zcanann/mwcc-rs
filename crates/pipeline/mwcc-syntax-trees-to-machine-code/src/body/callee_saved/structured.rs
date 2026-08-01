@@ -943,10 +943,27 @@ impl Generator {
                 )
             })
             .flatten();
+        let compact_narrow_scalar_frame =
+            super::structured_compact_scalar_frame::StructuredCompactScalarFrame::plan(
+                function,
+                self.behavior.frame_convention,
+                frame_arrays.is_empty(),
+                &frame_scalar_locals,
+                &frame_scalar_parameters,
+                &aggregate_frame_locals,
+                &eager_saved_locals,
+                &saved_parameters,
+                &deferred_saved_locals,
+            );
+        if compact_narrow_scalar_frame.is_some() {
+            self.owns_link_register_schedule = true;
+            self.structured_compact_narrow_scalar_frame = true;
+        }
         let linkage_first_scalar_local_table_bytes = if frame_arrays.is_empty()
             && frame_scalar_parameters.is_empty()
             && frame_publication.is_none()
             && self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && compact_narrow_scalar_frame.is_none()
         {
             i16::try_from(frame_scalar_locals.len() * 4)
                 .map_err(|_| Diagnostic::error("structured scalar frame is too large"))?
@@ -1964,6 +1981,7 @@ impl Generator {
                     || saved_float_count != 0
                     || (unused_frame_array && !aggregate_frame_locals.is_empty())
                     || !frame_scalar_parameters.is_empty()
+                    || compact_narrow_scalar_frame.is_some()
                 {
                     8
                 } else {
@@ -3419,13 +3437,17 @@ impl Generator {
             self.locations.keys().cloned().collect();
         let statement_start = if dense_frame {
             dense_statement_start
-        } else if entry_parameter_alias
-            .as_ref()
-            .is_some_and(|alias| alias.boundary == EntryAliasBoundary::AfterFirstStatement)
-        {
+        } else if matches!(
+            entry_parameter_alias.as_ref().map(|alias| alias.boundary),
+            Some(EntryAliasBoundary::AfterStatement(_))
+        ) {
             let alias = entry_parameter_alias.as_ref().expect("checked above");
+            let EntryAliasBoundary::AfterStatement(alias_statement) = alias.boundary else {
+                unreachable!("checked above")
+            };
+            let consumed = alias_statement + 1;
             self.emit_structured_statements(
-                &structured_function.statements[..1],
+                &structured_function.statements[..consumed],
                 structured_function,
                 &ephemeral_locals,
                 false,
@@ -3440,10 +3462,10 @@ impl Generator {
                 .register = alias.home;
             self.release_dead_ephemeral_float_locations(
                 &ephemeral_locals,
-                &structured_function.statements[1..],
+                &structured_function.statements[consumed..],
                 structured_function.return_expression.as_ref(),
             );
-            1
+            consumed
         } else {
             0
         };
@@ -4535,7 +4557,14 @@ impl Generator {
                     if self.try_emit_frame_aggregate_call_assignment(name, value)? {
                         continue;
                     }
-                    if self.frame_slots.contains_key(name) {
+                    if let Some(slot) = self.frame_slots.get(name) {
+                        if super::structured_frame_storage_identity::preserves_narrow_storage(
+                            name,
+                            value,
+                            slot.value_type,
+                        ) {
+                            continue;
+                        }
                         self.emit_store(&Expression::Variable(name.clone()), value)
                             .map_err(|mut diagnostic| {
                                 diagnostic.message.push_str(&format!(

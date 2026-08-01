@@ -137,6 +137,30 @@ impl Generator {
         &mut self,
         plan: GlobalConstantStoreReturnPlan,
     ) -> Compilation<()> {
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && self.behavior.global_addressing == GlobalAddressing::Absolute
+            && self.behavior.absolute_access_style
+                == mwcc_versions::AbsoluteAccessStyle::FoldedDisplacement
+            && plan.stores.len() == 1
+        {
+            let (global, pointee) = &plan.stores[0];
+            let base = self.fresh_virtual_general_preferring(Eabi::general_result().number);
+            self.emit_address_high(base, global);
+            self.load_integer_constant(GENERAL_SCRATCH, i64::from(plan.stored));
+            self.record_relocation(RelocationKind::Addr16Lo, global);
+            self.output.instructions.push(crate::expressions::displacement_store(
+                *pointee,
+                GENERAL_SCRATCH,
+                base,
+                0,
+            )?);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: Eabi::general_result().number,
+                a: 0,
+                immediate: plan.returned,
+            });
+            return Ok(());
+        }
         self.load_integer_constant(GENERAL_SCRATCH, i64::from(plan.stored));
         let result_instruction = Instruction::AddImmediate {
             d: Eabi::general_result().number,

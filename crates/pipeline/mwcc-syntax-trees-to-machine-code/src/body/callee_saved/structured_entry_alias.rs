@@ -13,7 +13,7 @@ pub(super) struct EntryParameterAlias {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EntryAliasBoundary {
-    AfterFirstStatement,
+    AfterStatement(usize),
     AfterFirstConditionTerm,
 }
 
@@ -34,7 +34,22 @@ pub(super) fn plan_first_call_alias(
                 )
         })
     };
-    if let Statement::Expression(Expression::Call { arguments, .. }) = statements.first()? {
+    let leading_call = statements.iter().enumerate().find_map(|(index, statement)| {
+        let prefix_is_safe = statements[..index].iter().all(|statement| {
+            matches!(statement,
+                Statement::Assign {
+                    value: Expression::IntegerLiteral(_),
+                    ..
+                })
+        });
+        match statement {
+            Statement::Expression(Expression::Call { arguments, .. }) if prefix_is_safe => {
+                Some((index, arguments))
+            }
+            _ => None,
+        }
+    });
+    if let Some((statement_index, arguments)) = leading_call {
         let (first_argument, later_arguments) = arguments.split_first()?;
         if crate::analysis::expression_has_call(first_argument) {
             return None;
@@ -53,7 +68,7 @@ pub(super) fn plan_first_call_alias(
         return Some(EntryParameterAlias {
             name: name.clone(),
             home: *home,
-            boundary: EntryAliasBoundary::AfterFirstStatement,
+            boundary: EntryAliasBoundary::AfterStatement(statement_index),
         });
     }
 
@@ -171,7 +186,31 @@ mod tests {
 
         assert_eq!(alias.name, "pointer");
         assert_eq!(alias.home, 31);
-        assert_eq!(alias.boundary, EntryAliasBoundary::AfterFirstStatement);
+        assert_eq!(alias.boundary, EntryAliasBoundary::AfterStatement(0));
+    }
+
+    #[test]
+    fn forwards_across_a_leading_constant_assignment() {
+        let statements = vec![
+            Statement::Assign {
+                name: "result".to_string(),
+                value: Expression::IntegerLiteral(1280),
+            },
+            Statement::Expression(Expression::Call {
+                name: "sink".to_string(),
+                arguments: vec![
+                    Expression::Variable("pointer".to_string()),
+                    Expression::IntegerLiteral(0),
+                ],
+            }),
+        ];
+        let saved = vec![("pointer".to_string(), 31, 3)];
+
+        let alias =
+            plan_first_call_alias(&statements, &saved, &[pointer_parameter("pointer")])
+                .expect("constant prefix preserves the incoming ABI register");
+
+        assert_eq!(alias.boundary, EntryAliasBoundary::AfterStatement(1));
     }
 
     #[test]
@@ -210,7 +249,7 @@ mod tests {
 
         assert_eq!(alias.name, "pointer");
         assert_eq!(alias.home, 31);
-        assert_eq!(alias.boundary, EntryAliasBoundary::AfterFirstStatement);
+        assert_eq!(alias.boundary, EntryAliasBoundary::AfterStatement(0));
     }
 
     #[test]

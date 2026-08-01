@@ -652,6 +652,7 @@ fn lower_function_body(
         retained_float_compare_value: None,
         transient_condition_float_call_results: Default::default(),
         frame_slots: HashMap::new(),
+        structured_compact_narrow_scalar_frame: false,
         structured_aggregate_call_copy_plan: None,
         structured_by_value_aggregate_plan: None,
         written_slots: HashSet::new(),
@@ -1164,6 +1165,7 @@ fn lower_function_body(
     generator.reuse_structured_frame_pointer_updates();
     generator.schedule_structured_broad_global_base_loop();
     generator.schedule_structured_global_byte_loop();
+    generator.finalize_structured_compact_narrow_scalar_frame();
     if generator.structured_nonreturning {
         generator.normalize_nonreturning_materialization_copies();
     }

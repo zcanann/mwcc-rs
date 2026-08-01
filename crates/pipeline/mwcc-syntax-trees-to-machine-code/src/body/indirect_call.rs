@@ -9,6 +9,7 @@ use super::*;
 
 mod guarded_indexed;
 mod guarded_shared_global;
+mod indexed_frame;
 mod indexed_mixed_arguments;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -258,6 +259,9 @@ impl Generator {
         target: &Expression,
         arguments: &[Expression],
     ) -> Compilation<()> {
+        if self.try_emit_frame_indexed_global_indirect_call(target, arguments)? {
+            return Ok(());
+        }
         if self.try_emit_shared_global_base_indirect_call(target, arguments)? {
             return Ok(());
         }

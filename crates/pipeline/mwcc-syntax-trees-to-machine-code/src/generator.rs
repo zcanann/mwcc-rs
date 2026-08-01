@@ -608,6 +608,9 @@ pub(crate) struct Generator {
     /// Address-taken variables and their stack-frame slots. A name here is
     /// frame-resident: `&v` and type-punned accesses read/write its slot.
     pub(crate) frame_slots: HashMap<String, FrameSlot>,
+    /// Source-proven build-163 frame that overlaps one narrow scratch slot
+    /// with the logical local table and owns its final linkage schedule.
+    pub(crate) structured_compact_narrow_scalar_frame: bool,
     /// Outgoing by-value aggregate copies owned by the allocator-backed
     /// structured body. Source object slots remain in `frame_slots`; this plan
     /// describes the separate caller-owned copies below them.

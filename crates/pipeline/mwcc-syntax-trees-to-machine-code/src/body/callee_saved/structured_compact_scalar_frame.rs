@@ -1,0 +1,285 @@
+//! Compact linkage-first frames for a call-filled narrow scalar scratch slot.
+//!
+//! Build 163 overlaps the logical local-table lane with the physical byte or
+//! halfword slot when a retained entry receiver and a returned status value are
+//! the only other survivors.  Keeping that source proof out of generic frame
+//! reconciliation prevents unrelated address-taken locals from being shrunk.
+
+#[allow(unused_imports)]
+use super::*;
+
+pub(super) struct StructuredCompactScalarFrame;
+
+impl StructuredCompactScalarFrame {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn plan(
+        function: &Function,
+        convention: FrameConvention,
+        frame_arrays_empty: bool,
+        frame_scalar_locals: &[&LocalDeclaration],
+        frame_scalar_parameters: &[&mwcc_syntax_trees::Parameter],
+        aggregate_frame_locals: &[&LocalDeclaration],
+        eager_saved_locals: &[&LocalDeclaration],
+        saved_parameters: &[&mwcc_syntax_trees::Parameter],
+        deferred_saved_locals: &[&LocalDeclaration],
+    ) -> Option<Self> {
+        if convention != FrameConvention::LinkageFirst
+            || !frame_arrays_empty
+            || !frame_scalar_parameters.is_empty()
+            || !aggregate_frame_locals.is_empty()
+            || !eager_saved_locals.is_empty()
+        {
+            return None;
+        }
+        let [scratch] = frame_scalar_locals else {
+            return None;
+        };
+        if !matches!(
+            scratch.declared_type,
+            Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort
+        ) {
+            return None;
+        }
+        let ([parameter], [result]) = (saved_parameters, deferred_saved_locals) else {
+            return None;
+        };
+        if !matches!(
+            function.return_expression.as_ref(),
+            Some(Expression::Variable(name)) if name == &result.name
+        ) {
+            return None;
+        }
+        let [
+            Statement::Assign {
+                name,
+                value: Expression::IntegerLiteral(_),
+            },
+            Statement::Expression(Expression::Call { arguments, .. }),
+            ..
+        ] = function.statements.as_slice()
+        else {
+            return None;
+        };
+        if name != &result.name
+            || !matches!(arguments.first(), Some(Expression::Variable(name)) if name == &parameter.name)
+        {
+            return None;
+        }
+        Some(Self)
+    }
+}
+
+impl Generator {
+    /// Complete the measured physical schedule after generic allocation and
+    /// latency filling have exposed the compact r30/r31 frame transaction.
+    pub(crate) fn finalize_structured_compact_narrow_scalar_frame(&mut self) {
+        if !self.structured_compact_narrow_scalar_frame
+            || self.output.instructions.len() < 33
+            || !matches!(&self.output.instructions[..8], [
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -24 },
+                Instruction::StoreWord { s: 31, a: 1, offset: 20 },
+                Instruction::StoreWord { s: 30, a: 1, offset: 16 },
+                Instruction::Or { a: 30, s: 3, b: 3 },
+                Instruction::AddImmediate { d: 31, a: 0, .. },
+                Instruction::AddImmediate { d: 4, a: 0, .. },
+            ])
+        {
+            return;
+        }
+
+        let result = self.output.instructions[6].clone();
+        let second_argument = self.output.instructions[7].clone();
+        self.output.instructions[..8].clone_from_slice(&[
+            Instruction::MoveFromLinkRegister { d: 0 },
+            second_argument,
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -24,
+            },
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 20,
+            },
+            result,
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 16,
+            },
+            Instruction::AddImmediate {
+                d: 30,
+                a: 3,
+                immediate: 0,
+            },
+        ]);
+
+        for instruction in &mut self.output.instructions[8..] {
+            if matches!(instruction, Instruction::Or { a: 3, s: 30, b: 30 }) {
+                *instruction = Instruction::AddImmediate {
+                    d: 3,
+                    a: 30,
+                    immediate: 0,
+                };
+            }
+        }
+        if let Some(instruction) = self.output.instructions.iter_mut().find(|instruction| {
+            matches!(instruction, Instruction::AddImmediate { d: 31, a: 3, immediate: 0 })
+        }) {
+            *instruction = Instruction::Or {
+                a: 31,
+                s: 3,
+                b: 3,
+            };
+        }
+
+        let end = self.output.instructions.len();
+        if matches!(&self.output.instructions[end - 7..], [
+            Instruction::LoadWord { d: 0, a: 1, offset: 28 },
+            Instruction::Or { a: 3, s: 31, b: 31 },
+            Instruction::LoadWord { d: 31, a: 1, offset: 20 },
+            Instruction::LoadWord { d: 30, a: 1, offset: 16 },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::AddImmediate { d: 1, a: 1, immediate: 24 },
+            Instruction::BranchToLinkRegister,
+        ]) {
+            self.output.instructions[end - 7..].clone_from_slice(&[
+                Instruction::Or {
+                    a: 3,
+                    s: 31,
+                    b: 31,
+                },
+                Instruction::LoadWord {
+                    d: 31,
+                    a: 1,
+                    offset: 20,
+                },
+                Instruction::LoadWord {
+                    d: 30,
+                    a: 1,
+                    offset: 16,
+                },
+                Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: 24,
+                },
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 4,
+                },
+                Instruction::MoveToLinkRegister { s: 0 },
+                Instruction::BranchToLinkRegister,
+            ]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mwcc_syntax_trees::{LocalDeclaration, Parameter};
+
+    fn local(name: &str, declared_type: Type) -> LocalDeclaration {
+        LocalDeclaration {
+            declared_type,
+            name: name.into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        }
+    }
+
+    fn function() -> Function {
+        Function {
+            return_type: Type::Int,
+            name: "dispatch".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![Parameter {
+                parameter_type: Type::Pointer(Pointee::Int),
+                name: "buffer".into(),
+            }],
+            locals: vec![local("result", Type::Int), local("command", Type::UnsignedChar)],
+            statements: vec![
+                Statement::Assign {
+                    name: "result".into(),
+                    value: Expression::IntegerLiteral(1280),
+                },
+                Statement::Expression(Expression::Call {
+                    name: "position".into(),
+                    arguments: vec![
+                        Expression::Variable("buffer".into()),
+                        Expression::IntegerLiteral(0),
+                    ],
+                }),
+            ],
+            guards: Vec::new(),
+            return_expression: Some(Expression::Variable("result".into())),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
+
+    #[test]
+    fn recognizes_the_overlapped_narrow_scratch_layout() {
+        let function = function();
+        let scratch = [&function.locals[1]];
+        let saved = [&function.parameters[0]];
+        let deferred = [&function.locals[0]];
+
+        assert!(StructuredCompactScalarFrame::plan(
+            &function,
+            FrameConvention::LinkageFirst,
+            true,
+            &scratch,
+            &[],
+            &[],
+            &[],
+            &saved,
+            &deferred,
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn rejects_a_full_word_scratch_slot() {
+        let mut function = function();
+        function.locals[1].declared_type = Type::Int;
+        let scratch = [&function.locals[1]];
+        let saved = [&function.parameters[0]];
+        let deferred = [&function.locals[0]];
+
+        assert!(StructuredCompactScalarFrame::plan(
+            &function,
+            FrameConvention::LinkageFirst,
+            true,
+            &scratch,
+            &[],
+            &[],
+            &[],
+            &saved,
+            &deferred,
+        )
+        .is_none());
+    }
+}
