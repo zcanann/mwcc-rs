@@ -1910,6 +1910,25 @@ impl Generator {
             self.emit_comma_side_effect(left)?;
             return self.evaluate_register_store_value(right, value_type, destination);
         }
+        // Assigning a narrow call result to a word-sized register local performs
+        // the integral promotion at the definition. Emit that conversion
+        // directly from the ABI result register so `s32 saved = short_call()` is
+        // one `extsh saved,r3`, not `mr saved,r3; extsh saved,saved`.
+        if let Expression::Call { name, arguments } = value {
+            if let Some(return_type) = self.call_return_types.get(name).copied() {
+                if return_type.width() < value_type.width() && return_type.width() < 32 {
+                    let result = Eabi::general_result().number;
+                    self.emit_call(name, arguments, Some(result), false)?;
+                    self.emit_widen(
+                        destination,
+                        result,
+                        return_type.width(),
+                        self.signed_of(return_type),
+                    );
+                    return Ok(());
+                }
+            }
+        }
         // References are represented as struct pointers after parsing. Binding
         // one to an indexed aggregate lvalue stores the element ADDRESS, not
         // the aggregate's first word. Keep this expectation-driven conversion
