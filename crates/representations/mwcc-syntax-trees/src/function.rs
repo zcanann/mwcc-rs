@@ -540,7 +540,11 @@ pub struct TranslationUnit {
 /// executable lowering rather than RTTI/vtable materialization.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CxxAbiClass {
+    /// Stable semantic identity used to join recovered class relationships.
     pub source_name: String,
+    /// Source-like spelling stored in the runtime type-name object. Concrete
+    /// template identities use ABI encodings internally, so this is distinct.
+    pub rtti_name: String,
     pub encoded_name: String,
     pub bases: Vec<CxxAbiBase>,
     pub vtable_components: Vec<CxxAbiVtableComponent>,

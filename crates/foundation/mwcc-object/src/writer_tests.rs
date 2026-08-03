@@ -279,6 +279,65 @@ fn owned_rtti_closures_schedule_base_tables_then_vtable_transactions() {
 }
 
 #[test]
+fn owned_rtti_dispatcher_precedes_template_virtual_leaves_in_slot_order() {
+    let relocation = |offset, target: &str| crate::DataRelocation {
+        offset,
+        target: target.into(),
+        addend: 0,
+    };
+    let mut dispatcher = weak_function("dispatch__12Receiver<1E>Fv");
+    dispatcher.text = &[0x60, 0, 0, 0, 0x4e, 0x80, 0, 0x20];
+    let functions = [
+        weak_function("first__12Receiver<1E>Fv"),
+        weak_function("second__12Receiver<1E>Fv"),
+        dispatcher,
+    ];
+    let vtable = DataObject {
+        name: "__vt__12Receiver<1E>",
+        size: 20,
+        alignment: 4,
+        comment_alignment: 4,
+        initial_bytes: Some(vec![0; 20]),
+        is_const: false,
+        force_full_data_section: true,
+        is_static: false,
+        force_active: false,
+        is_explicit_zero: false,
+        preassigned_anonymous_ordinal: None,
+        preassigned_ordinal_advances_counter: false,
+        preassigned_pool_prefix_credit: 0,
+        relocations: vec![
+            relocation(0, "__RTTI__12Receiver<1E>"),
+            relocation(8, "dispatch__12Receiver<1E>Fv"),
+            relocation(12, "first__12Receiver<1E>Fv"),
+            relocation(16, "second__12Receiver<1E>Fv"),
+        ],
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: true,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: None,
+    };
+    let objects = [vtable];
+    let schedule = data_relocation_order(&objects, &functions, &[0], true);
+    let targets: Vec<&str> = schedule
+        .entries
+        .iter()
+        .map(|&(object, relocation)| objects[object].relocations[relocation].target.as_str())
+        .collect();
+    assert_eq!(
+        targets,
+        [
+            "__RTTI__12Receiver<1E>",
+            "dispatch__12Receiver<1E>Fv",
+            "first__12Receiver<1E>Fv",
+            "second__12Receiver<1E>Fv",
+        ]
+    );
+}
+
+#[test]
 fn owned_rtti_data_layout_interleaves_names_bases_and_vtables() {
     let object = |name: &'static str, relocations: Vec<crate::DataRelocation>| DataObject {
         name,
@@ -308,11 +367,14 @@ fn owned_rtti_data_layout_interleaves_names_bases_and_vtables() {
         addend: 0,
     };
     let objects = vec![
-        object("@base-name", Vec::new()),
+        object("@leaf-name", Vec::new()),
         object("__vt__4Boss", vec![relocation(0, "__RTTI__4Boss")]),
         object("@boss-bases", vec![relocation(0, "__RTTI__4Base")]),
         object("@boss-name", Vec::new()),
-        object("__RTTI__4Base", vec![relocation(0, "@base-name")]),
+        object(
+            "__RTTI__4Base",
+            vec![relocation(0, "@base-name"), relocation(4, "@base-bases")],
+        ),
         object(
             "__RTTI__4Boss",
             vec![
@@ -320,18 +382,52 @@ fn owned_rtti_data_layout_interleaves_names_bases_and_vtables() {
                 relocation(4, "@boss-bases"),
             ],
         ),
+        object("@base-name", Vec::new()),
+        object("@base-bases", vec![relocation(0, "__RTTI__4Leaf")]),
+        object("__RTTI__4Leaf", vec![relocation(0, "@leaf-name")]),
     ];
 
     assert_eq!(
         owned_rtti_data_layout_order(&objects),
-        [3, 0, 2, 1],
-        "derived name, newly reached base name, bases, vtable"
+        [0, 6, 7, 3, 2, 1],
+        "base closure from leaf to root, then vtable"
     );
     assert_eq!(
         owned_rtti_local_symbol_order(&objects),
-        [3, 0, 4, 2, 5],
-        "derived name, base name and handle, bases, derived handle"
+        [3, 6, 0, 8, 7, 4, 2, 5],
+        "root name, recursive base transactions, root bases and handle"
     );
+}
+
+#[test]
+fn owned_rtti_frontier_follows_the_late_weak_body_group() {
+    let mut ordinary = weak_function("ordinary");
+    ordinary.weak_inline = false;
+    let weak = weak_function("weak");
+    let object = DataObject {
+        name: "@rtti-name",
+        size: 4,
+        alignment: 4,
+        comment_alignment: 4,
+        initial_bytes: Some(vec![0; 4]),
+        is_const: false,
+        force_full_data_section: true,
+        is_static: true,
+        force_active: false,
+        is_explicit_zero: false,
+        preassigned_anonymous_ordinal: None,
+        preassigned_ordinal_advances_counter: false,
+        preassigned_pool_prefix_credit: 0,
+        relocations: Vec::new(),
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: false,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: None,
+    };
+
+    assert_eq!(owned_rtti_source_frontier(&[object], &[ordinary, weak], &[0]), 1);
 }
 
 #[test]

@@ -148,7 +148,7 @@ pub fn materialize(
         }
 
         let name = anonymous_name(class, "name");
-        let mut name_bytes = class.source_name.as_bytes().to_vec();
+        let mut name_bytes = class.rtti_name.as_bytes().to_vec();
         name_bytes.push(0);
         let mut name_global = data_global(name.clone(), name_bytes, Vec::new(), true, false, 4);
         if let Some(&(non_static_functions_before, functions_before)) =
@@ -594,6 +594,7 @@ mod tests {
     fn class(name: &str, bases: &[(&str, u32)]) -> CxxAbiClass {
         CxxAbiClass {
             source_name: name.to_string(),
+            rtti_name: name.to_string(),
             encoded_name: format!("{}{name}", name.len()),
             bases: bases
                 .iter()
@@ -891,6 +892,7 @@ mod tests {
     fn vtable_headers_and_relocations_have_independent_abi_order() {
         let class = CxxAbiClass {
             source_name: "E".to_string(),
+            rtti_name: "E".to_string(),
             encoded_name: "1E".to_string(),
             bases: Vec::new(),
             vtable_components: vec![

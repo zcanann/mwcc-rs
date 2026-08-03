@@ -1275,6 +1275,7 @@ impl Parser {
                     .collect();
                 Ok(mwcc_syntax_trees::CxxAbiClass {
                     source_name: name.clone(),
+                    rtti_name: crate::cxx::rtti_source_name(name),
                     encoded_name,
                     bases: class
                         .bases

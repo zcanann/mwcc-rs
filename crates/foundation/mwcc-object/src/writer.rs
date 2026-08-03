@@ -122,6 +122,14 @@ fn text_relocation_order(relocations: &[TextRelocation]) -> Vec<&TextRelocation>
     order
 }
 
+/// Encoded owning class in a CodeWarrior member-function symbol.
+fn member_function_owner(symbol: &str) -> Option<&str> {
+    let encoded = symbol.rsplit_once("__")?.1;
+    let digit_count = encoded.bytes().take_while(u8::is_ascii_digit).count();
+    let name_length = encoded.get(..digit_count)?.parse::<usize>().ok()?;
+    encoded.get(..digit_count.checked_add(name_length)?)
+}
+
 fn data_relocation_order(
     objects: &[DataObject<'_>],
     functions: &[FunctionObject<'_>],
@@ -218,7 +226,7 @@ fn data_relocation_order(
         for function in functions
             .iter()
             .rev()
-            .filter(|function| function.weak_inline)
+            .filter(|function| function.weak_inline && !function.name.starts_with("__dt__"))
         {
             if let Some((relocation_index, _)) = object
                 .relocations
@@ -226,12 +234,47 @@ fn data_relocation_order(
                 .enumerate()
                 .find(|(index, relocation)| !emitted[*index] && relocation.target == function.name)
             {
-                closure_order.push((object_index, relocation_index));
-                emitted[relocation_index] = true;
+                // A nontrivial concrete-template dispatcher is emitted after
+                // its trivial virtual leaves, but the vtable transaction opens
+                // with the dispatcher and then visits those leaves in slot
+                // order. Other all-inline groups retain reverse body order.
+                let owner = (function.text.len() > 4)
+                    .then(|| member_function_owner(function.name))
+                    .flatten()
+                    .filter(|owner| owner.contains('<'));
+                if let Some(owner) = owner {
+                    let mut group: Vec<usize> = object
+                        .relocations
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(group_index, group_relocation)| {
+                            (!emitted[group_index]
+                                && member_function_owner(&group_relocation.target) == Some(owner))
+                            .then_some(group_index)
+                        })
+                        .collect();
+                    group.sort_by_key(|&group_index| object.relocations[group_index].offset);
+                    for group_index in group {
+                        closure_order.push((object_index, group_index));
+                        emitted[group_index] = true;
+                    }
+                } else {
+                    closure_order.push((object_index, relocation_index));
+                    emitted[relocation_index] = true;
+                }
             }
         }
         for relocation_index in (0..object.relocations.len()).rev() {
-            if !emitted[relocation_index] {
+            if !emitted[relocation_index]
+                && !object.relocations[relocation_index].target.starts_with("__dt__")
+            {
+                closure_order.push((object_index, relocation_index));
+            }
+        }
+        for relocation_index in (0..object.relocations.len()).rev() {
+            if !emitted[relocation_index]
+                && object.relocations[relocation_index].target.starts_with("__dt__")
+            {
                 closure_order.push((object_index, relocation_index));
             }
         }
@@ -263,6 +306,53 @@ fn data_relocation_order(
 /// `.sdata`, but their relocations provide the edges needed to recover this
 /// transaction order without encoding class names in the object layer.
 fn owned_rtti_data_layout_order(objects: &[DataObject<'_>]) -> Vec<usize> {
+    fn append_handle_closure(
+        handle_index: usize,
+        objects: &[DataObject<'_>],
+        by_name: &HashMap<&str, usize>,
+        order: &mut Vec<usize>,
+        seen_handles: &mut std::collections::HashSet<usize>,
+        seen_objects: &mut std::collections::HashSet<usize>,
+    ) {
+        if !seen_handles.insert(handle_index) {
+            return;
+        }
+        let relocation_target = |offset: u32| {
+            objects[handle_index]
+                .relocations
+                .iter()
+                .find(|relocation| relocation.offset == offset)
+                .and_then(|relocation| by_name.get(relocation.target.as_str()).copied())
+        };
+        let bases_index = relocation_target(4);
+        if let Some(bases_index) = bases_index {
+            for base_handle_index in objects[bases_index]
+                .relocations
+                .iter()
+                .filter_map(|relocation| by_name.get(relocation.target.as_str()).copied())
+            {
+                append_handle_closure(
+                    base_handle_index,
+                    objects,
+                    by_name,
+                    order,
+                    seen_handles,
+                    seen_objects,
+                );
+            }
+        }
+        if let Some(name_index) = relocation_target(0) {
+            if seen_objects.insert(name_index) {
+                order.push(name_index);
+            }
+        }
+        if let Some(bases_index) = bases_index {
+            if seen_objects.insert(bases_index) {
+                order.push(bases_index);
+            }
+        }
+    }
+
     let by_name: HashMap<&str, usize> = objects
         .iter()
         .enumerate()
@@ -346,7 +436,9 @@ fn owned_rtti_data_layout_order(objects: &[DataObject<'_>]) -> Vec<usize> {
         }
         return order;
     }
+    drop(append);
 
+    let mut seen_handles = std::collections::HashSet::new();
     for (vtable_index, vtable) in objects.iter().enumerate().filter(|(_, object)| {
         object.name.starts_with("__vt__")
             && object
@@ -362,22 +454,17 @@ fn owned_rtti_data_layout_order(objects: &[DataObject<'_>]) -> Vec<usize> {
         else {
             continue;
         };
-        if let Some(name_index) = relocation_target(handle_index, 0) {
-            append(name_index);
+        append_handle_closure(
+            handle_index,
+            objects,
+            &by_name,
+            &mut order,
+            &mut seen_handles,
+            &mut seen,
+        );
+        if seen.insert(vtable_index) {
+            order.push(vtable_index);
         }
-        if let Some(bases_index) = relocation_target(handle_index, 4) {
-            for base_handle_index in objects[bases_index]
-                .relocations
-                .iter()
-                .filter_map(|relocation| by_name.get(relocation.target.as_str()).copied())
-            {
-                if let Some(base_name_index) = relocation_target(base_handle_index, 0) {
-                    append(base_name_index);
-                }
-            }
-            append(bases_index);
-        }
-        append(vtable_index);
     }
     order
 }
@@ -388,6 +475,49 @@ fn owned_rtti_data_layout_order(objects: &[DataObject<'_>]) -> Vec<usize> {
 /// table follows the newly reached base handle. Vtables themselves remain in
 /// the later global run.
 fn owned_rtti_local_symbol_order(objects: &[DataObject<'_>]) -> Vec<usize> {
+    fn append_local(
+        index: usize,
+        objects: &[DataObject<'_>],
+        order: &mut Vec<usize>,
+        seen: &mut std::collections::HashSet<usize>,
+    ) {
+        if objects[index].is_static && seen.insert(index) {
+            order.push(index);
+        }
+    }
+
+    fn append_handle_transaction(
+        handle_index: usize,
+        objects: &[DataObject<'_>],
+        by_name: &HashMap<&str, usize>,
+        order: &mut Vec<usize>,
+        seen: &mut std::collections::HashSet<usize>,
+    ) {
+        let relocation_target = |offset: u32| {
+            objects[handle_index]
+                .relocations
+                .iter()
+                .find(|relocation| relocation.offset == offset)
+                .and_then(|relocation| by_name.get(relocation.target.as_str()).copied())
+        };
+        if let Some(name_index) = relocation_target(0) {
+            append_local(name_index, objects, order, seen);
+        }
+        let bases_index = relocation_target(4);
+        if let Some(bases_index) = bases_index {
+            let base_handles: Vec<usize> = objects[bases_index]
+                .relocations
+                .iter()
+                .filter_map(|relocation| by_name.get(relocation.target.as_str()).copied())
+                .collect();
+            for base_handle_index in base_handles {
+                append_handle_transaction(base_handle_index, objects, by_name, order, seen);
+            }
+            append_local(bases_index, objects, order, seen);
+        }
+        append_local(handle_index, objects, order, seen);
+    }
+
     let by_name: HashMap<&str, usize> = objects
         .iter()
         .enumerate()
@@ -402,12 +532,6 @@ fn owned_rtti_local_symbol_order(objects: &[DataObject<'_>]) -> Vec<usize> {
     };
     let mut order = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let mut append_local = |index: usize| {
-        if objects[index].is_static && seen.insert(index) {
-            order.push(index);
-        }
-    };
-
     for vtable in objects.iter().filter(|object| {
         object.name.starts_with("__vt__")
             && object
@@ -424,24 +548,51 @@ fn owned_rtti_local_symbol_order(objects: &[DataObject<'_>]) -> Vec<usize> {
             continue;
         };
         if let Some(name_index) = relocation_target(handle_index, 0) {
-            append_local(name_index);
+            append_local(name_index, objects, &mut order, &mut seen);
         }
         if let Some(bases_index) = relocation_target(handle_index, 4) {
-            for base_handle_index in objects[bases_index]
+            let base_handles: Vec<usize> = objects[bases_index]
                 .relocations
                 .iter()
                 .filter_map(|relocation| by_name.get(relocation.target.as_str()).copied())
-            {
-                if let Some(base_name_index) = relocation_target(base_handle_index, 0) {
-                    append_local(base_name_index);
-                }
-                append_local(base_handle_index);
+                .collect();
+            for base_handle_index in base_handles {
+                append_handle_transaction(
+                    base_handle_index,
+                    objects,
+                    &by_name,
+                    &mut order,
+                    &mut seen,
+                );
             }
-            append_local(bases_index);
+            append_local(bases_index, objects, &mut order, &mut seen);
         }
-        append_local(handle_index);
+        append_local(handle_index, objects, &mut order, &mut seen);
     }
     order
+}
+
+/// Source-function boundary at which a weak-vtable RTTI transaction opens.
+///
+/// The frontend annotates generated objects with their best source frontier,
+/// but late weak bodies are the authoritative boundary after body ordering has
+/// run. Keeping this decision here lets data layout and LOCAL-symbol creation
+/// consume the same transaction boundary.
+fn owned_rtti_source_frontier(
+    objects: &[DataObject<'_>],
+    functions: &[FunctionObject<'_>],
+    object_order: &[usize],
+) -> usize {
+    functions
+        .iter()
+        .position(|function| function.weak_inline)
+        .or_else(|| {
+            object_order
+                .iter()
+                .map(|&index| objects[index].functions_before.min(functions.len()))
+                .min()
+        })
+        .unwrap_or(functions.len())
 }
 
 /// The Metrowerks `.comment` record for a plain function. Bytes 12..15 spell the
@@ -831,6 +982,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .iter()
         .map(|&index| input.data_objects[index].name)
         .collect();
+    let owned_rtti_frontier = (!owned_rtti_data_order.is_empty()).then(|| {
+        owned_rtti_source_frontier(
+            &input.data_objects,
+            &input.functions,
+            &owned_rtti_data_order,
+        )
+    });
     let mut placed_data: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut file_data_size = 0u32;
     let mut jump_table_offset: Vec<Vec<Option<u32>>> = input
@@ -854,6 +1012,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
         if source_position == input.functions.len() {
+            if owned_rtti_frontier == Some(source_position) {
+                for &object_index in &owned_rtti_data_order {
+                    let object = &input.data_objects[object_index];
+                    if section_of(object) == ".data" && placed_data.insert(object.name) {
+                        place(object, ".data", &mut file_data_size);
+                    }
+                }
+            }
             continue;
         }
         let function_index = source_position;
@@ -875,6 +1041,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 .find(|object| object.name == name.as_str() && section_of(object) == ".data")
             {
                 if !owned_rtti_data.contains(object.name) && placed_data.insert(object.name) {
+                    place(object, ".data", &mut file_data_size);
+                }
+            }
+        }
+        // Owned RTTI is a creation transaction at its first class-emission
+        // frontier, not a section tail. Function literals whose eliminated
+        // owner collapsed onto that frontier have already been created; the
+        // function's deferred jump tables have not.
+        if owned_rtti_frontier == Some(source_position) {
+            for &object_index in &owned_rtti_data_order {
+                let object = &input.data_objects[object_index];
+                if section_of(object) == ".data" && placed_data.insert(object.name) {
                     place(object, ".data", &mut file_data_size);
                 }
             }
@@ -2228,6 +2406,34 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut extab_entry_symbols: Vec<u32> = Vec::new();
     let mut jump_table_symbols: Vec<Vec<u32>> = Vec::new();
     let mut rodata_blob_symbols: Vec<Vec<u32>> = Vec::new();
+    let owned_rtti_local_frontier = (!owned_rtti_local_order.is_empty()).then(|| {
+        owned_rtti_source_frontier(
+            &input.data_objects,
+            &functions,
+            &owned_rtti_local_order,
+        )
+    });
+    macro_rules! emit_owned_rtti_locals {
+        () => {{
+            for &object_index in &owned_rtti_local_order {
+                let object = &input.data_objects[object_index];
+                if local_data_symbols.contains_key(object.name) {
+                    continue;
+                }
+                local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(object.name),
+                    data_offsets[object.name],
+                    data_sizes[object.name],
+                    STB_LOCAL_OBJECT,
+                    0,
+                    index_of(data_section[object.name]) as u16,
+                );
+                comment_values.push((data_aligns[object.name], data_comment_flags(object)));
+            }
+        }};
+    }
     // A `static` function forward-declared by a prototype had its LOCAL FUNC
     // symbol created at that first declaration — so it emits here (after the
     // static data run, before the per-function `@N`/FUNC blocks), in prototype
@@ -2263,6 +2469,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
     }
     for (index, function) in functions.iter().enumerate() {
+        if owned_rtti_local_frontier == Some(index) {
+            emit_owned_rtti_locals!();
+        }
         // FILE-SCOPE statics declared right before this function (ansi_fp's
         // `static const char* const unused = "…"` between function bodies)
         // emit at their source position, in declaration order — the string
@@ -2779,22 +2988,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
     }
-    for object_index in owned_rtti_local_order {
-        let object = &input.data_objects[object_index];
-        if local_data_symbols.contains_key(object.name) {
-            continue;
-        }
-        local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
-        write_symbol(
-            &mut symtab,
-            strtab.add(object.name),
-            data_offsets[object.name],
-            data_sizes[object.name],
-            STB_LOCAL_OBJECT,
-            0,
-            index_of(data_section[object.name]) as u16,
-        );
-        comment_values.push((data_aligns[object.name], data_comment_flags(object)));
+    if owned_rtti_local_frontier == Some(functions.len()) {
+        emit_owned_rtti_locals!();
     }
     // A data-only unit has no per-function local-symbol block in which to create
     // the writable section anchor. Emit it at the end of the LOCAL run, still
@@ -4040,36 +4235,59 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     );
     if data_object_relocation_schedule.owned_rtti_closure {
         // Build 163's all-inline RTTI closure has an independently measured
-        // transaction order. Preserve the established jump-table phase ahead
-        // of that closure rather than sorting the closure by physical address.
+        // transaction order. Treat it as one creation block so earlier ordinary
+        // jump tables can precede it while later weak-body tables follow it.
+        let mut transactions: Vec<(u32, Vec<(u32, u32, u32)>)> = Vec::new();
+        let closure_base = data_object_relocation_schedule
+            .entries
+            .iter()
+            .map(|&(object_index, _)| data_offsets[input.data_objects[object_index].name])
+            .min()
+            .unwrap_or(file_data_size);
+        let mut closure_entries = Vec::new();
+        for (object_index, relocation_index) in data_object_relocation_schedule.entries {
+            let object = &input.data_objects[object_index];
+            let relocation = &object.relocations[relocation_index];
+            let (symbol, section_addend) = resolve_data_target(&relocation.target);
+            closure_entries.push((
+                data_offsets[object.name] + relocation.offset,
+                symbol,
+                section_addend.wrapping_add(relocation.addend as u32),
+            ));
+        }
+        transactions.push((closure_base, closure_entries));
         for (index, function) in functions.iter().enumerate() {
             let mut ordered: Vec<usize> = (0..function.jump_tables.len()).collect();
             ordered.sort_by_key(|&table_index| jump_table_offset[index][table_index]);
             for table_index in ordered {
                 let table = &function.jump_tables[table_index];
                 let base = jump_table_offset[index][table_index].unwrap();
-                for (entry_index, &body_offset) in table.entries.iter().enumerate() {
-                    write_rela(
-                        &mut rela_data,
-                        base + entry_index as u32 * 4,
-                        function_symbols[index],
-                        R_PPC_ADDR32,
-                        body_offset,
-                    );
-                }
+                let entries = table
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .map(|(entry_index, &body_offset)| {
+                        (
+                            base + entry_index as u32 * 4,
+                            function_symbols[index],
+                            body_offset,
+                        )
+                    })
+                    .collect();
+                transactions.push((base, entries));
             }
         }
-        for (object_index, relocation_index) in data_object_relocation_schedule.entries {
-            let object = &input.data_objects[object_index];
-            let relocation = &object.relocations[relocation_index];
-            let (symbol, section_addend) = resolve_data_target(&relocation.target);
-            write_rela(
-                &mut rela_data,
-                data_offsets[object.name] + relocation.offset,
-                symbol,
-                R_PPC_ADDR32,
-                section_addend.wrapping_add(relocation.addend as u32),
-            );
+        transactions.sort_by_key(|(base, _)| *base);
+        for (_, entries) in transactions {
+            for (offset, symbol, addend) in entries {
+                    write_rela(
+                        &mut rela_data,
+                        offset,
+                        symbol,
+                        R_PPC_ADDR32,
+                        addend,
+                    );
+            }
         }
     } else {
         // Ordinary C and C++ units serialize `.rela.data` by the same

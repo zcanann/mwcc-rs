@@ -6339,6 +6339,58 @@ pub(crate) fn encode_qualified_scope(scopes: &[&str]) -> Compilation<String> {
     }
 }
 
+/// Recover the source-like class spelling stored in CodeWarrior RTTI names.
+///
+/// Concrete template identities deliberately retain ABI-encoded arguments so
+/// they can be used directly in symbols (`Receiver<4Piki>`). Runtime type-name
+/// bytes omit a length prefix from a named argument (`Receiver<Piki>`). Decode
+/// only a complete length-prefixed name at a template-argument boundary; other
+/// ABI forms and non-type arguments remain untouched until their spelling is
+/// represented explicitly by the frontend.
+pub(crate) fn rtti_source_name(identity: &str) -> String {
+    let bytes = identity.as_bytes();
+    let mut output = String::with_capacity(identity.len());
+    let mut index = 0usize;
+    let mut argument_boundary = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'<' | b',' => {
+                output.push(bytes[index] as char);
+                index += 1;
+                argument_boundary = true;
+            }
+            byte if argument_boundary && byte.is_ascii_digit() => {
+                let digits_start = index;
+                while index < bytes.len() && bytes[index].is_ascii_digit() {
+                    index += 1;
+                }
+                let length = identity[digits_start..index].parse::<usize>().ok();
+                let end = length.and_then(|length| index.checked_add(length));
+                let is_complete_name = end.is_some_and(|end| {
+                    end <= bytes.len()
+                        && bytes[index..end]
+                            .first()
+                            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+                        && matches!(bytes.get(end), None | Some(b',') | Some(b'>'))
+                });
+                if let Some(end) = end.filter(|_| is_complete_name) {
+                    output.push_str(&identity[index..end]);
+                    index = end;
+                } else {
+                    output.push_str(&identity[digits_start..index]);
+                }
+                argument_boundary = false;
+            }
+            byte => {
+                output.push(byte as char);
+                index += 1;
+                argument_boundary = false;
+            }
+        }
+    }
+    output
+}
+
 fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
     let mut code = String::new();
     if parameter.is_reference {
@@ -6759,5 +6811,13 @@ mod tests {
             .iter()
             .any(|token| matches!(token, Token::Identifier(name) if name == "__dt")));
         assert!(!normalized.iter().any(|token| *token == Token::Tilde));
+    }
+
+    #[test]
+    fn rtti_template_names_decode_only_complete_named_arguments() {
+        assert_eq!(rtti_source_name("Receiver<4Piki>"), "Receiver<Piki>");
+        assert_eq!(rtti_source_name("Array<4>"), "Array<4>");
+        assert_eq!(rtti_source_name("Pair<4Piki,6Action>"), "Pair<Piki,Action>");
+        assert_eq!(rtti_source_name("Holder<4Pikix>"), "Holder<4Pikix>");
     }
 }
