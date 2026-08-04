@@ -3082,6 +3082,9 @@ mod tests {
     #[path = "float_fused_triplet.rs"]
     mod float_fused_triplet;
 
+    #[path = "mixed_integer_float_fusion.rs"]
+    mod mixed_integer_float_fusion;
+
     #[path = "saved_float_initializer.rs"]
     mod saved_float_initializer;
 

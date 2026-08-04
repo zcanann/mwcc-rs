@@ -122,6 +122,78 @@ impl Generator {
         destination: u8,
         double: bool,
     ) -> Compilation<bool> {
+        if let Some((integer, multiplier, base, direction)) = promoted_integer_register_fusion(
+            operator,
+            left,
+            right,
+            |expression| {
+                self.cast_operand_width(expression)
+                    .is_none_or(|width| width >= 32)
+                    && self.general_register_of_leaf(expression).is_ok()
+            },
+            |expression| self.is_float_leaf(expression),
+        ) {
+            let promoted = self.fresh_virtual_float_preferring(FLOAT_SCRATCH);
+            // The lowest free non-result lane holds the bias: f3 when the
+            // usual f1/f2 parameter pair is live, f1 when callee-saved values
+            // occupy the high bank. Expressing that as a preference lets the
+            // allocator derive both schedules from the same lowering.
+            let bias = self.fresh_virtual_float_preferring(1);
+            self.emit_int_to_float(integer, promoted, double, bias)?;
+            let multiplier = self.float_register_of_leaf(multiplier)?;
+            let base = self.float_register_of_leaf(base)?;
+            self.output.instructions.push(match (direction, double) {
+                (PromotedIntegerFusion::Add, false) => {
+                    Instruction::FloatMultiplyAddSingle {
+                        d: destination,
+                        a: promoted,
+                        c: multiplier,
+                        b: base,
+                    }
+                }
+                (PromotedIntegerFusion::ProductMinusBase, false) => {
+                    Instruction::FloatMultiplySubtractSingle {
+                        d: destination,
+                        a: promoted,
+                        c: multiplier,
+                        b: base,
+                    }
+                }
+                (PromotedIntegerFusion::BaseMinusProduct, false) => {
+                    Instruction::FloatNegativeMultiplySubtractSingle {
+                        d: destination,
+                        a: promoted,
+                        c: multiplier,
+                        b: base,
+                    }
+                }
+                (PromotedIntegerFusion::Add, true) => {
+                    Instruction::FloatMultiplyAddDouble {
+                        d: destination,
+                        a: promoted,
+                        c: multiplier,
+                        b: base,
+                    }
+                }
+                (PromotedIntegerFusion::ProductMinusBase, true) => {
+                    Instruction::FloatMultiplySubtractDouble {
+                        d: destination,
+                        a: promoted,
+                        c: multiplier,
+                        b: base,
+                    }
+                }
+                (PromotedIntegerFusion::BaseMinusProduct, true) => {
+                    Instruction::FloatNegativeMultiplySubtractDouble {
+                        d: destination,
+                        a: promoted,
+                        c: multiplier,
+                        b: base,
+                    }
+                }
+            });
+            return Ok(true);
+        }
         if double || operator != BinaryOperator::Add {
             return Ok(false);
         }
@@ -257,6 +329,51 @@ impl Generator {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PromotedIntegerFusion {
+    Add,
+    ProductMinusBase,
+    BaseMinusProduct,
+}
+
+fn promoted_integer_register_fusion<'a>(
+    operator: BinaryOperator,
+    left: &'a Expression,
+    right: &'a Expression,
+    is_integer: impl Fn(&Expression) -> bool,
+    is_float: impl Fn(&Expression) -> bool,
+) -> Option<(
+    &'a Expression,
+    &'a Expression,
+    &'a Expression,
+    PromotedIntegerFusion,
+)> {
+    let (product, base, direction) = match operator {
+        BinaryOperator::Add if as_multiplication(left).is_some() => {
+            (left, right, PromotedIntegerFusion::Add)
+        }
+        BinaryOperator::Add if as_multiplication(right).is_some() => {
+            (right, left, PromotedIntegerFusion::Add)
+        }
+        BinaryOperator::Subtract if as_multiplication(left).is_some() => {
+            (left, right, PromotedIntegerFusion::ProductMinusBase)
+        }
+        BinaryOperator::Subtract if as_multiplication(right).is_some() => {
+            (right, left, PromotedIntegerFusion::BaseMinusProduct)
+        }
+        _ => return None,
+    };
+    if !is_float(base) {
+        return None;
+    }
+    let (first, second) = as_multiplication(product)?;
+    match (is_integer(first), is_float(first), is_integer(second), is_float(second)) {
+        (true, false, false, true) => Some((first, second, base, direction)),
+        (false, true, true, false) => Some((second, first, base, direction)),
+        _ => None,
+    }
+}
+
 fn register_product(
     expression: &Expression,
     is_register_leaf: impl Fn(&Expression) -> bool,
@@ -346,5 +463,35 @@ mod tests {
             is_float_load,
         )
         .is_some());
+    }
+
+    #[test]
+    fn recognizes_both_subtraction_directions_for_promoted_integer_products() {
+        let variable = |name: &str| Expression::Variable(name.into());
+        let product = product(variable("count"), variable("scale"));
+        let is_integer =
+            |expression: &Expression| matches!(expression, Expression::Variable(name) if name == "count");
+        let is_float =
+            |expression: &Expression| matches!(expression, Expression::Variable(name) if name != "count");
+
+        let (_, _, _, base_minus_product) = promoted_integer_register_fusion(
+            BinaryOperator::Subtract,
+            &variable("base"),
+            &product,
+            is_integer,
+            is_float,
+        )
+        .expect("base minus promoted product");
+        let (_, _, _, product_minus_base) = promoted_integer_register_fusion(
+            BinaryOperator::Subtract,
+            &product,
+            &variable("base"),
+            is_integer,
+            is_float,
+        )
+        .expect("promoted product minus base");
+
+        assert_eq!(base_minus_product, PromotedIntegerFusion::BaseMinusProduct);
+        assert_eq!(product_minus_base, PromotedIntegerFusion::ProductMinusBase);
     }
 }
