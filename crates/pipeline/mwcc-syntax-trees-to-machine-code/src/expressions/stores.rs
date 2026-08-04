@@ -294,6 +294,9 @@ impl Generator {
         if self.try_emit_affine_member_pointer_leaf_arithmetic_store(target, value)? {
             return Ok(());
         }
+        if self.try_emit_member_pointer_constant_indexed_store(target, value)? {
+            return Ok(());
+        }
         if self.try_emit_retained_global_pointer_member_store(target, value)? {
             return Ok(());
         }
