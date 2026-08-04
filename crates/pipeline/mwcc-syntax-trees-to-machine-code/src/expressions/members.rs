@@ -154,6 +154,24 @@ fn embedded_aggregate_address_tail(
     instructions
 }
 
+/// Fold a constant embedded-array subscript into the member displacement.
+///
+/// The index is source-level element arithmetic, while `offset` and `stride`
+/// are byte quantities recovered from the aggregate layout. Keeping this
+/// calculation separate from register scheduling ensures constant subscripts
+/// never materialize a dead index value merely to form `base + displacement`.
+fn constant_embedded_aggregate_displacement(
+    offset: u32,
+    stride: u32,
+    index: &Expression,
+) -> Option<i16> {
+    constant_value(index)?
+        .checked_mul(i64::from(stride))?
+        .checked_add(i64::from(offset))?
+        .try_into()
+        .ok()
+}
+
 impl Generator {
     /// Materialize `&object.embedded[index]` when `embedded` is an inline
     /// member array. Struct-valued member expressions and scalar member-address
@@ -187,6 +205,25 @@ impl Generator {
         };
         if stride == 0 {
             return Ok(false);
+        }
+        if let Some(displacement) =
+            constant_embedded_aggregate_displacement(offset, stride, index)
+        {
+            let base = self.member_base_register(base)?;
+            if displacement == 0 {
+                if base != destination {
+                    self.output
+                        .instructions
+                        .push(Instruction::move_register(destination, base));
+                }
+            } else {
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: destination,
+                    a: base,
+                    immediate: displacement,
+                });
+            }
+            return Ok(true);
         }
         let offset = i16::try_from(offset).map_err(|_| {
             Diagnostic::error("embedded member array offset out of range (roadmap)")
@@ -3504,5 +3541,25 @@ mod tests {
         let (base, offset) = embedded_member_address_base(&storage).expect("inline storage base");
         assert!(matches!(base, Expression::Variable(name) if name == "object"));
         assert_eq!(offset, 668);
+    }
+
+    #[test]
+    fn folds_a_constant_embedded_array_index_into_its_member_displacement() {
+        assert_eq!(
+            constant_embedded_aggregate_displacement(
+                188,
+                12,
+                &Expression::IntegerLiteral(2),
+            ),
+            Some(212)
+        );
+        assert_eq!(
+            constant_embedded_aggregate_displacement(
+                188,
+                12,
+                &Expression::IntegerLiteral(-16_384),
+            ),
+            None
+        );
     }
 }
