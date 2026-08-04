@@ -80,12 +80,28 @@ impl Generator {
             });
         let (options, condition_bit) = false_branch_bo_bi(BinaryOperator::Equal)
             .expect("equality has a conditional-branch encoding");
-        self.output
-            .instructions
-            .push(Instruction::BranchConditionalToLinkRegister {
-                options,
-                condition_bit,
-            });
+        if self.preceded_by_asm {
+            // An earlier asm definition changes this old optimizer's terminal
+            // edge canonicalization for the remainder of the translation
+            // unit. It keeps `bne .Lreturn` here; the same source compiled in
+            // isolation uses `bnelr`.
+            self.preserve_terminal_return_branches = true;
+            let target = self.output.instructions.len() + 2;
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target,
+                });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalToLinkRegister {
+                    options,
+                    condition_bit,
+                });
+        }
         self.output.instructions.push(Instruction::StoreWord {
             s: value_register,
             a: address_base,
