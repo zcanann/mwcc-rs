@@ -713,6 +713,7 @@ fn lower_function_body(
         structured_float_handoff: None,
         retained_float_compare_value: None,
         transient_condition_float_call_results: Default::default(),
+        structured_guarded_bitfield_value: None,
         frame_slots: HashMap::new(),
         structured_compact_narrow_scalar_frame: false,
         structured_guarded_scalar_output_frame: false,

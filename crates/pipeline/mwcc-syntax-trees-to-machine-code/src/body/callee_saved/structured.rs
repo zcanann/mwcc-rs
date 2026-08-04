@@ -5350,6 +5350,11 @@ impl Generator {
                     });
                     let then_wide_mask_cache = self.wide_pair_mask_false_edge_cache();
                     let then_literal_cache = self.condition_float_literal_edge_cache();
+                    let guarded_bitfield_value =
+                        super::structured_guarded_bitfield_switch::recognize(
+                            condition,
+                            then_body,
+                        );
                     self.restore_condition_global_cache(previous_cache);
                     let branches = match condition_result {
                         Ok(branches) => branches,
@@ -5393,6 +5398,10 @@ impl Generator {
                         self.condition_float_cache = cache;
                     }
                     self.wide_pair_mask_cache = then_wide_mask_cache;
+                    let previous_guarded_bitfield = std::mem::replace(
+                        &mut self.structured_guarded_bitfield_value,
+                        guarded_bitfield_value,
+                    );
                     let prefix_result = self.emit_structured_statements(
                         carried_prefix,
                         function,
@@ -5426,6 +5435,8 @@ impl Generator {
                             entry_alias,
                         )
                     });
+                    self.structured_guarded_bitfield_value =
+                        previous_guarded_bitfield;
                     self.restore_condition_global_cache(enclosing_condition_cache);
                     self.restore_condition_float_cache(outer_float_cache);
                     let body_result = body_result.map_err(|mut diagnostic| {

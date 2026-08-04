@@ -654,6 +654,10 @@ pub(crate) struct Generator {
     /// condition. Assignment lowering binds the name to the comparison value
     /// instead of manufacturing a second live range for the same call result.
     pub(crate) transient_condition_float_call_results: HashSet<String>,
+    /// Bitfield value left in r0 by a true-edge guard whose first statement is
+    /// a switch over the identical field. The dense dispatch consumes this
+    /// cache before any intervening instruction can invalidate it.
+    pub(crate) structured_guarded_bitfield_value: Option<Expression>,
     /// Address-taken variables and their stack-frame slots. A name here is
     /// frame-resident: `&v` and type-punned accesses read/write its slot.
     pub(crate) frame_slots: HashMap<String, FrameSlot>,

@@ -371,6 +371,7 @@ mod structured_recycled_entry_queue_schedule;
 mod structured_void_queue_transaction_schedule;
 mod structured_queue_transaction_schedule;
 mod structured_switch_lowering;
+mod structured_guarded_bitfield_switch;
 mod structured_switch_result_schedule;
 mod structured_adjacent_global_store_base;
 mod structured_terminal_branch_result;

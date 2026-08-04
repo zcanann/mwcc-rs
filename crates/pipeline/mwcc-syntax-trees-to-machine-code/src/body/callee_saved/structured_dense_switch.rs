@@ -67,8 +67,16 @@ impl Generator {
             .map(|(name, location)| (name.clone(), location.register))
             .collect::<Vec<_>>();
 
-        let mut temporary_scrutinee = false;
-        let scrutinee_register = match scrutinee {
+        let reused_guarded_bitfield =
+            super::structured_guarded_bitfield_switch::consume(
+                &mut self.structured_guarded_bitfield_value,
+                scrutinee,
+            );
+        let mut temporary_scrutinee = reused_guarded_bitfield;
+        let scrutinee_register = if reused_guarded_bitfield {
+            GENERAL_SCRATCH
+        } else {
+            match scrutinee {
             Expression::Variable(name) if self.locations.contains_key(name) => {
                 let location = &self.locations[name];
                 if location.class != ValueClass::General {
@@ -86,6 +94,7 @@ impl Generator {
                 let register = computed_scrutinee_register(subtract);
                 self.evaluate_general(scrutinee, register)?;
                 register
+            }
             }
         };
         for (offset, (name, source)) in preserved_dispatch_values.into_iter().enumerate() {
