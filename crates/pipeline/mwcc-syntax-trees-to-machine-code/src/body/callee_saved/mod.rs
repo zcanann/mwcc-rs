@@ -298,6 +298,8 @@ mod structured_unoptimized_inline_float_transaction_homes;
 mod structured_unoptimized_leaf_schedule;
 mod structured_loop_member_receiver_layout;
 mod structured_loop_call_publication_layout;
+mod structured_guarded_call_publication_layout;
+mod structured_guarded_call_publication_schedule;
 mod structured_multi_phase_variadic_home_layout;
 mod structured_object_collision_loop_delta;
 mod structured_object_collision_loop_layout;

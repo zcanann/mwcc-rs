@@ -131,6 +131,7 @@ use super::structured_loop_register_pressure::{
 use super::structured_loop_mutated_parameters::loop_mutated_parameters;
 use super::structured_loop_member_receiver_layout::StructuredLoopMemberReceiverLayout;
 use super::structured_loop_call_publication_layout::StructuredLoopCallPublicationLayout;
+use super::structured_guarded_call_publication_layout::StructuredGuardedCallPublicationLayout;
 use super::structured_multi_phase_variadic_home_layout::StructuredMultiPhaseVariadicHomeLayout;
 use super::structured_object_collision_loop_layout::StructuredObjectCollisionLoopLayout;
 use super::structured_object_collision_loop_schedule::schedule_object_collision_loop_entry;
@@ -1446,6 +1447,15 @@ impl Generator {
             &parameter_home_reuse,
             count,
         );
+        let guarded_call_publication_layout = StructuredGuardedCallPublicationLayout::plan(
+            function,
+            &eager_saved_locals,
+            &saved_parameters,
+            &deferred_saved_locals,
+            &deferred_home_plan,
+            &parameter_home_reuse,
+            count,
+        );
         let member_array_offset_layout =
             super::structured_loop_member_array_offset::HomeLayout::plan(
                 eager_saved_locals.len(),
@@ -1639,7 +1649,8 @@ impl Generator {
             parameter_home_reuse
                 .reuses_parameter_home(eager_saved_locals.len(), saved_parameters.len()),
             self.behavior.use_lmw_stmw,
-        ) || dense_unused_array_state_transfer
+        ) || guarded_call_publication_layout.is_some()
+            || dense_unused_array_state_transfer
             || (member_array_offset_layout.is_some()
                 && self.behavior.use_lmw_stmw
                 && with_frame_array)
@@ -1830,6 +1841,11 @@ impl Generator {
                 {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = loop_call_publication_layout
+                    .as_ref()
+                    .and_then(|layout| layout.preference(home_index))
+                {
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = guarded_call_publication_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
                 {
@@ -2164,6 +2180,10 @@ impl Generator {
                 layout
                     .frame_slot(home_index)
                     .expect("the publication layout owns every saved home")
+            } else if let Some(layout) = &guarded_call_publication_layout {
+                layout
+                    .frame_slot(home_index)
+                    .expect("the guarded publication layout owns every saved home")
             } else if let Some(slot) = recovered_general_homes
                 .as_ref()
                 .and_then(|layout| layout.frame_slot(home_index))
@@ -2226,6 +2246,13 @@ impl Generator {
                     .into_iter()
                     .map(|home_index| homes[home_index]),
             );
+        } else if let Some(layout) = &guarded_call_publication_layout {
+            logical_saved_homes.extend(
+                layout
+                    .save_order()
+                    .into_iter()
+                    .map(|home_index| homes[home_index]),
+            );
         } else if let Some(save_order) = recovered_general_homes
             .as_ref()
             .and_then(StructuredRecoveredGeneralHomes::save_order)
@@ -2246,7 +2273,11 @@ impl Generator {
         frame_homes.resize(frame_saved_count, frame_first_saved as u8);
         let mut plan = mwcc_vreg::FramePlan::with_local_region(frame_homes, local_region_bytes);
         let base_frame_size = plan.frame_size;
-        let retained_linkage_lanes = usize::from(dense_frame && !with_frame_array);
+        let retained_linkage_lanes = usize::from(
+            dense_frame
+                && !with_frame_array
+                && guarded_call_publication_layout.is_none(),
+        );
         if retained_linkage_lanes != 0
             && self.behavior.frame_convention == FrameConvention::LinkageFirst
         {
@@ -2772,7 +2803,10 @@ impl Generator {
             .any(|plan| plan.defer_until_first_use)
         {
             LegacyCalleeSavedFrameLayout::RetainDeferredGlobalMemberAddressLane
-        } else if guarded_call_output_frame || packed_switch_frame {
+        } else if guarded_call_output_frame
+            || packed_switch_frame
+            || guarded_call_publication_layout.is_some()
+        {
             LegacyCalleeSavedFrameLayout::CompactValueHomes
         } else if retains_unobserved_local_lane {
             // An optimizer-only scalar can disappear from the emitted value
@@ -3208,6 +3242,7 @@ impl Generator {
             || sequenced_callback_wait_layout
             || loop_member_receiver_layout.is_some()
             || loop_call_publication_layout.is_some()
+            || guarded_call_publication_layout.is_some()
             || recovered_general_homes
                 .as_ref()
                 .and_then(StructuredRecoveredGeneralHomes::save_order)
