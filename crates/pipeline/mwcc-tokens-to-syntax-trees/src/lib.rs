@@ -9468,6 +9468,33 @@ blr\n\
     }
 
     #[test]
+    fn retains_function_parameter_aggregate_identity_for_debug_info() {
+        let source = r#"
+            typedef struct Packet {
+                unsigned char bytes[32];
+            } Packet;
+            int inspect(Packet* packet) {
+                return packet->bytes[0];
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.function_parameter_aggregate_tags
+                .get(&("inspect".into(), "packet".into()))
+                .map(String::as_str),
+            Some("Packet")
+        );
+    }
+
+    #[test]
     fn retains_struct_layout_across_static_cxx_method_declarations() {
         let source = r#"
             struct Slice {

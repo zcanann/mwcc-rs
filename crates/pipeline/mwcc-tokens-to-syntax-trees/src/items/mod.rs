@@ -4779,6 +4779,12 @@ impl Parser {
         for parameter in &parameters {
             self.variable_types
                 .insert(parameter.name.clone(), parameter.parameter_type);
+            if let Some(tag) = self.variable_structs.get(&parameter.name) {
+                self.function_parameter_structs.insert(
+                    (debug_function_name.clone(), parameter.name.clone()),
+                    tag.clone(),
+                );
+            }
         }
 
         // Zero or more local declarations precede the return statement. A
