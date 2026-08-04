@@ -3128,6 +3128,9 @@ mod tests {
     #[path = "leaf_singly_linked_unlink.rs"]
     mod leaf_singly_linked_unlink;
 
+    #[path = "release_to_global_manager.rs"]
+    mod release_to_global_manager;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 
