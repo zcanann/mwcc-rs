@@ -69,7 +69,7 @@ use super::structured_home_layout::{
     returned_deferred_pair_preference, saved_float_home_preference,
     uses_rounded_pointer_dense_layout,
 };
-use super::structured_deferred_local_layout::retains_deferred_saved_local_lane;
+use super::structured_deferred_local_layout::deferred_saved_local_lane;
 use super::structured_dense_switch::statements_fall_through;
 use super::structured_indirect_call_home::promote_cost_free_indirect_call_locals;
 use super::structured_interleaved_frame_layout::StructuredInterleavedFrameLayout;
@@ -929,10 +929,11 @@ impl Generator {
         // Frame provenance belongs to the source CFG. Lowering a switch into
         // nested `if` statements is an emission detail and must not make an
         // exhaustively selected result look like a source guarded local.
-        let retained_deferred_local_lane = retains_deferred_saved_local_lane(
+        let deferred_saved_local_lane = deferred_saved_local_lane(
             &structured_switch_source.statements,
             &saved_locals,
         );
+        let retained_deferred_local_lane = deferred_saved_local_lane.is_some();
         let (saved_float_locals, saved_locals): (Vec<_>, Vec<_>) = saved_locals
             .into_iter()
             .partition(|local| class_of(local.declared_type).ok() == Some(ValueClass::Float));
@@ -2409,7 +2410,9 @@ impl Generator {
             logical_saved_homes
         };
         self.legacy_callee_saved_frame_layout = if async_callback_switch_layout.is_some()
-            || (retained_deferred_local_lane && !saved_parameters.is_empty())
+            || (deferred_saved_local_lane.is_some_and(|lane| {
+                lane.distinct_from_entry_parameter_table
+            }) && !saved_parameters.is_empty())
         {
             // A deferred local can reuse the ordinary inferred value lane when
             // no entry parameter survives. Once a parameter also owns a saved

@@ -7,17 +7,33 @@
 
 use mwcc_syntax_trees::{LocalDeclaration, Statement, Type};
 
-pub(super) fn retains_deferred_saved_local_lane(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct DeferredSavedLocalLane {
+    pub(super) distinct_from_entry_parameter_table: bool,
+}
+
+pub(super) fn deferred_saved_local_lane(
     statements: &[Statement],
     saved_locals: &[&LocalDeclaration],
-) -> bool {
-    saved_locals.len() == 1
-        && saved_locals[0].initializer.is_none()
-        && (block_assigns_inside_guard(statements, &saved_locals[0].name, false)
-            || (matches!(
-                saved_locals[0].declared_type,
-                Type::Pointer(_) | Type::StructPointer { .. }
-            ) && assignment_follows_call(statements, &saved_locals[0].name)))
+) -> Option<DeferredSavedLocalLane> {
+    let [local] = saved_locals else {
+        return None;
+    };
+    if local.initializer.is_some() {
+        return None;
+    }
+    let pointer = matches!(
+        local.declared_type,
+        Type::Pointer(_) | Type::StructPointer { .. }
+    );
+    (block_assigns_inside_guard(statements, &local.name, false)
+        || (pointer && assignment_follows_call(statements, &local.name)))
+    .then_some(DeferredSavedLocalLane {
+        // Scalar guarded results share build 163's ordinary inferred value
+        // lane. Deferred pointer identities retain a separate optimizer table
+        // when an entry parameter owns a saved home at the same time.
+        distinct_from_entry_parameter_table: pointer,
+    })
 }
 
 fn block_assigns_inside_guard(statements: &[Statement], name: &str, guarded: bool) -> bool {
@@ -92,17 +108,23 @@ mod tests {
             else_body: Vec::new(),
         }];
 
-        assert!(retains_deferred_saved_local_lane(&statements, &[&local]));
+        assert_eq!(
+            deferred_saved_local_lane(&statements, &[&local]),
+            Some(DeferredSavedLocalLane {
+                distinct_from_entry_parameter_table: true,
+            })
+        );
     }
 
     #[test]
     fn excludes_an_unguarded_assignment() {
         let local = deferred("finished");
 
-        assert!(!retains_deferred_saved_local_lane(
+        assert!(deferred_saved_local_lane(
             &[assignment("finished")],
             &[&local]
-        ));
+        )
+        .is_none());
     }
 
     #[test]
@@ -116,6 +138,29 @@ mod tests {
             assignment("finished"),
         ];
 
-        assert!(retains_deferred_saved_local_lane(&statements, &[&local]));
+        assert_eq!(
+            deferred_saved_local_lane(&statements, &[&local]),
+            Some(DeferredSavedLocalLane {
+                distinct_from_entry_parameter_table: true,
+            })
+        );
+    }
+
+    #[test]
+    fn guarded_scalar_lane_is_shared_with_the_entry_table() {
+        let mut local = deferred("result");
+        local.declared_type = Type::Int;
+        let statements = vec![Statement::If {
+            condition: Expression::Variable("enabled".into()),
+            then_body: vec![assignment("result")],
+            else_body: vec![assignment("result")],
+        }];
+
+        assert_eq!(
+            deferred_saved_local_lane(&statements, &[&local]),
+            Some(DeferredSavedLocalLane {
+                distinct_from_entry_parameter_table: false,
+            })
+        );
     }
 }
