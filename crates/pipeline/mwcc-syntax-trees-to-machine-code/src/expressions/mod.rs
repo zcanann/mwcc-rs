@@ -74,6 +74,7 @@ mod stores;
 mod strings;
 mod wide_call_arguments;
 mod wide_pointer_mask_store;
+mod word_cast_leaf;
 mod xnor_feedback_update;
 
 pub(crate) use members::embedded_member_address_base;

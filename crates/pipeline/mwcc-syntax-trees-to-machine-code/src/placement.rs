@@ -119,6 +119,15 @@ impl Generator {
         if self.is_global(left) || self.is_global(right) {
             return self.place_global_operands(operator, left, right);
         }
+        // A word-sized cast makes a pointer an ordinary integer operand without
+        // changing its bits. Treat that explicit cast as a leaf so `(u32)p + n`
+        // reads p in place rather than manufacturing a temporary copy.
+        if let (Some(left), Some(right)) = (
+            self.transparent_word_cast_register(left),
+            self.transparent_word_cast_register(right),
+        ) {
+            return Operands::ordered(left, right);
+        }
         // A struct-member operand loads into a register, like a dereference.
         if as_member(left).is_some() || as_member(right).is_some() {
             return self.place_member_operands(operator, left, right);
@@ -687,12 +696,11 @@ impl Generator {
     /// The home register of a wide (32-bit) leaf variable; narrow leaves and
     /// non-leaves are deferred (they need extension or their own placement).
     fn wide_leaf_register(&self, operand: &Expression) -> Compilation<u8> {
-        if !matches!(operand, Expression::Variable(_)) || self.is_narrow_leaf(operand) {
-            return Err(Diagnostic::error(
+        self.transparent_word_cast_register(operand).ok_or_else(|| {
+            Diagnostic::error(
                 "dereference combined with this operand needs the full allocator (roadmap)",
-            ));
-        }
-        self.general_register_of_leaf(operand)
+            )
+        })
     }
 
     /// Keep a register-resident wide leaf in place, or materialize a computed
@@ -707,8 +715,8 @@ impl Generator {
         operand: &Expression,
         located: &Expression,
     ) -> Compilation<u8> {
-        if matches!(operand, Expression::Variable(_)) && !self.is_narrow_leaf(operand) {
-            return self.general_register_of_leaf(operand);
+        if let Some(register) = self.transparent_word_cast_register(operand) {
+            return Ok(register);
         }
         self.with_reserved_inputs(located, |generator| {
             let register = generator.fresh_virtual_general();
