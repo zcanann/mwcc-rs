@@ -9,25 +9,34 @@ use super::*;
 
 impl Generator {
     pub(crate) fn schedule_variadic_report_member_arguments(&mut self) {
-        let Some(start) = self
+        if let Some(start) = self
             .output
             .instructions
             .windows(6)
             .position(is_unscheduled_report)
-        else {
-            return;
-        };
-        if !schedule_relocations::same_target_value(
-            &self.output.relocations,
-            &self.output.constants,
-            start,
-            start + 1,
-        ) {
-            return;
+            .filter(|start| {
+                schedule_relocations::same_target_value(
+                    &self.output.relocations,
+                    &self.output.constants,
+                    *start,
+                    *start + 1,
+                )
+            })
+        {
+            self.move_report_instruction_before(start + 2, start + 1);
+            self.move_report_instruction_before(start + 3, start + 2);
         }
 
-        self.move_report_instruction_before(start + 2, start + 1);
-        self.move_report_instruction_before(start + 3, start + 2);
+        while let Some((start, index)) = duplicate_word_pair_report(&self.output.instructions) {
+            // Selection order:
+            //   format; index; load A; reload A; index+16; load B; reload B; crclr
+            // Build 163 hides both load latencies and retains each loaded value:
+            //   load B; index; load A; format; crclr; copy A; copy B; index+16
+            self.permute_duplicate_word_pair_report(start);
+            self.output.instructions[start + 1] = Instruction::move_register(4, index);
+            self.output.instructions[start + 5] = Instruction::move_register(6, 5);
+            self.output.instructions[start + 6] = Instruction::move_register(9, 8);
+        }
     }
 
     fn move_report_instruction_before(&mut self, from: usize, to: usize) {
@@ -59,6 +68,89 @@ impl Generator {
             }
         }
     }
+
+    fn permute_duplicate_word_pair_report(&mut self, start: usize) {
+        const ORDER: [usize; 9] = [5, 1, 2, 0, 7, 3, 6, 4, 8];
+        let old = self.output.instructions[start..start + ORDER.len()].to_vec();
+        for (new, old_index) in ORDER.into_iter().enumerate() {
+            self.output.instructions[start + new] = old[old_index].clone();
+        }
+        let mut old_to_new = [0usize; ORDER.len()];
+        for (new, old_index) in ORDER.into_iter().enumerate() {
+            old_to_new[old_index] = new;
+        }
+        let remap_owner = |instruction_index: &mut usize| {
+            if (start..start + ORDER.len()).contains(instruction_index) {
+                *instruction_index = start + old_to_new[*instruction_index - start];
+            }
+        };
+        for relocation in &mut self.output.relocations {
+            remap_owner(&mut relocation.instruction_index);
+        }
+        self.output
+            .relocations
+            .sort_by_key(|relocation| relocation.instruction_index);
+        for displacement in &mut self.output.data_section_displacements {
+            remap_owner(&mut displacement.instruction_index);
+        }
+        // This is a basic-block content schedule: incoming branches continue
+        // to enter at `start`, now the hoisted load. Labels and branch targets
+        // intentionally remain attached to the block boundary, not to the old
+        // first (format-address) instruction.
+    }
+}
+
+fn duplicate_word_pair_report(instructions: &[Instruction]) -> Option<(usize, u8)> {
+    instructions.windows(9).enumerate().find_map(|(start, window)| {
+        let [
+            Instruction::AddImmediate { d: 3, a: format_base, .. },
+            Instruction::AddImmediate {
+                d: 4,
+                a: first_index,
+                immediate: 0,
+            },
+            Instruction::LoadWord {
+                d: 5,
+                a: first_base,
+                offset: first_offset,
+            },
+            Instruction::LoadWord {
+                d: 6,
+                a: duplicate_first_base,
+                offset: duplicate_first_offset,
+            },
+            Instruction::AddImmediate {
+                d: 7,
+                a: second_index,
+                immediate: 16,
+            },
+            Instruction::LoadWord {
+                d: 8,
+                a: second_base,
+                offset: second_offset,
+            },
+            Instruction::LoadWord {
+                d: 9,
+                a: duplicate_second_base,
+                offset: duplicate_second_offset,
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink { target },
+        ] = window else {
+            return None;
+        };
+        ((14..=31).contains(format_base)
+            && (14..=31).contains(first_index)
+            && first_index == second_index
+            && first_base == duplicate_first_base
+            && first_offset == duplicate_first_offset
+            && second_base == duplicate_second_base
+            && second_offset == duplicate_second_offset
+            && first_base == second_base
+            && second_offset.checked_sub(*first_offset) == Some(64)
+            && target == "OSReport")
+            .then_some((start, *first_index))
+    })
 }
 
 fn is_unscheduled_report(window: &[Instruction]) -> bool {
@@ -87,5 +179,51 @@ mod tests {
             Instruction::BranchAndLink { target: "OSReport".into() },
         ];
         assert!(is_unscheduled_report(&instructions));
+    }
+
+    #[test]
+    fn recognizes_two_duplicated_word_arguments_from_one_indexed_context() {
+        let instructions = [
+            Instruction::AddImmediate {
+                d: 3,
+                a: 31,
+                immediate: 68,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 25,
+                immediate: 0,
+            },
+            Instruction::LoadWord {
+                d: 5,
+                a: 27,
+                offset: 0,
+            },
+            Instruction::LoadWord {
+                d: 6,
+                a: 27,
+                offset: 0,
+            },
+            Instruction::AddImmediate {
+                d: 7,
+                a: 25,
+                immediate: 16,
+            },
+            Instruction::LoadWord {
+                d: 8,
+                a: 27,
+                offset: 64,
+            },
+            Instruction::LoadWord {
+                d: 9,
+                a: 27,
+                offset: 64,
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink {
+                target: "OSReport".into(),
+            },
+        ];
+        assert_eq!(duplicate_word_pair_report(&instructions), Some((0, 25)));
     }
 }
