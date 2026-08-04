@@ -115,7 +115,8 @@ pub(crate) fn apply_weak_vtable_emission_tail<'a>(
     let (mut source_functions, weak_functions): (Vec<_>, Vec<_>) = std::mem::take(functions)
         .into_iter()
         .partition(|function| {
-            !function.weak_inline || immediate_names.contains(function.name.as_str())
+            !(function.is_weak && function.weak_inline)
+                || immediate_names.contains(function.name.as_str())
         });
     if weak_functions.is_empty() {
         *functions = source_functions;
@@ -415,6 +416,7 @@ mod tests {
         ];
         for function in &mut functions {
             function.weak_inline = !function.name.starts_with("source_");
+            function.is_weak = function.weak_inline;
         }
 
         apply_weak_vtable_emission_tail(
@@ -455,8 +457,10 @@ mod tests {
     fn caller_requested_weak_body_keeps_its_immediate_position() {
         let mut requested = function("requested__4NodeFv", false);
         requested.weak_inline = true;
+        requested.is_weak = true;
         let mut vtable_owned = function("vtable_owned__4NodeFv", false);
         vtable_owned.weak_inline = true;
+        vtable_owned.is_weak = true;
         let mut functions = vec![
             function("caller", false),
             requested,
@@ -485,6 +489,35 @@ mod tests {
                 "later_source",
                 "vtable_owned__4NodeFv",
             ]
+        );
+    }
+
+    #[test]
+    fn strong_bodies_with_weak_inline_provenance_stay_in_source_order() {
+        let mut strong = function("strong__4NodeFv", false);
+        strong.weak_inline = true;
+        let mut weak = function("weak__4NodeFv", false);
+        weak.weak_inline = true;
+        weak.is_weak = true;
+        let mut functions = vec![
+            function("source_a", false),
+            strong,
+            weak,
+            function("source_b", false),
+        ];
+
+        apply_weak_vtable_emission_tail(
+            &mut functions,
+            ["weak__4NodeFv", "strong__4NodeFv"],
+            &[],
+        );
+
+        assert_eq!(
+            functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["source_a", "strong__4NodeFv", "source_b", "weak__4NodeFv"]
         );
     }
 

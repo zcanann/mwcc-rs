@@ -466,6 +466,42 @@ impl MachineFunction {
         true
     }
 
+    /// Remove pool entries whose last relocation was rebound to a named data
+    /// object, preserving indices and number gaps of every surviving entry.
+    pub fn prune_unreferenced_constants(&mut self) {
+        let mut used = vec![false; self.constants.len()];
+        for relocation in &self.relocations {
+            match relocation.target {
+                RelocationTarget::Constant(index)
+                | RelocationTarget::ConstantWithAddend(index, _) => used[index] = true,
+                _ => {}
+            }
+        }
+        let mut new_of_old = vec![None; self.constants.len()];
+        let mut constants = Vec::new();
+        for (old, constant) in self.constants.iter().copied().enumerate() {
+            if used[old] {
+                new_of_old[old] = Some(constants.len());
+                constants.push(constant);
+            }
+        }
+        for relocation in &mut self.relocations {
+            match &mut relocation.target {
+                RelocationTarget::Constant(index)
+                | RelocationTarget::ConstantWithAddend(index, _) => {
+                    *index = new_of_old[*index].expect("referenced constant retained");
+                }
+                _ => {}
+            }
+        }
+        self.constant_number_gaps = self
+            .constant_number_gaps
+            .iter()
+            .filter_map(|&(old, gap)| new_of_old[old].map(|new| (new, gap)))
+            .collect();
+        self.constants = constants;
+    }
+
     fn intern_constant_slotted(
         &mut self,
         bits: u64,
@@ -595,6 +631,30 @@ mod tests {
             RelocationTarget::ConstantWithAddend(1, 4)
         ));
         assert_eq!(function.constant_number_gaps, [(1, 1)]);
+    }
+
+    #[test]
+    fn pruning_constants_remaps_surviving_relocations_and_gaps() {
+        let mut function = MachineFunction::new("probe".to_string());
+        function.intern_constant(0x11, 4);
+        function.intern_constant(0x22, 4);
+        function.intern_constant(0x33, 8);
+        function.relocations = vec![Relocation {
+            instruction_index: 1,
+            kind: RelocationKind::EmbSda21,
+            target: RelocationTarget::ConstantWithAddend(2, 4),
+        }];
+        function.constant_number_gaps = vec![(1, 2), (2, 1)];
+
+        function.prune_unreferenced_constants();
+
+        assert_eq!(function.constants.len(), 1);
+        assert_eq!(function.constants[0].bits, 0x33);
+        assert!(matches!(
+            function.relocations[0].target,
+            RelocationTarget::ConstantWithAddend(0, 4)
+        ));
+        assert_eq!(function.constant_number_gaps, [(0, 1)]);
     }
 
     #[test]

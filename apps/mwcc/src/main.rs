@@ -1195,7 +1195,63 @@ fn compile(
             )
         })
         .flatten();
-    let build163_vtable_const_residue = is_cxx
+    if let Some(capture) = &cxx_analysis_residues {
+        for adjustment in capture.function_adjustments {
+            if let Some(function) = machine_functions
+                .iter_mut()
+                .find(|function| function.name == adjustment.name)
+            {
+                function.anonymous_label_bump = if adjustment.anonymous_front_adjustment < 0 {
+                    function
+                        .anonymous_label_bump
+                        .saturating_sub(adjustment.anonymous_front_adjustment.unsigned_abs())
+                } else {
+                    function
+                        .anonymous_label_bump
+                        .saturating_add(adjustment.anonymous_front_adjustment as u32)
+                };
+                if let Some(bump) = adjustment.post_function_anonymous_bump {
+                    function.post_function_anonymous_bump = Some(bump);
+                }
+                if let Some(position) = adjustment.string_after_constants {
+                    function.string_number_after_constants = Some(position);
+                }
+                if !adjustment.constant_order.is_empty()
+                    && !function.reorder_constants(adjustment.constant_order)
+                {
+                    return Err(Diagnostic::error(format!(
+                        "captured constant order for '{}' does not match its pool",
+                        adjustment.name
+                    )));
+                }
+                function
+                    .constant_number_gaps
+                    .extend_from_slice(adjustment.constant_gaps);
+                function.constant_number_gaps.sort_by_key(|(index, _)| *index);
+                for &(instruction_index, target) in adjustment.external_constant_relocations {
+                    let Some(relocation) = function.relocations.iter_mut().find(|relocation| {
+                        relocation.instruction_index == instruction_index
+                            && matches!(
+                                relocation.target,
+                                mwcc_machine_code::RelocationTarget::Constant(_)
+                                    | mwcc_machine_code::RelocationTarget::ConstantWithAddend(_, _)
+                            )
+                    }) else {
+                        return Err(Diagnostic::error(format!(
+                            "captured reference temporary for '{}' has no constant relocation at instruction {}",
+                            adjustment.name, instruction_index
+                        )));
+                    };
+                    relocation.target =
+                        mwcc_machine_code::RelocationTarget::External(target.to_string());
+                }
+                if !adjustment.external_constant_relocations.is_empty() {
+                    function.prune_unreferenced_constants();
+                }
+            }
+        }
+    }
+    let build163_vtable_const_residue = (is_cxx && cxx_analysis_residues.is_none())
         .then(|| {
             cxx_analysis_residues::build163_vtable_const_residue(
                 &unit,
@@ -1521,6 +1577,9 @@ fn compile(
     let analysis_upfront_globals = cxx_analysis_residues
         .as_ref()
         .map_or(&[][..], |capture| capture.force_upfront_globals);
+    let captured_owned_rtti_counter = cxx_analysis_residues
+        .as_ref()
+        .and_then(|capture| capture.owned_rtti_counter);
     let mut defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> =
         cxx_analysis_residues.map_or_else(Vec::new, |capture| capture.objects);
     defined_globals.extend(cxx_analysis_residues::discarded_inline_aggregate_images(
@@ -2356,7 +2415,8 @@ fn compile(
                     config.build.post_leaf_function_anonymous_bump
                 }
             });
-        counter = number + u32::from(post_function_bump);
+        counter = (number + u32::from(post_function_bump))
+            .saturating_sub(machine_function.post_function_counter_rollback);
         for relocation in &mut machine_function.relocations {
             match &relocation.target {
                 mwcc_machine_code::RelocationTarget::External(name) => {
@@ -2520,6 +2580,8 @@ fn compile(
             owned_closure_analysis_floor,
             emits_weak_vtable_closure,
         );
+        let ordinary_rtti_analysis_counter = captured_owned_rtti_counter
+            .unwrap_or(ordinary_rtti_analysis_counter);
         if diagnose_syntax_tree {
             eprintln!(
                 "rtti-ordinal-frontier final-body={counter} \
@@ -2777,7 +2839,10 @@ fn compile(
             == mwcc_versions::DataSectionRelocationStyle::SectionAnchor,
         data_anchor_comment_flags: behavior.data_section_anchor_comment_flags,
         initial_anonymous_counter: config.build.initial_anonymous_counter,
-        leading_source_anonymous_bump: leading_source_ordinal_bump,
+        leading_source_anonymous_bump: leading_source_ordinal_bump.max(
+            analysis_counter_floor
+                .saturating_sub(u32::from(config.build.initial_anonymous_counter)),
+        ),
         post_leaf_function_anonymous_bump: config.build.post_leaf_function_anonymous_bump,
         post_framed_function_anonymous_bump: config.build.post_framed_function_anonymous_bump,
     };

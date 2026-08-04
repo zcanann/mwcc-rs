@@ -276,6 +276,10 @@ fn owned_rtti_closures_schedule_base_tables_then_vtable_transactions() {
             "update__4BaseFv",
         ]
     );
+    assert_eq!(
+        owned_vtable_function_symbol_order(&objects, &functions, &[0, 1]),
+        [1, 0]
+    );
 }
 
 #[test]
@@ -334,6 +338,10 @@ fn owned_rtti_dispatcher_precedes_template_virtual_leaves_in_slot_order() {
             "first__12Receiver<1E>Fv",
             "second__12Receiver<1E>Fv",
         ]
+    );
+    assert_eq!(
+        owned_vtable_function_symbol_order(&objects, &functions, &[0]),
+        [2, 0, 1]
     );
 }
 

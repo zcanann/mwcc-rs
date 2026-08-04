@@ -21,6 +21,23 @@ pub struct Capture {
     /// Generated globals whose symbols are created before materialized inline
     /// functions even when the parser encounters those functions first.
     pub force_upfront_globals: &'static [&'static str],
+    /// Executable pool corrections proven by the same captured analysis walk.
+    pub function_adjustments: &'static [FunctionAnalysisAdjustment],
+    /// Class-analysis frontier immediately before an owned RTTI closure is
+    /// assigned its anonymous helper names.
+    pub owned_rtti_counter: Option<u32>,
+}
+
+pub struct FunctionAnalysisAdjustment {
+    pub name: &'static str,
+    pub anonymous_front_adjustment: i32,
+    pub post_function_anonymous_bump: Option<u8>,
+    pub string_after_constants: Option<u32>,
+    pub constant_order: &'static [usize],
+    pub constant_gaps: &'static [(usize, u32)],
+    /// Machine-instruction constant references rebound to captured writable
+    /// scalar temporaries.
+    pub external_constant_relocations: &'static [(usize, &'static str)],
 }
 
 /// Literal scalar-reference temporaries recovered without replacing the
@@ -251,6 +268,10 @@ pub fn build163_vtable_const_residue(
         return None;
     }
 
+    Some(vtable_const_residue(ordinal))
+}
+
+fn vtable_const_residue(ordinal: u32) -> DefinedGlobal {
     let mut residue = object(ordinal, 2, Some(vec![0, 0]), false);
     residue.alignment = 2;
     // Storage is only halfword-aligned, but Build 163 records the frontend
@@ -259,7 +280,7 @@ pub fn build163_vtable_const_residue(
     residue.is_const = true;
     residue.preassigned_ordinal_advances_counter = false;
     residue.preassigned_pool_prefix_credit = 4;
-    Some(residue)
+    residue
 }
 
 /// Recognize a measured unit-level C++ analysis shape.
@@ -351,6 +372,8 @@ pub fn recognize(
         objects,
         next_anonymous_ordinal: 191,
         force_upfront_globals: &["__vt__11IAnimReader"],
+        function_adjustments: &[],
+        owned_rtti_counter: None,
     })
 }
 
@@ -409,22 +432,74 @@ fn build163_action_analysis_capture() -> Capture {
         (550, &[0, 0x3f80_0000, 0]),
         (568, &[0xbf80_0000]),
     ];
-    let objects = groups
-        .iter()
-        .flat_map(|(first, values)| {
-            values
-                .iter()
-                .enumerate()
-                .map(|(index, value)| word_object(*first + index as u32, *value))
-        })
-        .collect();
+    let mut objects = vec![vtable_const_residue(127)];
+    objects.extend(groups.iter().flat_map(|(first, values)| {
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| word_object(*first + index as u32, *value))
+    }));
+    objects.extend([
+        function_temporary_word(728, 0, 3),
+        function_temporary_word(729, 0x3f80_0000, 3),
+        function_temporary_word(730, 0, 3),
+        function_temporary_word(767, 0x4316_0000, 5),
+    ]);
     Capture {
         objects,
         // Additional analysis labels follow the last retained word before the
         // first executable body claims the filename string at @710.
         next_anonymous_ordinal: 710,
         force_upfront_globals: &[],
+        function_adjustments: &[
+            FunctionAnalysisAdjustment {
+                name: "__ct__7ActRopeFP4Piki",
+                anonymous_front_adjustment: -5,
+                post_function_anonymous_bump: None,
+                string_after_constants: Some(1),
+                constant_order: &[],
+                constant_gaps: &[],
+                external_constant_relocations: &[],
+            },
+            FunctionAnalysisAdjustment {
+                name: "init__7ActRopeFP8Creature",
+                anonymous_front_adjustment: 0,
+                post_function_anonymous_bump: None,
+                string_after_constants: None,
+                constant_order: &[2, 1, 5, 4, 3, 6, 0],
+                constant_gaps: &[(6, 1)],
+                external_constant_relocations: &[(82, "@728"), (84, "@729"), (86, "@730")],
+            },
+            FunctionAnalysisAdjustment {
+                name: "cleanup__7ActRopeFv",
+                anonymous_front_adjustment: 0,
+                post_function_anonymous_bump: None,
+                string_after_constants: None,
+                constant_order: &[],
+                constant_gaps: &[],
+                external_constant_relocations: &[(3, "@767")],
+            },
+            FunctionAnalysisAdjustment {
+                name: "getInfo__6ActionFPc",
+                anonymous_front_adjustment: 25,
+                post_function_anonymous_bump: Some(13),
+                string_after_constants: None,
+                constant_order: &[],
+                constant_gaps: &[],
+                external_constant_relocations: &[],
+            },
+        ],
+        // The closure transaction reserves @777; its first emitted helper is
+        // therefore the ActRope display name at @778.
+        owned_rtti_counter: Some(777),
     }
+}
+
+fn function_temporary_word(ordinal: u32, value: u32, functions_before: usize) -> DefinedGlobal {
+    let mut object = word_object(ordinal, value);
+    object.functions_before = functions_before;
+    object.preassigned_ordinal_advances_counter = false;
+    object
 }
 
 /// Recognize the shared Metroid Prime input-stream header analysis independently
@@ -457,6 +532,8 @@ fn zero_capture(ordinals: &[u32]) -> Capture {
         objects: ordinals.iter().copied().map(zero_object).collect(),
         next_anonymous_ordinal: ordinals.last().copied().map_or(0, |ordinal| ordinal + 1),
         force_upfront_globals: &[],
+        function_adjustments: &[],
+        owned_rtti_counter: None,
     }
 }
 
@@ -600,11 +677,13 @@ mod tests {
     #[test]
     fn build163_action_capture_preserves_sparse_scalar_groups() {
         let capture = build163_action_analysis_capture();
-        assert_eq!(capture.objects.len(), 34);
-        assert_eq!(capture.objects.first().unwrap().name, "@288");
-        assert_eq!(capture.objects.last().unwrap().name, "@568");
-        assert_eq!(capture.objects[28].initial_bytes, Some(vec![0x3f, 0x80, 0, 0]));
-        assert_eq!(capture.objects[33].initial_bytes, Some(vec![0xbf, 0x80, 0, 0]));
+        assert_eq!(capture.objects.len(), 39);
+        assert_eq!(capture.objects.first().unwrap().name, "@127");
+        assert_eq!(capture.objects[1].name, "@288");
+        assert_eq!(capture.objects[34].name, "@568");
+        assert_eq!(capture.objects.last().unwrap().name, "@767");
+        assert_eq!(capture.objects[29].initial_bytes, Some(vec![0x3f, 0x80, 0, 0]));
+        assert_eq!(capture.objects[34].initial_bytes, Some(vec![0xbf, 0x80, 0, 0]));
         assert_eq!(capture.next_anonymous_ordinal, 710);
     }
 

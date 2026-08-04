@@ -298,6 +298,37 @@ fn data_relocation_order(
     }
 }
 
+/// Function-symbol creation order contributed by an owned vtable transaction.
+///
+/// Data relocation serialization already reconstructs the compiler's class
+/// ownership walk, including concrete-template dispatchers and deleting
+/// destructors. Derive function discovery from that one ordering authority so
+/// the relocation and GLOBAL-symbol passes cannot disagree.
+fn owned_vtable_function_symbol_order(
+    objects: &[DataObject<'_>],
+    functions: &[FunctionObject<'_>],
+    eligible_objects: &[usize],
+) -> Vec<usize> {
+    let function_by_name: HashMap<&str, usize> = functions
+        .iter()
+        .enumerate()
+        .map(|(index, function)| (function.name, index))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    data_relocation_order(objects, functions, eligible_objects, true)
+        .entries
+        .into_iter()
+        .filter(|&(object_index, _)| objects[object_index].name.starts_with("__vt__"))
+        .filter_map(|(object_index, relocation_index)| {
+            function_by_name
+                .get(objects[object_index].relocations[relocation_index].target.as_str())
+                .copied()
+        })
+        .filter(|&index| functions[index].is_weak && functions[index].weak_inline)
+        .filter(|index| seen.insert(*index))
+        .collect()
+}
+
 /// Physical `.data` creation order for Build 163's owned RTTI closure.
 ///
 /// Ordinary source/function data is already complete when the closure opens.
@@ -1162,6 +1193,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // Function-owned strings/statics therefore precede file declarations that
     // occur after their owner, even though the invocation layer discovers all
     // file globals before it resolves function string pools.
+    let owned_rtti_sdata_order = if input.object_format.owned_rtti_closure_relocation_order {
+        owned_rtti_local_symbol_order(&input.data_objects)
+    } else {
+        Vec::new()
+    };
+    let owned_rtti_sdata: std::collections::HashSet<&str> = owned_rtti_sdata_order
+        .iter()
+        .map(|&index| input.data_objects[index].name)
+        .collect();
     let mut sdata_size = 0u32;
     let mut placed_sdata: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
     for source_position in 0..=input.functions.len() {
@@ -1170,12 +1210,21 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 && section_of(object) == ".sdata"
                 && !string_owner.contains_key(object.name)
                 && object.static_local_owner.is_none()
+                && !owned_rtti_sdata.contains(object.name)
         }) {
             if placed_sdata.insert(object.name) {
                 place(object, ".sdata", &mut sdata_size);
             }
         }
         if source_position == input.functions.len() {
+            if owned_rtti_frontier == Some(source_position) {
+                for &object_index in &owned_rtti_sdata_order {
+                    let object = &input.data_objects[object_index];
+                    if section_of(object) == ".sdata" && placed_sdata.insert(object.name) {
+                        place(object, ".sdata", &mut sdata_size);
+                    }
+                }
+            }
             continue;
         }
         let function = &input.functions[source_position];
@@ -1196,6 +1245,20 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     place(object, ".sdata", &mut sdata_size);
                 }
             }
+        }
+        if owned_rtti_frontier == Some(source_position) {
+            for &object_index in &owned_rtti_sdata_order {
+                let object = &input.data_objects[object_index];
+                if section_of(object) == ".sdata" && placed_sdata.insert(object.name) {
+                    place(object, ".sdata", &mut sdata_size);
+                }
+            }
+        }
+    }
+    for object_index in owned_rtti_sdata_order {
+        let object = &input.data_objects[object_index];
+        if section_of(object) == ".sdata" && placed_sdata.insert(object.name) {
+            place(object, ".sdata", &mut sdata_size);
         }
     }
     // Preserve emission for synthetic objects that intentionally have no
@@ -1468,6 +1531,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let is_in_stream_file_string = |object: &DataObject| {
         object.is_static
             && object.name.starts_with('@')
+            && object.preassigned_anonymous_ordinal.is_none()
             && object.static_local_owner.is_none()
             && object.functions_before > 0
             && !function_string_names.contains(object.name)
@@ -3438,6 +3502,24 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             emit_initialized_object!(object);
         }
     }
+    let owned_vtable_function_symbol_tail = if input.object_format.weak_vtable_function_symbol_tail
+    {
+        let data_object_indices: Vec<usize> = input
+            .data_objects
+            .iter()
+            .enumerate()
+            .filter_map(|(index, object)| {
+                (data_section[object.name] == ".data").then_some(index)
+            })
+            .collect();
+        owned_vtable_function_symbol_order(
+            &input.data_objects,
+            &functions,
+            &data_object_indices,
+        )
+    } else {
+        Vec::new()
+    };
     let mut functions_seen = 0usize;
     for (index, function) in functions.iter().enumerate() {
         // A function-local static initializer creates its address targets while
@@ -3728,7 +3810,20 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         // the table and its address-taken function slots as one
                         // compiler-generated declaration transaction. Weak
                         // dependency tables retain ordinary reference order.
-                        if name.starts_with("__vt__") && !object.is_weak {
+                        let owns_deferred_weak_body = input
+                            .object_format
+                            .weak_vtable_function_symbol_tail
+                            && object.relocations.iter().any(|relocation| {
+                                functions.iter().any(|function| {
+                                    function.name == relocation.target
+                                        && function.is_weak
+                                        && function.weak_inline
+                                })
+                            });
+                        if name.starts_with("__vt__")
+                            && !object.is_weak
+                            && !owns_deferred_weak_body
+                        {
                             emit_object_targets!(object);
                         }
                     } else if referenced_inline_asm.contains(name) {
@@ -3831,16 +3926,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // body is reached. The normal function pass below then observes the
         // symbols as already registered.
         if input.object_format.weak_vtable_function_symbol_tail
+            && function.is_weak
             && function.weak_inline
-            && functions[..index].iter().all(|prior| !prior.weak_inline)
+            && functions[..index]
+                .iter()
+                .all(|prior| !(prior.is_weak && prior.weak_inline))
         {
-            // Body materialization has already grouped vtable slots by owner and
-            // overload family. Symbol registration closes that transaction in
-            // reverse body-emission order.
-            for function_index in (index..functions.len()).rev() {
-                if functions[function_index].weak_inline {
-                    emit_function_symbol!(function_index);
-                }
+            for &function_index in &owned_vtable_function_symbol_tail {
+                emit_function_symbol!(function_index);
             }
         }
         let creation_order_emitted = if let Some(source_ordered) = creation_ordered {
