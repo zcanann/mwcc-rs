@@ -19,6 +19,7 @@ mod calls;
 mod constructed_new;
 mod constructor_initializers;
 mod computed_index_subscript;
+mod complement_logical;
 mod driver;
 mod frame_aggregate_copy;
 mod frame_array_indexed_load;

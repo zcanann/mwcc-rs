@@ -127,6 +127,7 @@ mod frame_vector_accumulation_schedule;
 mod global_aggregate_constant_initialization;
 mod global_struct_binary_search_schedule;
 mod hierarchy_push_pop_schedule;
+mod recorded_boolean_zero_test;
 mod guards_ifs;
 mod global_struct_member_search;
 mod global_bitfield_dirty_update;

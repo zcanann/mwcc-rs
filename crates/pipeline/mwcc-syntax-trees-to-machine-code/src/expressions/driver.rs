@@ -964,7 +964,7 @@ impl Generator {
                 }
                 // `x & ~y` / `x | ~y` fuse into andc/orc.
                 if matches!(operator, BinaryOperator::BitAnd | BinaryOperator::BitOr)
-                    && self.try_emit_complement_logical(*operator, left, right, destination)
+                    && self.try_emit_complement_logical(*operator, left, right, destination)?
                 {
                     return Ok(());
                 }

@@ -1,4 +1,4 @@
-//! Constant folding, immediate forms, complement fusion, and shifts.
+//! Constant folding, immediate forms, and shifts.
 
 use crate::analysis::*;
 use crate::generator::*;
@@ -7,72 +7,6 @@ use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Type, UnaryOperator};
 
 impl Generator {
-    /// If one operand is `~leaf` and the other is a leaf, emit `andc`/`orc`.
-    pub(crate) fn try_emit_complement_logical(
-        &mut self,
-        operator: BinaryOperator,
-        left: &Expression,
-        right: &Expression,
-        destination: u8,
-    ) -> bool {
-        // Both operands complemented — De Morgan folds to a single op: `~a & ~b` is
-        // `nor(a,b)` and `~a | ~b` is `nand(a,b)`.
-        if matches!(operator, BinaryOperator::BitAnd | BinaryOperator::BitOr) {
-            if let (Some(left_name), Some(right_name)) =
-                (complemented_leaf_name(left), complemented_leaf_name(right))
-            {
-                if let (Some(left_register), Some(right_register)) = (
-                    self.lookup_general(left_name),
-                    self.lookup_general(right_name),
-                ) {
-                    self.output.instructions.push(match operator {
-                        BinaryOperator::BitAnd => Instruction::Nor {
-                            a: destination,
-                            s: left_register,
-                            b: right_register,
-                        },
-                        _ => Instruction::Nand {
-                            a: destination,
-                            s: left_register,
-                            b: right_register,
-                        },
-                    });
-                    return true;
-                }
-            }
-        }
-        let (kept_expression, complemented_name) = if let Some(name) = complemented_leaf_name(right)
-        {
-            (left, name)
-        } else if let Some(name) = complemented_leaf_name(left) {
-            (right, name)
-        } else {
-            return false;
-        };
-        let (Some(kept_name), Some(complemented_register)) = (
-            leaf_name(kept_expression),
-            self.lookup_general(complemented_name),
-        ) else {
-            return false;
-        };
-        let Some(kept_register) = self.lookup_general(kept_name) else {
-            return false;
-        };
-        self.output.instructions.push(match operator {
-            BinaryOperator::BitAnd => Instruction::AndComplement {
-                a: destination,
-                s: kept_register,
-                b: complemented_register,
-            },
-            _ => Instruction::OrComplement {
-                a: destination,
-                s: kept_register,
-                b: complemented_register,
-            },
-        });
-        true
-    }
-
     /// `a*b + a*c` / `a*b - a*c` — two products sharing a common factor distribute to `a*(b±c)`, as
     /// mwcc does: one `add`/`subf` of the non-factor operands into the scratch, then a single `mullw`.
     /// The factor keeps its side from the FIRST product (`a*b`→`mullw d,a,r0`; `b*a`→`mullw d,r0,a`);
