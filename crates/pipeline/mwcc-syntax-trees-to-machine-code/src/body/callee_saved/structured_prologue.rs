@@ -55,6 +55,74 @@ pub(super) fn uses_dense_saved_register_range(
         && (eager_local_count == 0 || reuses_parameter_home || with_aggregate_frame)
 }
 
+/// Repeated inlined callback walks share a dense saved-register suffix, but
+/// each walk rematerializes its queue head. Build 163 treats this as one
+/// whole-caller frame owner even when `-use_lmw_stmw` was not explicitly set.
+pub(super) fn repeated_indirect_member_loops_own_dense_range(function: &Function) -> bool {
+    let mut loops = std::collections::HashMap::<(String, u32), usize>::new();
+    collect_indirect_member_loops(&function.statements, &mut loops);
+    loops.values().any(|count| *count >= 2)
+}
+
+fn collect_indirect_member_loops(
+    statements: &[Statement],
+    loops: &mut std::collections::HashMap<(String, u32), usize>,
+) {
+    for statement in statements {
+        match statement {
+            Statement::Loop {
+                kind: mwcc_syntax_trees::LoopKind::For,
+                initializer:
+                    Some(Expression::Assign {
+                        value,
+                        ..
+                    }),
+                body,
+                ..
+            } => {
+                if let Expression::Member { base, offset, .. } = value.as_ref() {
+                    if let Expression::Variable(global) = base.as_ref() {
+                        if statements_have_indirect_call(body) {
+                            *loops.entry((global.clone(), *offset)).or_default() += 1;
+                        }
+                    }
+                }
+                collect_indirect_member_loops(body, loops);
+            }
+            Statement::Loop { body, .. } => collect_indirect_member_loops(body, loops),
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_indirect_member_loops(then_body, loops);
+                collect_indirect_member_loops(else_body, loops);
+            }
+            Statement::Switch { arms, default, .. } => {
+                for arm in arms {
+                    if let mwcc_syntax_trees::ArmBody::Statements(body) = &arm.body {
+                        collect_indirect_member_loops(body, loops);
+                    }
+                }
+                if let Some(mwcc_syntax_trees::ArmBody::Statements(body)) = default {
+                    collect_indirect_member_loops(body, loops);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn statements_have_indirect_call(statements: &[Statement]) -> bool {
+    let mut found = false;
+    for statement in statements {
+        super::structured_expression_visit::visit_statement(statement, &mut |expression| {
+            found |= matches!(expression, Expression::CallThrough { .. });
+        });
+    }
+    found
+}
+
 impl Generator {
     /// Complete the independent saved-home stores and entry copies before
     /// loading a member-derived saved local. This fills the member load's

@@ -148,7 +148,7 @@ use super::structured_eager_home_reuse::StructuredEagerHomeReuse;
 use super::structured_complement_product_pair::StructuredComplementProductPair;
 use super::structured_prologue::{
     dense_entry_owns_parameter_copies, saved_home_stores_precede_initialization,
-    uses_dense_saved_register_range,
+    repeated_indirect_member_loops_own_dense_range, uses_dense_saved_register_range,
 };
 use super::structured_register_width::assigned_register_width;
 use super::structured_state_transfer_layout::is_unused_array_state_transfer;
@@ -1640,6 +1640,8 @@ impl Generator {
         let loop_assertion_saved_range = loop_assertion_strings.is_some();
         let dense_unused_array_state_transfer =
             unused_array_state_transfer && count == 5;
+        let repeated_indirect_member_loops =
+            repeated_indirect_member_loops_own_dense_range(function);
         let dense_frame = uses_dense_saved_register_range(
             with_frame_array,
             !aggregate_frame_locals.is_empty(),
@@ -1649,7 +1651,9 @@ impl Generator {
             parameter_home_reuse
                 .reuses_parameter_home(eager_saved_locals.len(), saved_parameters.len()),
             self.behavior.use_lmw_stmw,
-        ) || guarded_call_publication_layout.is_some()
+        ) || (self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && repeated_indirect_member_loops)
+            || guarded_call_publication_layout.is_some()
             || dense_unused_array_state_transfer
             || (member_array_offset_layout.is_some()
                 && self.behavior.use_lmw_stmw
@@ -2778,6 +2782,15 @@ impl Generator {
                 .map(|size| (size + 7) / 8 * 8)
                 .ok_or_else(|| Diagnostic::error("structured broad global frame is too large"))?;
         }
+        if repeated_indirect_member_loops {
+            let entry_table_bytes = i16::try_from(self.entry_parameter_words.div_ceil(2) * 8)
+                .map_err(|_| {
+                    Diagnostic::error("structured repeated-loop entry table is too large")
+                })?;
+            plan.frame_size = plan.frame_size.checked_add(entry_table_bytes).ok_or_else(|| {
+                Diagnostic::error("structured repeated-loop frame is too large")
+            })?;
+        }
         self.non_leaf = true;
         self.structured_global_byte_loop_layout_owner = global_byte_loop_layout.is_some();
         self.structured_broad_global_base_layout_owner = broad_global_base_layout.is_some();
@@ -2925,6 +2938,10 @@ impl Generator {
         if entry_call_forwarding.is_some() {
             self.legacy_callee_saved_frame_layout =
                 LegacyCalleeSavedFrameLayout::ReserveForwardedParameterLane;
+        }
+        if repeated_indirect_member_loops {
+            self.legacy_callee_saved_frame_layout =
+                LegacyCalleeSavedFrameLayout::RetainEntryParameterTable;
         }
         let pooled_dense_inline_save = array_pool_plan.is_some();
         let dense_predecrement_inline_save = dense_saved_range

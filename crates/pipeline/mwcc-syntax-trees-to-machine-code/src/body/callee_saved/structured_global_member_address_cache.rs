@@ -24,7 +24,7 @@ enum Event {
     Member {
         global: String,
         offset: u32,
-        inside_loop: bool,
+        loop_id: Option<usize>,
     },
     Call,
 }
@@ -55,27 +55,36 @@ pub(super) fn plans(
         })
         .collect::<std::collections::HashMap<_, _>>();
     let mut events = Vec::new();
+    let mut next_loop_id = 0;
     for initializer in function
         .locals
         .iter()
         .filter_map(|local| local.initializer.as_ref())
     {
-        collect_expression_events(initializer, &struct_sizes, false, &mut events);
+        collect_expression_events(initializer, &struct_sizes, None, &mut events);
     }
-    collect_statement_events(&function.statements, &struct_sizes, false, &mut events);
-    let mut positions =
-        std::collections::HashMap::<(String, u32), Vec<(usize, bool)>>::new();
+    collect_statement_events(
+        &function.statements,
+        &struct_sizes,
+        None,
+        &mut next_loop_id,
+        &mut events,
+    );
+    let mut positions = std::collections::HashMap::<
+        (String, u32),
+        Vec<(usize, Option<usize>)>,
+    >::new();
     for (position, event) in events.iter().enumerate() {
         if let Event::Member {
             global,
             offset,
-            inside_loop,
+            loop_id,
         } = event
         {
             positions
                 .entry((global.clone(), *offset))
                 .or_default()
-                .push((position, *inside_loop));
+                .push((position, *loop_id));
         }
     }
 
@@ -88,6 +97,17 @@ pub(super) fn plans(
             let (first, _) = *occurrences.first()?;
             let (last, _) = *occurrences.last()?;
             if occurrences.len() < 2 || first >= last {
+                return None;
+            }
+            // A saved address may span calls within one loop, or bridge a
+            // preloop use into that loop. Separate sibling loops are distinct
+            // lifetime regions: hoisting one address across both invents a
+            // caller-wide home that MWCC's per-loop planning never creates.
+            let loop_ids = occurrences
+                .iter()
+                .filter_map(|(_, loop_id)| *loop_id)
+                .collect::<std::collections::HashSet<_>>();
+            if loop_ids.len() > 1 {
                 return None;
             }
             let call_between = events[first + 1..last]
@@ -159,30 +179,31 @@ pub(super) fn retain_hottest_for_cached_global(
 fn collect_statement_events(
     statements: &[Statement],
     struct_sizes: &std::collections::HashMap<String, u32>,
-    inside_loop: bool,
+    loop_id: Option<usize>,
+    next_loop_id: &mut usize,
     events: &mut Vec<Event>,
 ) {
     for statement in statements {
         match statement {
             Statement::Store { target, value } => {
-                collect_expression_events(target, struct_sizes, inside_loop, events);
-                collect_expression_events(value, struct_sizes, inside_loop, events);
+                collect_expression_events(target, struct_sizes, loop_id, events);
+                collect_expression_events(value, struct_sizes, loop_id, events);
             }
             Statement::Assign { value, .. } | Statement::Expression(value) => {
-                collect_expression_events(value, struct_sizes, inside_loop, events);
+                collect_expression_events(value, struct_sizes, loop_id, events);
             }
             Statement::If {
                 condition,
                 then_body,
                 else_body,
             } => {
-                collect_expression_events(condition, struct_sizes, inside_loop, events);
-                collect_statement_events(then_body, struct_sizes, inside_loop, events);
-                collect_statement_events(else_body, struct_sizes, inside_loop, events);
+                collect_expression_events(condition, struct_sizes, loop_id, events);
+                collect_statement_events(then_body, struct_sizes, loop_id, next_loop_id, events);
+                collect_statement_events(else_body, struct_sizes, loop_id, next_loop_id, events);
             }
             Statement::Return(value) => {
                 if let Some(value) = value {
-                    collect_expression_events(value, struct_sizes, inside_loop, events);
+                    collect_expression_events(value, struct_sizes, loop_id, events);
                 }
             }
             Statement::Switch {
@@ -190,12 +211,12 @@ fn collect_statement_events(
                 arms,
                 default,
             } => {
-                collect_expression_events(scrutinee, struct_sizes, inside_loop, events);
+                collect_expression_events(scrutinee, struct_sizes, loop_id, events);
                 for arm in arms {
-                    collect_arm_events(&arm.body, struct_sizes, inside_loop, events);
+                    collect_arm_events(&arm.body, struct_sizes, loop_id, next_loop_id, events);
                 }
                 if let Some(default) = default {
-                    collect_arm_events(default, struct_sizes, inside_loop, events);
+                    collect_arm_events(default, struct_sizes, loop_id, next_loop_id, events);
                 }
             }
             Statement::Loop {
@@ -205,10 +226,23 @@ fn collect_statement_events(
                 body,
                 ..
             } => {
+                let current_loop_id = *next_loop_id;
+                *next_loop_id += 1;
                 for expression in [initializer, condition, step].into_iter().flatten() {
-                    collect_expression_events(expression, struct_sizes, true, events);
+                    collect_expression_events(
+                        expression,
+                        struct_sizes,
+                        Some(current_loop_id),
+                        events,
+                    );
                 }
-                collect_statement_events(body, struct_sizes, true, events);
+                collect_statement_events(
+                    body,
+                    struct_sizes,
+                    Some(current_loop_id),
+                    next_loop_id,
+                    events,
+                );
             }
             Statement::InlineAsm(_)
             | Statement::Break
@@ -222,7 +256,7 @@ fn collect_statement_events(
 fn collect_expression_events(
     expression: &Expression,
     struct_sizes: &std::collections::HashMap<String, u32>,
-    inside_loop: bool,
+    loop_id: Option<usize>,
     events: &mut Vec<Event>,
 ) {
     visit_expression(expression, &mut |expression| {
@@ -242,7 +276,7 @@ fn collect_expression_events(
             events.push(Event::Member {
                 global: global.clone(),
                 offset: *offset,
-                inside_loop,
+                loop_id,
             });
         }
     });
@@ -254,15 +288,16 @@ fn collect_expression_events(
 fn collect_arm_events(
     body: &ArmBody,
     struct_sizes: &std::collections::HashMap<String, u32>,
-    inside_loop: bool,
+    loop_id: Option<usize>,
+    next_loop_id: &mut usize,
     events: &mut Vec<Event>,
 ) {
     match body {
         ArmBody::Return(expression) => {
-            collect_expression_events(expression, struct_sizes, inside_loop, events)
+            collect_expression_events(expression, struct_sizes, loop_id, events)
         }
         ArmBody::Statements(statements) => {
-            collect_statement_events(statements, struct_sizes, inside_loop, events)
+            collect_statement_events(statements, struct_sizes, loop_id, next_loop_id, events)
         }
     }
 }
@@ -432,6 +467,33 @@ mod tests {
                 defer_until_first_use: false,
                 use_count: 2,
             })
+        );
+    }
+
+    #[test]
+    fn does_not_hoist_a_member_address_across_sibling_loops() {
+        let member_loop = || Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(member(8)),
+            condition: Some(Expression::Variable("running".into())),
+            step: None,
+            body: vec![Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: Vec::new(),
+            })],
+        };
+        let function = function(vec![member_loop(), member_loop()]);
+
+        assert_eq!(
+            plan(
+                &function,
+                &std::collections::HashMap::from([(
+                    "record".into(),
+                    Type::Struct { size: 12, align: 4 },
+                )]),
+                &std::collections::HashMap::new(),
+            ),
+            None
         );
     }
 
