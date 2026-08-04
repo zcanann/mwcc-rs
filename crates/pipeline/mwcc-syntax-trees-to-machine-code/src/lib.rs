@@ -979,6 +979,8 @@ fn lower_function_body(
     schedule_instructions(&mut generator);
     generator.schedule_dense_counted_loop_entry();
     generator.schedule_dense_counted_loop_state();
+    generator.schedule_dense_counted_loop_tail();
+    generator.schedule_dense_counted_loop_epilogue();
     generator.schedule_materialized_fixed_bank_store();
     generator.fuse_adjacent_materialized_fixed_bank_stores();
     generator.fuse_linkage_first_fixed_bank_region();

@@ -320,6 +320,7 @@ mod structured_loop_scalar_cse;
 mod structured_counted_loop;
 mod structured_counted_loop_entry_schedule;
 mod structured_counted_loop_state_schedule;
+mod structured_counted_loop_tail_schedule;
 mod structured_loop_packet_load_reuse;
 mod structured_loop_packet_setup;
 mod structured_loop_packet_zero;
