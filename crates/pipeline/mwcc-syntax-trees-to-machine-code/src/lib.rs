@@ -1334,6 +1334,8 @@ fn lower_function_body(
     generator.schedule_structured_global_base_epilogue();
     generator.normalize_nintendo_saved_gpr_epilogue();
     generator.fuse_retained_zero_saved_pair();
+    generator.schedule_structured_effecter_preloop();
+    generator.normalize_structured_effecter_loop_conversion_frame();
     // Allocation can coalesce the terminal result move that previously kept a
     // conditional exit from targeting the final `blr`. Canonicalize again on
     // the finished physical stream so returned loop accumulators use MWCC's
@@ -1872,20 +1874,29 @@ fn schedule_allocated_structured_array_pool_control_flow(generator: &mut Generat
 /// leaving one stale after scheduling or deleting a self-move patches or enters
 /// the wrong instruction.
 pub(crate) fn remap_instruction_indices(generator: &mut Generator, permutation: &[usize]) {
-    for relocation in &mut generator.output.relocations {
+    remap_machine_function_indices(&mut generator.output, permutation);
+}
+
+/// Remap owners stored directly by a machine function when a scheduler does
+/// not otherwise need access to generator state.
+pub(crate) fn remap_machine_function_indices(
+    output: &mut mwcc_machine_code::MachineFunction,
+    permutation: &[usize],
+) {
+    for relocation in &mut output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];
     }
-    for displacement in &mut generator.output.data_section_displacements {
+    for displacement in &mut output.data_section_displacements {
         displacement.instruction_index = permutation[displacement.instruction_index];
     }
     // Jump-table entries are byte offsets into the same instruction stream.
     // They are label owners just like branch destinations; allocator
     // coalescing and late scheduling must move them through the permutation.
-    for table in &mut generator.output.jump_tables {
+    for table in &mut output.jump_tables {
         for entry in &mut table.entries {
             let old_index = *entry as usize / 4;
             let new_index = if old_index == permutation.len() {
-                generator.output.instructions.len()
+                output.instructions.len()
             } else {
                 permutation[old_index]
             };
@@ -1894,7 +1905,7 @@ pub(crate) fn remap_instruction_indices(generator: &mut Generator, permutation: 
                 .saturating_mul(4);
         }
     }
-    remap_branch_targets(&mut generator.output.instructions, permutation);
+    remap_branch_targets(&mut output.instructions, permutation);
 }
 
 /// Move one instruction earlier after labels have been resolved, preserving

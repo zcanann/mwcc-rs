@@ -79,15 +79,11 @@ pub(super) fn permute_region(
     for (destination, &source) in schedule.iter().enumerate() {
         output.instructions[start + destination] = original[source].clone();
     }
-    let mut inverse = vec![0usize; schedule.len()];
+    let mut permutation = (0..output.instructions.len()).collect::<Vec<_>>();
     for (new_index, &old_index) in schedule.iter().enumerate() {
-        inverse[old_index] = new_index;
+        permutation[start + old_index] = start + new_index;
     }
-    for relocation in &mut output.relocations {
-        if (start..start + schedule.len()).contains(&relocation.instruction_index) {
-            relocation.instruction_index = start + inverse[relocation.instruction_index - start];
-        }
-    }
+    crate::remap_machine_function_indices(output, &permutation);
 }
 
 #[cfg(test)]
