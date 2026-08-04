@@ -32,7 +32,11 @@ impl Generator {
             //   format; index; load A; reload A; index+16; load B; reload B; crclr
             // Build 163 hides both load latencies and retains each loaded value:
             //   load B; index; load A; format; crclr; copy A; copy B; index+16
-            permute_basic_block_contents(&mut self.output, start, [5, 1, 2, 0, 7, 3, 6, 4, 8]);
+            basic_block_schedule::permute_contents(
+                &mut self.output,
+                start,
+                [5, 1, 2, 0, 7, 3, 6, 4, 8],
+            );
             self.output.instructions[start + 1] = Instruction::move_register(4, index);
             self.output.instructions[start + 5] = Instruction::move_register(6, 5);
             self.output.instructions[start + 6] = Instruction::move_register(9, 8);
@@ -42,14 +46,18 @@ impl Generator {
             // Selection order computes the saved format address first. Build
             // 163 starts the first independent member load, then fills its
             // latency with the format address before loading the second word.
-            permute_basic_block_contents(&mut self.output, start, [1, 0, 2, 3, 4]);
+            basic_block_schedule::permute_contents(&mut self.output, start, [1, 0, 2, 3, 4]);
         }
 
         while let Some((start, index)) = indexed_word_pair_report(&self.output.instructions) {
             // The two member loads are independent of both saved-index
             // arguments. Start each load early and retain the copied index in
             // the encoding MWCC selects after physical allocation.
-            permute_basic_block_contents(&mut self.output, start, [2, 1, 4, 0, 3, 5, 6]);
+            basic_block_schedule::permute_contents(
+                &mut self.output,
+                start,
+                [2, 1, 4, 0, 3, 5, 6],
+            );
             self.output.instructions[start + 1] = Instruction::move_register(4, index);
         }
     }
@@ -84,39 +92,6 @@ impl Generator {
         }
     }
 
-}
-
-fn permute_basic_block_contents<const N: usize>(
-    output: &mut mwcc_machine_code::MachineFunction,
-    start: usize,
-    order: [usize; N],
-) {
-    let old = output.instructions[start..start + N].to_vec();
-    for (new, old_index) in order.into_iter().enumerate() {
-        output.instructions[start + new] = old[old_index].clone();
-    }
-    let mut old_to_new = [0usize; N];
-    for (new, old_index) in order.into_iter().enumerate() {
-        old_to_new[old_index] = new;
-    }
-    let remap_owner = |instruction_index: &mut usize| {
-        if (start..start + N).contains(instruction_index) {
-            *instruction_index = start + old_to_new[*instruction_index - start];
-        }
-    };
-    for relocation in &mut output.relocations {
-        remap_owner(&mut relocation.instruction_index);
-    }
-    output
-        .relocations
-        .sort_by_key(|relocation| relocation.instruction_index);
-    for displacement in &mut output.data_section_displacements {
-        remap_owner(&mut displacement.instruction_index);
-    }
-    // This is a basic-block content schedule: incoming branches continue to
-    // enter at `start`, now the hoisted load. Labels and branch targets
-    // intentionally remain attached to the block boundary, not to the old
-    // first (format-address) instruction.
 }
 
 fn two_word_member_report(instructions: &[Instruction]) -> Option<usize> {
@@ -375,7 +350,11 @@ mod tests {
             },
         ];
 
-        permute_basic_block_contents(&mut output, 3, [5, 1, 2, 0, 7, 3, 6, 4, 8]);
+        basic_block_schedule::permute_contents(
+            &mut output,
+            3,
+            [5, 1, 2, 0, 7, 3, 6, 4, 8],
+        );
 
         assert!(matches!(
             output.instructions[3],

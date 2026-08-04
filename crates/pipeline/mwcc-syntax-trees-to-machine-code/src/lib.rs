@@ -1116,6 +1116,7 @@ fn lower_function_body(
     generator.schedule_mixed_member_zero_reset();
     generator.schedule_inlined_context_clear_transaction();
     generator.schedule_variadic_report_member_arguments();
+    generator.schedule_variadic_float_conversion_reports();
     generator.schedule_variadic_report_loop_tails();
     generator.schedule_saved_character_formatter_arguments();
     generator.schedule_position_formatter_arguments();
