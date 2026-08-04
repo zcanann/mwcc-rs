@@ -51,7 +51,7 @@ impl Generator {
 fn find_saved_call_result_zero_test(
     instructions: &[Instruction],
 ) -> Option<(usize, usize)> {
-    let mut matches = instructions.windows(4).enumerate().filter_map(|(call, window)| {
+    instructions.windows(4).enumerate().find_map(|(call, window)| {
         let [Instruction::BranchAndLink { .. }, copy, compare, branch] = window else {
             return None;
         };
@@ -72,9 +72,7 @@ fn find_saved_call_result_zero_test(
             && matches!(compare, Instruction::CompareWordImmediate { a, immediate: 0 } if *a == saved)
             && matches!(branch, Instruction::BranchConditionalForward { condition_bit: 2, .. }))
         .then_some((call + 1, call + 2))
-    });
-    let only = matches.next()?;
-    matches.next().is_none().then_some(only)
+    })
 }
 
 fn find_call_result_assignment_zero_test(instructions: &[Instruction]) -> Option<usize> {
@@ -178,7 +176,34 @@ mod tests {
     }
 
     #[test]
-    fn leaves_repeated_saved_call_result_tests_to_the_guard_chain_owner() {
+    fn processes_repeated_saved_call_result_zero_tests_in_stream_order() {
+        let packet = |callee: &str, saved| {
+            [
+                Instruction::BranchAndLink {
+                    target: callee.into(),
+                },
+                Instruction::AddImmediate {
+                    d: saved,
+                    a: 3,
+                    immediate: 0,
+                },
+                Instruction::CompareWordImmediate {
+                    a: saved,
+                    immediate: 0,
+                },
+                Instruction::BranchConditionalForward {
+                    options: 4,
+                    condition_bit: 2,
+                    target: 8,
+                },
+            ]
+        };
+        let instructions = [packet("first", 31), packet("second", 30)].concat();
+        assert_eq!(find_saved_call_result_zero_test(&instructions), Some((1, 2)));
+    }
+
+    #[test]
+    fn recognizes_the_first_repeated_saved_call_result_test() {
         let mut instructions = Vec::new();
         for target in [5, 10] {
             instructions.extend([
@@ -193,6 +218,6 @@ mod tests {
             ]);
         }
 
-        assert_eq!(find_saved_call_result_zero_test(&instructions), None);
+        assert_eq!(find_saved_call_result_zero_test(&instructions), Some((1, 2)));
     }
 }

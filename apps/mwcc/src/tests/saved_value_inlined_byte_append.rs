@@ -1,0 +1,103 @@
+use crate::{compile, SourceLanguage};
+
+#[test]
+fn emits_the_marioparty4_notify_append_transaction() {
+    let source = br#"
+        typedef unsigned char u8;
+        typedef unsigned int u32;
+
+        typedef struct Buffer {
+            u32 reserved0;
+            u32 reserved4;
+            u32 length;
+            u32 position;
+            u8 data[2176];
+        } Buffer;
+
+        extern int get_buffer(int*, Buffer**);
+        extern void add_stop_info(Buffer*);
+        extern void add_exception_info(Buffer*);
+        extern int send_request(Buffer*, int*, int, int, int);
+        extern void release_buffer(int);
+
+        inline int append_command(Buffer* message, u8 command) {
+            int error;
+            if (message->position >= 2176) {
+                error = 769;
+            } else {
+                message->data[message->position++] = command;
+                message->length += 1;
+                error = 0;
+            }
+            return error;
+        }
+
+        int notify_stopped(u8 command) {
+            int error;
+            int request_index;
+            int buffer_index;
+            Buffer* message;
+
+            error = get_buffer(&buffer_index, &message);
+            if (error == 0) {
+                error = append_command(message, command);
+                if (error == 0) {
+                    if (command == 144) {
+                        add_stop_info(message);
+                    } else {
+                        add_exception_info(message);
+                    }
+                }
+                error = send_request(message, &request_index, 2, 3, 1);
+                if (error == 0) {
+                    release_buffer(request_index);
+                }
+                release_buffer(buffer_index);
+            }
+            return error;
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.global_addressing = mwcc_versions::GlobalAddressing::Absolute;
+    flags.read_only_global_addressing = mwcc_versions::GlobalAddressing::Absolute;
+    flags.enum_storage = mwcc_versions::EnumStorage::Minimum;
+    flags.inline_deferred = true;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    flags.string_literals_read_only = true;
+    flags.use_lmw_stmw = true;
+    flags.debug_info = false;
+    let object = compile(
+        source,
+        "saved-value-inlined-byte-append.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_3,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the saved-value inline append should compile");
+
+    // Exact GC/1.3 code measured from Marioparty 4's TRKDoNotifyStopped.
+    let expected = [
+        0x94, 0x21, 0xff, 0xe0, 0x7c, 0x08, 0x02, 0xa6, 0x90, 0x01, 0x00, 0x24, 0x38, 0x81,
+        0x00, 0x08, 0x93, 0xe1, 0x00, 0x1c, 0x93, 0xc1, 0x00, 0x18, 0x7c, 0x7e, 0x1b, 0x78,
+        0x38, 0x61, 0x00, 0x0c, 0x48, 0x00, 0x00, 0x01, 0x7c, 0x7f, 0x1b, 0x79, 0x40, 0x82,
+        0x00, 0x94, 0x80, 0xa1, 0x00, 0x08, 0x80, 0x65, 0x00, 0x0c, 0x28, 0x03, 0x08, 0x80,
+        0x41, 0x80, 0x00, 0x0c, 0x38, 0x80, 0x03, 0x01, 0x48, 0x00, 0x00, 0x24, 0x38, 0x03,
+        0x00, 0x01, 0x7c, 0x65, 0x1a, 0x14, 0x90, 0x05, 0x00, 0x0c, 0x38, 0x80, 0x00, 0x00,
+        0x9b, 0xc3, 0x00, 0x10, 0x80, 0x65, 0x00, 0x08, 0x38, 0x03, 0x00, 0x01, 0x90, 0x05,
+        0x00, 0x08, 0x2c, 0x04, 0x00, 0x00, 0x40, 0x82, 0x00, 0x24, 0x57, 0xc0, 0x06, 0x3e,
+        0x28, 0x00, 0x00, 0x90, 0x40, 0x82, 0x00, 0x10, 0x80, 0x61, 0x00, 0x08, 0x48, 0x00,
+        0x00, 0x01, 0x48, 0x00, 0x00, 0x0c, 0x80, 0x61, 0x00, 0x08, 0x48, 0x00, 0x00, 0x01,
+        0x80, 0x61, 0x00, 0x08, 0x38, 0x81, 0x00, 0x10, 0x38, 0xa0, 0x00, 0x02, 0x38, 0xc0,
+        0x00, 0x03, 0x38, 0xe0, 0x00, 0x01, 0x48, 0x00, 0x00, 0x01, 0x7c, 0x7f, 0x1b, 0x79,
+        0x40, 0x82, 0x00, 0x0c, 0x80, 0x61, 0x00, 0x10, 0x48, 0x00, 0x00, 0x01, 0x80, 0x61,
+        0x00, 0x0c, 0x48, 0x00, 0x00, 0x01, 0x80, 0x01, 0x00, 0x24, 0x7f, 0xe3, 0xfb, 0x78,
+        0x83, 0xe1, 0x00, 0x1c, 0x83, 0xc1, 0x00, 0x18, 0x7c, 0x08, 0x03, 0xa6, 0x38, 0x21,
+        0x00, 0x20, 0x4e, 0x80, 0x00, 0x20,
+    ];
+    assert!(object.windows(expected.len()).any(|bytes| bytes == expected));
+}

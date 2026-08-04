@@ -217,6 +217,7 @@ mod structured_indirect_call_home;
 mod structured_inline_residue;
 mod structured_inlined_byte_append_schedule;
 mod structured_repeated_value_inlined_byte_append_schedule;
+mod structured_saved_value_inlined_byte_append;
 mod structured_single_inlined_byte_append;
 mod structured_inlined_address_receiver_schedule;
 mod structured_inlined_guarded_value_diamond_schedule;

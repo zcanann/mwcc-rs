@@ -3083,6 +3083,9 @@ mod tests {
     #[path = "saved_float_parameter.rs"]
     mod saved_float_parameter;
 
+    #[path = "saved_value_inlined_byte_append.rs"]
+    mod saved_value_inlined_byte_append;
+
     #[path = "metroid_prime_qsort.rs"]
     mod metroid_prime_qsort;
 

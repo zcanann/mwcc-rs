@@ -344,7 +344,7 @@ fn flow(
                 name: assigned_name,
                 value,
             } => {
-                read_after |= expression_reads_name_across_call(value, name, prior_call);
+                read_after |= advance_expression(value, name, &mut prior_call);
                 if assigned_name == name {
                     // The assignment's new value is defined only after every
                     // call in its right-hand side has returned. It has not yet
@@ -663,16 +663,38 @@ pub(super) fn transient_condition_call_result_callee<'a>(
 /// loop counter assigned after a call from inheriting the old value's lifetime,
 /// while still observing a read-modify-write step such as `i = i + 1`.
 fn advance_expression(expression: &Expression, name: &str, prior_call: &mut bool) -> bool {
-    if let Expression::Assign { target, value } = expression {
-        if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name) {
-            let read_after = expression_reads_name_across_call(value, name, *prior_call);
+    match expression {
+        Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name) =>
+        {
+            let read_after = advance_expression(value, name, prior_call);
             *prior_call = false;
-            return read_after;
+            read_after
+        }
+        Expression::Comma { left, right } => {
+            let left_read = advance_expression(left, name, prior_call);
+            left_read | advance_expression(right, name, prior_call)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+            ..
+        } => {
+            let mut read_after = advance_expression(condition, name, prior_call);
+            let mut true_call = *prior_call;
+            let mut false_call = *prior_call;
+            read_after |= advance_expression(when_true, name, &mut true_call);
+            read_after |= advance_expression(when_false, name, &mut false_call);
+            *prior_call = true_call || false_call;
+            read_after
+        }
+        _ => {
+            let read_after = expression_reads_name_across_call(expression, name, *prior_call);
+            *prior_call |= expression_has_call(expression);
+            read_after
         }
     }
-    let read_after = expression_reads_name_across_call(expression, name, *prior_call);
-    *prior_call |= expression_has_call(expression);
-    read_after
 }
 
 #[cfg(test)]
@@ -716,6 +738,56 @@ mod tests {
                 }
             }),
         ]
+    }
+
+    fn assign(name: &str, value: Expression) -> Expression {
+        Expression::Assign {
+            target: Box::new(Expression::Variable(name.into())),
+            value: Box::new(value),
+        }
+    }
+
+    #[test]
+    fn nested_comma_assignment_starts_a_fresh_lifetime_after_a_call() {
+        let expression = Expression::Comma {
+            left: Box::new(assign("alias", Expression::Variable("source".into()))),
+            right: Box::new(Expression::Variable("alias".into())),
+        };
+        let mut prior_call = true;
+        assert!(!advance_expression(&expression, "alias", &mut prior_call));
+        assert!(!prior_call);
+    }
+
+    #[test]
+    fn conditional_assignments_on_both_edges_start_a_fresh_lifetime() {
+        let expression = Expression::Comma {
+            left: Box::new(Expression::Conditional {
+                condition: Box::new(Expression::Variable("condition".into())),
+                when_true: Box::new(assign("result", Expression::IntegerLiteral(1))),
+                when_false: Box::new(assign("result", Expression::IntegerLiteral(0))),
+                origin: mwcc_syntax_trees::ConditionalOrigin::IfAssignments,
+            }),
+            right: Box::new(Expression::Variable("result".into())),
+        };
+        let mut prior_call = true;
+        assert!(!advance_expression(&expression, "result", &mut prior_call));
+        assert!(!prior_call);
+    }
+
+    #[test]
+    fn conditional_assignment_on_one_edge_preserves_the_incoming_lifetime() {
+        let expression = Expression::Comma {
+            left: Box::new(Expression::Conditional {
+                condition: Box::new(Expression::Variable("condition".into())),
+                when_true: Box::new(assign("result", Expression::IntegerLiteral(1))),
+                when_false: Box::new(Expression::IntegerLiteral(0)),
+                origin: mwcc_syntax_trees::ConditionalOrigin::IfAssignments,
+            }),
+            right: Box::new(Expression::Variable("result".into())),
+        };
+        let mut prior_call = true;
+        assert!(advance_expression(&expression, "result", &mut prior_call));
+        assert!(prior_call);
     }
 
     fn inline_result_alias(later_read: bool) -> Vec<Statement> {
