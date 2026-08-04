@@ -32,9 +32,10 @@ impl Generator {
                 else_body,
             );
         let mut guarded_member_handoff =
-            super::structured_guarded_member_handoff::plan(
+            super::structured_guarded_member_handoff::plan_either_arm(
                 condition,
                 then_body,
+                else_body,
             );
         let mut branch_entry_cache =
             super::structured_if_else_branch_entry_cache::plan(

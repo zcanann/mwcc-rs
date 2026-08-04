@@ -31,6 +31,14 @@ pub(super) fn plan<'a>(
     })
 }
 
+pub(super) fn plan_either_arm<'a>(
+    condition: &Expression,
+    then_body: &'a [Statement],
+    else_body: &'a [Statement],
+) -> Option<Plan<'a>> {
+    plan(condition, then_body).or_else(|| plan(condition, else_body))
+}
+
 fn tested_pointer_member(expression: &Expression) -> Option<&Expression> {
     match expression {
         member @ Expression::Member {
@@ -102,5 +110,27 @@ mod tests {
             arguments: Vec::new(),
         })];
         assert!(plan(&callback(), &body).is_none());
+    }
+
+    #[test]
+    fn recognizes_the_same_member_called_at_the_else_entry() {
+        let else_body = [Statement::Expression(Expression::CallThrough {
+            target: Box::new(callback()),
+            arguments: vec![Expression::Variable("object".into())],
+        })];
+        let plan = plan_either_arm(
+            &Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left: Box::new(callback()),
+                right: Box::new(Expression::IntegerLiteral(0)),
+            },
+            &[Statement::Return(Some(Expression::IntegerLiteral(1)))],
+            &else_body,
+        )
+        .expect("else-entry callback handoff");
+        let Statement::Expression(expected) = &else_body[0] else {
+            unreachable!()
+        };
+        assert!(std::ptr::eq(plan.followup, expected));
     }
 }
