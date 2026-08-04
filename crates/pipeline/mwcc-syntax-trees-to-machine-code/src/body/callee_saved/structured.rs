@@ -433,6 +433,12 @@ impl Generator {
             Vec::new()
         };
         let address_taken = crate::frame::collect_address_taken(function);
+        let passive_frame_scalar_mirrors =
+            super::structured_passive_frame_scalar_mirrors::Plan::recognize(function);
+        self.passive_frame_scalar_mirrors = passive_frame_scalar_mirrors
+            .as_ref()
+            .map(|plan| plan.names().map(str::to_owned).collect())
+            .unwrap_or_default();
         let periodic_float_normalization =
             (self.behavior.optimization == mwcc_versions::Optimization::O0)
                 .then(|| StructuredPeriodicFloatNormalization::plan(function))
@@ -698,7 +704,10 @@ impl Generator {
             .iter()
             .filter(|local| {
                 local.array_length.is_none()
-                    && !address_taken.contains(local.name.as_str())
+                    && (!address_taken.contains(local.name.as_str())
+                        || passive_frame_scalar_mirrors
+                            .as_ref()
+                            .is_some_and(|plan| plan.contains(&local.name)))
                     && !eliminated_unobserved_locals.contains(local.name.as_str())
             })
             .map(|local| local.name.as_str())
@@ -710,6 +719,9 @@ impl Generator {
                         !frame_scalar_parameters
                             .iter()
                             .any(|framed| framed.name == parameter.name)
+                            || passive_frame_scalar_mirrors
+                                .as_ref()
+                                .is_some_and(|plan| plan.contains(&parameter.name))
                     })
                     .map(|parameter| parameter.name.as_str()),
             )
@@ -800,9 +812,12 @@ impl Generator {
             .rev()
             .filter(|parameter| {
                 survivors.contains(parameter.name.as_str())
-                    && !frame_scalar_parameters
+                    && (!frame_scalar_parameters
                         .iter()
                         .any(|framed| framed.name == parameter.name)
+                        || passive_frame_scalar_mirrors
+                            .as_ref()
+                            .is_some_and(|plan| plan.contains(&parameter.name)))
             })
             .collect();
         let has_prescaled_pointer_table_index = function.locals.iter().any(|local| {
@@ -1737,6 +1752,11 @@ impl Generator {
                 } else if let Some(preferred) = member_array_offset_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
+                {
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = passive_frame_scalar_mirrors
+                    .as_ref()
+                    .and_then(|plan| plan.home_preference(home_index, first_saved))
                 {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = object_collision_loop_layout

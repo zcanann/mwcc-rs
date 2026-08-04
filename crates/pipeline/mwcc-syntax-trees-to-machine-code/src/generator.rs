@@ -436,6 +436,10 @@ pub(crate) struct Generator {
     /// embedded aggregate element. Its final issue order depends on the three
     /// physical saved homes chosen by allocation.
     pub(crate) structured_member_array_offset_owner: bool,
+    /// Scalars whose source address is materialized only into an otherwise
+    /// dead local. Their frame image remains ABI-visible, but no executable
+    /// alias can mutate it, so ordinary reads use the retained register mirror.
+    pub(crate) passive_frame_scalar_mirrors: HashSet<String>,
     /// A broad global aggregate loop selected source-ordered saved homes and
     /// retains an additional linkage lane for its addressable cursor record.
     pub(crate) structured_broad_global_base_layout_owner: bool,
@@ -1210,7 +1214,9 @@ impl Generator {
         // incoming/initial value. A call through the escaped address may replace
         // the object, so all later value consumers must go through `evaluate`
         // and reload the frame slot rather than taking this fast register path.
-        if self.frame_slots.contains_key(name) {
+        if self.frame_slots.contains_key(name)
+            && !self.passive_frame_scalar_mirrors.contains(name)
+        {
             return None;
         }
         self.locations
@@ -1535,7 +1541,9 @@ impl Generator {
             // An addressable object is no longer a register leaf. Its incoming
             // register may initialize the frame slot, but an escaped pointer can
             // replace the stored value before any later use.
-            if self.frame_slots.contains_key(name) {
+            if self.frame_slots.contains_key(name)
+                && !self.passive_frame_scalar_mirrors.contains(name)
+            {
                 return Err(Diagnostic::error("expected a general-register leaf"));
             }
             if let Some(location) = self.locations.get(name.as_str()) {

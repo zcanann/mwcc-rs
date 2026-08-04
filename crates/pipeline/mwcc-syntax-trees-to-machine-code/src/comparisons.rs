@@ -10,10 +10,14 @@ use mwcc_syntax_trees::{BinaryOperator, Expression, Type};
 fn frame_scalar_load_width(
     value: &Expression,
     frame_slots: &std::collections::HashMap<String, FrameSlot>,
+    passive_mirrors: &std::collections::HashSet<String>,
 ) -> Option<u8> {
     let Expression::Variable(name) = value else {
         return None;
     };
+    if passive_mirrors.contains(name) {
+        return None;
+    }
     frame_slots
         .get(name)
         .filter(|slot| !slot.is_array && slot.class == ValueClass::General)
@@ -1839,7 +1843,12 @@ impl Generator {
     /// index, or struct member — which can be evaluated into a register and used
     /// as a comparison operand without narrow extension.
     pub(crate) fn is_word_load(&self, value: &Expression) -> bool {
-        if frame_scalar_load_width(value, &self.frame_slots) == Some(32) {
+        if frame_scalar_load_width(
+            value,
+            &self.frame_slots,
+            &self.passive_frame_scalar_mirrors,
+        ) == Some(32)
+        {
             return true;
         }
         match value {
@@ -1867,7 +1876,12 @@ impl Generator {
     /// already contains the exact unsigned-byte value even when the source type
     /// is signed.
     pub(crate) fn is_byte_load(&self, value: &Expression) -> bool {
-        if frame_scalar_load_width(value, &self.frame_slots) == Some(8) {
+        if frame_scalar_load_width(
+            value,
+            &self.frame_slots,
+            &self.passive_frame_scalar_mirrors,
+        ) == Some(8)
+        {
             return true;
         }
         let width = match value {
@@ -1888,7 +1902,12 @@ impl Generator {
     /// halfword loads yield an ordinary GPR comparison operand; instruction
     /// selection preserves the source signedness with `lha` versus `lhz`.
     pub(crate) fn is_halfword_load(&self, value: &Expression) -> bool {
-        if frame_scalar_load_width(value, &self.frame_slots) == Some(16) {
+        if frame_scalar_load_width(
+            value,
+            &self.frame_slots,
+            &self.passive_frame_scalar_mirrors,
+        ) == Some(16)
+        {
             return true;
         }
         let width = match value {
@@ -2081,7 +2100,7 @@ mod tests {
     use super::{frame_scalar_load_width, unshadowed_global_byte_load};
     use crate::generator::{FrameSlot, ValueClass};
     use mwcc_syntax_trees::{Expression, Type};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     #[test]
     fn classifies_an_unshadowed_global_byte_as_a_memory_load() {
@@ -2114,8 +2133,22 @@ mod tests {
             },
         )]);
 
-        assert_eq!(frame_scalar_load_width(&expression, &slots), Some(8));
+        assert_eq!(
+            frame_scalar_load_width(&expression, &slots, &HashSet::new()),
+            Some(8)
+        );
+        assert_eq!(
+            frame_scalar_load_width(
+                &expression,
+                &slots,
+                &HashSet::from(["flag".into()]),
+            ),
+            None
+        );
         slots.get_mut("flag").unwrap().is_array = true;
-        assert_eq!(frame_scalar_load_width(&expression, &slots), None);
+        assert_eq!(
+            frame_scalar_load_width(&expression, &slots, &HashSet::new()),
+            None
+        );
     }
 }

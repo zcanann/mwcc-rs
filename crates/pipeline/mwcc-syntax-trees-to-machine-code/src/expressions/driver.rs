@@ -435,6 +435,25 @@ impl Generator {
                 self.emit_frame_matrix_row_address(name, index, destination)
             }
             Expression::Variable(name) => {
+                if self.passive_frame_scalar_mirrors.contains(name) {
+                    let location = self.locations.get(name).ok_or_else(|| {
+                        Diagnostic::error(format!(
+                            "passive frame scalar '{name}' has no register mirror"
+                        ))
+                    })?;
+                    if location.class != ValueClass::General {
+                        return Err(Diagnostic::error(format!(
+                            "passive frame scalar '{name}' is not an integer"
+                        )));
+                    }
+                    self.emit_widen(
+                        destination,
+                        location.register,
+                        location.width,
+                        location.signed,
+                    );
+                    return Ok(());
+                }
                 // A frame-resident variable is reloaded from its stack slot; a local
                 // array decays to the slot's address instead (`addi d,r1,offset`).
                 if let Some(slot) = self.frame_slots.get(name).copied() {

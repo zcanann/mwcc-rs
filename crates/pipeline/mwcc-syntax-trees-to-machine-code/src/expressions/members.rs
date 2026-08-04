@@ -556,7 +556,12 @@ impl Generator {
             _ => None,
         };
         if let Some(name) = frame_aggregate_name {
-            if let Some(slot) = self.frame_slots.get(name).copied() {
+            if let Some(slot) = self
+                .frame_slots
+                .get(name)
+                .copied()
+                .filter(|_| !self.passive_frame_scalar_mirrors.contains(name))
+            {
                 let pointee = pointee_of_type(member_type).ok_or_else(|| {
                     Diagnostic::error(format!(
                         "unsupported frame member load type {member_type:?} at +{offset}"
@@ -980,16 +985,21 @@ impl Generator {
                 GENERAL_SCRATCH,
             )?);
         } else {
+            // `indexed_struct_array_register` can return the persistent home of
+            // a named pointer. The effective address is a new value; defining
+            // it over that home corrupts every later use of the pointer (and is
+            // especially visible for a saved mirror spanning calls).
+            let address = self.fresh_virtual_general();
             self.output.instructions.push(Instruction::Add {
-                d: array_register,
+                d: address,
                 a: array_register,
                 b: GENERAL_SCRATCH,
             });
-            let displacement = self.emit_member_base_adjustment(array_register, offset);
+            let displacement = self.emit_member_base_adjustment(address, offset);
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
-                array_register,
+                address,
                 displacement,
             )?);
         }
@@ -1393,7 +1403,12 @@ impl Generator {
                 }
             }
             Expression::Variable(name) => {
-                if let Some(slot) = self.frame_slots.get(name).copied() {
+                if let Some(slot) = self
+                    .frame_slots
+                    .get(name)
+                    .copied()
+                    .filter(|_| !self.passive_frame_scalar_mirrors.contains(name))
+                {
                     let pointee = frame_value_pointee(slot.value_type).ok_or_else(|| {
                         Diagnostic::error("a frame-resident member base requires pointer storage")
                     })?;
@@ -1715,17 +1730,14 @@ impl Generator {
                     scaled,
                 )?);
             } else {
-                let retained_cache_base = self
-                    .structured_global_base_cache
-                    .as_ref()
-                    .is_some_and(|cache| {
-                        cache.remaining_uses != 0 && cache.register == address
-                    });
-                let indexed_address = if retained_cache_base {
-                    self.fresh_virtual_general_avoiding(vec![GENERAL_SCRATCH])
-                } else {
-                    address
-                };
+                // `member_base_register` may return a persistent parameter or
+                // saved-local home. The indexed member address is a separate
+                // value even when no structured global cache owns the base;
+                // defining it over the base corrupts every following member
+                // access. Liveness may still coalesce the virtual when the
+                // source base really dies here.
+                let indexed_address =
+                    self.fresh_virtual_general_avoiding(vec![GENERAL_SCRATCH]);
                 self.output.instructions.push(Instruction::Add {
                     d: indexed_address,
                     a: address,

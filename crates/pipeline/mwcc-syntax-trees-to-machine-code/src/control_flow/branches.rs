@@ -2213,7 +2213,8 @@ impl Generator {
         // have replaced its value. Reload the frame slot for a comparison just
         // as ordinary expression placement does.
         if matches!(operand, Expression::Variable(name)
-            if self.frame_slots.get(name).is_some_and(|slot| !slot.is_array))
+            if self.frame_slots.get(name).is_some_and(|slot| !slot.is_array)
+                && !self.passive_frame_scalar_mirrors.contains(name))
         {
             self.evaluate_general(operand, GENERAL_SCRATCH)?;
             return Ok(GENERAL_SCRATCH);
