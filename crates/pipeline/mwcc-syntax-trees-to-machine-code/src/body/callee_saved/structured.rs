@@ -7,7 +7,7 @@
 
 use super::guarded_computed_survivor::emit_scaled_index;
 use super::structured_call_accumulator::{
-    call_accumulator_assignment_count, call_accumulator_names,
+    accumulator_value_is_observed, call_accumulator_assignment_count, call_accumulator_names,
     fold_zero_initialized_call_accumulator, in_place_call_combined_return_name,
 };
 use super::structured_aggregate_slots::{
@@ -1660,7 +1660,7 @@ impl Generator {
         self.structured_repeated_indirect_member_loop_entry = repeated_indirect_member_loops
             && eager_saved_locals.is_empty()
             && saved_parameters.len() == 3
-            && count == 5;
+            && matches!(count, 5 | 6);
         let dense_frame = uses_dense_saved_register_range(
             with_frame_array,
             !aggregate_frame_locals.is_empty(),
@@ -5793,6 +5793,7 @@ impl Generator {
                         value,
                         previous,
                         dying_preference,
+                        accumulator_value_is_observed(function, name),
                     )?;
                     if let Some(destination) = accumulator {
                         self.locations.insert(

@@ -11,7 +11,88 @@ use super::*;
 pub(super) fn call_accumulator_names(function: &Function) -> std::collections::HashSet<&str> {
     let mut names = std::collections::HashSet::new();
     collect_call_accumulator_names(&function.statements, &mut names);
+    names.retain(|name| accumulator_value_is_observed(function, name));
     names
+}
+
+pub(super) fn accumulator_value_is_observed(function: &Function, name: &str) -> bool {
+    function
+        .return_expression
+        .as_ref()
+        .is_some_and(|value| expression_reads_name(value, name))
+        || function.guards.iter().any(|guard| {
+            expression_reads_name(&guard.condition, name)
+                || expression_reads_name(&guard.value, name)
+        })
+        || statements_observe_accumulator(&function.statements, name)
+}
+
+fn statements_observe_accumulator(statements: &[Statement], name: &str) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Assign {
+            name: assigned,
+            value,
+        } if assigned == name && is_call_accumulator_value(name, value) => false,
+        Statement::Assign { value, .. } | Statement::Expression(value) => {
+            expression_reads_name(value, name)
+        }
+        Statement::Store { target, value } => {
+            expression_reads_name(target, name) || expression_reads_name(value, name)
+        }
+        Statement::Loop {
+            initializer,
+            condition,
+            step,
+            body,
+            ..
+        } => {
+            initializer
+                .iter()
+                .chain(condition)
+                .chain(step)
+                .any(|value| expression_reads_name(value, name))
+                || statements_observe_accumulator(body, name)
+        }
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expression_reads_name(condition, name)
+                || statements_observe_accumulator(then_body, name)
+                || statements_observe_accumulator(else_body, name)
+        }
+        Statement::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            expression_reads_name(scrutinee, name)
+                || arms.iter().any(|arm| match &arm.body {
+                    mwcc_syntax_trees::ArmBody::Return(value) => {
+                        expression_reads_name(value, name)
+                    }
+                    mwcc_syntax_trees::ArmBody::Statements(body) => {
+                        statements_observe_accumulator(body, name)
+                    }
+                })
+                || default.as_ref().is_some_and(|body| match body {
+                    mwcc_syntax_trees::ArmBody::Return(value) => {
+                        expression_reads_name(value, name)
+                    }
+                    mwcc_syntax_trees::ArmBody::Statements(body) => {
+                        statements_observe_accumulator(body, name)
+                    }
+                })
+        }
+        Statement::Return(value) => value
+            .as_ref()
+            .is_some_and(|value| expression_reads_name(value, name)),
+        Statement::InlineAsm(_) => true,
+        Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {
+            false
+        }
+    })
 }
 
 fn collect_call_accumulator_names<'a>(
@@ -233,6 +314,7 @@ impl Generator {
         value: &Expression,
         previous: Option<u8>,
         preference: Option<u8>,
+        optimizer_owned_lane: bool,
     ) -> Compilation<Option<u8>> {
         let (call, include_previous) = match value {
             Expression::Unary {
@@ -280,7 +362,9 @@ impl Generator {
             // optimizer state introduced by the inlined reduction. Its r29
             // preference leaves the later, non-overlapping source local in
             // the planned r27 home and makes the physical save suffix dense.
-            self.prefer_virtual_general(previous, 29);
+            if optimizer_owned_lane {
+                self.prefer_virtual_general(previous, 29);
+            }
             previous
         } else {
             preference
@@ -304,7 +388,11 @@ impl Generator {
             a: normalized,
             s: GENERAL_SCRATCH,
             shift: 27,
-            begin: 24,
+            begin: if self.structured_repeated_indirect_member_loop_entry {
+                5
+            } else {
+                24
+            },
             end: 31,
         });
         if let Some(previous) = previous {

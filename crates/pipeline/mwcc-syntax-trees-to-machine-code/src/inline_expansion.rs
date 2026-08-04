@@ -1424,17 +1424,20 @@ impl InlineBodySet {
                 .iter()
                 .map(|statement| substitute_statement(statement, &replacements)),
         );
-        let discarded_result = destination.is_none().then(|| {
-            discarded_result::write_only_result_local(callee)
-                .or_else(|| discarded_result::guarded_accumulator_local(callee))
-        }).flatten();
-        if let Some(result_name) = discarded_result {
-                if let Some(Expression::Variable(substituted_result)) =
-                    replacements.get(result_name)
-                {
-                    substituted =
-                        discarded_result::remove_assignments(substituted, substituted_result);
-                }
+        let write_only_result = destination
+            .is_none()
+            .then(|| discarded_result::write_only_result_local(callee))
+            .flatten();
+        let guarded_accumulator = destination
+            .is_none()
+            .then(|| discarded_result::guarded_accumulator_local(callee))
+            .flatten();
+        let discarded_result = write_only_result.or(guarded_accumulator);
+        if let Some(result_name) = write_only_result {
+            if let Some(Expression::Variable(substituted_result)) = replacements.get(result_name) {
+                substituted =
+                    discarded_result::remove_assignments(substituted, substituted_result);
+            }
         }
         // Guards are trailing early returns in the callee's executable body.
         // Rebind them to a private forward boundary and, for value-position

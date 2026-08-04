@@ -71,12 +71,14 @@ pub(super) fn repeated_indirect_member_loop_home_preference(
     total_home_count: usize,
     home_index: usize,
 ) -> Option<u8> {
-    (enabled
-        && eager_home_count == 0
-        && parameter_home_count == 3
-        && total_home_count == 5)
-        .then(|| [31, 30, 26, 28, 27].get(home_index).copied())
-        .flatten()
+    if !enabled || eager_home_count != 0 || parameter_home_count != 3 {
+        return None;
+    }
+    match total_home_count {
+        5 => [31, 30, 26, 28, 27].get(home_index).copied(),
+        6 => [31, 30, 26, 28, 27, 29].get(home_index).copied(),
+        _ => None,
+    }
 }
 
 /// A direct-call result introduced between repeated inlined cursor walks keeps
@@ -630,6 +632,12 @@ mod tests {
         assert_eq!(
             repeated_indirect_member_loop_home_preference(true, 1, 3, 6, 0),
             None
+        );
+        assert_eq!(
+            (0..6)
+                .map(|index| repeated_indirect_member_loop_home_preference(true, 0, 3, 6, index))
+                .collect::<Vec<_>>(),
+            [Some(31), Some(30), Some(26), Some(28), Some(27), Some(29)]
         );
     }
 
