@@ -17,6 +17,7 @@ mod indexed_mixed_arguments;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ArgumentPlacement {
     Register { source: u8, target: u8 },
+    FrameValue { target: u8 },
     Constant { value: i64, target: u8 },
     FunctionAddress { target: u8 },
     GlobalAddress { target: u8 },
@@ -52,7 +53,8 @@ fn placement_overwrites_later_source(placements: &[ArgumentPlacement]) -> bool {
         .any(|(index, placement)| {
             let target = match placement {
                 ArgumentPlacement::Register { source, target } if source != target => *target,
-                ArgumentPlacement::Constant { target, .. }
+                ArgumentPlacement::FrameValue { target }
+                | ArgumentPlacement::Constant { target, .. }
                 | ArgumentPlacement::FunctionAddress { target }
                 | ArgumentPlacement::GlobalAddress { target } => *target,
                 ArgumentPlacement::Register { .. } => return false,
@@ -244,6 +246,13 @@ impl Generator {
                     if self.is_direct_function_symbol(name) {
                         return Ok(ArgumentPlacement::FunctionAddress { target });
                     }
+                    if self.frame_slots.get(name).is_some_and(|slot| {
+                        !slot.is_array
+                            && slot.class == ValueClass::General
+                            && slot.value_type.width() == 32
+                    }) {
+                        return Ok(ArgumentPlacement::FrameValue { target });
+                    }
                 }
                 if let Expression::AddressOf { operand } = transparent {
                     if matches!(operand.as_ref(), Expression::Variable(name) if self.globals.contains_key(name)) {
@@ -275,6 +284,9 @@ impl Generator {
         for (argument, placement) in arguments.iter().zip(placements) {
             match *placement {
                 ArgumentPlacement::Register { source, target } if source != target => {
+                    self.evaluate_general(argument, target)?;
+                }
+                ArgumentPlacement::FrameValue { target } => {
                     self.evaluate_general(argument, target)?;
                 }
                 ArgumentPlacement::Constant { value, target } => {
@@ -508,6 +520,32 @@ mod tests {
         ];
 
         assert!(!placement_overwrites_later_source(&placements));
+    }
+
+    #[test]
+    fn accepts_a_frame_value_before_an_independent_register_argument() {
+        let placements = [
+            ArgumentPlacement::FrameValue { target: 3 },
+            ArgumentPlacement::Register {
+                source: 4,
+                target: 4,
+            },
+        ];
+
+        assert!(!placement_overwrites_later_source(&placements));
+    }
+
+    #[test]
+    fn rejects_a_frame_value_that_overwrites_a_later_register_argument() {
+        let placements = [
+            ArgumentPlacement::FrameValue { target: 3 },
+            ArgumentPlacement::Register {
+                source: 3,
+                target: 4,
+            },
+        ];
+
+        assert!(placement_overwrites_later_source(&placements));
     }
 
     #[test]

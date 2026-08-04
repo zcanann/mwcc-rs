@@ -47,6 +47,9 @@ impl Generator {
                             immediate: 0,
                         });
                     }
+                    ArgumentPlacement::FrameValue { target } => {
+                        self.evaluate_general(argument, target)?;
+                    }
                     ArgumentPlacement::Constant { value, target } => {
                         self.load_integer_constant(target, value);
                     }
