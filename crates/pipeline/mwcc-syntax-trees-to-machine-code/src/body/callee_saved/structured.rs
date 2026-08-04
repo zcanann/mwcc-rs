@@ -93,6 +93,7 @@ use super::structured_repeated_call_poll::is_repeated_call_poll_transaction;
 use super::structured_recovered_float_homes;
 use super::structured_recovered_general_homes::StructuredRecoveredGeneralHomes;
 use super::structured_periodic_float_normalization::StructuredPeriodicFloatNormalization;
+use super::structured_paired_subobject_initialization::StructuredPairedSubobjectInitialization;
 use super::structured_unoptimized_leaf_homes::StructuredUnoptimizedLeafHomes;
 use super::structured_unoptimized_frame_call_homes::StructuredUnoptimizedFrameCallHomes;
 use super::structured_unoptimized_inline_float_loop_homes::
@@ -363,6 +364,8 @@ impl Generator {
         let function = stripped_empty_switches.as_ref().unwrap_or(function);
         let structured_switch_source = function.clone();
         let repeated_call_poll_transaction = is_repeated_call_poll_transaction(function);
+        let paired_subobject_initialization =
+            StructuredPairedSubobjectInitialization::plan(function);
         let direct_call_sparse_switch = has_direct_call_sparse_switch(function);
         let single_value_inlined_byte_append =
             has_single_value_inlined_byte_append(function);
@@ -2556,6 +2559,7 @@ impl Generator {
         {
             LegacyCalleeSavedFrameLayout::CompactValueHomes
         } else if has_only_call_result_temporaries(function)
+            && paired_subobject_initialization.is_none()
             && !saved_parameters.is_empty()
             && saved_float_parameters.is_empty()
             && eager_saved_locals.is_empty()
@@ -3983,6 +3987,9 @@ impl Generator {
         self.schedule_structured_frame_digit_pair();
         self.schedule_structured_virtual_calls();
         self.schedule_leading_member_store_call();
+        if let Some(initialization) = paired_subobject_initialization {
+            initialization.schedule(&mut self.output.instructions);
+        }
         if exclusive_arm_home_layout.is_some() {
             self.schedule_exclusive_arm_entry();
             self.schedule_exclusive_arm_wide_snapshot();
