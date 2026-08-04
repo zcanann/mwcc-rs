@@ -947,8 +947,6 @@ impl Generator {
             unoptimized_inline_float_transaction_homes.is_some();
         let dense_loop_window =
             plan_dense_loop_register_window(&function.statements, &ephemeral_locals);
-        let dense_loop_carried =
-            plan_dense_loop_carried_locals(&function.statements, &ephemeral_locals);
         let frame_publication =
             StructuredFramePublication::plan(function, &frame_scalar_locals, dense_loop_window);
         if let Some(publication) = &frame_publication {
@@ -1325,6 +1323,11 @@ impl Generator {
                 value_home_count,
                 &saved_parameters,
             );
+        let dense_loop_carried = plan_dense_loop_carried_locals(
+            &function.statements,
+            &ephemeral_locals,
+            dense_loop_window,
+        );
         let loop_assertion_strings =
             (value_home_count == 4).then_some(planned_loop_assertion_strings).flatten();
         let base_home_count = value_home_count + 2 * usize::from(loop_assertion_strings.is_some());

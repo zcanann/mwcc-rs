@@ -40,10 +40,14 @@ impl DenseLoopCarriedPlan<'_> {
 pub(super) fn plan_dense_loop_carried_locals<'a>(
     statements: &[Statement],
     ephemeral_locals: &[&'a LocalDeclaration],
+    saved_window: Option<usize>,
 ) -> DenseLoopCarriedPlan<'a> {
     let mut plan = DenseLoopCarriedPlan {
         locals: [None; DENSE_LOOP_CARRIED_REGISTERS.len()],
     };
+    if saved_window != Some(DENSE_SAVED_GPR_COUNT) {
+        return plan;
+    }
     let Some(loop_statement) = dense_loop_statement(statements, ephemeral_locals) else {
         return plan;
     };
@@ -556,7 +560,11 @@ mod tests {
             body,
         }];
 
-        let plan = plan_dense_loop_carried_locals(&statements, &references);
+        let plan = plan_dense_loop_carried_locals(
+            &statements,
+            &references,
+            Some(DENSE_SAVED_GPR_COUNT),
+        );
         assert_eq!(
             plan.locals,
             [Some("v0"), Some("v2"), Some("v3"), Some("v4")]
@@ -589,7 +597,41 @@ mod tests {
             body,
         }];
 
-        let plan = plan_dense_loop_carried_locals(&statements, &references);
+        let plan = plan_dense_loop_carried_locals(
+            &statements,
+            &references,
+            Some(DENSE_SAVED_GPR_COUNT),
+        );
+        assert_eq!(plan.preference_for("v0"), None);
+    }
+
+    #[test]
+    fn does_not_prefer_carried_roles_in_a_partial_saved_window() {
+        let locals: Vec<_> = (0..DENSE_SAVED_GPR_COUNT)
+            .map(|index| local(&format!("v{index}")))
+            .collect();
+        let references: Vec<_> = locals.iter().collect();
+        let mut body = vec![
+            read("v0"),
+            assign(
+                "v0",
+                Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(Expression::Variable("v0".into())),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                },
+            ),
+        ];
+        body.extend(locals[1..].iter().map(|local| read(&local.name)));
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body,
+        }];
+
+        let plan = plan_dense_loop_carried_locals(&statements, &references, Some(13));
         assert_eq!(plan.preference_for("v0"), None);
     }
 }
