@@ -1,9 +1,9 @@
-//! Fold a materialized one-bit boolean and its zero compare into `srwi.`.
+//! Fold a value-producing narrow operation and its zero compare into record form.
 //!
-//! The PowerPC record form produces the same CR0 relation as `cmplwi value,0`
-//! when a logical right shift by 31 has normalized the value to 0 or 1. MWCC
-//! selects that form across an adjacent local definition/use boundary; doing the
-//! fold after allocation preserves the local's chosen physical home.
+//! PowerPC shifts and narrow extensions can produce their value and set CR0 in
+//! one instruction. MWCC selects that form across adjacent definition/use
+//! boundaries; doing the fold after allocation preserves the chosen physical
+//! register while removing the now-redundant compare.
 
 #[allow(unused_imports)]
 use super::*;
@@ -16,7 +16,7 @@ impl Generator {
 
         let mut index = 0;
         while index + 1 < self.output.instructions.len() {
-            let Some(record) = recorded_shift_at(&self.output, index) else {
+            let Some(record) = recorded_zero_test_at(&self.output, index) else {
                 index += 1;
                 continue;
             };
@@ -31,30 +31,57 @@ impl Generator {
     }
 }
 
-fn recorded_shift_at(
+fn recorded_zero_test_at(
     output: &mwcc_machine_code::MachineFunction,
     index: usize,
 ) -> Option<Instruction> {
-    let [
-        Instruction::ShiftRightLogicalImmediate { a, s, shift: 31 },
-        Instruction::CompareLogicalWordImmediate {
-            a: compared,
-            immediate: 0,
-        },
-    ] = output.instructions.get(index..index + 2)?
-    else {
+    let [producer, compare] = output.instructions.get(index..index + 2)? else {
         return None;
     };
-    if a != compared || instruction_has_entry(output, index + 1) {
+    if instruction_has_entry(output, index + 1) {
         return None;
     }
-    Some(Instruction::RotateAndMaskRecord {
-        a: *a,
-        s: *s,
-        shift: 1,
-        begin: 31,
-        end: 31,
-    })
+    match (producer, compare) {
+        (
+            Instruction::ShiftRightLogicalImmediate { a, s, shift: 31 },
+            Instruction::CompareLogicalWordImmediate {
+                a: compared,
+                immediate: 0,
+            },
+        ) if a == compared => Some(Instruction::RotateAndMaskRecord {
+            a: *a,
+            s: *s,
+            shift: 1,
+            begin: 31,
+            end: 31,
+        }),
+        (
+            Instruction::ClearLeftImmediate { a, s, clear },
+            Instruction::CompareLogicalWordImmediate {
+                a: compared,
+                immediate: 0,
+            },
+        ) if a == compared && *clear != 0 => Some(Instruction::ClearLeftImmediateRecord {
+            a: *a,
+            s: *s,
+            clear: *clear,
+        }),
+        (
+            Instruction::ExtendSignByte { a, s },
+            Instruction::CompareWordImmediate {
+                a: compared,
+                immediate: 0,
+            },
+        ) if a == compared => Some(Instruction::ExtendSignByteRecord { a: *a, s: *s }),
+        (
+            Instruction::ExtendSignHalfword { a, s },
+            Instruction::CompareWordImmediate {
+                a: compared,
+                immediate: 0,
+            },
+        ) if a == compared => Some(Instruction::ExtendSignHalfwordRecord { a: *a, s: *s }),
+        _ => None,
+    }
 }
 
 fn instruction_has_entry(
@@ -110,7 +137,7 @@ mod tests {
     #[test]
     fn recognizes_an_adjacent_normalized_boolean_zero_test() {
         assert_eq!(
-            recorded_shift_at(&candidate(), 0),
+            recorded_zero_test_at(&candidate(), 0),
             Some(Instruction::RotateAndMaskRecord {
                 a: 4,
                 s: 0,
@@ -125,7 +152,7 @@ mod tests {
     fn preserves_a_compare_that_is_a_control_flow_entry() {
         let mut output = candidate();
         output.instructions.push(Instruction::Branch { target: 1 });
-        assert_eq!(recorded_shift_at(&output, 0), None);
+        assert_eq!(recorded_zero_test_at(&output, 0), None);
     }
 
     #[test]
@@ -136,6 +163,37 @@ mod tests {
             s: 0,
             shift: 1,
         };
-        assert_eq!(recorded_shift_at(&output, 0), None);
+        assert_eq!(recorded_zero_test_at(&output, 0), None);
+    }
+
+    #[test]
+    fn records_an_unsigned_narrow_cast_before_its_zero_compare() {
+        let mut output = candidate();
+        output.instructions[0] = Instruction::ClearLeftImmediate {
+            a: 0,
+            s: 4,
+            clear: 24,
+        };
+        output.instructions[1] =
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 };
+        assert_eq!(
+            recorded_zero_test_at(&output, 0),
+            Some(Instruction::ClearLeftImmediateRecord {
+                a: 0,
+                s: 4,
+                clear: 24,
+            })
+        );
+    }
+
+    #[test]
+    fn records_a_signed_narrow_cast_before_its_zero_compare() {
+        let mut output = candidate();
+        output.instructions[0] = Instruction::ExtendSignHalfword { a: 0, s: 4 };
+        output.instructions[1] = Instruction::CompareWordImmediate { a: 0, immediate: 0 };
+        assert_eq!(
+            recorded_zero_test_at(&output, 0),
+            Some(Instruction::ExtendSignHalfwordRecord { a: 0, s: 4 })
+        );
     }
 }
