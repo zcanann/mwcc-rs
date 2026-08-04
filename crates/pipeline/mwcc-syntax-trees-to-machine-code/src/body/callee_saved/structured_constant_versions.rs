@@ -121,13 +121,7 @@ fn rewrite_statement_list(statements: &mut Vec<Statement>, name: &str) -> Option
             continue;
         }
         if rewrite_guarded_second_store(&mut statements[first + 1..], constant, name, false) {
-            let Statement::Store {
-                value: first_value, ..
-            } = &mut statements[first]
-            else {
-                unreachable!("the first guarded constant was classified as a store")
-            };
-            *first_value = Expression::Variable(name.to_owned());
+            rewrite_matching_store_constants(&mut statements[first..], constant, name);
             statements.insert(
                 first,
                 Statement::Assign {
@@ -145,22 +139,11 @@ fn rewrite_statement_list(statements: &mut Vec<Statement>, name: &str) -> Option
             {
                 continue;
             }
-            let replacement = Expression::Variable(name.to_owned());
-            let Statement::Store {
-                value: first_value, ..
-            } = &mut statements[first]
-            else {
-                unreachable!("the first repeated constant was classified as a store")
-            };
-            *first_value = replacement.clone();
-            let Statement::Store {
-                value: second_value,
-                ..
-            } = &mut statements[second]
-            else {
-                unreachable!("the second repeated constant was classified as a store")
-            };
-            *second_value = replacement;
+            rewrite_matching_store_constants(
+                &mut statements[first..=second],
+                constant,
+                name,
+            );
             statements.insert(
                 first,
                 Statement::Assign {
@@ -172,6 +155,36 @@ fn rewrite_statement_list(statements: &mut Vec<Statement>, name: &str) -> Option
         }
     }
     None
+}
+
+/// Once a constant owns a call-crossing value version, reuse it for every
+/// dominated store in that interval. This includes narrow member stores:
+/// materializing a second literal into r0 would discard the retained value and
+/// diverge from MWCC's shared-zero transaction.
+fn rewrite_matching_store_constants(statements: &mut [Statement], constant: i64, name: &str) {
+    for statement in statements {
+        if store_integer_constant(statement) == Some(constant) {
+            let Statement::Store { value, .. } = statement else {
+                unreachable!("the matching constant was classified as a store")
+            };
+            *value = Expression::Variable(name.to_owned());
+            continue;
+        }
+        match statement {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                rewrite_matching_store_constants(then_body, constant, name);
+                rewrite_matching_store_constants(else_body, constant, name);
+            }
+            Statement::Loop { body, .. } => {
+                rewrite_matching_store_constants(body, constant, name);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn loop_store_constants(statements: &[Statement]) -> Vec<i64> {
@@ -366,6 +379,40 @@ mod tests {
                 },
             ] if name == "__retained" && first == name && second == name
         ));
+    }
+
+    #[test]
+    fn versions_intervening_narrow_stores_with_the_retained_constant() {
+        let mut statements = vec![
+            Statement::Store {
+                target: Expression::Variable("first".into()),
+                value: Expression::IntegerLiteral(0),
+            },
+            Statement::Store {
+                target: Expression::Variable("narrow".into()),
+                value: Expression::IntegerLiteral(0),
+            },
+            Statement::Expression(Expression::Call {
+                name: "flush".into(),
+                arguments: Vec::new(),
+            }),
+            Statement::Store {
+                target: Expression::Variable("last".into()),
+                value: Expression::IntegerLiteral(0),
+            },
+        ];
+
+        assert_eq!(
+            rewrite_statement_list(&mut statements, "__retained"),
+            Some(0)
+        );
+        assert!(statements[1..]
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::Store { value, .. } => Some(value),
+                _ => None,
+            })
+            .all(|value| matches!(value, Expression::Variable(name) if name == "__retained")));
     }
 
     #[test]

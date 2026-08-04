@@ -3122,6 +3122,9 @@ mod tests {
     #[path = "leaf_tail_append.rs"]
     mod leaf_tail_append;
 
+    #[path = "retained_zero_cleanup.rs"]
+    mod retained_zero_cleanup;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 

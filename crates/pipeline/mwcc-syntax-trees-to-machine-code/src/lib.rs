@@ -1296,6 +1296,7 @@ fn lower_function_body(
     generator.normalize_float_to_int_scratch_images();
     generator.schedule_structured_global_base_epilogue();
     generator.normalize_nintendo_saved_gpr_epilogue();
+    generator.fuse_retained_zero_saved_pair();
     // Allocation can coalesce the terminal result move that previously kept a
     // conditional exit from targeting the final `blr`. Canonicalize again on
     // the finished physical stream so returned loop accumulators use MWCC's

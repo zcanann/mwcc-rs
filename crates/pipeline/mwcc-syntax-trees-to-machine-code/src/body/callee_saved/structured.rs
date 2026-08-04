@@ -1636,6 +1636,14 @@ impl Generator {
             && deferred_saved_locals
                 .iter()
                 .all(|local| local.name.starts_with("__mwcc_retained_constant_"));
+        let parameter_retained_constant_homes = eager_saved_locals.is_empty()
+            && saved_parameters.len() == 1
+            && count == 2
+            && deferred_home_plan.group_count == 1
+            && deferred_saved_locals.len() == 1
+            && deferred_saved_locals[0]
+                .name
+                .starts_with("__mwcc_retained_constant_");
         let sequenced_callback_wait_layout = is_sequenced_callback_wait_layout(
             function,
             &saved_parameters,
@@ -1661,6 +1669,8 @@ impl Generator {
                     };
                     self.fresh_virtual_general_preferring(preferred)
                 } else if retained_store_constant_homes {
+                    self.fresh_virtual_general_preferring((first_saved + home_index) as u8)
+                } else if parameter_retained_constant_homes {
                     self.fresh_virtual_general_preferring((first_saved + home_index) as u8)
                 } else if let Some(preferred) = recovered_general_homes
                     .as_ref()
