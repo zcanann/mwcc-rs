@@ -534,7 +534,13 @@ pub(super) fn expand_expression(
                         &argument,
                         Expression::Variable(name) if function_symbols.contains(name)
                     );
-                let read_only_variable = matches!(argument, Expression::Variable(_))
+                // A bare variable is safe to substitute without proving caller
+                // stability only when the inline body reads it once. Repeating
+                // the expression can reread a volatile global (and can observe a
+                // changed local), whereas an ordinary call captures its argument
+                // value exactly once before entering the callee.
+                let read_only_variable = use_count == 1
+                    && matches!(argument, Expression::Variable(_))
                     && !super::safety::parameter_requires_materialization(
                         &body.source,
                         &parameter.name,
@@ -821,6 +827,93 @@ fn fresh_name(name: &str, local: &str, allocator: &mut LocalAllocator<'_>) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_function(name: &str, return_type: Type) -> mwcc_syntax_trees::Function {
+        mwcc_syntax_trees::Function {
+            return_type,
+            name: name.into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
+
+    #[test]
+    fn captures_a_repeated_unstable_variable_argument_once() {
+        let mut source = empty_function("predicate", Type::Int);
+        source.parameters.push(mwcc_syntax_trees::Parameter {
+            parameter_type: Type::UnsignedInt,
+            name: "command".into(),
+        });
+        let parameter = || Expression::Variable("command".into());
+        let body = ValueInlineBody {
+            source,
+            expression: Expression::Binary {
+                operator: BinaryOperator::LogicalOr,
+                left: Box::new(Expression::Binary {
+                    operator: BinaryOperator::Equal,
+                    left: Box::new(parameter()),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                }),
+                right: Box::new(Expression::Binary {
+                    operator: BinaryOperator::Equal,
+                    left: Box::new(parameter()),
+                    right: Box::new(Expression::IntegerLiteral(4)),
+                }),
+            },
+            automatic_transaction: false,
+        };
+        let bodies = HashMap::from([("predicate".into(), body)]);
+        let call = Expression::Call {
+            name: "predicate".into(),
+            arguments: vec![Expression::Variable("volatile_command".into())],
+        };
+        let mut locals = Vec::new();
+        let mut occupied_names = HashSet::new();
+        let mut next_local_id = 0;
+        let mut allocator = LocalAllocator {
+            locals: &mut locals,
+            occupied_names: &mut occupied_names,
+            next_local_id: &mut next_local_id,
+        };
+        let mut active = HashSet::new();
+        let mut changed = false;
+        let mut substitutions = 0;
+
+        let expanded = expand_expression(
+            &call,
+            &bodies,
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut active,
+            &mut changed,
+            &mut substitutions,
+            &mut allocator,
+        );
+
+        assert!(changed);
+        assert_eq!(substitutions, 1);
+        assert_eq!(locals.len(), 1);
+        assert_eq!(
+            super::super::safety::expression_use_count(&expanded, "volatile_command"),
+            1
+        );
+        assert_eq!(
+            super::super::safety::expression_use_count(&expanded, &locals[0].name),
+            3
+        );
+    }
 
     #[test]
     fn sinks_a_cast_onto_a_comma_sequences_terminal_value() {

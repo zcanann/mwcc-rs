@@ -948,8 +948,11 @@ pub(super) fn summarize_automatic_straight_line(
 /// SDK command classifiers commonly test a short explicit set, then scan a
 /// one- or two-element configuration array and return one on the first match.
 /// The loop induction object has no identity outside that scan, so MWCC folds
-/// the body into the caller's short-circuit predicate instead of retaining a
-/// call or an inlined local.
+/// the body into one returned predicate value instead of retaining a call or
+/// an inlined local. Keep the scalar return conversion around that predicate:
+/// MWCC materializes the inlined call result before the caller tests it, and
+/// erasing the value boundary incorrectly lets the caller branch directly from
+/// the callee's last comparison.
 fn summarize_automatic_bounded_predicate(function: &Function) -> Option<ValueInlineBody> {
     if !function.is_static
         || function.return_type == Type::Void
@@ -1091,6 +1094,7 @@ fn summarize_automatic_bounded_predicate(function: &Function) -> Option<ValueInl
             left: Box::new(left),
             right: Box::new(right),
         })?;
+    let expression = apply_scalar_return_conversion(expression, function.return_type);
     let mut source = function.clone();
     source.locals.clear();
     source.statements.clear();
@@ -1617,6 +1621,16 @@ mod tests {
             super::super::safety::expression_use_count(&summary.expression, "commands"),
             2
         );
+        assert!(matches!(
+            summary.expression,
+            Expression::Cast {
+                target_type: Type::Int,
+                operand,
+            } if matches!(operand.as_ref(), Expression::Binary {
+                operator: BinaryOperator::LogicalOr,
+                ..
+            })
+        ));
     }
 
     #[test]
