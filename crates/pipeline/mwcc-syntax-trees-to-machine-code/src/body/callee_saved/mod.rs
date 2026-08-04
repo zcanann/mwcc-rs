@@ -48,6 +48,7 @@ mod linkage_first_retained_member_completion_arm;
 mod linkage_first_retained_object_completion_arm;
 mod linkage_first_stateful_callback_completion_arm;
 mod linkage_first_data_anchor;
+mod linkage_first_data_anchor_strings;
 mod linkage_first_anchor_only_schedule;
 mod linkage_first_data_anchor_schedule;
 mod linkage_first_inlined_switch_schedule;

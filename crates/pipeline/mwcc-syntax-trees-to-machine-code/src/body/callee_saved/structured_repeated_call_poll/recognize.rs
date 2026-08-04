@@ -1,8 +1,4 @@
-use std::collections::HashSet;
-
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LoopKind, Statement};
-
-use super::super::structured_expression_visit::{visit_expression, visit_statement};
 
 pub(super) const MINIMUM_POLL_PAIRS: usize = 6;
 
@@ -12,24 +8,6 @@ pub(in super::super) fn is_repeated_call_poll_transaction(function: &Function) -
         return false;
     }
     plan.sender.is_some() && plan.poller.is_some()
-}
-
-pub(in super::super) fn owns_long_string_data_anchor(function: &Function) -> bool {
-    let mut strings = HashSet::new();
-    let mut collect = |expression: &Expression| {
-        if let Expression::StringLiteral(bytes) = expression {
-            if bytes.len() + 1 > 8 {
-                strings.insert(bytes.clone());
-            }
-        }
-    };
-    for statement in &function.statements {
-        visit_statement(statement, &mut collect);
-    }
-    if let Some(expression) = &function.return_expression {
-        visit_expression(expression, &mut collect);
-    }
-    strings.len() >= 3
 }
 
 #[derive(Default)]

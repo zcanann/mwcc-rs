@@ -8,4 +8,4 @@ mod handler;
 mod recognize;
 mod schedule;
 
-pub(super) use recognize::{is_repeated_call_poll_transaction, owns_long_string_data_anchor};
+pub(super) use recognize::is_repeated_call_poll_transaction;

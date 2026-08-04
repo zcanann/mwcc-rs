@@ -43,7 +43,9 @@ pub(crate) fn plan(
         behavior.inferred_array_uses_full_data_section,
     );
     let (data_references, _) = referenced_symbols(function, &data_symbols);
-    if data_references.len() >= 3 && references_span_call(function, &data_references) {
+    if (data_references.len() >= 3 && references_span_call(function, &data_references))
+        || super::linkage_first_data_anchor_strings::owns_long_string_data_anchor(function)
+    {
         return Some(DataSectionAnchorPlan {
             symbols: data_references,
             anchor_symbol: "...data.0".into(),
