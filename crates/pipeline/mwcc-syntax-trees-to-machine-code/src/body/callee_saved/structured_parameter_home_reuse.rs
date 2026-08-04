@@ -50,8 +50,10 @@ impl StructuredParameterHomeReuse {
         let mut parameters: Vec<_> = saved_parameters
             .iter()
             .enumerate()
-            .filter(|(_, parameter)| {
-                !structured_name_occurs_in_loop(function, &parameter.name)
+            .filter_map(|(index, parameter)| {
+                let occurs_in_loop =
+                    structured_name_occurs_in_loop(function, &parameter.name);
+                (!occurs_in_loop
                     || (0..deferred.group_count).any(|group| {
                         deferred.members(group).any(|result| {
                             loop_exit_member_result_reuses_parameter(
@@ -60,9 +62,10 @@ impl StructuredParameterHomeReuse {
                                 &parameter.name,
                             )
                         })
-                    })
+                    }))
+                .then_some((index, *parameter, occurs_in_loop))
             })
-            .filter(|(_, parameter)| {
+            .filter(|(_, parameter, _)| {
                 function
                     .return_expression
                     .as_ref()
@@ -70,14 +73,23 @@ impl StructuredParameterHomeReuse {
                         !expression_reads_name(expression, &parameter.name)
                     })
             })
-            .filter_map(|(index, parameter)| {
+            .filter_map(|(index, parameter, occurs_in_loop)| {
                 structured_name_last_read(function, &parameter.name)
-                    .map(|last_read| (index, parameter.name.as_str(), last_read))
+                    .map(|last_read| {
+                        (index, parameter.name.as_str(), last_read, occurs_in_loop)
+                    })
             })
             .collect();
-        parameters.sort_by_key(|(_, _, last_read)| std::cmp::Reverse(*last_read));
+        // Ordinary expired parameters are unconstrained interval colors. Give
+        // them first choice before the narrower loop-exit exception: otherwise
+        // a loop-carried parameter with a later lexical read can steal the only
+        // compatible result group from an already-expired parameter, producing
+        // a valid but non-MWCC coloring.
+        parameters.sort_by_key(|(_, _, last_read, occurs_in_loop)| {
+            (*occurs_in_loop, std::cmp::Reverse(*last_read))
+        });
 
-        for (parameter, parameter_name, last_read) in parameters {
+        for (parameter, parameter_name, last_read, occurs_in_loop) in parameters {
             let reusable = (0..deferred.group_count)
                 .filter(|group| reused_parameter_by_group[*group].is_none())
                 .filter(|group| {
@@ -107,13 +119,14 @@ impl StructuredParameterHomeReuse {
                 })
                 .max_by_key(|group| deferred.first_assignment(*group));
             if let Some(group) = reusable {
-                reuses_loop_exit_parameter_home |= deferred.members(group).any(|result| {
-                    loop_exit_member_result_reuses_parameter(
-                        function,
-                        result,
-                        parameter_name,
-                    )
-                });
+                reuses_loop_exit_parameter_home |= occurs_in_loop
+                    && deferred.members(group).any(|result| {
+                        loop_exit_member_result_reuses_parameter(
+                            function,
+                            result,
+                            parameter_name,
+                        )
+                    });
                 reused_parameter_by_group[group] = Some(parameter);
             }
         }
@@ -166,22 +179,8 @@ fn loop_exit_member_result_reuses_parameter(
             let Statement::Loop { body, .. } = statement else {
                 return false;
             };
-            let owns_exit = body.iter().any(|statement| {
-                let Statement::If { then_body, .. } = statement else {
-                    return false;
-                };
-                matches!(
-                    then_body.as_slice(),
-                    [
-                        Statement::Assign {
-                            name,
-                            value: Expression::Member { base, .. },
-                        },
-                        Statement::Break,
-                    ] if name == result
-                        && matches!(base.as_ref(), Expression::Variable(name) if name == parameter)
-                )
-            });
+            let owns_exit = loop_exit_assignment_count(body, result, parameter)
+                .is_some_and(|count| count != 0);
             owns_exit
                 && !function.statements[loop_index + 1..]
                     .iter()
@@ -192,6 +191,45 @@ fn loop_exit_member_result_reuses_parameter(
                     expression_reads_name(expression, parameter)
                 })
         })
+}
+
+/// Count assignments that create `result` only on an immediate exit from this
+/// loop. The result may overwrite the expired parameter home after either a
+/// final member load or a constant selection. Any other assignment shape makes
+/// the coalescing proof fail closed.
+fn loop_exit_assignment_count(
+    statements: &[Statement],
+    result: &str,
+    parameter: &str,
+) -> Option<usize> {
+    let mut count = 0;
+    for (index, statement) in statements.iter().enumerate() {
+        match statement {
+            Statement::Assign { name, value } if name == result => {
+                let exit_follows = matches!(statements.get(index + 1), Some(Statement::Break));
+                let safe_value = matches!(value, Expression::IntegerLiteral(_))
+                    || matches!(value, Expression::Member { base, .. }
+                        if matches!(base.as_ref(), Expression::Variable(name) if name == parameter));
+                if !exit_follows || !safe_value {
+                    return None;
+                }
+                count += 1;
+            }
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                count += loop_exit_assignment_count(then_body, result, parameter)?;
+                count += loop_exit_assignment_count(else_body, result, parameter)?;
+            }
+            // A `Break` in a nested loop does not exit the loop whose
+            // parameter home we are considering.
+            Statement::Loop { .. } => return None,
+            _ => {}
+        }
+    }
+    Some(count)
 }
 
 #[cfg(test)]
@@ -495,5 +533,108 @@ mod tests {
         assert_eq!(reuse.fresh_group_count, 0);
         assert_eq!(reuse.home_index(deferred.group("late")), 0);
         assert!(reuse.reuses_loop_exit_parameter_home);
+    }
+
+    #[test]
+    fn reuses_a_parameter_across_nested_constant_loop_exits() {
+        let mut function = function(false);
+        function.statements = vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: vec![Statement::If {
+                condition: Expression::Variable("finished".into()),
+                then_body: vec![
+                    Statement::Assign {
+                        name: "late".into(),
+                        value: Expression::IntegerLiteral(0),
+                    },
+                    Statement::Break,
+                ],
+                else_body: vec![Statement::If {
+                    condition: Expression::Variable("failed".into()),
+                    then_body: vec![
+                        Statement::Assign {
+                            name: "late".into(),
+                            value: Expression::IntegerLiteral(-1),
+                        },
+                        Statement::Break,
+                    ],
+                    else_body: vec![Statement::Expression(Expression::Member {
+                        base: Box::new(Expression::Variable("incoming".into())),
+                        offset: 12,
+                        member_type: Type::Int,
+                        index_stride: None,
+                    })],
+                }],
+            }],
+        }];
+        function.return_expression = Some(Expression::Variable("late".into()));
+        let deferred = plan_deferred_saved_homes(&function, &[&function.locals[0]]).unwrap();
+        let reuse = StructuredParameterHomeReuse::plan(
+            &function,
+            0,
+            &[&function.parameters[0]],
+            &deferred,
+            &StructuredEagerHomeReuse::plan(&function, &[], &deferred),
+        );
+
+        assert_eq!(reuse.fresh_group_count, 0);
+        assert_eq!(reuse.home_index(deferred.group("late")), 0);
+        assert!(reuse.reuses_loop_exit_parameter_home);
+    }
+
+    #[test]
+    fn prefers_an_ordinary_expired_parameter_to_a_loop_exit_exception() {
+        let mut function = function(false);
+        function.parameters.push(Parameter {
+            parameter_type: Type::Int,
+            name: "early".into(),
+        });
+        function.statements = vec![
+            Statement::Expression(Expression::Call {
+                name: "consume_early".into(),
+                arguments: vec![Expression::Variable("early".into())],
+            }),
+            Statement::Loop {
+                kind: LoopKind::While,
+                initializer: None,
+                condition: Some(Expression::IntegerLiteral(1)),
+                step: None,
+                body: vec![
+                    Statement::Expression(Expression::Member {
+                        base: Box::new(Expression::Variable("incoming".into())),
+                        offset: 12,
+                        member_type: Type::Int,
+                        index_stride: None,
+                    }),
+                    Statement::If {
+                        condition: Expression::Variable("finished".into()),
+                        then_body: vec![
+                            Statement::Assign {
+                                name: "late".into(),
+                                value: Expression::IntegerLiteral(0),
+                            },
+                            Statement::Break,
+                        ],
+                        else_body: Vec::new(),
+                    },
+                ],
+            },
+        ];
+        function.return_expression = Some(Expression::Variable("late".into()));
+        let deferred = plan_deferred_saved_homes(&function, &[&function.locals[0]]).unwrap();
+        let reuse = StructuredParameterHomeReuse::plan(
+            &function,
+            0,
+            &[&function.parameters[0], &function.parameters[1]],
+            &deferred,
+            &StructuredEagerHomeReuse::plan(&function, &[], &deferred),
+        );
+
+        assert_eq!(reuse.fresh_group_count, 0);
+        assert_eq!(reuse.home_index(deferred.group("late")), 1);
+        assert!(!reuse.reuses_loop_exit_parameter_home);
     }
 }
