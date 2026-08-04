@@ -62,7 +62,9 @@ impl Generator {
             plan.step,
             None,
         )? {
-            return Ok(None);
+            return Err(Diagnostic::error(
+                "a recognized postfix comparison lost its register-local target",
+            ));
         }
         Ok(false_branch_bo_bi(comparison))
     }
