@@ -248,12 +248,87 @@ pub(super) fn plan(
                 .then_with(|| right_name.cmp(left_name))
         })?;
     let leading_count = leading.get(&global).copied().unwrap_or(0);
+    let use_count = if loop_uses_global_member(&function.statements, &global) {
+        count
+    } else {
+        linear_total.get(&global).copied().unwrap_or(leading_count)
+    };
     Some(StructuredGlobalBasePlan {
         total_size: global_size(&global)?,
-        use_count: linear_total.get(&global).copied().unwrap_or(leading_count),
+        use_count,
         global,
         crosses_call: count > leading_count,
     })
+}
+
+/// A loop body is one address live range even though branch arms outside loops
+/// rematerialize independently. Count every syntactic use that lowering emits
+/// so the shared base is not exhausted halfway through the loop transaction.
+fn loop_uses_global_member(statements: &[Statement], global: &str) -> bool {
+    for statement in statements {
+        match statement {
+            Statement::Loop { body, .. } => {
+                let mut occurrences = std::collections::HashMap::new();
+                visit_statement(statement, &mut |expression| {
+                    collect_global_member(expression, global, &mut occurrences)
+                });
+                if occurrences.get(global).copied().unwrap_or(0) != 0
+                    || loop_uses_global_member(body, global)
+                {
+                    return true;
+                }
+            }
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                if loop_uses_global_member(then_body, global)
+                    || loop_uses_global_member(else_body, global)
+                {
+                    return true;
+                }
+            }
+            Statement::Switch { arms, default, .. } => {
+                if arms
+                    .iter()
+                    .map(|arm| &arm.body)
+                    .chain(default.iter())
+                    .any(|body| match body {
+                        mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                            loop_uses_global_member(statements, global)
+                        }
+                        mwcc_syntax_trees::ArmBody::Return(_) => false,
+                    })
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn collect_global_member(
+    expression: &Expression,
+    global: &str,
+    occurrences: &mut std::collections::HashMap<String, usize>,
+) {
+    let Expression::Member { base, .. } = expression else {
+        return;
+    };
+    let name = match base.as_ref() {
+        Expression::Variable(name) => Some(name),
+        Expression::Index { base, .. } => match base.as_ref() {
+            Expression::Variable(name) => Some(name),
+            _ => None,
+        },
+        _ => None,
+    };
+    if name.is_some_and(|name| name == global) {
+        *occurrences.entry(global.to_string()).or_default() += 1;
+    }
 }
 
 impl Generator {
@@ -278,7 +353,7 @@ impl Generator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{BinaryOperator, LocalDeclaration, Statement, Type};
+    use mwcc_syntax_trees::{BinaryOperator, LocalDeclaration, LoopKind, Statement, Type};
 
     fn member(index: Option<i64>, offset: u32) -> Expression {
         let base = index.map_or_else(
@@ -437,6 +512,52 @@ mod tests {
                     },
                 }],
                 else_body: Vec::new(),
+            },
+        ]);
+
+        assert_eq!(
+            plan(
+                &function,
+                &std::collections::HashMap::from([(
+                    "pads".into(),
+                    Type::Struct {
+                        size: 272,
+                        align: 4,
+                    },
+                )]),
+                &std::collections::HashMap::new(),
+            ),
+            Some(StructuredGlobalBasePlan {
+                global: "pads".into(),
+                total_size: 272,
+                crosses_call: true,
+                use_count: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn retains_the_shared_base_for_every_emitted_loop_use() {
+        let function = function(vec![
+            Statement::Assign {
+                name: "first".into(),
+                value: member(None, 48),
+            },
+            Statement::Loop {
+                kind: LoopKind::While,
+                initializer: None,
+                condition: Some(member(None, 80)),
+                step: None,
+                body: vec![
+                    Statement::Expression(Expression::Call {
+                        name: "sink".into(),
+                        arguments: Vec::new(),
+                    }),
+                    Statement::Assign {
+                        name: "later".into(),
+                        value: member(None, 167),
+                    },
+                ],
             },
         ]);
 

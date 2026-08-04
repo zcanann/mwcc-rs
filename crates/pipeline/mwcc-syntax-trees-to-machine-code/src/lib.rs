@@ -1202,6 +1202,10 @@ fn lower_function_body(
     generator.schedule_structured_inlined_byte_appends();
     generator.schedule_structured_single_inlined_byte_append();
     generator.schedule_structured_broad_global_base_loop();
+    // Global-base loop scheduling can expose the final successor definitions
+    // that prove an assignment-test scratch dead. The fold is idempotent and
+    // must observe that settled physical control-flow graph.
+    generator.fold_structured_call_result_assignment_zero_tests();
     generator.schedule_structured_global_byte_loop();
     generator.finalize_structured_compact_narrow_scalar_frame();
     generator.finalize_structured_guarded_scalar_output_frame();
