@@ -24,6 +24,7 @@ mod inlined_list_wipe;
 mod interrupt_vector_copy;
 mod linked_list_append;
 mod linked_list_remove;
+mod nested_pointer_search;
 pub(crate) mod policy;
 mod poll_search;
 mod pointer_walk_minimum;

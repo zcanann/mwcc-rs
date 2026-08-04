@@ -2751,6 +2751,12 @@ impl Generator {
         if self.try_float_intrinsic_leaf(function)? {
             return Ok(());
         }
+        // A nested owner chase reuses the cursor register for `p`, then
+        // `p->owner`, before advancing through `p->owner->next`. Its one
+        // scalar local is register-only, so claim it before frame fallbacks.
+        if self.try_nested_pointer_search_loop(function)? {
+            return Ok(());
+        }
         if self.try_callee_saved_structured_frame_body(function)? {
             return Ok(());
         }

@@ -3015,6 +3015,7 @@ mod tests {
 
     #[path = "xnor_feedback_loop.rs"]
     mod xnor_feedback_loop;
+    mod nested_pointer_search;
 
     #[path = "bit_reverse_loop.rs"]
     mod bit_reverse_loop;
