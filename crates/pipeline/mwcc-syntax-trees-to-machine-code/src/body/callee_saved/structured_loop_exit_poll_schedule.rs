@@ -49,7 +49,8 @@ fn loop_exit_poll_register_schedule(
                 Instruction::LoadWord { d: 3, a: 30, offset: 12 },
                 Instruction::CompareWordImmediate { a: 3, immediate: 0 },
                 Instruction::BranchConditionalForward { .. },
-                Instruction::AddImmediate { d: 30, a: 0, immediate: 0 },
+                Instruction::AddImmediate { d: 30, a: 0, immediate: 0 }
+                    | Instruction::LoadWord { d: 30, a: 30, offset: 32 },
                 Instruction::Branch { .. },
                 Instruction::CompareWordImmediate { a: 3, immediate: -1 },
                 Instruction::BranchConditionalForward { .. },
@@ -74,7 +75,7 @@ mod tests {
 
     #[test]
     fn recognizes_a_three_way_loop_exit_poll_ladder() {
-        let instructions = vec![
+        let mut instructions = vec![
             Instruction::LoadWord { d: 3, a: 30, offset: 12 },
             Instruction::CompareWordImmediate { a: 3, immediate: 0 },
             Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 5 },
@@ -97,6 +98,8 @@ mod tests {
                 compares: [1, 5, 9],
             })
         );
+        instructions[3] = Instruction::LoadWord { d: 30, a: 30, offset: 32 };
+        assert!(loop_exit_poll_register_schedule(&instructions).is_some());
     }
 
     #[test]

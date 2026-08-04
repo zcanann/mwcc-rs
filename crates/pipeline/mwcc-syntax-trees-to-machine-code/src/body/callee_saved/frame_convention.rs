@@ -494,6 +494,8 @@ impl Generator {
             inferred_entry_lane_count(),
             promoted_parameter_count,
             self.legacy_discarded_call_locals,
+            self.structured_loop_exit_parameter_home_reuse,
+            self.entry_parameter_words,
         );
         let entry_lane_bytes = i16::try_from(extra_lane_count * 8).unwrap_or(i16::MAX);
         // PreserveLogicalSize means the source-level local region already
@@ -1880,6 +1882,8 @@ fn legacy_extra_lane_count(
     inferred_entry_lanes: usize,
     promoted_parameter_count: usize,
     discarded_call_locals: usize,
+    loop_exit_parameter_home_reuse: bool,
+    entry_parameter_words: usize,
 ) -> usize {
     if layout == LegacyCalleeSavedFrameLayout::PreserveLogicalSize
         || guarded_entry_table_is_frame_resident
@@ -1894,7 +1898,14 @@ fn legacy_extra_lane_count(
     } else if layout
         == LegacyCalleeSavedFrameLayout::RetainEntryParameterTableAndDeferredLocalLane
     {
-        inferred_entry_lanes.saturating_add(1)
+        inferred_entry_lanes
+            .saturating_add(1)
+            // A second incoming word consumed by the inlined command setup
+            // retains its own source lane when the loop later coalesces the
+            // surviving parameter with the selected exit result.
+            .saturating_add(usize::from(
+                loop_exit_parameter_home_reuse && entry_parameter_words > 1,
+            ))
     } else if discarded_call_locals == 0 {
         inferred_entry_lanes
     } else {
@@ -2264,6 +2275,8 @@ mod tests {
                 1,
                 2,
                 0,
+                false,
+                2,
             ),
             2
         );
@@ -2274,8 +2287,22 @@ mod tests {
                 1,
                 2,
                 0,
+                false,
+                2,
             ),
             1
+        );
+        assert_eq!(
+            legacy_extra_lane_count(
+                LegacyCalleeSavedFrameLayout::RetainEntryParameterTableAndDeferredLocalLane,
+                false,
+                1,
+                1,
+                0,
+                true,
+                2,
+            ),
+            3
         );
     }
 

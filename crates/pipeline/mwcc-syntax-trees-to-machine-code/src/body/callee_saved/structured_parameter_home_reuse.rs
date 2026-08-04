@@ -208,8 +208,7 @@ fn loop_exit_assignment_count(
             Statement::Assign { name, value } if name == result => {
                 let exit_follows = matches!(statements.get(index + 1), Some(Statement::Break));
                 let safe_value = matches!(value, Expression::IntegerLiteral(_))
-                    || matches!(value, Expression::Member { base, .. }
-                        if matches!(base.as_ref(), Expression::Variable(name) if name == parameter));
+                    || loop_exit_member_value_reuses_parameter(value, parameter);
                 if !exit_follows || !safe_value {
                     return None;
                 }
@@ -230,6 +229,20 @@ fn loop_exit_assignment_count(
         }
     }
     Some(count)
+}
+
+fn loop_exit_member_value_reuses_parameter(value: &Expression, parameter: &str) -> bool {
+    match value {
+        Expression::Member { base, .. } => {
+            matches!(base.as_ref(), Expression::Variable(name) if name == parameter)
+        }
+        // A scalar cast consumes the member before defining the result, so it
+        // does not extend the incoming pointer's interval across the exit.
+        Expression::Cast { operand, .. } => {
+            loop_exit_member_value_reuses_parameter(operand, parameter)
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -503,11 +516,14 @@ mod tests {
                     then_body: vec![
                         Statement::Assign {
                             name: "late".into(),
-                            value: Expression::Member {
-                                base: Box::new(Expression::Variable("incoming".into())),
-                                offset: 32,
-                                member_type: Type::Int,
-                                index_stride: None,
+                            value: Expression::Cast {
+                                target_type: Type::UnsignedInt,
+                                operand: Box::new(Expression::Member {
+                                    base: Box::new(Expression::Variable("incoming".into())),
+                                    offset: 32,
+                                    member_type: Type::UnsignedInt,
+                                    index_stride: None,
+                                }),
                             },
                         },
                         Statement::Break,
