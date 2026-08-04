@@ -359,6 +359,10 @@ impl Generator {
             .as_ref()
             .map(|materialization| &materialization.function)
             .unwrap_or(function);
+        let guarded_member_lvalue = (self.behavior.frame_convention
+            == FrameConvention::LinkageFirst)
+        .then(|| super::structured_guarded_member_lvalue::recognize(function))
+        .flatten();
         let reduced_member_array_offsets =
             super::structured_loop_member_array_offset::strength_reduce_member_array_offsets(
                 function,
@@ -4312,6 +4316,9 @@ impl Generator {
         );
         if let Some(materialization) = &entry_member_address {
             materialization.schedule_entry(self);
+        }
+        if let Some(plan) = &guarded_member_lvalue {
+            plan.schedule(self);
         }
         if let Some(plan) = &counted_loop {
             let scheduled = plan.schedule(self);
