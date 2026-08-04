@@ -22,6 +22,7 @@ impl Generator {
         let Some(plan) = plan(&self.output) else {
             return false;
         };
+        self.prefer_structured_effecter_loop_float_layout(plan.insertion, plan.load);
         let old = match self.output.instructions[plan.load] {
             Instruction::LoadFloatDouble { d, .. } => d,
             _ => unreachable!("conversion bias load changed after recognition"),

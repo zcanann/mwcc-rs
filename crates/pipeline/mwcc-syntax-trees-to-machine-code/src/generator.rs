@@ -913,6 +913,15 @@ impl Generator {
         Reg::Virtual(virtual_register).to_field()
     }
 
+    /// Update the allocator preference of an existing floating virtual. This is
+    /// used by whole-loop layout recognizers whose retained roles are only
+    /// apparent after instruction selection has emitted the complete CFG.
+    pub(crate) fn prefer_virtual_float(&mut self, register: u8, preferred: u8) {
+        if let Reg::Virtual(register) = Reg::from_field(register, Class::Float) {
+            self.register_prefer.insert(register, preferred);
+        }
+    }
+
     /// Whether floating-point values in the current function already use the
     /// virtual-register allocator. New overlapping temporaries must join that
     /// allocation domain instead of being hard-pinned to a physical FPR.
