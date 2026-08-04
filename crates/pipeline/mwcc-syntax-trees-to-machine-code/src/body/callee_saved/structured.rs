@@ -388,6 +388,14 @@ impl Generator {
         let function = folded_preloop_alias.as_ref().unwrap_or(function);
         let stripped_empty_switches = strip_side_effect_free_empty_switches(function);
         let function = stripped_empty_switches.as_ref().unwrap_or(function);
+        let counted_loop = (self.behavior.optimization != mwcc_versions::Optimization::O0)
+            .then(|| super::structured_counted_loop::Plan::recognize(function))
+            .flatten();
+        let capture_counted_loop = std::env::var_os("MWCC_CAPTURE_FUNCTION")
+            .is_some_and(|name| name == std::ffi::OsStr::new(&function.name));
+        if capture_counted_loop {
+            eprintln!("structured counted loop plan: {}", counted_loop.is_some());
+        }
         let structured_switch_source = function.clone();
         let repeated_call_poll_transaction = is_repeated_call_poll_transaction(function);
         let paired_subobject_initialization =
@@ -4304,6 +4312,12 @@ impl Generator {
         );
         if let Some(materialization) = &entry_member_address {
             materialization.schedule_entry(self);
+        }
+        if let Some(plan) = &counted_loop {
+            let scheduled = plan.schedule(self);
+            if capture_counted_loop {
+                eprintln!("structured counted loop scheduled: {scheduled}");
+            }
         }
         if let Some(layout) = &loop_member_receiver_layout {
             layout.coalesce_receiver_load(self, homes[0], homes[3]);
