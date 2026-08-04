@@ -283,6 +283,19 @@ pub enum IntegerSelectStyle {
     BranchPreserving,
 }
 
+/// Lowering used when a cleared low bit selects a power-of-two constant:
+/// `((value & 1) == 0) ? (1 << bit) : 0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClearedLowBitPowerSelectStyle {
+    /// The 2.3.3 optimizer retains the source compare-and-branch diamond.
+    BranchPreserving,
+    /// The 2.4.x optimizer turns the low bit into a -1/0 mask and ANDs a
+    /// separately materialized power-of-two constant into it.
+    MaterializedAnd,
+    /// The 4.x optimizer extracts the selected bit directly from the -1/0 mask.
+    ExtractedBit,
+}
+
 /// Stack-frame and sign-mask lowering for the fdlibm `copysign` word splice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopySignStyle {
@@ -1231,6 +1244,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         IntegerSelectStyle::Branchless
     }
 
+    fn cleared_low_bit_power_select_style(&self) -> ClearedLowBitPowerSelectStyle {
+        ClearedLowBitPowerSelectStyle::MaterializedAnd
+    }
+
     fn copy_sign_style(&self) -> CopySignStyle {
         CopySignStyle::FusedInsertion
     }
@@ -1686,6 +1703,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn cleared_low_bit_power_select_style(&self) -> ClearedLowBitPowerSelectStyle {
+        ClearedLowBitPowerSelectStyle::ExtractedBit
+    }
+
     fn saved_float_epilogue_style(&self) -> SavedFloatEpilogueStyle {
         SavedFloatEpilogueStyle::LinkReloadAfterFloatRestores
     }
@@ -1892,6 +1913,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn cleared_low_bit_power_select_style(&self) -> ClearedLowBitPowerSelectStyle {
+        ClearedLowBitPowerSelectStyle::ExtractedBit
+    }
+
     fn saved_float_epilogue_style(&self) -> SavedFloatEpilogueStyle {
         SavedFloatEpilogueStyle::LinkReloadAfterFloatRestores
     }
@@ -2223,6 +2248,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn cleared_low_bit_power_select_style(&self) -> ClearedLowBitPowerSelectStyle {
+        ClearedLowBitPowerSelectStyle::BranchPreserving
+    }
+
     fn copy_sign_style(&self) -> CopySignStyle {
         CopySignStyle::ExplicitSignMaskCompactFrame
     }

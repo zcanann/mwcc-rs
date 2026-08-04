@@ -15,7 +15,8 @@ use crate::config::CompilerConfig;
 use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal, SchedulingModel};
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
-    CallDispatcherStyle, CoefficientTableRelocationStyle, CommaValuePlacementStyle,
+    CallDispatcherStyle, ClearedLowBitPowerSelectStyle, CoefficientTableRelocationStyle,
+    CommaValuePlacementStyle,
     ComputedStoreIssueStyle, ConstantStoreScheduleStyle, CopySignStyle, DataSectionRelocationStyle,
     CxxConstructorInlineOrdinalWeights, DeferredFunctionEmissionStyle,
     DiscardedInlineAggregateImageStyle, FieldMergeStyle, FixedAddressConstantStoreStyle,
@@ -149,6 +150,8 @@ pub enum Quirk {
     /// Build 163 preserves a compare/branch diamond for canonical integer
     /// boolean ternaries instead of using the 2.4.x branchless idioms.
     LegacyBranchPreservingIntegerSelect,
+    LegacyBranchPreservingClearedLowBitPowerSelect,
+    LaterExtractedClearedLowBitPowerSelect,
     LegacyCarryChainComparisonValues,
     LegacyFullWidthNarrowComputedReturn,
     LegacyCarryCorrectedPowerOfTwoDivision,
@@ -230,6 +233,8 @@ impl Quirk {
             Quirk::LegacyBalancedSharedFloatDag => QuirkKind::Intentional,
             Quirk::LegacyIntCallResultConversion => QuirkKind::Intentional,
             Quirk::LegacyBranchPreservingIntegerSelect => QuirkKind::Intentional,
+            Quirk::LegacyBranchPreservingClearedLowBitPowerSelect => QuirkKind::Intentional,
+            Quirk::LaterExtractedClearedLowBitPowerSelect => QuirkKind::Intentional,
             Quirk::LegacyCarryChainComparisonValues => QuirkKind::Intentional,
             Quirk::LegacyFullWidthNarrowComputedReturn => QuirkKind::Intentional,
             Quirk::LegacyCarryCorrectedPowerOfTwoDivision => QuirkKind::Intentional,
@@ -336,6 +341,12 @@ impl Quirk {
             }
             Quirk::LegacyBranchPreservingIntegerSelect => {
                 "integer ternaries preserve build 163's source-level branch shape"
+            }
+            Quirk::LegacyBranchPreservingClearedLowBitPowerSelect => {
+                "cleared-low-bit power selects preserve the 2.3.3 branch diamond"
+            }
+            Quirk::LaterExtractedClearedLowBitPowerSelect => {
+                "4.x extracts cleared-low-bit power selects directly from the -1/0 mask"
             }
             Quirk::LegacyCarryChainComparisonValues => {
                 "integer comparison values use build 163's carry-chain idioms"
@@ -707,6 +718,8 @@ pub struct Behavior {
     pub va_arg_schedule_style: VaArgScheduleStyle,
     /// Lowering of canonical integer boolean ternaries.
     pub integer_select_style: IntegerSelectStyle,
+    /// Lowering of `((value & 1) == 0) ? power_of_two : 0`.
+    pub cleared_low_bit_power_select_style: ClearedLowBitPowerSelectStyle,
     /// Frame and mask policy for the fdlibm copy-sign word splice.
     pub copy_sign_style: CopySignStyle,
     /// Instruction family for integer comparisons materialized as 0/1 values.
@@ -1175,6 +1188,10 @@ impl Behavior {
             narrow_guard_schedule_style: config.build.profile.narrow_guard_schedule_style(),
             va_arg_schedule_style: config.build.profile.va_arg_schedule_style(),
             integer_select_style: config.build.profile.integer_select_style(),
+            cleared_low_bit_power_select_style: config
+                .build
+                .profile
+                .cleared_low_bit_power_select_style(),
             copy_sign_style: config.build.profile.copy_sign_style(),
             integer_comparison_value_style: config.build.profile.integer_comparison_value_style(),
             narrow_computed_return_style: config.build.profile.narrow_computed_return_style(),
@@ -1510,6 +1527,15 @@ impl Behavior {
         if self.integer_select_style == IntegerSelectStyle::BranchPreserving {
             quirks.push(ActiveQuirk::of(Quirk::LegacyBranchPreservingIntegerSelect));
         }
+        match self.cleared_low_bit_power_select_style {
+            ClearedLowBitPowerSelectStyle::BranchPreserving => quirks.push(ActiveQuirk::of(
+                Quirk::LegacyBranchPreservingClearedLowBitPowerSelect,
+            )),
+            ClearedLowBitPowerSelectStyle::MaterializedAnd => {}
+            ClearedLowBitPowerSelectStyle::ExtractedBit => quirks.push(ActiveQuirk::of(
+                Quirk::LaterExtractedClearedLowBitPowerSelect,
+            )),
+        }
         if self.integer_comparison_value_style == IntegerComparisonValueStyle::LegacyCarryChain {
             quirks.push(ActiveQuirk::of(Quirk::LegacyCarryChainComparisonValues));
         }
@@ -1736,6 +1762,45 @@ impl Behavior {
 mod tests {
     use super::*;
     use crate::{build, flags::CharDefault};
+
+    #[test]
+    fn cleared_low_bit_power_select_tracks_optimizer_generation() {
+        for compiler_build in [
+            build::GC_1_1,
+            build::GC_1_1P1,
+            build::GC_1_2_5,
+            build::GC_1_2_5N,
+        ] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build))
+                    .cleared_low_bit_power_select_style,
+                ClearedLowBitPowerSelectStyle::BranchPreserving,
+            );
+        }
+        for compiler_build in [
+            build::GC_1_3,
+            build::GC_1_3_2,
+            build::GC_1_3_2R,
+            build::GC_2_0,
+            build::GC_2_0P1,
+            build::GC_2_5,
+            build::GC_2_6,
+            build::GC_2_7,
+        ] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build))
+                    .cleared_low_bit_power_select_style,
+                ClearedLowBitPowerSelectStyle::MaterializedAnd,
+            );
+        }
+        for compiler_build in [build::GC_3_0A3, build::GC_3_0A3P1, build::WII_1_0] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build))
+                    .cleared_low_bit_power_select_style,
+                ClearedLowBitPowerSelectStyle::ExtractedBit,
+            );
+        }
+    }
 
     #[test]
     fn saved_float_epilogue_schedule_tracks_optimizer_generation() {

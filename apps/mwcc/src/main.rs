@@ -2954,6 +2954,9 @@ mod tests {
     #[path = "masked_member_boolean.rs"]
     mod masked_member_boolean;
 
+    #[path = "cleared_low_bit_power_select.rs"]
+    mod cleared_low_bit_power_select;
+
     #[path = "unsigned_narrow_to_float.rs"]
     mod unsigned_narrow_to_float;
 

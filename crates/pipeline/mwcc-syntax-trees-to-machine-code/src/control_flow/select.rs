@@ -460,6 +460,116 @@ impl Generator {
         Ok(false)
     }
 
+    /// `((value & 1) == 0) ? (1 << bit) : 0` is the clear-low-bit power
+    /// selector used by packed nibble writers. The 2.4.x and 4.x optimizers both
+    /// turn the low bit into a `-1/0` mask, but the former ANDs a materialized
+    /// constant while the latter extracts the requested bit directly. The 2.3.3
+    /// profile declines this peephole so the generic branch path remains intact.
+    pub(crate) fn try_emit_cleared_low_bit_power_select(
+        &mut self,
+        condition: &Expression,
+        when_true: &Expression,
+        when_false: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let Some(power) = constant_value(when_true)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| value.is_power_of_two())
+        else {
+            return Ok(false);
+        };
+        if !is_zero_literal(when_false) {
+            return Ok(false);
+        }
+        let Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left,
+            right,
+        } = condition
+        else {
+            return Ok(false);
+        };
+        let masked = if is_zero_literal(right) {
+            left.as_ref()
+        } else if is_zero_literal(left) {
+            right.as_ref()
+        } else {
+            return Ok(false);
+        };
+        let Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left,
+            right,
+        } = masked
+        else {
+            return Ok(false);
+        };
+        let value = if constant_value(right) == Some(1) {
+            left.as_ref()
+        } else if constant_value(left) == Some(1) {
+            right.as_ref()
+        } else {
+            return Ok(false);
+        };
+        let Some(source) = leaf_name(value).and_then(|name| self.lookup_general(name)) else {
+            return Ok(false);
+        };
+        let style = self.behavior.cleared_low_bit_power_select_style;
+        if style == mwcc_versions::ClearedLowBitPowerSelectStyle::BranchPreserving {
+            return Ok(false);
+        }
+
+        let masked_low_bit = if source == destination {
+            destination
+        } else {
+            self.fresh_virtual_general_avoiding(vec![source, destination])
+        };
+        self.output.instructions.push(Instruction::RotateAndMask {
+            a: masked_low_bit,
+            s: source,
+            shift: 0,
+            begin: 31,
+            end: 31,
+        });
+        match style {
+            mwcc_versions::ClearedLowBitPowerSelectStyle::BranchPreserving => unreachable!(),
+            mwcc_versions::ClearedLowBitPowerSelectStyle::MaterializedAnd => {
+                self.load_integer_constant(GENERAL_SCRATCH, i64::from(power));
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: masked_low_bit,
+                    a: masked_low_bit,
+                    immediate: -1,
+                });
+                self.output.instructions.push(Instruction::And {
+                    a: destination,
+                    s: GENERAL_SCRATCH,
+                    b: masked_low_bit,
+                });
+            }
+            mwcc_versions::ClearedLowBitPowerSelectStyle::ExtractedBit => {
+                let adjusted = if masked_low_bit == destination {
+                    GENERAL_SCRATCH
+                } else {
+                    masked_low_bit
+                };
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: adjusted,
+                    a: masked_low_bit,
+                    immediate: -1,
+                });
+                let selected_bit = 31 - power.trailing_zeros() as u8;
+                self.output.instructions.push(Instruction::RotateAndMask {
+                    a: destination,
+                    s: adjusted,
+                    shift: 0,
+                    begin: selected_bit,
+                    end: selected_bit,
+                });
+            }
+        }
+        Ok(true)
+    }
+
     /// `cond ? c1 : c2` with a truthy leaf condition and consecutive non-zero
     /// constants: `neg`/`or` form the truth value (the sign bit of `-cond|cond`),
     /// then `srawi` (a -1/0 mask when the true value is lower) or `srwi` (a 0/1

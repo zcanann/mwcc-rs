@@ -573,6 +573,15 @@ impl Generator {
             return Ok(());
         }
 
+        if self.try_emit_cleared_low_bit_power_select(
+            condition,
+            when_true,
+            when_false,
+            destination,
+        )? {
+            return Ok(());
+        }
+
         // `cond ? x : 0` (AND) and `cond ? 0 : x` (ANDC) with a plain truth
         // condition are branchless: a mask all-ones when cond != 0, combined with
         // `x` (a leaf, or a non-zero constant materialized in r0).
