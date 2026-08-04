@@ -4702,6 +4702,8 @@ impl Generator {
                 );
             }
         }
+        self.reuse_structured_guarded_member_pointer();
+        self.lower_structured_fixed_byte_copy_loop();
         self.reuse_structured_float_clamp_literals();
         Ok(true)
     }

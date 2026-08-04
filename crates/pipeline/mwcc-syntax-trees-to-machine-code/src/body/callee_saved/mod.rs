@@ -311,6 +311,8 @@ mod structured_loop_integer_conversion_high;
 mod structured_loop_conversion_bias;
 mod structured_loop_effecter_float_layout;
 mod structured_float_clamp_literal_reuse;
+mod structured_guarded_member_pointer_reuse;
+mod structured_fixed_byte_copy_loop;
 mod structured_loop_global_byte_cursor;
 mod structured_loop_member_array_offset;
 mod structured_loop_member_element_base;
