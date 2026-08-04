@@ -546,10 +546,12 @@ pub(super) fn lower(
             .map(|(function, _)| *function)
             .collect::<Vec<_>>();
         let mut aggregate_keys = Vec::new();
+        let mut type_requests = Vec::new();
         for function in &source_function_refs {
             if let Some(tag) = unit.function_return_aggregate_tags.get(&function.name) {
                 if !aggregate_keys.contains(tag) {
                     aggregate_keys.push(tag.clone());
+                    type_requests.push(data::GeneralTypeRequest::Aggregate(tag.clone()));
                 }
             }
             for parameter in &function.parameters {
@@ -559,22 +561,36 @@ pub(super) fn lower(
                 {
                     if !aggregate_keys.contains(tag) {
                         aggregate_keys.push(tag.clone());
+                        type_requests.push(data::GeneralTypeRequest::Aggregate(tag.clone()));
                     }
                 }
             }
-            for local in &function.locals {
+            for (local_index, local) in function.locals.iter().enumerate() {
+                if let Some(length) = local.array_length {
+                    if !matches!(
+                        local.declared_type,
+                        Type::Pointer(_) | Type::Struct { .. } | Type::StructPointer { .. }
+                    ) {
+                        type_requests.push(data::GeneralTypeRequest::ScalarLocalArray {
+                            function: function.name.clone(),
+                            local_index,
+                            element_type: local.declared_type,
+                            length,
+                        });
+                    }
+                }
                 if let Some(tag) = unit
                     .function_local_aggregate_tags
                     .get(&(function.name.clone(), local.name.clone()))
                 {
                     if !aggregate_keys.contains(tag) {
                         aggregate_keys.push(tag.clone());
+                        type_requests.push(data::GeneralTypeRequest::Aggregate(tag.clone()));
                     }
                 }
             }
         }
-        let data =
-            data::general_records(unit, &globals, first_global_id, &aggregate_keys)?;
+        let data = data::general_records(unit, &globals, first_global_id, &type_requests)?;
         let variables = general::variables(
             unit,
             &source_functions,
@@ -584,7 +600,13 @@ pub(super) fn lower(
         let function_plan =
             functions::selected_plan_with_variables(&source_function_refs, data.next_id, &variables)?;
         records.extend(data.records);
-        records.extend(function_plan.records(unit, &layout, &data.aggregate_ids, None)?);
+        records.extend(function_plan.records_with_local_array_ids(
+            unit,
+            &layout,
+            &data.aggregate_ids,
+            &data.local_array_ids,
+            None,
+        )?);
         return finish(
             line,
             records,

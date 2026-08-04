@@ -208,6 +208,23 @@ impl SelectedFunctionPlan<'_> {
         aggregate_ids: &HashMap<String, DebugEntryId>,
         following: Option<DebugEntryId>,
     ) -> Compilation<Vec<DebugRecord>> {
+        self.records_with_local_array_ids(
+            unit,
+            layout,
+            aggregate_ids,
+            &HashMap::new(),
+            following,
+        )
+    }
+
+    pub(super) fn records_with_local_array_ids(
+        &self,
+        unit: &TranslationUnit,
+        layout: &FunctionLayout,
+        aggregate_ids: &HashMap<String, DebugEntryId>,
+        local_array_ids: &HashMap<(String, usize), DebugEntryId>,
+        following: Option<DebugEntryId>,
+    ) -> Compilation<Vec<DebugRecord>> {
         let mut records = Vec::new();
         for (index, plan) in self.functions.iter().enumerate() {
             let sibling = self
@@ -374,6 +391,9 @@ impl SelectedFunctionPlan<'_> {
                         })
                     })
                     .transpose()?;
+                let local_array_id = local_array_ids
+                    .get(&(plan.function.name.clone(), local_index))
+                    .copied();
                 records.push(DebugRecord::Entry(DebugEntry {
                     id: plan.local_ids[selected_index],
                     tag: Tag::LocalVariable,
@@ -383,23 +403,31 @@ impl SelectedFunctionPlan<'_> {
                             AttributeName::Name,
                             AttributeValue::String(local.name.clone()),
                         ),
-                        match local.declared_type {
-                            Type::Pointer(pointee) if local.is_const => {
-                                data::const_pointer_type_attribute(pointee)?
-                            }
-                            _ => data::member_type_attribute(
-                                local.declared_type,
-                                aggregate_id,
-                                None,
-                            )
-                            .map_err(|mut diagnostic| {
-                                diagnostic.message.push_str(&format!(
-                                    " (local '{}.{}')",
-                                    plan.function.name, local.name
-                                ));
-                                diagnostic
-                            })?,
-                        },
+                        local_array_id.map_or_else(
+                            || match local.declared_type {
+                                Type::Pointer(pointee) if local.is_const => {
+                                    data::const_pointer_type_attribute(pointee)
+                                }
+                                _ => data::member_type_attribute(
+                                    local.declared_type,
+                                    aggregate_id,
+                                    None,
+                                ),
+                            },
+                            |id| {
+                                Ok(super::attribute(
+                                    AttributeName::UserDefinedType,
+                                    AttributeValue::Reference(id),
+                                ))
+                            },
+                        )
+                        .map_err(|mut diagnostic| {
+                            diagnostic.message.push_str(&format!(
+                                " (local '{}.{}')",
+                                plan.function.name, local.name
+                            ));
+                            diagnostic
+                        })?,
                         location_attribute(location),
                     ],
                 }));

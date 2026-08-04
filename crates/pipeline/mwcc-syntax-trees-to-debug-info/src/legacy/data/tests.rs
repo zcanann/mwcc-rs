@@ -73,6 +73,74 @@ fn function_local_aggregates_extend_the_data_type_chain_before_functions() {
 }
 
 #[test]
+fn general_type_plan_interleaves_parameter_aggregates_and_local_arrays() {
+    let source = br#"
+        typedef struct Header {
+            unsigned char data[4];
+        } Header;
+        typedef struct Footer {
+            int checksum;
+        } Footer;
+        void transform(Header* header) {
+            double table[8];
+            Footer footer;
+        }
+    "#;
+    let unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit(
+        mwcc_source_to_tokens::tokenize_bytes_located(source).expect("tokens"),
+        false,
+        false,
+        3,
+        1,
+    )
+    .expect("translation unit");
+    let function = &unit.functions[0];
+    let header = unit.function_parameter_aggregate_tags
+        [&("transform".to_owned(), "header".to_owned())]
+        .clone();
+    let footer = unit.function_local_aggregate_tags
+        [&("transform".to_owned(), "footer".to_owned())]
+        .clone();
+    let requests = vec![
+        GeneralTypeRequest::Aggregate(header.clone()),
+        GeneralTypeRequest::ScalarLocalArray {
+            function: function.name.clone(),
+            local_index: 0,
+            element_type: function.locals[0].declared_type,
+            length: function.locals[0].array_length.expect("table extent"),
+        },
+        GeneralTypeRequest::Aggregate(footer.clone()),
+    ];
+    let lowered = general_records(&unit, &[], DebugEntryId(1), &requests)
+        .expect("ordered general type records");
+    let table_id = lowered.local_array_ids
+        [&("transform".to_owned(), 0)];
+    let ordered_ids = lowered.records.iter().filter_map(|record| match record {
+        DebugRecord::Entry(entry) => Some(entry.id),
+        DebugRecord::Marker(_) | DebugRecord::Raw(_) => None,
+    }).collect::<Vec<_>>();
+
+    let header_position = ordered_ids.iter().position(|id| *id == lowered.aggregate_ids[&header])
+        .expect("header type");
+    let table_position = ordered_ids.iter().position(|id| *id == table_id)
+        .expect("table type");
+    let footer_position = ordered_ids.iter().position(|id| *id == lowered.aggregate_ids[&footer])
+        .expect("footer type");
+    assert!(header_position < table_position && table_position < footer_position);
+
+    let table = lowered.records.iter().find_map(|record| match record {
+        DebugRecord::Entry(entry) if entry.id == table_id => Some(entry),
+        DebugRecord::Entry(_) | DebugRecord::Marker(_) | DebugRecord::Raw(_) => None,
+    }).expect("table array DIE");
+    assert!(table.attributes.iter().any(|attribute| {
+        attribute.name == AttributeName::SubscriptData
+            && attribute.value == AttributeValue::Block2(
+                fundamental_subscript_data(8, FundamentalType::Double)
+            )
+    }));
+}
+
+#[test]
 fn aggregate_arrays_share_types_and_preserve_variable_linkage() {
     let source = br#"
         typedef struct scroll_s {

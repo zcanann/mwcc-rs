@@ -29,6 +29,21 @@ pub(super) struct DataRecords {
     /// parameters can reference the same declaration graph that data globals
     /// caused to be materialized.
     pub aggregate_ids: HashMap<String, DebugEntryId>,
+    /// Type DIEs owned by function-local array declarations. The key uses the
+    /// final function identity and source-local index so shadowed names remain
+    /// unambiguous.
+    pub local_array_ids: HashMap<(String, usize), DebugEntryId>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) enum GeneralTypeRequest {
+    Aggregate(String),
+    ScalarLocalArray {
+        function: String,
+        local_index: usize,
+        element_type: Type,
+        length: u16,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -379,6 +394,7 @@ pub(super) fn fragmented_records(
         next_id: DebugEntryId(next_id),
         global_ids,
         aggregate_ids,
+        local_array_ids: HashMap::new(),
     })
 }
 
@@ -437,6 +453,24 @@ struct GlobalPlan<'a> {
     kind: PlanKind<'a>,
 }
 
+enum TrailingTypePlan<'a> {
+    Aggregate(AggregatePlan<'a>),
+    ScalarLocalArray {
+        id: DebugEntryId,
+        element_type: Type,
+        length: u16,
+    },
+}
+
+impl TrailingTypePlan<'_> {
+    fn start_id(&self) -> DebugEntryId {
+        match self {
+            Self::Aggregate(aggregate) => aggregate.start_id(),
+            Self::ScalarLocalArray { id, .. } => *id,
+        }
+    }
+}
+
 pub(super) fn records<'a>(
     unit: &'a TranslationUnit,
     globals: &[&'a GlobalDeclaration],
@@ -466,14 +500,14 @@ pub(super) fn general_records<'a>(
     unit: &'a TranslationUnit,
     globals: &[&'a GlobalDeclaration],
     first_id: DebugEntryId,
-    aggregate_keys: &[String],
+    type_requests: &[GeneralTypeRequest],
 ) -> Compilation<DataRecords> {
     records_with_continuation(
         unit,
         globals,
         first_id,
         Continuation::FunctionsAfterDataEnd,
-        aggregate_keys,
+        type_requests,
         true,
     )
 }
@@ -506,12 +540,17 @@ pub(super) fn records_with_local_aggregates_directly_followed_by_functions<'a>(
     aggregate_keys: &[String],
     first_id: DebugEntryId,
 ) -> Compilation<DataRecords> {
+    let type_requests = aggregate_keys
+        .iter()
+        .cloned()
+        .map(GeneralTypeRequest::Aggregate)
+        .collect::<Vec<_>>();
     records_with_continuation(
         unit,
         globals,
         first_id,
         Continuation::FunctionsDirectly,
-        aggregate_keys,
+        &type_requests,
         false,
     )
 }
@@ -521,7 +560,7 @@ fn records_with_continuation<'a>(
     globals: &[&'a GlobalDeclaration],
     first_id: DebugEntryId,
     continuation: Continuation,
-    trailing_aggregate_keys: &[String],
+    trailing_type_requests: &[GeneralTypeRequest],
     allow_opaque_callable_signatures: bool,
 ) -> Compilation<DataRecords> {
     let mut next_id = first_id.0;
@@ -621,20 +660,52 @@ fn records_with_continuation<'a>(
         });
     }
 
-    let mut trailing_aggregates = Vec::new();
-    for key in trailing_aggregate_keys {
-        let before = trailing_aggregates.len();
-        plan_aggregate(
-            unit,
-            key,
-            &mut next_id,
-            &mut aggregate_ids,
-            &mut trailing_aggregates,
-        )?;
-        if trailing_aggregates.len() == before && !aggregate_ids.contains_key(key) {
-            return Err(Diagnostic::error(format!(
-                "debug-info: local aggregate identity '{key}' was not retained"
-            )));
+    let mut trailing_types = Vec::new();
+    let mut local_array_ids = HashMap::new();
+    for request in trailing_type_requests {
+        match request {
+            GeneralTypeRequest::Aggregate(key) => {
+                let mut aggregates = Vec::new();
+                plan_aggregate(
+                    unit,
+                    key,
+                    &mut next_id,
+                    &mut aggregate_ids,
+                    &mut aggregates,
+                )?;
+                trailing_types.extend(
+                    aggregates
+                        .into_iter()
+                        .map(TrailingTypePlan::Aggregate),
+                );
+                if !aggregate_ids.contains_key(key) {
+                    return Err(Diagnostic::error(format!(
+                        "debug-info: local aggregate identity '{key}' was not retained"
+                    )));
+                }
+            }
+            GeneralTypeRequest::ScalarLocalArray {
+                function,
+                local_index,
+                element_type,
+                length,
+            } => {
+                if *length == 0 {
+                    return Err(Diagnostic::error(format!(
+                        "debug-info: zero-length local array '{function}[{local_index}]' has no measured legacy subscript encoding"
+                    )));
+                }
+                // Validate before allocating so a rejected request cannot leave
+                // a gap in the stable DIE ordinal stream.
+                fundamental_type(*element_type)?;
+                let id = allocate(&mut next_id);
+                local_array_ids.insert((function.clone(), *local_index), id);
+                trailing_types.push(TrailingTypePlan::ScalarLocalArray {
+                    id,
+                    element_type: *element_type,
+                    length: *length,
+                });
+            }
         }
     }
 
@@ -642,9 +713,9 @@ fn records_with_continuation<'a>(
         Continuation::FunctionsDirectly => DebugEntryId(next_id),
         Continuation::Standalone | Continuation::FunctionsAfterDataEnd => DATA_END,
     };
-    let terminal_sibling = trailing_aggregates
+    let terminal_sibling = trailing_types
         .first()
-        .map_or(after_data_sibling, AggregatePlan::start_id);
+        .map_or(after_data_sibling, TrailingTypePlan::start_id);
     let mut records = Vec::new();
     for (index, plan) in plans.iter().enumerate() {
         let next = plans
@@ -761,7 +832,7 @@ fn records_with_continuation<'a>(
             }
         }
     }
-    append_aggregate_types(&mut records, &trailing_aggregates, after_data_sibling)?;
+    append_trailing_types(&mut records, &trailing_types, after_data_sibling)?;
     match continuation {
         Continuation::Standalone => {
             records.push(DebugRecord::Marker(DATA_END));
@@ -783,7 +854,45 @@ fn records_with_continuation<'a>(
         next_id: DebugEntryId(next_id),
         global_ids,
         aggregate_ids,
+        local_array_ids,
     })
+}
+
+fn append_trailing_types(
+    records: &mut Vec<DebugRecord>,
+    types: &[TrailingTypePlan<'_>],
+    final_sibling: DebugEntryId,
+) -> Compilation<()> {
+    for (index, planned) in types.iter().enumerate() {
+        let sibling = types
+            .get(index + 1)
+            .map_or(final_sibling, TrailingTypePlan::start_id);
+        match planned {
+            TrailingTypePlan::Aggregate(aggregate) => {
+                append_aggregate_types(records, std::slice::from_ref(aggregate), sibling)?;
+            }
+            TrailingTypePlan::ScalarLocalArray {
+                id,
+                element_type,
+                length,
+                ..
+            } => records.push(DebugRecord::Entry(DebugEntry {
+                id: *id,
+                tag: Tag::ArrayType,
+                attributes: vec![
+                    attribute(AttributeName::Sibling, AttributeValue::Reference(sibling)),
+                    attribute(
+                        AttributeName::SubscriptData,
+                        AttributeValue::Block2(fundamental_subscript_data(
+                            *length,
+                            fundamental_type(*element_type)?,
+                        )),
+                    ),
+                ],
+            })),
+        }
+    }
+    Ok(())
 }
 
 fn append_aggregate_types(
