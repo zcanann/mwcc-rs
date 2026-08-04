@@ -1063,6 +1063,9 @@ fn lower_function_body(
     generator.schedule_linkage_first_address_constant_arguments();
     generator.normalize_linkage_first_indirect_call_schedule();
     generator.normalize_linkage_first_conversion_frame();
+    // Allocation and late frame normalization expose physical incoming-register
+    // cycles that are intentionally invisible to the body-time scheduler.
+    generator.schedule_leading_member_store_call();
     generator.hoist_normalized_linkage_first_arg_moves();
     generator.schedule_linkage_first_variadic_frame_entry();
     generator.schedule_linkage_first_variadic_leaf_call();

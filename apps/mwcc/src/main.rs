@@ -2975,6 +2975,9 @@ mod tests {
     #[path = "member_preincrement_condition.rs"]
     mod member_preincrement_condition;
 
+    #[path = "swapped_call_arguments.rs"]
+    mod swapped_call_arguments;
+
     #[path = "float_conditions.rs"]
     mod float_conditions;
 

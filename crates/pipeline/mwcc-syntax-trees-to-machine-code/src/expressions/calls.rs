@@ -703,6 +703,9 @@ impl Generator {
         )? {
             return Ok(());
         }
+        if self.try_emit_two_leaf_general_argument_swap(arguments, name, direct_call)? {
+            return Ok(());
+        }
         if self.try_emit_dependency_ordered_general_arguments(arguments, name, direct_call)? {
             return Ok(());
         }

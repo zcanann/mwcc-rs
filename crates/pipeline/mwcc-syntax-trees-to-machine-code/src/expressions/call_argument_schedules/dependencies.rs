@@ -48,6 +48,61 @@ fn dependency_order(
 }
 
 impl Generator {
+    /// Marshal a two-register permutation through the first free ABI argument
+    /// register.
+    ///
+    /// A topological argument order cannot resolve `callee(r4, r3)`: writing
+    /// either destination destroys the other source. Build 163 preserves the
+    /// second source with `mr r5,r3`, then treats both legs of the swap as
+    /// ordinary value materializations. Keeping this beside the acyclic
+    /// dependency scheduler makes the distinction explicit instead of
+    /// extending the generic one-way endangered-argument shortcut.
+    pub(crate) fn try_emit_two_leaf_general_argument_swap(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [first, second] = arguments else {
+            return Ok(false);
+        };
+        if !direct_call
+            || !self.call_parameter_types.get(name).is_some_and(|types| {
+                types.len() >= 2
+                    && types[..2].iter().all(|ty| {
+                        ty.width() == 32
+                            && !matches!(ty, Type::Float | Type::Double | Type::Struct { .. })
+                    })
+            })
+        {
+            return Ok(false);
+        }
+
+        let Ok((first_source, first_width, _)) = self.leaf_info(first) else {
+            return Ok(false);
+        };
+        let Ok((second_source, second_width, _)) = self.leaf_info(second) else {
+            return Ok(false);
+        };
+        let first_argument = Eabi::FIRST_GENERAL_ARGUMENT;
+        let second_argument = first_argument + 1;
+        if first_width != 32
+            || second_width != 32
+            || first_source != second_argument
+            || second_source != first_argument
+        {
+            return Ok(false);
+        }
+
+        let scratch = second_argument + 1;
+        self.output
+            .instructions
+            .push(Instruction::move_register(scratch, second_source));
+        self.emit_integer_materialization_copy(first_argument, first_source);
+        self.emit_integer_materialization_copy(second_argument, scratch);
+        Ok(true)
+    }
+
     /// Topologically marshal a pure, word-sized general argument list.
     ///
     /// Each expression may overwrite only its own ABI destination and r0. When

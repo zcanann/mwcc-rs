@@ -2,15 +2,29 @@
 //!
 //! In `object->field = 0; object->method(id, 0);`, GC/2.6 forms the call's
 //! receiver and first explicit argument in the LR-save latency slots, then
-//! issues the independent zero/store work before the call. The complete
-//! prologue/body window is required so ordinary stores and calls keep their
-//! source-order lowering.
+//! issues the independent zero/store work before the call. Build 163 applies
+//! the same principle to `object->field = value; value->method(object)`: it
+//! saves the cyclic argument source in the first linkage slot before performing
+//! the member store and the two-register swap. Complete prologue/body windows
+//! keep these schedules out of ordinary store and call lowering.
 
 #[allow(unused_imports)]
 use super::*;
 
 impl Generator {
     pub(crate) fn schedule_leading_member_store_call(&mut self) -> bool {
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+            let Some(start) = self
+                .output
+                .instructions
+                .windows(8)
+                .position(is_linkage_first_member_store_swapped_call)
+            else {
+                return false;
+            };
+            self.move_member_store_call_instruction_before(start + 4, start + 1);
+            return true;
+        }
         if self.behavior.frame_convention != FrameConvention::Predecrement {
             return false;
         }
@@ -62,6 +76,19 @@ impl Generator {
     }
 }
 
+fn is_linkage_first_member_store_swapped_call(window: &[Instruction]) -> bool {
+    matches!(window, [
+        Instruction::MoveFromLinkRegister { d: 0 },
+        Instruction::StoreWord { s: 0, a: 1, .. },
+        Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
+        Instruction::StoreWord { s: 4, a: 3, .. },
+        Instruction::Or { a: 5, s: 3, b: 3 },
+        Instruction::AddImmediate { d: 3, a: 4, immediate: 0 },
+        Instruction::AddImmediate { d: 4, a: 5, immediate: 0 },
+        Instruction::BranchAndLink { .. },
+    ])
+}
+
 fn is_leading_member_store_call(window: &[Instruction]) -> bool {
     matches!(window, [
         Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
@@ -94,5 +121,20 @@ mod tests {
             Instruction::BranchAndLink { target: "start".to_string() },
         ];
         assert!(is_leading_member_store_call(&instructions));
+    }
+
+    #[test]
+    fn recognizes_a_member_store_before_a_cyclic_argument_swap() {
+        let instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -8 },
+            Instruction::StoreWord { s: 4, a: 3, offset: 0 },
+            Instruction::Or { a: 5, s: 3, b: 3 },
+            Instruction::AddImmediate { d: 3, a: 4, immediate: 0 },
+            Instruction::AddImmediate { d: 4, a: 5, immediate: 0 },
+            Instruction::BranchAndLink { target: "addClient".to_string() },
+        ];
+        assert!(is_linkage_first_member_store_swapped_call(&instructions));
     }
 }
