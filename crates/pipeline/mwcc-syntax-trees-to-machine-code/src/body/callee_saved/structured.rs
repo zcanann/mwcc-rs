@@ -363,6 +363,9 @@ impl Generator {
         let function = coalesced_packets.as_ref().unwrap_or(function);
         let hoisted_packet_words = hoist_repeated_packet_words(function);
         let function = hoisted_packet_words.as_ref().unwrap_or(function);
+        let materialized_loop_scalars = super::structured_loop_scalar_cse::
+            materialize_repeated_loop_scalars(function);
+        let function = materialized_loop_scalars.as_ref().unwrap_or(function);
         let cached_loop_members = cache_repeated_loop_members(function);
         let function = cached_loop_members.as_ref().unwrap_or(function);
         let hoisted_loop_addresses = hoist_loop_address_invariants(function);

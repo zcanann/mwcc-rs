@@ -90,7 +90,7 @@ pub(super) fn plan_dense_loop_register_window(
             let general_locals = ephemeral_locals
                 .iter()
                 .filter(|local| {
-                    class_of(local.declared_type).ok() == Some(ValueClass::General)
+                    is_distinct_general_loop_role(local)
                         && body_uses_local(std::slice::from_ref(statement), &local.name)
                 })
                 .count();
@@ -263,7 +263,7 @@ fn maximum_loop_register_role_count(
                 let general_locals = ephemeral_locals
                     .iter()
                     .filter(|local| {
-                        class_of(local.declared_type).ok() == Some(ValueClass::General)
+                        is_distinct_general_loop_role(local)
                             && body_uses_local(std::slice::from_ref(statement), &local.name)
                     })
                     .count();
@@ -449,7 +449,7 @@ fn dense_loop_statement<'a>(
             let general_locals = ephemeral_locals
                 .iter()
                 .filter(|local| {
-                    class_of(local.declared_type).ok() == Some(ValueClass::General)
+                    is_distinct_general_loop_role(local)
                         && body_uses_local(std::slice::from_ref(statement), &local.name)
                 })
                 .count();
@@ -465,6 +465,11 @@ fn dense_loop_statement<'a>(
             .or_else(|| dense_loop_statement(else_body, ephemeral_locals)),
         _ => None,
     })
+}
+
+fn is_distinct_general_loop_role(local: &LocalDeclaration) -> bool {
+    class_of(local.declared_type).ok() == Some(ValueClass::General)
+        && !super::structured_loop_scalar_cse::is_materialized_scalar_continuation(&local.name)
 }
 
 fn loop_carries_name(statement: &Statement, name: &str) -> bool {
@@ -634,6 +639,27 @@ mod tests {
                 0,
             ),
             Some(13)
+        );
+    }
+
+    #[test]
+    fn does_not_double_count_materialized_scalar_continuations() {
+        let mut locals: Vec<_> = (0..DENSE_SAVED_GPR_COUNT)
+            .map(|index| local(&format!("v{index}")))
+            .collect();
+        locals.push(local("__mwcc_loop_scalar_cse_0"));
+        let references: Vec<_> = locals.iter().collect();
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: locals.iter().map(|local| read(&local.name)).collect(),
+        }];
+
+        assert_eq!(
+            maximum_loop_register_role_count(&statements, &references, &[]),
+            Some(DENSE_SAVED_GPR_COUNT)
         );
     }
 
