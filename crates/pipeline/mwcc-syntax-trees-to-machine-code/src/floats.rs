@@ -9,6 +9,42 @@ use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type, UnaryOperator};
 
 impl Generator {
+    /// Lower a whole-body floating intrinsic before generic structured-frame
+    /// ownership sees the call-shaped syntax. Intrinsics do not clobber LR and
+    /// therefore remain frame-free even when their declaration is implicit.
+    pub(crate) fn try_float_intrinsic_leaf(
+        &mut self,
+        function: &mwcc_syntax_trees::Function,
+    ) -> Compilation<bool> {
+        if !function.locals.is_empty()
+            || !function.statements.is_empty()
+            || !function.guards.is_empty()
+            || !matches!(function.return_type, Type::Float | Type::Double)
+        {
+            return Ok(false);
+        }
+        let Some(returned @ Expression::Call { name, arguments }) =
+            function.return_expression.as_ref()
+        else {
+            return Ok(false);
+        };
+        if !crate::analysis::is_intrinsic_call(name)
+            || arguments.iter().any(crate::analysis::expression_has_call)
+        {
+            return Ok(false);
+        }
+
+        self.evaluate(
+            returned,
+            function.return_type,
+            mwcc_target::Eabi::float_result().number,
+        )?;
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
     /// Evaluate a float expression into float register `destination`.
     pub(crate) fn evaluate_float(
         &mut self,

@@ -2748,6 +2748,9 @@ impl Generator {
         if self.try_scaled_angle_call(function)? {
             return Ok(());
         }
+        if self.try_float_intrinsic_leaf(function)? {
+            return Ok(());
+        }
         if self.try_callee_saved_structured_frame_body(function)? {
             return Ok(());
         }
@@ -5371,7 +5374,8 @@ impl Generator {
                 // is an integer addition followed by one conversion; routing
                 // it through the floating binary walker would incorrectly try
                 // to convert both select operands independently.
-                if !self.is_float_operand(expression)
+                if !matches!(expression, Expression::Call { name, .. } if is_intrinsic_call(name))
+                    && !self.is_float_operand(expression)
                     && !self.is_float_call_value(expression)
                 {
                     return self.emit_cast_to_float(
