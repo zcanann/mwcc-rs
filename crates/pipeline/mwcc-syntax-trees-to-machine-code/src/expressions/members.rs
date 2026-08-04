@@ -479,14 +479,19 @@ impl Generator {
             index_stride: None,
         } = base
         {
-            let pointer = if destination == GENERAL_SCRATCH
-                || matches!(member_type, Type::Float | Type::Double)
-            {
-                self.lowest_free_general()?
+            let pointer = if let Some(retained) = self.condition_member_register(base) {
+                retained
             } else {
-                destination
+                let pointer = if destination == GENERAL_SCRATCH
+                    || matches!(member_type, Type::Float | Type::Double)
+                {
+                    self.lowest_free_general()?
+                } else {
+                    destination
+                };
+                self.emit_member_load(inner, *inner_offset, *inner_type, None, pointer)?;
+                pointer
             };
-            self.emit_member_load(inner, *inner_offset, *inner_type, None, pointer)?;
             let pointee = pointee_of_type(member_type).ok_or_else(|| {
                 Diagnostic::error(format!(
                     "unsupported nested-pointer member load type {member_type:?} at +{offset}"
@@ -1376,6 +1381,15 @@ impl Generator {
     /// is in its own register; a chained base `a->b` is itself a pointer member, so
     /// its value is loaded into the inner base register (reused) before use.
     pub(crate) fn member_base_register(&mut self, base: &Expression) -> Compilation<u8> {
+        // A dominating condition can retain a pointer-valued member for a
+        // nested short-circuit term. Reuse that exact value as the chained
+        // member base; loading it again would discard the edge-scoped CSE
+        // established by the condition cache.
+        if matches!(base, Expression::Member { .. }) {
+            if let Some(register) = self.condition_member_register(base) {
+                return Ok(register);
+            }
+        }
         match base {
             // A file-scope struct VALUE is an addressable object, not a scalar
             // register value. Materialize `&global` once and let the ordinary

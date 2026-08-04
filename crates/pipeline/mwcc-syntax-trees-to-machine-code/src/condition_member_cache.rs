@@ -43,7 +43,15 @@ impl Generator {
         edge_reuse: bool,
     ) -> ConditionMemberCache {
         let previous = std::mem::take(&mut self.condition_member_cache);
-        self.condition_member_cache.active = edge_reuse || is_short_circuit_chain(condition);
+        let active = edge_reuse || is_short_circuit_chain(condition);
+        if previous.active && active {
+            // An enclosing guard may explicitly carry its compared member to
+            // the first nested condition. Preserve that value and its original
+            // instruction index so the ordinary barrier/definition proof can
+            // still reject an unsafe reuse.
+            self.condition_member_cache = previous.clone();
+        }
+        self.condition_member_cache.active = active;
         previous
     }
 
@@ -103,7 +111,9 @@ impl Generator {
         }
         *d = register;
         let Some(
-            Instruction::CompareWordImmediate { a, .. }
+            Instruction::CompareWord { a, .. }
+            | Instruction::CompareLogicalWord { a, .. }
+            | Instruction::CompareWordImmediate { a, .. }
             | Instruction::CompareLogicalWordImmediate { a, .. },
         ) = self.output.instructions.get_mut(load_index + 1)
         else {

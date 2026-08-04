@@ -9,6 +9,46 @@
 #[allow(unused_imports)]
 use super::*;
 
+/// A member compared by an outer guard and then used as the pointer base of a
+/// member in the first nested condition. Its loaded value dominates the nested
+/// true edge and needs a non-r0 home because PowerPC D-form addressing treats
+/// r0 as literal zero.
+pub(super) fn nested_condition_member_base(
+    condition: &Expression,
+    nested_condition: &Expression,
+) -> Option<Expression> {
+    let mut outer_members = Vec::new();
+    super::structured_expression_visit::visit_expression(condition, &mut |expression| {
+        if matches!(expression, Expression::Member {
+            base,
+            member_type: Type::Pointer(_) | Type::StructPointer { .. },
+            index_stride: None,
+            ..
+        } if matches!(base.as_ref(), Expression::Variable(_)))
+        {
+            outer_members.push(expression.clone());
+        }
+    });
+    let mut retained = None;
+    super::structured_expression_visit::visit_expression(
+        nested_condition,
+        &mut |expression| {
+            let Expression::Member { base, .. } = expression else {
+                return;
+            };
+            let Expression::Member { .. } = base.as_ref() else {
+                return;
+            };
+            if let Some(member) = outer_members.iter().find(|member| {
+                crate::condition_member_cache::same_member(member, base)
+            }) {
+                retained = Some(member.clone());
+            }
+        },
+    );
+    retained
+}
+
 impl Generator {
     pub(super) fn retain_guarded_nested_member_base(&mut self) {
         while let Some((start, retained, value)) =
@@ -140,5 +180,36 @@ mod tests {
         ];
 
         assert_eq!(guarded_nested_member_reload(&instructions), Some((0, 5, 4)));
+    }
+
+    #[test]
+    fn recognizes_an_outer_member_reused_as_a_nested_condition_base() {
+        let pointer = Expression::Member {
+            base: Box::new(Expression::Variable("object".into())),
+            offset: 32,
+            member_type: Type::StructPointer { element_size: 16 },
+            index_stride: None,
+        };
+        let condition = Expression::Binary {
+            operator: BinaryOperator::NotEqual,
+            left: Box::new(pointer.clone()),
+            right: Box::new(Expression::Variable("expected".into())),
+        };
+        let nested = Expression::Binary {
+            operator: BinaryOperator::LogicalAnd,
+            left: Box::new(pointer.clone()),
+            right: Box::new(Expression::Member {
+                base: Box::new(pointer.clone()),
+                offset: 8,
+                member_type: Type::UnsignedInt,
+                index_stride: None,
+            }),
+        };
+
+        assert!(crate::analysis::structurally_equal(
+            &nested_condition_member_base(&condition, &nested)
+                .expect("nested pointer base"),
+            &pointer,
+        ));
     }
 }

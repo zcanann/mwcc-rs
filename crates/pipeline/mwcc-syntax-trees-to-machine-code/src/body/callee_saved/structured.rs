@@ -4997,7 +4997,12 @@ impl Generator {
                         };
                     let previous_member_cache = carried_assignment_member_cache_restore
                         .take()
-                        .unwrap_or_else(|| self.begin_condition_member_cache(condition));
+                        .unwrap_or_else(|| {
+                            self.begin_condition_member_cache_with_edge_reuse(
+                                condition,
+                                nested_condition.is_some(),
+                            )
+                        });
                     // A fallthrough value may still live in its incoming
                     // physical register even when the condition has no call.
                     // Keep condition temporaries out of those homes until the
@@ -5245,7 +5250,20 @@ impl Generator {
                             grouped_equality: false,
                         })
                     })();
+                    if let Some(member) = nested_condition.and_then(|nested| {
+                        super::structured_nested_member_base::nested_condition_member_base(
+                            condition,
+                            nested,
+                        )
+                    }) {
+                        self.fix_condition_member_value_register(
+                            &member,
+                            Eabi::FIRST_GENERAL_ARGUMENT,
+                        );
+                    }
                     self.release_reserved_physical_homes(reserved_fallthrough_homes);
+                    let guarded_true_member_cache =
+                        nested_condition.map(|_| self.condition_member_cache.clone());
                     self.restore_condition_member_cache(previous_member_cache);
                     let carry_fallthrough_cache = matches!(
                         then_body.last(),
@@ -5311,6 +5329,9 @@ impl Generator {
                     let prefix_cache_restore = guarded_true_cache.map(|cache| {
                         std::mem::replace(&mut self.condition_global_values, cache)
                     });
+                    let prefix_member_cache_restore = guarded_true_member_cache.map(|cache| {
+                        std::mem::replace(&mut self.condition_member_cache, cache)
+                    });
                     if let Some(cache) = guarded_true_float_cache {
                         self.condition_float_cache = cache;
                     }
@@ -5327,6 +5348,9 @@ impl Generator {
                     );
                     if let Some(previous) = prefix_cache_restore {
                         self.restore_condition_global_cache(previous);
+                    }
+                    if let Some(previous) = prefix_member_cache_restore {
+                        self.restore_condition_member_cache(previous);
                     }
                     self.restore_condition_float_cache(previous_float_cache);
                     let outer_float_cache = std::mem::replace(
