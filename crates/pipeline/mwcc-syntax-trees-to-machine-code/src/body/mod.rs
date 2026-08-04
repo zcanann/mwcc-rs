@@ -22,6 +22,7 @@ mod fixed_list_bank_transfer;
 mod dsp_channel_parameter_update;
 mod release_list_bank_to_global;
 mod intrusive_list_pop;
+mod audio_manager_defaults;
 mod bounded_global_ring_remove;
 mod fixed_triplet_float_dispatch;
 mod global_object_array_repair;

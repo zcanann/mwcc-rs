@@ -1208,6 +1208,9 @@ impl Generator {
         if self.try_intrusive_list_pop(function)? {
             return Ok(());
         }
+        if self.try_audio_manager_defaults(function)? {
+            return Ok(());
+        }
         if self.try_bounded_global_ring_remove(function)? {
             return Ok(());
         }

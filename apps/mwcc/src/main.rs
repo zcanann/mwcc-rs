@@ -3151,6 +3151,8 @@ mod tests {
     mod release_list_bank_to_global;
     #[path = "intrusive_list_pop.rs"]
     mod intrusive_list_pop;
+    #[path = "audio_manager_defaults.rs"]
+    mod audio_manager_defaults;
 
     #[path = "bounded_global_ring_remove.rs"]
     mod bounded_global_ring_remove;
