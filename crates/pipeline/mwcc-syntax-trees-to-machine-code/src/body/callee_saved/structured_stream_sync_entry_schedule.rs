@@ -103,7 +103,7 @@ fn stream_sync_entry_schedule(
                 Instruction::AddImmediate { d: 0, a: 0, .. },
                 Instruction::StoreWord { s: 0, a: 30, offset: 8 },
                 Instruction::StoreWord { s: 3, a: 30, offset: 40 },
-                Instruction::AddImmediate { d: 3, a: 0, immediate: 1 },
+                Instruction::AddImmediate { d: 3, a: 0, .. },
                 Instruction::Or { a: 4, s: 30, b: 30 },
                 Instruction::BranchAndLink { .. },
             ])
@@ -192,7 +192,7 @@ mod tests {
             Instruction::load_immediate(0, 7),
             Instruction::StoreWord { s: 0, a: 30, offset: 8 },
             Instruction::StoreWord { s: 3, a: 30, offset: 40 },
-            Instruction::load_immediate(3, 1),
+            Instruction::load_immediate(3, 2),
             Instruction::Or { a: 4, s: 30, b: 30 },
             Instruction::BranchAndLink { target: "issueCommand".into() },
         ];

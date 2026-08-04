@@ -406,6 +406,10 @@ pub(crate) struct Generator {
     /// forwarding blocks and no-op fallthrough branches. Ordinary functions
     /// retain that optimizer residue.
     pub(crate) structured_cfg_cleanup_owner: bool,
+    /// A loop-carried incoming parameter and the result selected on its exit
+    /// share one saved home. Late polling-loop scheduling uses this semantic
+    /// provenance after physical allocation has erased the source lifetimes.
+    pub(crate) structured_loop_exit_parameter_home_reuse: bool,
     /// The source graph owns a shared terminal return label. Some legacy
     /// switches branch to that label even though it contains only `blr`, so the
     /// ordinary conditional-return peephole must preserve those edges.

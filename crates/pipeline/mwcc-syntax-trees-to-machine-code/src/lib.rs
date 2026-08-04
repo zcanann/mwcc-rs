@@ -598,6 +598,7 @@ fn lower_function_body(
         structured_sequenced_callback_wait_starter: None,
         structured_switch_dispatch_conditionals: HashSet::new(),
         structured_cfg_cleanup_owner: false,
+        structured_loop_exit_parameter_home_reuse: false,
         preserve_terminal_return_branches: false,
         structured_repeated_call_poll_owner: false,
         structured_nonreturning: false,
@@ -1155,6 +1156,7 @@ fn lower_function_body(
     generator.schedule_structured_state_validation_transaction();
     generator.schedule_structured_state_read_entry();
     generator.schedule_structured_stream_sync_entry();
+    generator.schedule_structured_loop_exit_poll_register();
     generator.schedule_archive_header_initialization(function);
 
     ordinal_accounting::relocate_inline_initializer_ordinals(

@@ -1231,6 +1231,15 @@ impl Generator {
                 &eager_home_reuse,
             )
         };
+        if parameter_home_reuse.reuses_loop_exit_parameter_home {
+            // MWCC's interval coalescer runs with its terminal CFG cleanup for
+            // this transaction. Once the loop-carried parameter and its exit
+            // result share a home, the nested `if` ladder's abandoned sibling
+            // joins are unreachable forwarding blocks rather than preserved
+            // source-graph residue.
+            self.structured_cfg_cleanup_owner = true;
+            self.structured_loop_exit_parameter_home_reuse = true;
+        }
         let returned_deferred_home = function
             .return_expression
             .as_ref()
