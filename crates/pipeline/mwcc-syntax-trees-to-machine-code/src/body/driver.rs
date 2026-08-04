@@ -5231,13 +5231,11 @@ impl Generator {
         value_type: Type,
         destination: u8,
     ) -> Compilation<()> {
-        // A C++ reference binding to an aggregate (`S& r = *p`) carries the
-        // aggregate's address. The frontend represents references as
-        // `StructPointer`, so evaluating the dereference as a scalar load would
-        // incorrectly try to read an entire struct. Materialize the pointer
-        // value instead; member pointers still perform their one required `lwz`.
+        // A C++ reference binding to an aggregate carries the aggregate's
+        // address. Only an aggregate-pointer cast/member has those semantics:
+        // an ordinary C `S *old = *head` is a real pointer-to-pointer load.
         if matches!(value_type, Type::StructPointer { .. }) {
-            if let Expression::Dereference { pointer } = expression {
+            if let Some(pointer) = crate::expressions::aggregate_reference_pointer(expression) {
                 return self.evaluate_general(pointer, destination);
             }
         }

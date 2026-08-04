@@ -39,6 +39,24 @@ impl Generator {
 
         let mut aliases = std::collections::HashMap::new();
         let mut materialized = 0usize;
+        // MWCC uses r0 as the one memory snapshot in a void leaf whose stores
+        // otherwise need no scratch register. Keeping that physical lifetime
+        // explicit also avoids pointlessly preserving the incoming r3 in a
+        // third argument register.
+        let scratch_snapshot = function.locals.len() == 1
+            && function.return_type == Type::Void
+            && matches!(
+                function.locals[0].initializer,
+                Some(Expression::Dereference { ref pointer })
+                    if matches!(pointer.as_ref(), Expression::Variable(_))
+            )
+            && function.statements.iter().all(|statement| {
+                let Statement::Store { target, value } = statement else {
+                    return false;
+                };
+                self.is_scratch_safe_store_target(target)
+                    && matches!(value, Expression::Variable(_))
+            });
         for local in &function.locals {
             let initializer = crate::value_tracking::substitute(
                 local.initializer.as_ref().expect("eligibility checked"),
@@ -49,10 +67,14 @@ impl Generator {
                 continue;
             }
 
-            let first_home: u8 = if function.return_type == Type::Void { 3 } else { 4 };
-            let preferred =
-                first_home.saturating_add(u8::try_from(materialized).unwrap_or(8));
-            let home = self.fresh_virtual_general_preferring(preferred);
+            let home = if scratch_snapshot {
+                GENERAL_SCRATCH
+            } else {
+                let first_home: u8 = if function.return_type == Type::Void { 3 } else { 4 };
+                let preferred =
+                    first_home.saturating_add(u8::try_from(materialized).unwrap_or(8));
+                self.fresh_virtual_general_preferring(preferred)
+            };
             self.evaluate(&initializer, local.declared_type, home)?;
             self.locations.insert(
                 local.name.clone(),

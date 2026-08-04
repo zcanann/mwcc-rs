@@ -25,10 +25,11 @@ fn pointer_cast_arithmetic_stride(target_type: Type) -> Option<u32> {
 /// Recover the address carried by an aggregate-reference dereference.
 ///
 /// C++ reference bindings are represented as `StructPointer` values in the
-/// compact IR. After reference-alias substitution, a use can retain the
-/// source spelling `*(Aggregate*)pointer_value` even though its runtime value
-/// is the address itself; loading word zero would read the aggregate rather
-/// than pass its address.
+/// compact IR. After reference-alias substitution, a use can retain either
+/// `*(Aggregate*)pointer_value` or `*owner->aggregate_pointer` even though its
+/// runtime value is the address itself; loading word zero would read the
+/// aggregate rather than pass its address. A plain `*pointer_to_pointer` is
+/// deliberately excluded: that is an ordinary word load in C.
 pub(crate) fn aggregate_reference_pointer(expression: &Expression) -> Option<&Expression> {
     let Expression::Dereference { pointer } = expression else {
         return None;
@@ -37,6 +38,9 @@ pub(crate) fn aggregate_reference_pointer(expression: &Expression) -> Option<&Ex
         pointer.as_ref(),
         Expression::Cast {
             target_type: Type::StructPointer { .. },
+            ..
+        } | Expression::Member {
+            member_type: Type::StructPointer { .. },
             ..
         }
     )
@@ -1046,6 +1050,26 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn distinguishes_member_references_from_pointer_to_pointer_loads() {
+        let member_pointer = member(Type::StructPointer { element_size: 64 });
+        let member_reference = Expression::Dereference {
+            pointer: Box::new(member_pointer.clone()),
+        };
+        let pointer_load = Expression::Dereference {
+            pointer: Box::new(Expression::Variable("head".into())),
+        };
+
+        assert!(matches!(
+            aggregate_reference_pointer(&member_reference),
+            Some(Expression::Member {
+                member_type: Type::StructPointer { element_size: 64 },
+                ..
+            })
+        ));
+        assert!(aggregate_reference_pointer(&pointer_load).is_none());
     }
 
     #[test]

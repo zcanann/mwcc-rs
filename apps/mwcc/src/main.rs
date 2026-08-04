@@ -3104,6 +3104,9 @@ mod tests {
     #[path = "paired_single_restore_encoding.rs"]
     mod paired_single_restore_encoding;
 
+    #[path = "materialized_pointer_snapshot.rs"]
+    mod materialized_pointer_snapshot;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 

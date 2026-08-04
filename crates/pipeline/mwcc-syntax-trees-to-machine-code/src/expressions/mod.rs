@@ -81,6 +81,7 @@ mod xnor_feedback_update;
 pub(crate) use members::embedded_member_address_base;
 pub(crate) use call_argument_types::source_parameter_type;
 pub(crate) use packed_shift_mask::is_shallow_packed_shift_mask_expression;
+pub(crate) use pointers::aggregate_reference_pointer;
 #[allow(unused_imports)]
 pub(crate) use passes::*;
 
