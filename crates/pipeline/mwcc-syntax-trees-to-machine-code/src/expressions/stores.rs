@@ -336,6 +336,9 @@ impl Generator {
         if self.try_emit_member_vec3_scalar_product(target, value)? {
             return Ok(());
         }
+        if self.try_emit_computed_member_array_store(target, value)? {
+            return Ok(());
+        }
         if self.try_emit_frame_to_global_aggregate_copy(target, value)? {
             return Ok(());
         }
@@ -343,6 +346,9 @@ impl Generator {
             return Ok(());
         }
         if self.try_emit_frame_subobject_store(target, value)? {
+            return Ok(());
+        }
+        if self.try_emit_small_aggregate_frame_store(target, value)? {
             return Ok(());
         }
         if self.try_emit_bit_field_store(target, value)? {

@@ -1922,6 +1922,15 @@ impl Generator {
     /// value is non-negative, so the result is identical but the instruction differs.
     pub(crate) fn is_narrow_unsigned_load(&self, value: &Expression) -> Compilation<bool> {
         let width = match value {
+            Expression::Variable(name)
+                if !self.locations.contains_key(name)
+                    && !self.frame_slots.contains_key(name)
+                    && self.globals.get(name).is_some_and(|value_type| {
+                        matches!(value_type, Type::UnsignedChar | Type::UnsignedShort)
+                    }) =>
+            {
+                self.globals.get(name).map(|value_type| value_type.width())
+            }
             Expression::Dereference { pointer } => self.dereferenced_width(pointer),
             Expression::Index { base, .. } => self.dereferenced_width(base),
             Expression::Member { member_type, .. } => Some(member_type.width()),
