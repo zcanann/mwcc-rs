@@ -17,6 +17,34 @@ pub(super) enum EntryAliasBoundary {
     AfterFirstConditionTerm,
 }
 
+/// A declaration initializer can read an untouched incoming parameter while
+/// preparing its arguments, but the alias is dead once any call in that
+/// initializer returns. Later declarations must read the saved home.
+pub(super) fn initializer_clobbers_entry_alias(local: &LocalDeclaration) -> bool {
+    local
+        .initializer
+        .as_ref()
+        .is_some_and(crate::analysis::expression_has_call)
+}
+
+impl Generator {
+    pub(super) fn retire_entry_parameter_aliases_after_initializer(
+        &mut self,
+        local: &LocalDeclaration,
+        saved_parameters: &[(String, u8, u8)],
+    ) {
+        if !initializer_clobbers_entry_alias(local) {
+            return;
+        }
+        for (name, home, _) in saved_parameters {
+            self.locations
+                .get_mut(name)
+                .expect("saved parameter was eligibility checked")
+                .register = *home;
+        }
+    }
+}
+
 /// Identify a saved parameter that MWCC can forward to the first direct call
 /// from its untouched incoming ABI register. Later uses switch to the saved
 /// home after that call has clobbered the entry alias.
@@ -166,6 +194,27 @@ mod tests {
             name: "sink".to_string(),
             arguments,
         })]
+    }
+
+    #[test]
+    fn a_calling_initializer_ends_the_entry_alias_lifetime() {
+        let local = LocalDeclaration {
+            declared_type: Type::Int,
+            name: "result".into(),
+            initializer: Some(Expression::Call {
+                name: "source".into(),
+                arguments: vec![],
+            }),
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: vec![],
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        };
+        assert!(initializer_clobbers_entry_alias(&local));
     }
 
     #[test]

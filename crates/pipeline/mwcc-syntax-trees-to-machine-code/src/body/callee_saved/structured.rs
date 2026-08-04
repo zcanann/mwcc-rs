@@ -3423,6 +3423,10 @@ impl Generator {
                     stride: pointer_stride(local.declared_type),
                 },
             );
+            self.retire_entry_parameter_aliases_after_initializer(
+                local,
+                &saved_parameter_homes,
+            );
         }
         for (_, home, incoming) in &saved_parameter_homes {
             home_index += 1;
@@ -3791,6 +3795,10 @@ impl Generator {
                     stride: pointer_stride(local.declared_type),
                 },
             );
+            self.retire_entry_parameter_aliases_after_initializer(
+                local,
+                &saved_parameter_homes,
+            );
         }
         for local in &aggregate_frame_locals {
             if let Some(initializer) = &local.initializer {
@@ -3904,10 +3912,7 @@ impl Generator {
         // into that statement when all declaration initializers are call-free.
         let initializers_preserve_entry_alias = function.locals.iter().all(|local| {
             local.data_bytes.is_none()
-                && local
-                    .initializer
-                    .as_ref()
-                    .is_none_or(|initializer| !crate::analysis::expression_has_call(initializer))
+                && !super::structured_entry_alias::initializer_clobbers_entry_alias(local)
         });
         let entry_parameter_alias = (!dense_inline_save
             && initializers_preserve_entry_alias
