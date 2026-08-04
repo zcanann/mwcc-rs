@@ -21,14 +21,19 @@ impl Generator {
         {
             return Ok(None);
         }
-        let Expression::Variable(frame_name) = left else {
-            return Ok(None);
+        let (frame_name, compare_address) = match left {
+            Expression::Variable(name) => (name, false),
+            Expression::AddressOf { operand } => match operand.as_ref() {
+                Expression::Variable(name) => (name, true),
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
         };
         let Some(slot) = self
             .frame_slots
             .get(frame_name)
             .copied()
-            .filter(|slot| !slot.is_array)
+            .filter(|slot| compare_address || !slot.is_array)
         else {
             return Ok(None);
         };
@@ -43,9 +48,18 @@ impl Generator {
         }
 
         let global_base = self.fresh_virtual_general_preferring(3);
-        let frame_value = self.fresh_virtual_general_preferring(4);
+        let frame_value = self.fresh_virtual_general_avoiding(vec![GENERAL_SCRATCH]);
+        self.prefer_virtual_general(frame_value, 4);
         self.emit_address_high(global_base, global_name);
-        self.evaluate_general(left, frame_value)?;
+        if compare_address {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: frame_value,
+                a: 1,
+                immediate: slot.offset,
+            });
+        } else {
+            self.evaluate_general(left, frame_value)?;
+        }
         self.record_relocation(mwcc_machine_code::RelocationKind::Addr16Lo, global_name);
         self.output.instructions.push(self.global_load_instruction(
             global_type,
@@ -53,7 +67,9 @@ impl Generator {
             global_base,
         )?);
 
-        let signed = self.signed_of(slot.value_type) && self.signed_of(global_type);
+        let signed = !compare_address
+            && self.signed_of(slot.value_type)
+            && self.signed_of(global_type);
         self.output.instructions.push(if signed {
             Instruction::CompareWord {
                 a: frame_value,

@@ -5,7 +5,7 @@ use mwcc_syntax_trees::{
     BinaryOperator, Expression, Function, GlobalDeclaration, InlineExpansionFacts,
     LocalDeclaration, Parameter, SourceFundamentalType, Statement, Type,
 };
-use mwcc_versions::{CompilerConfig, GC_1_2_5N};
+use mwcc_versions::{CompilerConfig, GlobalAddressing, GC_1_2_5N};
 
 use crate::{lower_function, InlineBodySet, InlineSummaries};
 
@@ -39,9 +39,27 @@ fn lower(function: &Function) -> MachineFunction {
 }
 
 fn lower_with_globals(function: &Function, globals: &[GlobalDeclaration]) -> MachineFunction {
-    let fundamentals = HashMap::from([(function.name.clone(), SourceFundamentalType::Boolean)]);
     let mut config = CompilerConfig::new(GC_1_2_5N);
     config.flags.cpp_exceptions = false;
+    lower_with_config(function, globals, config)
+}
+
+fn lower_with_absolute_globals(
+    function: &Function,
+    globals: &[GlobalDeclaration],
+) -> MachineFunction {
+    let mut config = CompilerConfig::new(GC_1_2_5N);
+    config.flags.cpp_exceptions = false;
+    config.flags.global_addressing = GlobalAddressing::Absolute;
+    lower_with_config(function, globals, config)
+}
+
+fn lower_with_config(
+    function: &Function,
+    globals: &[GlobalDeclaration],
+    config: CompilerConfig,
+) -> MachineFunction {
+    let fundamentals = HashMap::from([(function.name.clone(), SourceFundamentalType::Boolean)]);
     lower_function(
         function,
         globals,
@@ -466,6 +484,82 @@ fn address_taken_scalar_large_equality_uses_a_nonzero_addis_source() {
         )),
         "the frame reload must feed addis through a non-r0 source: {:?}",
         machine.instructions
+    );
+}
+
+#[test]
+fn frame_address_and_global_pointer_keep_distinct_compare_operands() {
+    let function = Function {
+        return_type: Type::Void,
+        name: "install_frame".into(),
+        is_static: false,
+        is_weak: false,
+        parameters: Vec::new(),
+        locals: vec![LocalDeclaration {
+            declared_type: Type::Struct { size: 32, align: 4 },
+            name: "frame".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        }],
+        statements: vec![
+            Statement::Expression(Expression::Call {
+                name: "prepare".into(),
+                arguments: vec![Expression::AddressOf {
+                    operand: Box::new(Expression::Variable("frame".into())),
+                }],
+            }),
+            Statement::If {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::Equal,
+                    left: Box::new(Expression::AddressOf {
+                        operand: Box::new(Expression::Variable("frame".into())),
+                    }),
+                    right: Box::new(Expression::Variable("active_frame".into())),
+                },
+                then_body: vec![Statement::Expression(Expression::Call {
+                    name: "matched".into(),
+                    arguments: Vec::new(),
+                })],
+                else_body: Vec::new(),
+            },
+        ],
+        guards: Vec::new(),
+        return_expression: None,
+        section: None,
+        preceded_by_asm: false,
+        asm_body: None,
+        inline_asm_blocks: Vec::new(),
+        force_active: false,
+        text_deferred: false,
+        peephole_disabled: false,
+    };
+    let machine = lower_with_absolute_globals(
+        &function,
+        &[typed_global(
+            "active_frame",
+            Type::StructPointer { element_size: 32 },
+        )],
+    );
+
+    assert!(
+        machine.instructions.windows(4).any(|window| matches!(
+            window,
+            [
+                Instruction::AddImmediateShifted { .. },
+                Instruction::AddImmediate { d: frame, a: 1, .. },
+                Instruction::LoadWord { d: 0, .. },
+                Instruction::CompareLogicalWord { a, b: 0 },
+            ] if *frame != 0 && a == frame
+        )),
+        "frame/global comparison instructions: {:?}",
+        machine.instructions,
     );
 }
 
