@@ -4,6 +4,7 @@
 
 mod arithmetic;
 mod adjacent_fixed_bank_stores;
+mod affine_member_pointer_store;
 mod aggregate_member_arithmetic;
 mod aggregate_member_copy;
 mod aggregate_member_copy_loop;

@@ -291,6 +291,9 @@ impl Generator {
             Expression::IndexedUpdateValue { value } => (value.as_ref(), true),
             value => (value, false),
         };
+        if self.try_emit_affine_member_pointer_leaf_arithmetic_store(target, value)? {
+            return Ok(());
+        }
         if self.try_emit_retained_global_pointer_member_store(target, value)? {
             return Ok(());
         }
