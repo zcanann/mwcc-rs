@@ -7,6 +7,7 @@ mod ascii_hash;
 mod ascii_upper;
 mod bit_reverse;
 mod count_register;
+mod counted_member_pointer_search;
 mod counted_pointer_search;
 mod counters;
 mod fill_copy;

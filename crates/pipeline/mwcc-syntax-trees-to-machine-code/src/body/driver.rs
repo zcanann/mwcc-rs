@@ -1187,6 +1187,11 @@ impl Generator {
         // local-pointer aliases are not later mistaken for entry parameters.
         self.known_locals
             .extend(function.locals.iter().map(|local| local.name.clone()));
+        // Inline expansion exposes member-index searches before broad loop
+        // lowering can discard their explicit pointer induction variable.
+        if self.try_counted_member_pointer_search(function)? {
+            return Ok(());
+        }
         if self.try_global_status_snapshot_access(function)? {
             return Ok(());
         }
