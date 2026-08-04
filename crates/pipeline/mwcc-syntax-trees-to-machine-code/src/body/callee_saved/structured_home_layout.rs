@@ -165,8 +165,9 @@ pub(super) fn paired_eager_deferred_preference(
 }
 
 /// A compact body with one incoming value spanning the call graph and one
-/// deferred local returned afterward gives the returned value the highest
-/// saved home. The longer-lived input occupies r30 below it.
+/// deferred local returned afterward uses the r30/r31 pair. A fresh returned
+/// value takes r31 above the input; a loop-exit result that overwrites its
+/// expired parameter stays in r30 while the earlier deferred state uses r31.
 pub(super) fn returned_deferred_pair_preference(
     with_frame_array: bool,
     eager_count: usize,
@@ -176,12 +177,17 @@ pub(super) fn returned_deferred_pair_preference(
     returned_home: Option<usize>,
     home_index: usize,
 ) -> Option<u8> {
-    (!with_frame_array
-        && eager_count == 0
+    let returned_fresh_deferred = eager_count == 0
         && parameter_count == 1
         && deferred_count == 1
+        && returned_home == Some(1);
+    let returned_parameter_reuse = eager_count == 0
+        && parameter_count == 1
+        && deferred_count == 2
+        && returned_home == Some(0);
+    (!with_frame_array
         && total_count == 2
-        && returned_home == Some(1)
+        && (returned_fresh_deferred || returned_parameter_reuse)
         && home_index < 2)
         .then_some(if home_index == 0 { 30 } else { 31 })
 }
@@ -391,6 +397,14 @@ mod tests {
         assert_eq!(
             returned_deferred_pair_preference(false, 0, 1, 1, 2, None, 0),
             None
+        );
+        assert_eq!(
+            returned_deferred_pair_preference(false, 0, 1, 2, 2, Some(0), 0),
+            Some(30)
+        );
+        assert_eq!(
+            returned_deferred_pair_preference(false, 0, 1, 2, 2, Some(0), 1),
+            Some(31)
         );
     }
 

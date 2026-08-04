@@ -18,6 +18,7 @@ use mwcc_syntax_trees::Parameter;
 pub(super) struct StructuredParameterHomeReuse {
     home_index_by_group: Vec<usize>,
     pub(super) fresh_group_count: usize,
+    pub(super) reuses_loop_exit_parameter_home: bool,
 }
 
 impl StructuredParameterHomeReuse {
@@ -33,6 +34,7 @@ impl StructuredParameterHomeReuse {
                 .map(|group| eager_count + parameter_count + group)
                 .collect(),
             fresh_group_count: deferred_group_count,
+            reuses_loop_exit_parameter_home: false,
         }
     }
 
@@ -44,11 +46,21 @@ impl StructuredParameterHomeReuse {
         eager_reuse: &StructuredEagerHomeReuse,
     ) -> Self {
         let mut reused_parameter_by_group = vec![None; deferred.group_count];
+        let mut reuses_loop_exit_parameter_home = false;
         let mut parameters: Vec<_> = saved_parameters
             .iter()
             .enumerate()
             .filter(|(_, parameter)| {
                 !structured_name_occurs_in_loop(function, &parameter.name)
+                    || (0..deferred.group_count).any(|group| {
+                        deferred.members(group).any(|result| {
+                            loop_exit_member_result_reuses_parameter(
+                                function,
+                                result,
+                                &parameter.name,
+                            )
+                        })
+                    })
             })
             .filter(|(_, parameter)| {
                 function
@@ -86,11 +98,22 @@ impl StructuredParameterHomeReuse {
                                     function,
                                     result,
                                     parameter_name,
+                                ) || loop_exit_member_result_reuses_parameter(
+                                    function,
+                                    result,
+                                    parameter_name,
                                 )
                             }))
                 })
                 .max_by_key(|group| deferred.first_assignment(*group));
             if let Some(group) = reusable {
+                reuses_loop_exit_parameter_home |= deferred.members(group).any(|result| {
+                    loop_exit_member_result_reuses_parameter(
+                        function,
+                        result,
+                        parameter_name,
+                    )
+                });
                 reused_parameter_by_group[group] = Some(parameter);
             }
         }
@@ -114,6 +137,7 @@ impl StructuredParameterHomeReuse {
         Self {
             home_index_by_group,
             fresh_group_count,
+            reuses_loop_exit_parameter_home,
         }
     }
 
@@ -127,6 +151,47 @@ impl StructuredParameterHomeReuse {
             .iter()
             .any(|home| *home < fresh_home_base)
     }
+}
+
+fn loop_exit_member_result_reuses_parameter(
+    function: &Function,
+    result: &str,
+    parameter: &str,
+) -> bool {
+    function
+        .statements
+        .iter()
+        .enumerate()
+        .any(|(loop_index, statement)| {
+            let Statement::Loop { body, .. } = statement else {
+                return false;
+            };
+            let owns_exit = body.iter().any(|statement| {
+                let Statement::If { then_body, .. } = statement else {
+                    return false;
+                };
+                matches!(
+                    then_body.as_slice(),
+                    [
+                        Statement::Assign {
+                            name,
+                            value: Expression::Member { base, .. },
+                        },
+                        Statement::Break,
+                    ] if name == result
+                        && matches!(base.as_ref(), Expression::Variable(name) if name == parameter)
+                )
+            });
+            owns_exit
+                && !function.statements[loop_index + 1..]
+                    .iter()
+                    .any(|statement| {
+                        super::structured_liveness::statement_reads_name(statement, parameter)
+                    })
+                && !function.return_expression.as_ref().is_some_and(|expression| {
+                    expression_reads_name(expression, parameter)
+                })
+        })
 }
 
 #[cfg(test)]
@@ -195,6 +260,7 @@ mod tests {
             vec![3, 4, 5]
         );
         assert!(!plan.reuses_parameter_home(1, 2));
+        assert!(!plan.reuses_loop_exit_parameter_home);
     }
 
     #[test]
@@ -383,5 +449,51 @@ mod tests {
 
         assert_eq!(reuse.fresh_group_count, 1);
         assert_eq!(reuse.home_index(deferred.group("late")), 1);
+    }
+
+    #[test]
+    fn reuses_a_parameter_consumed_by_a_loop_exit_member_load() {
+        let mut function = function(false);
+        function.statements = vec![
+            Statement::Loop {
+                kind: LoopKind::While,
+                initializer: None,
+                condition: Some(Expression::IntegerLiteral(1)),
+                step: None,
+                body: vec![Statement::If {
+                    condition: Expression::Variable("finished".into()),
+                    then_body: vec![
+                        Statement::Assign {
+                            name: "late".into(),
+                            value: Expression::Member {
+                                base: Box::new(Expression::Variable("incoming".into())),
+                                offset: 32,
+                                member_type: Type::Int,
+                                index_stride: None,
+                            },
+                        },
+                        Statement::Break,
+                    ],
+                    else_body: Vec::new(),
+                }],
+            },
+            Statement::Expression(Expression::Call {
+                name: "restore".into(),
+                arguments: Vec::new(),
+            }),
+        ];
+        function.return_expression = Some(Expression::Variable("late".into()));
+        let deferred = plan_deferred_saved_homes(&function, &[&function.locals[0]]).unwrap();
+        let reuse = StructuredParameterHomeReuse::plan(
+            &function,
+            0,
+            &[&function.parameters[0]],
+            &deferred,
+            &StructuredEagerHomeReuse::plan(&function, &[], &deferred),
+        );
+
+        assert_eq!(reuse.fresh_group_count, 0);
+        assert_eq!(reuse.home_index(deferred.group("late")), 0);
+        assert!(reuse.reuses_loop_exit_parameter_home);
     }
 }

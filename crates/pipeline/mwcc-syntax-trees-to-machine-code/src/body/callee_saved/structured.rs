@@ -74,6 +74,7 @@ use super::structured_dense_switch::statements_fall_through;
 use super::structured_indirect_call_home::promote_cost_free_indirect_call_locals;
 use super::structured_interleaved_frame_layout::StructuredInterleavedFrameLayout;
 use super::structured_liveness::{
+    is_immediate_call_result_zero_guard, is_inline_terminal_call_result_alias,
     read_after_possible_call, read_after_possible_call_in_function,
     transient_condition_call_result_callee,
 };
@@ -705,6 +706,10 @@ impl Generator {
                     && function.statements.iter().any(statement_has_call))
             })
             .collect();
+        survivors.retain(|name| {
+            !is_immediate_call_result_zero_guard(function, name)
+                && !is_inline_terminal_call_result_alias(function, name)
+        });
         let recovered_general_homes = StructuredRecoveredGeneralHomes::plan(
             function,
             &self.inline_global_transaction_result_homes,
@@ -2413,6 +2418,7 @@ impl Generator {
             || (deferred_saved_local_lane.is_some_and(|lane| {
                 lane.distinct_from_entry_parameter_table
             }) && !saved_parameters.is_empty())
+            || parameter_home_reuse.reuses_loop_exit_parameter_home
         {
             // A deferred local can reuse the ordinary inferred value lane when
             // no entry parameter survives. Once a parameter also owns a saved
@@ -3552,6 +3558,15 @@ impl Generator {
                         )
                         .expect("aggregate-call companion preference was checked"),
                     )
+                }
+                ValueClass::General
+                    if is_inline_terminal_call_result_alias(function, &local.name)
+                        || is_immediate_call_result_zero_guard(function, &local.name) =>
+                {
+                    // A comma-expanded `(temporary = call(), temporary)`
+                    // packet has no lifetime beyond the enclosing expression.
+                    // Keep both identities in the ABI result register.
+                    mwcc_target::Eabi::general_result().number
                 }
                 ValueClass::General
                     if matches!(

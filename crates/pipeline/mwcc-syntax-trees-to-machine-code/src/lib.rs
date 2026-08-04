@@ -1153,6 +1153,7 @@ fn lower_function_body(
     generator.schedule_structured_inlined_guarded_value_diamond();
     generator.schedule_structured_precomposition_tail();
     generator.schedule_structured_state_validation_transaction();
+    generator.schedule_structured_stream_sync_entry();
     generator.schedule_archive_header_initialization(function);
 
     ordinal_accounting::relocate_inline_initializer_ordinals(

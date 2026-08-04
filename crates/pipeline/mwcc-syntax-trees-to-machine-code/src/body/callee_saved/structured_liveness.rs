@@ -87,6 +87,166 @@ pub(crate) fn read_after_possible_call_in_function(
             }))
 }
 
+/// Whether a local is defined by a terminal call, consumed by the immediately
+/// following zero test, and dead on both successors.
+///
+/// Inline expansion can preserve a conservative source-survivor marker after
+/// turning `result = wrapper(); if (!result) return ...;` into a comma-sequenced
+/// call transaction. The result is born after those calls and dies in the
+/// adjacent condition, so it belongs in the volatile ABI result register.
+pub(super) fn is_immediate_call_result_zero_guard(function: &Function, name: &str) -> bool {
+    immediate_call_result_zero_guard(
+        &function.statements,
+        function.return_expression.as_ref(),
+        name,
+    )
+}
+
+/// Whether inline expansion introduced a one-expression alias for the final
+/// call result of a comma transaction.
+///
+/// The canonical form is `(temporary = call(...), temporary)`. Its only read
+/// is sequenced immediately after its definition, so source-level survivor
+/// provenance must not force it into a callee-saved home.
+pub(super) fn is_inline_terminal_call_result_alias(function: &Function, name: &str) -> bool {
+    inline_terminal_call_result_alias(
+        &function.statements,
+        function.return_expression.as_ref(),
+        name,
+    )
+}
+
+fn inline_terminal_call_result_alias(
+    statements: &[Statement],
+    return_expression: Option<&Expression>,
+    name: &str,
+) -> bool {
+    let mut owner = None;
+    for (index, statement) in statements.iter().enumerate() {
+        let expression = match statement {
+            Statement::Assign { value, .. } | Statement::Expression(value) => value,
+            _ => continue,
+        };
+        if crate::analysis::count_name_occurrences(expression, name) == 2
+            && contains_terminal_call_result_alias(expression, name)
+        {
+            if owner.replace(index).is_some() {
+                return false;
+            }
+        }
+    }
+    let Some(owner) = owner else {
+        return false;
+    };
+    !statements
+        .iter()
+        .enumerate()
+        .any(|(index, statement)| index != owner && statement_reads_name(statement, name))
+        && !return_expression
+            .is_some_and(|expression| expression_reads_name(expression, name))
+}
+
+fn contains_terminal_call_result_alias(expression: &Expression, name: &str) -> bool {
+    let Expression::Comma { left, right } = expression else {
+        return false;
+    };
+    let packet = matches!(
+        (left.as_ref(), right.as_ref()),
+        (
+            Expression::Assign { target, value },
+            Expression::Variable(read),
+        ) if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name)
+            && read == name
+            && matches!(value.as_ref(), Expression::Call { .. })
+            && !expression_reads_name(value, name)
+    );
+    packet
+        || contains_terminal_call_result_alias(left, name)
+        || contains_terminal_call_result_alias(right, name)
+}
+
+fn immediate_call_result_zero_guard(
+    statements: &[Statement],
+    return_expression: Option<&Expression>,
+    name: &str,
+) -> bool {
+    let mut matched = None;
+    for (index, window) in statements.windows(2).enumerate() {
+        let [
+            Statement::Assign {
+                name: assigned,
+                value,
+            },
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            },
+        ] = window
+        else {
+            continue;
+        };
+        if assigned == name
+            && expression_ends_in_call(value)
+            && is_zero_test_of(condition, name)
+            && !then_body
+                .iter()
+                .chain(else_body)
+                .any(|statement| statement_reads_name(statement, name))
+        {
+            if matched.replace(index).is_some() {
+                return false;
+            }
+        }
+    }
+    let Some(assignment) = matched else {
+        return false;
+    };
+    !statements[..assignment]
+        .iter()
+        .chain(&statements[assignment + 2..])
+        .any(|statement| statement_reads_name(statement, name))
+        && !return_expression
+            .is_some_and(|expression| expression_reads_name(expression, name))
+}
+
+fn expression_ends_in_call(expression: &Expression) -> bool {
+    match expression {
+        Expression::Call { .. }
+        | Expression::CallThrough { .. }
+        | Expression::VirtualCall { .. } => true,
+        Expression::Comma { left, right } => {
+            expression_ends_in_call(right)
+                || matches!(
+                    (left.as_ref(), right.as_ref()),
+                    (
+                        Expression::Assign { target, value },
+                        Expression::Variable(read),
+                    ) if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == read)
+                        && matches!(value.as_ref(), Expression::Call { .. })
+                )
+        }
+        _ => false,
+    }
+}
+
+fn is_zero_test_of(expression: &Expression, name: &str) -> bool {
+    let Expression::Binary {
+        operator:
+            mwcc_syntax_trees::BinaryOperator::Equal
+            | mwcc_syntax_trees::BinaryOperator::NotEqual,
+        left,
+        right,
+    } = expression
+    else {
+        return false;
+    };
+    (matches!(left.as_ref(), Expression::Variable(variable) if variable == name)
+        && matches!(right.as_ref(), Expression::IntegerLiteral(0)))
+        || (matches!(right.as_ref(), Expression::Variable(variable) if variable == name)
+            && matches!(left.as_ref(), Expression::IntegerLiteral(0)))
+}
+
 fn flow(
     statements: &[Statement],
     name: &str,
@@ -316,7 +476,7 @@ fn flow(
     }
 }
 
-fn statement_reads_name(statement: &Statement, name: &str) -> bool {
+pub(super) fn statement_reads_name(statement: &Statement, name: &str) -> bool {
     fn arm_reads_name(body: &mwcc_syntax_trees::ArmBody, name: &str) -> bool {
         match body {
             mwcc_syntax_trees::ArmBody::Return(expression) => {
@@ -518,6 +678,103 @@ mod tests {
             name: name.into(),
             arguments: vec![],
         })
+    }
+
+    fn immediate_result_guard(later_read: bool) -> Vec<Statement> {
+        vec![
+            Statement::Assign {
+                name: "result".into(),
+                value: Expression::Comma {
+                    left: Box::new(Expression::IntegerLiteral(1)),
+                    right: Box::new(Expression::Call {
+                        name: "issue".into(),
+                        arguments: Vec::new(),
+                    }),
+                },
+            },
+            Statement::If {
+                condition: Expression::Binary {
+                    operator: mwcc_syntax_trees::BinaryOperator::Equal,
+                    left: Box::new(Expression::Variable("result".into())),
+                    right: Box::new(Expression::IntegerLiteral(0)),
+                },
+                then_body: vec![Statement::Return(Some(Expression::IntegerLiteral(-1)))],
+                else_body: Vec::new(),
+            },
+            Statement::Expression(if later_read {
+                Expression::Variable("result".into())
+            } else {
+                Expression::Call {
+                    name: "sleep".into(),
+                    arguments: Vec::new(),
+                }
+            }),
+        ]
+    }
+
+    fn inline_result_alias(later_read: bool) -> Vec<Statement> {
+        vec![
+            Statement::Assign {
+                name: "outer".into(),
+                value: Expression::Comma {
+                    left: Box::new(Expression::IntegerLiteral(1)),
+                    right: Box::new(Expression::Comma {
+                        left: Box::new(Expression::Assign {
+                            target: Box::new(Expression::Variable("temporary".into())),
+                            value: Box::new(Expression::Call {
+                                name: "issue".into(),
+                                arguments: Vec::new(),
+                            }),
+                        }),
+                        right: Box::new(Expression::Variable("temporary".into())),
+                    }),
+                },
+            },
+            Statement::Expression(if later_read {
+                Expression::Variable("temporary".into())
+            } else {
+                Expression::Call {
+                    name: "sleep".into(),
+                    arguments: Vec::new(),
+                }
+            }),
+        ]
+    }
+
+    #[test]
+    fn immediate_call_result_zero_guard_is_volatile() {
+        assert!(immediate_call_result_zero_guard(
+            &immediate_result_guard(false),
+            None,
+            "result"
+        ));
+    }
+
+    #[test]
+    fn later_call_result_read_prevents_volatile_classification() {
+        assert!(!immediate_call_result_zero_guard(
+            &immediate_result_guard(true),
+            None,
+            "result"
+        ));
+    }
+
+    #[test]
+    fn inline_terminal_call_result_alias_is_volatile() {
+        assert!(inline_terminal_call_result_alias(
+            &inline_result_alias(false),
+            None,
+            "temporary"
+        ));
+    }
+
+    #[test]
+    fn later_inline_alias_read_prevents_volatile_classification() {
+        assert!(!inline_terminal_call_result_alias(
+            &inline_result_alias(true),
+            None,
+            "temporary"
+        ));
     }
 
     #[test]
