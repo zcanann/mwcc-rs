@@ -95,6 +95,7 @@ use super::structured_recovered_general_homes::StructuredRecoveredGeneralHomes;
 use super::structured_periodic_float_normalization::StructuredPeriodicFloatNormalization;
 use super::structured_paired_subobject_initialization::StructuredPairedSubobjectInitialization;
 use super::structured_blocking_queue_transaction::StructuredBlockingQueueTransaction;
+use super::structured_guarded_member_reset::StructuredGuardedMemberReset;
 use super::structured_unoptimized_leaf_homes::StructuredUnoptimizedLeafHomes;
 use super::structured_unoptimized_frame_call_homes::StructuredUnoptimizedFrameCallHomes;
 use super::structured_unoptimized_inline_float_loop_homes::
@@ -368,6 +369,7 @@ impl Generator {
         let paired_subobject_initialization =
             StructuredPairedSubobjectInitialization::plan(function);
         let blocking_queue_transaction = StructuredBlockingQueueTransaction::plan(function);
+        let guarded_member_reset = StructuredGuardedMemberReset::plan(function);
         let direct_call_sparse_switch = has_direct_call_sparse_switch(function);
         let single_value_inlined_byte_append =
             has_single_value_inlined_byte_append(function);
@@ -721,6 +723,9 @@ impl Generator {
             !is_immediate_call_result_zero_guard(function, name)
                 && !is_inline_terminal_call_result_alias(function, name)
         });
+        if let Some(plan) = &guarded_member_reset {
+            survivors.extend(plan.names());
+        }
         let recovered_general_homes = StructuredRecoveredGeneralHomes::plan(
             function,
             &self.inline_global_transaction_result_homes,
@@ -1915,6 +1920,33 @@ impl Generator {
         } else {
             None
         };
+        let guarded_member_reset_homes = if let Some(layout) = &guarded_member_reset {
+            let mut named_homes = std::collections::HashMap::new();
+            for (local_index, local) in eager_saved_locals.iter().enumerate() {
+                named_homes.insert(local.name.as_str(), homes[local_index]);
+                if let Some(preferred) = layout.preference(&local.name) {
+                    self.prefer_virtual_general(homes[local_index], preferred);
+                }
+            }
+            for (parameter_index, parameter) in saved_parameters.iter().enumerate() {
+                let home = homes[eager_saved_locals.len() + parameter_index];
+                named_homes.insert(parameter.name.as_str(), home);
+                if let Some(preferred) = layout.preference(&parameter.name) {
+                    self.prefer_virtual_general(home, preferred);
+                }
+            }
+            for local in &deferred_saved_locals {
+                let group = deferred_home_plan.group(&local.name);
+                let home = homes[parameter_home_reuse.home_index(group)];
+                named_homes.insert(local.name.as_str(), home);
+                if let Some(preferred) = layout.preference(&local.name) {
+                    self.prefer_virtual_general(home, preferred);
+                }
+            }
+            layout.homes(|name| named_homes.get(name).copied())
+        } else {
+            None
+        };
         let data_section_anchor_home = reused_data_anchor_home_index
             .map(|home_index| homes[home_index])
             .or(standalone_data_anchor_home);
@@ -1968,6 +2000,10 @@ impl Generator {
                     .enumerate()
                     .filter_map(|(index, home)| (index != reused).then_some(*home)),
             );
+        } else if let (Some(layout), Some(reset_homes)) =
+            (&guarded_member_reset, guarded_member_reset_homes)
+        {
+            logical_saved_homes.extend(layout.save_order(reset_homes));
         } else if let (Some(layout), Some(queue_homes)) =
             (&blocking_queue_transaction, blocking_queue_homes)
         {
@@ -4299,6 +4335,11 @@ impl Generator {
             (&blocking_queue_transaction, blocking_queue_homes)
         {
             transaction.schedule(self, queue_homes);
+        }
+        if let (Some(transaction), Some(reset_homes)) =
+            (&guarded_member_reset, guarded_member_reset_homes)
+        {
+            transaction.schedule(self, reset_homes);
         }
         Ok(true)
     }

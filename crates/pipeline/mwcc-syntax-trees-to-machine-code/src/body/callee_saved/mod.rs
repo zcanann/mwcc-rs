@@ -263,6 +263,7 @@ mod structured_recovered_float_homes;
 mod structured_periodic_float_normalization;
 mod structured_paired_subobject_initialization;
 mod structured_blocking_queue_transaction;
+mod structured_guarded_member_reset;
 mod structured_polymorphic_zero_constructor_schedule;
 pub(crate) fn uses_direct_paired_single_restores(function: &Function) -> bool {
     structured_periodic_float_normalization::StructuredPeriodicFloatNormalization::plan(function)

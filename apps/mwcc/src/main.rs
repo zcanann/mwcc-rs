@@ -3202,6 +3202,9 @@ mod tests {
     #[path = "guarded_global_address_call.rs"]
     mod guarded_global_address_call;
 
+    #[path = "guarded_member_reset.rs"]
+    mod guarded_member_reset;
+
     #[path = "guarded_call_boolean.rs"]
     mod guarded_call_boolean;
 
