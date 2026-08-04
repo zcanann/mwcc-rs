@@ -2408,7 +2408,13 @@ impl Generator {
         } else {
             logical_saved_homes
         };
-        self.legacy_callee_saved_frame_layout = if async_callback_switch_layout.is_some() {
+        self.legacy_callee_saved_frame_layout = if async_callback_switch_layout.is_some()
+            || (retained_deferred_local_lane && !saved_parameters.is_empty())
+        {
+            // A deferred local can reuse the ordinary inferred value lane when
+            // no entry parameter survives. Once a parameter also owns a saved
+            // home, build 163 retains that entry table independently from the
+            // guarded/post-call local table.
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTableAndDeferredLocalLane
         } else if global_member_address_cache_plans
             .iter()
