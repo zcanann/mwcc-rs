@@ -3125,6 +3125,9 @@ mod tests {
     #[path = "retained_zero_cleanup.rs"]
     mod retained_zero_cleanup;
 
+    #[path = "leaf_singly_linked_unlink.rs"]
+    mod leaf_singly_linked_unlink;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 

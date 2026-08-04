@@ -1067,6 +1067,7 @@ fn lower_function_body(
     // cycles that are intentionally invisible to the body-time scheduler.
     generator.schedule_leading_member_store_call();
     generator.schedule_leaf_tail_append();
+    generator.schedule_leaf_singly_linked_unlink();
     generator.hoist_normalized_linkage_first_arg_moves();
     generator.schedule_linkage_first_variadic_frame_entry();
     generator.schedule_linkage_first_variadic_leaf_call();
