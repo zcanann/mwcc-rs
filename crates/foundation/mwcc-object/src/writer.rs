@@ -2113,6 +2113,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut local_data_symbols: std::collections::HashMap<&str, u32> =
         std::collections::HashMap::new();
     let mut emitted_zero_static: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let local_symbol_order = debug
+        .filter(|debug| !debug.captured_local_symbol_order.is_empty())
+        .map_or(input.local_symbol_order, |debug| {
+            debug.captured_local_symbol_order.as_slice()
+        });
+    let pinned_local_symbols: std::collections::HashSet<&str> =
+        local_symbol_order.iter().map(String::as_str).collect();
     let owned_rtti_local_order = if input.object_format.owned_rtti_closure_relocation_order {
         owned_rtti_local_symbol_order(&input.data_objects)
     } else {
@@ -2257,6 +2264,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         if object.is_static
             && (static_forward(object)
                 || input.object_format.local_data_symbols_in_declaration_order)
+            && !pinned_local_symbols.contains(object.name)
             && !function_string_names.contains(object.name)
             && !deferred_owned_rtti_locals.contains(object.name)
             && object.static_local_owner.is_none()
@@ -2313,26 +2321,72 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // zero statics materialize at first reference while static functions appear
     // at a prior declaration or definition, interleaved with those data symbols.
     // Names not in the pin continue through the general policies below.
-    for name in input.local_symbol_order {
-        if let Some(object) = input
-            .data_objects
-            .iter()
-            .find(|object| object.name == name && is_pending_zero_static(object))
-        {
-            if emitted_zero_static.insert(object.name) {
-                local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
-                let section = index_of(data_section[object.name]) as u16;
-                write_symbol(
-                    &mut symtab,
-                    strtab.add(object.name),
-                    data_offsets[object.name],
-                    data_sizes[object.name],
-                    STB_LOCAL_OBJECT,
-                    0,
-                    section,
-                );
-                comment_values.push((data_aligns[object.name], data_comment_flags(object)));
+    let mut bss_anchor_emitted = false;
+    for name in local_symbol_order {
+        if name == "...bss.0" && bss_anchor_needed_by_code && !bss_anchor_emitted {
+            local_data_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
+            write_symbol(
+                &mut symtab,
+                strtab.add(name),
+                0,
+                0,
+                0,
+                0,
+                index_of(".bss") as u16,
+            );
+            comment_values.push((1, 0));
+            bss_anchor_emitted = true;
+            continue;
+        }
+        if name == "...data.0" && data_marker_pending {
+            local_data_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
+            write_symbol(
+                &mut symtab,
+                strtab.add(name),
+                0,
+                0,
+                0,
+                0,
+                index_of(".data") as u16,
+            );
+            comment_values.push((1, input.object_format.data_anchor_comment_flags));
+            data_marker_pending = false;
+            continue;
+        }
+        if name == "...rodata.0" && rodata_anchor_needed && !rodata_anchor_emitted {
+            local_data_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
+            write_symbol(
+                &mut symtab,
+                strtab.add(name),
+                0,
+                0,
+                0,
+                0,
+                index_of(".rodata") as u16,
+            );
+            comment_values.push((1, input.object_format.rodata_anchor_comment_flags));
+            rodata_anchor_emitted = true;
+            continue;
+        }
+        if let Some(object) = input.data_objects.iter().find(|object| object.name == name) {
+            if local_data_symbols.contains_key(object.name) {
+                continue;
             }
+            if is_pending_zero_static(object) {
+                emitted_zero_static.insert(object.name);
+            }
+            local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+            let section = index_of(data_section[object.name]) as u16;
+            write_symbol(
+                &mut symtab,
+                strtab.add(object.name),
+                data_offsets[object.name],
+                data_sizes[object.name],
+                STB_LOCAL_OBJECT,
+                0,
+                section,
+            );
+            comment_values.push((data_aligns[object.name], data_comment_flags(object)));
             continue;
         }
         if let Some(index) = functions.iter().position(|function| {
@@ -2434,7 +2488,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // Some aggregate-base schedules address a full-BSS object through the
     // section's zero-offset local anchor. MWCC emits that marker after the
     // file-local BSS objects and before function-local anonymous entries.
-    if bss_anchor_needed_by_code {
+    if bss_anchor_needed_by_code && !bss_anchor_emitted {
         local_data_symbols.insert("...bss.0", (symtab.len() / SYMBOL_SIZE) as u32);
         write_symbol(
             &mut symtab,
@@ -2662,6 +2716,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             && function.string_number_after_rodata.is_none()
         {
             for name in &function.string_names {
+                if local_data_symbols.contains_key(name.as_str()) {
+                    continue;
+                }
                 if data_marker_pending && data_section[name.as_str()] == ".data" {
                     local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
                     write_symbol(
@@ -2733,6 +2790,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 if let Some((position, _)) = function.string_number_after_rodata {
                     if position == blob_index as u32 {
                         for name in &function.string_names {
+                            if local_data_symbols.contains_key(name.as_str()) {
+                                continue;
+                            }
                             local_data_symbols
                                 .insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
                             let section = index_of(data_section[name.as_str()]) as u16;
@@ -2786,6 +2846,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             if let Some((position, _)) = function.string_number_after_rodata {
                 if position as usize >= function.anonymous_rodata.len() {
                     for name in &function.string_names {
+                        if local_data_symbols.contains_key(name.as_str()) {
+                            continue;
+                        }
                         local_data_symbols
                             .insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
                         let section = index_of(data_section[name.as_str()]) as u16;
@@ -2831,6 +2894,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         for (constant_index, constant) in function.constants.iter().enumerate() {
             if function.string_number_after_constants == Some(constant_index as u32) {
                 for name in &function.string_names {
+                    if local_data_symbols.contains_key(name.as_str()) {
+                        continue;
+                    }
                     local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
                     let section = index_of(data_section[name.as_str()]) as u16;
                     write_symbol(
@@ -2901,6 +2967,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         if let Some(position) = function.string_number_after_constants {
             if position as usize >= function.constants.len() {
                 for name in &function.string_names {
+                    if local_data_symbols.contains_key(name.as_str()) {
+                        continue;
+                    }
                     local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
                     let section = index_of(data_section[name.as_str()]) as u16;
                     write_symbol(

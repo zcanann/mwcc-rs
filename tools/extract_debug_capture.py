@@ -155,7 +155,7 @@ def main() -> None:
         "between-grouped": 4,
     }[args.layout]
 
-    output = bytearray(b"MWDC\x02")
+    output = bytearray(b"MWDC\x03")
     output.append(layout)
     write_bytes(output, section_bytes(data, sections, ".line"))
     write_bytes(output, section_bytes(data, sections, ".debug"))
@@ -202,12 +202,33 @@ def main() -> None:
         )
         output.extend(encoded_name)
 
+    # Monolithic debug can affect when MWCC creates ordinary LOCAL symbols.
+    # Preserve the semantic name timeline independently of ELF indexes; the
+    # object writer re-emits each known data/function/anchor symbol from its
+    # generated definition and therefore remains authoritative for its value,
+    # size, binding, and section.
+    captured_local_symbol_names = [
+        name
+        for name, _value, _size, info, section_index in symbol_table
+        if name
+        and info >> 4 == 0
+        and info & 0xF not in (3, 4)
+        and 0 < section_index < len(sections)
+        and sections[section_index].name not in (".line", ".debug")
+    ]
+    output.extend(struct.pack(">I", len(captured_local_symbol_names)))
+    for name in captured_local_symbol_names:
+        encoded_name = name.encode("utf-8")
+        output.extend(struct.pack(">H", len(encoded_name)))
+        output.extend(encoded_name)
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(output)
     print(
         f"wrote {args.output}: line={len(section_bytes(data, sections, '.line'))} "
         f"debug={len(section_bytes(data, sections, '.debug'))} "
-        f"relocations={len(relocations(data, sections, symbol_table, '.rela.line')) + len(relocations(data, sections, symbol_table, '.rela.debug'))}"
+        f"relocations={len(relocations(data, sections, symbol_table, '.rela.line')) + len(relocations(data, sections, symbol_table, '.rela.debug'))} "
+        f"ordinary_local_symbols={len(captured_local_symbol_names)}"
     )
 
 

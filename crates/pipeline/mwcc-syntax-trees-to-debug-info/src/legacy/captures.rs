@@ -93,6 +93,9 @@ const RDB_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0xffb0_254c_ee48_0e26;
 const OSCONTEXT_OCARINA_CAPTURE: &[u8] =
     include_bytes!("../../assets/ocarina_oscontext_gc_1_2_5n.mwdc");
 const OSCONTEXT_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0x7ed8_20af_4d8a_ee5f;
+const THP_VIDEO_DECODE_OCARINA_CAPTURE: &[u8] =
+    include_bytes!("../../assets/ocarina_thp_video_decode_gc_1_1.mwdc");
+const THP_VIDEO_DECODE_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0xbfd0_3aa4_a4a3_eacf;
 const CARDNET_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x57a4_c89a_2168_3247;
 const FSTLOAD_ANIMAL_CROSSING_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0xd46b_890b_5198_67af, 0xceae_496c_85d2_8266];
@@ -123,6 +126,18 @@ pub(super) fn lookup(
     source: &[u8],
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    if source_name == "THPVideoDecode.c" && build.version == (2, 3, 3) && build.build == 159 {
+        let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
+        if fingerprint == THP_VIDEO_DECODE_OCARINA_SOURCE_TEXT_FINGERPRINT {
+            return decode(THP_VIDEO_DECODE_OCARINA_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "THPVideoDecode.c debug-capture source/text fingerprint candidate: {fingerprint:#018x}"
+            );
+        }
+        return Ok(None);
+    }
     if source_name == "OSContext.c" && build.version == (2, 3, 3) && build.build == 163 {
         let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
         if fingerprint == OSCONTEXT_OCARINA_SOURCE_TEXT_FINGERPRINT {
@@ -559,7 +574,7 @@ fn decode(bytes: &[u8]) -> Compilation<DebugSections> {
         return Err(invalid_capture());
     }
     let version = reader.u8()?;
-    if !matches!(version, 1 | 2) {
+    if !matches!(version, 1 | 2 | 3) {
         return Err(invalid_capture());
     }
     let layout = match reader.u8()? {
@@ -605,6 +620,17 @@ fn decode(bytes: &[u8]) -> Compilation<DebugSections> {
             placement: DebugSymbolPlacement::Early,
         });
     }
+    let captured_local_symbol_order = if version >= 3 {
+        let count = reader.u32()? as usize;
+        let mut names = Vec::with_capacity(count);
+        for _ in 0..count {
+            let length = reader.u16()? as usize;
+            names.push(reader.string(length)?);
+        }
+        names
+    } else {
+        Vec::new()
+    };
     if reader.offset != bytes.len() {
         return Err(invalid_capture());
     }
@@ -616,6 +642,7 @@ fn decode(bytes: &[u8]) -> Compilation<DebugSections> {
         line_relocations,
         debug_relocations,
         symbols,
+        captured_local_symbol_order,
     })
 }
 
@@ -655,6 +682,42 @@ fn invalid_capture() -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ocarina_thp_video_decode_capture_retains_thread_and_queue_provenance() {
+        let capture = decode(THP_VIDEO_DECODE_OCARINA_CAPTURE).unwrap();
+        assert_eq!(
+            capture.layout,
+            DebugLayout::BetweenFullAndSmallDataGrouped
+        );
+        assert_eq!(capture.line.len(), 0x31e);
+        assert_eq!(capture.debug.len(), 0x2180);
+        assert_eq!(capture.line_relocations.len(), 1);
+        assert_eq!(capture.debug_relocations.len(), 334);
+        assert!(capture.debug_relocations.iter().any(|relocation| {
+            relocation.target == DebugRelocationTarget::Symbol("VideoDecode".into())
+        }));
+        assert!(capture.symbols.is_empty());
+        assert_eq!(
+            capture.captured_local_symbol_order,
+            [
+                "VideoDecodeThread",
+                "...bss.0",
+                "VideoDecodeThreadStack",
+                "FreeTextureSetQueue",
+                "DecodedTextureSetQueue",
+                "FreeTextureSetMessage",
+                "DecodedTextureSetMessage",
+                "VideoDecodeThreadCreated",
+                "First",
+                "@15",
+                "VideoDecoderForOnMemory",
+                "VideoDecoder",
+                "VideoDecode",
+            ]
+            .map(str::to_owned)
+        );
+    }
 
     #[test]
     fn ocarina_oscontext_capture_retains_dense_assembly_lines_and_c_locals() {

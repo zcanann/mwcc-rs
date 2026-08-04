@@ -1158,6 +1158,7 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
             binding: DebugSymbolBinding::Local,
             placement: DebugSymbolPlacement::Early,
         }],
+        captured_local_symbol_order: Vec::new(),
     };
     let object = write_object(&ObjectInput {
         source_name: "class.cpp",

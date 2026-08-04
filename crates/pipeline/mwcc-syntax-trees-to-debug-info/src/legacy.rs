@@ -811,6 +811,7 @@ fn finish(
         line_relocations: convert_relocations(line.relocations, &offsets, false),
         debug_relocations: convert_relocations(encoded.section.relocations, &offsets, true),
         symbols: Vec::new(),
+        captured_local_symbol_order: Vec::new(),
     })
 }
 

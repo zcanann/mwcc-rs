@@ -134,4 +134,8 @@ pub struct DebugSections {
     pub line_relocations: Vec<DebugRelocation>,
     pub debug_relocations: Vec<DebugRelocation>,
     pub symbols: Vec<DebugSymbol>,
+    /// Authoritative ordinary LOCAL-symbol creation timeline carried by an
+    /// exact semantic capture. Synthesized debug plans leave this empty and
+    /// use the machine pipeline's ordinary local-symbol policy.
+    pub captured_local_symbol_order: Vec<String>,
 }
