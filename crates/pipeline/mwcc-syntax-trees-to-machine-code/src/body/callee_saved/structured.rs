@@ -148,6 +148,7 @@ use super::structured_eager_home_reuse::StructuredEagerHomeReuse;
 use super::structured_complement_product_pair::StructuredComplementProductPair;
 use super::structured_prologue::{
     dense_entry_owns_parameter_copies, saved_home_stores_precede_initialization,
+    repeated_indirect_member_loop_home_preference,
     repeated_indirect_member_loops_own_dense_range, uses_dense_saved_register_range,
 };
 use super::structured_register_width::assigned_register_width;
@@ -1642,6 +1643,10 @@ impl Generator {
             unused_array_state_transfer && count == 5;
         let repeated_indirect_member_loops =
             repeated_indirect_member_loops_own_dense_range(function);
+        self.structured_repeated_indirect_member_loop_entry = repeated_indirect_member_loops
+            && eager_saved_locals.is_empty()
+            && saved_parameters.len() == 3
+            && count == 5;
         let dense_frame = uses_dense_saved_register_range(
             with_frame_array,
             !aggregate_frame_locals.is_empty(),
@@ -1809,6 +1814,14 @@ impl Generator {
                         5 => 29,
                         _ => unreachable!("loop assertion plan has six saved homes"),
                     };
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = repeated_indirect_member_loop_home_preference(
+                    self.structured_repeated_indirect_member_loop_entry,
+                    eager_saved_locals.len(),
+                    saved_parameters.len(),
+                    count,
+                    home_index,
+                ) {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if retained_store_constant_homes {
                     self.fresh_virtual_general_preferring((first_saved + home_index) as u8)

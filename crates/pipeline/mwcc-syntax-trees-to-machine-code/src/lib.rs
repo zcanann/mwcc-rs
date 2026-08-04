@@ -646,6 +646,7 @@ fn lower_function_body(
         structured_global_byte_loop_layout_owner: false,
         structured_dense_counted_loop_entry_owner: false,
         structured_member_array_offset_owner: false,
+        structured_repeated_indirect_member_loop_entry: false,
         passive_frame_scalar_mirrors: HashSet::new(),
         structured_broad_global_base_layout_owner: false,
         structured_shared_switch_global_value: None,
@@ -999,6 +1000,7 @@ fn lower_function_body(
         }
         diagnostic
     })?;
+    generator.schedule_repeated_indirect_member_loop_entry();
     // Coalesce away `mr rX,rX` self-moves the allocator leaves when it colors a value's
     // virtual home to the register the value already holds (mwcc coalesces them).
     coalesce_self_moves(&mut generator);

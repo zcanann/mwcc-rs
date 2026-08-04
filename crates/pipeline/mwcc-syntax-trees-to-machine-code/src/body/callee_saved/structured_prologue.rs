@@ -64,6 +64,21 @@ pub(super) fn repeated_indirect_member_loops_own_dense_range(function: &Function
     loops.values().any(|count| *count >= 2)
 }
 
+pub(super) fn repeated_indirect_member_loop_home_preference(
+    enabled: bool,
+    eager_home_count: usize,
+    parameter_home_count: usize,
+    total_home_count: usize,
+    home_index: usize,
+) -> Option<u8> {
+    (enabled
+        && eager_home_count == 0
+        && parameter_home_count == 3
+        && total_home_count == 5)
+        .then(|| [31, 30, 26, 27, 28].get(home_index).copied())
+        .flatten()
+}
+
 fn collect_indirect_member_loops(
     statements: &[Statement],
     loops: &mut std::collections::HashMap<(String, u32), usize>,
@@ -559,6 +574,16 @@ mod tests {
         assert!(!uses_dense_saved_register_range(true, false, 4, 12, false, false, false));
         assert!(uses_dense_saved_register_range(false, false, 0, 5, false, false, true));
         assert!(uses_dense_saved_register_range(false, true, 1, 5, false, false, true));
+        assert_eq!(
+            (0..5)
+                .map(|index| repeated_indirect_member_loop_home_preference(true, 0, 3, 5, index))
+                .collect::<Vec<_>>(),
+            [Some(31), Some(30), Some(26), Some(27), Some(28)]
+        );
+        assert_eq!(
+            repeated_indirect_member_loop_home_preference(true, 1, 3, 6, 0),
+            None
+        );
     }
 
     #[test]

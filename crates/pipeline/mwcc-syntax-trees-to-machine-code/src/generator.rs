@@ -439,6 +439,10 @@ pub(crate) struct Generator {
     /// embedded aggregate element. Its final issue order depends on the three
     /// physical saved homes chosen by allocation.
     pub(crate) structured_member_array_offset_owner: bool,
+    /// Repeated inlined indirect-member walks own the dense three-parameter
+    /// entry packet whose source order and copy spelling are finalized only
+    /// after saved-home allocation.
+    pub(crate) structured_repeated_indirect_member_loop_entry: bool,
     /// Scalars whose source address is materialized only into an otherwise
     /// dead local. Their frame image remains ABI-visible, but no executable
     /// alias can mutate it, so ordinary reads use the retained register mirror.
