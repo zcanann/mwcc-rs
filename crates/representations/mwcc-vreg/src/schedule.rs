@@ -639,6 +639,38 @@ fn list_schedule(run: &[usize], instructions: &[Instruction]) -> Vec<usize> {
             })
         })
         .collect();
+    // A linear interpolation has two independent FPU nodes that converge on
+    // one fmadd: `complement = one - amount`, `weighted = amount * next`, then
+    // `complement * current + weighted`. MWCC issues the complement before the
+    // otherwise higher-ranked multiply. Identify the dataflow rather than
+    // globally raising every subtract, which would perturb unrelated packets.
+    let interpolation_complement: Vec<bool> = (0..count)
+        .map(|subtract| {
+            let Some((complement, amount)) = float_subtract_result_and_rhs(
+                &instructions[run[subtract]],
+            ) else {
+                return false;
+            };
+            (subtract + 1..count).any(|multiply| {
+                let Some((weighted, factor_left, factor_right)) = float_multiply_parts(
+                    &instructions[run[multiply]],
+                ) else {
+                    return false;
+                };
+                if factor_left != amount && factor_right != amount {
+                    return false;
+                }
+                (multiply + 1..count).any(|fused| {
+                    float_multiply_add_parts(&instructions[run[fused]]).is_some_and(
+                        |(multiplicand, multiplier, addend)| {
+                            (multiplicand == complement || multiplier == complement)
+                                && addend == weighted
+                        },
+                    )
+                })
+            })
+        })
+        .collect();
     // predecessors[k] = how many earlier-in-run instructions instruction run[k]
     // still depends on; successors[k] = the run-local indices that depend on it.
     let mut remaining_predecessors = vec![0usize; count];
@@ -690,6 +722,7 @@ fn list_schedule(run: &[usize], instructions: &[Instruction]) -> Vec<usize> {
                     );
                 let rank = latency_rank(&instructions[run[k]])
                     .max(if heads_latency_chain[k] { 2 } else { 1 })
+                    .max(if interpolation_complement[k] { 2 } else { 1 })
                     .max(if fills_address_adjustment { 2 } else { 1 });
                 (rank, std::cmp::Reverse(run[k]))
             })
@@ -702,6 +735,30 @@ fn list_schedule(run: &[usize], instructions: &[Instruction]) -> Vec<usize> {
         }
     }
     scheduled
+}
+
+fn float_subtract_result_and_rhs(instruction: &Instruction) -> Option<(u8, u8)> {
+    match instruction {
+        Instruction::FloatSubtractSingle { d, b, .. }
+        | Instruction::FloatSubtractDouble { d, b, .. } => Some((*d, *b)),
+        _ => None,
+    }
+}
+
+fn float_multiply_parts(instruction: &Instruction) -> Option<(u8, u8, u8)> {
+    match instruction {
+        Instruction::FloatMultiplySingle { d, a, c }
+        | Instruction::FloatMultiplyDouble { d, a, c } => Some((*d, *a, *c)),
+        _ => None,
+    }
+}
+
+fn float_multiply_add_parts(instruction: &Instruction) -> Option<(u8, u8, u8)> {
+    match instruction {
+        Instruction::FloatMultiplyAddSingle { a, c, b, .. }
+        | Instruction::FloatMultiplyAddDouble { a, c, b, .. } => Some((*a, *c, *b)),
+        _ => None,
+    }
 }
 
 /// Reorder a straight-line function in place to mwcc's schedule, returning the
@@ -1181,6 +1238,25 @@ mod tests {
         );
         // old index 1 (addi) moved to new position 2; old 2 (c*d) to position 1.
         assert_eq!(permutation, vec![0, 2, 1, 3, 4]);
+    }
+
+    #[test]
+    fn an_interpolation_complement_issues_before_its_sibling_product() {
+        let mut stream = vec![
+            Instruction::FloatSubtractSingle { d: 3, a: 3, b: 1 },
+            Instruction::FloatMultiplySingle { d: 0, a: 1, c: 0 },
+            Instruction::FloatMultiplyAddSingle {
+                d: 1,
+                a: 3,
+                c: 2,
+                b: 0,
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+        let original = stream.clone();
+
+        assert_eq!(schedule(&mut stream), vec![0, 1, 2, 3]);
+        assert_eq!(stream, original);
     }
 
     #[test]

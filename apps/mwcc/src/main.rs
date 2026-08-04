@@ -3082,6 +3082,9 @@ mod tests {
     #[path = "float_fused_triplet.rs"]
     mod float_fused_triplet;
 
+    #[path = "adjacent_linear_interpolation.rs"]
+    mod adjacent_linear_interpolation;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 

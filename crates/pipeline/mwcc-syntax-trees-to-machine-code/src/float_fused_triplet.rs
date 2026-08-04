@@ -1,6 +1,6 @@
 //! Contracted multiply-add selection and operand scheduling.
 
-use crate::analysis::as_multiplication;
+use crate::analysis::{as_multiplication, same_operand};
 use crate::generator::{Generator, FLOAT_SCRATCH};
 use mwcc_core::Compilation;
 use mwcc_machine_code::Instruction;
@@ -25,6 +25,15 @@ impl Generator {
     ) -> Compilation<bool> {
         if !self.behavior.contract_floating_point {
             return Ok(false);
+        }
+        if self.try_emit_adjacent_linear_interpolation(
+            operator,
+            left,
+            right,
+            destination,
+            double,
+        )? {
+            return Ok(true);
         }
         if self.try_emit_promoted_integer_fused_triplet(
             operator,
@@ -109,6 +118,117 @@ impl Generator {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// Emit the canonical adjacent-sample interpolation
+    /// `(1 - amount) * values[index] + amount * values[index + 1]`.
+    ///
+    /// Besides selecting the final fused multiply-add, MWCC computes the
+    /// scaled index once and forms an adjacent address for the second load.
+    /// Keeping that address transaction inside the expression selector avoids
+    /// relying on a later peephole to rediscover source-level aliasing after
+    /// the two independent subscript lowerings have already duplicated it.
+    fn try_emit_adjacent_linear_interpolation(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+        double: bool,
+    ) -> Compilation<bool> {
+        if operator != BinaryOperator::Add {
+            return Ok(false);
+        }
+        let Some(interpolation) = adjacent_linear_interpolation(left, right) else {
+            return Ok(false);
+        };
+        let pointee = self.pointee_of(interpolation.base)?;
+        if !matches!(pointee, mwcc_syntax_trees::Pointee::Float | mwcc_syntax_trees::Pointee::Double)
+            || double != matches!(pointee, mwcc_syntax_trees::Pointee::Double)
+        {
+            return Ok(false);
+        }
+
+        let index = self.general_register_of_leaf(interpolation.index)?;
+        let scaled = self.fresh_virtual_general_preferring(0);
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: scaled,
+                s: index,
+                shift: pointee.size().trailing_zeros() as u8,
+            });
+
+        let complement = self.fresh_virtual_float_preferring(3);
+        self.load_float_literal(complement, 1.0, double);
+
+        let (resolved_pointee, base) = self.resolve_pointer(interpolation.base)?;
+        debug_assert_eq!(resolved_pointee, pointee);
+        // Prefer coalescing the now-dead source index with the address. If the
+        // index remains live outside this expression, ordinary interference
+        // moves the address to another GPR without changing the lowering.
+        let adjacent = self.fresh_virtual_general_preferring(index);
+        self.output.instructions.push(Instruction::Add {
+            d: adjacent,
+            a: base,
+            b: scaled,
+        });
+
+        let current = self.fresh_virtual_float_preferring(2);
+        let next = self.fresh_virtual_float_preferring(FLOAT_SCRATCH);
+        self.output.instructions.push(crate::expressions::indexed_load(
+            pointee, current, base, scaled,
+        )?);
+        self.output.instructions.push(crate::expressions::displacement_load(
+            pointee,
+            next,
+            adjacent,
+            pointee.size() as i16,
+        )?);
+
+        let amount = self.float_register_of_leaf(interpolation.amount)?;
+        self.output.instructions.push(if double {
+            Instruction::FloatSubtractDouble {
+                d: complement,
+                a: complement,
+                b: amount,
+            }
+        } else {
+            Instruction::FloatSubtractSingle {
+                d: complement,
+                a: complement,
+                b: amount,
+            }
+        });
+        self.output.instructions.push(if double {
+            Instruction::FloatMultiplyDouble {
+                d: next,
+                a: amount,
+                c: next,
+            }
+        } else {
+            Instruction::FloatMultiplySingle {
+                d: next,
+                a: amount,
+                c: next,
+            }
+        });
+        self.output.instructions.push(if double {
+            Instruction::FloatMultiplyAddDouble {
+                d: destination,
+                a: complement,
+                c: current,
+                b: next,
+            }
+        } else {
+            Instruction::FloatMultiplyAddSingle {
+                d: destination,
+                a: complement,
+                c: current,
+                b: next,
+            }
+        });
+        Ok(true)
     }
 
     /// Emit `(int * float_load) + float_load` as the contracted mixed-type
@@ -336,6 +456,92 @@ enum PromotedIntegerFusion {
     BaseMinusProduct,
 }
 
+struct AdjacentLinearInterpolation<'a> {
+    amount: &'a Expression,
+    base: &'a Expression,
+    index: &'a Expression,
+}
+
+fn adjacent_linear_interpolation<'a>(
+    complement_product: &'a Expression,
+    amount_product: &'a Expression,
+) -> Option<AdjacentLinearInterpolation<'a>> {
+    let (complement_left, complement_right) = as_multiplication(complement_product)?;
+    let (amount, current) = if let Some(amount) = one_minus(complement_left) {
+        (amount, complement_right)
+    } else {
+        (one_minus(complement_right)?, complement_left)
+    };
+    let Expression::Index {
+        base: current_base,
+        index: current_index,
+    } = current
+    else {
+        return None;
+    };
+
+    let (amount_left, amount_right) = as_multiplication(amount_product)?;
+    let next = if same_operand(amount_left, amount) {
+        amount_right
+    } else if same_operand(amount_right, amount) {
+        amount_left
+    } else {
+        return None;
+    };
+    let Expression::Index {
+        base: next_base,
+        index: next_index,
+    } = next
+    else {
+        return None;
+    };
+    if !same_operand(current_base, next_base) || !is_adjacent_index(current_index, next_index) {
+        return None;
+    }
+    Some(AdjacentLinearInterpolation {
+        amount,
+        base: current_base,
+        index: current_index,
+    })
+}
+
+fn one_minus(expression: &Expression) -> Option<&Expression> {
+    let Expression::Binary {
+        operator: BinaryOperator::Subtract,
+        left,
+        right,
+    } = expression
+    else {
+        return None;
+    };
+    is_float_one(left).then_some(right)
+}
+
+fn is_float_one(mut expression: &Expression) -> bool {
+    while let Expression::Cast {
+        target_type: mwcc_syntax_trees::Type::Float | mwcc_syntax_trees::Type::Double,
+        operand,
+    } = expression
+    {
+        expression = operand;
+    }
+    matches!(expression, Expression::FloatLiteral(value) if *value == 1.0)
+}
+
+fn is_adjacent_index(current: &Expression, next: &Expression) -> bool {
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left,
+        right,
+    } = next
+    else {
+        return false;
+    };
+    (same_operand(left, current) && matches!(right.as_ref(), Expression::IntegerLiteral(1)))
+        || (same_operand(right, current)
+            && matches!(left.as_ref(), Expression::IntegerLiteral(1)))
+}
+
 fn promoted_integer_register_fusion<'a>(
     operator: BinaryOperator,
     left: &'a Expression,
@@ -493,5 +699,33 @@ mod tests {
 
         assert_eq!(base_minus_product, PromotedIntegerFusion::BaseMinusProduct);
         assert_eq!(product_minus_base, PromotedIntegerFusion::ProductMinusBase);
+    }
+
+    #[test]
+    fn recognizes_factor_commutation_in_an_adjacent_linear_interpolation() {
+        let variable = |name: &str| Expression::Variable(name.into());
+        let index = |index| Expression::Index {
+            base: Box::new(variable("samples")),
+            index: Box::new(index),
+        };
+        let amount = variable("amount");
+        let complement = Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left: Box::new(Expression::FloatLiteral(1.0)),
+            right: Box::new(amount.clone()),
+        };
+        let current = product(index(variable("index")), complement);
+        let next_index = Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: Box::new(variable("index")),
+            right: Box::new(Expression::IntegerLiteral(1)),
+        };
+        let next = product(index(next_index), amount);
+
+        let interpolation = adjacent_linear_interpolation(&current, &next)
+            .expect("adjacent linear interpolation");
+        assert!(matches!(interpolation.amount, Expression::Variable(name) if name == "amount"));
+        assert!(matches!(interpolation.base, Expression::Variable(name) if name == "samples"));
+        assert!(matches!(interpolation.index, Expression::Variable(name) if name == "index"));
     }
 }
