@@ -1,8 +1,10 @@
 //! Source-positioned accounting for newly introduced function string pools.
 //!
 //! A later function can reuse strings interned by an earlier body without
-//! repeating the optimizer's pool-front analysis transaction. Keep that
-//! unit-wide provenance out of per-function lowering.
+//! repeating the optimizer's pool-front analysis transaction. Legacy functions
+//! that already own a trailing pool transaction retain one additional front
+//! label when they introduce multiple strings. Keep that unit-wide provenance
+//! out of per-function lowering.
 
 use mwcc_machine_code::MachineFunction;
 use std::collections::HashSet;
@@ -26,7 +28,7 @@ pub(crate) fn apply_multiple_new_string_residue(functions: &mut [MachineFunction
                 relocation.kind == mwcc_machine_code::RelocationKind::Rel24
             })
             .count();
-        if newly_interned > 1 && direct_calls > 1 {
+        if newly_interned > 1 && direct_calls > 1 && function.post_constant_label_bump != 0 {
             function.anonymous_label_bump += u32::from(residue);
         }
     }
@@ -37,7 +39,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn charges_only_the_function_that_introduces_multiple_strings() {
+    fn charges_only_the_trailing_transaction_owner_that_introduces_multiple_strings() {
         let call = |index, name: &str| mwcc_machine_code::Relocation {
             instruction_index: index,
             kind: mwcc_machine_code::RelocationKind::Rel24,
@@ -46,6 +48,7 @@ mod tests {
         let mut first = MachineFunction::new("first");
         first.string_literals = vec![b"file.c".to_vec(), b"message".to_vec()];
         first.relocations = vec![call(0, "report"), call(1, "continue_work")];
+        first.post_constant_label_bump = 1;
         let mut second = MachineFunction::new("second");
         second.string_literals = vec![b"file.c".to_vec(), b"message".to_vec()];
         second.relocations = vec![call(0, "report"), call(1, "continue_work")];
@@ -55,7 +58,10 @@ mod tests {
         let mut single_call = MachineFunction::new("single_call");
         single_call.string_literals = vec![b"new-a".to_vec(), b"new-b".to_vec()];
         single_call.relocations = vec![call(0, "report")];
-        let mut functions = vec![first, second, third, single_call];
+        let mut ordinary = MachineFunction::new("ordinary");
+        ordinary.string_literals = vec![b"plain-a".to_vec(), b"plain-b".to_vec()];
+        ordinary.relocations = vec![call(0, "report"), call(1, "continue_work")];
+        let mut functions = vec![first, second, third, single_call, ordinary];
 
         apply_multiple_new_string_residue(&mut functions, 1);
 
@@ -63,5 +69,6 @@ mod tests {
         assert_eq!(functions[1].anonymous_label_bump, 0);
         assert_eq!(functions[2].anonymous_label_bump, 0);
         assert_eq!(functions[3].anonymous_label_bump, 0);
+        assert_eq!(functions[4].anonymous_label_bump, 0);
     }
 }

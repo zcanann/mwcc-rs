@@ -926,8 +926,8 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
-    /// Pool-front analysis residue retained when one function introduces more
-    /// than one string literal.
+    /// Pool-front analysis residue retained when a function with a trailing
+    /// pool transaction introduces more than one string literal.
     fn multiple_function_strings_label_bump(&self) -> u8 {
         0
     }

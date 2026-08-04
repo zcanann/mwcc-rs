@@ -920,6 +920,10 @@ fn compile(
         );
         eprintln!("skipped-inline-ordinal-total {}", unit.skipped_inline_functions);
         eprintln!(
+            "function-inline-prebumps {:#?}",
+            unit.function_inline_prebumps
+        );
+        eprintln!(
             "materialized-inline-candidates {:#?}",
             unit.materialized_inline_candidates
         );

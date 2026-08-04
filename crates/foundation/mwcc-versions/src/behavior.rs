@@ -608,8 +608,8 @@ pub struct Behavior {
     /// Anonymous-label residue retained for each explicitly empty conditional
     /// then-body.
     pub empty_conditional_then_label_bump: u8,
-    /// Pool-front residue retained when one function introduces multiple
-    /// string literals.
+    /// Pool-front residue retained when a function with a trailing pool
+    /// transaction introduces multiple string literals.
     pub multiple_function_strings_label_bump: u8,
     /// Whether plain `char` is signed. Cascades through read/operand extension,
     /// `>>`/`/`/`%` strength reduction, comparison folding, and the int->float bias.
