@@ -111,7 +111,14 @@ fn is_negated_call(expression: &Expression) -> bool {
         Expression::Unary {
             operator: UnaryOperator::LogicalNot,
             operand,
-        } if matches!(operand.as_ref(), Expression::Call { .. })
+        } if is_scalar_call(operand)
+    )
+}
+
+fn is_scalar_call(expression: &Expression) -> bool {
+    matches!(
+        expression,
+        Expression::Call { .. } | Expression::CallThrough { .. }
     )
 }
 
@@ -174,7 +181,7 @@ impl Generator {
             Expression::Unary {
                 operator: UnaryOperator::LogicalNot,
                 operand,
-            } if matches!(operand.as_ref(), Expression::Call { .. }) => {
+            } if is_scalar_call(operand) => {
                 (operand.as_ref(), false)
             }
             Expression::Binary {
@@ -189,7 +196,7 @@ impl Generator {
                 else {
                     return Ok(None);
                 };
-                if !matches!(operand.as_ref(), Expression::Call { .. }) {
+                if !is_scalar_call(operand) {
                     return Ok(None);
                 }
                 (operand.as_ref(), true)

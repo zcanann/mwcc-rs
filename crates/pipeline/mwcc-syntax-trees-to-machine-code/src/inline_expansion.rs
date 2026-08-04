@@ -1415,15 +1415,44 @@ impl InlineBodySet {
                 .iter()
                 .map(|statement| substitute_statement(statement, &replacements)),
         );
-        if destination.is_none() {
-            if let Some(result_name) = discarded_result::write_only_result_local(callee) {
+        let discarded_result = destination.is_none().then(|| {
+            discarded_result::write_only_result_local(callee)
+                .or_else(|| discarded_result::guarded_accumulator_local(callee))
+        }).flatten();
+        if let Some(result_name) = discarded_result {
                 if let Some(Expression::Variable(substituted_result)) =
                     replacements.get(result_name)
                 {
                     substituted =
                         discarded_result::remove_assignments(substituted, substituted_result);
                 }
+        }
+        // Guards are trailing early returns in the callee's executable body.
+        // Rebind them to a private forward boundary and, for value-position
+        // composition, publish the selected return value before leaving this
+        // inline instance.
+        let return_boundary =
+            format!("__mwcc_inline_return_{}_{}", callee_name, *next_local_id);
+        *next_local_id += 1;
+        let mut has_early_exit = false;
+        for guard in &callee.guards {
+            if discarded_result.is_some() {
+                continue;
             }
+            let mut then_body = Vec::new();
+            if let Some(destination) = destination {
+                then_body.push(Statement::Assign {
+                    name: destination.to_owned(),
+                    value: substitute_expression(&guard.value, &replacements),
+                });
+            }
+            then_body.push(Statement::Goto(return_boundary.clone()));
+            substituted.push(Statement::If {
+                condition: substitute_expression(&guard.condition, &replacements),
+                then_body,
+                else_body: Vec::new(),
+            });
+            has_early_exit = true;
         }
         if let Some(destination) = destination {
             let returned = substitute_expression(callee.return_expression.as_ref()?, &replacements);
@@ -1435,10 +1464,8 @@ impl InlineBodySet {
         substituted = fold_constant_inline_branches(substituted);
         // A return exits the callee instance, not its caller. Give every
         // expansion a private forward boundary before recursive composition.
-        let return_boundary =
-            format!("__mwcc_inline_return_{}_{}", callee_name, *next_local_id);
-        *next_local_id += 1;
-        if rewrite_inline_returns(&mut substituted, &return_boundary) {
+        has_early_exit |= rewrite_inline_returns(&mut substituted, &return_boundary);
+        if has_early_exit {
             substituted.push(Statement::Label(return_boundary));
         }
         *changed = true;
@@ -1473,6 +1500,133 @@ impl InlineBodySet {
         Some(output)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn expand_pretest_loop_condition_call(
+        &self,
+        statement: &Statement,
+        stable_variables: &HashSet<String>,
+        active: &mut HashSet<String>,
+        changed: &mut bool,
+        locals: &mut Vec<mwcc_syntax_trees::LocalDeclaration>,
+        occupied_names: &mut HashSet<String>,
+        next_local_id: &mut usize,
+        statement_body_substitutions: &mut usize,
+        statement_frame_residue_substitutions: &mut usize,
+        statement_mutating_body_substitutions: &mut usize,
+        allow_changing_scalar_arguments: bool,
+    ) -> Option<Statement> {
+        let Statement::Loop {
+            kind: mwcc_syntax_trees::LoopKind::While,
+            initializer: None,
+            condition: Some(condition),
+            step: None,
+            body,
+        } = statement
+        else {
+            return None;
+        };
+        let (call, negated) = match condition {
+            Expression::Call { .. } => (condition, false),
+            Expression::Unary {
+                operator: mwcc_syntax_trees::UnaryOperator::LogicalNot,
+                operand,
+            } if matches!(operand.as_ref(), Expression::Call { .. }) => (operand.as_ref(), true),
+            _ => return None,
+        };
+        let Expression::Call {
+            name: callee_name,
+            arguments,
+        } = call
+        else {
+            return None;
+        };
+        let callee = self.statement_value_bodies.get(callee_name)?;
+        let result_name = loop {
+            let candidate = format!(
+                "__mwcc_inline_{}_{}_condition",
+                callee_name, *next_local_id
+            );
+            *next_local_id += 1;
+            if occupied_names.insert(candidate.clone()) {
+                break candidate;
+            }
+        };
+        locals.push(mwcc_syntax_trees::LocalDeclaration {
+            declared_type: callee.return_type,
+            name: result_name.clone(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        });
+        let assignment = Statement::Assign {
+            name: result_name.clone(),
+            value: Expression::Call {
+                name: callee_name.clone(),
+                arguments: arguments.clone(),
+            },
+        };
+        let Some(mut expanded_body) = self.expand_statement_call(
+            &assignment,
+            0,
+            1,
+            stable_variables,
+            active,
+            changed,
+            locals,
+            occupied_names,
+            next_local_id,
+            statement_body_substitutions,
+            statement_frame_residue_substitutions,
+            statement_mutating_body_substitutions,
+            false,
+            allow_changing_scalar_arguments,
+        ) else {
+            occupied_names.remove(&result_name);
+            locals.pop();
+            return None;
+        };
+        let exit_condition = if negated {
+            Expression::Variable(result_name)
+        } else {
+            Expression::Unary {
+                operator: mwcc_syntax_trees::UnaryOperator::LogicalNot,
+                operand: Box::new(Expression::Variable(result_name)),
+            }
+        };
+        expanded_body.push(Statement::If {
+            condition: exit_condition,
+            then_body: vec![Statement::Break],
+            else_body: Vec::new(),
+        });
+        expanded_body.extend(self.expand_statements(
+            body,
+            stable_variables,
+            active,
+            changed,
+            locals,
+            occupied_names,
+            next_local_id,
+            statement_body_substitutions,
+            statement_frame_residue_substitutions,
+            statement_mutating_body_substitutions,
+            false,
+            allow_changing_scalar_arguments,
+        ));
+        Some(Statement::Loop {
+            kind: mwcc_syntax_trees::LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: expanded_body,
+        })
+    }
+
     fn expand_statements(
         &self,
         statements: &[Statement],
@@ -1490,6 +1644,22 @@ impl InlineBodySet {
     ) -> Vec<Statement> {
         let mut output = Vec::new();
         for (statement_index, statement) in statements.iter().enumerate() {
+            if let Some(expanded) = self.expand_pretest_loop_condition_call(
+                statement,
+                stable_variables,
+                active,
+                changed,
+                locals,
+                occupied_names,
+                next_local_id,
+                statement_body_substitutions,
+                statement_frame_residue_substitutions,
+                statement_mutating_body_substitutions,
+                allow_changing_scalar_arguments,
+            ) {
+                output.push(expanded);
+                continue;
+            }
             if let Some(expanded) = self.expand_statement_call(
                 statement,
                 statement_index,
@@ -2046,7 +2216,7 @@ mod tests {
     use super::*;
     use mwcc_syntax_trees::{
         AsmInstruction, AsmItem, AsmOperand, BinaryOperator, InlineAsmBlock,
-        LocalDeclaration, LoopKind, Parameter, Pointee, Type,
+        GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, Type,
     };
 
     #[test]
@@ -4699,5 +4869,117 @@ mod tests {
                 } if name == "outer" && value.starts_with("__mwcc_inline_drain_")
             )
         }));
+    }
+
+    #[test]
+    fn composes_a_guarded_accumulator_into_a_pretest_loop_condition() {
+        let accumulate = |call: &str| Statement::Assign {
+            name: "failed".into(),
+            value: Expression::Binary {
+                operator: BinaryOperator::BitOr,
+                left: Box::new(Expression::Variable("failed".into())),
+                right: Box::new(Expression::Call {
+                    name: call.into(),
+                    arguments: Vec::new(),
+                }),
+            },
+        };
+        let mut transaction = function(
+            "transaction",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "final_pass".into(),
+            }],
+            vec![
+                Statement::Loop {
+                    kind: LoopKind::For,
+                    initializer: Some(Expression::Assign {
+                        target: Box::new(Expression::Variable("iterator".into())),
+                        value: Box::new(Expression::Variable("head".into())),
+                    }),
+                    condition: Some(Expression::Binary {
+                        operator: BinaryOperator::NotEqual,
+                        left: Box::new(Expression::Variable("iterator".into())),
+                        right: Box::new(Expression::IntegerLiteral(0)),
+                    }),
+                    step: Some(Expression::Assign {
+                        target: Box::new(Expression::Variable("iterator".into())),
+                        value: Box::new(Expression::Variable("next".into())),
+                    }),
+                    body: vec![accumulate("visit")],
+                },
+                accumulate("finish"),
+            ],
+        );
+        transaction.return_type = Type::Int;
+        transaction.locals = vec![
+            LocalDeclaration {
+                declared_type: Type::Pointer(Pointee::Int),
+                name: "iterator".into(),
+                initializer: None,
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                attribute_alignment: None,
+                row_bytes: None,
+            },
+            local("failed", Type::Int, Expression::IntegerLiteral(0)),
+        ];
+        transaction.guards = vec![GuardedReturn {
+            condition: Expression::Variable("failed".into()),
+            value: Expression::IntegerLiteral(0),
+        }];
+        transaction.return_expression = Some(Expression::IntegerLiteral(1));
+
+        let caller = function(
+            "caller",
+            Vec::new(),
+            vec![
+                Statement::Loop {
+                    kind: LoopKind::While,
+                    initializer: None,
+                    condition: Some(Expression::Unary {
+                        operator: mwcc_syntax_trees::UnaryOperator::LogicalNot,
+                        operand: Box::new(Expression::Call {
+                            name: "transaction".into(),
+                            arguments: vec![Expression::IntegerLiteral(0)],
+                        }),
+                    }),
+                    step: None,
+                    body: Vec::new(),
+                },
+                Statement::Expression(Expression::Call {
+                    name: "transaction".into(),
+                    arguments: vec![Expression::IntegerLiteral(1)],
+                }),
+            ],
+        );
+
+        let expanded = InlineBodySet::analyze_with_definitions(
+            &[transaction, caller.clone()],
+            &[],
+        )
+        .expand_calls(&caller)
+        .expect("the guarded reduction should compose at both call sites");
+        let mut calls = HashMap::new();
+        collect_function_calls(&expanded, &mut calls);
+        assert!(!calls.contains_key("transaction"));
+        assert!(matches!(
+            expanded.statements.first(),
+            Some(Statement::Loop {
+                condition: Some(Expression::IntegerLiteral(1)),
+                body,
+                ..
+            }) if body.iter().any(|statement| matches!(
+                statement,
+                Statement::If {
+                    then_body,
+                    ..
+                } if matches!(then_body.as_slice(), [Statement::Break])
+            ))
+        ));
     }
 }

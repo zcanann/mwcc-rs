@@ -1,6 +1,6 @@
 //! Conservative eligibility and alias-safety checks for AST inline expansion.
 
-use mwcc_syntax_trees::{Expression, Function, Statement, Type};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LoopKind, Statement, Type};
 use std::collections::HashSet;
 
 pub(super) fn composable_function(function: &Function) -> bool {
@@ -185,6 +185,11 @@ pub(super) fn automatic_straight_line_scalar_value_function(function: &Function)
 /// storage, dominance, parameter-alias, and control-flow safety proofs used by
 /// ordinary statement-body composition.
 pub(super) fn automatic_statement_value_function(function: &Function) -> bool {
+    automatic_queue_draining_value_function(function)
+        || automatic_guarded_accumulator_value_function(function)
+}
+
+fn automatic_queue_draining_value_function(function: &Function) -> bool {
     if matches!(function.return_type, Type::Void | Type::Struct { .. })
         || function.locals.is_empty()
         || function.locals.len() > 4
@@ -223,6 +228,108 @@ pub(super) fn automatic_statement_value_function(function: &Function) -> bool {
         .collect();
     statement_value_statements_are_composable(&function.statements, &local_names)
         && multi_call_transaction_callee(function)
+}
+
+/// A small scalar reduction may be duplicated at each source-visible call
+/// site even when its result has an early-return encoding. This is the other
+/// common statement-valued IPA shape beside queue draining: walk a linked
+/// range, accumulate callback failures, fold one final status call, then map
+/// the accumulator to a scalar success result.
+fn automatic_guarded_accumulator_value_function(function: &Function) -> bool {
+    let [loop_statement, trailing] = function.statements.as_slice() else {
+        return false;
+    };
+    let [guard] = function.guards.as_slice() else {
+        return false;
+    };
+    let Expression::Variable(result_name) = &guard.condition else {
+        return false;
+    };
+    let Some(result_local) = function
+        .locals
+        .iter()
+        .find(|local| local.name == *result_name)
+    else {
+        return false;
+    };
+    if matches!(function.return_type, Type::Void | Type::Struct { .. })
+        || function.locals.len() > 4
+        || function.asm_body.is_some()
+        || result_local.initializer.is_none()
+        || function.locals.iter().any(|local| {
+            local.is_static
+                || local.is_volatile
+                || !automatic_local_has_composable_storage(local)
+                || matches!(local.declared_type, Type::Void | Type::Struct { .. })
+        })
+        || function
+            .parameters
+            .iter()
+            .any(|parameter| variable_is_modified_or_escaped(function, &parameter.name))
+        || crate::analysis::expression_has_side_effect(&guard.value)
+        || function
+            .return_expression
+            .as_ref()
+            .is_none_or(crate::analysis::expression_has_side_effect)
+        || !uninitialized_local_reads_are_dominated(function)
+        || !accumulator_assignment_has_call(trailing, result_name)
+        || !bounded_accumulator_loop(loop_statement, result_name, function)
+    {
+        return false;
+    }
+    true
+}
+
+fn accumulator_assignment(statement: &Statement, result_name: &str) -> bool {
+    matches!(
+        statement,
+        Statement::Assign {
+            name,
+            value: Expression::Binary {
+                operator: BinaryOperator::BitOr,
+                left,
+                ..
+            },
+        } if name == result_name
+            && matches!(left.as_ref(), Expression::Variable(value) if value == result_name)
+    )
+}
+
+fn accumulator_assignment_has_call(statement: &Statement, result_name: &str) -> bool {
+    accumulator_assignment(statement, result_name)
+        && matches!(statement, Statement::Assign { value, .. }
+            if crate::analysis::expression_has_call(value))
+}
+
+fn bounded_accumulator_loop(
+    statement: &Statement,
+    result_name: &str,
+    function: &Function,
+) -> bool {
+    let Statement::Loop {
+        kind: LoopKind::For,
+        initializer: Some(Expression::Assign { target, .. }),
+        condition: Some(condition),
+        step: Some(Expression::Assign {
+            target: step_target,
+            ..
+        }),
+        body,
+    } = statement
+    else {
+        return false;
+    };
+    let (Expression::Variable(iterator), Expression::Variable(step_iterator)) =
+        (target.as_ref(), step_target.as_ref())
+    else {
+        return false;
+    };
+    iterator == step_iterator
+        && iterator != result_name
+        && function.locals.iter().any(|local| local.name == *iterator)
+        && !crate::analysis::expression_has_call(condition)
+        && matches!(body.as_slice(), [body_statement]
+            if accumulator_assignment_has_call(body_statement, result_name))
 }
 
 fn is_queue_draining_loop(statement: &Statement) -> bool {

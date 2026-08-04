@@ -4,7 +4,7 @@
 //! source-level return value. When the caller discards that value, assignments
 //! to the local are dead, but side effects in their right-hand sides are not.
 
-use mwcc_syntax_trees::{ArmBody, Expression, Function, Statement};
+use mwcc_syntax_trees::{ArmBody, BinaryOperator, Expression, Function, Statement, UnaryOperator};
 
 use crate::analysis::{expression_has_side_effect, expression_reads_name};
 
@@ -30,6 +30,36 @@ pub(super) fn write_only_result_local(function: &Function) -> Option<&str> {
     Some(name)
 }
 
+/// Find a scalar accumulator used only to choose the callee's return value.
+/// Once that value is discarded, its assignments may be reduced to their
+/// side effects and its trailing guards may be omitted entirely.
+pub(super) fn guarded_accumulator_local(function: &Function) -> Option<&str> {
+    let first = function.guards.first()?;
+    let Expression::Variable(name) = &first.condition else {
+        return None;
+    };
+    if !function.locals.iter().any(|local| local.name == *name)
+        || function.guards.iter().any(|guard| {
+            !matches!(&guard.condition, Expression::Variable(guarded) if guarded == name)
+                || expression_reads_name(&guard.value, name)
+        })
+        || function
+            .return_expression
+            .as_ref()
+            .is_some_and(|value| expression_reads_name(value, name))
+        || function.locals.iter().any(|local| {
+            local
+                .initializer
+                .as_ref()
+                .is_some_and(|value| expression_reads_name(value, name))
+        })
+        || !statements_only_accumulate_name(&function.statements, name)
+    {
+        return None;
+    }
+    Some(name)
+}
+
 pub(super) fn remove_assignments(statements: Vec<Statement>, result_name: &str) -> Vec<Statement> {
     statements
         .into_iter()
@@ -40,7 +70,9 @@ pub(super) fn remove_assignments(statements: Vec<Statement>, result_name: &str) 
 fn remove_assignment(statement: Statement, result_name: &str) -> Option<Statement> {
     match statement {
         Statement::Assign { name, value } if name == result_name => {
-            expression_has_side_effect(&value).then_some(Statement::Expression(value))
+            discarded_accumulator_effect(&value, result_name)
+                .or_else(|| expression_has_side_effect(&value).then_some(value))
+                .map(Statement::Expression)
         }
         Statement::If {
             condition,
@@ -90,10 +122,92 @@ fn remove_assignment(statement: Statement, result_name: &str) -> Option<Statemen
     }
 }
 
+fn discarded_accumulator_effect(value: &Expression, result_name: &str) -> Option<Expression> {
+    let Expression::Binary {
+        operator: BinaryOperator::BitOr,
+        left,
+        right,
+    } = value
+    else {
+        return None;
+    };
+    let Expression::Unary {
+        operator: UnaryOperator::LogicalNot,
+        operand,
+    } = right.as_ref()
+    else {
+        return None;
+    };
+    matches!(left.as_ref(), Expression::Variable(read) if read == result_name)
+        .then(|| match operand.as_ref() {
+            call @ (Expression::Call { .. } | Expression::CallThrough { .. }) => {
+                Some(call.clone())
+            }
+            _ => None,
+        })
+        .flatten()
+}
+
 fn statements_read_name(statements: &[Statement], name: &str) -> bool {
     statements
         .iter()
         .any(|statement| statement_reads_name(statement, name))
+}
+
+fn statements_only_accumulate_name(statements: &[Statement], name: &str) -> bool {
+    statements.iter().all(|statement| match statement {
+        Statement::Assign {
+            name: target,
+            value,
+        } => target == name || !expression_reads_name(value, name),
+        Statement::Store { target, value } => {
+            !expression_reads_name(target, name) && !expression_reads_name(value, name)
+        }
+        Statement::Expression(value) => !expression_reads_name(value, name),
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            !expression_reads_name(condition, name)
+                && statements_only_accumulate_name(then_body, name)
+                && statements_only_accumulate_name(else_body, name)
+        }
+        Statement::Loop {
+            initializer,
+            condition,
+            step,
+            body,
+            ..
+        } => {
+            initializer
+                .iter()
+                .chain(condition)
+                .chain(step)
+                .all(|value| !expression_reads_name(value, name))
+                && statements_only_accumulate_name(body, name)
+        }
+        Statement::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            !expression_reads_name(scrutinee, name)
+                && arms.iter().all(|arm| match &arm.body {
+                    ArmBody::Return(value) => !expression_reads_name(value, name),
+                    ArmBody::Statements(body) => statements_only_accumulate_name(body, name),
+                })
+                && default.as_ref().is_none_or(|body| match body {
+                    ArmBody::Return(value) => !expression_reads_name(value, name),
+                    ArmBody::Statements(body) => statements_only_accumulate_name(body, name),
+                })
+        }
+        Statement::Return(value) => value
+            .as_ref()
+            .is_none_or(|value| !expression_reads_name(value, name)),
+        Statement::InlineAsm(_) => false,
+        Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => true,
+    })
 }
 
 fn statement_reads_name(statement: &Statement, name: &str) -> bool {
@@ -156,7 +270,6 @@ fn arm_body_reads_name(body: &ArmBody, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::BinaryOperator;
 
     fn variable(name: &str) -> Expression {
         Expression::Variable(name.to_owned())
