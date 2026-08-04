@@ -965,7 +965,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 place(object, ".rodata", &mut rodata_size);
             }
         }
-        for (blob_index, (bytes, _)) in function.anonymous_rodata.iter().enumerate() {
+        for (blob_index, blob) in function.anonymous_rodata.iter().enumerate() {
+            let bytes = &blob.bytes;
             rodata_size = rodata_size.div_ceil(4) * 4;
             rodata_blob_offset[source_position][blob_index] = rodata_size;
             rodata_size += bytes.len() as u32;
@@ -1372,7 +1373,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
     }
     for (function_index, function) in input.functions.iter().enumerate() {
-        for (blob_index, (bytes, _)) in function.anonymous_rodata.iter().enumerate() {
+        for (blob_index, blob) in function.anonymous_rodata.iter().enumerate() {
+            let bytes = &blob.bytes;
             let offset = rodata_blob_offset[function_index][blob_index] as usize;
             rodata[offset..offset + bytes.len()].copy_from_slice(bytes);
         }
@@ -1610,8 +1612,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // (measured: __strtold's table @26 precedes its pool double @147).
         {
             let mut numbers_of_blobs = Vec::new();
-            for (blob_index, (_, anonymous_offset)) in function.anonymous_rodata.iter().enumerate()
-            {
+            for (blob_index, blob) in function.anonymous_rodata.iter().enumerate() {
                 // string_number_after_rodata: the strings (and a gap before
                 // them) number between blob K-1 and blob K (strtold's "NAN("
                 // @53 between "INFINITY" @39 and the template @54).
@@ -1620,7 +1621,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         number += gap + function.string_count;
                     }
                 }
-                let number_of_blob = (number as i64 + *anonymous_offset as i64) as u32;
+                let number_of_blob = (number as i64 + blob.anonymous_offset as i64) as u32;
                 number = number_of_blob + 1;
                 numbers_of_blobs.push(number_of_blob);
             }
@@ -2814,7 +2815,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
                 symbols_of_blobs.push((symtab.len() / SYMBOL_SIZE) as u32);
                 let name = strtab.add(&format!("@{}", number));
-                let size = function.anonymous_rodata[blob_index].0.len() as u32;
+                let blob = &function.anonymous_rodata[blob_index];
+                let size = blob.bytes.len() as u32;
                 write_symbol(
                     &mut symtab,
                     name,
@@ -2824,8 +2826,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     0,
                     index_of(".rodata") as u16,
                 );
-                // The blob's `.comment` alignment record is 4 (measured on __strtold's @26).
-                comment_values.push((4, 0));
+                comment_values.push((blob.comment_alignment, 0));
                 if rodata_anchor_needed
                     && !rodata_anchor_emitted
                     && !input.object_format.rodata_anchor_before_data_symbols
@@ -3710,9 +3711,32 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             .map(|name| name.as_str())
             .filter(|name| !referenced_inline_asm.contains(name) && !local_callees.contains(name))
             .collect();
+        // Register save/restore helpers are compiler-created prologue/epilogue
+        // events, even when the frontend's declaration classifier leaves them
+        // out of the implicit-call set. Pull them from the complete discovery
+        // stream before splitting explicit and implicit source callees.
+        let is_register_helper = |name: &str| {
+            name.starts_with("_savegpr_")
+                || name.starts_with("_restgpr_")
+                || name.starts_with("_savefpr_")
+                || name.starts_with("_restfpr_")
+        };
+        let helper_ordered = ordered
+            .iter()
+            .copied()
+            .filter(|name| is_register_helper(name))
+            .collect::<Vec<_>>();
         let (implicit_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) = ordered
             .into_iter()
             .partition(|name| implicit.contains(name));
+        let implicit_ordered = implicit_ordered
+            .into_iter()
+            .filter(|name| !is_register_helper(name))
+            .collect::<Vec<_>>();
+        let explicit_ordered = explicit_ordered
+            .into_iter()
+            .filter(|name| !is_register_helper(name))
+            .collect::<Vec<_>>();
         let early_implicit: std::collections::HashSet<&str> = function
             .early_implicit_external_callees
             .iter()
@@ -3786,16 +3810,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             } else {
                 (Vec::new(), explicit_ordered)
             };
-        // The register save/restore HELPERS (_savegpr_N/_restgpr_N) are created
-        // while mwcc compiles the PROLOGUE/EPILOGUE — before the function's
-        // symbol — even though they are unprototyped (measured: strtoul).
-        let (helper_ordered, implicit_ordered): (Vec<&str>, Vec<&str>) =
-            implicit_ordered.into_iter().partition(|name| {
-                name.starts_with("_savegpr_")
-                    || name.starts_with("_restgpr_")
-                    || name.starts_with("_savefpr_")
-                    || name.starts_with("_restfpr_")
-            });
+        // Register helpers were separated from both declaration classes above:
+        // MWCC creates them while compiling the prologue/epilogue, before the
+        // owning function symbol (measured: strtoul and dense WENC loops).
         // Emit one external/global symbol (skipping a name that already resolves to an
         // existing global or LOCAL `static` symbol). A `macro_rules!` keeps the shared body
         // in one place while avoiding a closure over the many `&mut` writer collections.

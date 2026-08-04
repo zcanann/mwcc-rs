@@ -228,6 +228,7 @@ mod tests {
         machine.intern_constant(SIGNED_CONVERSION_BIAS, 8);
         machine.anonymous_rodata.push(AnonymousRodata {
             bytes: vec![0; 16],
+            comment_alignment: 4,
             static_slot_prefix_bump: Some(0),
             anonymous_offset: 0,
         });

@@ -8,8 +8,8 @@ use mwcc_machine_code::{
     MachineFunction, RelocationKind as MachineRelocationKind, RelocationTarget as MachineTarget,
 };
 use mwcc_object::{
-    static_local_link_name, DataObject, FrameLayout, FunctionObject, JumpTable, ObjectInput,
-    RelocationTarget, Sdata2Constant, TextRelocation,
+    static_local_link_name, AnonymousRodataObject, DataObject, FrameLayout, FunctionObject,
+    JumpTable, ObjectInput, RelocationTarget, Sdata2Constant, TextRelocation,
 };
 
 pub use mwcc_object::DebugSections;
@@ -321,7 +321,11 @@ pub fn assemble_object(
                     } else {
                         blob.anonymous_offset
                     };
-                    (blob.bytes.clone(), anonymous_offset)
+                    AnonymousRodataObject {
+                        bytes: blob.bytes.clone(),
+                        anonymous_offset,
+                        comment_alignment: blob.comment_alignment,
+                    }
                 })
                 .collect(),
             local_undefined_callees: function.local_undefined_callees.clone(),

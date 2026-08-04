@@ -526,6 +526,7 @@ mod tests {
     fn source_slot(bytes: usize) -> mwcc_machine_code::AnonymousRodata {
         mwcc_machine_code::AnonymousRodata {
             bytes: vec![0; bytes],
+            comment_alignment: 4,
             static_slot_prefix_bump: Some(0),
             anonymous_offset: 0,
         }
@@ -663,6 +664,7 @@ mod tests {
                 .anonymous_rodata
                 .push(mwcc_machine_code::AnonymousRodata {
                     bytes: vec![0; size],
+                    comment_alignment: 4,
                     static_slot_prefix_bump: None,
                     anonymous_offset: 0,
                 });

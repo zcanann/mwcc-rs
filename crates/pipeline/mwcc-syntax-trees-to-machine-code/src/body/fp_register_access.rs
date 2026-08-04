@@ -332,6 +332,7 @@ impl Generator {
             .anonymous_rodata
             .push(mwcc_machine_code::AnonymousRodata {
                 bytes: access.image,
+                comment_alignment: 4,
                 static_slot_prefix_bump: None,
                 // Eleven optimizer labels precede the image's source slot;
                 // eight remain outside the ordinary running counter here.

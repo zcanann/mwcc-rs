@@ -50,6 +50,7 @@ impl Generator {
             .anonymous_rodata
             .push(mwcc_machine_code::AnonymousRodata {
                 bytes: vec![0; 42],
+                comment_alignment: 4,
                 static_slot_prefix_bump: None,
                 anonymous_offset: -1,
             });
@@ -57,6 +58,7 @@ impl Generator {
             .anonymous_rodata
             .push(mwcc_machine_code::AnonymousRodata {
                 bytes: b"INFINITY\0".to_vec(),
+                comment_alignment: 4,
                 static_slot_prefix_bump: None,
                 anonymous_offset: 14,
             });
@@ -64,6 +66,7 @@ impl Generator {
             .anonymous_rodata
             .push(mwcc_machine_code::AnonymousRodata {
                 bytes: vec![0; 32],
+                comment_alignment: 4,
                 static_slot_prefix_bump: None,
                 anonymous_offset: 0,
             });

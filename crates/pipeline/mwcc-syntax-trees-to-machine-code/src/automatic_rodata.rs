@@ -52,6 +52,7 @@ pub(super) fn retain_unused_array_images(
 
     output.anonymous_rodata.push(AnonymousRodata {
         bytes: materialize_image(first),
+        comment_alignment: image_comment_alignment(first),
         // The first automatic image occupies the function's static-local slot;
         // subsequent images continue from that ordinal.
         static_slot_prefix_bump: Some(output.object_anonymous_bump()),
@@ -61,6 +62,7 @@ pub(super) fn retain_unused_array_images(
         .anonymous_rodata
         .extend(retained.map(|local| AnonymousRodata {
             bytes: materialize_image(local),
+            comment_alignment: image_comment_alignment(local),
             static_slot_prefix_bump: None,
             anonymous_offset: 0,
         }));
@@ -83,6 +85,18 @@ fn materialize_image(local: &LocalDeclaration) -> Vec<u8> {
     let mut image = vec![0; size.max(explicit.len())];
     image[..explicit.len()].copy_from_slice(explicit);
     image
+}
+
+fn image_comment_alignment(local: &LocalDeclaration) -> u32 {
+    let element_alignment = match local.declared_type {
+        Type::Struct { align, .. } => u32::from(align),
+        Type::Double | Type::LongLong | Type::UnsignedLongLong => 8,
+        Type::Int | Type::UnsignedInt | Type::Float => 4,
+        Type::Short | Type::UnsignedShort => 2,
+        Type::Char | Type::UnsignedChar => 1,
+        _ => u32::from(local.declared_type.width()).div_ceil(8),
+    };
+    element_alignment.max(4)
 }
 
 #[cfg(test)]
@@ -155,6 +169,16 @@ mod tests {
     }
 
     #[test]
+    fn automatic_image_comment_alignment_preserves_double_elements() {
+        let mut array = local("coefficients", 8);
+        array.declared_type = Type::Double;
+        array.data_bytes = Some(vec![0; 64]);
+
+        assert_eq!(image_comment_alignment(&array), 8);
+        assert_eq!(image_comment_alignment(&local("bytes", 64)), 4);
+    }
+
+    #[test]
     fn does_not_duplicate_dead_images_already_attached_by_a_copy_transaction() {
         let mut first = local("first", 12);
         first.is_const = false;
@@ -182,6 +206,7 @@ mod tests {
         for bytes in [vec![0; 12], vec![0; 40]] {
             output.anonymous_rodata.push(AnonymousRodata {
                 bytes,
+                comment_alignment: 4,
                 static_slot_prefix_bump: None,
                 anonymous_offset: 0,
             });

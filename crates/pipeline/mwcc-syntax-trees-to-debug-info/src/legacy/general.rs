@@ -36,6 +36,16 @@ pub(super) fn line_records(
             records.extend(asm_records);
             continue;
         }
+        if let Some(dense_records) = super::dense_counted_loop_lines::records(
+            function,
+            source,
+            machine,
+            start,
+            layout.sizes[index],
+        ) {
+            records.extend(dense_records);
+            continue;
+        }
         if let Some(wrapper_records) = direct_call_wrapper(function).and_then(|wrapper| {
             exact_direct_call_wrapper_line_records(wrapper, source, machine, start)
         }) {

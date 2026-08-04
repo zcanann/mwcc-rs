@@ -3,6 +3,7 @@
 mod captures;
 mod classes;
 pub(super) mod data;
+mod dense_counted_loop_lines;
 mod enumerations;
 mod fatal_messaging;
 mod functions;

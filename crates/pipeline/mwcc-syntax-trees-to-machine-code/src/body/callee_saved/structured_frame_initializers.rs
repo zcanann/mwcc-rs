@@ -152,6 +152,7 @@ impl Generator {
             .anonymous_rodata
             .push(mwcc_machine_code::AnonymousRodata {
                 bytes: explicit.clone(),
+                comment_alignment: 4,
                 static_slot_prefix_bump: None,
                 // Runtime instruction-patch diamonds number the image three
                 // slots after the discounted structured-label counter.

@@ -141,6 +141,7 @@ impl Generator {
                 .anonymous_rodata
                 .push(mwcc_machine_code::AnonymousRodata {
                     bytes: image.clone(),
+                    comment_alignment: 4,
                     static_slot_prefix_bump: (image_index == 0).then_some(0),
                     anonymous_offset: 0,
                 });

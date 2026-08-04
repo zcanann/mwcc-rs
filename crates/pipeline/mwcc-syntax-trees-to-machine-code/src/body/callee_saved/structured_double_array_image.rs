@@ -69,6 +69,7 @@ impl Generator {
             .anonymous_rodata
             .push(mwcc_machine_code::AnonymousRodata {
                 bytes: image,
+                comment_alignment: 8,
                 // Ordinal accounting resolves the declaration-time slot after
                 // all structured front labels have been measured.
                 static_slot_prefix_bump: Some(0),

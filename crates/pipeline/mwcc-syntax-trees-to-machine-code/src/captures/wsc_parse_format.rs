@@ -45,6 +45,7 @@ impl Generator {
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 ],
+                comment_alignment: 4,
                 static_slot_prefix_bump: None,
                 anonymous_offset: -1, // real @19
             });

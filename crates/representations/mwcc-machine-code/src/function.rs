@@ -29,6 +29,11 @@ pub struct PoolConstant {
 #[derive(Debug, Clone)]
 pub struct AnonymousRodata {
     pub bytes: Vec<u8>,
+    /// Alignment recorded for this object's symbol in CodeWarrior's
+    /// `.comment` metadata. This is source-semantic metadata rather than a
+    /// property recoverable from the byte image: an automatic `double[]`
+    /// records 8 while compiler tables of the same size can record 4.
+    pub comment_alignment: u32,
     /// Place this blob in the automatic object's static-local ordinal slot,
     /// before the recorded function-local control-label prefix and packed
     /// strings. Unit-level declaration prefixes added later remain ahead of it.

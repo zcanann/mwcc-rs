@@ -214,6 +214,78 @@ fn deferred_body_can_complete_reference_discovery_before_its_symbol() {
 }
 
 #[test]
+fn compiler_register_helpers_precede_function_first_body_symbols() {
+    let mut function = weak_function("owner");
+    function.is_weak = false;
+    function.weak_inline = false;
+    function.symbol_order = vec![
+        "_savegpr_19".into(),
+        "memset".into(),
+        "_restgpr_19".into(),
+    ];
+    function.relocations = function
+        .symbol_order
+        .iter()
+        .enumerate()
+        .map(|(index, name)| crate::TextRelocation {
+            offset: (index * 4) as u32,
+            elf_type: 10,
+            target: crate::RelocationTarget::External(name.clone()),
+        })
+        .collect();
+    let object = write_object(&ObjectInput {
+        source_name: "helpers.c",
+        object_format: ObjectFormat {
+            comment: CommentFormat {
+                marker: 11,
+                version: (3, 0, 0),
+                pooling_enabled: true,
+            },
+            emb_sda21_offset: 0,
+            code_alignment: 4,
+            sdata2_writable: false,
+            function_symbol_order: FunctionSymbolOrder::FunctionFirst,
+            asm_absolute_references_before_function: false,
+            weak_vtable_function_symbol_tail: false,
+            owned_rtti_closure_relocation_order: false,
+            initialized_globals_before_deferred_functions: false,
+            local_data_symbols_in_declaration_order: false,
+            small_zero_statics_in_declaration_order: false,
+            small_zero_data_in_declaration_order: false,
+            rodata_anchor_before_data_symbols: false,
+            rodata_anchor_comment_flags: 0,
+            data_relocations_use_section_anchors: false,
+            data_anchor_comment_flags: 0,
+            initial_anonymous_counter: 1,
+            leading_source_anonymous_bump: 0,
+            post_leaf_function_anonymous_bump: 0,
+            post_framed_function_anonymous_bump: 0,
+        },
+        functions: vec![function],
+        data_objects: Vec::new(),
+        small_data: false,
+        emit_mwcats: false,
+        inline_asm_symbols: &[],
+        early_static_function_symbols: &[],
+        early_undefined_externals: &[],
+        section_function_declarations: &[],
+        section_externals: &[],
+        local_symbol_order: &[],
+        debug: None,
+    });
+    let names = symbol_names(&object);
+    let save = names.iter().position(|name| name == "_savegpr_19").unwrap();
+    let restore = names
+        .iter()
+        .position(|name| name == "_restgpr_19")
+        .unwrap();
+    let owner = names.iter().position(|name| name == "owner").unwrap();
+    let memset = names.iter().position(|name| name == "memset").unwrap();
+
+    assert_eq!((save + 1, restore + 1, owner + 1), (restore, owner, memset));
+}
+
+#[test]
 fn text_relocations_are_written_in_offset_order() {
     let relocations = vec![
         crate::TextRelocation {

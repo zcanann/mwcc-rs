@@ -280,6 +280,7 @@ mod tests {
         function.constant_number_gaps.push((0, 2));
         function.anonymous_rodata.push(AnonymousRodata {
             bytes: vec![0; 16],
+            comment_alignment: 4,
             static_slot_prefix_bump: Some(3),
             anonymous_offset: 0,
         });

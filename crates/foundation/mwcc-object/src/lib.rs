@@ -328,10 +328,9 @@ pub struct FunctionObject<'a> {
     /// `@N` object in `.data`, fills the per-entry `ADDR32` relocations to this
     /// function, and resolves this function's `JumpTable` `.text` relocations.
     pub jump_tables: Vec<JumpTable>,
-    /// An anonymous `.rodata` blob (`@N` via ADDR16_HA/LO): raw bytes plus the
-    /// blob's offset past the function's running `@N` counter (numbered BEFORE
-    /// the pool constants — measured on __strtold: table @26, pool @147).
-    pub anonymous_rodata: Vec<(Vec<u8>, i32)>,
+    /// Anonymous `.rodata` blobs (`@N` via ADDR16_HA/LO), numbered before the
+    /// pool constants (measured on __strtold: table @26, pool @147).
+    pub anonymous_rodata: Vec<AnonymousRodataObject>,
     /// Callees emitting LOCAL UND symbols in the explicit extern run.
     pub local_undefined_callees: Vec<String>,
     /// The names this function references (globals/callees) in mwcc's symbol-table
@@ -350,6 +349,17 @@ pub struct FunctionObject<'a> {
     pub implicit_external_callees: Vec<String>,
     /// Implicit callees created before this function's referenced data symbols.
     pub early_implicit_external_callees: Vec<String>,
+}
+
+/// Object-layer metadata for one compiler-created anonymous `.rodata` image.
+///
+/// Symbol alignment belongs here rather than being inferred by the writer:
+/// equally-sized byte images can retain different source-type alignment in
+/// CodeWarrior's `.comment` records.
+pub struct AnonymousRodataObject {
+    pub bytes: Vec<u8>,
+    pub anonymous_offset: i32,
+    pub comment_alignment: u32,
 }
 
 #[derive(Clone)]
