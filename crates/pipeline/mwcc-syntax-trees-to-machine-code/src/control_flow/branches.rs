@@ -22,6 +22,15 @@ impl Generator {
         tail: bool,
         origin: ConditionalOrigin,
     ) -> Compilation<()> {
+        if self.try_emit_composed_effect_select(
+            condition,
+            when_true,
+            when_false,
+            destination,
+            tail,
+        )? {
+            return Ok(());
+        }
         if self.try_emit_callback_fallback_select(
             condition,
             when_true,

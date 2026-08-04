@@ -3021,6 +3021,7 @@ impl Generator {
         // location yet.
         let mut early_saved_float_homes = std::collections::HashMap::new();
         let mut early_ephemeral_float_homes = std::collections::HashMap::new();
+        let mut early_ephemeral_general_homes = std::collections::HashMap::new();
         let mut home_index = 0;
         let mut deferred_round_up_base = None;
         let mut dense_eager_consumed_statements = 0usize;
@@ -3068,7 +3069,8 @@ impl Generator {
                     let preferred =
                         structured_recovered_float_homes::preference(dependency, preferred);
                     let home = self.fresh_virtual_float_preferring(preferred);
-                    self.evaluate(
+                    self.evaluate_structured_initializer(
+                        function,
                         dependency_initializer,
                         dependency.declared_type,
                         home,
@@ -3105,7 +3107,8 @@ impl Generator {
                             )
                         })?;
                     let home = self.fresh_virtual_float();
-                    self.evaluate(
+                    self.evaluate_structured_initializer(
+                        function,
                         dependency_initializer,
                         dependency.declared_type,
                         home,
@@ -3124,6 +3127,45 @@ impl Generator {
                     early_ephemeral_float_homes
                         .insert(dependency.name.clone(), home);
                 }
+                for dependency in &ephemeral_locals {
+                    if class_of(dependency.declared_type).ok() != Some(ValueClass::General)
+                        || dependency.name.starts_with("__mwcc_inline_")
+                        || self.locations.contains_key(&dependency.name)
+                        || !crate::analysis::expression_reads_name(
+                            initializer,
+                            &dependency.name,
+                        )
+                    {
+                        continue;
+                    }
+                    let dependency_initializer = dependency.initializer.as_ref().ok_or_else(|| {
+                        Diagnostic::error(
+                            "an ephemeral general dependency has no initializer",
+                        )
+                    })?;
+                    let home = self.fresh_virtual_general();
+                    self.evaluate_structured_initializer(
+                        function,
+                        dependency_initializer,
+                        dependency.declared_type,
+                        home,
+                    )?;
+                    self.locations.insert(
+                        dependency.name.clone(),
+                        Location {
+                            class: ValueClass::General,
+                            register: home,
+                            signed: self.signed_of(dependency.declared_type),
+                            width: dependency.declared_type.width(),
+                            pointee: match dependency.declared_type {
+                                Type::Pointer(pointee) => Some(pointee),
+                                _ => None,
+                            },
+                            stride: pointer_stride(dependency.declared_type),
+                        },
+                    );
+                    early_ephemeral_general_homes.insert(dependency.name.clone(), home);
+                }
             }
             let initializer_start = self.output.instructions.len();
             let mut location_register = home;
@@ -3135,7 +3177,12 @@ impl Generator {
                 .is_some_and(|round_up| round_up.pointer_name == local.name);
             if is_round_up_base {
                 let temporary = self.fresh_virtual_general_preferring(3);
-                self.evaluate(initializer, local.declared_type, temporary)?;
+                self.evaluate_structured_initializer(
+                    function,
+                    initializer,
+                    local.declared_type,
+                    temporary,
+                )?;
                 location_register = temporary;
                 deferred_round_up_base = Some((local.name.clone(), home, temporary));
             } else if is_rounded_pointer {
@@ -3183,7 +3230,12 @@ impl Generator {
                     && !handled_dense_global
                     && !self.try_emit_structured_wide_saved_initializer(initializer, home)
                 {
-                    self.evaluate(initializer, local.declared_type, home)?;
+                    self.evaluate_structured_initializer(
+                        function,
+                        initializer,
+                        local.declared_type,
+                        home,
+                    )?;
                 }
             }
             if stagger_dense_parameter_copies && home_index == 1 {
@@ -3369,7 +3421,12 @@ impl Generator {
             for (local, &home) in saved_float_locals.iter().zip(&saved_float_homes) {
                 if !early_saved_float_homes.contains_key(&local.name) {
                     if let Some(initializer) = &local.initializer {
-                        self.evaluate(initializer, local.declared_type, home)?;
+                        self.evaluate_structured_initializer(
+                            function,
+                            initializer,
+                            local.declared_type,
+                            home,
+                        )?;
                     }
                 }
             }
@@ -3437,7 +3494,9 @@ impl Generator {
         // alias after copying the value to a saved home (`mr r31,r3; lwz ...,r3`)
         // and switches subsequent body uses to the home only after declarations.
         for local in &ephemeral_locals {
-            if early_ephemeral_float_homes.contains_key(&local.name) {
+            if early_ephemeral_float_homes.contains_key(&local.name)
+                || early_ephemeral_general_homes.contains_key(&local.name)
+            {
                 continue;
             }
             let class = class_of(local.declared_type).expect("eligibility checked");
@@ -3541,7 +3600,12 @@ impl Generator {
             });
             if alias.is_none() {
                 if let Some(initializer) = &local.initializer {
-                    self.evaluate(initializer, local.declared_type, temporary)?;
+                    self.evaluate_structured_initializer(
+                        function,
+                        initializer,
+                        local.declared_type,
+                        temporary,
+                    )?;
                 }
             }
             self.locations.insert(

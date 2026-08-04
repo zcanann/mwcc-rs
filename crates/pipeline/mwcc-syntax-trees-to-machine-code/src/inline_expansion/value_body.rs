@@ -192,6 +192,13 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
             automatic_transaction: false,
         });
     }
+    if let Some(expression) = summarize_guarded_local_return(function) {
+        return Some(ValueInlineBody {
+            source: function.clone(),
+            expression,
+            automatic_transaction: false,
+        });
+    }
     // A direct scalar/member return is the smallest value-inline body. Keep it
     // before the result-local pattern below: ordinary (non-inline) definitions
     // use this shape too, and mwcc's automatic inliner substitutes sufficiently
@@ -353,6 +360,64 @@ fn summarize_return_arm(statements: &[Statement], return_type: Type) -> Option<E
         .map(statement_expression)
         .collect::<Option<Vec<_>>>()?;
     expressions.push(normalize_reference_result(return_type, result.clone()));
+    Some(sequence(expressions))
+}
+
+/// Preserve scalar setup shared by a guarded early return and its fallback.
+///
+/// Alignment helpers commonly compute a mask into automatic locals, refine a
+/// pointer only on the aligned edge, then return a fixed-offset pointer on the
+/// fallthrough edge. The ordinary sequenced-body composer cannot consume the
+/// nested `return`, while statement splicing would move a value-position call
+/// out of its original evaluation point. Keep the shared initializers before a
+/// conditional and sequence only the true-edge effects into its return value.
+fn summarize_guarded_local_return(function: &Function) -> Option<Expression> {
+    if function.locals.is_empty()
+        || function.locals.len() > 8
+        || !function.guards.is_empty()
+        || function.asm_body.is_some()
+        || statement_count(&function.statements) > 12
+        || function.locals.iter().any(|local| {
+            local.is_static
+                || local.is_volatile
+                || local.array_length.is_some()
+                || matches!(local.declared_type, Type::Void | Type::Struct { .. })
+        })
+    {
+        return None;
+    }
+    let [Statement::If {
+        condition,
+        then_body,
+        else_body,
+    }] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    if !else_body.is_empty() {
+        return None;
+    }
+
+    let selection = Expression::Conditional {
+        condition: Box::new(condition.clone()),
+        when_true: Box::new(summarize_return_arm(then_body, function.return_type)?),
+        when_false: Box::new(normalize_reference_result(
+            function.return_type,
+            function.return_expression.clone()?,
+        )),
+        origin: ConditionalOrigin::IfReturns,
+    };
+    let mut expressions = function
+        .locals
+        .iter()
+        .filter_map(|local| {
+            local.initializer.as_ref().map(|initializer| Expression::Assign {
+                target: Box::new(Expression::Variable(local.name.clone())),
+                value: Box::new(initializer.clone()),
+            })
+        })
+        .collect::<Vec<_>>();
+    expressions.push(selection);
     Some(sequence(expressions))
 }
 
@@ -2015,6 +2080,135 @@ mod tests {
             } if matches!(left.as_ref(), Expression::Assign { .. })
                 && matches!(right.as_ref(), Expression::IntegerLiteral(1)))
                 && matches!(when_false.as_ref(), Expression::IntegerLiteral(0))
+        ));
+    }
+
+    #[test]
+    fn summarizes_local_setup_before_a_guarded_pointer_return() {
+        let mut function = empty_function("aligned_data", Type::Pointer(Pointee::Int));
+        function.parameters.push(Parameter {
+            parameter_type: Type::StructPointer { element_size: 8 },
+            name: "chunk".into(),
+        });
+        function.locals = vec![
+            LocalDeclaration {
+                declared_type: Type::UnsignedInt,
+                name: "align_field".into(),
+                initializer: Some(Expression::Binary {
+                    operator: BinaryOperator::BitAnd,
+                    left: Box::new(Expression::Member {
+                        base: Box::new(Expression::Variable("chunk".into())),
+                        offset: 0,
+                        member_type: Type::UnsignedInt,
+                        index_stride: None,
+                    }),
+                    right: Box::new(Expression::IntegerLiteral(0x7f00_0000)),
+                }),
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                attribute_alignment: None,
+                row_bytes: None,
+            },
+            LocalDeclaration {
+                declared_type: Type::UnsignedInt,
+                name: "is_aligned".into(),
+                initializer: Some(Expression::Variable("align_field".into())),
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                attribute_alignment: None,
+                row_bytes: None,
+            },
+            LocalDeclaration {
+                declared_type: Type::UnsignedInt,
+                name: "alignment".into(),
+                initializer: None,
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                attribute_alignment: None,
+                row_bytes: None,
+            },
+            LocalDeclaration {
+                declared_type: Type::UnsignedInt,
+                name: "pointer".into(),
+                initializer: None,
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                attribute_alignment: None,
+                row_bytes: None,
+            },
+        ];
+        function.statements = vec![Statement::If {
+            condition: Expression::Binary {
+                operator: BinaryOperator::NotEqual,
+                left: Box::new(Expression::Variable("is_aligned".into())),
+                right: Box::new(Expression::IntegerLiteral(0)),
+            },
+            then_body: vec![
+                Statement::Assign {
+                    name: "alignment".into(),
+                    value: Expression::IntegerLiteral(8),
+                },
+                Statement::Assign {
+                    name: "pointer".into(),
+                    value: Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left: Box::new(Expression::Cast {
+                            target_type: Type::UnsignedInt,
+                            operand: Box::new(Expression::Variable("chunk".into())),
+                        }),
+                        right: Box::new(Expression::Variable("alignment".into())),
+                    },
+                },
+                Statement::Return(Some(Expression::Cast {
+                    target_type: Type::Pointer(Pointee::Int),
+                    operand: Box::new(Expression::Variable("pointer".into())),
+                })),
+            ],
+            else_body: Vec::new(),
+        }];
+        function.return_expression = Some(Expression::Cast {
+            target_type: Type::Pointer(Pointee::Int),
+            operand: Box::new(Expression::Binary {
+                operator: BinaryOperator::Add,
+                left: Box::new(Expression::Cast {
+                    target_type: Type::Pointer(Pointee::UnsignedChar),
+                    operand: Box::new(Expression::Variable("chunk".into())),
+                }),
+                right: Box::new(Expression::IntegerLiteral(8)),
+            }),
+        });
+
+        let summary = summarize(&function).expect("guarded pointer helper should summarize");
+        assert!(matches!(
+            summary.expression,
+            Expression::Comma {
+                left,
+                right,
+            } if matches!(left.as_ref(), Expression::Assign { .. })
+                && matches!(right.as_ref(), Expression::Comma {
+                    left,
+                    right,
+                } if matches!(left.as_ref(), Expression::Assign { .. })
+                    && matches!(right.as_ref(), Expression::Conditional {
+                        origin: ConditionalOrigin::IfReturns,
+                        ..
+                    }))
         ));
     }
 

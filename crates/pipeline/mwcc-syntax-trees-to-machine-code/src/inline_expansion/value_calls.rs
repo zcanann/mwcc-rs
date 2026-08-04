@@ -4,7 +4,7 @@ use super::safety::{stable_argument, stable_local_values};
 use super::substitution::substitute_expression;
 use super::value_body::ValueInlineBody;
 use mwcc_syntax_trees::{
-    ArmBody, BinaryOperator, Expression, LocalDeclaration, Statement, UnaryOperator,
+    ArmBody, BinaryOperator, Expression, LocalDeclaration, Statement, Type, UnaryOperator,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -660,10 +660,10 @@ pub(super) fn expand_expression(
         Expression::Cast {
             target_type,
             operand,
-        } => Expression::Cast {
-            target_type: *target_type,
-            operand: Box::new(recurse(operand, active, changed, value_body_substitutions)),
-        },
+        } => apply_cast_to_terminal_value(
+            *target_type,
+            recurse(operand, active, changed, value_body_substitutions),
+        ),
         Expression::BitFieldRead {
             extracted,
             promoted_type,
@@ -786,6 +786,25 @@ pub(super) fn expand_expression(
     }
 }
 
+/// Keep inline setup effects visible to value-position lowering.
+///
+/// A cast applies only to the comma operator's surviving right value. Sinking
+/// it through the sequence is therefore semantic normalization, and avoids
+/// hiding the effect prefix in a sub-expression position that would require an
+/// artificial result move.
+fn apply_cast_to_terminal_value(target_type: Type, operand: Expression) -> Expression {
+    match operand {
+        Expression::Comma { left, right } => Expression::Comma {
+            left,
+            right: Box::new(apply_cast_to_terminal_value(target_type, *right)),
+        },
+        operand => Expression::Cast {
+            target_type,
+            operand: Box::new(operand),
+        },
+    }
+}
+
 fn fresh_name(name: &str, local: &str, allocator: &mut LocalAllocator<'_>) -> String {
     loop {
         let candidate = format!(
@@ -802,6 +821,31 @@ fn fresh_name(name: &str, local: &str, allocator: &mut LocalAllocator<'_>) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sinks_a_cast_onto_a_comma_sequences_terminal_value() {
+        let normalized = apply_cast_to_terminal_value(
+            Type::Pointer(mwcc_syntax_trees::Pointee::Char),
+            Expression::Comma {
+                left: Box::new(Expression::Assign {
+                    target: Box::new(Expression::Variable("temporary".into())),
+                    value: Box::new(Expression::IntegerLiteral(7)),
+                }),
+                right: Box::new(Expression::Variable("temporary".into())),
+            },
+        );
+
+        assert!(matches!(
+            normalized,
+            Expression::Comma { left, right }
+                if matches!(left.as_ref(), Expression::Assign { .. })
+                    && matches!(right.as_ref(), Expression::Cast {
+                        target_type: Type::Pointer(mwcc_syntax_trees::Pointee::Char),
+                        operand,
+                    } if matches!(operand.as_ref(), Expression::Variable(name)
+                        if name == "temporary"))
+        ));
+    }
 
     #[test]
     fn composes_a_true_arm_effect_into_the_enclosing_if() {

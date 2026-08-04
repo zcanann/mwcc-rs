@@ -114,6 +114,7 @@ mod structured_sequenced_callback_wait;
 mod structured_condition_schedule;
 mod structured_condition_join_cache;
 mod structured_complement_product_pair;
+mod structured_composed_initializer;
 mod structured_compact_scalar_frame;
 mod structured_counted_call_retry;
 mod structured_constructor_schedule;

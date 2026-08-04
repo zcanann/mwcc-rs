@@ -10,6 +10,7 @@ mod call_result_error_select;
 mod callback_fallback_select;
 mod common_offset_select;
 mod compared_value_store_select;
+mod composed_effect_select;
 mod float;
 mod frame_global_compare;
 mod large_equality_compare;

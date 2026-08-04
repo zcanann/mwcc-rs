@@ -566,7 +566,7 @@ pub(super) fn plan_ephemeral_locals<'a>(
                 Ok(ValueClass::General | ValueClass::Float)
             )
             || (local.initializer.is_none()
-                && !is_definitely_assigned_before_reads(&function.statements, &local.name))
+                && !function_definitely_assigns_before_reads(function, &local.name))
         })
         .collect();
     if !unsupported.is_empty() {
@@ -629,6 +629,43 @@ pub(super) fn is_definitely_assigned_before_reads(statements: &[Statement], name
         &mut seen_labels,
     )
     .is_some_and(|flow| flow.assigned && pending_gotos.is_empty())
+}
+
+/// Validate a compiler-created scalar whose definition may be embedded in a
+/// later local initializer.
+///
+/// Value-position inline expansion allocates hygienic declarations up front,
+/// then keeps their assignments at the original call site. When that site is
+/// another local's initializer, scanning only the statement list loses the
+/// definition even though comma/conditional expression flow already proves
+/// every reachable read. Walk declaration initializers in source evaluation
+/// order before continuing through the ordinary body CFG.
+fn function_definitely_assigns_before_reads(function: &Function, name: &str) -> bool {
+    let mut initialized = false;
+    let mut assigned = false;
+    for local in &function.locals {
+        let Some(initializer) = &local.initializer else {
+            continue;
+        };
+        let Some((next_initialized, initializer_assigned)) =
+            expression_initialization_flow(initializer, name, initialized)
+        else {
+            return false;
+        };
+        initialized = next_initialized;
+        assigned |= initializer_assigned;
+    }
+
+    let mut pending_gotos = std::collections::HashMap::<String, Vec<bool>>::new();
+    let mut seen_labels = std::collections::HashSet::<String>::new();
+    assignment_flow(
+        &function.statements,
+        name,
+        initialized,
+        &mut pending_gotos,
+        &mut seen_labels,
+    )
+    .is_some_and(|flow| (assigned || flow.assigned) && pending_gotos.is_empty())
 }
 
 fn assignment_flow(
@@ -704,9 +741,11 @@ fn assignment_flow(
                 name: assigned_name,
                 value,
             } if assigned_name == name => expression_reads_name(value, name),
-            Statement::Store { target, value } => {
-                expression_reads_name(target, name) || expression_reads_name(value, name)
-            }
+            // Store operands were already traversed in evaluation order by
+            // `expression_initialization_flow` above. Rechecking them as an
+            // unordered read set would reject a comma/conditional value that
+            // defines and consumes an inline temporary internally.
+            Statement::Store { .. } => false,
             Statement::Assign { .. }
             | Statement::Expression(_)
             | Statement::Return(Some(_))
@@ -1609,6 +1648,59 @@ mod tests {
     }
 
     #[test]
+    fn accepts_branch_local_assignment_inside_a_later_local_initializer() {
+        let mut temporary = local("temporary", Expression::IntegerLiteral(0));
+        temporary.initializer = None;
+        let function = Function {
+            return_type: Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![
+                temporary,
+                local(
+                    "result",
+                    Expression::Conditional {
+                        condition: Box::new(Expression::Variable("select".into())),
+                        when_true: Box::new(Expression::Comma {
+                            left: Box::new(Expression::Assign {
+                                target: Box::new(Expression::Variable("temporary".into())),
+                                value: Box::new(Expression::IntegerLiteral(7)),
+                            }),
+                            right: Box::new(Expression::Variable("temporary".into())),
+                        }),
+                        when_false: Box::new(Expression::IntegerLiteral(0)),
+                        origin: mwcc_syntax_trees::ConditionalOrigin::IfReturns,
+                    },
+                ),
+            ],
+            statements: vec![Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![Expression::Variable("result".into())],
+            })],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        let planned = plan_ephemeral_locals(
+            &function,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        )
+        .expect("the initializer-local value is defined on every path that reads it");
+        assert!(planned.iter().any(|local| local.name == "temporary"));
+    }
+
+    #[test]
     fn accepts_a_value_defined_and_consumed_within_each_loop_iteration() {
         let statements = vec![Statement::Loop {
             kind: LoopKind::For,
@@ -1849,6 +1941,30 @@ mod tests {
             }),
             right: Box::new(Expression::FloatLiteral(2.0)),
         })];
+
+        assert!(is_definitely_assigned_before_reads(
+            &statements,
+            "temporary"
+        ));
+    }
+
+    #[test]
+    fn accepts_a_branch_local_temporary_inside_a_store_value() {
+        let statements = vec![Statement::Store {
+            target: Expression::Variable("output".into()),
+            value: Expression::Conditional {
+                condition: Box::new(Expression::Variable("select".into())),
+                when_true: Box::new(Expression::Comma {
+                    left: Box::new(Expression::Assign {
+                        target: Box::new(Expression::Variable("temporary".into())),
+                        value: Box::new(Expression::IntegerLiteral(7)),
+                    }),
+                    right: Box::new(Expression::Variable("temporary".into())),
+                }),
+                when_false: Box::new(Expression::IntegerLiteral(0)),
+                origin: mwcc_syntax_trees::ConditionalOrigin::IfReturns,
+            },
+        }];
 
         assert!(is_definitely_assigned_before_reads(
             &statements,
