@@ -210,10 +210,35 @@ impl Generator {
             return Ok(false);
         }
         // The modified value must read the very same element being stored.
-        if !same_operand(target, left) {
+        if !structurally_equal(target, left) {
             return Ok(false);
         }
         let (pointee, address) = self.resolve_pointer(base)?;
+        let computed_index = self.general_register_of_leaf(index).is_err();
+        let computed_right = self.plain_integer_leaf_register(right).is_none()
+            && constant_value(right).is_none();
+        if (computed_index || computed_right)
+            && matches!(
+                pointee,
+                Pointee::Char
+                    | Pointee::UnsignedChar
+                    | Pointee::Short
+                    | Pointee::UnsignedShort
+                    | Pointee::Int
+                    | Pointee::UnsignedInt
+            )
+            && !expression_has_call(index)
+            && !expression_has_call(right)
+        {
+            self.emit_computed_indexed_rmw(
+                pointee,
+                address,
+                index,
+                *operator,
+                right,
+            )?;
+            return Ok(true);
+        }
         if !matches!(pointee, Pointee::Int | Pointee::UnsignedInt) {
             return Ok(false);
         }

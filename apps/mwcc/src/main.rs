@@ -2957,6 +2957,9 @@ mod tests {
     #[path = "cleared_low_bit_power_select.rs"]
     mod cleared_low_bit_power_select;
 
+    #[path = "computed_byte_indexed_rmw.rs"]
+    mod computed_byte_indexed_rmw;
+
     #[path = "unsigned_narrow_to_float.rs"]
     mod unsigned_narrow_to_float;
 

@@ -1,0 +1,70 @@
+use crate::{compile, SourceLanguage};
+
+#[test]
+fn computes_a_shifted_byte_update_through_a_signed_half_index() {
+    let source = br#"
+        void update_byte(unsigned char *bytes, int index, unsigned char value, int amount) {
+            bytes[index / 2] |= value << amount;
+        }
+    "#;
+
+    // Exact representative bodies measured from mwcceppc. The transition is
+    // 2.3.3 carry correction -> 2.4.x promoted shift -> 4.x direct parameter shift.
+    let generations: [(mwcc_versions::CompilerBuild, &[u8]); 4] = [
+        (
+            mwcc_versions::GC_1_2_5,
+            &[
+                0x7c, 0x87, 0x0e, 0x70, 0x7c, 0xe7, 0x01, 0x94, 0x54, 0xa0, 0x06, 0x3e, 0x7c,
+                0x83, 0x38, 0xae, 0x7c, 0x00, 0x30, 0x30, 0x7c, 0x80, 0x03, 0x78, 0x7c, 0x03,
+                0x39, 0xae, 0x4e, 0x80, 0x00, 0x20,
+            ],
+        ),
+        (
+            mwcc_versions::GC_1_3,
+            &[
+                0x54, 0x87, 0x0f, 0xfe, 0x54, 0xa0, 0x06, 0x3e, 0x7c, 0x87, 0x22, 0x14, 0x7c,
+                0x85, 0x0e, 0x70, 0x7c, 0x00, 0x30, 0x30, 0x7c, 0x83, 0x28, 0xae, 0x7c, 0x80,
+                0x03, 0x78, 0x7c, 0x03, 0x29, 0xae, 0x4e, 0x80, 0x00, 0x20,
+            ],
+        ),
+        (
+            mwcc_versions::GC_3_0A3,
+            &[
+                0x54, 0x87, 0x0f, 0xfe, 0x7c, 0xa0, 0x30, 0x30, 0x7c, 0x87, 0x22, 0x14, 0x7c,
+                0x85, 0x0e, 0x70, 0x7c, 0x83, 0x28, 0xae, 0x7c, 0x80, 0x03, 0x78, 0x7c, 0x03,
+                0x29, 0xae, 0x4e, 0x80, 0x00, 0x20,
+            ],
+        ),
+        (
+            mwcc_versions::WII_1_0,
+            &[
+                0x54, 0x87, 0x0f, 0xfe, 0x7c, 0xa0, 0x30, 0x30, 0x7c, 0x87, 0x22, 0x14, 0x7c,
+                0x85, 0x0e, 0x70, 0x7c, 0x83, 0x28, 0xae, 0x7c, 0x80, 0x03, 0x78, 0x7c, 0x03,
+                0x29, 0xae, 0x4e, 0x80, 0x00, 0x20,
+            ],
+        ),
+    ];
+
+    for (build, expected) in generations {
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.emit_mwcats = false;
+        flags.inline_enabled = false;
+        let object = compile(
+            source,
+            "computed-byte-indexed-rmw.c",
+            mwcc_versions::CompilerConfig { build, flags },
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("computed byte indexed update should compile");
+        assert!(
+            object
+                .windows(expected.len())
+                .any(|bytes| bytes == expected),
+            "missing exact {} computed byte indexed update body",
+            build.label,
+        );
+    }
+}

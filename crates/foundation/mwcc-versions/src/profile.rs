@@ -296,6 +296,20 @@ pub enum ClearedLowBitPowerSelectStyle {
     ExtractedBit,
 }
 
+/// Scheduling of `byte_pointer[signed_index / 2] op= narrow << amount`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComputedByteIndexedRmwStyle {
+    /// The 2.3.3 optimizer forms the quotient with `srawi`/`addze`, then places
+    /// the byte load between narrowing and the variable shift.
+    LegacyCarryCorrected,
+    /// The 2.4.x optimizer narrows the shifted byte before completing the
+    /// sign-corrected quotient.
+    MainlinePromotedShift,
+    /// The 4.x optimizer may shift an incoming narrow parameter directly and
+    /// overlaps that shift with quotient formation.
+    LaterDirectParameterShift,
+}
+
 /// Stack-frame and sign-mask lowering for the fdlibm `copysign` word splice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopySignStyle {
@@ -1248,6 +1262,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         ClearedLowBitPowerSelectStyle::MaterializedAnd
     }
 
+    fn computed_byte_indexed_rmw_style(&self) -> ComputedByteIndexedRmwStyle {
+        ComputedByteIndexedRmwStyle::MainlinePromotedShift
+    }
+
     fn copy_sign_style(&self) -> CopySignStyle {
         CopySignStyle::FusedInsertion
     }
@@ -1707,6 +1725,10 @@ impl CodegenProfile for Gc41Build51213 {
         ClearedLowBitPowerSelectStyle::ExtractedBit
     }
 
+    fn computed_byte_indexed_rmw_style(&self) -> ComputedByteIndexedRmwStyle {
+        ComputedByteIndexedRmwStyle::LaterDirectParameterShift
+    }
+
     fn saved_float_epilogue_style(&self) -> SavedFloatEpilogueStyle {
         SavedFloatEpilogueStyle::LinkReloadAfterFloatRestores
     }
@@ -1915,6 +1937,10 @@ pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
     fn cleared_low_bit_power_select_style(&self) -> ClearedLowBitPowerSelectStyle {
         ClearedLowBitPowerSelectStyle::ExtractedBit
+    }
+
+    fn computed_byte_indexed_rmw_style(&self) -> ComputedByteIndexedRmwStyle {
+        ComputedByteIndexedRmwStyle::LaterDirectParameterShift
     }
 
     fn saved_float_epilogue_style(&self) -> SavedFloatEpilogueStyle {
@@ -2250,6 +2276,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 impl CodegenProfile for Gc233Build163 {
     fn cleared_low_bit_power_select_style(&self) -> ClearedLowBitPowerSelectStyle {
         ClearedLowBitPowerSelectStyle::BranchPreserving
+    }
+
+    fn computed_byte_indexed_rmw_style(&self) -> ComputedByteIndexedRmwStyle {
+        ComputedByteIndexedRmwStyle::LegacyCarryCorrected
     }
 
     fn copy_sign_style(&self) -> CopySignStyle {

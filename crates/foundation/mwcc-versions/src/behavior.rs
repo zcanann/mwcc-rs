@@ -16,7 +16,7 @@ use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal, SchedulingM
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CallDispatcherStyle, ClearedLowBitPowerSelectStyle, CoefficientTableRelocationStyle,
-    CommaValuePlacementStyle,
+    CommaValuePlacementStyle, ComputedByteIndexedRmwStyle,
     ComputedStoreIssueStyle, ConstantStoreScheduleStyle, CopySignStyle, DataSectionRelocationStyle,
     CxxConstructorInlineOrdinalWeights, DeferredFunctionEmissionStyle,
     DiscardedInlineAggregateImageStyle, FieldMergeStyle, FixedAddressConstantStoreStyle,
@@ -152,6 +152,8 @@ pub enum Quirk {
     LegacyBranchPreservingIntegerSelect,
     LegacyBranchPreservingClearedLowBitPowerSelect,
     LaterExtractedClearedLowBitPowerSelect,
+    LegacyCarryCorrectedComputedByteIndexedRmw,
+    LaterDirectParameterComputedByteIndexedRmw,
     LegacyCarryChainComparisonValues,
     LegacyFullWidthNarrowComputedReturn,
     LegacyCarryCorrectedPowerOfTwoDivision,
@@ -235,6 +237,8 @@ impl Quirk {
             Quirk::LegacyBranchPreservingIntegerSelect => QuirkKind::Intentional,
             Quirk::LegacyBranchPreservingClearedLowBitPowerSelect => QuirkKind::Intentional,
             Quirk::LaterExtractedClearedLowBitPowerSelect => QuirkKind::Intentional,
+            Quirk::LegacyCarryCorrectedComputedByteIndexedRmw => QuirkKind::Intentional,
+            Quirk::LaterDirectParameterComputedByteIndexedRmw => QuirkKind::Intentional,
             Quirk::LegacyCarryChainComparisonValues => QuirkKind::Intentional,
             Quirk::LegacyFullWidthNarrowComputedReturn => QuirkKind::Intentional,
             Quirk::LegacyCarryCorrectedPowerOfTwoDivision => QuirkKind::Intentional,
@@ -347,6 +351,12 @@ impl Quirk {
             }
             Quirk::LaterExtractedClearedLowBitPowerSelect => {
                 "4.x extracts cleared-low-bit power selects directly from the -1/0 mask"
+            }
+            Quirk::LegacyCarryCorrectedComputedByteIndexedRmw => {
+                "2.3.3 uses carry-corrected quotient scheduling in computed byte updates"
+            }
+            Quirk::LaterDirectParameterComputedByteIndexedRmw => {
+                "4.x shifts incoming narrow parameters directly in computed byte updates"
             }
             Quirk::LegacyCarryChainComparisonValues => {
                 "integer comparison values use build 163's carry-chain idioms"
@@ -720,6 +730,8 @@ pub struct Behavior {
     pub integer_select_style: IntegerSelectStyle,
     /// Lowering of `((value & 1) == 0) ? power_of_two : 0`.
     pub cleared_low_bit_power_select_style: ClearedLowBitPowerSelectStyle,
+    /// Scheduling of byte updates through a computed signed-half index.
+    pub computed_byte_indexed_rmw_style: ComputedByteIndexedRmwStyle,
     /// Frame and mask policy for the fdlibm copy-sign word splice.
     pub copy_sign_style: CopySignStyle,
     /// Instruction family for integer comparisons materialized as 0/1 values.
@@ -1192,6 +1204,10 @@ impl Behavior {
                 .build
                 .profile
                 .cleared_low_bit_power_select_style(),
+            computed_byte_indexed_rmw_style: config
+                .build
+                .profile
+                .computed_byte_indexed_rmw_style(),
             copy_sign_style: config.build.profile.copy_sign_style(),
             integer_comparison_value_style: config.build.profile.integer_comparison_value_style(),
             narrow_computed_return_style: config.build.profile.narrow_computed_return_style(),
@@ -1536,6 +1552,15 @@ impl Behavior {
                 Quirk::LaterExtractedClearedLowBitPowerSelect,
             )),
         }
+        match self.computed_byte_indexed_rmw_style {
+            ComputedByteIndexedRmwStyle::LegacyCarryCorrected => quirks.push(
+                ActiveQuirk::of(Quirk::LegacyCarryCorrectedComputedByteIndexedRmw),
+            ),
+            ComputedByteIndexedRmwStyle::MainlinePromotedShift => {}
+            ComputedByteIndexedRmwStyle::LaterDirectParameterShift => quirks.push(
+                ActiveQuirk::of(Quirk::LaterDirectParameterComputedByteIndexedRmw),
+            ),
+        }
         if self.integer_comparison_value_style == IntegerComparisonValueStyle::LegacyCarryChain {
             quirks.push(ActiveQuirk::of(Quirk::LegacyCarryChainComparisonValues));
         }
@@ -1798,6 +1823,45 @@ mod tests {
                 Behavior::resolve(&CompilerConfig::new(compiler_build))
                     .cleared_low_bit_power_select_style,
                 ClearedLowBitPowerSelectStyle::ExtractedBit,
+            );
+        }
+    }
+
+    #[test]
+    fn computed_byte_indexed_rmw_tracks_optimizer_generation() {
+        for compiler_build in [
+            build::GC_1_1,
+            build::GC_1_1P1,
+            build::GC_1_2_5,
+            build::GC_1_2_5N,
+        ] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build))
+                    .computed_byte_indexed_rmw_style,
+                ComputedByteIndexedRmwStyle::LegacyCarryCorrected,
+            );
+        }
+        for compiler_build in [
+            build::GC_1_3,
+            build::GC_1_3_2,
+            build::GC_1_3_2R,
+            build::GC_2_0,
+            build::GC_2_0P1,
+            build::GC_2_5,
+            build::GC_2_6,
+            build::GC_2_7,
+        ] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build))
+                    .computed_byte_indexed_rmw_style,
+                ComputedByteIndexedRmwStyle::MainlinePromotedShift,
+            );
+        }
+        for compiler_build in [build::GC_3_0A3, build::GC_3_0A3P1, build::WII_1_0] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build))
+                    .computed_byte_indexed_rmw_style,
+                ComputedByteIndexedRmwStyle::LaterDirectParameterShift,
             );
         }
     }

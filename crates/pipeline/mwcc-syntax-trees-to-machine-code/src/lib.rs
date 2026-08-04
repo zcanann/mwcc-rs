@@ -523,6 +523,11 @@ fn lower_function_body(
         compiler_generated_symbols: Vec::new(),
         labels: mwcc_vreg::Labels::default(),
         locations: HashMap::new(),
+        parameter_names: function
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .collect(),
         // A `const` global is read-only and mwcc *folds* its value into each reader
         // (`return K;` becomes `li r3, <value>`, not a load). That folding is not
         // modeled yet, so const globals are withheld from the operand map: any

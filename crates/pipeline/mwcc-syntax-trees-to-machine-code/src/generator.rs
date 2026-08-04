@@ -351,6 +351,9 @@ pub(crate) struct Generator {
     /// Resolved into `output.instructions` once body emission completes.
     pub(crate) labels: mwcc_vreg::Labels,
     pub(crate) locations: HashMap<String, Location>,
+    /// Source parameters retain ABI-entry provenance after value tracking and
+    /// register allocation have merged them with ordinary scalar locations.
+    pub(crate) parameter_names: HashSet<String>,
     /// File-scope globals by name; a reference to one loads from the small-data
     /// area (an `R_PPC_EMB_SDA21` relocation off r13, the `0(r0)` placeholder).
     pub(crate) globals: HashMap<String, Type>,
