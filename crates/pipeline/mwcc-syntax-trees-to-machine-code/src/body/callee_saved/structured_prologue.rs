@@ -34,21 +34,25 @@ pub(super) fn dense_entry_owns_parameter_copies(
 }
 
 /// Select MWCC's contiguous GPR save form for structured frames. Eager locals
-/// are safe here only when lifetime coloring has merged a later local into an
-/// expired parameter home; that is the measured shape where the legacy
-/// allocator changes from individually scheduled saves to one dense range.
+/// ordinarily require lifetime coloring to merge a later local into an expired
+/// parameter home. An automatic aggregate is the other measured owner: its
+/// fixed frame keeps the complete saved suffix dense even without home reuse.
 pub(super) fn uses_dense_saved_register_range(
     with_frame_array: bool,
+    with_aggregate_frame: bool,
     eager_local_count: usize,
     saved_home_count: usize,
     global_member_search_entry: bool,
     reuses_parameter_home: bool,
     use_lmw_stmw: bool,
 ) -> bool {
-    (with_frame_array || saved_home_count >= 9 || (use_lmw_stmw && saved_home_count >= 5))
+    (with_frame_array
+        || with_aggregate_frame
+        || saved_home_count >= 9
+        || (use_lmw_stmw && saved_home_count >= 5))
         && saved_home_count <= 18
         && (saved_home_count >= 5 || (global_member_search_entry && saved_home_count >= 4))
-        && (eager_local_count == 0 || reuses_parameter_home)
+        && (eager_local_count == 0 || reuses_parameter_home || with_aggregate_frame)
 }
 
 impl Generator {
@@ -483,9 +487,10 @@ mod tests {
 
     #[test]
     fn expired_parameter_reuse_enables_a_dense_eager_frame() {
-        assert!(uses_dense_saved_register_range(true, 4, 12, false, true, false));
-        assert!(!uses_dense_saved_register_range(true, 4, 12, false, false, false));
-        assert!(uses_dense_saved_register_range(false, 0, 5, false, false, true));
+        assert!(uses_dense_saved_register_range(true, false, 4, 12, false, true, false));
+        assert!(!uses_dense_saved_register_range(true, false, 4, 12, false, false, false));
+        assert!(uses_dense_saved_register_range(false, false, 0, 5, false, false, true));
+        assert!(uses_dense_saved_register_range(false, true, 1, 5, false, false, true));
     }
 
     #[test]

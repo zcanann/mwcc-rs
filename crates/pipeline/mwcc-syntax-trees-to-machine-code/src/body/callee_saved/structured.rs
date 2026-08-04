@@ -1424,6 +1424,7 @@ impl Generator {
             unused_array_state_transfer && count == 5;
         let dense_frame = uses_dense_saved_register_range(
             with_frame_array,
+            !aggregate_frame_locals.is_empty(),
             eager_saved_locals.len(),
             total_home_count,
             global_member_search_entry,
