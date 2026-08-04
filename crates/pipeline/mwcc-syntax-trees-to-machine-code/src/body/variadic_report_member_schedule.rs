@@ -32,7 +32,7 @@ impl Generator {
             //   format; index; load A; reload A; index+16; load B; reload B; crclr
             // Build 163 hides both load latencies and retains each loaded value:
             //   load B; index; load A; format; crclr; copy A; copy B; index+16
-            self.permute_duplicate_word_pair_report(start);
+            permute_duplicate_word_pair_report(&mut self.output, start);
             self.output.instructions[start + 1] = Instruction::move_register(4, index);
             self.output.instructions[start + 5] = Instruction::move_register(6, 5);
             self.output.instructions[start + 6] = Instruction::move_register(9, 8);
@@ -69,35 +69,39 @@ impl Generator {
         }
     }
 
-    fn permute_duplicate_word_pair_report(&mut self, start: usize) {
-        const ORDER: [usize; 9] = [5, 1, 2, 0, 7, 3, 6, 4, 8];
-        let old = self.output.instructions[start..start + ORDER.len()].to_vec();
-        for (new, old_index) in ORDER.into_iter().enumerate() {
-            self.output.instructions[start + new] = old[old_index].clone();
-        }
-        let mut old_to_new = [0usize; ORDER.len()];
-        for (new, old_index) in ORDER.into_iter().enumerate() {
-            old_to_new[old_index] = new;
-        }
-        let remap_owner = |instruction_index: &mut usize| {
-            if (start..start + ORDER.len()).contains(instruction_index) {
-                *instruction_index = start + old_to_new[*instruction_index - start];
-            }
-        };
-        for relocation in &mut self.output.relocations {
-            remap_owner(&mut relocation.instruction_index);
-        }
-        self.output
-            .relocations
-            .sort_by_key(|relocation| relocation.instruction_index);
-        for displacement in &mut self.output.data_section_displacements {
-            remap_owner(&mut displacement.instruction_index);
-        }
-        // This is a basic-block content schedule: incoming branches continue
-        // to enter at `start`, now the hoisted load. Labels and branch targets
-        // intentionally remain attached to the block boundary, not to the old
-        // first (format-address) instruction.
+}
+
+fn permute_duplicate_word_pair_report(
+    output: &mut mwcc_machine_code::MachineFunction,
+    start: usize,
+) {
+    const ORDER: [usize; 9] = [5, 1, 2, 0, 7, 3, 6, 4, 8];
+    let old = output.instructions[start..start + ORDER.len()].to_vec();
+    for (new, old_index) in ORDER.into_iter().enumerate() {
+        output.instructions[start + new] = old[old_index].clone();
     }
+    let mut old_to_new = [0usize; ORDER.len()];
+    for (new, old_index) in ORDER.into_iter().enumerate() {
+        old_to_new[old_index] = new;
+    }
+    let remap_owner = |instruction_index: &mut usize| {
+        if (start..start + ORDER.len()).contains(instruction_index) {
+            *instruction_index = start + old_to_new[*instruction_index - start];
+        }
+    };
+    for relocation in &mut output.relocations {
+        remap_owner(&mut relocation.instruction_index);
+    }
+    output
+        .relocations
+        .sort_by_key(|relocation| relocation.instruction_index);
+    for displacement in &mut output.data_section_displacements {
+        remap_owner(&mut displacement.instruction_index);
+    }
+    // This is a basic-block content schedule: incoming branches continue to
+    // enter at `start`, now the hoisted load. Labels and branch targets
+    // intentionally remain attached to the block boundary, not to the old
+    // first (format-address) instruction.
 }
 
 fn duplicate_word_pair_report(instructions: &[Instruction]) -> Option<(usize, u8)> {
@@ -225,5 +229,75 @@ mod tests {
             },
         ];
         assert_eq!(duplicate_word_pair_report(&instructions), Some((0, 25)));
+    }
+
+    #[test]
+    fn duplicate_word_report_schedule_preserves_the_loop_entry_boundary() {
+        let mut output = mwcc_machine_code::MachineFunction::new("report_loop");
+        output.instructions = vec![
+            Instruction::Branch { target: 1 },
+            Instruction::Branch { target: 2 },
+            Instruction::Branch { target: 3 },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 31,
+                immediate: 68,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 25,
+                immediate: 0,
+            },
+            Instruction::LoadWord {
+                d: 5,
+                a: 27,
+                offset: 0,
+            },
+            Instruction::LoadWord {
+                d: 6,
+                a: 27,
+                offset: 0,
+            },
+            Instruction::AddImmediate {
+                d: 7,
+                a: 25,
+                immediate: 16,
+            },
+            Instruction::LoadWord {
+                d: 8,
+                a: 27,
+                offset: 64,
+            },
+            Instruction::LoadWord {
+                d: 9,
+                a: 27,
+                offset: 64,
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink {
+                target: "OSReport".into(),
+            },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 0,
+                target: 3,
+            },
+        ];
+
+        permute_duplicate_word_pair_report(&mut output, 3);
+
+        assert!(matches!(
+            output.instructions[3],
+            Instruction::LoadWord {
+                d: 8,
+                a: 27,
+                offset: 64
+            }
+        ));
+        assert_eq!(output.instructions[2], Instruction::Branch { target: 3 });
+        assert!(matches!(
+            output.instructions[12],
+            Instruction::BranchConditionalForward { target: 3, .. }
+        ));
     }
 }
