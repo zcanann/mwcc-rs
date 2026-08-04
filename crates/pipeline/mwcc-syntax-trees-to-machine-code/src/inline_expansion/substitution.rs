@@ -170,6 +170,28 @@ pub(super) fn substitute_expression(
             value: Box::new(substitute_expression(value, replacements)),
         },
         Expression::Dereference { pointer } => {
+            // The frontend gives a scalar C++ reference parameter the explicit
+            // form `*(T*)parameter`: its ABI slot remains pointer-shaped while
+            // source reads retain the pointee type. Inline substitution binds
+            // that source lvalue directly. An lvalue argument arrives as
+            // `&object`; a const-reference temporary may arrive as its scalar
+            // value. In either case, preserving the cast after replacing the
+            // parameter would manufacture `*(T*)&object` or, worse,
+            // `*(T*)literal` instead of the referenced expression.
+            if let Expression::Cast {
+                target_type: mwcc_syntax_trees::Type::Pointer(_),
+                operand,
+            } = pointer.as_ref()
+            {
+                if let Expression::Variable(parameter) = operand.as_ref() {
+                    if let Some(argument) = replacements.get(parameter) {
+                        return match argument {
+                            Expression::AddressOf { operand } => *operand.clone(),
+                            _ => argument.clone(),
+                        };
+                    }
+                }
+            }
             let pointer = substitute_expression(pointer, replacements);
             // Inline by-reference parameters commonly substitute `&lvalue` for
             // a callee-side `*pointer`. Preserve the C lvalue identity `*&x ==
@@ -392,6 +414,54 @@ mod tests {
                 member_type: Type::Float,
                 index_stride: None,
             } if matches!(base.as_ref(), Expression::Variable(name) if name == "fighter")
+        ));
+    }
+
+    #[test]
+    fn folds_a_scalar_reference_bound_to_a_literal_value() {
+        let expression = Expression::Dereference {
+            pointer: Box::new(Expression::Cast {
+                target_type: Type::Pointer(mwcc_syntax_trees::Pointee::Float),
+                operand: Box::new(Expression::Variable("value".into())),
+            }),
+        };
+        let replacements =
+            HashMap::from([("value".into(), Expression::FloatLiteral(1.0))]);
+
+        assert!(matches!(
+            substitute_expression(&expression, &replacements),
+            Expression::FloatLiteral(value) if value == 1.0
+        ));
+    }
+
+    #[test]
+    fn folds_a_scalar_reference_bound_to_an_lvalue() {
+        let expression = Expression::Dereference {
+            pointer: Box::new(Expression::Cast {
+                target_type: Type::Pointer(mwcc_syntax_trees::Pointee::Int),
+                operand: Box::new(Expression::Variable("value".into())),
+            }),
+        };
+        let replacements = HashMap::from([(
+            "value".into(),
+            Expression::AddressOf {
+                operand: Box::new(Expression::Member {
+                    base: Box::new(Expression::Variable("object".into())),
+                    offset: 12,
+                    member_type: Type::Int,
+                    index_stride: None,
+                }),
+            },
+        )]);
+
+        assert!(matches!(
+            substitute_expression(&expression, &replacements),
+            Expression::Member {
+                base,
+                offset: 12,
+                member_type: Type::Int,
+                index_stride: None,
+            } if matches!(base.as_ref(), Expression::Variable(name) if name == "object")
         ));
     }
 
