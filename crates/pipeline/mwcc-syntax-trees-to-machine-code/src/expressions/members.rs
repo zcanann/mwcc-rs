@@ -495,6 +495,15 @@ impl Generator {
             )?);
             return Ok(());
         }
+        if self.try_emit_embedded_struct_array_member_load(
+            base,
+            offset,
+            member_type,
+            index_stride,
+            destination,
+        )? {
+            return Ok(());
+        }
         if self.try_emit_member_pointer_array_member_load(
             base,
             offset,

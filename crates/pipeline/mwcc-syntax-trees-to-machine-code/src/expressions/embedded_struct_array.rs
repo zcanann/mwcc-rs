@@ -19,6 +19,15 @@ struct EmbeddedStructScalar<'a> {
     element: Pointee,
 }
 
+struct EmbeddedStructMember<'a> {
+    aggregate: &'a Expression,
+    array_offset: u32,
+    index: &'a Expression,
+    stride: u32,
+    member_offset: u32,
+    element: Pointee,
+}
+
 fn element(expression: &Expression) -> Option<EmbeddedStructElement<'_>> {
     let Expression::Index { base, index } = expression else {
         return None;
@@ -105,7 +114,112 @@ fn member_scalar(target: &Expression) -> Option<EmbeddedStructScalar<'_>> {
     })
 }
 
+fn indexed_member<'a>(
+    base: &'a Expression,
+    member_offset: u32,
+    member_type: Type,
+    index_stride: Option<u32>,
+) -> Option<EmbeddedStructMember<'a>> {
+    let Expression::Index {
+        base: inline_array,
+        index,
+    } = base
+    else {
+        return None;
+    };
+    let Expression::Member {
+        base: aggregate,
+        offset: array_offset,
+        member_type: Type::Struct { size, .. },
+        index_stride: None,
+    } = inline_array.as_ref()
+    else {
+        return None;
+    };
+    let stride = u32::from(*size);
+    if stride == 0 || index_stride != Some(stride) {
+        return None;
+    }
+    Some(EmbeddedStructMember {
+        aggregate,
+        array_offset: *array_offset,
+        index,
+        stride,
+        member_offset,
+        element: pointee_of_type(member_type)?,
+    })
+}
+
 impl Generator {
+    pub(super) fn try_emit_embedded_struct_array_member_load(
+        &mut self,
+        base: &Expression,
+        member_offset: u32,
+        member_type: Type,
+        index_stride: Option<u32>,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let Some(load) = indexed_member(base, member_offset, member_type, index_stride) else {
+            return Ok(false);
+        };
+        let trailing_offset = load
+            .array_offset
+            .checked_add(load.member_offset)
+            .ok_or_else(|| Diagnostic::error("embedded struct-array member offset overflow"))?;
+        let aggregate = self.member_base_register(load.aggregate)?;
+        if let Some(index) = constant_value(load.index) {
+            let displacement = index
+                .checked_mul(i64::from(load.stride))
+                .and_then(|scaled| scaled.checked_add(i64::from(trailing_offset)))
+                .and_then(|offset| i16::try_from(offset).ok())
+                .ok_or_else(|| {
+                    Diagnostic::error("embedded struct-array member displacement is out of range")
+                })?;
+            self.output.instructions.push(displacement_load(
+                load.element,
+                destination,
+                aggregate,
+                displacement,
+            )?);
+            return Ok(true);
+        }
+
+        let index = self.materialize_index_operand(load.index)?;
+        let scaled = self.fresh_virtual_general_preferring(index);
+        if load.stride.is_power_of_two() {
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: scaled,
+                    s: index,
+                    shift: load.stride.trailing_zeros() as u8,
+                });
+        } else {
+            let immediate = i16::try_from(load.stride).map_err(|_| {
+                Diagnostic::error("embedded struct-array stride is out of range")
+            })?;
+            self.output.instructions.push(Instruction::MultiplyImmediate {
+                d: scaled,
+                a: index,
+                immediate,
+            });
+        }
+        let address = self.fresh_virtual_general_preferring(destination);
+        self.output.instructions.push(Instruction::Add {
+            d: address,
+            a: aggregate,
+            b: scaled,
+        });
+        let displacement = self.emit_member_base_adjustment(address, trailing_offset);
+        self.output.instructions.push(displacement_load(
+            load.element,
+            destination,
+            address,
+            displacement,
+        )?);
+        Ok(true)
+    }
+
     pub(super) fn try_emit_embedded_struct_array_address(
         &mut self,
         base: &Expression,
@@ -228,5 +342,24 @@ mod tests {
         let access = member_scalar(&member).expect("constant row member should classify");
         assert_eq!(access.offset, 203);
         assert_eq!(access.element, Pointee::UnsignedChar);
+    }
+
+    #[test]
+    fn recognizes_a_variable_row_member_in_inline_storage() {
+        let base = Expression::Index {
+            base: Box::new(Expression::Member {
+                base: Box::new(Expression::Variable("owner".into())),
+                offset: 72,
+                member_type: Type::Struct { size: 24, align: 4 },
+                index_stride: None,
+            }),
+            index: Box::new(Expression::Variable("row".into())),
+        };
+        let load = indexed_member(&base, 3, Type::UnsignedChar, Some(24))
+            .expect("a variable inline row member should classify");
+        assert_eq!(load.array_offset, 72);
+        assert_eq!(load.stride, 24);
+        assert_eq!(load.member_offset, 3);
+        assert_eq!(load.element, Pointee::UnsignedChar);
     }
 }
