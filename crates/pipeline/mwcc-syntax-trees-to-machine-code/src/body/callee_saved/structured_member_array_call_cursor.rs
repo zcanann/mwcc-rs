@@ -8,6 +8,8 @@
 
 use super::*;
 
+pub(super) const CURSOR_PREFIX: &str = "__mwcc_member_array_cursor_";
+
 #[derive(Clone)]
 struct CursorPlan {
     index: String,
@@ -29,6 +31,7 @@ pub(super) fn strength_reduce_member_array_call_cursors(
         .collect();
     let mut next_name = 0usize;
     let mut declarations = Vec::new();
+    let mut cursor_by_element = Vec::<(Pointee, String)>::new();
     let mut statements = Vec::with_capacity(function.statements.len());
     let mut changed = false;
 
@@ -38,6 +41,7 @@ pub(super) fn strength_reduce_member_array_call_cursors(
             &mut used,
             &mut next_name,
             &mut declarations,
+            &mut cursor_by_element,
             &mut changed,
         )
     }));
@@ -55,23 +59,31 @@ fn reduce_statement(
     used: &mut std::collections::HashSet<String>,
     next_name: &mut usize,
     declarations: &mut Vec<LocalDeclaration>,
+    cursor_by_element: &mut Vec<(Pointee, String)>,
     changed: &mut bool,
 ) -> Statement {
     if let Some(plan) = plan(statement) {
-        let cursor = fresh_name(used, next_name);
-        declarations.push(LocalDeclaration {
-            declared_type: Type::Pointer(plan.element),
-            name: cursor.clone(),
-            initializer: None,
-            is_volatile: false,
-            array_length: None,
-            is_static: false,
-            data_bytes: None,
-            data_relocations: Vec::new(),
-            is_const: false,
-            attribute_alignment: None,
-            row_bytes: None,
-        });
+        let cursor = cursor_by_element
+            .iter()
+            .find_map(|(element, cursor)| (*element == plan.element).then(|| cursor.clone()))
+            .unwrap_or_else(|| {
+                let cursor = fresh_name(used, next_name);
+                declarations.push(LocalDeclaration {
+                    declared_type: Type::Pointer(plan.element),
+                    name: cursor.clone(),
+                    initializer: None,
+                    is_volatile: false,
+                    array_length: None,
+                    is_static: false,
+                    data_bytes: None,
+                    data_relocations: Vec::new(),
+                    is_const: false,
+                    attribute_alignment: None,
+                    row_bytes: None,
+                });
+                cursor_by_element.push((plan.element, cursor.clone()));
+                cursor
+            });
         *changed = true;
         return rewrite_loop(statement, &plan, &cursor);
     }
@@ -85,13 +97,27 @@ fn reduce_statement(
             then_body: then_body
                 .iter()
                 .map(|statement| {
-                    reduce_statement(statement, used, next_name, declarations, changed)
+                    reduce_statement(
+                        statement,
+                        used,
+                        next_name,
+                        declarations,
+                        cursor_by_element,
+                        changed,
+                    )
                 })
                 .collect(),
             else_body: else_body
                 .iter()
                 .map(|statement| {
-                    reduce_statement(statement, used, next_name, declarations, changed)
+                    reduce_statement(
+                        statement,
+                        used,
+                        next_name,
+                        declarations,
+                        cursor_by_element,
+                        changed,
+                    )
                 })
                 .collect(),
         },
@@ -109,7 +135,14 @@ fn reduce_statement(
             body: body
                 .iter()
                 .map(|statement| {
-                    reduce_statement(statement, used, next_name, declarations, changed)
+                    reduce_statement(
+                        statement,
+                        used,
+                        next_name,
+                        declarations,
+                        cursor_by_element,
+                        changed,
+                    )
                 })
                 .collect(),
         },
@@ -356,7 +389,7 @@ fn fresh_name(
     next: &mut usize,
 ) -> String {
     loop {
-        let name = format!("__mwcc_member_array_cursor_{}", *next);
+        let name = format!("{CURSOR_PREFIX}{}", *next);
         *next += 1;
         if used.insert(name.clone()) {
             return name;
@@ -488,6 +521,49 @@ mod tests {
             Expression::Index { index, .. }
                 if crate::analysis::constant_value(index) == Some(16)
         ));
+    }
+
+    #[test]
+    fn reuses_one_cursor_lane_for_sequential_loops_over_the_same_element_type() {
+        let arguments = || {
+            vec![
+                word(Expression::Variable("i".into())),
+                word(Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(Expression::Variable("i".into())),
+                    right: Box::new(Expression::IntegerLiteral(16)),
+                }),
+            ]
+        };
+        let mut source = function(counted_call(arguments()));
+        source.statements.push(counted_call(arguments()));
+
+        let reduced = strength_reduce_member_array_call_cursors(&source)
+            .expect("both loops should acquire the shared cursor lane");
+
+        assert_eq!(
+            reduced
+                .locals
+                .iter()
+                .filter(|local| local.name.starts_with("__mwcc_member_array_cursor_"))
+                .count(),
+            1,
+        );
+        for statement in &reduced.statements {
+            let Statement::Loop {
+                initializer: Some(Expression::Comma { right, .. }),
+                ..
+            } = statement
+            else {
+                panic!("expected a rewritten counted loop")
+            };
+            assert!(matches!(
+                right.as_ref(),
+                Expression::Assign { target, .. }
+                    if matches!(target.as_ref(), Expression::Variable(name)
+                        if name == "__mwcc_member_array_cursor_0")
+            ));
+        }
     }
 
     #[test]

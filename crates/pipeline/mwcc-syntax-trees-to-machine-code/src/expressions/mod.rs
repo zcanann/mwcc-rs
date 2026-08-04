@@ -68,6 +68,7 @@ mod pointer_spans;
 mod pointers;
 mod post_step;
 mod packed_shift_mask;
+mod paired_indexed_float_to_unsigned_arguments;
 mod punned_displacement;
 mod shifted_member_mask;
 mod stores;

@@ -63,7 +63,7 @@ pub(super) fn structured_name_first_assignment(function: &Function, name: &str) 
 /// read on the next iteration. Until loop fixed-point interference is modeled,
 /// keep such values in distinct homes.
 pub(super) fn structured_name_occurs_in_loop(function: &Function, name: &str) -> bool {
-    statements_touch_name_in_loop(&function.statements, name, false)
+    !structured_name_loop_regions(function, name).is_empty()
 }
 
 /// Color deferred locals whose initialization remains in the body.
@@ -122,11 +122,21 @@ fn plan_deferred_saved_homes_with_reuse(
 
     let mut group_last_reads = Vec::<usize>::new();
     let mut group_first_assignments = Vec::<usize>::new();
-    let mut group_contains_loop_value = Vec::<bool>::new();
+    let mut group_loop_regions = Vec::<std::collections::HashSet<usize>>::new();
+    let mut group_member_array_cursor_type = Vec::<Option<Type>>::new();
     let mut group_by_name = std::collections::HashMap::<String, usize>::new();
     let mut path_reused_groups = std::collections::HashSet::new();
     for (name, first_assignment, last_read) in intervals {
-        let occurs_in_loop = structured_name_occurs_in_loop(function, name);
+        let loop_regions = structured_name_loop_regions(function, name);
+        let member_array_cursor_type = name
+            .starts_with(super::structured_member_array_call_cursor::CURSOR_PREFIX)
+            .then(|| {
+                locals
+                    .iter()
+                    .find(|local| local.name == name)
+                    .expect("a deferred interval belongs to a selected local")
+                    .declared_type
+            });
         // Ordinary assignments use MWCC's LIFO lifetime discipline: when
         // several homes are free, the next local takes the one whose previous
         // value died latest. Consecutive frame loads consume the expired homes
@@ -145,7 +155,10 @@ fn plan_deferred_saved_homes_with_reuse(
                     .iter()
                     .enumerate()
                     .filter(|(group, previous_last_read)| {
-                        if occurs_in_loop || group_contains_loop_value[*group] {
+                        if group_member_array_cursor_type[*group] != member_array_cursor_type {
+                            return false;
+                        }
+                        if !loop_regions.is_disjoint(&group_loop_regions[*group]) {
                             return false;
                         }
                         let textually_expired = **previous_last_read < first_assignment;
@@ -170,14 +183,15 @@ fn plan_deferred_saved_homes_with_reuse(
             .unwrap_or_else(|| {
                 group_last_reads.push(0);
                 group_first_assignments.push(first_assignment);
-                group_contains_loop_value.push(false);
+                group_loop_regions.push(std::collections::HashSet::new());
+                group_member_array_cursor_type.push(member_array_cursor_type);
                 group_last_reads.len() - 1
             });
         if group < existing_group_count && group_last_reads[group] >= first_assignment {
             path_reused_groups.insert(group);
         }
         group_last_reads[group] = group_last_reads[group].max(last_read);
-        group_contains_loop_value[group] |= occurs_in_loop;
+        group_loop_regions[group].extend(loop_regions);
         group_by_name.insert(name.to_owned(), group);
     }
     Some(DeferredSavedHomePlan {
@@ -188,78 +202,95 @@ fn plan_deferred_saved_homes_with_reuse(
     })
 }
 
-fn statements_touch_name_in_loop(
+/// Optimizer cycle regions containing a value. Textual intervals may be reused
+/// across consecutive loops, but values in the same loop (including an outer
+/// loop containing a nested one) interfere across the backedge.
+fn structured_name_loop_regions(
+    function: &Function,
+    name: &str,
+) -> std::collections::HashSet<usize> {
+    let mut next = 0;
+    let mut regions = std::collections::HashSet::new();
+    collect_name_loop_regions(&function.statements, name, &mut next, &mut regions);
+    regions
+}
+
+fn collect_name_loop_regions(
     statements: &[Statement],
     name: &str,
-    inside_loop: bool,
-) -> bool {
+    next: &mut usize,
+    regions: &mut std::collections::HashSet<usize>,
+) {
+    for statement in statements {
+        match statement {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_name_loop_regions(then_body, name, next, regions);
+                collect_name_loop_regions(else_body, name, next, regions);
+            }
+            Statement::Loop {
+                initializer,
+                condition,
+                step,
+                body,
+                ..
+            } => {
+                let region = *next;
+                *next += 1;
+                let header_touches = initializer
+                    .iter()
+                    .chain(condition)
+                    .chain(step)
+                    .any(|expression| {
+                        expression_reads_name(expression, name)
+                            || expression_assignment_count(expression, name) != 0
+                    });
+                if header_touches
+                    || body_uses_local(body, name)
+                    || statements_contain_inline_asm(body)
+                {
+                    regions.insert(region);
+                }
+                collect_name_loop_regions(body, name, next, regions);
+            }
+            Statement::Switch { arms, default, .. } => {
+                for body in arms.iter().map(|arm| &arm.body).chain(default) {
+                    if let mwcc_syntax_trees::ArmBody::Statements(statements) = body {
+                        collect_name_loop_regions(statements, name, next, regions);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn statements_contain_inline_asm(statements: &[Statement]) -> bool {
     statements.iter().any(|statement| match statement {
-        Statement::Store { target, value } => {
-            inside_loop
-                && (expression_reads_name(target, name)
-                    || expression_reads_name(value, name))
-        }
-        Statement::Assign {
-            name: assigned,
-            value,
-        } => {
-            inside_loop
-                && (assigned == name || expression_reads_name(value, name))
-        }
-        Statement::Expression(expression) | Statement::Return(Some(expression)) => {
-            inside_loop && expression_reads_name(expression, name)
-        }
+        Statement::InlineAsm(_) => true,
         Statement::If {
-            condition,
             then_body,
             else_body,
-        } => {
-            (inside_loop && expression_reads_name(condition, name))
-                || statements_touch_name_in_loop(then_body, name, inside_loop)
-                || statements_touch_name_in_loop(else_body, name, inside_loop)
-        }
-        Statement::Loop {
-            initializer,
-            condition,
-            step,
-            body,
             ..
         } => {
-            initializer
-                .iter()
-                .chain(condition)
-                .chain(step)
-                .any(|expression| {
-                    expression_reads_name(expression, name)
-                        || expression_assignment_count(expression, name) != 0
-                })
-                || statements_touch_name_in_loop(body, name, true)
+            statements_contain_inline_asm(then_body)
+                || statements_contain_inline_asm(else_body)
         }
-        Statement::Switch { scrutinee, arms, default } => {
-            (inside_loop && expression_reads_name(scrutinee, name))
-                || arms.iter().any(|arm| match &arm.body {
-                    mwcc_syntax_trees::ArmBody::Return(expression) => {
-                        inside_loop && expression_reads_name(expression, name)
-                    }
-                    mwcc_syntax_trees::ArmBody::Statements(statements) => {
-                        statements_touch_name_in_loop(statements, name, inside_loop)
-                    }
-                })
-                || default.as_ref().is_some_and(|body| match body {
-                    mwcc_syntax_trees::ArmBody::Return(expression) => {
-                        inside_loop && expression_reads_name(expression, name)
-                    }
-                    mwcc_syntax_trees::ArmBody::Statements(statements) => {
-                        statements_touch_name_in_loop(statements, name, inside_loop)
-                    }
-                })
-        }
-        Statement::InlineAsm(_) => inside_loop,
-        Statement::Return(None)
-        | Statement::Break
-        | Statement::Continue
-        | Statement::Goto(_)
-        | Statement::Label(_) => false,
+        Statement::Loop { body, .. } => statements_contain_inline_asm(body),
+        Statement::Switch { arms, default, .. } => arms
+            .iter()
+            .map(|arm| &arm.body)
+            .chain(default)
+            .any(|body| match body {
+                mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                    statements_contain_inline_asm(statements)
+                }
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+            }),
+        _ => false,
     })
 }
 
@@ -1441,6 +1472,33 @@ mod tests {
         }
     }
 
+    fn counted_consume_loop(name: &str) -> Statement {
+        Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(Expression::Assign {
+                target: Box::new(Expression::Variable(name.into())),
+                value: Box::new(Expression::IntegerLiteral(0)),
+            }),
+            condition: Some(Expression::Binary {
+                operator: BinaryOperator::Less,
+                left: Box::new(Expression::Variable(name.into())),
+                right: Box::new(Expression::IntegerLiteral(4)),
+            }),
+            step: Some(Expression::Assign {
+                target: Box::new(Expression::Variable(name.into())),
+                value: Box::new(Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(Expression::Variable(name.into())),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                }),
+            }),
+            body: vec![Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![Expression::Variable(name.into())],
+            })],
+        }
+    }
+
     #[test]
     fn distinguishes_an_unobserved_pure_assignment_inside_a_switch() {
         let mut temporary = local("finished", Expression::IntegerLiteral(0));
@@ -1820,6 +1878,124 @@ mod tests {
 
         assert!(structured_name_occurs_in_loop(&function, "cursor"));
         assert!(structured_name_occurs_in_loop(&function, "temporary"));
+        assert_eq!(plan.group_count, 2);
+    }
+
+    #[test]
+    fn reuses_a_deferred_home_across_consecutive_loop_regions() {
+        let mut first = local("first", Expression::IntegerLiteral(0));
+        first.initializer = None;
+        let mut second = local("second", Expression::IntegerLiteral(0));
+        second.initializer = None;
+        let function = Function {
+            return_type: Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![first, second],
+            statements: vec![counted_consume_loop("first"), counted_consume_loop("second")],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let locals: Vec<_> = function.locals.iter().collect();
+
+        let plan = plan_deferred_saved_homes(&function, &locals)
+            .expect("consecutive loop locals have valid definitions");
+
+        assert_eq!(plan.group_count, 1);
+        assert_eq!(plan.group("first"), plan.group("second"));
+    }
+
+    #[test]
+    fn keeps_source_and_generated_loop_values_in_distinct_homes() {
+        let mut source = local("source", Expression::IntegerLiteral(0));
+        source.initializer = None;
+        let cursor_name = format!(
+            "{}0",
+            super::structured_member_array_call_cursor::CURSOR_PREFIX,
+        );
+        let mut cursor = local(&cursor_name, Expression::IntegerLiteral(0));
+        cursor.initializer = None;
+        let function = Function {
+            return_type: Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![source, cursor],
+            statements: vec![
+                counted_consume_loop("source"),
+                counted_consume_loop(&cursor_name),
+            ],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let locals: Vec<_> = function.locals.iter().collect();
+
+        let plan = plan_deferred_saved_homes(&function, &locals)
+            .expect("both consecutive loop values have valid definitions");
+
+        assert_eq!(plan.group_count, 2);
+        assert_ne!(plan.group("source"), plan.group(&cursor_name));
+    }
+
+    #[test]
+    fn keeps_different_member_array_cursor_element_types_in_distinct_homes() {
+        let word_name = format!(
+            "{}0",
+            super::structured_member_array_call_cursor::CURSOR_PREFIX,
+        );
+        let double_name = format!(
+            "{}1",
+            super::structured_member_array_call_cursor::CURSOR_PREFIX,
+        );
+        let mut word = local(&word_name, Expression::IntegerLiteral(0));
+        word.initializer = None;
+        word.declared_type = Type::Pointer(Pointee::UnsignedInt);
+        let mut double = local(&double_name, Expression::IntegerLiteral(0));
+        double.initializer = None;
+        double.declared_type = Type::Pointer(Pointee::Double);
+        let function = Function {
+            return_type: Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![word, double],
+            statements: vec![
+                counted_consume_loop(&word_name),
+                counted_consume_loop(&double_name),
+            ],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let locals: Vec<_> = function.locals.iter().collect();
+
+        let plan = plan_deferred_saved_homes(&function, &locals)
+            .expect("both cursor lanes have valid loop definitions");
+
         assert_eq!(plan.group_count, 2);
     }
 

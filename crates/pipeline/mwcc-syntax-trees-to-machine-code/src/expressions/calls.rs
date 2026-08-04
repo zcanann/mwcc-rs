@@ -445,6 +445,9 @@ impl Generator {
         if self.try_emit_fixed_clock_wide_callback_arguments(arguments, name)? {
             return Ok(());
         }
+        if self.try_emit_paired_indexed_float_to_unsigned_arguments(arguments, name)? {
+            return Ok(());
+        }
         // A CALL in a non-first argument clobbers the argument registers already holding earlier
         // arguments (a call returns in r3 and clobbers r3–r12), and its own result lands in r3 rather
         // than the argument's positional register. mwcc evaluates such arguments RIGHT-first, preserving
