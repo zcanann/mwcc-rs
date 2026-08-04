@@ -2617,7 +2617,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // A `static` function forward-declared by a prototype normally emits after
     // static data and before per-function `@N` blocks. Build 163 delays this
     // declaration event until the first function's pool transaction closes.
-    if !input.object_format.early_static_functions_after_first_pool {
+    if !input.object_format.early_static_functions_after_first_pool
+        && !input.object_format.small_zero_data_in_declaration_order
+    {
         emit_early_static_function_symbols!();
     }
     for (index, function) in functions.iter().enumerate() {
@@ -2920,6 +2922,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     section,
                 );
                 comment_values.push((data_aligns[object.name], data_comment_flags(object)));
+            }
+            // This layout style is one declaration-order creation phase. A
+            // header prototype discovered before the source definitions still
+            // registers its static function only after that data phase closes.
+            if !input.object_format.early_static_functions_after_first_pool {
+                emit_early_static_function_symbols!();
             }
         }
         let mut symbols = Vec::new();
