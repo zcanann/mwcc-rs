@@ -779,6 +779,17 @@ pub enum QueueServiceInliningStyle {
     KeepServiceCallOutOfLine,
 }
 
+/// Deferred-inlining policy for an endian-selecting scalar stack pack whose
+/// selected bytes feed a bounded append helper in the same translation unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndianStackPackInliningStyle {
+    /// Build 81 and later splice the verified append helper into the wrapper.
+    InlineVerifiedAppend,
+    /// Build 53 composes a sole use, but retains a repeatedly called append
+    /// helper out of line even under `-inline ...,deferred`.
+    InlineSingleUseAppend,
+}
+
 /// Lowering of a constant right-shift compound assignment to a narrow global.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NarrowCompoundShiftStyle {
@@ -1688,6 +1699,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         QueueServiceInliningStyle::InlineVerifiedCallers
     }
 
+    fn endian_stack_pack_inlining_style(&self) -> EndianStackPackInliningStyle {
+        EndianStackPackInliningStyle::InlineVerifiedAppend
+    }
+
     fn narrow_compound_shift_style(&self) -> NarrowCompoundShiftStyle {
         NarrowCompoundShiftStyle::ImmediateInScratch
     }
@@ -2187,6 +2202,10 @@ impl CodegenProfile for Gc13Build53 {
 
     fn queue_service_inlining_style(&self) -> QueueServiceInliningStyle {
         QueueServiceInliningStyle::KeepServiceCallOutOfLine
+    }
+
+    fn endian_stack_pack_inlining_style(&self) -> EndianStackPackInliningStyle {
+        EndianStackPackInliningStyle::InlineSingleUseAppend
     }
 
     fn mem_copy_word_schedule_style(&self) -> MemCopyWordScheduleStyle {

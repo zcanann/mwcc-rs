@@ -35,7 +35,7 @@ use crate::profile::{
     NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle, NestedGlobalDispatchSchedule,
     PlainLinkageEpilogueStyle, PointerCallStoreEpilogueStyle, PunnedConditionalWritebackStyle,
     PunnedFloatFrameConvention, PunnedLadderConditionStyle, PunnedShiftWritebackStyle,
-    QueueServiceInliningStyle,
+    EndianStackPackInliningStyle, QueueServiceInliningStyle,
     RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle,
     SavedFloatEpilogueStyle, SavedFloatParameterCopyOrder, SavedGprEpilogueStyle,
     SharedFloatDagStyle, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
@@ -890,6 +890,9 @@ pub struct Behavior {
     pub fixed_address_poll_address_style: FixedAddressPollAddressStyle,
     /// Whether verified compound queue callers inline the service helper CFG.
     pub queue_service_inlining_style: QueueServiceInliningStyle,
+    /// Whether deferred compilation inlines a structurally verified bounded
+    /// append helper into an endian-selecting scalar stack pack.
+    pub endian_stack_pack_inlining_style: EndianStackPackInliningStyle,
     /// Constant right-shift lowering for narrow global compound assignments.
     pub narrow_compound_shift_style: NarrowCompoundShiftStyle,
     /// Accumulator/exit convention for logical OR integer values.
@@ -905,6 +908,9 @@ pub struct Behavior {
     /// to TU/object orchestration; captures consult this only for measured
     /// codegen metadata differences.
     pub deferred_inlining: bool,
+    /// Whether ordinary same-translation-unit definitions are eligible for
+    /// automatic inline composition (`-inline auto`, excluding `noauto`).
+    pub automatic_inlining_enabled: bool,
     /// Whether contiguous GPR saves/restores use inline `stmw`/`lmw` rather
     /// than `_savegpr_N`/`_restgpr_N` helper calls.
     pub use_lmw_stmw: bool,
@@ -1477,11 +1483,16 @@ impl Behavior {
                 .profile
                 .fixed_address_poll_address_style(),
             queue_service_inlining_style: config.build.profile.queue_service_inlining_style(),
+            endian_stack_pack_inlining_style: config
+                .build
+                .profile
+                .endian_stack_pack_inlining_style(),
             narrow_compound_shift_style: config.build.profile.narrow_compound_shift_style(),
             logical_or_value_style: config.build.profile.logical_or_value_style(),
             global_addressing: config.flags.global_addressing,
             read_only_global_addressing: config.flags.read_only_global_addressing,
             deferred_inlining: config.flags.inline_deferred,
+            automatic_inlining_enabled: config.flags.automatic_inlining_enabled,
             use_lmw_stmw: config.flags.use_lmw_stmw,
             scheduler_enabled: config.flags.scheduler_enabled,
             contract_floating_point: config.flags.fp_contract,

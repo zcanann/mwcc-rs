@@ -342,8 +342,10 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                 }
             }
             // `-sdata N`: zero disables writable SDA (r13); a later non-zero
-            // threshold turns it back on. Keep it independent from `-sdata2`.
-            "-sdata" => {
+            // threshold turns it back on. GC/1.1p1 project files use the older
+            // `-sdatathreshold N` spelling for the same writable-global policy.
+            // Keep either spelling independent from `-sdata2`.
+            "-sdata" | "-sdatathreshold" => {
                 index += 1;
                 if let Some(threshold) = arguments
                     .get(index)
@@ -6886,6 +6888,26 @@ mod tests {
         );
         assert_eq!(
             last_wins.flags.read_only_global_addressing,
+            GlobalAddressing::SmallData
+        );
+
+        let legacy = parse_invocation(&[
+            "-sdatathreshold".into(),
+            "0".into(),
+            "-sdatathreshold".into(),
+            "8".into(),
+        ]);
+        assert_eq!(legacy.flags.global_addressing, GlobalAddressing::SmallData);
+        assert_eq!(
+            legacy.flags.read_only_global_addressing,
+            GlobalAddressing::SmallData
+        );
+
+        let legacy_zero =
+            parse_invocation(&["-sdatathreshold".into(), "0".into()]);
+        assert_eq!(legacy_zero.flags.global_addressing, GlobalAddressing::Absolute);
+        assert_eq!(
+            legacy_zero.flags.read_only_global_addressing,
             GlobalAddressing::SmallData
         );
     }

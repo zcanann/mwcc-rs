@@ -83,6 +83,10 @@ pub struct InlineBodySet {
     /// maps below; retaining this view does not make arbitrary functions
     /// composable.
     definitions: HashMap<String, Function>,
+    /// Total calls from emitted definitions, retained for exact whole-body
+    /// planners whose measured automatic-inline threshold depends on whether a
+    /// verified callee is single-use or repeated.
+    definition_call_counts: HashMap<String, usize>,
     /// Read-only skipped-inline definitions. Transaction lowerers may inspect
     /// these even when generic AST composition correctly rejects their control
     /// flow; lookup alone never makes them callable or composable.
@@ -462,6 +466,7 @@ impl InlineBodySet {
                 .iter()
                 .map(|function| (function.name.clone(), function.clone()))
                 .collect(),
+            definition_call_counts: call_counts,
             retained_definitions: skipped
                 .iter()
                 .map(|function| (function.name.clone(), function.clone()))
@@ -555,6 +560,10 @@ impl InlineBodySet {
     /// lowerers that validate the complete callee shape before composing it.
     pub(crate) fn definition_body(&self, name: &str) -> Option<&Function> {
         self.definitions.get(name)
+    }
+
+    pub(crate) fn definition_call_count(&self, name: &str) -> usize {
+        self.definition_call_counts.get(name).copied().unwrap_or(0)
     }
 
     /// A skipped inline's retained semantic body, including definitions whose
