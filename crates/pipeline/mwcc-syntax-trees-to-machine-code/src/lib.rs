@@ -1156,6 +1156,7 @@ fn lower_function_body(
     generator.schedule_structured_state_validation_transaction();
     generator.schedule_structured_state_read_entry();
     generator.schedule_structured_stream_sync_entry();
+    generator.schedule_structured_multi_member_sync_entry();
     generator.schedule_structured_loop_exit_poll_register();
     generator.schedule_archive_header_initialization(function);
 

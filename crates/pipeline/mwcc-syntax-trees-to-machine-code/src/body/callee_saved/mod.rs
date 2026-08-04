@@ -308,6 +308,7 @@ mod structured_loop_assertion_string_schedule;
 mod structured_loop_assertion_body_schedule;
 mod structured_nested_member_base;
 mod structured_member_bound_call_schedule;
+mod structured_multi_member_sync_entry_schedule;
 mod structured_preloop_alias;
 mod structured_precomposition_home_layout;
 mod structured_precomposition_entry_schedule;
