@@ -36,7 +36,7 @@ use crate::profile::{
     PunnedFloatFrameConvention, PunnedLadderConditionStyle, PunnedShiftWritebackStyle,
     QueueServiceInliningStyle,
     RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle,
-    SavedFloatEpilogueStyle, SavedGprEpilogueStyle,
+    SavedFloatEpilogueStyle, SavedFloatParameterCopyOrder, SavedGprEpilogueStyle,
     SharedFloatDagStyle, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
     StoredGlobalReadStyle, SymbolTraversalStyle, TrigDispatcherStyle, TrigQuadrantDispatchStyle,
     TrigZeroConstantPlacement, VaArgScheduleStyle, ValueTrackedMutationStyle,
@@ -686,6 +686,8 @@ pub struct Behavior {
     pub saved_gpr_epilogue_style: SavedGprEpilogueStyle,
     /// Post-call result and restore order for allocator-selected saved FPRs.
     pub saved_float_epilogue_style: SavedFloatEpilogueStyle,
+    /// Entry-copy issue order for parameters assigned allocator-selected saved FPRs.
+    pub saved_float_parameter_copy_order: SavedFloatParameterCopyOrder,
     /// Whether a structured early LR write must move behind the complete saved-GPR/stack tail.
     pub structured_saved_gpr_stack_first: bool,
     /// Whether the SDK DVD FST loader uses build 163's early saved-LR issue
@@ -1145,6 +1147,10 @@ impl Behavior {
             plain_linkage_epilogue_style: config.build.profile.plain_linkage_epilogue_style(),
             saved_gpr_epilogue_style: config.build.profile.saved_gpr_epilogue_style(),
             saved_float_epilogue_style: config.build.profile.saved_float_epilogue_style(),
+            saved_float_parameter_copy_order: config
+                .build
+                .profile
+                .saved_float_parameter_copy_order(),
             structured_saved_gpr_stack_first: config
                 .build
                 .profile
@@ -1761,6 +1767,39 @@ mod tests {
                 Behavior::resolve(&CompilerConfig::new(compiler_build))
                     .saved_float_epilogue_style,
                 SavedFloatEpilogueStyle::LinkReloadAfterFloatRestores,
+            );
+        }
+    }
+
+    #[test]
+    fn saved_float_parameter_copy_order_tracks_optimizer_generation() {
+        for compiler_build in [
+            build::GC_1_1,
+            build::GC_1_1P1,
+            build::GC_1_2_5,
+            build::GC_1_2_5N,
+        ] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build))
+                    .saved_float_parameter_copy_order,
+                SavedFloatParameterCopyOrder::DescendingSavedHome,
+            );
+        }
+        for compiler_build in [
+            build::GC_1_3,
+            build::GC_1_3_2,
+            build::GC_2_0,
+            build::GC_2_0P1,
+            build::GC_2_5,
+            build::GC_2_6,
+            build::GC_2_7,
+            build::GC_3_0A3,
+            build::WII_1_0,
+        ] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build))
+                    .saved_float_parameter_copy_order,
+                SavedFloatParameterCopyOrder::AscendingSavedHome,
             );
         }
     }

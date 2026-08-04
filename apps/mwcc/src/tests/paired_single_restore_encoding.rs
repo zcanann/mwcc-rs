@@ -54,3 +54,46 @@ fn restores_a_saved_fpr_with_one_displacement_form_psq_load() {
         .windows(expected_tail.len())
         .any(|bytes| bytes == expected_tail));
 }
+
+#[test]
+fn copies_multiple_saved_float_parameters_from_the_lowest_home_first() {
+    let mut flags = mwcc_versions::Flags::default();
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let object = compile(
+        br#"
+            extern float transform(float);
+            float retain(float value, float left, float right) {
+                float transformed = transform(value);
+                return transformed + left * right;
+            }
+        "#,
+        "multiple-saved-float-parameters.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_0P1,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("both floating parameters should survive the call");
+
+    // GC/1.3--2.7 allocate the source-later value to f31 but issue independent
+    // entry copies in ascending saved-home order. Build 163 uses the opposite
+    // order, which is tracked separately by the resolved build behavior.
+    let ascending_copies = [
+        0xff, 0xc0, 0x10, 0x90, // fmr f30,f2
+        0xff, 0xe0, 0x18, 0x90, // fmr f31,f3
+    ];
+    let descending_copies = [
+        0xff, 0xe0, 0x18, 0x90, // fmr f31,f3
+        0xff, 0xc0, 0x10, 0x90, // fmr f30,f2
+    ];
+    assert!(object
+        .windows(ascending_copies.len())
+        .any(|bytes| bytes == ascending_copies));
+    assert!(!object
+        .windows(descending_copies.len())
+        .any(|bytes| bytes == descending_copies));
+}

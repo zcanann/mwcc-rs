@@ -25,6 +25,7 @@ use super::structured_sequenced_callback_wait::{
     sequenced_callback_wait_home_preference, sequenced_callback_wait_save_order,
     sequenced_callback_wait_starter,
 };
+use super::structured_saved_float_parameter_copies::emit as emit_saved_float_parameter_copies;
 use super::structured_constant_versions::{
     repeated_store_constant_exceeds_home_capacity,
     retain_repeated_store_constant_across_call,
@@ -3537,6 +3538,8 @@ impl Generator {
             // before allocation so frame materialization can preserve both.
             .max(u8::from(retained_sqrtf_spill.is_some()) * 4)
             .max(u8::from(periodic_float_normalization.is_some()) * 4);
+        let mut saved_float_parameter_copies =
+            Vec::with_capacity(saved_float_parameters.len());
         for (parameter_index, parameter) in saved_float_parameters.iter().enumerate() {
             let incoming = self
                 .locations
@@ -3555,9 +3558,7 @@ impl Generator {
                     |_| 28,
                 );
             let home = self.fresh_virtual_float_preferring(preferred);
-            self.output
-                .instructions
-                .push(Instruction::FloatMove { d: home, b: incoming });
+            saved_float_parameter_copies.push((home, incoming));
             self.locations.insert(
                 parameter.name.clone(),
                 Location {
@@ -3570,6 +3571,11 @@ impl Generator {
                 },
             );
         }
+        emit_saved_float_parameter_copies(
+            &mut self.output.instructions,
+            &saved_float_parameter_copies,
+            self.behavior.saved_float_parameter_copy_order,
+        );
         let saved_float_homes: Vec<_> = saved_float_locals
             .iter()
             .map(|local| {

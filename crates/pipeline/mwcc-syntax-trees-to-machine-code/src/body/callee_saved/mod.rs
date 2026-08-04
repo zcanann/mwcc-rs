@@ -114,6 +114,7 @@ mod structured_leaf;
 mod structured_call_schedule;
 mod structured_call_result_assignment_zero_test;
 mod structured_sequenced_callback_wait;
+mod structured_saved_float_parameter_copies;
 mod structured_condition_schedule;
 mod structured_condition_join_cache;
 mod structured_complement_product_pair;

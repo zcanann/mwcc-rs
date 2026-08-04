@@ -54,6 +54,17 @@ pub enum SavedFloatEpilogueStyle {
     LinkReloadAfterFloatRestores,
 }
 
+/// Issue order for entry copies into callee-saved floating-point homes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedFloatParameterCopyOrder {
+    /// The 2.4.x and later schedulers copy the lowest selected saved FPR first:
+    /// `fmr f30,f2; fmr f31,f3` for two surviving parameters.
+    AscendingSavedHome,
+    /// The 2.3.3 scheduler copies the highest selected saved FPR first:
+    /// `fmr f31,f3; fmr f30,f2` for the same live ranges.
+    DescendingSavedHome,
+}
+
 /// Restore order after a call result is stored through a saved pointer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerCallStoreEpilogueStyle {
@@ -1154,6 +1165,12 @@ pub trait CodegenProfile: core::fmt::Debug {
     /// FPR. The 2.4.x mainline overlaps LR-load latency with the final `lfd`.
     fn saved_float_epilogue_style(&self) -> SavedFloatEpilogueStyle {
         SavedFloatEpilogueStyle::LinkReloadBeforeFinalRestore
+    }
+
+    /// Saved floating homes are allocated from f31 downward, but the 2.4.x
+    /// scheduler issues their entry copies in ascending physical-home order.
+    fn saved_float_parameter_copy_order(&self) -> SavedFloatParameterCopyOrder {
+        SavedFloatParameterCopyOrder::AscendingSavedHome
     }
 
     /// Whether structured owners must defer an explicitly early LR write until
@@ -2351,6 +2368,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn saved_float_epilogue_style(&self) -> SavedFloatEpilogueStyle {
         self.saved_float_epilogue_style
+    }
+
+    fn saved_float_parameter_copy_order(&self) -> SavedFloatParameterCopyOrder {
+        SavedFloatParameterCopyOrder::DescendingSavedHome
     }
 
     fn structured_saved_gpr_stack_first(&self) -> bool {
