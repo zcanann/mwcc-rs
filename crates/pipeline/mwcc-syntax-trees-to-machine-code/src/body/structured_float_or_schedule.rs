@@ -10,6 +10,11 @@
 //! `f2`, and later members use `f0`. This is safe across the short-circuit
 //! edges because every path reaching a later comparison has executed the first
 //! literal load, while the decisive true edges leave the chain entirely.
+//!
+//! When that chain guards a three-way maximum, MWCC also forwards the first
+//! member through the taken edge.  The maximum's complete diamond is rewritten
+//! here, alongside the chain that establishes the physical `f2` lifetime, so a
+//! later register repaint cannot invalidate an earlier semantic cache choice.
 
 #[allow(unused_imports)]
 use super::*;
@@ -161,7 +166,153 @@ impl ChainedFloatLiteralOr {
                 self.start + term * 4 + 1,
             );
         }
+
+        if self.terms == 3 {
+            let body = self.start + self.terms * 3 + 1;
+            if let Some(plan) = dominated_three_way_max(&generator.output, body) {
+                plan.apply(generator);
+            }
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DominatedThreeWayMax {
+    start: usize,
+    base: u8,
+    second_offset: i16,
+    third_offset: i16,
+    branch_options: u8,
+    condition_bit: u8,
+}
+
+impl DominatedThreeWayMax {
+    fn apply(self, generator: &mut Generator) {
+        // Four instructions disappear from the repeated second maximum.  Drop
+        // the tail first so the recognized prefix and its labels retain their
+        // indices; the shared removal helper updates every index owner.
+        for index in (self.start + 15..self.start + 19).rev() {
+            crate::remove_instruction_retargeting_to_next(generator, index);
+        }
+
+        let branch = |target| Instruction::BranchConditionalForward {
+            options: self.branch_options,
+            condition_bit: self.condition_bit,
+            target,
+        };
+        let join = self.start + 15;
+        let scheduled = [
+            Instruction::LoadFloatSingle {
+                d: 1,
+                a: self.base,
+                offset: self.second_offset,
+            },
+            Instruction::FloatCompareOrdered { a: 2, b: 1 },
+            branch(self.start + 5),
+            Instruction::FloatMove { d: 0, b: 2 },
+            Instruction::Branch {
+                target: self.start + 6,
+            },
+            Instruction::FloatMove { d: 0, b: 1 },
+            Instruction::LoadFloatSingle {
+                d: 3,
+                a: self.base,
+                offset: self.third_offset,
+            },
+            Instruction::FloatCompareOrdered { a: 0, b: 3 },
+            branch(self.start + 14),
+            Instruction::FloatCompareOrdered { a: 2, b: 1 },
+            branch(self.start + 12),
+            Instruction::Branch { target: join },
+            Instruction::FloatMove { d: 2, b: 1 },
+            Instruction::Branch { target: join },
+            Instruction::FloatMove { d: 2, b: 3 },
+        ];
+        generator.output.instructions[self.start..join].clone_from_slice(&scheduled);
+    }
+}
+
+fn dominated_three_way_max(
+    output: &mwcc_machine_code::MachineFunction,
+    start: usize,
+) -> Option<DominatedThreeWayMax> {
+    let window = output.instructions.get(start..start + 19)?;
+    let [
+        Instruction::LoadFloatSingle { d: 1, a: base, offset: first_offset },
+        Instruction::LoadFloatSingle { d: 0, a: second_base, offset: second_offset },
+        Instruction::FloatCompareOrdered { a: 1, b: 0 },
+        Instruction::BranchConditionalForward { options, condition_bit, target: first_false },
+        Instruction::LoadFloatSingle { d: 0, a: first_reload_base, offset: first_reload_offset },
+        Instruction::Branch { target: first_join },
+        Instruction::LoadFloatSingle { d: 0, a: second_reload_base, offset: second_reload_offset },
+        Instruction::LoadFloatSingle { d: 1, a: third_base, offset: third_offset },
+        Instruction::FloatCompareOrdered { a: 0, b: 1 },
+        Instruction::BranchConditionalForward { options: outer_options, condition_bit: outer_bit, target: outer_false },
+        Instruction::LoadFloatSingle { d: 1, a: nested_first_base, offset: nested_first_offset },
+        Instruction::LoadFloatSingle { d: 0, a: nested_second_base, offset: nested_second_offset },
+        Instruction::FloatCompareOrdered { a: 1, b: 0 },
+        Instruction::BranchConditionalForward { options: nested_options, condition_bit: nested_bit, target: nested_false },
+        Instruction::LoadFloatSingle { d: 2, a: result_first_base, offset: result_first_offset },
+        Instruction::Branch { target: nested_join },
+        Instruction::LoadFloatSingle { d: 2, a: result_second_base, offset: result_second_offset },
+        Instruction::Branch { target: outer_join },
+        Instruction::LoadFloatSingle { d: 2, a: result_third_base, offset: result_third_offset },
+    ] = window
+    else {
+        return None;
+    };
+    if *base == 0
+        || *base != *second_base
+        || *base != *first_reload_base
+        || *base != *second_reload_base
+        || *base != *third_base
+        || *base != *nested_first_base
+        || *base != *nested_second_base
+        || *base != *result_first_base
+        || *base != *result_second_base
+        || *base != *result_third_base
+        || *second_offset != first_offset.checked_add(4)?
+        || *third_offset != first_offset.checked_add(8)?
+        || *first_reload_offset != *first_offset
+        || *second_reload_offset != *second_offset
+        || *nested_first_offset != *first_offset
+        || *nested_second_offset != *second_offset
+        || *result_first_offset != *first_offset
+        || *result_second_offset != *second_offset
+        || *result_third_offset != *third_offset
+        || *outer_options != *options
+        || *nested_options != *options
+        || *outer_bit != *condition_bit
+        || *nested_bit != *condition_bit
+        || *first_false != start + 6
+        || *first_join != start + 7
+        || *outer_false != start + 18
+        || *nested_false != start + 16
+        || *nested_join != start + 17
+        || *outer_join != start + 19
+        || output.relocations.iter().any(|relocation| {
+            (start..start + 19).contains(&relocation.instruction_index)
+        })
+        || output.instructions.iter().enumerate().any(|(index, instruction)| {
+            !(start..start + 19).contains(&index)
+                && matches!(
+                    instruction,
+                    Instruction::BranchConditionalForward { target, .. }
+                        | Instruction::Branch { target }
+                        if (start + 1..start + 19).contains(target)
+                )
+        })
+    {
+        return None;
+    }
+    Some(DominatedThreeWayMax {
+        start,
+        base: *base,
+        second_offset: *second_offset,
+        third_offset: *third_offset,
+        branch_options: *options,
+        condition_bit: *condition_bit,
+    })
 }
 
 fn chained_float_literal_or(
@@ -379,6 +530,57 @@ mod tests {
         assert_eq!(
             chained_float_literal_or(&output),
             Some(ChainedFloatLiteralOr { start: 0, terms: 3 })
+        );
+    }
+
+    #[test]
+    fn recognizes_a_dominated_three_way_maximum() {
+        let start = 2;
+        let conditional = |target| Instruction::BranchConditionalForward {
+            options: 4,
+            condition_bit: 0,
+            target,
+        };
+        let mut instructions = vec![
+            Instruction::load_immediate(0, 1),
+            Instruction::load_immediate(0, 2),
+        ];
+        instructions.extend([
+            Instruction::LoadFloatSingle { d: 1, a: 29, offset: 4 },
+            Instruction::LoadFloatSingle { d: 0, a: 29, offset: 8 },
+            Instruction::FloatCompareOrdered { a: 1, b: 0 },
+            conditional(start + 6),
+            Instruction::LoadFloatSingle { d: 0, a: 29, offset: 4 },
+            Instruction::Branch { target: start + 7 },
+            Instruction::LoadFloatSingle { d: 0, a: 29, offset: 8 },
+            Instruction::LoadFloatSingle { d: 1, a: 29, offset: 12 },
+            Instruction::FloatCompareOrdered { a: 0, b: 1 },
+            conditional(start + 18),
+            Instruction::LoadFloatSingle { d: 1, a: 29, offset: 4 },
+            Instruction::LoadFloatSingle { d: 0, a: 29, offset: 8 },
+            Instruction::FloatCompareOrdered { a: 1, b: 0 },
+            conditional(start + 16),
+            Instruction::LoadFloatSingle { d: 2, a: 29, offset: 4 },
+            Instruction::Branch { target: start + 17 },
+            Instruction::LoadFloatSingle { d: 2, a: 29, offset: 8 },
+            Instruction::Branch { target: start + 19 },
+            Instruction::LoadFloatSingle { d: 2, a: 29, offset: 12 },
+        ]);
+        let output = mwcc_machine_code::MachineFunction {
+            instructions,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            dominated_three_way_max(&output, start),
+            Some(DominatedThreeWayMax {
+                start,
+                base: 29,
+                second_offset: 8,
+                third_offset: 12,
+                branch_options: 4,
+                condition_bit: 0,
+            })
         );
     }
 
