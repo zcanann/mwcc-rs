@@ -112,6 +112,10 @@ impl StructuredBlockingQueueTransaction {
         generator: &mut Generator,
         homes: StructuredBlockingQueueHomes,
     ) {
+        match self.direction {
+            Direction::Enqueue => self.schedule_enqueue_body(generator, homes),
+            Direction::Dequeue => self.schedule_dequeue_body(generator, homes),
+        }
         self.schedule_prologue(
             generator,
             homes.owner,
@@ -169,6 +173,114 @@ impl StructuredBlockingQueueTransaction {
                 _ => {}
             }
         }
+    }
+
+    fn schedule_enqueue_body(
+        &self,
+        generator: &mut Generator,
+        homes: StructuredBlockingQueueHomes,
+    ) {
+        let Some(start) = generator
+            .output
+            .instructions
+            .windows(19)
+            .position(|window| enqueue_body(window, homes))
+        else {
+            return;
+        };
+        let branch = generator.output.instructions[start + 3].clone();
+        crate::move_instruction_before_retargeting(generator, start + 18, start + 16);
+        generator.output.instructions.splice(
+            start..start + 16,
+            [
+                load_member(6, homes.owner, 20),
+                load_member(4, homes.owner, 28),
+                Instruction::CompareWord { a: 6, b: 4 },
+                branch,
+                load_member(0, homes.owner, 24),
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: homes.owner,
+                    immediate: 8,
+                },
+                load_member(5, homes.owner, 16),
+                Instruction::Add { d: 4, a: 0, b: 4 },
+                Instruction::DivideWord { d: 0, a: 4, b: 6 },
+                Instruction::MultiplyLow { d: 0, a: 0, b: 6 },
+                Instruction::SubtractFrom { d: 0, a: 0, b: 4 },
+                Instruction::ShiftLeftImmediate {
+                    a: 0,
+                    s: 0,
+                    shift: 2,
+                },
+                Instruction::StoreWordIndexed {
+                    s: homes.payload,
+                    a: 5,
+                    b: 0,
+                },
+                load_member(4, homes.owner, 28),
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 4,
+                    immediate: 1,
+                },
+                store_member(0, homes.owner, 28),
+            ],
+        );
+        crate::remove_instruction_retargeting_to_next(generator, start + 18);
+        crate::remove_instruction_retargeting_to_next(generator, start + 17);
+    }
+
+    fn schedule_dequeue_body(
+        &self,
+        generator: &mut Generator,
+        homes: StructuredBlockingQueueHomes,
+    ) {
+        let Some(start) = generator
+            .output
+            .instructions
+            .windows(17)
+            .position(|window| dequeue_body(window, homes))
+        else {
+            return;
+        };
+        generator.output.instructions.splice(
+            start..start + 16,
+            [
+                load_member(0, homes.owner, 24),
+                load_member(3, homes.owner, 16),
+                Instruction::ShiftLeftImmediate {
+                    a: 0,
+                    s: 0,
+                    shift: 2,
+                },
+                Instruction::LoadWordIndexed { d: 0, a: 3, b: 0 },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: homes.payload,
+                    offset: 0,
+                },
+                load_member(5, homes.owner, 24),
+                Instruction::move_register(3, homes.owner),
+                load_member(4, homes.owner, 20),
+                Instruction::AddImmediate {
+                    d: 5,
+                    a: 5,
+                    immediate: 1,
+                },
+                Instruction::DivideWord { d: 0, a: 5, b: 4 },
+                Instruction::MultiplyLow { d: 0, a: 0, b: 4 },
+                Instruction::SubtractFrom { d: 0, a: 0, b: 5 },
+                store_member(0, homes.owner, 24),
+                load_member(4, homes.owner, 28),
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 4,
+                    immediate: -1,
+                },
+                store_member(0, homes.owner, 28),
+            ],
+        );
     }
 
     fn schedule_prologue(
@@ -276,6 +388,90 @@ fn load(register: u8, offset: i16) -> Instruction {
         a: 1,
         offset,
     }
+}
+
+fn load_member(destination: u8, owner: u8, offset: i16) -> Instruction {
+    Instruction::LoadWord {
+        d: destination,
+        a: owner,
+        offset,
+    }
+}
+
+fn store_member(source: u8, owner: u8, offset: i16) -> Instruction {
+    Instruction::StoreWord {
+        s: source,
+        a: owner,
+        offset,
+    }
+}
+
+fn enqueue_body(instructions: &[Instruction], homes: StructuredBlockingQueueHomes) -> bool {
+    matches!(instructions,
+        [
+            Instruction::LoadWord { a, offset: 20, .. },
+            Instruction::LoadWord { a: used_owner, offset: 28, .. },
+            Instruction::CompareWord { .. },
+            Instruction::BranchConditionalForward { .. },
+            Instruction::LoadWord { a: first_owner, offset: 24, .. },
+            Instruction::LoadWord { a: used_reload_owner, offset: 28, .. },
+            Instruction::LoadWord { a: count_reload_owner, offset: 20, .. },
+            Instruction::Add { .. },
+            Instruction::DivideWord { .. },
+            Instruction::MultiplyLow { .. },
+            Instruction::SubtractFrom { .. },
+            Instruction::LoadWord { a: array_owner, offset: 16, .. },
+            Instruction::ShiftLeftImmediate { shift: 2, .. },
+            Instruction::StoreWordIndexed { s, .. },
+            Instruction::LoadWord { a: final_used_owner, offset: 28, .. },
+            Instruction::AddImmediate { immediate: 1, .. },
+            Instruction::StoreWord { a: store_owner, offset: 28, .. },
+            Instruction::AddImmediate { d: 3, a: wake_owner, immediate: 8 },
+            Instruction::BranchAndLink { target },
+        ] if *a == homes.owner
+            && *used_owner == homes.owner
+            && *first_owner == homes.owner
+            && *used_reload_owner == homes.owner
+            && *count_reload_owner == homes.owner
+            && *array_owner == homes.owner
+            && *s == homes.payload
+            && *final_used_owner == homes.owner
+            && *store_owner == homes.owner
+            && *wake_owner == homes.owner
+            && target == "OSWakeupThread")
+}
+
+fn dequeue_body(instructions: &[Instruction], homes: StructuredBlockingQueueHomes) -> bool {
+    matches!(instructions,
+        [
+            Instruction::LoadWord { a, offset: 16, .. },
+            Instruction::LoadWord { a: first_owner, offset: 24, .. },
+            Instruction::ShiftLeftImmediate { shift: 2, .. },
+            Instruction::LoadWordIndexed { .. },
+            Instruction::StoreWord { a: output, offset: 0, .. },
+            Instruction::LoadWord { a: tail_first_owner, offset: 24, .. },
+            Instruction::AddImmediate { immediate: 1, .. },
+            Instruction::LoadWord { a: count_owner, offset: 20, .. },
+            Instruction::DivideWord { .. },
+            Instruction::MultiplyLow { .. },
+            Instruction::SubtractFrom { .. },
+            Instruction::StoreWord { a: first_store_owner, offset: 24, .. },
+            Instruction::LoadWord { a: used_owner, offset: 28, .. },
+            Instruction::AddImmediate { immediate: -1, .. },
+            Instruction::StoreWord { a: used_store_owner, offset: 28, .. },
+            Instruction::Or { a: 3, s: wake_owner, b: wake_owner_copy },
+            Instruction::BranchAndLink { target },
+        ] if *a == homes.owner
+            && *first_owner == homes.owner
+            && *output == homes.payload
+            && *tail_first_owner == homes.owner
+            && *count_owner == homes.owner
+            && *first_store_owner == homes.owner
+            && *used_owner == homes.owner
+            && *used_store_owner == homes.owner
+            && *wake_owner == homes.owner
+            && *wake_owner_copy == homes.owner
+            && target == "OSWakeupThread")
 }
 
 fn queue_condition(expression: &Expression, owner: &str) -> Option<Direction> {
