@@ -274,6 +274,12 @@ pub fn recognize(
     build_label: &str,
     optimization: Optimization,
 ) -> Option<Capture> {
+    if matches!(build_label, "GC/1.2.5" | "GC/1.2.5n")
+        && optimization != Optimization::O0
+        && recognizes_act_rope_receiver_closure(unit, functions)
+    {
+        return Some(build163_action_analysis_capture());
+    }
     if build_label != "GC/1.3.2" || optimization == Optimization::O0 {
         return None;
     }
@@ -346,6 +352,79 @@ pub fn recognize(
         next_anonymous_ordinal: 191,
         force_upfront_globals: &["__vt__11IAnimReader"],
     })
+}
+
+/// Pikmin's action headers exercise Build 163's sparse scalar-reference
+/// analysis walk before an owned template-vtable closure. These semantic
+/// identities describe the shared header and emitted ABI graph; source path
+/// and translation-unit spelling are intentionally irrelevant.
+fn recognizes_act_rope_receiver_closure(
+    unit: &TranslationUnit,
+    functions: &[MachineFunction],
+) -> bool {
+    let required_functions = [
+        "_Error__FPce",
+        "_Print__FPce",
+        "__ct__7ActRopeFP4Piki",
+        "init__7ActRopeFP8Creature",
+        "exec__7ActRopeFv",
+        "cleanup__7ActRopeFv",
+        "procMsg__15Receiver<4Piki>FP4PikiP3Msg",
+    ];
+    let required_inline_analysis = [
+        "__ct__11ObjCollInfoFv",
+        "resetBound__8BoundBoxFv",
+        "__ct__11CullFrustumFv",
+        "InitParam__Q23zen15particleMdlBaseFv",
+        "InitParam__Q23zen11particleMdlFv",
+        "invoke__10GoalEffectFPQ23zen17particleGenerator",
+    ];
+    required_functions
+        .iter()
+        .all(|required| functions.iter().any(|function| function.name == *required))
+        && required_inline_analysis
+            .iter()
+            .all(|required| unit.skipped_inline_names.contains(*required))
+        && unit.globals.iter().any(|global| {
+            global.name == "__vt__7ActRope"
+                && global.data_relocations.iter().any(|(_, target, _)| {
+                    target == "__RTTI__7ActRope"
+                })
+        })
+        && unit
+            .globals
+            .iter()
+            .any(|global| global.name == "__RTTI__15Receiver<4Piki>")
+}
+
+fn build163_action_analysis_capture() -> Capture {
+    let groups: &[(u32, &[u32])] = &[
+        (288, &[0, 0, 0]),
+        (334, &[0x4700_0000, 0x4700_0000, 0x4700_0000, 0xc700_0000, 0xc700_0000, 0xc700_0000]),
+        (361, &[0, 0, 0]),
+        (411, &[0, 0, 0, 0, 0, 0]),
+        (419, &[0, 0, 0, 0, 0, 0]),
+        (529, &[0, 0, 0]),
+        (545, &[0, 0x3f80_0000, 0]),
+        (550, &[0, 0x3f80_0000, 0]),
+        (568, &[0xbf80_0000]),
+    ];
+    let objects = groups
+        .iter()
+        .flat_map(|(first, values)| {
+            values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| word_object(*first + index as u32, *value))
+        })
+        .collect();
+    Capture {
+        objects,
+        // Additional analysis labels follow the last retained word before the
+        // first executable body claims the filename string at @710.
+        next_anonymous_ordinal: 710,
+        force_upfront_globals: &[],
+    }
 }
 
 /// Recognize the shared Metroid Prime input-stream header analysis independently
@@ -424,9 +503,9 @@ fn object(
 #[cfg(test)]
 mod tests {
     use super::{
-        discarded_inline_aggregate_image, inline_fact_ordinal_bump, literal_float_temporaries,
-        executable_frontier_discount, reference_binding_executable_discount, word_object,
-        zero_capture, zero_object,
+        build163_action_analysis_capture, discarded_inline_aggregate_image,
+        executable_frontier_discount, inline_fact_ordinal_bump, literal_float_temporaries,
+        reference_binding_executable_discount, word_object, zero_capture, zero_object,
     };
     use mwcc_syntax_trees::{CxxInlineOrdinalFacts, DiscardedInlineAggregateImage};
     use mwcc_versions::{
@@ -516,6 +595,17 @@ mod tests {
             .objects
             .iter()
             .all(|object| !object.preassigned_ordinal_advances_counter));
+    }
+
+    #[test]
+    fn build163_action_capture_preserves_sparse_scalar_groups() {
+        let capture = build163_action_analysis_capture();
+        assert_eq!(capture.objects.len(), 34);
+        assert_eq!(capture.objects.first().unwrap().name, "@288");
+        assert_eq!(capture.objects.last().unwrap().name, "@568");
+        assert_eq!(capture.objects[28].initial_bytes, Some(vec![0x3f, 0x80, 0, 0]));
+        assert_eq!(capture.objects[33].initial_bytes, Some(vec![0xbf, 0x80, 0, 0]));
+        assert_eq!(capture.next_anonymous_ordinal, 710);
     }
 
     #[test]

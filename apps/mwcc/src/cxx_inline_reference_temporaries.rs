@@ -7,8 +7,8 @@
 //! mixing compiler-version weights into parsing.
 
 use mwcc_syntax_trees::{
-    ArmBody, Expression, Function, GuardedReturn, LocalDeclaration, Statement, TranslationUnit,
-    Type,
+    ArmBody, BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, Statement,
+    TranslationUnit, Type, UnaryOperator,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -23,11 +23,25 @@ pub struct Analysis {
 
 pub fn analyze(unit: &TranslationUnit) -> Analysis {
     let mut seen = HashSet::new();
-    unit.skipped_inline_definitions
-        .iter()
-        .filter(|function| seen.insert(function.name.as_str()))
-        .map(|function| analyze_function(function, &unit.cxx_const_reference_parameter_types))
-        .sum()
+    let diagnostic = std::env::var_os("MWCC_DIAGNOSTIC_SYNTAX_TREE").is_some();
+    let mut total = Analysis::default();
+    for function in &unit.skipped_inline_definitions {
+        let analysis = analyze_function(function, &unit.cxx_const_reference_parameter_types);
+        let first = seen.insert(function.name.as_str());
+        if diagnostic && (analysis.binding_count != 0 || !first) {
+            eprintln!(
+                "cxx-reference-temporaries {}{} bindings={} words={:08x?}",
+                function.name,
+                if first { "" } else { " [duplicate]" },
+                analysis.binding_count,
+                analysis.materialized_float_words,
+            );
+        }
+        if first {
+            total = total + analysis;
+        }
+    }
+    total
 }
 
 impl std::ops::Add for Analysis {
@@ -201,14 +215,50 @@ fn analyze_call_bindings(
         }
         analysis.binding_count += 1;
         if *temporary_type == Type::Float {
-            if let Expression::FloatLiteral(value) = argument {
-                analysis
-                    .materialized_float_words
-                    .push((*value as f32).to_bits());
+            if let Some(word) = float_temporary_word(argument) {
+                analysis.materialized_float_words.push(word);
+            } else if std::env::var_os("MWCC_DIAGNOSTIC_REFERENCE_TEMPORARIES").is_some() {
+                eprintln!("unmaterialized-float-reference {name}: {argument:#?}");
             }
         }
     }
     analysis
+}
+
+/// Fold the source forms that create a scalar float image during discarded
+/// inline analysis. The parameter type has already established the conversion
+/// to `float`; preserve the expression shape here only long enough to recover
+/// the value MWCC stores in its orphaned temporary.
+fn float_temporary_word(expression: &Expression) -> Option<u32> {
+    fn scalar(expression: &Expression) -> Option<f64> {
+        match expression {
+            Expression::IntegerLiteral(value) => Some(*value as f64),
+            Expression::FloatLiteral(value) => Some(*value),
+            Expression::Unary {
+                operator: UnaryOperator::Negate,
+                operand,
+            } => scalar(operand).map(|value| -value),
+            Expression::Cast { operand, .. } => scalar(operand),
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } => {
+                let left = scalar(left)?;
+                let right = scalar(right)?;
+                match operator {
+                    BinaryOperator::Add => Some(left + right),
+                    BinaryOperator::Subtract => Some(left - right),
+                    BinaryOperator::Multiply => Some(left * right),
+                    BinaryOperator::Divide if right != 0.0 => Some(left / right),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    scalar(expression).map(|value| (value as f32).to_bits())
 }
 
 fn is_lvalue(expression: &Expression) -> bool {
@@ -358,6 +408,32 @@ mod tests {
         assert_eq!(
             analysis.materialized_float_words,
             vec![0.0f32.to_bits(), 1.25f32.to_bits()]
+        );
+    }
+
+    #[test]
+    fn folds_converted_and_negated_float_temporary_images() {
+        let bindings = HashMap::from([(
+            "set__1VFRCfRCf".to_string(),
+            vec![None, Some(Type::Float), Some(Type::Float)],
+        )]);
+        let expression = Expression::Call {
+            name: "set__1VFRCfRCf".to_string(),
+            arguments: vec![
+                Expression::Variable("this".to_string()),
+                Expression::IntegerLiteral(1),
+                Expression::Unary {
+                    operator: UnaryOperator::Negate,
+                    operand: Box::new(Expression::FloatLiteral(1.0)),
+                },
+            ],
+        };
+
+        let analysis = analyze_expression(&expression, &bindings);
+        assert_eq!(analysis.binding_count, 2);
+        assert_eq!(
+            analysis.materialized_float_words,
+            vec![1.0f32.to_bits(), (-1.0f32).to_bits()]
         );
     }
 }
