@@ -92,6 +92,53 @@ pub(crate) fn nested_retained_switch_hidden_label_count(function: &Function) -> 
     statements(function, &function.statements, false)
 }
 
+/// Labels by which an outer dense-switch pool walk observes a nested retained
+/// sparse dispatch. The nested switch owns one label per explicit case, one
+/// for its default edge when present, plus the dispatch and shared join. Its
+/// arm-internal optimizer labels remain local to the nested owner and must not
+/// advance the outer jump-table ordinal.
+pub(crate) fn nested_retained_switch_dispatch_label_count(function: &Function) -> u32 {
+    fn statements(body: &[Statement], inside_switch: bool) -> u32 {
+        body.iter()
+            .map(|statement| match statement {
+                Statement::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    statements(then_body, inside_switch)
+                        + statements(else_body, inside_switch)
+                }
+                Statement::Loop { body, .. } => statements(body, inside_switch),
+                Statement::Switch { arms, default, .. } => {
+                    let retained = if inside_switch
+                        && super::structured_sparse_switch::is_sparse_retained_switch(arms)
+                    {
+                        arms.len() as u32 + u32::from(default.is_some()) + 2
+                    } else {
+                        0
+                    };
+                    retained
+                        + arms
+                            .iter()
+                            .map(|arm| match &arm.body {
+                                ArmBody::Statements(body) => statements(body, true),
+                                ArmBody::Return(_) => 0,
+                            })
+                            .sum::<u32>()
+                        + default.as_ref().map_or(0, |body| match body {
+                            ArmBody::Statements(body) => statements(body, true),
+                            ArmBody::Return(_) => 0,
+                        })
+                }
+                _ => 0,
+            })
+            .sum()
+    }
+
+    statements(&function.statements, false)
+}
+
 /// Build the structured emitter's control-flow view.
 ///
 /// Analysis still consumes the fully canonicalized if-tree returned by
@@ -523,6 +570,36 @@ mod tests {
             body: ArmBody::Statements(vec![Statement::Break]),
             falls_through: false,
         }
+    }
+
+    #[test]
+    fn counts_only_dispatch_labels_for_a_nested_sparse_switch() {
+        let nested = Statement::Switch {
+            scrutinee: Expression::Variable("command".into()),
+            arms: [1, 4, 14, 15]
+                .into_iter()
+                .map(|value| SwitchArm {
+                    value,
+                    body: ArmBody::Statements(vec![Statement::Break]),
+                    falls_through: false,
+                })
+                .collect(),
+            default: Some(ArmBody::Statements(vec![Statement::Break])),
+        };
+        let outer = Statement::Switch {
+            scrutinee: Expression::Variable("state".into()),
+            arms: vec![SwitchArm {
+                value: 0,
+                body: ArmBody::Statements(vec![nested]),
+                falls_through: false,
+            }],
+            default: None,
+        };
+
+        assert_eq!(
+            nested_retained_switch_dispatch_label_count(&function(vec![outer])),
+            7
+        );
     }
 
     #[test]

@@ -581,6 +581,8 @@ pub struct Behavior {
     pub complex_structured_dense_switch_labels_per_arm: u8,
     /// Fixed dispatch labels retained by a complex allocator-backed dense switch.
     pub complex_structured_dense_switch_base_labels: u8,
+    /// Source-label replay weight of a late mixed inline transaction.
+    pub mixed_inline_source_hidden_replay_weight: u8,
     /// Anonymous-label residue retained for each explicitly empty conditional
     /// then-body.
     pub empty_conditional_then_label_bump: u8,
@@ -1005,6 +1007,10 @@ impl Behavior {
                 .build
                 .profile
                 .complex_structured_dense_switch_base_labels(),
+            mixed_inline_source_hidden_replay_weight: config
+                .build
+                .profile
+                .mixed_inline_source_hidden_replay_weight(),
             empty_conditional_then_label_bump: config
                 .build
                 .profile
@@ -2527,6 +2533,12 @@ mod tests {
 
         assert!(!behavior.ordinary_inline_substitution_advances_ordinals);
         assert!(behavior.inline_initializer_ordinals_follow_strings);
+        assert_eq!(behavior.mixed_inline_source_hidden_replay_weight, 4);
+        assert_eq!(
+            Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2))
+                .mixed_inline_source_hidden_replay_weight,
+            0
+        );
     }
 
     #[test]

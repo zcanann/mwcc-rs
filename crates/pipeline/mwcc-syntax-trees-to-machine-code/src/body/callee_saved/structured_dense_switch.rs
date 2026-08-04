@@ -308,6 +308,15 @@ impl Generator {
                 }
                 ArmBody::Return(_) => 0,
             });
+        let nested_retained_dispatch_labels =
+            super::structured_switch_lowering::nested_retained_switch_dispatch_label_count(
+                function,
+            );
+        let shared_scalar_result = dense_switch_writes_shared_scalar_result(
+            function,
+            arms,
+            default,
+        );
         let simple_terminal_calls = arms
             .iter()
             .map(|arm| &arm.body)
@@ -330,7 +339,7 @@ impl Generator {
                         )
                 )
             });
-        let labels_per_arm = if simple_terminal_calls {
+        let labels_per_arm = if simple_terminal_calls || shared_scalar_result {
             1
         } else {
             u32::from(
@@ -346,12 +355,30 @@ impl Generator {
                     .complex_structured_dense_switch_base_labels,
             )
         };
+        if std::env::var_os("MWCC_DIAGNOSTIC_ANONYMOUS_ORDINALS").is_some() {
+            eprintln!(
+                "dense-switch-ordinals {}: arms={} default={} body_hidden={} nested_dispatch={} simple={} shared_scalar={} per_arm={} base={}",
+                function.name,
+                arms.len(),
+                default.is_some(),
+                body_hidden_labels,
+                nested_retained_dispatch_labels,
+                simple_terminal_calls,
+                shared_scalar_result,
+                labels_per_arm,
+                base_labels,
+            );
+        }
         self.output.jump_tables.push(JumpTable {
             entries,
             anonymous_offset: arms.len() as u32 * labels_per_arm
                 + base_labels
                 + u32::from(default.is_some())
-                + body_hidden_labels,
+                + if shared_scalar_result {
+                    1
+                } else {
+                    body_hidden_labels + nested_retained_dispatch_labels
+                },
         });
         // The table occupies its assigned `@N` slot. The writer's jump-table
         // walk lands on N rather than advancing past it, so retain the one
@@ -383,6 +410,84 @@ impl Generator {
         self.prematerialized_constants.clear();
         self.prematerialized_float_constants.clear();
     }
+}
+
+/// A dense switch that only selects the scalar returned after the switch has
+/// one shared result join. Its case bodies do not retain the legacy optimizer
+/// node block charged to general side-effecting arms.
+fn dense_switch_writes_shared_scalar_result(
+    function: &Function,
+    arms: &[mwcc_syntax_trees::SwitchArm],
+    default: Option<&ArmBody>,
+) -> bool {
+    let Some(Expression::Variable(result)) = function.return_expression.as_ref() else {
+        return false;
+    };
+    let local_names = function
+        .locals
+        .iter()
+        .map(|local| local.name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut saw_assignment = false;
+    arms.iter()
+        .map(|arm| &arm.body)
+        .chain(default)
+        .all(|body| match body {
+            ArmBody::Statements(statements) => {
+                statements_only_assign_local_scalars(
+                    statements,
+                    result,
+                    &local_names,
+                    &mut saw_assignment,
+                )
+            }
+            ArmBody::Return(_) => false,
+        })
+        && saw_assignment
+}
+
+fn statements_only_assign_local_scalars(
+    statements: &[Statement],
+    result: &str,
+    local_names: &std::collections::HashSet<&str>,
+    saw_assignment: &mut bool,
+) -> bool {
+    statements.iter().all(|statement| match statement {
+        Statement::Assign { name, value }
+            if local_names.contains(name.as_str())
+                && !crate::analysis::expression_has_call(value) =>
+        {
+            *saw_assignment |= name == result;
+            true
+        }
+        Statement::Store {
+            target: Expression::Variable(name),
+            value,
+        } if local_names.contains(name.as_str())
+            && !crate::analysis::expression_has_call(value) =>
+        {
+            *saw_assignment |= name == result;
+            true
+        }
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } if !crate::analysis::expression_has_call(condition) => {
+            statements_only_assign_local_scalars(
+                then_body,
+                result,
+                local_names,
+                saw_assignment,
+            ) && statements_only_assign_local_scalars(
+                else_body,
+                result,
+                local_names,
+                saw_assignment,
+            )
+        }
+        _ => false,
+    })
 }
 
 pub(super) fn switch_bodies_use_name(
@@ -499,6 +604,111 @@ fn block_control_outcome(statements: &[Statement]) -> StatementControlOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scalar_local(name: &str) -> LocalDeclaration {
+        LocalDeclaration {
+            declared_type: Type::Int,
+            name: name.into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        }
+    }
+
+    fn returned_scalar_function(statements: Vec<Statement>) -> Function {
+        Function {
+            return_type: Type::Int,
+            name: "select".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![scalar_local("result"), scalar_local("scratch")],
+            statements,
+            guards: Vec::new(),
+            return_expression: Some(Expression::Variable("result".into())),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
+
+    fn statement_arm(value: i64, statements: Vec<Statement>) -> mwcc_syntax_trees::SwitchArm {
+        mwcc_syntax_trees::SwitchArm {
+            value,
+            body: ArmBody::Statements(statements),
+            falls_through: false,
+        }
+    }
+
+    #[test]
+    fn shared_result_switch_allows_local_scratch_assignments() {
+        let arms = vec![
+            statement_arm(
+                0,
+                vec![Statement::Assign {
+                    name: "result".into(),
+                    value: Expression::IntegerLiteral(0),
+                }],
+            ),
+            statement_arm(
+                1,
+                vec![
+                    Statement::Assign {
+                        name: "scratch".into(),
+                        value: Expression::IntegerLiteral(7),
+                    },
+                    Statement::If {
+                        condition: Expression::Variable("scratch".into()),
+                        then_body: vec![Statement::Assign {
+                            name: "result".into(),
+                            value: Expression::IntegerLiteral(1),
+                        }],
+                        else_body: vec![Statement::Assign {
+                            name: "result".into(),
+                            value: Expression::IntegerLiteral(0),
+                        }],
+                    },
+                ],
+            ),
+        ];
+        let function = returned_scalar_function(Vec::new());
+
+        assert!(dense_switch_writes_shared_scalar_result(
+            &function, &arms, None,
+        ));
+    }
+
+    #[test]
+    fn shared_result_switch_rejects_nonlocal_side_effects() {
+        let arms = vec![statement_arm(
+            0,
+            vec![
+                Statement::Assign {
+                    name: "result".into(),
+                    value: Expression::IntegerLiteral(1),
+                },
+                Statement::Store {
+                    target: Expression::Variable("global_state".into()),
+                    value: Expression::IntegerLiteral(1),
+                },
+            ],
+        )];
+        let function = returned_scalar_function(Vec::new());
+
+        assert!(!dense_switch_writes_shared_scalar_result(
+            &function, &arms, None,
+        ));
+    }
 
     #[test]
     fn rebased_computed_scrutinee_avoids_the_addi_zero_base() {

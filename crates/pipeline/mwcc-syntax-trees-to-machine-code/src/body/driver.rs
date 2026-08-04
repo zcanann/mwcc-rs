@@ -1722,6 +1722,43 @@ impl Generator {
             return Ok(());
         }
         if let Some(expanded) = self.inline_bodies.expand_selective_calls(function) {
+            if std::env::var_os("MWCC_DIAGNOSTIC_ANONYMOUS_ORDINALS").is_some() {
+                let source_hidden =
+                    super::callee_saved::hidden_label_count_with_switches(function);
+                let expanded_hidden = super::callee_saved::hidden_label_count_with_switches(
+                    &expanded.function,
+                );
+                let structured_hidden_discount = if expanded.discounts_structured_hidden_labels {
+                    expanded_hidden
+                        .saturating_sub(source_hidden)
+                        + super::callee_saved::nested_retained_switch_hidden_label_count(
+                            &expanded.function,
+                        )
+                        .saturating_sub(
+                            super::callee_saved::nested_retained_switch_hidden_label_count(
+                                function,
+                            ),
+                        )
+                } else {
+                    0
+                };
+                eprintln!(
+                    "inline-ordinals {}: lane=selective statement={} value={} retained={} advances={} weight={} value_frame={} source_hidden={} expanded_hidden={} structured_discount={}",
+                    function.name,
+                    expanded.statement_body_substitutions,
+                    expanded.value_body_substitutions,
+                    expanded.retains_ordinary_residue,
+                    expanded.advances_ordinary_ordinals,
+                    self.behavior.inline_statement_substitution_label_weight,
+                    crate::inline_expansion::legacy_value_body_frame_residue_bytes(
+                        &expanded.function,
+                        expanded.value_body_substitutions,
+                    ),
+                    source_hidden,
+                    expanded_hidden,
+                    structured_hidden_discount,
+                );
+            }
             if expanded.retains_ordinary_residue {
                 self.legacy_inline_expansion_frame_bytes +=
                     crate::inline_expansion::legacy_statement_body_frame_residue_bytes(
@@ -1822,11 +1859,41 @@ impl Generator {
                     .output
                     .anonymous_label_bump
                     .saturating_sub(hidden_label_discount);
+                if expanded.replays_source_hidden_ordinals {
+                    self.output.post_constant_label_bump = self
+                        .output
+                        .post_constant_label_bump
+                        .saturating_add(
+                            super::callee_saved::hidden_label_count_with_switches(function)
+                                .saturating_mul(u32::from(
+                                    self.behavior
+                                        .mixed_inline_source_hidden_replay_weight,
+                                ))
+                                .saturating_add(
+                                    expanded.distinct_substituted_callees,
+                                ),
+                        );
+                }
             }
             return result;
         }
         if calls_inline_candidate {
             if let Some(expanded) = self.inline_bodies.expand_calls_with_facts(function) {
+                if std::env::var_os("MWCC_DIAGNOSTIC_ANONYMOUS_ORDINALS").is_some() {
+                    eprintln!(
+                        "inline-ordinals {}: lane=automatic statement={} value={} retained={} advances={} weight={} value_frame={}",
+                        function.name,
+                        expanded.statement_body_substitutions,
+                        expanded.value_body_substitutions,
+                        expanded.retains_ordinary_residue,
+                        expanded.advances_ordinary_ordinals,
+                        self.behavior.inline_statement_substitution_label_weight,
+                        crate::inline_expansion::legacy_value_body_frame_residue_bytes(
+                            &expanded.function,
+                            expanded.value_body_substitutions,
+                        ),
+                    );
+                }
                 // Ordinary automatic inlining is optional: MWCC keeps an
                 // externally callable definition, and an unsupported expanded
                 // topology may still be compiled through that call. Lower the

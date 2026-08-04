@@ -157,6 +157,23 @@ pub fn lower_function(
         &mut output,
         Behavior::resolve(&config),
     );
+    if std::env::var_os("MWCC_DIAGNOSTIC_ANONYMOUS_ORDINALS").is_some() {
+        eprintln!(
+            "anonymous-ordinals {}: front={} constants={} strings={} frame={} jumps={:?} post={} rollback={}",
+            function.name,
+            output.object_anonymous_bump(),
+            output.constants.len(),
+            output.string_literals.len(),
+            output.frame.is_some(),
+            output
+                .jump_tables
+                .iter()
+                .map(|table| table.anonymous_offset)
+                .collect::<Vec<_>>(),
+            output.post_constant_label_bump,
+            output.post_function_counter_rollback,
+        );
+    }
     Ok(output)
 }
 

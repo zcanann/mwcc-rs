@@ -849,6 +849,13 @@ pub trait CodegenProfile: core::fmt::Debug {
         1
     }
 
+    /// Replay weight for source control labels retained by a late mixed
+    /// statement/value inline transaction. Most optimizer generations select
+    /// that lane after anonymous-label analysis and therefore retain nothing.
+    fn mixed_inline_source_hidden_replay_weight(&self) -> u8 {
+        0
+    }
+
     /// Anonymous-label residue retained for an explicitly empty conditional
     /// then-body. Most generations discard the body completely.
     fn empty_conditional_then_label_bump(&self) -> u8 {
@@ -2125,6 +2132,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn complex_structured_dense_switch_base_labels(&self) -> u8 {
         2
+    }
+
+    fn mixed_inline_source_hidden_replay_weight(&self) -> u8 {
+        4
     }
 
     fn empty_conditional_then_label_bump(&self) -> u8 {

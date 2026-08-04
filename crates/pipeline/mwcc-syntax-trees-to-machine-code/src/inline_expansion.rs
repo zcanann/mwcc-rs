@@ -183,6 +183,12 @@ pub(crate) struct ExpandedCalls {
     pub(crate) statement_frame_residue_substitutions: usize,
     pub(crate) statement_mutating_body_substitutions: usize,
     pub(crate) value_body_substitutions: usize,
+    /// Number of distinct source callees for which at least one call site was
+    /// removed by this expansion transaction.
+    pub(crate) distinct_substituted_callees: u32,
+    /// Whether this mixed late-inline lane replays the caller's source control
+    /// graph into the post-pool anonymous-ordinal stream.
+    pub(crate) replays_source_hidden_ordinals: bool,
     /// Whether ordinary inline-analysis frame residue applies to this lane.
     pub(crate) retains_ordinary_residue: bool,
     /// Whether this lane consumes ordinary inline-analysis anonymous-symbol
@@ -900,6 +906,40 @@ impl InlineBodySet {
         if statement_calls < 3 || guarded_calls == 0 {
             return None;
         }
+        if std::env::var_os("MWCC_DIAGNOSTIC_ANONYMOUS_ORDINALS").is_some() {
+            let mut statement_sites = calls
+                .iter()
+                .filter_map(|(name, count)| {
+                    let body = visible_bodies.get(name)?;
+                    Some(format!(
+                        "{name}:{count}:w{}:l{}:g{}",
+                        safety::statement_weight(&body.statements),
+                        body.locals.len(),
+                        body.guards.len(),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let mut value_sites = calls
+                .iter()
+                .filter_map(|(name, count)| {
+                    let body = visible_values.get(name)?;
+                    Some(format!(
+                        "{name}:{count}:w{}:l{}:g{}",
+                        safety::statement_weight(&body.source.statements),
+                        body.source.locals.len(),
+                        body.source.guards.len(),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            statement_sites.sort();
+            value_sites.sort();
+            eprintln!(
+                "inline-ordinal-sites {}: statement=[{}] value=[{}]",
+                function.name,
+                statement_sites.join(","),
+                value_sites.join(","),
+            );
+        }
 
         let mut expanded = self.clone();
         expanded.bodies.extend(visible_bodies);
@@ -911,6 +951,15 @@ impl InlineBodySet {
         result.advances_ordinary_ordinals = false;
         result.discounts_structured_hidden_labels = true;
         result.retains_source_call_survivors = true;
+        // The build-163 replay transaction is the measured large callback
+        // topology: five statement sites, six value sites, and seven distinct
+        // helper bodies. Smaller mixed lanes are selected after ordinal
+        // analysis and retain no replay block.
+        result.replays_source_hidden_ordinals = mixed_inline_replays_source_hidden_ordinals(
+            result.statement_body_substitutions,
+            result.value_body_substitutions,
+            result.distinct_substituted_callees,
+        );
         Some(result)
     }
 
@@ -1144,6 +1193,14 @@ impl InlineBodySet {
         let mut required_scope = self.clone();
         required_scope.values = values;
         let calls_remain = required_scope.calls_required(&expanded);
+        let mut remaining_calls = HashMap::new();
+        collect_function_calls(&expanded, &mut remaining_calls);
+        let distinct_substituted_callees = source_calls
+            .iter()
+            .filter(|(name, count)| {
+                remaining_calls.get(*name).copied().unwrap_or(0) < **count
+            })
+            .count() as u32;
         if calls_remain
             && std::env::var_os("MWCC_CAPTURE_FUNCTION")
                 .is_some_and(|name| name == std::ffi::OsStr::new(&function.name))
@@ -1166,6 +1223,8 @@ impl InlineBodySet {
             statement_frame_residue_substitutions,
             statement_mutating_body_substitutions,
             value_body_substitutions,
+            distinct_substituted_callees,
+            replays_source_hidden_ordinals: false,
             retains_ordinary_residue: true,
             advances_ordinary_ordinals: true,
             discounts_structured_hidden_labels: false,
@@ -1954,6 +2013,16 @@ fn collect_depth_limited_fallbacks(
     }
 }
 
+fn mixed_inline_replays_source_hidden_ordinals(
+    statement_substitutions: usize,
+    value_substitutions: usize,
+    distinct_substituted_callees: u32,
+) -> bool {
+    statement_substitutions == 5
+        && value_substitutions == 6
+        && distinct_substituted_callees == 7
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1961,6 +2030,14 @@ mod tests {
         AsmInstruction, AsmItem, AsmOperand, BinaryOperator, InlineAsmBlock,
         LocalDeclaration, LoopKind, Parameter, Pointee, Type,
     };
+
+    #[test]
+    fn only_the_large_mixed_transaction_replays_source_ordinals() {
+        assert!(mixed_inline_replays_source_hidden_ordinals(5, 6, 7));
+        assert!(!mixed_inline_replays_source_hidden_ordinals(4, 6, 7));
+        assert!(!mixed_inline_replays_source_hidden_ordinals(5, 5, 7));
+        assert!(!mixed_inline_replays_source_hidden_ordinals(5, 6, 6));
+    }
 
     fn function(name: &str, parameters: Vec<Parameter>, statements: Vec<Statement>) -> Function {
         Function {
