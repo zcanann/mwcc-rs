@@ -211,6 +211,10 @@ pub(crate) enum LegacyCalleeSavedFrameLayout {
     /// beyond their physical save slots.
     CompactValueHomes,
     RetainEntryParameterTable,
+    /// An entry-parameter table and a deferred call-result local have distinct
+    /// optimizer identities. Build 163 keeps one physical lane for each even
+    /// when all three live values remain in callee-saved registers.
+    RetainEntryParameterTableAndDeferredLocalLane,
     /// A source guard that records one saved entry parameter before a call and
     /// retains another parameter across that call. Build 163 keeps both the
     /// condition-materialization lane and its ordinary entry-value table.

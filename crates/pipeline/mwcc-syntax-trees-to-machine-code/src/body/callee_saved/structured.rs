@@ -2408,7 +2408,9 @@ impl Generator {
         } else {
             logical_saved_homes
         };
-        self.legacy_callee_saved_frame_layout = if global_member_address_cache_plans
+        self.legacy_callee_saved_frame_layout = if async_callback_switch_layout.is_some() {
+            LegacyCalleeSavedFrameLayout::RetainEntryParameterTableAndDeferredLocalLane
+        } else if global_member_address_cache_plans
             .iter()
             .any(|plan| plan.defer_until_first_use)
         {

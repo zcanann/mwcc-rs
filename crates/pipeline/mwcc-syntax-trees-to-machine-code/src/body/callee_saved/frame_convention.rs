@@ -424,14 +424,10 @@ impl Generator {
             == LegacyCalleeSavedFrameLayout::RetainEagerLocalLane;
         let retain_guarded_entry_parameter_table = self.legacy_callee_saved_frame_layout
             == LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable;
-        let retain_guarded_local_lane = matches!(
-            self.legacy_callee_saved_frame_layout,
-            LegacyCalleeSavedFrameLayout::RetainDeferredLocalLane
-                | LegacyCalleeSavedFrameLayout::RetainDeferredGlobalMemberAddressLane
-        );
         let retain_entry_parameter_table = matches!(
             self.legacy_callee_saved_frame_layout,
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
+                | LegacyCalleeSavedFrameLayout::RetainEntryParameterTableAndDeferredLocalLane
                 | LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable
         );
         let recorded_saved_entry_home_before_call =
@@ -492,17 +488,13 @@ impl Generator {
                 usize::from(reserve_forwarded_parameter_lane)
             }
         };
-        let extra_lane_count = if preserve_logical_size || guarded_entry_table_is_frame_resident {
-            0
-        } else if retain_guarded_local_lane {
-            1
-        } else if self.legacy_discarded_call_locals == 0 {
-            inferred_entry_lane_count()
-        } else {
-            let retained_parameter_lanes = inferred_entry_lane_count();
-            let promoted_values = promoted_parameter_count.max(retained_parameter_lanes);
-            (promoted_values + self.legacy_discarded_call_locals).div_ceil(2)
-        };
+        let extra_lane_count = legacy_extra_lane_count(
+            self.legacy_callee_saved_frame_layout,
+            guarded_entry_table_is_frame_resident,
+            inferred_entry_lane_count(),
+            promoted_parameter_count,
+            self.legacy_discarded_call_locals,
+        );
         let entry_lane_bytes = i16::try_from(extra_lane_count * 8).unwrap_or(i16::MAX);
         // PreserveLogicalSize means the source-level local region already
         // accounts for the allocator's retained value storage. That policy
@@ -1878,6 +1870,39 @@ fn compact_linkage_first_saved_frame_size(saved_registers: usize) -> i16 {
         & !7
 }
 
+/// Count build 163's optimizer-only doubleword lanes after value-origin
+/// inference. Most deferred locals replace the inferred value lane; the
+/// callback-switch family proves that its entry table and deferred call result
+/// are distinct and therefore owns both.
+fn legacy_extra_lane_count(
+    layout: LegacyCalleeSavedFrameLayout,
+    guarded_entry_table_is_frame_resident: bool,
+    inferred_entry_lanes: usize,
+    promoted_parameter_count: usize,
+    discarded_call_locals: usize,
+) -> usize {
+    if layout == LegacyCalleeSavedFrameLayout::PreserveLogicalSize
+        || guarded_entry_table_is_frame_resident
+    {
+        0
+    } else if matches!(
+        layout,
+        LegacyCalleeSavedFrameLayout::RetainDeferredLocalLane
+            | LegacyCalleeSavedFrameLayout::RetainDeferredGlobalMemberAddressLane
+    ) {
+        1
+    } else if layout
+        == LegacyCalleeSavedFrameLayout::RetainEntryParameterTableAndDeferredLocalLane
+    {
+        inferred_entry_lanes.saturating_add(1)
+    } else if discarded_call_locals == 0 {
+        inferred_entry_lanes
+    } else {
+        let promoted_values = promoted_parameter_count.max(inferred_entry_lanes);
+        (promoted_values + discarded_call_locals).div_ceil(2)
+    }
+}
+
 fn shared_inline_aggregate_lane_offset(
     entry_lane_bytes: i16,
     inline_lane_bytes: i16,
@@ -2228,6 +2253,30 @@ mod tests {
         assert_eq!(compact_linkage_first_saved_frame_size(3), 24);
         assert_eq!(compact_linkage_first_saved_frame_size(4), 24);
         assert_eq!(compact_linkage_first_saved_frame_size(5), 32);
+    }
+
+    #[test]
+    fn callback_switch_retains_entry_and_deferred_local_lanes() {
+        assert_eq!(
+            legacy_extra_lane_count(
+                LegacyCalleeSavedFrameLayout::RetainEntryParameterTableAndDeferredLocalLane,
+                false,
+                1,
+                2,
+                0,
+            ),
+            2
+        );
+        assert_eq!(
+            legacy_extra_lane_count(
+                LegacyCalleeSavedFrameLayout::RetainDeferredLocalLane,
+                false,
+                1,
+                2,
+                0,
+            ),
+            1
+        );
     }
 
     #[test]
