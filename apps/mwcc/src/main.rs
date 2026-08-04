@@ -3020,6 +3020,9 @@ mod tests {
     #[path = "structured_7400_schedules.rs"]
     mod structured_7400_schedules;
 
+    #[path = "structured_heap_transactions.rs"]
+    mod structured_heap_transactions;
+
     #[path = "extern_unsized_array.rs"]
     mod extern_unsized_array;
 

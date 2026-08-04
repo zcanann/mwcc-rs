@@ -1283,6 +1283,7 @@ fn lower_function_body(
     if !function.peephole_disabled {
         generator.fold_recorded_boolean_zero_tests();
     }
+    generator.schedule_structured_heap_transactions();
     generator.normalize_float_to_int_scratch_images();
 
     // Debug lowering consumes final physical allocation, not the frontend's

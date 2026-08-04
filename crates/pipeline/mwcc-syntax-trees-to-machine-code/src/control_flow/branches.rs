@@ -1582,6 +1582,33 @@ impl Generator {
                     return Ok(false_branch_bo_bi(*operator)
                         .expect("is_comparison restricts the operator"));
                 }
+                // Two computed integer operands must remain live together at
+                // the compare.  Placing each independently through
+                // `condition_operand_register` would evaluate both into r0 and
+                // silently reduce `computed_a < computed_b` to `cmpw r0,r0`.
+                // Reuse the ordinary binary operand planner: it evaluates one
+                // subtree into a virtual home, keeps that lifetime live, and
+                // evaluates the other into scratch with the normal
+                // Sethi-Ullman ordering.
+                if is_complex(left) && is_complex(right) {
+                    let operands = self.place_general_operands(*operator, left, right)?;
+                    let signed = self.usual_integer_binary_signedness(left, right)?;
+                    if signed {
+                        self.output.instructions.push(Instruction::CompareWord {
+                            a: operands.left,
+                            b: operands.right,
+                        });
+                    } else {
+                        self.output
+                            .instructions
+                            .push(Instruction::CompareLogicalWord {
+                                a: operands.left,
+                                b: operands.right,
+                            });
+                    }
+                    return Ok(false_branch_bo_bi(*operator)
+                        .expect("is_comparison restricts the operator"));
+                }
                 // `unsigned u > 0` / `0 < u` is `u != 0`, and `unsigned u <= 0` / `0 >= u` is
                 // `u == 0` — as a branch mwcc uses the equality idiom (`bne`/`beq`), not the
                 // unsigned relational one (`bgt`/`ble`). Rewrite to the equality and recurse, the
