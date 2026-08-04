@@ -575,7 +575,12 @@ pub(super) fn lower(
         }
         let data =
             data::general_records(unit, &globals, first_global_id, &aggregate_keys)?;
-        let variables = general::variables(unit, &source_functions, machine_functions);
+        let variables = general::variables(
+            unit,
+            &source_functions,
+            machine_functions,
+            &data.global_ids,
+        );
         let function_plan =
             functions::selected_plan_with_variables(&source_function_refs, data.next_id, &variables)?;
         records.extend(data.records);
