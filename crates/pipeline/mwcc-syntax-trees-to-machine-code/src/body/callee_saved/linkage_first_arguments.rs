@@ -7,18 +7,24 @@ impl Generator {
     /// Fill build 163's three linkage latency slots after physical allocation.
     /// Allocator-owned callee-saved bodies cannot use the ordinary pre-allocation
     /// call-prologue scheduler, so their final machine stream is normalized here.
-    pub(crate) fn schedule_linkage_first_entry_arguments(&mut self, physical_saved: &[u8]) {
+    /// Returns true only for the mixed loaded-cursor entry shape whose compact
+    /// standard-build epilogue writes LR before releasing the stack.
+    pub(crate) fn schedule_linkage_first_entry_arguments(
+        &mut self,
+        physical_saved: &[u8],
+    ) -> bool {
         if self.schedule_linkage_first_asm_barrier_entry(physical_saved) {
-            return;
+            return false;
         }
         let function_symbols = &self.call_return_types;
         let is_function_symbol = |name: &str| function_symbols.contains_key(name);
-        schedule_guarded_saved_entry_copies(&mut self.output);
+        let guarded_mixed_saved_entry = schedule_guarded_saved_entry_values(&mut self.output);
         schedule_entry_arguments(&mut self.output, &is_function_symbol);
         if let Some((from, to)) = schedule_entry_zero_store(&mut self.output) {
             self.labels.moved_before(from, to);
         }
         schedule_entry_wide_mask(&mut self.output);
+        guarded_mixed_saved_entry
     }
 
     /// Schedule a relocatable function-address pair in any linkage-first body.
@@ -76,18 +82,18 @@ impl Generator {
 
 /// A short-circuit guard consumes its saved scalar parameters before the first
 /// call can clobber their incoming registers. Build 163 completes the physical
-/// save range first, then copies the entry values from low saved register to
+/// save range first, then defines the entry values from low saved register to
 /// high; direct-call entry groups retain their separate latency-slot policy.
-fn schedule_guarded_saved_entry_copies(
+fn schedule_guarded_saved_entry_values(
     output: &mut mwcc_machine_code::MachineFunction,
-) {
+) -> bool {
     let Some(stack_update) = output.instructions.iter().position(|instruction| {
         matches!(
             instruction,
             Instruction::StoreWordWithUpdate { s: 1, a: 1, .. }
         )
     }) else {
-        return;
+        return false;
     };
     let Some(first_branch) = output.instructions[stack_update + 1..]
         .iter()
@@ -99,8 +105,11 @@ fn schedule_guarded_saved_entry_copies(
         })
         .map(|offset| stack_update + 1 + offset)
     else {
-        return;
+        return false;
     };
+    let first_call = output.instructions.iter().position(|instruction| {
+        matches!(instruction, Instruction::BranchAndLink { .. })
+    });
     for start in stack_update + 1..first_branch.saturating_sub(3) {
         let [first_store, first_copy, second_store, second_copy] =
             &output.instructions[start..start + 4]
@@ -152,7 +161,7 @@ fn schedule_guarded_saved_entry_copies(
                 a: *first_incoming,
                 immediate: 0,
             };
-            return;
+            return false;
         }
         let reordered = [
             first_store.clone(),
@@ -161,8 +170,70 @@ fn schedule_guarded_saved_entry_copies(
             first_copy.clone(),
         ];
         output.instructions[start..start + 4].clone_from_slice(&reordered);
-        return;
+        return false;
     }
+
+    // A traversal guard can derive its two survivors differently: load the
+    // cursor into the higher home, then copy the incoming owner into the lower
+    // home. Build 163 still completes both physical saves first and issues the
+    // two definitions low-to-high. Use index-aware moves because the load may
+    // own a relocation and later control-flow targets are instruction indices.
+    for start in stack_update + 1..first_branch.saturating_sub(3) {
+        let [first_store, first_value, second_store, second_copy] =
+            &output.instructions[start..start + 4]
+        else {
+            unreachable!()
+        };
+        let (
+            Instruction::StoreWord {
+                s: first_saved,
+                a: 1,
+                ..
+            },
+            Instruction::LoadWord { d: first_home, .. },
+            Instruction::StoreWord {
+                s: second_saved,
+                a: 1,
+                ..
+            },
+            Instruction::Or {
+                a: second_home,
+                s: second_incoming,
+                b: second_again,
+            },
+        ) = (first_store, first_value, second_store, second_copy)
+        else {
+            continue;
+        };
+        if first_saved != first_home
+            || second_saved != second_home
+            || second_incoming != second_again
+            || first_saved <= second_saved
+        {
+            continue;
+        }
+        let Some(first_call) = first_call else { continue };
+        let guard_consumes_both_homes = output.instructions[start + 4..=first_call]
+            .iter()
+            .any(|instruction| touches_general_register(instruction, *first_home))
+            && output.instructions[start + 4..=first_call]
+                .iter()
+                .any(|instruction| touches_general_register(instruction, *second_home));
+        if !guard_consumes_both_homes {
+            continue;
+        }
+
+        let second_store = output.instructions.remove(start + 2);
+        output.instructions.insert(start + 1, second_store);
+        remap_relocations_for_move(&mut output.relocations, start + 2, start + 1);
+        remap_branch_targets_for_move(&mut output.instructions, start + 2, start + 1);
+        let second_copy = output.instructions.remove(start + 3);
+        output.instructions.insert(start + 2, second_copy);
+        remap_relocations_for_move(&mut output.relocations, start + 3, start + 2);
+        remap_branch_targets_for_move(&mut output.instructions, start + 3, start + 2);
+        return true;
+    }
+    false
 }
 
 fn retained_eager_entry_argument_move(
@@ -700,7 +771,7 @@ mod tests {
             },
         ];
 
-        schedule_guarded_saved_entry_copies(&mut output);
+        schedule_guarded_saved_entry_values(&mut output);
 
         assert!(matches!(
             &output.instructions[1..5],
@@ -709,6 +780,39 @@ mod tests {
                 Instruction::StoreWord { s: 30, .. },
                 Instruction::Or { a: 30, s: 3, b: 3 },
                 Instruction::Or { a: 31, s: 5, b: 5 },
+            ]
+        ));
+    }
+
+    #[test]
+    fn guarded_loaded_cursor_follows_the_saved_owner_copy() {
+        let mut output = mwcc_machine_code::MachineFunction::new("guarded_cursor");
+        output.instructions = vec![
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -24 },
+            Instruction::StoreWord { s: 31, a: 1, offset: 20 },
+            Instruction::LoadWord { d: 31, a: 3, offset: 756 },
+            Instruction::StoreWord { s: 30, a: 1, offset: 16 },
+            Instruction::move_register(30, 3),
+            Instruction::Branch { target: 10 },
+            Instruction::LoadWord { d: 0, a: 31, offset: 8 },
+            Instruction::CompareLogicalWord { a: 0, b: 30 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 10,
+            },
+            Instruction::BranchAndLink { target: "check".into() },
+        ];
+
+        assert!(schedule_guarded_saved_entry_values(&mut output));
+
+        assert!(matches!(
+            &output.instructions[1..5],
+            [
+                Instruction::StoreWord { s: 31, .. },
+                Instruction::StoreWord { s: 30, .. },
+                Instruction::Or { a: 30, s: 3, b: 3 },
+                Instruction::LoadWord { d: 31, a: 3, offset: 756 },
             ]
         ));
     }
@@ -749,7 +853,7 @@ mod tests {
                 target: 9,
             },
         ];
-        schedule_guarded_saved_entry_copies(&mut output);
+        schedule_guarded_saved_entry_values(&mut output);
 
         assert!(matches!(
             &output.instructions[1..5],

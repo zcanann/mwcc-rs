@@ -853,7 +853,8 @@ impl Generator {
         // [mflr, scheduled gap..., stw LR, stwu].
         self.output.instructions[..=link_store].rotate_left(1);
         remap_prefix_rotate_left(&mut self.output.relocations, link_store);
-        self.schedule_linkage_first_entry_arguments(&physical_saved);
+        let guarded_mixed_saved_entry =
+            self.schedule_linkage_first_entry_arguments(&physical_saved);
         self.schedule_linkage_first_asm_barrier_byte_stores();
         self.schedule_linkage_first_asm_barrier_status_calls();
         self.schedule_linkage_first_addressable_parameter_calls();
@@ -866,6 +867,8 @@ impl Generator {
             mwcc_versions::SavedGprEpilogueStyle::LinkRegisterAfterStackRestore => {
                 if self.behavior.structured_saved_gpr_stack_first {
                     self.normalize_link_register_after_stack_restore(new_size);
+                } else if guarded_mixed_saved_entry {
+                    self.normalize_link_register_before_stack_restore(new_size);
                 } else {
                     for index in 0..self.output.instructions.len().saturating_sub(1) {
                         if matches!(
@@ -921,6 +924,27 @@ impl Generator {
             );
             link_restore += 1;
         }
+    }
+
+    /// A guarded cursor loaded into one saved home while its owner is copied
+    /// into another uses build 163's compact early-LR tail. This is the inverse
+    /// of the Nintendo structured-tail normalization above: move only the
+    /// adjacent `mtlr` ahead of the stack release.
+    fn normalize_link_register_before_stack_restore(&mut self, frame_size: i16) {
+        let Some(stack_restore) = self.output.instructions.windows(2).rposition(|window| {
+            matches!(window,
+                [
+                    Instruction::AddImmediate { d: 1, a: 1, immediate },
+                    Instruction::MoveToLinkRegister { s: 0 },
+                ] if *immediate == frame_size)
+        }) else {
+            return;
+        };
+        crate::move_instruction_before_retargeting(
+            self,
+            stack_restore + 1,
+            stack_restore,
+        );
     }
 
     fn normalize_restored_stack_saved_gpr_epilogue(
