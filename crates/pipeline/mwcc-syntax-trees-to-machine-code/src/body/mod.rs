@@ -13,6 +13,7 @@ mod terminal_float_update;
 mod member_acceleration_clamp;
 mod member_float_friction_select;
 mod leading_member_store_call;
+mod leaf_tail_append_schedule;
 mod leading_shared_zero_bitfield_guard;
 mod linker_table_initialization;
 mod linkage_first_address_argument_schedule;

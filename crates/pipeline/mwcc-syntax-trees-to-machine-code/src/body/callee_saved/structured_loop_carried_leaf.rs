@@ -5,7 +5,7 @@
 //! emitter: a source local is reassigned in a loop and its new value can feed a
 //! later iteration or the continuation after the loop.
 
-use mwcc_syntax_trees::{ArmBody, Expression, Function, Statement, Type};
+use mwcc_syntax_trees::{ArmBody, BinaryOperator, Expression, Function, Statement, Type};
 
 pub(super) fn contains_loop_carried_local(function: &Function) -> bool {
     function
@@ -61,6 +61,78 @@ pub(super) fn returned_loop_home_preference(function: &Function, local: &str) ->
     u8::try_from(rank)
         .ok()
         .and_then(|rank| mwcc_target::Eabi::general_result().number.checked_add(1 + rank))
+}
+
+/// A member value loaded at the top of an infinite list walk, tested for null,
+/// and copied into the cursor at the bottom has no lifetime outside one
+/// iteration. MWCC keeps that transient in r0 rather than consuming another
+/// volatile allocator lane.
+pub(super) fn transient_loop_member_home_preference(
+    function: &Function,
+    local: &str,
+) -> Option<u8> {
+    function
+        .locals
+        .iter()
+        .find(|candidate| candidate.name == local && candidate.initializer.is_none())?;
+    function.statements.iter().find_map(|statement| {
+        let Statement::Loop {
+            condition: Some(Expression::IntegerLiteral(1)),
+            body,
+            ..
+        } = statement
+        else {
+            return None;
+        };
+        body.windows(3).find_map(|window| {
+            let [
+                Statement::Assign {
+                    name: loaded,
+                    value:
+                        Expression::Member {
+                            base,
+                            ..
+                        },
+                },
+                Statement::If {
+                    condition:
+                        Expression::Binary {
+                            operator: BinaryOperator::Equal,
+                            left,
+                            right,
+                        },
+                    then_body,
+                    else_body,
+                },
+                Statement::Assign {
+                    name: cursor,
+                    value: Expression::Variable(assigned),
+                },
+            ] = window
+            else {
+                return None;
+            };
+            let Expression::Variable(member_base) = base.as_ref() else {
+                return None;
+            };
+            let compares_loaded_to_zero = matches!(
+                (left.as_ref(), right.as_ref()),
+                (Expression::Variable(name), Expression::IntegerLiteral(0))
+                    if name == loaded
+            ) || matches!(
+                (left.as_ref(), right.as_ref()),
+                (Expression::IntegerLiteral(0), Expression::Variable(name))
+                    if name == loaded
+            );
+            (loaded == local
+                && assigned == loaded
+                && cursor == member_base
+                && compares_loaded_to_zero
+                && else_body.is_empty()
+                && matches!(then_body.last(), Some(Statement::Return(None))))
+                .then_some(0)
+        })
+    })
 }
 
 fn statements_carry_local(statements: &[Statement], name: &str, read_after: bool) -> bool {
@@ -325,5 +397,61 @@ mod tests {
         );
         function.return_expression = Some(Expression::Variable("other".into()));
         assert_eq!(returned_loop_carried_local(&function), None);
+    }
+
+    #[test]
+    fn prefers_scratch_for_a_null_tested_member_carried_into_the_cursor() {
+        let mut function = function(vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: vec![
+                Statement::Assign {
+                    name: "next".into(),
+                    value: Expression::Member {
+                        base: Box::new(Expression::Variable("cursor".into())),
+                        offset: 8,
+                        member_type: Type::StructPointer { element_size: 32 },
+                        index_stride: None,
+                    },
+                },
+                Statement::If {
+                    condition: Expression::Binary {
+                        operator: BinaryOperator::Equal,
+                        left: Box::new(Expression::Variable("next".into())),
+                        right: Box::new(Expression::IntegerLiteral(0)),
+                    },
+                    then_body: vec![Statement::Return(None)],
+                    else_body: Vec::new(),
+                },
+                Statement::Assign {
+                    name: "cursor".into(),
+                    value: Expression::Variable("next".into()),
+                },
+            ],
+        }]);
+        function.locals.push(LocalDeclaration {
+            declared_type: Type::StructPointer { element_size: 32 },
+            name: "next".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        });
+
+        assert_eq!(
+            transient_loop_member_home_preference(&function, "next"),
+            Some(0)
+        );
+        assert_eq!(
+            transient_loop_member_home_preference(&function, "cursor"),
+            None
+        );
     }
 }

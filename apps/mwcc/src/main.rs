@@ -3116,6 +3116,9 @@ mod tests {
     #[path = "guarded_member_early_return.rs"]
     mod guarded_member_early_return;
 
+    #[path = "leaf_tail_append.rs"]
+    mod leaf_tail_append;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 
