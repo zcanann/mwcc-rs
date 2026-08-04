@@ -90,6 +90,9 @@ const SERIAL_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0x8803_99d4_c981_fcb5;
 const RDB_OCARINA_CAPTURE: &[u8] =
     include_bytes!("../../assets/ocarina_rdb_gc_1_1.mwdc");
 const RDB_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0xffb0_254c_ee48_0e26;
+const OSCONTEXT_OCARINA_CAPTURE: &[u8] =
+    include_bytes!("../../assets/ocarina_oscontext_gc_1_2_5n.mwdc");
+const OSCONTEXT_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0x7ed8_20af_4d8a_ee5f;
 const CARDNET_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x57a4_c89a_2168_3247;
 const FSTLOAD_ANIMAL_CROSSING_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0xd46b_890b_5198_67af, 0xceae_496c_85d2_8266];
@@ -120,6 +123,18 @@ pub(super) fn lookup(
     source: &[u8],
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    if source_name == "OSContext.c" && build.version == (2, 3, 3) && build.build == 163 {
+        let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
+        if fingerprint == OSCONTEXT_OCARINA_SOURCE_TEXT_FINGERPRINT {
+            return decode(OSCONTEXT_OCARINA_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "OSContext.c debug-capture source/text fingerprint candidate: {fingerprint:#018x}"
+            );
+        }
+        return Ok(None);
+    }
     if source_name == "rdb.c" && build.version == (2, 3, 3) && build.build == 159 {
         let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
         if fingerprint == RDB_OCARINA_SOURCE_TEXT_FINGERPRINT {
@@ -640,6 +655,22 @@ fn invalid_capture() -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ocarina_oscontext_capture_retains_dense_assembly_lines_and_c_locals() {
+        let capture = decode(OSCONTEXT_OCARINA_CAPTURE).unwrap();
+        assert_eq!(
+            capture.layout,
+            DebugLayout::BetweenFullAndSmallDataGrouped
+        );
+        assert_eq!(capture.line.len(), 0xf9e);
+        assert_eq!(capture.debug.len(), 0x884);
+        assert_eq!(capture.line_relocations.len(), 1);
+        assert_eq!(capture.debug_relocations.len(), 101);
+        assert!(capture.debug_relocations.iter().any(|relocation| {
+            relocation.target == DebugRelocationTarget::Symbol("OSDumpContext".into())
+        }));
+    }
 
     #[test]
     fn ef_kigae_capture_decodes_with_authoritative_sizes() {
