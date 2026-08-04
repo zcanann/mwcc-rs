@@ -209,12 +209,18 @@ impl Generator {
     /// MWCC tests that value in r3 and consumes it directly instead of loading
     /// the same member again through the saved owner.
     pub(super) fn schedule_guarded_member_receiver_reuse(&mut self) {
-        let Some(start) = self
+        let start = self
             .output
             .instructions
             .windows(8)
             .position(is_guarded_member_receiver_reload)
-        else {
+            .or_else(|| {
+                self.output
+                    .instructions
+                    .windows(7)
+                    .position(is_guarded_member_receiver_reload_with_owner_argument)
+            });
+        let Some(start) = start else {
             return;
         };
         let receiver = Eabi::FIRST_GENERAL_ARGUMENT;
@@ -568,6 +574,26 @@ fn is_guarded_member_receiver_reload(window: &[Instruction]) -> bool {
         && test_offset == call_offset)
 }
 
+fn is_guarded_member_receiver_reload_with_owner_argument(window: &[Instruction]) -> bool {
+    matches!(window, [
+        Instruction::Or { a: saved, s: entry, b: entry_again },
+        Instruction::LoadWord { d: tested, a: test_base, offset: test_offset },
+        Instruction::CompareLogicalWordImmediate { a: compared, immediate: 0 },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::LoadWord { d: 3, a: call_base, offset: call_offset },
+        Instruction::Or { a: 4, s: owner, b: owner_again },
+        Instruction::BranchAndLink { .. },
+    ] if saved != entry
+        && entry == entry_again
+        && test_base == entry
+        && tested == compared
+        && *tested != 3
+        && call_base == saved
+        && test_offset == call_offset
+        && owner == saved
+        && owner == owner_again)
+}
+
 fn is_guarded_member_classifier_chain(window: &[Instruction]) -> bool {
     let Some((saved, entry)) = window.first().and_then(entry_register_copy) else {
         return false;
@@ -910,6 +936,22 @@ mod tests {
             Instruction::BranchAndLink { target: "callee".into() },
         ];
         assert!(is_guarded_member_receiver_reload(&instructions));
+    }
+
+    #[test]
+    fn recognizes_a_guard_receiver_beside_its_saved_owner_argument() {
+        let instructions = [
+            Instruction::Or { a: 31, s: 3, b: 3 },
+            Instruction::LoadWord { d: 0, a: 3, offset: 0 },
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 },
+            Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 7 },
+            Instruction::LoadWord { d: 3, a: 31, offset: 0 },
+            Instruction::Or { a: 4, s: 31, b: 31 },
+            Instruction::BranchAndLink { target: "removeClient".into() },
+        ];
+        assert!(is_guarded_member_receiver_reload_with_owner_argument(
+            &instructions,
+        ));
     }
 
     #[test]

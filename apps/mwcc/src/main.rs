@@ -2978,6 +2978,9 @@ mod tests {
     #[path = "swapped_call_arguments.rs"]
     mod swapped_call_arguments;
 
+    #[path = "guarded_member_receiver_reuse.rs"]
+    mod guarded_member_receiver_reuse;
+
     #[path = "float_conditions.rs"]
     mod float_conditions;
 
