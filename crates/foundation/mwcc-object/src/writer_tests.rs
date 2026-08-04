@@ -1424,6 +1424,97 @@ fn code_data_anchor_precedes_pools_when_full_data_is_declared_upfront() {
 }
 
 #[test]
+fn code_data_anchor_follows_earlier_static_functions_before_an_owned_string() {
+    let mut first = weak_function("first");
+    first.is_static = true;
+    first.is_weak = false;
+    first.weak_inline = false;
+    let mut second = weak_function("second");
+    second.is_static = true;
+    second.is_weak = false;
+    second.weak_inline = false;
+    let mut owner = weak_function("owner");
+    owner.is_weak = false;
+    owner.weak_inline = false;
+    owner.string_count = 1;
+    owner.string_names = vec!["@1".into()];
+    owner.relocations = vec![crate::TextRelocation {
+        offset: 2,
+        elf_type: 6,
+        target: crate::RelocationTarget::External("...data.0".into()),
+    }];
+
+    let object = write_object(&ObjectInput {
+        source_name: "anchor.c",
+        object_format: crate::ObjectFormat {
+            comment: CommentFormat {
+                marker: 8,
+                version: (1, 2, 5),
+                pooling_enabled: true,
+            },
+            emb_sda21_offset: 0,
+            code_alignment: 4,
+            sdata2_writable: false,
+            function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
+            asm_absolute_references_before_function: false,
+            weak_vtable_function_symbol_tail: false,
+            owned_rtti_closure_relocation_order: false,
+            initialized_globals_before_deferred_functions: false,
+            local_data_symbols_in_declaration_order: false,
+            small_zero_statics_in_declaration_order: false,
+            small_zero_data_in_declaration_order: false,
+            rodata_anchor_before_data_symbols: false,
+            rodata_anchor_comment_flags: 0,
+            data_relocations_use_section_anchors: false,
+            data_anchor_comment_flags: 0,
+            initial_anonymous_counter: 1,
+            leading_source_anonymous_bump: 0,
+            post_leaf_function_anonymous_bump: 0,
+            post_framed_function_anonymous_bump: 0,
+        },
+        functions: vec![first, second, owner],
+        data_objects: vec![DataObject {
+            name: "@1",
+            size: 4,
+            alignment: 1,
+            comment_alignment: 1,
+            initial_bytes: Some(vec![0; 4]),
+            is_const: false,
+            force_full_data_section: true,
+            is_static: true,
+            force_active: false,
+            is_explicit_zero: false,
+            preassigned_anonymous_ordinal: Some(1),
+            preassigned_ordinal_advances_counter: true,
+            preassigned_pool_prefix_credit: 0,
+            relocations: Vec::new(),
+            non_static_functions_before: 0,
+            functions_before: 0,
+            is_weak: false,
+            static_local_owner: None,
+            anonymous_adjust: 0,
+            section: None,
+        }],
+        small_data: true,
+        emit_mwcats: false,
+        inline_asm_symbols: &[],
+        early_static_function_symbols: &[],
+        early_undefined_externals: &[],
+        section_function_declarations: &[],
+        section_externals: &[],
+        local_symbol_order: &[],
+        debug: None,
+    });
+    let names = symbol_names(&object);
+    let first = names.iter().position(|name| name == "first").unwrap();
+    let second = names.iter().position(|name| name == "second").unwrap();
+    let anchor = names.iter().position(|name| name == "...data.0").unwrap();
+    let string = names.iter().position(|name| name == "@1").unwrap();
+
+    assert_eq!((first + 1, second + 1, anchor + 1), (second, anchor, string));
+}
+
+#[test]
 fn const_pointer_arrays_emit_reverse_rodata_relocations() {
     let data = [
         DataObject {

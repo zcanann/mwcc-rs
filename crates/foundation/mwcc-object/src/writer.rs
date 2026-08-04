@@ -2237,7 +2237,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         if data_marker_pending
             && data_section[object.name] == ".data"
             && (data_marker_needed_by_data
-                || (data_marker_needed_by_code && object.functions_before == 0))
+                || (data_marker_needed_by_code
+                    && object.functions_before == 0
+                    && !function_string_names.contains(object.name)))
         {
             local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
             write_symbol(
