@@ -4739,6 +4739,14 @@ impl Generator {
                         enter_body,
                         grouped_equality,
                     } = branches;
+                    // A cache inherited from an enclosing condition may feed
+                    // this condition, but it must not leak into this guarded
+                    // body or survive a call there. Only the explicit
+                    // `guarded_true_cache` below owns the proven first-statement
+                    // handoff. Preserve the enclosing scope while emitting the
+                    // body with an otherwise empty condition cache.
+                    let enclosing_condition_cache =
+                        std::mem::take(&mut self.condition_global_values);
                     self.commit_structured_float_handoff();
                     let body_start = self.output.instructions.len();
                     for &branch in &enter_body {
@@ -4787,6 +4795,7 @@ impl Generator {
                             entry_alias,
                         )
                     });
+                    self.restore_condition_global_cache(enclosing_condition_cache);
                     self.restore_condition_float_cache(outer_float_cache);
                     let body_result = body_result.map_err(|mut diagnostic| {
                         diagnostic.message.push_str(&format!(

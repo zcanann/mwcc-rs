@@ -1229,6 +1229,7 @@ fn lower_function_body(
     generator.schedule_polymorphic_zero_constructor();
     generator.schedule_materialized_vec3_product(function);
     generator.schedule_structured_dense_destroy_loop();
+    generator.schedule_structured_global_pointer_replacement();
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for
