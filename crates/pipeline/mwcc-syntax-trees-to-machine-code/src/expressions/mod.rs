@@ -34,6 +34,7 @@ mod function_address;
 mod global_array_decay;
 mod global_array_element_address;
 mod global_array_index;
+mod global_array_indexed_rmw;
 mod global_pointer_array_member_load;
 mod global_pointer_table_entry;
 mod global_pointer_table_member_store;

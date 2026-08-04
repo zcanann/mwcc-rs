@@ -707,6 +707,9 @@ impl Generator {
                 }
                 // `g[index] = value;` where `g` is a file-scope array global.
                 if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
+                    if self.try_emit_global_array_indexed_rmw(target, value)? {
+                        return Ok(());
+                    }
                     return self.emit_global_array_store(name, total_size, index, value);
                 }
                 // `__EXIRegs[index] = value;` — a store to a fixed-address (hardware register) array.
