@@ -3141,6 +3141,8 @@ mod tests {
     mod fixed_list_bank_transfer;
     #[path = "dsp_channel_parameter_update.rs"]
     mod dsp_channel_parameter_update;
+    #[path = "release_list_bank_to_global.rs"]
+    mod release_list_bank_to_global;
 
     #[path = "bounded_global_ring_remove.rs"]
     mod bounded_global_ring_remove;
