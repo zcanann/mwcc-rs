@@ -1159,7 +1159,7 @@ impl Generator {
                 right,
             } = operand.as_ref()
             {
-                if self.try_emit_record_mask_test(left, right)? {
+                if self.try_emit_mask_condition_test(left, right)? {
                     return Ok((4, 2)); // bne — skip when the masked bits are set
                 }
             }
@@ -1275,7 +1275,7 @@ impl Generator {
                     right: and_right,
                 } = left.as_ref()
                 {
-                    if self.try_emit_record_mask_test(and_left, and_right)? {
+                    if self.try_emit_mask_condition_test(and_left, and_right)? {
                         return Ok((4, 2)); // bne — skip when masked bits set
                     }
                 }
@@ -1306,7 +1306,7 @@ impl Generator {
                     right: and_right,
                 } = left.as_ref()
                 {
-                    if self.try_emit_record_mask_test(and_left, and_right)? {
+                    if self.try_emit_mask_condition_test(and_left, and_right)? {
                         return Ok((12, 2)); // beq — skip when masked bits are clear
                     }
                 }
@@ -1924,7 +1924,7 @@ impl Generator {
             right,
         } = condition
         {
-            if self.try_emit_record_mask_test(left, right)? {
+            if self.try_emit_mask_condition_test(left, right)? {
                 return Ok((12, 2)); // beq — skip when the masked bits are all zero
             }
         }
