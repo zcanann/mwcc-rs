@@ -238,7 +238,7 @@ impl Plan {
             if from <= to {
                 return false;
             }
-            crate::move_instruction_before_retargeting(generator, from, to);
+            crate::move_instruction_before_retargeting_source_to_next(generator, from, to);
         }
         // Extending these definitions around the loop changes linear-scan
         // order. Record MWCC's preheader homes as preferences: interference

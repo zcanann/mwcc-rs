@@ -137,6 +137,18 @@ impl Labels {
         }
     }
 
+    /// Move every label bound to `from` onto `to` without changing branch-use
+    /// ownership. This is used when an instruction is hoisted out of a basic
+    /// block: incoming edges continue at the old instruction's successor,
+    /// while relocations owned by the hoisted instruction move with it.
+    pub fn retarget_bindings(&mut self, from: usize, to: usize) {
+        for binding in self.bound.iter_mut().flatten() {
+            if *binding == from {
+                *binding = to;
+            }
+        }
+    }
+
     /// A new, unbound label.
     pub fn fresh(&mut self) -> Label {
         self.bound.push(None);
@@ -224,6 +236,22 @@ mod tests {
         assert_eq!(labels.bound[retained_target.0], Some(8));
         assert_eq!(labels.pending[0].0, 2);
         assert_eq!(labels.pending[1].0, 6);
+    }
+
+    #[test]
+    fn a_hoisted_block_head_can_leave_its_label_on_the_continuation() {
+        let mut labels = Labels::default();
+        let block = labels.fresh();
+        labels.use_at(1, block);
+        labels.bind(block, 5);
+
+        labels.retarget_bindings(5, 6);
+        labels.moved_before(5, 2);
+
+        let mut stream = vec![Instruction::load_immediate(3, 0); 7];
+        stream[1] = Instruction::Branch { target: 0 };
+        labels.resolve(&mut stream).unwrap();
+        assert_eq!(stream[1], Instruction::Branch { target: 6 });
     }
 
     #[test]

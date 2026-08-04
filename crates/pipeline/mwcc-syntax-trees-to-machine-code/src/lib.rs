@@ -1899,6 +1899,35 @@ pub(crate) fn move_instruction_before_retargeting(
     remap_instruction_indices(generator, &permutation);
 }
 
+/// Hoist one instruction while leaving incoming control-flow edges on the
+/// continuation that originally followed it. Relocations and late data
+/// displacements remain owned by the hoisted instruction.
+///
+/// This differs from [`move_instruction_before_retargeting`], which preserves
+/// the moved instruction as a branch destination. Loop-invariant code that is
+/// removed from the head of a body block needs the block label to stay behind.
+pub(crate) fn move_instruction_before_retargeting_source_to_next(
+    generator: &mut Generator,
+    from: usize,
+    to: usize,
+) {
+    debug_assert!(to < from);
+    debug_assert!(from + 1 < generator.output.instructions.len());
+    let continuation = from + 1;
+    retarget_exact_branch_destinations(
+        &mut generator.output.instructions,
+        from,
+        continuation,
+    );
+    retarget_exact_jump_table_destinations(
+        &mut generator.output.jump_tables,
+        from,
+        continuation,
+    );
+    generator.labels.retarget_bindings(from, continuation);
+    move_instruction_before_retargeting(generator, from, to);
+}
+
 /// Remove one instruction after labels have been resolved, preserving every
 /// instruction-index owner. A branch to the erased instruction denotes the
 /// continuation that followed it, so it must target the survivor now occupying
@@ -2008,6 +2037,39 @@ fn remap_branch_targets(instructions: &mut [Instruction], permutation: &[usize])
         } else {
             permutation[*target]
         };
+    }
+}
+
+fn retarget_exact_branch_destinations(
+    instructions: &mut [Instruction],
+    from: usize,
+    to: usize,
+) {
+    for instruction in instructions {
+        let target = match instruction {
+            Instruction::BranchConditionalForward { target, .. }
+            | Instruction::Branch { target } => target,
+            _ => continue,
+        };
+        if *target == from {
+            *target = to;
+        }
+    }
+}
+
+fn retarget_exact_jump_table_destinations(
+    tables: &mut [mwcc_machine_code::JumpTable],
+    from: usize,
+    to: usize,
+) {
+    let from_offset = u32::try_from(from).unwrap_or(u32::MAX).saturating_mul(4);
+    let to_offset = u32::try_from(to).unwrap_or(u32::MAX).saturating_mul(4);
+    for table in tables {
+        for entry in &mut table.entries {
+            if *entry == from_offset {
+                *entry = to_offset;
+            }
+        }
     }
 }
 
@@ -2186,6 +2248,25 @@ mod instruction_index_tests {
     }
 
     #[test]
+    fn hoisting_a_block_head_leaves_incoming_edges_on_its_continuation() {
+        let mut instructions = vec![
+            Instruction::Branch { target: 3 },
+            Instruction::load_immediate(3, 1),
+            Instruction::Branch { target: 1 },
+            Instruction::load_immediate(4, 2),
+            Instruction::load_immediate(5, 3),
+        ];
+        retarget_exact_branch_destinations(&mut instructions, 3, 4);
+        let moved = instructions.remove(3);
+        instructions.insert(1, moved);
+        let permutation = instruction_move_before_permutation(5, 3, 1);
+        remap_branch_targets(&mut instructions, &permutation);
+
+        assert_eq!(instructions[0], Instruction::Branch { target: 4 });
+        assert_eq!(instructions[3], Instruction::Branch { target: 2 });
+    }
+
+    #[test]
     fn inserting_an_instruction_preserves_jump_table_destinations() {
         let mut tables = [mwcc_machine_code::JumpTable {
             entries: vec![4, 12, 20],
@@ -2195,6 +2276,18 @@ mod instruction_index_tests {
         retarget_jump_table_entries_after_insertion(&mut tables, 3);
 
         assert_eq!(tables[0].entries, [4, 16, 24]);
+    }
+
+    #[test]
+    fn hoisting_a_jump_table_arm_leaves_the_entry_on_its_continuation() {
+        let mut tables = [mwcc_machine_code::JumpTable {
+            entries: vec![4, 12, 20],
+            anonymous_offset: 7,
+        }];
+
+        retarget_exact_jump_table_destinations(&mut tables, 3, 4);
+
+        assert_eq!(tables[0].entries, [4, 16, 20]);
     }
 
     #[test]
