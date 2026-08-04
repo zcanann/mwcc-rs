@@ -3137,6 +3137,8 @@ mod tests {
     mod allocate_from_global_pool;
     #[path = "wait_queue_drain.rs"]
     mod wait_queue_drain;
+    #[path = "fixed_list_bank_transfer.rs"]
+    mod fixed_list_bank_transfer;
 
     #[path = "bounded_global_ring_remove.rs"]
     mod bounded_global_ring_remove;
