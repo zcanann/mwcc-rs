@@ -122,13 +122,13 @@ impl Generator {
     /// Expand an already scheduled non-leaf frame around the FPRs selected by
     /// register allocation. Predecrement frames preserve both paired-single
     /// lanes; the legacy linkage-first convention uses compact double lanes.
-    /// Restore encoding and epilogue-entry ownership remain separate because
-    /// some early exits intentionally enter after a direct restore packet.
+    /// Restore placement and epilogue-entry ownership remain separate because
+    /// some early exits intentionally enter after the FPR restore packet.
     pub(crate) fn materialize_allocated_float_frame(
         &mut self,
         registers: &[u8],
         paired_single_frame: bool,
-        direct_paired_single_restores: bool,
+        restores_before_gpr_helper_setup: bool,
         branches_enter_float_restores: bool,
     ) -> Compilation<()> {
         let registers = required_float_save_range(self.callee_saved_float, registers)
@@ -144,7 +144,7 @@ impl Generator {
                     &registers,
                     saved_gpr_count,
                     paired_single_frame,
-                    direct_paired_single_restores,
+                    restores_before_gpr_helper_setup,
                     branches_enter_float_restores,
                 )
                 .map_err(Diagnostic::error)?
@@ -209,7 +209,7 @@ fn materialize_predecrement_frame(
     registers: &[u8],
     saved_gpr_count: usize,
     paired_single_frame: bool,
-    direct_paired_single_restores: bool,
+    restores_before_gpr_helper_setup: bool,
     branches_enter_float_restores: bool,
 ) -> Result<(Vec<usize>, i16), &'static str> {
     let expected: Vec<u8> = (0..registers.len())
@@ -283,7 +283,7 @@ fn materialize_predecrement_frame(
             instruction_links(instruction) && !instruction_is_gpr_restore(instruction)
         })
         .ok_or("allocator-selected FPR saves require a non-leaf body")?;
-    let direct_restore_helper_setup = direct_paired_single_restores
+    let early_restore_helper_setup = restores_before_gpr_helper_setup
         .then(|| {
             instructions
                 .iter()
@@ -303,7 +303,7 @@ fn materialize_predecrement_frame(
                 })
         })
         .flatten();
-    let restore_at = direct_restore_helper_setup
+    let restore_at = early_restore_helper_setup
         .or_else(|| {
             instructions
                 .iter()
@@ -388,26 +388,7 @@ fn materialize_predecrement_frame(
                 w: 0,
                 i: 0,
             });
-            if direct_paired_single_restores {
-                restores.push(Instruction::PairedSingleQuantizedLoad {
-                    d: register,
-                    a: 1,
-                    offset: paired_offset,
-                    w: 0,
-                    i: 0,
-                });
-            } else {
-                restores.extend([
-                    Instruction::load_immediate(0, paired_offset),
-                    Instruction::PairedSingleQuantizedLoadIndexed {
-                        d: register,
-                        a: 1,
-                        b: 0,
-                        w: 0,
-                        i: 0,
-                    },
-                ]);
-            }
+            restores.extend(paired_single_restore(register, paired_offset));
             restores.push(Instruction::LoadFloatDouble {
                 d: register,
                 a: 1,
@@ -441,6 +422,32 @@ fn materialize_predecrement_frame(
     }
     *instructions = rebuilt;
     Ok((permutation, frame_growth))
+}
+
+/// Select the smallest encoding that can represent a saved paired-single
+/// lane. `psq_l` has a signed 12-bit displacement; only a larger frame needs
+/// the materialized-offset `psq_lx` packet.
+fn paired_single_restore(register: u8, offset: i16) -> Vec<Instruction> {
+    if (-2048..=2047).contains(&offset) {
+        vec![Instruction::PairedSingleQuantizedLoad {
+            d: register,
+            a: 1,
+            offset,
+            w: 0,
+            i: 0,
+        }]
+    } else {
+        vec![
+            Instruction::load_immediate(0, offset),
+            Instruction::PairedSingleQuantizedLoadIndexed {
+                d: register,
+                a: 1,
+                b: 0,
+                w: 0,
+                i: 0,
+            },
+        ]
+    }
 }
 
 fn instruction_links(instruction: &Instruction) -> bool {
@@ -622,6 +629,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selects_paired_restore_encoding_from_the_signed_twelve_bit_range() {
+        assert!(matches!(
+            paired_single_restore(31, 2047).as_slice(),
+            [Instruction::PairedSingleQuantizedLoad {
+                d: 31,
+                offset: 2047,
+                ..
+            }]
+        ));
+        assert!(matches!(
+            paired_single_restore(31, 2048).as_slice(),
+            [
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 0,
+                    immediate: 2048,
+                },
+                Instruction::PairedSingleQuantizedLoadIndexed {
+                    d: 31,
+                    a: 1,
+                    b: 0,
+                    ..
+                }
+            ]
+        ));
+    }
+
+    #[test]
     fn ordinary_r0_aggregate_slots_are_not_linkage_state() {
         let instructions = vec![
             Instruction::StoreWord { s: 0, a: 1, offset: 8 },
@@ -786,9 +821,9 @@ mod tests {
         ));
         assert!(matches!(
             instructions[8],
-            Instruction::AddImmediate {
-                d: 0,
-                immediate: 40,
+            Instruction::PairedSingleQuantizedLoad {
+                d: 31,
+                offset: 40,
                 ..
             }
         ));

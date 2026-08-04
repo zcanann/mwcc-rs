@@ -1024,7 +1024,7 @@ fn lower_function_body(
     generator.materialize_allocated_float_frame(
         &allocated_float_saves,
         paired_single_float_frame,
-        body::uses_direct_paired_single_restores(function) || retained_sqrtf_frame,
+        body::restores_fprs_before_gpr_helper_setup(function) || retained_sqrtf_frame,
         body::branches_enter_float_restores(function)
             || generator.unoptimized_inline_float_transaction_homes
             || retained_sqrtf_frame,

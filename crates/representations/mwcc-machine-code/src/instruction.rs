@@ -231,8 +231,8 @@ pub enum Instruction {
     /// (the callee-saved FPR restore's second half under -proc gekko).
     PairedSingleQuantizedLoad { d: u8, a: u8, offset: i16, w: u8, i: u8 },
     /// `psq_lx frD, rA, rB, W, I` — indexed paired-single quantized load.
-    /// Wii-era epilogues materialize each save offset in r0 and restore through
-    /// this form rather than the immediate `psq_l` encoding.
+    /// Large-frame epilogues materialize an offset outside `psq_l`'s signed
+    /// 12-bit displacement in r0 and restore through this form.
     PairedSingleQuantizedLoadIndexed { d: u8, a: u8, b: u8, w: u8, i: u8 },
     /// `psq_st frS, offset(rA), W, I` — Gekko paired-single quantized store.
     PairedSingleQuantizedStore { s: u8, a: u8, offset: i16, w: u8, i: u8 },

@@ -8,7 +8,7 @@ pub(super) struct StructuredRecoveredGeneralHomes {
     parameter_count: usize,
     save_order: Option<Vec<usize>>,
     preferences_follow_groups: bool,
-    direct_paired_single_restores: bool,
+    restores_fprs_before_gpr_helper_setup: bool,
 }
 
 fn recovered_register(name: &str) -> Option<u8> {
@@ -90,7 +90,7 @@ impl StructuredRecoveredGeneralHomes {
                 parameter_count: 0,
                 save_order: None,
                 preferences_follow_groups: true,
-                direct_paired_single_restores: false,
+                restores_fprs_before_gpr_helper_setup: false,
             });
         }
         if !function_makes_call(function) {
@@ -117,7 +117,7 @@ impl StructuredRecoveredGeneralHomes {
                 parameter_count: 0,
                 save_order: None,
                 preferences_follow_groups: false,
-                direct_paired_single_restores: false,
+                restores_fprs_before_gpr_helper_setup: false,
             });
         }
 
@@ -206,7 +206,7 @@ impl StructuredRecoveredGeneralHomes {
                 parameter_count: used_parameters.len(),
                 save_order: None,
                 preferences_follow_groups: false,
-                direct_paired_single_restores: nested_void_recovered_loop,
+                restores_fprs_before_gpr_helper_setup: nested_void_recovered_loop,
             });
         }
         // Three or more recovered local names can describe an entire saved-GPR
@@ -243,7 +243,7 @@ impl StructuredRecoveredGeneralHomes {
                     parameter_count: 1,
                     save_order,
                     preferences_follow_groups: true,
-                    direct_paired_single_restores: false,
+                    restores_fprs_before_gpr_helper_setup: false,
                 });
             }
         }
@@ -272,7 +272,7 @@ impl StructuredRecoveredGeneralHomes {
             parameter_count: 1,
             save_order: Some(vec![1, 0, 2]),
             preferences_follow_groups: false,
-            direct_paired_single_restores: false,
+            restores_fprs_before_gpr_helper_setup: false,
         })
     }
 
@@ -317,8 +317,8 @@ impl StructuredRecoveredGeneralHomes {
         self.parameter_count >= 2
     }
 
-    pub(super) fn direct_paired_single_restores(&self) -> bool {
-        self.direct_paired_single_restores
+    pub(super) fn restores_fprs_before_gpr_helper_setup(&self) -> bool {
+        self.restores_fprs_before_gpr_helper_setup
     }
 
     pub(super) fn frame_slot(&self, home_index: usize) -> Option<usize> {

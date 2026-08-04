@@ -268,18 +268,18 @@ mod structured_blocking_queue_transaction;
 mod structured_guarded_member_reset;
 mod structured_heap_schedule;
 mod structured_polymorphic_zero_constructor_schedule;
-pub(crate) fn uses_direct_paired_single_restores(function: &Function) -> bool {
+pub(crate) fn restores_fprs_before_gpr_helper_setup(function: &Function) -> bool {
     structured_periodic_float_normalization::StructuredPeriodicFloatNormalization::plan(function)
         .is_some()
         || structured_recovered_general_homes::StructuredRecoveredGeneralHomes::plan(
             function,
             &[],
         )
-        .is_some_and(|plan| plan.direct_paired_single_restores())
+        .is_some_and(|plan| plan.restores_fprs_before_gpr_helper_setup())
 }
 pub(crate) fn branches_enter_float_restores(function: &Function) -> bool {
     structured_recovered_general_homes::StructuredRecoveredGeneralHomes::plan(function, &[])
-        .is_some_and(|plan| plan.direct_paired_single_restores())
+        .is_some_and(|plan| plan.restores_fprs_before_gpr_helper_setup())
 }
 mod structured_unoptimized_leaf_homes;
 mod structured_unoptimized_frame_call_homes;

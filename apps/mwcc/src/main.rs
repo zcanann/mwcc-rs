@@ -3089,6 +3089,9 @@ mod tests {
     #[path = "numeric_conversion_block_scratch.rs"]
     mod numeric_conversion_block_scratch;
 
+    #[path = "paired_single_restore_encoding.rs"]
+    mod paired_single_restore_encoding;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 
