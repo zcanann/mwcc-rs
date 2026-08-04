@@ -1295,6 +1295,13 @@ fn lower_function_body(
     generator.normalize_float_to_int_scratch_images();
     generator.schedule_structured_global_base_epilogue();
     generator.normalize_nintendo_saved_gpr_epilogue();
+    // Allocation can coalesce the terminal result move that previously kept a
+    // conditional exit from targeting the final `blr`. Canonicalize again on
+    // the finished physical stream so returned loop accumulators use MWCC's
+    // direct `b<cc>lr` form too.
+    if !generator.preserve_terminal_return_branches {
+        collapse_forward_branch_to_terminal_blr(&mut generator.output.instructions);
+    }
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for

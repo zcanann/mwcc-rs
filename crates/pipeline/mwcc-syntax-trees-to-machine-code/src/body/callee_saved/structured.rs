@@ -3785,6 +3785,13 @@ impl Generator {
                         dense_loop_carried.preference_for(&local.name)
                     {
                         self.fresh_virtual_general_preferring(register)
+                    } else if let Some(register) =
+                        super::structured_loop_carried_leaf::returned_loop_home_preference(
+                            function,
+                            &local.name,
+                        )
+                    {
+                        self.fresh_virtual_general_preferring(register)
                     } else {
                         self.fresh_virtual_general()
                     }

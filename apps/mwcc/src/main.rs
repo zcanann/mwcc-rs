@@ -3110,6 +3110,9 @@ mod tests {
     #[path = "post_call_member_parameter_frame.rs"]
     mod post_call_member_parameter_frame;
 
+    #[path = "returned_loop_accumulator.rs"]
+    mod returned_loop_accumulator;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 

@@ -5,13 +5,62 @@
 //! emitter: a source local is reassigned in a loop and its new value can feed a
 //! later iteration or the continuation after the loop.
 
-use mwcc_syntax_trees::{ArmBody, Expression, Function, Statement};
+use mwcc_syntax_trees::{ArmBody, Expression, Function, Statement, Type};
 
 pub(super) fn contains_loop_carried_local(function: &Function) -> bool {
     function
         .locals
         .iter()
         .any(|local| statements_carry_local(&function.statements, &local.name, false))
+}
+
+/// A loop-carried local returned directly from a frameless leaf prefers the
+/// ABI result register. Coalescing that lifetime at allocation time also frees
+/// the loop cursor for the next argument register and lets a terminal null
+/// branch collapse directly to `beqlr`.
+pub(super) fn returned_loop_carried_local(function: &Function) -> Option<&str> {
+    let Expression::Variable(returned) = function.return_expression.as_ref()? else {
+        return None;
+    };
+    function
+        .locals
+        .iter()
+        .find(|local| {
+            local.name == *returned
+                && statements_carry_local(&function.statements, &local.name, true)
+        })
+        .map(|local| local.name.as_str())
+}
+
+/// Prefer the returned carried value in r3 and its carried companions in
+/// declaration order from r4 upward. A preference on the returned value alone
+/// arrives too late for linear scan: an earlier cursor has already claimed r3.
+pub(super) fn returned_loop_home_preference(function: &Function, local: &str) -> Option<u8> {
+    let returned = returned_loop_carried_local(function)?;
+    if local == returned {
+        return Some(mwcc_target::Eabi::general_result().number);
+    }
+    let rank = function
+        .locals
+        .iter()
+        .filter(|candidate| candidate.name != returned)
+        .filter(|candidate| {
+            matches!(
+                candidate.declared_type,
+                Type::Int
+                    | Type::UnsignedInt
+                    | Type::Char
+                    | Type::UnsignedChar
+                    | Type::Short
+                    | Type::UnsignedShort
+                    | Type::Pointer(_)
+                    | Type::StructPointer { .. }
+            ) && statements_carry_local(&function.statements, &candidate.name, false)
+        })
+        .position(|candidate| candidate.name == local)?;
+    u8::try_from(rank)
+        .ok()
+        .and_then(|rank| mwcc_target::Eabi::general_result().number.checked_add(1 + rank))
 }
 
 fn statements_carry_local(statements: &[Statement], name: &str, read_after: bool) -> bool {
@@ -249,5 +298,32 @@ mod tests {
         function.return_expression = Some(Expression::IntegerLiteral(0));
 
         assert!(!contains_loop_carried_local(&function));
+    }
+
+    #[test]
+    fn identifies_a_directly_returned_loop_accumulator() {
+        let mut function = function(vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: vec![Statement::Assign {
+                name: "cursor".into(),
+                value: Expression::Member {
+                    base: Box::new(Expression::Variable("cursor".into())),
+                    offset: 8,
+                    member_type: Type::StructPointer { element_size: 32 },
+                    index_stride: None,
+                },
+            }],
+        }]);
+
+        assert_eq!(returned_loop_carried_local(&function), Some("cursor"));
+        assert_eq!(
+            returned_loop_home_preference(&function, "cursor"),
+            Some(3)
+        );
+        function.return_expression = Some(Expression::Variable("other".into()));
+        assert_eq!(returned_loop_carried_local(&function), None);
     }
 }
