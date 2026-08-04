@@ -21,6 +21,37 @@ pub(crate) fn peel_indexed_update_provenance(expression: &Expression) -> &Expres
     }
 }
 
+/// Source name at the root of one or more array subscripts. This deliberately
+/// ignores element-type state installed during lowering so pre-frame analyses
+/// can pair an indexed expression with its declaration metadata.
+pub(crate) fn indexed_root_name(mut expression: &Expression) -> Option<&str> {
+    while let Expression::Index { base, .. } = expression {
+        expression = base;
+    }
+    match expression {
+        Expression::Variable(name) => Some(name),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod indexed_root_name_tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_declaration_beneath_nested_subscripts() {
+        let expression = Expression::Index {
+            base: Box::new(Expression::Index {
+                base: Box::new(Expression::Variable("matrix".into())),
+                index: Box::new(Expression::IntegerLiteral(2)),
+            }),
+            index: Box::new(Expression::IntegerLiteral(3)),
+        };
+
+        assert_eq!(indexed_root_name(&expression), Some("matrix"));
+    }
+}
+
 #[cfg(test)]
 mod indexed_update_provenance_tests {
     use super::*;

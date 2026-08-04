@@ -73,3 +73,43 @@ fn plans_a_conversion_image_for_a_framed_explicit_cast() {
     )
     .expect("a non-leaf explicit conversion should have planned stack scratch");
 }
+
+#[test]
+fn plans_a_conversion_image_for_an_indexed_local_double_table() {
+    let source = br#"
+        int scale(int value, int index) {
+            const double table[2] = {0.5, 1.5};
+            return value * table[index];
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.emit_mwcats = false;
+    flags.inline_enabled = false;
+    let object = compile(
+        source,
+        "indexed-local-double-table-conversion.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_3_0A3,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the local double table should be typed before conversion-frame planning");
+
+    // Exact GC/3.0a3 conversion tail measured from mwcceppc. The table occupies
+    // 8..24, integer-to-double scratch occupies 24..32, and the pre-planned
+    // float-to-int image occupies 32..40 inside one 48-byte frame.
+    let expected = [
+        0xfc, 0x00, 0x00, 0x1e, // fctiwz f0,f0
+        0xd8, 0x01, 0x00, 0x20, // stfd f0,32(r1)
+        0x80, 0x61, 0x00, 0x24, // lwz r3,36(r1)
+        0x38, 0x21, 0x00, 0x30, // addi r1,r1,48
+        0x4e, 0x80, 0x00, 0x20, // blr
+    ];
+    assert!(object
+        .windows(expected.len())
+        .any(|bytes| bytes == expected));
+}

@@ -1,5 +1,6 @@
 //! Integer<->float conversions.
 
+use crate::analysis::indexed_root_name;
 use crate::generator::*;
 use mwcc_core::Compilation;
 use mwcc_machine_code::Instruction;
@@ -161,6 +162,9 @@ impl Generator {
                 Expression::Comma { right, .. } => {
                     expression_is_float(generator, declared_float_values, right)
                 }
+                Expression::Index { base, .. } => indexed_root_name(base).is_some_and(|name| {
+                    declared_float_values.contains(name)
+                }),
                 _ => false,
             }
         }

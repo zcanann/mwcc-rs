@@ -4,7 +4,7 @@
 //! frame owners must reserve those images before emitting their prologue;
 //! simpler functions may discover them lazily and grow their single frame push.
 
-use crate::analysis::{constant_value, is_comparison};
+use crate::analysis::{constant_value, indexed_root_name, is_comparison};
 use crate::generator::{Generator, GENERAL_SCRATCH};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
@@ -64,6 +64,9 @@ impl Generator {
                 Expression::Comma { right, .. } => {
                     expression_is_float(generator, declared_float_values, right)
                 }
+                Expression::Index { base, .. } => indexed_root_name(base).is_some_and(|name| {
+                    declared_float_values.contains(name)
+                }),
                 _ => false,
             }
         }
