@@ -3134,6 +3134,9 @@ mod tests {
     #[path = "release_to_global_manager.rs"]
     mod release_to_global_manager;
 
+    #[path = "bounded_global_ring_remove.rs"]
+    mod bounded_global_ring_remove;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 

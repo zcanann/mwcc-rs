@@ -1190,6 +1190,9 @@ impl Generator {
         if self.try_release_to_global_manager(function)? {
             return Ok(());
         }
+        if self.try_bounded_global_ring_remove(function)? {
+            return Ok(());
+        }
         // Inline expansion exposes member-index searches before broad loop
         // lowering can discard their explicit pointer induction variable.
         if self.try_counted_member_pointer_search(function)? {
