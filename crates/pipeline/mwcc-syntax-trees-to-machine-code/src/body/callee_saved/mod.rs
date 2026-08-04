@@ -271,6 +271,7 @@ mod structured_blocking_queue_transaction;
 mod structured_guarded_member_reset;
 mod structured_guarded_member_handoff;
 mod structured_guarded_member_lvalue;
+mod structured_guarded_callback_copy_schedule;
 mod structured_heap_schedule;
 mod structured_polymorphic_zero_constructor_schedule;
 pub(crate) fn restores_fprs_before_gpr_helper_setup(function: &Function) -> bool {

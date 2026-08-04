@@ -11,8 +11,8 @@
 use super::*;
 
 pub(super) struct Plan {
-    object: String,
-    member_offset: i16,
+    pub(super) object: String,
+    pub(super) member_offset: i16,
     clear_offset: Option<i16>,
 }
 
