@@ -138,9 +138,9 @@ impl Generator {
             return Ok(());
         }
         let saved_gpr_count = self.callee_saved.len();
-        let (permutation, frame_growth) = match self.behavior.frame_convention {
+        let (permutation, frame_growth, helper_calls) = match self.behavior.frame_convention {
             FrameConvention::Predecrement => {
-                materialize_predecrement_frame(
+                let (permutation, frame_growth) = materialize_predecrement_frame(
                     &mut self.output.instructions,
                     &registers,
                     saved_gpr_count,
@@ -150,20 +150,52 @@ impl Generator {
                     epilogue_style
                         == mwcc_versions::SavedFloatEpilogueStyle::LinkReloadBeforeFinalRestore,
                 )
-                .map_err(Diagnostic::error)?
+                .map_err(Diagnostic::error)?;
+                (permutation, frame_growth, None)
             }
             FrameConvention::LinkageFirst => {
-                let permutation =
-                    materialize_linkage_first_frame(&mut self.output.instructions, &registers)
-                        .map_err(Diagnostic::error)?;
+                let use_helpers = self.behavior.optimization_goal
+                    == mwcc_versions::OptimizationGoal::Size
+                    && registers.len() >= 2;
+                let materialized = materialize_linkage_first_frame(
+                    &mut self.output.instructions,
+                    &registers,
+                    use_helpers,
+                )
+                .map_err(Diagnostic::error)?;
                 let frame_growth = i16::try_from(registers.len())
                     .ok()
                     .and_then(|count| count.checked_mul(8))
                     .ok_or_else(|| Diagnostic::error("allocated FPR frame is too large"))?;
-                (permutation, frame_growth)
+                (
+                    materialized.permutation,
+                    frame_growth,
+                    materialized.helper_calls,
+                )
             }
         };
         crate::remap_instruction_indices(self, &permutation);
+        if let Some([save, restore]) = helper_calls {
+            let first_register = registers
+                .last()
+                .expect("a nonempty allocated FPR range was checked above");
+            self.output.relocations.extend([
+                mwcc_machine_code::Relocation {
+                    instruction_index: save,
+                    kind: RelocationKind::Rel24,
+                    target: mwcc_machine_code::RelocationTarget::External(format!(
+                        "_savefpr_{first_register}"
+                    )),
+                },
+                mwcc_machine_code::Relocation {
+                    instruction_index: restore,
+                    kind: RelocationKind::Rel24,
+                    target: mwcc_machine_code::RelocationTarget::External(format!(
+                        "_restfpr_{first_register}"
+                    )),
+                },
+            ]);
+        }
         let count = u8::try_from(registers.len())
             .map_err(|_| Diagnostic::error("too many allocator-selected FPR saves"))?;
         self.callee_saved_float = count;

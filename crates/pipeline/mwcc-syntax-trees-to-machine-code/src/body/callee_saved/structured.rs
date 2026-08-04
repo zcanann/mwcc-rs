@@ -80,6 +80,7 @@ use super::structured_liveness::{
     transient_condition_call_result_callee,
 };
 use super::structured_loop_invariants::hoist_iterator_end_sentinels;
+use super::structured_loop_float_invariants::hoist_repeated_float_switch_invariants;
 use super::structured_loop_address_invariants::hoist_loop_address_invariants;
 use super::structured_loop_global_byte_cursor::strength_reduce_global_byte_loop_cursor;
 use super::structured_global_byte_loop_layout::StructuredGlobalByteLoopLayout;
@@ -376,6 +377,9 @@ impl Generator {
         let function = coalesced_packets.as_ref().unwrap_or(function);
         let hoisted_packet_words = hoist_repeated_packet_words(function);
         let function = hoisted_packet_words.as_ref().unwrap_or(function);
+        let hoisted_float_switch_invariants =
+            hoist_repeated_float_switch_invariants(function);
+        let function = hoisted_float_switch_invariants.as_ref().unwrap_or(function);
         let materialized_loop_scalars = super::structured_loop_scalar_cse::
             materialize_repeated_loop_scalars(function);
         let function = materialized_loop_scalars.as_ref().unwrap_or(function);
@@ -1022,6 +1026,13 @@ impl Generator {
         let saved_float_count = saved_float_parameters
             .len()
             .checked_add(saved_float_plan.group_count)
+            .and_then(|count| {
+                count.checked_add(usize::from(
+                    super::structured_loop_float_invariants::retains_separate_selection_lane(
+                        function,
+                    ),
+                ))
+            })
             .ok_or_else(|| Diagnostic::error("saved float-home count overflow"))?;
         if saved_float_count > 18 {
             decline!("more than eighteen overlapping saved float values are live");

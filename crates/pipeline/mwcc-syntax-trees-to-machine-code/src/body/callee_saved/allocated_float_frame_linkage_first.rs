@@ -3,13 +3,19 @@
 #[allow(unused_imports)]
 use super::*;
 
+pub(super) struct MaterializedLinkageFirstFrame {
+    pub(super) permutation: Vec<usize>,
+    pub(super) helper_calls: Option<[usize; 2]>,
+}
+
 /// Add compact double-only FPR lanes after the GPR/linkage frame has been
 /// normalized. Existing locals and GPR homes stay at their low offsets; the
 /// FPRs occupy the new high lanes below the caller linkage area.
 pub(super) fn materialize_linkage_first_frame(
     instructions: &mut Vec<Instruction>,
     registers: &[u8],
-) -> Result<Vec<usize>, &'static str> {
+    use_helpers: bool,
+) -> Result<MaterializedLinkageFirstFrame, &'static str> {
     let expected: Vec<u8> = (0..registers.len())
         .map(|index| 31u8.saturating_sub(index as u8))
         .collect();
@@ -57,6 +63,7 @@ pub(super) fn materialize_linkage_first_frame(
         .skip(last_call + 1)
         .find_map(|(index, instruction)| match instruction {
             Instruction::LoadWord { d, a: 1, .. } if *d >= 14 => Some(index),
+            Instruction::LoadMultipleWord { d, a: 1, .. } if *d >= 14 => Some(index),
             Instruction::AddImmediate {
                 d: 1,
                 a: 1,
@@ -91,39 +98,78 @@ pub(super) fn materialize_linkage_first_frame(
         }
     }
 
-    let mut saves = Vec::with_capacity(registers.len());
-    let mut restores = Vec::with_capacity(registers.len());
-    for (index, register) in registers.iter().copied().enumerate() {
-        let offset = new_size - 8 * (index as i16 + 1);
-        saves.push(Instruction::StoreFloatDouble {
-            s: register,
-            a: 1,
-            offset,
-        });
-        restores.push(Instruction::LoadFloatDouble {
-            d: register,
-            a: 1,
-            offset,
-        });
-    }
+    let first_register = *registers
+        .last()
+        .expect("a nonempty allocated FPR range was checked by the caller");
+    let (mut saves, mut restores) = if use_helpers {
+        (
+            vec![
+                Instruction::AddImmediate {
+                    d: 11,
+                    a: 1,
+                    immediate: new_size,
+                },
+                Instruction::BranchAndLink {
+                    target: format!("_savefpr_{first_register}"),
+                },
+            ],
+            vec![
+                Instruction::AddImmediate {
+                    d: 11,
+                    a: 1,
+                    immediate: new_size,
+                },
+                Instruction::BranchAndLink {
+                    target: format!("_restfpr_{first_register}"),
+                },
+            ],
+        )
+    } else {
+        let mut saves = Vec::with_capacity(registers.len());
+        let mut restores = Vec::with_capacity(registers.len());
+        for (index, register) in registers.iter().copied().enumerate() {
+            let offset = new_size - 8 * (index as i16 + 1);
+            saves.push(Instruction::StoreFloatDouble {
+                s: register,
+                a: 1,
+                offset,
+            });
+            restores.push(Instruction::LoadFloatDouble {
+                d: register,
+                a: 1,
+                offset,
+            });
+        }
+        (saves, restores)
+    };
 
     let old = std::mem::take(instructions);
     let old_len = old.len();
     let save_at = frame_push + 1;
     let mut permutation = vec![0usize; old_len];
     let mut rebuilt = Vec::with_capacity(old_len + saves.len() + restores.len());
+    let mut helper_calls = None;
     for (index, instruction) in old.into_iter().enumerate() {
         if index == save_at {
+            if use_helpers {
+                helper_calls = Some([rebuilt.len() + 1, 0]);
+            }
             rebuilt.append(&mut saves);
         }
         if index == restore_at {
+            if let Some(calls) = &mut helper_calls {
+                calls[1] = rebuilt.len() + 1;
+            }
             rebuilt.append(&mut restores);
         }
         permutation[index] = rebuilt.len();
         rebuilt.push(instruction);
     }
     *instructions = rebuilt;
-    Ok(permutation)
+    Ok(MaterializedLinkageFirstFrame {
+        permutation,
+        helper_calls,
+    })
 }
 
 #[cfg(test)]
@@ -170,10 +216,11 @@ mod tests {
             Instruction::MoveToLinkRegister { s: 0 },
             Instruction::BranchToLinkRegister,
         ];
-        let permutation =
-            materialize_linkage_first_frame(&mut instructions, &[31, 30]).unwrap();
+        let materialized =
+            materialize_linkage_first_frame(&mut instructions, &[31, 30], false).unwrap();
 
-        assert_eq!(permutation[3], 5);
+        assert_eq!(materialized.permutation[3], 5);
+        assert_eq!(materialized.helper_calls, None);
         assert!(matches!(
             instructions[2],
             Instruction::StoreWordWithUpdate { offset: -56, .. }
@@ -209,6 +256,64 @@ mod tests {
                 offset: 36,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn uses_runtime_helpers_for_a_compact_float_frame() {
+        let mut instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -40,
+            },
+            Instruction::StoreMultipleWord {
+                s: 29,
+                a: 1,
+                offset: 28,
+            },
+            Instruction::BranchAndLink {
+                target: "call".into(),
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 44,
+            },
+            Instruction::LoadMultipleWord {
+                d: 29,
+                a: 1,
+                offset: 28,
+            },
+            Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 40,
+            },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::BranchToLinkRegister,
+        ];
+        let materialized =
+            materialize_linkage_first_frame(&mut instructions, &[31, 30], true).unwrap();
+
+        assert_eq!(materialized.helper_calls, Some([4, 9]));
+        assert!(matches!(
+            instructions[3],
+            Instruction::AddImmediate { d: 11, a: 1, immediate: 56 }
+        ));
+        assert!(matches!(
+            &instructions[4],
+            Instruction::BranchAndLink { target } if target == "_savefpr_30"
+        ));
+        assert!(matches!(
+            &instructions[9],
+            Instruction::BranchAndLink { target } if target == "_restfpr_30"
         ));
     }
 }

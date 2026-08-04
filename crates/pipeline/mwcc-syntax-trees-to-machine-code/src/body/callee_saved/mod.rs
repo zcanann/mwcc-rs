@@ -315,6 +315,7 @@ mod structured_global_byte_loop_schedule;
 mod structured_broad_global_base_layout;
 mod structured_broad_global_base_schedule;
 mod structured_loop_float_zero;
+mod structured_loop_float_invariants;
 mod structured_loop_exit_poll_schedule;
 mod structured_loop_packet_algebra;
 mod structured_loop_packet_immediates;
