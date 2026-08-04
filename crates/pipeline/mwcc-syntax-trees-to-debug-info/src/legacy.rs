@@ -575,6 +575,10 @@ pub(super) fn lower(
                             function: function.name.clone(),
                             local_index,
                             element_type: local.declared_type,
+                            source_fundamental: unit
+                                .function_local_fundamentals
+                                .get(&(function.name.clone(), local.name.clone()))
+                                .copied(),
                             length,
                         });
                     }

@@ -631,9 +631,15 @@ impl Parser {
         }
         {
             let declared_type = self.parse_type()?;
+            let source_fundamental = self.last_source_fundamental.take();
             self.last_type_was_const |= declaration_const;
             self.last_type_was_volatile |= declaration_volatile;
             let is_volatile = self.last_type_was_volatile;
+            let pointee_const = self.last_type_was_const
+                && matches!(
+                    declared_type,
+                    Type::Pointer(_) | Type::StructPointer { .. }
+                );
             // An array-typedef local (`Mtx proj;`) is exactly the flat local array
             // `f32 proj[12];` — reuse that machinery (frame codegen still defers
             // it; task #19). Extra brackets/stars/initializers are unmeasured.
@@ -659,6 +665,11 @@ impl Parser {
                     ) {
                         return Err(Diagnostic::error("an array-typedef local with brackets/initializer is not supported yet (roadmap)"));
                     }
+                    self.retain_function_local_debug_type(
+                        &name,
+                        source_fundamental,
+                        pointee_const,
+                    );
                     block_locals.push(LocalDeclaration {
                         declared_type: element,
                         name: name.clone(),
@@ -724,6 +735,11 @@ impl Parser {
                 } else {
                     name
                 };
+                self.retain_function_local_debug_type(
+                    &name,
+                    source_fundamental,
+                    pointee_const,
+                );
                 if *self.peek() == Token::BracketOpen {
                     let (explicit, inner_elements) =
                         self.parse_local_array_dimensions()?;

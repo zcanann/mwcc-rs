@@ -424,6 +424,20 @@ pub struct TranslationUnit {
     /// `unsigned int`. Keyed by emitted function name and parameter name.
     pub function_parameter_fundamentals:
         std::collections::HashMap<(String, String), SourceFundamentalType>,
+    /// Pointer parameters whose source declarator qualifies the pointee rather
+    /// than the pointer object (`const T*` / `T const*`). Storage lowering does
+    /// not distinguish that qualifier, while legacy DWARF does.
+    pub function_parameter_pointee_const:
+        std::collections::HashSet<(String, String)>,
+    /// Source scalar identity for function locals whose executable storage
+    /// collapses typedef distinctions such as `s32` versus plain `int`.
+    pub function_local_fundamentals:
+        std::collections::HashMap<(String, String), SourceFundamentalType>,
+    /// Pointer locals whose source declarator qualifies the pointee. Kept in
+    /// the translation-unit declaration graph so executable local types remain
+    /// compact and qualifier-agnostic.
+    pub function_local_pointee_const:
+        std::collections::HashSet<(String, String)>,
     /// Function prototypes (`type name(params);`) by name, return type, and
     /// parameter types, so a call to an externally-defined function knows its
     /// result type (e.g. a `double`-returning math routine) and its parameter

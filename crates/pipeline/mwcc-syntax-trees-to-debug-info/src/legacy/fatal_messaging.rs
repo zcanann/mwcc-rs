@@ -212,6 +212,7 @@ fn convert_location(location: DebugVariableLocation) -> Compilation<VariableLoca
         DebugVariableLocation::FrameOffset(offset) => {
             Ok(VariableLocation::Frame(i32::from(offset)))
         }
+        DebugVariableLocation::Unavailable => Ok(VariableLocation::Unavailable),
         DebugVariableLocation::FloatRegister(_) => Err(Diagnostic::error(
             "debug-info: legacy floating-register variable locations are not implemented yet",
         )),

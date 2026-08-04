@@ -1367,6 +1367,15 @@ impl Parser {
             function_parameter_fundamentals: std::mem::take(
                 &mut self.function_parameter_fundamentals,
             ),
+            function_parameter_pointee_const: std::mem::take(
+                &mut self.function_parameter_pointee_const,
+            ),
+            function_local_fundamentals: std::mem::take(
+                &mut self.function_local_fundamentals,
+            ),
+            function_local_pointee_const: std::mem::take(
+                &mut self.function_local_pointee_const,
+            ),
             prototypes,
             static_function_prototype_positions: std::mem::take(
                 &mut self.static_function_prototype_positions,
@@ -3411,6 +3420,18 @@ impl Parser {
                         .map(|fundamental| (parameter.name.clone(), fundamental))
                 })
                 .collect::<Vec<_>>();
+            let source_parameter_pointee_const = parameters
+                .iter()
+                .zip(&cxx_parameters)
+                .filter(|(parameter, source_type)| {
+                    source_type.pointee_const()
+                        && matches!(
+                            parameter.parameter_type,
+                            Type::Pointer(_) | Type::StructPointer { .. }
+                        )
+                })
+                .map(|(parameter, _)| parameter.name.clone())
+                .collect::<Vec<_>>();
             let mut member_is_const = false;
             if member_scope.is_some() {
                 while matches!(self.peek(), Token::Identifier(word)
@@ -3581,6 +3602,12 @@ impl Parser {
                 if !parameter.is_empty() {
                     self.function_parameter_fundamentals
                         .insert((name.clone(), parameter), fundamental);
+                }
+            }
+            for parameter in source_parameter_pointee_const {
+                if !parameter.is_empty() {
+                    self.function_parameter_pointee_const
+                        .insert((name.clone(), parameter));
                 }
             }
 
@@ -4749,6 +4776,7 @@ impl Parser {
         cxx_const_object_parameters: std::collections::HashSet<String>,
     ) -> Compilation<Function> {
         let debug_function_name = name.clone();
+        self.current_debug_function_name = Some(debug_function_name.clone());
         self.inline_substitution_count = 0;
         self.current_inline_string_symbols.clear();
         self.current_leaf_statement_lines.clear();
@@ -4875,9 +4903,15 @@ impl Parser {
                 break;
             }
             let declared_type = self.parse_type()?;
+            let source_fundamental = self.last_source_fundamental.take();
             self.last_type_was_const |= declaration_const;
             self.last_type_was_volatile |= declaration_volatile;
             let is_volatile = self.last_type_was_volatile;
+            let pointee_const = self.last_type_was_const
+                && matches!(
+                    declared_type,
+                    Type::Pointer(_) | Type::StructPointer { .. }
+                );
             if is_extern
                 && matches!(self.peek(), Token::Identifier(_))
                 && *self.peek_at(1) == Token::ParenOpen
@@ -4922,6 +4956,11 @@ impl Parser {
                         row_bytes: (_inner > 1).then(|| _inner * (element.width() as u16 / 8)),
                     });
                     local_lines.push(Some(declaration_line));
+                    self.retain_function_local_debug_type(
+                        &name,
+                        source_fundamental,
+                        pointee_const,
+                    );
                     self.variable_types.insert(name.clone(), element);
                     self.variable_array_bytes
                         .insert(name.clone(), element.width() as u32 / 8 * total as u32);
@@ -5005,6 +5044,11 @@ impl Parser {
                 }
                 let name = self.parse_identifier()?;
                 let mut attribute_alignment = self.skip_attributes()?;
+                self.retain_function_local_debug_type(
+                    &name,
+                    source_fundamental,
+                    pointee_const,
+                );
                 if let Some(tag) = &struct_tag {
                     self.variable_structs.insert(name.clone(), tag.clone());
                     self.function_local_structs
@@ -5632,6 +5676,7 @@ impl Parser {
                 std::mem::take(&mut self.current_inline_string_symbols),
             );
         }
+        self.current_debug_function_name = None;
         Ok(Function {
             return_type,
             name,
@@ -5650,6 +5695,25 @@ impl Parser {
             inline_asm_blocks,
             force_active: self.force_active,
         })
+    }
+
+    pub(crate) fn retain_function_local_debug_type(
+        &mut self,
+        name: &str,
+        source_fundamental: Option<SourceFundamentalType>,
+        pointee_const: bool,
+    ) {
+        let Some(function) = self.current_debug_function_name.clone() else {
+            return;
+        };
+        let key = (function, name.to_string());
+        if let Some(fundamental) = source_fundamental {
+            self.function_local_fundamentals
+                .insert(key.clone(), fundamental);
+        }
+        if pointee_const {
+            self.function_local_pointee_const.insert(key);
+        }
     }
 
     /// Parse a function-scope `typedef RET (*Alias)(params);`. The alias registration is owned by

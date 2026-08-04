@@ -7,7 +7,7 @@
 use mwcc_core::Compilation;
 use mwcc_syntax_trees::TranslationUnit;
 use mwcc_tokens::{LocatedToken, SourceLocation, Token};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 mod aggregate_size_assertions;
 mod cxx;
@@ -177,10 +177,11 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
     anonymous_namespace_scope: Option<String>,
     enum_min: bool,
 ) -> Compilation<TranslationUnit> {
-    // East pointee qualifiers are codegen-transparent, but C++ `const`
-    // remains part of a function's ABI name. Move that fact after the star as
-    // a parser-internal marker: declaration lookahead keeps seeing canonical
-    // `T*`, while parse_type consumes the marker before the declarator name.
+    // East pointee qualifiers are codegen-transparent, but `const` remains
+    // part of the source declaration identity (C debug types and C++ ABI
+    // names). Move that fact after the star as a parser-internal marker:
+    // declaration lookahead keeps seeing canonical `T*`, while parse_type
+    // consumes the marker before the declarator name.
     let mut tokens = cxx::normalize_linkage_specifications(tokens);
     let (removed_template_named_parameters, reused_template_named_parameters) = if cplusplus {
         let materialization = explicit_instantiations::materialize(tokens);
@@ -201,7 +202,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
             _ => None,
         };
         if qualifier.is_some() && tokens[index + 1].token == Token::Star {
-            if cplusplus && qualifier == Some(true) {
+            if qualifier == Some(true) {
                 tokens.swap(index, index + 1);
                 tokens[index + 1].token = Token::Identifier(CXX_POINTEE_CONST_MARKER.to_string());
                 index += 2;
@@ -363,6 +364,10 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         function_return_fundamentals: HashMap::new(),
         function_source_names: HashMap::new(),
         function_parameter_fundamentals: HashMap::new(),
+        function_parameter_pointee_const: HashSet::new(),
+        function_local_fundamentals: HashMap::new(),
+        function_local_pointee_const: HashSet::new(),
+        current_debug_function_name: None,
         fixed_address_globals: HashMap::new(),
         fixed_address_arrays: HashMap::new(),
         variable_types: HashMap::new(),
@@ -9492,6 +9497,56 @@ blr\n\
                 .map(String::as_str),
             Some("Packet")
         );
+    }
+
+    #[test]
+    fn retains_function_local_source_fundamentals_for_debug_info() {
+        let source = r#"
+            typedef signed long s32;
+            typedef signed short s16;
+            int inspect(s16 const* input) {
+                s32 first, second;
+                s16 const* cursor;
+                int plain;
+                if (plain) {
+                    s16 const* nested;
+                }
+                return 0;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.function_local_fundamentals
+                .get(&("inspect".into(), "first".into())),
+            Some(&mwcc_syntax_trees::SourceFundamentalType::SignedLong)
+        );
+        assert_eq!(
+            unit.function_local_fundamentals
+                .get(&("inspect".into(), "second".into())),
+            Some(&mwcc_syntax_trees::SourceFundamentalType::SignedLong)
+        );
+        assert_eq!(
+            unit.function_local_fundamentals
+                .get(&("inspect".into(), "plain".into())),
+            Some(&mwcc_syntax_trees::SourceFundamentalType::SignedInteger)
+        );
+        assert!(unit
+            .function_parameter_pointee_const
+            .contains(&("inspect".into(), "input".into())));
+        assert!(unit
+            .function_local_pointee_const
+            .contains(&("inspect".into(), "cursor".into())));
+        assert!(unit
+            .function_local_pointee_const
+            .contains(&("inspect".into(), "nested".into())));
     }
 
     #[test]

@@ -89,6 +89,9 @@ pub enum DebugVariableLocation {
     GeneralRegister(u8),
     FloatRegister(u8),
     FrameOffset(i16),
+    /// MWCC retained the declaration but could no longer describe a stable
+    /// optimized home. Legacy DWARF spells this as register `-1`.
+    Unavailable,
 }
 
 /// One source variable that still has a physical home after optimization.

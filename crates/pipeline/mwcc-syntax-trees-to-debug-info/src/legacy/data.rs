@@ -42,6 +42,7 @@ pub(super) enum GeneralTypeRequest {
         function: String,
         local_index: usize,
         element_type: Type,
+        source_fundamental: Option<SourceFundamentalType>,
         length: u16,
     },
 }
@@ -458,6 +459,7 @@ enum TrailingTypePlan<'a> {
     ScalarLocalArray {
         id: DebugEntryId,
         element_type: Type,
+        source_fundamental: Option<SourceFundamentalType>,
         length: u16,
     },
 }
@@ -688,6 +690,7 @@ fn records_with_continuation<'a>(
                 function,
                 local_index,
                 element_type,
+                source_fundamental,
                 length,
             } => {
                 if *length == 0 {
@@ -697,12 +700,16 @@ fn records_with_continuation<'a>(
                 }
                 // Validate before allocating so a rejected request cannot leave
                 // a gap in the stable DIE ordinal stream.
-                fundamental_type(*element_type)?;
+                match source_fundamental {
+                    Some(source) => source_fundamental_type(*source)?,
+                    None => fundamental_type(*element_type)?,
+                };
                 let id = allocate(&mut next_id);
                 local_array_ids.insert((function.clone(), *local_index), id);
                 trailing_types.push(TrailingTypePlan::ScalarLocalArray {
                     id,
                     element_type: *element_type,
+                    source_fundamental: *source_fundamental,
                     length: *length,
                 });
             }
@@ -874,6 +881,7 @@ fn append_trailing_types(
             TrailingTypePlan::ScalarLocalArray {
                 id,
                 element_type,
+                source_fundamental,
                 length,
                 ..
             } => records.push(DebugRecord::Entry(DebugEntry {
@@ -885,7 +893,10 @@ fn append_trailing_types(
                         AttributeName::SubscriptData,
                         AttributeValue::Block2(fundamental_subscript_data(
                             *length,
-                            fundamental_type(*element_type)?,
+                            match source_fundamental {
+                                Some(source) => source_fundamental_type(*source)?,
+                                None => fundamental_type(*element_type)?,
+                            },
                         )),
                     ),
                 ],
@@ -1293,10 +1304,17 @@ fn pointer_member_type_attribute(
     ))
 }
 
-pub(super) fn const_pointer_type_attribute(pointee: Pointee) -> Compilation<Attribute> {
+pub(super) fn const_pointer_type_attribute(
+    pointee: Pointee,
+    source_fundamental: Option<SourceFundamentalType>,
+) -> Compilation<Attribute> {
+    let fundamental = match source_fundamental {
+        Some(source) => source_fundamental_type(source)?,
+        None => pointee_type(pointee)?,
+    };
     Ok(modified_fundamental_type_with_modifiers(
         &[1, 3],
-        pointee_type(pointee)?,
+        fundamental,
     ))
 }
 

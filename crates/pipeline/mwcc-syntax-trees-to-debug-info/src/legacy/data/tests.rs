@@ -12,6 +12,20 @@ fn integer_double_pointers_retain_both_legacy_modifiers() {
 }
 
 #[test]
+fn const_pointer_types_retain_typedef_source_identity() {
+    let attribute = const_pointer_type_attribute(
+        Pointee::Int,
+        Some(SourceFundamentalType::SignedLong),
+    )
+    .expect("const typedef pointer type");
+    assert_eq!(attribute.name, AttributeName::ModifiedFundamentalType);
+    assert_eq!(
+        attribute.value,
+        AttributeValue::Block2(vec![1, 3, 0, FundamentalType::SignedLong as u8])
+    );
+}
+
+#[test]
 fn function_local_aggregates_extend_the_data_type_chain_before_functions() {
     let source = br#"
         typedef struct Color {
@@ -107,6 +121,7 @@ fn general_type_plan_interleaves_parameter_aggregates_and_local_arrays() {
             function: function.name.clone(),
             local_index: 0,
             element_type: function.locals[0].declared_type,
+            source_fundamental: None,
             length: function.locals[0].array_length.expect("table extent"),
         },
         GeneralTypeRequest::Aggregate(footer.clone()),

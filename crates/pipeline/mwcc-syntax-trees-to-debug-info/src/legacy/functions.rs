@@ -24,6 +24,7 @@ struct FunctionPlan<'a> {
 pub(super) enum VariableLocation {
     Register(u8),
     Frame(i32),
+    Unavailable,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -340,6 +341,25 @@ impl SelectedFunctionPlan<'_> {
                     })
                 })
                 .transpose()?;
+                let source_fundamental = unit
+                    .function_parameter_fundamentals
+                    .get(&(plan.function.name.clone(), parameter.name.clone()))
+                    .copied();
+                let type_attribute = match parameter.parameter_type {
+                    Type::Pointer(pointee)
+                        if unit.function_parameter_pointee_const.contains(&(
+                            plan.function.name.clone(),
+                            parameter.name.clone(),
+                        )) =>
+                    {
+                        data::const_pointer_type_attribute(pointee, source_fundamental)
+                    }
+                    _ => data::member_type_attribute(
+                        parameter.parameter_type,
+                        aggregate_id,
+                        source_fundamental,
+                    ),
+                };
                 records.push(DebugRecord::Entry(DebugEntry {
                     id: plan.parameter_ids[selected_index],
                     tag: Tag::FormalParameter,
@@ -349,13 +369,7 @@ impl SelectedFunctionPlan<'_> {
                             AttributeName::Name,
                             AttributeValue::String(parameter.name.clone()),
                         ),
-                        data::member_type_attribute(
-                            parameter.parameter_type,
-                            aggregate_id,
-                            unit.function_parameter_fundamentals
-                                .get(&(plan.function.name.clone(), parameter.name.clone()))
-                                .copied(),
-                        )
+                        type_attribute
                             .map_err(|mut diagnostic| {
                                 diagnostic.message.push_str(&format!(
                                     " (parameter '{}.{}')",
@@ -394,6 +408,10 @@ impl SelectedFunctionPlan<'_> {
                 let local_array_id = local_array_ids
                     .get(&(plan.function.name.clone(), local_index))
                     .copied();
+                let source_fundamental = unit
+                    .function_local_fundamentals
+                    .get(&(plan.function.name.clone(), local.name.clone()))
+                    .copied();
                 records.push(DebugRecord::Entry(DebugEntry {
                     id: plan.local_ids[selected_index],
                     tag: Tag::LocalVariable,
@@ -405,13 +423,22 @@ impl SelectedFunctionPlan<'_> {
                         ),
                         local_array_id.map_or_else(
                             || match local.declared_type {
-                                Type::Pointer(pointee) if local.is_const => {
-                                    data::const_pointer_type_attribute(pointee)
+                                Type::Pointer(pointee)
+                                    if local.is_const
+                                        || unit.function_local_pointee_const.contains(&(
+                                            plan.function.name.clone(),
+                                            local.name.clone(),
+                                        )) =>
+                                {
+                                    data::const_pointer_type_attribute(
+                                        pointee,
+                                        source_fundamental,
+                                    )
                                 }
                                 _ => data::member_type_attribute(
                                     local.declared_type,
                                     aggregate_id,
-                                    None,
+                                    source_fundamental,
                                 ),
                             },
                             |id| {
@@ -469,6 +496,7 @@ fn location_attribute(location: VariableLocation) -> mwcc_dwarf1::Attribute {
             bytes.push(0x07);
             bytes
         }
+        VariableLocation::Unavailable => vec![0x01, 0xff, 0xff, 0xff, 0xff],
     };
     attribute(AttributeName::Location, AttributeValue::Block2(bytes))
 }
@@ -511,6 +539,10 @@ mod tests {
             AttributeValue::Block2(vec![
                 0x02, 0, 0, 0, 1, 0x04, 0, 0, 0, 20, 0x07,
             ])
+        );
+        assert_eq!(
+            location_attribute(VariableLocation::Unavailable).value,
+            AttributeValue::Block2(vec![0x01, 0xff, 0xff, 0xff, 0xff])
         );
     }
 

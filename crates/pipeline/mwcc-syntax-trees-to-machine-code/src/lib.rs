@@ -36,6 +36,7 @@ mod copy_sign_frame;
 mod cxx_abi;
 mod cxx_temporary_arguments;
 mod dag_emitter;
+mod debug_provenance;
 mod division;
 mod expressions;
 mod float;
@@ -1372,6 +1373,7 @@ fn lower_function_body(
             })
         })
         .collect();
+    generator.select_dense_counted_loop_debug_variables(function);
 
     // A function with a stack frame carries unwind tables. The codegen does not
     // yet save callee registers, so the saved counts are zero today; the FPU flag

@@ -307,6 +307,7 @@ fn convert_location(location: DebugVariableLocation) -> Option<VariableLocation>
         DebugVariableLocation::FrameOffset(offset) => {
             Some(VariableLocation::Frame(i32::from(offset)))
         }
+        DebugVariableLocation::Unavailable => Some(VariableLocation::Unavailable),
         // Legacy FPR location expressions need generation-specific register
         // numbering. Omit those variables until that policy is measured.
         DebugVariableLocation::FloatRegister(_) => None,
