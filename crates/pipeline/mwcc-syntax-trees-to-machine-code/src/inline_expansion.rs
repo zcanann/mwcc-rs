@@ -195,6 +195,11 @@ pub(crate) struct ExpandedCalls {
     /// ordinals. Whole-file switch duplication retains an allocator lane but
     /// is selected after the ordinary anonymous-symbol pass.
     pub(crate) advances_ordinary_ordinals: bool,
+    /// Expanded control-flow nodes absent from the pre-pool ordinal walk.
+    pub(crate) pre_constant_ordinal_discount: u32,
+    /// Optimizer residue selected after the function's strings/constants.
+    /// This is distinct from ordinary inline residue, which precedes them.
+    pub(crate) post_constant_ordinal_residue: u32,
     /// Whether structured labels introduced by this late-selected lane are
     /// absent from the translation unit's anonymous-symbol stream.
     pub(crate) discounts_structured_hidden_labels: bool,
@@ -743,6 +748,17 @@ impl InlineBodySet {
         let mut expanded = self.clone();
         expanded.bodies.extend(visible_bodies);
         let mut result = expanded.expand_calls_with_facts_policy(function, true)?;
+        if let Some(adjustment) = ordinal_residue::context_snapshot_clear_adjustment(
+            &calls,
+            result.statement_body_substitutions,
+            result.value_body_substitutions,
+        ) {
+            // Preserve the semantic adjustment separately from version policy.
+            // Body lowering enables it only for analyzers whose inline nodes
+            // are assigned after function-owned strings.
+            result.pre_constant_ordinal_discount = adjustment.pre_constant_discount;
+            result.post_constant_ordinal_residue = adjustment.post_constant_residue;
+        }
         if switch_transaction_calls != 0 {
             result.statement_frame_residue_substitutions =
                 usize::from(switch_transaction_calls == 1);
@@ -1227,6 +1243,8 @@ impl InlineBodySet {
             replays_source_hidden_ordinals: false,
             retains_ordinary_residue: true,
             advances_ordinary_ordinals: true,
+            pre_constant_ordinal_discount: 0,
+            post_constant_ordinal_residue: 0,
             discounts_structured_hidden_labels: false,
             retains_source_call_survivors: false,
             introduced_mutable_globals: HashSet::new(),

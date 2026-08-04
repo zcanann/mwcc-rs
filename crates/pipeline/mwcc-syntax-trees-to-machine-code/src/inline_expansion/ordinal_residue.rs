@@ -4,6 +4,31 @@
 //! pool symbols even though neither the call nor those nodes survive codegen.
 
 use mwcc_syntax_trees::{ArmBody, Expression, Function, InlineExpansionFacts, Statement};
+use std::collections::HashMap;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct OrdinalAdjustment {
+    pub(super) pre_constant_discount: u32,
+    pub(super) post_constant_residue: u32,
+}
+
+/// Build 163 selects the context snapshot/clear transaction after its ordinary
+/// anonymous-symbol walk. Each expanded clear retains one of its two branch
+/// nodes before the pool, while one shared transaction terminator follows it.
+pub(super) fn context_snapshot_clear_adjustment(
+    calls: &HashMap<String, usize>,
+    statement_substitutions: usize,
+    value_substitutions: usize,
+) -> Option<OrdinalAdjustment> {
+    (statement_substitutions == 2
+        && value_substitutions == 1
+        && calls.get("OSClearContext") == Some(&2)
+        && calls.get("OSGetCurrentContext") == Some(&1))
+        .then_some(OrdinalAdjustment {
+            pre_constant_discount: 2,
+            post_constant_residue: 1,
+        })
+}
 
 pub(super) fn ordinal_residue(
     facts: InlineExpansionFacts,
@@ -92,6 +117,22 @@ mod tests {
             ),
             8
         );
+    }
+
+    #[test]
+    fn context_snapshot_clear_moves_branch_and_terminator_residue() {
+        let calls = HashMap::from([
+            ("OSClearContext".to_owned(), 2),
+            ("OSGetCurrentContext".to_owned(), 1),
+        ]);
+        assert_eq!(
+            context_snapshot_clear_adjustment(&calls, 2, 1),
+            Some(OrdinalAdjustment {
+                pre_constant_discount: 2,
+                post_constant_residue: 1,
+            })
+        );
+        assert_eq!(context_snapshot_clear_adjustment(&calls, 1, 1), None);
     }
 
     #[test]

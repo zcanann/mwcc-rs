@@ -1721,7 +1721,16 @@ impl Generator {
         if self.try_call_result_product_return(function)? {
             return Ok(());
         }
-        if let Some(expanded) = self.inline_bodies.expand_selective_calls(function) {
+        if let Some(mut expanded) = self.inline_bodies.expand_selective_calls(function) {
+            if self.behavior.inline_initializer_ordinals_follow_strings
+                && (expanded.pre_constant_ordinal_discount != 0
+                    || expanded.post_constant_ordinal_residue != 0)
+            {
+                expanded.advances_ordinary_ordinals = false;
+            } else {
+                expanded.pre_constant_ordinal_discount = 0;
+                expanded.post_constant_ordinal_residue = 0;
+            }
             if std::env::var_os("MWCC_DIAGNOSTIC_ANONYMOUS_ORDINALS").is_some() {
                 let source_hidden =
                     super::callee_saved::hidden_label_count_with_switches(function);
@@ -1743,12 +1752,16 @@ impl Generator {
                     0
                 };
                 eprintln!(
-                    "inline-ordinals {}: lane=selective statement={} value={} retained={} advances={} weight={} value_frame={} source_hidden={} expanded_hidden={} structured_discount={}",
+                    "inline-ordinals {}: lane=selective leading_initializer={} parser_body_value={} statement={} value={} retained={} advances={} pre_discount={} post_residue={} weight={} value_frame={} source_hidden={} expanded_hidden={} structured_discount={}",
                     function.name,
+                    self.inline_expansion_facts.leading_initializer_substitutions,
+                    self.inline_expansion_facts.body_value_substitutions,
                     expanded.statement_body_substitutions,
                     expanded.value_body_substitutions,
                     expanded.retains_ordinary_residue,
                     expanded.advances_ordinary_ordinals,
+                    expanded.pre_constant_ordinal_discount,
+                    expanded.post_constant_ordinal_residue,
                     self.behavior.inline_statement_substitution_label_weight,
                     crate::inline_expansion::legacy_value_body_frame_residue_bytes(
                         &expanded.function,
@@ -1855,6 +1868,14 @@ impl Generator {
             }
             let result = self.evaluate_body(&expanded.function);
             if result.is_ok() {
+                self.output.anonymous_label_bump = self
+                    .output
+                    .anonymous_label_bump
+                    .saturating_sub(expanded.pre_constant_ordinal_discount);
+                self.output.post_constant_label_bump = self
+                    .output
+                    .post_constant_label_bump
+                    .saturating_add(expanded.post_constant_ordinal_residue);
                 self.output.anonymous_label_bump = self
                     .output
                     .anonymous_label_bump
