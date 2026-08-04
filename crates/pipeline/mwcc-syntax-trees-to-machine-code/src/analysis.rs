@@ -7,6 +7,14 @@ use crate::intrinsics::{is_integer_intrinsic_call, is_intrinsic_call};
 
 pub(crate) const PRESCALED_POINTER_TABLE_INDEX_PREFIX: &str =
     "__mwcc_pointer_table_byte_offset_";
+pub(crate) const PRESCALED_MEMBER_ARRAY_INDEX_PREFIX: &str =
+    "__mwcc_member_array_byte_offset_";
+
+pub(crate) fn is_prescaled_byte_offset(expression: &Expression) -> bool {
+    matches!(expression, Expression::Variable(name)
+        if name.starts_with(PRESCALED_POINTER_TABLE_INDEX_PREFIX)
+            || name.starts_with(PRESCALED_MEMBER_ARRAY_INDEX_PREFIX))
+}
 
 pub(crate) fn is_prescaled_pointer_table_index(expression: &Expression) -> bool {
     matches!(expression, Expression::Variable(name)

@@ -1948,7 +1948,7 @@ impl Generator {
         // global scalar indices through the shared index policy; register-local
         // indices retain their existing home without an extra move.
         let index_register = self.materialize_index_operand(index)?;
-        let size = if crate::analysis::is_prescaled_pointer_table_index(index) {
+        let size = if crate::analysis::is_prescaled_byte_offset(index) {
             1
         } else {
             pointee.size()

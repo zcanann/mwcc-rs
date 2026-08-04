@@ -641,6 +641,7 @@ fn lower_function_body(
         structured_repeated_call_poll_owner: false,
         structured_nonreturning: false,
         structured_global_byte_loop_layout_owner: false,
+        structured_member_array_offset_owner: false,
         structured_broad_global_base_layout_owner: false,
         structured_shared_switch_global_value: None,
         transient_global_index_base: None,
@@ -992,6 +993,9 @@ fn lower_function_body(
     // virtual home to the register the value already holds (mwcc coalesces them).
     coalesce_self_moves(&mut generator);
     coalesce_float_conversion_moves(&mut generator);
+    if generator.structured_member_array_offset_owner {
+        generator.schedule_member_array_offset_loop();
+    }
     generator.schedule_periodic_float_normalization(function);
     generator.schedule_inlined_global_transaction_volatile_reuse();
     generator.share_leaf_constant_guard_epilogue();

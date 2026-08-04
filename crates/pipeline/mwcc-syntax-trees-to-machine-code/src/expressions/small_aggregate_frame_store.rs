@@ -75,7 +75,12 @@ impl Generator {
         };
         let element = representation(copy.size);
         let aggregate = self.member_base_register(copy.aggregate)?;
-        let source = GENERAL_SCRATCH;
+        let prescaled = crate::analysis::is_prescaled_byte_offset(copy.index);
+        let source = if prescaled {
+            self.fresh_virtual_general_preferring(3)
+        } else {
+            GENERAL_SCRATCH
+        };
         if let Some(index) = constant_value(copy.index) {
             let offset = index
                 .checked_mul(i64::from(copy.size))
@@ -92,6 +97,30 @@ impl Generator {
             )?);
         } else {
             let index = self.general_register_of_leaf(copy.index)?;
+            if prescaled {
+                let offset = i16::try_from(copy.member_offset).map_err(|_| {
+                    Diagnostic::error("small aggregate member offset is out of range")
+                })?;
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: source,
+                    a: index,
+                    immediate: offset,
+                });
+                self.output.instructions.push(indexed_load(
+                    element,
+                    source,
+                    aggregate,
+                    source,
+                )?);
+                self.output.instructions.push(displacement_store(
+                    element,
+                    source,
+                    1,
+                    copy.slot.offset,
+                )?);
+                self.written_slots.insert(copy.slot.offset);
+                return Ok(true);
+            }
             let scaled = if copy.size == 1 {
                 index
             } else {

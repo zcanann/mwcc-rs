@@ -267,7 +267,7 @@ impl<'a> LoopLowering<'a> {
             // An always-true pre-test loop enters its body directly. Retaining the
             // generic jump-to-condition creates an otherwise dead entry trampoline
             // before polling loops such as `while (1) { if (done) break; }`.
-        } else if needs_entry_test {
+        } else if needs_entry_test && !first_iteration_is_proven(initializer, condition) {
             output.push(Statement::Goto(condition_label.clone()));
         }
         output.push(Statement::Label(body_label.clone()));

@@ -432,6 +432,10 @@ pub(crate) struct Generator {
     /// A normalized counted loop owns MWCC's dense global-byte decoder window.
     /// Its final physical issue order is selected only after saved-home coloring.
     pub(crate) structured_global_byte_loop_layout_owner: bool,
+    /// A counted loop retains both a source index and the byte offset of an
+    /// embedded aggregate element. Its final issue order depends on the three
+    /// physical saved homes chosen by allocation.
+    pub(crate) structured_member_array_offset_owner: bool,
     /// A broad global aggregate loop selected source-ordered saved homes and
     /// retains an additional linkage lane for its addressable cursor record.
     pub(crate) structured_broad_global_base_layout_owner: bool,

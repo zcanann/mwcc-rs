@@ -169,6 +169,11 @@ fn lower_structured_switches_with_mode(
         locals: function.locals.clone(),
         changed: false,
         preserve_dense,
+        preserve_adjacent_ranges: function.locals.iter().any(|local| {
+            local
+                .name
+                .starts_with(crate::analysis::PRESCALED_MEMBER_ARRAY_INDEX_PREFIX)
+        }),
         control_depth: 0,
     };
     let statements = lowering.lower_statements(&function.statements);
@@ -249,6 +254,7 @@ struct SwitchLowering {
     locals: Vec<LocalDeclaration>,
     changed: bool,
     preserve_dense: bool,
+    preserve_adjacent_ranges: bool,
     control_depth: usize,
 }
 
@@ -293,6 +299,9 @@ impl SwitchLowering {
                             || ((self.control_depth == 0
                                 || arms.iter().any(|arm| arm.falls_through)
                                 || arms.len() >= 4)
+                                && super::structured_sparse_switch::is_sparse_retained_switch(arms))
+                            || (self.preserve_adjacent_ranges
+                                && adjacent_local_member_store_range(arms)
                                 && super::structured_sparse_switch::is_sparse_retained_switch(arms)))
                     {
                         let switch_has_break = arms.iter().any(|arm| {
@@ -440,6 +449,42 @@ impl SwitchLowering {
             }
         }
     }
+}
+
+fn adjacent_local_member_store_range(arms: &[mwcc_syntax_trees::SwitchArm]) -> bool {
+    fn target(arm: &mwcc_syntax_trees::SwitchArm) -> Option<(&str, u32)> {
+        match &arm.body {
+            ArmBody::Statements(statements) => match statements.as_slice() {
+                [Statement::Store {
+                    target:
+                        Expression::Member {
+                            base,
+                            offset,
+                            member_type: Type::Char | Type::UnsignedChar,
+                            index_stride: None,
+                        },
+                    value: Expression::IntegerLiteral(_),
+                }] => match base.as_ref() {
+                    Expression::Variable(name) => Some((name.as_str(), *offset)),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    let [left, right] = arms else {
+        return false;
+    };
+    if left.value.checked_add(1) != Some(right.value)
+        && right.value.checked_add(1) != Some(left.value)
+    {
+        return false;
+    }
+    matches!((target(left), target(right)),
+        (Some((left_name, left_offset)), Some((right_name, right_offset)))
+            if left_name == right_name && left_offset == right_offset)
 }
 
 fn current_switch_has_break(statements: &[Statement]) -> bool {

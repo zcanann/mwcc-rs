@@ -300,6 +300,7 @@ mod structured_loop_member_cache;
 mod structured_loop_invariants;
 mod structured_loop_address_invariants;
 mod structured_loop_global_byte_cursor;
+mod structured_loop_member_array_offset;
 mod structured_global_byte_loop_layout;
 mod structured_global_byte_loop_schedule;
 mod structured_broad_global_base_layout;

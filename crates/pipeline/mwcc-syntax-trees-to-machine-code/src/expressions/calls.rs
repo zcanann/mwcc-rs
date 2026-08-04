@@ -1395,15 +1395,18 @@ impl Generator {
                             // home (`lwz r0; clrlwi r4,r0,16` for a u32 member
                             // passed as u16, or `lha r0; clrlwi r5,r0,24` for
                             // an s16 member passed as u8).
-                            if source_width.is_some_and(|width| {
-                                u32::from(width) > parameter_type.width() as u32
-                            }) && matches!(
-                                general_argument,
-                                Expression::Variable(_)
-                                    | Expression::Dereference { .. }
-                                    | Expression::Index { .. }
-                                    | Expression::Member { .. }
-                            ) {
+                            if self.leaf_info(general_argument).is_err()
+                                && source_width.is_some_and(|width| {
+                                    u32::from(width) > parameter_type.width() as u32
+                                })
+                                && matches!(
+                                    general_argument,
+                                    Expression::Variable(_)
+                                        | Expression::Dereference { .. }
+                                        | Expression::Index { .. }
+                                        | Expression::Member { .. }
+                                )
+                            {
                                 let newly_reserved: Vec<_> =
                                     (Eabi::FIRST_GENERAL_ARGUMENT..next_general)
                                         .filter(|register| self.reserved.insert(*register))
