@@ -6450,7 +6450,7 @@ fn has_only_call_result_temporaries(function: &Function) -> bool {
         })
     }
 
-    function.locals.iter().all(|local| {
+    !function.locals.is_empty() && function.locals.iter().all(|local| {
         if local.initializer.is_some() {
             return false;
         }
@@ -6716,6 +6716,9 @@ mod tests {
 
         assert!(has_only_call_result_temporaries(&call_only));
         assert!(!has_only_call_result_temporaries(&stored_value));
+        let mut no_locals = call_only.clone();
+        no_locals.locals.clear();
+        assert!(!has_only_call_result_temporaries(&no_locals));
     }
 
     #[test]
