@@ -6,7 +6,7 @@ use mwcc_dwarf1::{
     Address, AttributeName, AttributeValue, DebugEntry, DebugEntryId, DebugRecord, Tag,
 };
 use mwcc_object::FunctionLayout;
-use mwcc_syntax_trees::{Function, TranslationUnit, Type};
+use mwcc_syntax_trees::{Function, SourceFundamentalType, TranslationUnit, Type};
 use std::collections::HashMap;
 
 struct FunctionPlan<'a> {
@@ -220,9 +220,20 @@ impl SelectedFunctionPlan<'_> {
                 attribute(AttributeName::Sibling, AttributeValue::Reference(sibling)),
                 attribute(
                     AttributeName::Name,
-                    AttributeValue::String(plan.function.name.clone()),
+                    AttributeValue::String(
+                        unit.function_source_names
+                            .get(&plan.function.name)
+                            .cloned()
+                            .unwrap_or_else(|| plan.function.name.clone()),
+                    ),
                 ),
             ];
+            if unit.function_source_names.contains_key(&plan.function.name) {
+                attributes.push(attribute(
+                    AttributeName::MwLinkageName,
+                    AttributeValue::String(plan.function.name.clone()),
+                ));
+            }
             if plan.function.return_type != Type::Void {
                 let aggregate_id = unit
                     .function_return_aggregate_tags
@@ -240,9 +251,11 @@ impl SelectedFunctionPlan<'_> {
                     data::member_type_attribute(
                         plan.function.return_type,
                         aggregate_id,
-                        unit.function_return_fundamentals
-                            .get(&plan.function.name)
-                            .copied(),
+                        debug_return_fundamental(
+                            unit.function_return_fundamentals
+                                .get(&plan.function.name)
+                                .copied(),
+                        ),
                     )
                     .map_err(|mut diagnostic| {
                         diagnostic
@@ -319,7 +332,13 @@ impl SelectedFunctionPlan<'_> {
                             AttributeName::Name,
                             AttributeValue::String(parameter.name.clone()),
                         ),
-                        data::member_type_attribute(parameter.parameter_type, aggregate_id, None)
+                        data::member_type_attribute(
+                            parameter.parameter_type,
+                            aggregate_id,
+                            unit.function_parameter_fundamentals
+                                .get(&(plan.function.name.clone(), parameter.name.clone()))
+                                .copied(),
+                        )
                             .map_err(|mut diagnostic| {
                                 diagnostic.message.push_str(&format!(
                                     " (parameter '{}.{}')",
@@ -401,6 +420,18 @@ impl SelectedFunctionPlan<'_> {
     }
 }
 
+/// MWCC's C++ `bool` return ABI is an unsigned byte, and its legacy function
+/// DIE records that lowered storage identity. Other scalar distinctions (for
+/// example `unsigned long` versus `unsigned int`) retain their source identity.
+fn debug_return_fundamental(
+    source: Option<SourceFundamentalType>,
+) -> Option<SourceFundamentalType> {
+    match source {
+        Some(SourceFundamentalType::Boolean) => None,
+        other => other,
+    }
+}
+
 fn location_attribute(location: VariableLocation) -> mwcc_dwarf1::Attribute {
     let bytes = match location {
         VariableLocation::Register(register) => vec![0x01, 0, 0, 0, register],
@@ -452,6 +483,18 @@ mod tests {
             AttributeValue::Block2(vec![
                 0x02, 0, 0, 0, 1, 0x04, 0, 0, 0, 20, 0x07,
             ])
+        );
+    }
+
+    #[test]
+    fn boolean_returns_use_the_lowered_unsigned_byte_debug_type() {
+        assert_eq!(
+            debug_return_fundamental(Some(SourceFundamentalType::Boolean)),
+            None
+        );
+        assert_eq!(
+            debug_return_fundamental(Some(SourceFundamentalType::UnsignedLong)),
+            Some(SourceFundamentalType::UnsignedLong)
         );
     }
 

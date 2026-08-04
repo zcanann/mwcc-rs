@@ -361,6 +361,8 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         cxx_const_object_variables: std::collections::HashSet::new(),
         function_return_structs: HashMap::new(),
         function_return_fundamentals: HashMap::new(),
+        function_source_names: HashMap::new(),
+        function_parameter_fundamentals: HashMap::new(),
         fixed_address_globals: HashMap::new(),
         fixed_address_arrays: HashMap::new(),
         variable_types: HashMap::new(),
@@ -1926,6 +1928,37 @@ void invoke(void) {\n\
                 .unwrap()
                 .control_flow_lines,
             [4]
+        );
+    }
+
+    #[test]
+    fn retains_cxx_source_names_and_parameter_fundamentals_for_debug_info() {
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(
+                "void wrapper(unsigned long count, const void* bytes) {}",
+            )
+            .unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let emitted = &unit.functions[0].name;
+
+        assert_eq!(
+            unit.function_source_names.get(emitted).map(String::as_str),
+            Some("wrapper")
+        );
+        assert_eq!(
+            unit.function_parameter_fundamentals
+                .get(&(emitted.clone(), "count".into())),
+            Some(&mwcc_syntax_trees::SourceFundamentalType::UnsignedLong)
+        );
+        assert_eq!(
+            unit.function_parameter_fundamentals
+                .get(&(emitted.clone(), "bytes".into())),
+            Some(&mwcc_syntax_trees::SourceFundamentalType::Void)
         );
     }
 

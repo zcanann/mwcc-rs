@@ -200,7 +200,11 @@ pub(super) fn lower(
             &layout,
         )?);
     } else if shape == MeasuredShape::General {
-        line_records.extend(general::line_records(&source_functions, &layout));
+        line_records.extend(general::line_records(
+            &source_functions,
+            machine_functions,
+            &layout,
+        ));
     } else if matches!(
         shape,
         MeasuredShape::ConstantFunctions | MeasuredShape::FragmentedFunctionsWithAggregateData

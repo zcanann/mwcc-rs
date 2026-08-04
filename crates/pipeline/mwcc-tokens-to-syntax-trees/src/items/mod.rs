@@ -1363,6 +1363,10 @@ impl Parser {
             function_return_aggregate_tags: std::mem::take(&mut self.function_return_structs),
             function_return_enumeration_tags: std::mem::take(&mut self.function_return_enums),
             function_return_fundamentals: std::mem::take(&mut self.function_return_fundamentals),
+            function_source_names: std::mem::take(&mut self.function_source_names),
+            function_parameter_fundamentals: std::mem::take(
+                &mut self.function_parameter_fundamentals,
+            ),
             prototypes,
             static_function_prototype_positions: std::mem::take(
                 &mut self.static_function_prototype_positions,
@@ -3398,6 +3402,15 @@ impl Parser {
             if !is_kr_definition {
                 self.expect(Token::ParenClose)?;
             }
+            let source_parameter_fundamentals = parameters
+                .iter()
+                .zip(&cxx_parameters)
+                .filter_map(|(parameter, source_type)| {
+                    source_type
+                        .source_fundamental()
+                        .map(|fundamental| (parameter.name.clone(), fundamental))
+                })
+                .collect::<Vec<_>>();
             let mut member_is_const = false;
             if member_scope.is_some() {
                 while matches!(self.peek(), Token::Identifier(word)
@@ -3559,6 +3572,16 @@ impl Parser {
             if let Some(fundamental) = declared_source_fundamental {
                 self.function_return_fundamentals
                     .insert(name.clone(), fundamental);
+            }
+            if name != source_function_name {
+                self.function_source_names
+                    .insert(name.clone(), source_function_name);
+            }
+            for (parameter, fundamental) in source_parameter_fundamentals {
+                if !parameter.is_empty() {
+                    self.function_parameter_fundamentals
+                        .insert((name.clone(), parameter), fundamental);
+                }
             }
 
             if *self.peek() == Token::Semicolon {

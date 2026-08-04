@@ -415,6 +415,15 @@ pub struct TranslationUnit {
     /// and `unsigned char` are both one-byte values but have distinct result
     /// normalization and ABI behavior.
     pub function_return_fundamentals: std::collections::HashMap<String, SourceFundamentalType>,
+    /// Source-written names for functions whose emitted C++ ABI names are
+    /// mangled. Legacy DWARF writes the source name in `AT_name` and keeps the
+    /// emitted symbol separately in Metrowerks' linkage-name attribute.
+    pub function_source_names: std::collections::HashMap<String, String>,
+    /// Source scalar identity for formal parameters whose executable storage
+    /// collapses language distinctions such as `unsigned long` versus
+    /// `unsigned int`. Keyed by emitted function name and parameter name.
+    pub function_parameter_fundamentals:
+        std::collections::HashMap<(String, String), SourceFundamentalType>,
     /// Function prototypes (`type name(params);`) by name, return type, and
     /// parameter types, so a call to an externally-defined function knows its
     /// result type (e.g. a `double`-returning math routine) and its parameter

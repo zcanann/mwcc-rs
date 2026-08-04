@@ -430,6 +430,10 @@ impl CxxFunctionType {
 }
 
 impl CxxParameterType {
+    pub(crate) fn source_fundamental(&self) -> Option<SourceFundamentalType> {
+        self.source_fundamental
+    }
+
     pub(crate) fn scalar_rvalue_temporary_type(&self) -> Option<Type> {
         (self.is_reference
             && self.pointee_const
