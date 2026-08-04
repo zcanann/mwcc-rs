@@ -195,6 +195,7 @@ mod structured_expression_visit;
 mod structured_reference_call_span;
 mod structured_guard_cache_schedule;
 mod structured_deferred_local_layout;
+mod structured_dense_destroy_loop_schedule;
 mod structured_async_callback_switch_layout;
 mod structured_async_callback_switch_schedule;
 mod structured_guarded_ucode_schedule;
