@@ -63,6 +63,7 @@ mod linkage_first_narrow_conversion_reuse;
 mod linkage_first_state_switch_schedule;
 mod mixed_conversion_entry_schedule;
 mod nested_reset_callback_schedule;
+mod nintendo_saved_gpr_epilogue;
 mod linkage_first_variadic_frame_schedule;
 mod linkage_first_variadic_leaf_schedule;
 mod linkage_first_addressable_parameters;

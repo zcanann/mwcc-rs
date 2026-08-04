@@ -1285,6 +1285,7 @@ fn lower_function_body(
     }
     generator.schedule_structured_heap_transactions();
     generator.normalize_float_to_int_scratch_images();
+    generator.normalize_nintendo_saved_gpr_epilogue();
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for
