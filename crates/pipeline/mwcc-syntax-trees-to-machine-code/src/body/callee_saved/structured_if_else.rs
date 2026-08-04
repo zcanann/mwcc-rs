@@ -262,6 +262,10 @@ impl Generator {
         });
         self.commit_structured_float_handoff();
 
+        // Variable-index store look-ahead describes one linear instruction
+        // run. Neither arm can pre-scale an index for the mutually exclusive
+        // arm, and no run survives the join.
+        self.emitted_leaf_variable_index_store_since_scratch_barrier = false;
         let then_start = self.output.instructions.len();
         for branch in branches.enter_then {
             self.patch_forward(branch, then_start);
@@ -319,6 +323,7 @@ impl Generator {
             .instructions
             .push(Instruction::Branch { target: 0 });
 
+        self.emitted_leaf_variable_index_store_since_scratch_barrier = false;
         let else_start = self.output.instructions.len();
         for branch in branches.enter_else {
             self.patch_forward(branch, else_start);
@@ -374,6 +379,7 @@ impl Generator {
         if let Instruction::Branch { target } = &mut self.output.instructions[skip_else] {
             *target = join;
         }
+        self.emitted_leaf_variable_index_store_since_scratch_barrier = false;
         self.restore_wide_pair_mask_cache(previous_wide_mask_cache);
         Ok(())
     }

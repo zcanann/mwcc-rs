@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn integer_double_pointers_retain_both_legacy_modifiers() {
+    let attribute = member_type_attribute(Type::Pointer(Pointee::WordPointer), None, None)
+        .expect("word double pointer type");
+    assert_eq!(attribute.name, AttributeName::ModifiedFundamentalType);
+    assert_eq!(
+        attribute.value,
+        AttributeValue::Block2(vec![1, 1, 0, FundamentalType::SignedInteger as u8])
+    );
+}
+
+#[test]
 fn function_local_aggregates_extend_the_data_type_chain_before_functions() {
     let source = br#"
         typedef struct Color {

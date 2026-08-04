@@ -1349,6 +1349,12 @@ impl Generator {
                 // stored directly (`li r0,0; stbx r0,base,index`). Wider stores
                 // retain the leaf-only rule because their index shift uses r0.
                 let byte_literal = size == 1 && constant_value(value).is_some();
+                // Zero is also safe for a wider store when it receives an
+                // allocator-owned value register before r0 scales the index.
+                // This is the branch-arm form of `table[i] = 0`: the sibling
+                // arm stores a pointer through the same index, but the two
+                // mutually exclusive schedules cannot share a pre-scaled r0.
+                let wide_zero_literal = size > 1 && is_zero_literal(value);
                 let simple_pointer_cast = matches!(
                     value,
                     Expression::Cast {
@@ -1361,13 +1367,18 @@ impl Generator {
                 if !matches!(value, Expression::Variable(_))
                     && !indexed_source
                     && !byte_literal
+                    && !wide_zero_literal
                     && !simple_pointer_cast
                 {
                     return Err(Diagnostic::error(
                         "store with a variable index needs a simple value (roadmap)",
                     ));
                 }
-                let source = if indexed_source {
+                let source = if wide_zero_literal {
+                    let source = self.fresh_virtual_general();
+                    self.load_integer_constant(source, 0);
+                    source
+                } else if indexed_source {
                     // The indexed load itself needs r0 for its scale. Keep its
                     // result in a separately allocated value register so the
                     // target's following scale cannot overwrite it.

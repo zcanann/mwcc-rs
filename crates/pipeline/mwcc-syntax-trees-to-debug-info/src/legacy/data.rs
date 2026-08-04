@@ -1130,10 +1130,7 @@ pub(super) fn member_type_attribute(
         Type::Pointer(_) if source_fundamental == Some(SourceFundamentalType::Void) => {
             Ok(fundamental_attribute(FundamentalType::Pointer))
         }
-        Type::Pointer(pointee) => Ok(modified_fundamental_type(match source_fundamental {
-            Some(source) => source_fundamental_type(source)?,
-            None => pointee_type(pointee)?,
-        })),
+        Type::Pointer(pointee) => pointer_member_type_attribute(pointee, source_fundamental),
         Type::Struct { .. } => aggregate_id
             .map(|id| {
                 attribute(
@@ -1152,6 +1149,39 @@ pub(super) fn member_type_attribute(
             None => fundamental_type(other)?,
         })),
     }
+}
+
+fn pointer_member_type_attribute(
+    pointee: Pointee,
+    source_fundamental: Option<SourceFundamentalType>,
+) -> Compilation<Attribute> {
+    let (modifiers, fundamental): (&[u8], FundamentalType) = match (pointee, source_fundamental) {
+        (Pointee::WordPointer, source) => (
+            &[1, 1],
+            source
+                .map(source_fundamental_type)
+                .transpose()?
+                .unwrap_or(FundamentalType::SignedInteger),
+        ),
+        (Pointee::Pointer, Some(source)) => {
+            (&[1, 1], source_fundamental_type(source)?)
+        }
+        // The scalar type behind an unqualified `T **` was not retained. DWARF
+        // has a fundamental pointer code, so one pointer modifier over that
+        // identity preserves the known indirection without inventing `T`.
+        (Pointee::Pointer, None) => (&[1], FundamentalType::Pointer),
+        (pointee, source) => (
+            &[1],
+            match source {
+                Some(source) => source_fundamental_type(source)?,
+                None => pointee_type(pointee)?,
+            },
+        ),
+    };
+    Ok(modified_fundamental_type_with_modifiers(
+        modifiers,
+        fundamental,
+    ))
 }
 
 pub(super) fn const_pointer_type_attribute(pointee: Pointee) -> Compilation<Attribute> {
@@ -1207,10 +1237,6 @@ fn fundamental_attribute(fundamental: FundamentalType) -> Attribute {
         AttributeName::FundamentalType,
         AttributeValue::Data2(fundamental as u16),
     )
-}
-
-fn modified_fundamental_type(fundamental: FundamentalType) -> Attribute {
-    modified_fundamental_type_with_modifiers(&[1], fundamental)
 }
 
 fn modified_fundamental_type_with_modifiers(
