@@ -953,6 +953,7 @@ fn lower_function_body(
     generator.split_linkage_first_fixed_bank_self_copies();
     generator.schedule_linkage_first_callback_state_arms();
     generator.schedule_linkage_first_callback_completion_arms();
+    generator.retain_inlined_leading_store_guard_constant();
     let allocated_float_saves = allocate_registers(&mut generator).map_err(|mut diagnostic| {
         let context = format!("function '{}'", function.name);
         if !diagnostic.message.contains(&context) {
