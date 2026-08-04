@@ -1339,6 +1339,7 @@ fn lower_function_body(
     generator.normalize_structured_effecter_loop_conversion_frame();
     generator.normalize_structured_effecter_jump_table_entries();
     generator.schedule_structured_guarded_call_publication();
+    generator.schedule_loop_step_prefetch();
     // Allocation can coalesce the terminal result move that previously kept a
     // conditional exit from targeting the final `blr`. Canonicalize again on
     // the finished physical stream so returned loop accumulators use MWCC's

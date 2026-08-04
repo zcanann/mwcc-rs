@@ -394,7 +394,6 @@ fn collect_deferred_interval(
             Statement::Loop {
                 initializer,
                 condition,
-                step,
                 ..
             } => initializer.as_ref().is_some_and(|expression| {
                 match expression {
@@ -407,9 +406,13 @@ fn collect_deferred_interval(
                 }
             }) || condition
                 .iter()
-                .chain(step)
                 .any(|expression| expression_reads_name(expression, name)),
-            Statement::Switch { .. } => return None,
+            Statement::Switch { .. } => {
+                if body_uses_local(std::slice::from_ref(statement), name) {
+                    return None;
+                }
+                false
+            }
         };
         if reads {
             interval.last_read = Some(position);
@@ -425,10 +428,14 @@ fn collect_deferred_interval(
             ..
         } = statement
         {
-            for expression in initializer.iter().chain(step) {
+            if let Some(expression) = initializer {
                 collect_expression_interval(expression, name, position, interval);
             }
             collect_deferred_interval(body, name, cursor, interval)?;
+            if let Some(step) = step {
+                *cursor += 1;
+                collect_expression_interval(step, name, *cursor, interval);
+            }
         }
         if let Statement::If {
             then_body,
@@ -1879,6 +1886,77 @@ mod tests {
         assert!(structured_name_occurs_in_loop(&function, "cursor"));
         assert!(structured_name_occurs_in_loop(&function, "temporary"));
         assert_eq!(plan.group_count, 2);
+    }
+
+    #[test]
+    fn permits_an_unrelated_switch_inside_a_deferred_value_interval() {
+        let mut temporary = local("temporary", Expression::IntegerLiteral(0));
+        temporary.initializer = None;
+        let function = function_with_local(
+            temporary,
+            vec![
+                Statement::Assign {
+                    name: "temporary".into(),
+                    value: Expression::IntegerLiteral(1),
+                },
+                Statement::Switch {
+                    scrutinee: Expression::Variable("state".into()),
+                    arms: vec![mwcc_syntax_trees::SwitchArm {
+                        value: 1,
+                        body: mwcc_syntax_trees::ArmBody::Statements(vec![Statement::Expression(
+                            Expression::Call {
+                                name: "observe_state".into(),
+                                arguments: Vec::new(),
+                            },
+                        )]),
+                        falls_through: false,
+                    }],
+                    default: None,
+                },
+                Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: vec![Expression::Variable("temporary".into())],
+                }),
+            ],
+        );
+
+        let plan = plan_deferred_saved_homes(&function, &[&function.locals[0]])
+            .expect("an unrelated switch does not split the value's lifetime");
+        assert_eq!(plan.group_count, 1);
+    }
+
+    #[test]
+    fn orders_a_loop_step_after_its_body_assignment() {
+        let mut next = local("next", Expression::IntegerLiteral(0));
+        next.initializer = None;
+        let function = function_with_local(
+            next,
+            vec![Statement::Loop {
+                kind: LoopKind::For,
+                initializer: Some(Expression::Assign {
+                    target: Box::new(Expression::Variable("cursor".into())),
+                    value: Box::new(Expression::Variable("head".into())),
+                }),
+                condition: Some(Expression::Variable("cursor".into())),
+                step: Some(Expression::Assign {
+                    target: Box::new(Expression::Variable("cursor".into())),
+                    value: Box::new(Expression::Variable("next".into())),
+                }),
+                body: vec![Statement::Assign {
+                    name: "next".into(),
+                    value: Expression::Member {
+                        base: Box::new(Expression::Variable("cursor".into())),
+                        offset: 8,
+                        member_type: Type::StructPointer { element_size: 0 },
+                        index_stride: None,
+                    },
+                }],
+            }],
+        );
+
+        let plan = plan_deferred_saved_homes(&function, &[&function.locals[0]])
+            .expect("the loop step consumes the value after its body definition");
+        assert_eq!(plan.group_count, 1);
     }
 
     #[test]
