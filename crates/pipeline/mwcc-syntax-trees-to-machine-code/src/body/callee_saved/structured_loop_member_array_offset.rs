@@ -243,6 +243,7 @@ impl Plan {
 /// order; MWCC assigns those lifetimes to r31, r29, and r30 respectively.
 pub(super) struct HomeLayout {
     preferences: std::collections::HashMap<usize, u8>,
+    loop_invariant_homes: Option<[u8; 3]>,
 }
 
 impl HomeLayout {
@@ -284,6 +285,7 @@ impl HomeLayout {
                     (offset_home, 29),
                     (element_home, 25),
                 ]),
+                loop_invariant_homes: Some([26, 27, 28]),
             });
         }
         if deferred_locals.len() != 2
@@ -308,11 +310,16 @@ impl HomeLayout {
                 (index_home, 29),
                 (cursor_home, 30),
             ]),
+            loop_invariant_homes: None,
         })
     }
 
     pub(super) fn preference(&self, home: usize) -> Option<u8> {
         self.preferences.get(&home).copied()
+    }
+
+    pub(super) fn loop_invariant_homes(&self) -> Option<[u8; 3]> {
+        self.loop_invariant_homes
     }
 
     /// Lowest physical register covered by this layout's dense save image.

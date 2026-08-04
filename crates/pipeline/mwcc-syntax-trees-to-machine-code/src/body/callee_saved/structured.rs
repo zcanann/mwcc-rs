@@ -2021,6 +2021,21 @@ impl Generator {
                 }
             })
             .collect();
+        let loop_jump_table_homes = member_array_offset_layout
+            .as_ref()
+            .and_then(|layout| layout.loop_invariant_homes())
+            .filter(|_| {
+                super::structured_loop_jump_table_bases::needs_retained_homes(
+                    &structured_switch_source,
+                )
+            })
+            .map(|preferences| {
+                preferences
+                    .iter()
+                    .map(|preference| self.fresh_virtual_general_preferring(*preference))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         if let Some(layout) = &unoptimized_frame_call_homes {
             for (parameter_index, parameter) in saved_parameters.iter().enumerate() {
                 let Some(preferred) = layout.preference(&parameter.name) else {
@@ -2224,6 +2239,7 @@ impl Generator {
         } else {
             logical_saved_homes.extend(homes.iter().copied());
         }
+        logical_saved_homes.extend(loop_jump_table_homes.iter().copied());
         let mut frame_homes = logical_saved_homes.clone();
         frame_homes.resize(frame_saved_count, frame_first_saved as u8);
         let mut plan = mwcc_vreg::FramePlan::with_local_region(frame_homes, local_region_bytes);
@@ -4669,6 +4685,17 @@ impl Generator {
             (&guarded_member_reset, guarded_member_reset_homes)
         {
             transaction.schedule(self, reset_homes);
+        }
+        if !loop_jump_table_homes.is_empty() {
+            let conversion =
+                self.hoist_structured_loop_integer_conversion_high(loop_jump_table_homes[2]);
+            let tables =
+                self.hoist_structured_loop_jump_table_bases(&loop_jump_table_homes[..2]);
+            if capture {
+                eprintln!(
+                    "structured loop invariant schedule: tables={tables} conversion={conversion}"
+                );
+            }
         }
         Ok(true)
     }
