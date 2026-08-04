@@ -13,6 +13,13 @@ struct BoundedGlobalRingRemove<'a> {
     top: &'a str,
     array: &'a str,
     mask: u32,
+    mode: RemovalMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RemovalMode {
+    ReturnOnRemove,
+    ClearAllMatches,
 }
 
 impl Generator {
@@ -32,6 +39,79 @@ impl Generator {
             || !matches!(self.globals.get(plan.top), Some(Type::UnsignedInt))
         {
             return Ok(false);
+        }
+
+        if plan.mode == RemovalMode::ClearAllMatches {
+            self.output.pre_scheduled = true;
+            self.record_relocation(RelocationKind::EmbSda21, plan.count);
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 7,
+                a: 0,
+                offset: 0,
+            });
+            self.emit_address_high(4, plan.array);
+            self.record_relocation(RelocationKind::Addr16Lo, plan.array);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 5,
+                a: 4,
+                immediate: 0,
+            });
+            self.record_relocation(RelocationKind::EmbSda21, plan.top);
+            self.output.instructions.extend([
+                Instruction::LoadWord {
+                    d: 6,
+                    a: 0,
+                    offset: 0,
+                },
+                Instruction::load_immediate(8, 0),
+                Instruction::load_immediate(0, 0),
+                Instruction::MoveToCountRegister { s: 7 },
+                Instruction::CompareLogicalWordImmediate {
+                    a: 7,
+                    immediate: 0,
+                },
+                Instruction::BranchConditionalToLinkRegister {
+                    options: 4,
+                    condition_bit: 1,
+                },
+                Instruction::Add { d: 4, a: 6, b: 8 },
+                Instruction::RotateAndMask {
+                    a: 4,
+                    s: 4,
+                    shift: 2,
+                    begin: 25,
+                    end: 29,
+                },
+                Instruction::Add { d: 7, a: 5, b: 4 },
+                Instruction::LoadWord {
+                    d: 4,
+                    a: 7,
+                    offset: 0,
+                },
+                Instruction::CompareLogicalWord { a: 4, b: 3 },
+                Instruction::BranchConditionalForward {
+                    options: 4,
+                    condition_bit: 2,
+                    target: 16,
+                },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 7,
+                    offset: 0,
+                },
+                Instruction::AddImmediate {
+                    d: 8,
+                    a: 8,
+                    immediate: 1,
+                },
+                Instruction::BranchConditionalForward {
+                    options: 16,
+                    condition_bit: 0,
+                    target: 9,
+                },
+                Instruction::BranchToLinkRegister,
+            ]);
+            return Ok(true);
         }
 
         self.output.pre_scheduled = true;
@@ -91,6 +171,10 @@ impl Generator {
 }
 
 fn classify(function: &Function) -> Option<BoundedGlobalRingRemove<'_>> {
+    classify_returning(function).or_else(|| classify_clear_all(function))
+}
+
+fn classify_returning(function: &Function) -> Option<BoundedGlobalRingRemove<'_>> {
     let [parameter] = function.parameters.as_slice() else {
         return None;
     };
@@ -208,6 +292,111 @@ fn classify(function: &Function) -> Option<BoundedGlobalRingRemove<'_>> {
         top,
         array,
         mask,
+        mode: RemovalMode::ReturnOnRemove,
+    })
+}
+
+fn classify_clear_all(function: &Function) -> Option<BoundedGlobalRingRemove<'_>> {
+    let [parameter] = function.parameters.as_slice() else {
+        return None;
+    };
+    let [index_local] = function.locals.as_slice() else {
+        return None;
+    };
+    if function.return_type != Type::Void
+        || !matches!(parameter.parameter_type, Type::Pointer(_) | Type::StructPointer { .. })
+        || index_local.declared_type != Type::UnsignedInt
+        || index_local.initializer.is_some()
+        || !function.guards.is_empty()
+        || function.return_expression.is_some()
+    {
+        return None;
+    }
+    let [Statement::Loop {
+        kind: LoopKind::For,
+        initializer: Some(initializer),
+        condition: Some(condition),
+        step: Some(step),
+        body,
+    }] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    let index = index_local.name.as_str();
+    if !assigns_constant(initializer, index, 0) || !increments_by_one(step, index) {
+        return None;
+    }
+    let Expression::Binary {
+        operator: BinaryOperator::Less,
+        left: condition_index,
+        right: count,
+    } = condition
+    else {
+        return None;
+    };
+    if variable(condition_index) != Some(index) {
+        return None;
+    }
+    let count = variable(count)?;
+    let [Statement::If {
+        condition: match_condition,
+        then_body,
+        else_body,
+    }] = body.as_slice()
+    else {
+        return None;
+    };
+    if !else_body.is_empty() {
+        return None;
+    }
+    let Expression::Binary {
+        operator: BinaryOperator::Equal,
+        left: element,
+        right: compared_object,
+    } = match_condition
+    else {
+        return None;
+    };
+    if variable(compared_object) != Some(parameter.name.as_str()) {
+        return None;
+    }
+    let (array, ring_offset) = indexed_variable(element)?;
+    let Expression::Binary {
+        operator: BinaryOperator::BitAnd,
+        left: sum,
+        right: mask,
+    } = ring_offset
+    else {
+        return None;
+    };
+    let mask = u32::try_from(constant_value(mask)?).ok()?;
+    if mask != 31 {
+        return None;
+    }
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left: top,
+        right: summed_index,
+    } = sum.as_ref()
+    else {
+        return None;
+    };
+    if variable(summed_index) != Some(index) {
+        return None;
+    }
+    let top = variable(top)?;
+    let [Statement::Store { target, value }] = then_body.as_slice() else {
+        return None;
+    };
+    if !structurally_equal(target, element) || constant_value(value) != Some(0) {
+        return None;
+    }
+    Some(BoundedGlobalRingRemove {
+        count,
+        top,
+        array,
+        mask,
+        mode: RemovalMode::ClearAllMatches,
     })
 }
 
