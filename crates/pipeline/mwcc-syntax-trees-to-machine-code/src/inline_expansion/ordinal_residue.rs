@@ -13,8 +13,8 @@ pub(super) struct OrdinalAdjustment {
 }
 
 /// Build 163 selects the context snapshot/clear transaction after its ordinary
-/// anonymous-symbol walk. Each expanded clear retains one of its two branch
-/// nodes before the pool, while one shared transaction terminator follows it.
+/// anonymous-symbol walk. The two expanded clears share one discarded branch
+/// node before the pool, while one shared transaction terminator follows it.
 pub(super) fn context_snapshot_clear_adjustment(
     calls: &HashMap<String, usize>,
     statement_substitutions: usize,
@@ -25,7 +25,7 @@ pub(super) fn context_snapshot_clear_adjustment(
         && calls.get("OSClearContext") == Some(&2)
         && calls.get("OSGetCurrentContext") == Some(&1))
         .then_some(OrdinalAdjustment {
-            pre_constant_discount: 2,
+            pre_constant_discount: 1,
             post_constant_residue: 1,
         })
 }
@@ -128,7 +128,7 @@ mod tests {
         assert_eq!(
             context_snapshot_clear_adjustment(&calls, 2, 1),
             Some(OrdinalAdjustment {
-                pre_constant_discount: 2,
+                pre_constant_discount: 1,
                 post_constant_residue: 1,
             })
         );

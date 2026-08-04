@@ -8,7 +8,7 @@
 
 use super::*;
 
-pub(super) const CURSOR_PREFIX: &str = "__mwcc_member_array_cursor_";
+pub(super) const CURSOR_PREFIX: &str = crate::analysis::MEMBER_ARRAY_CALL_CURSOR_PREFIX;
 
 #[derive(Clone)]
 struct CursorPlan {

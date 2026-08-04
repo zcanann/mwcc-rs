@@ -247,7 +247,19 @@ impl Generator {
             let scaled = if disposable_index {
                 index_register
             } else {
-                self.fresh_virtual_general_preferring(index_register)
+                // A strength-reduced member-array call cursor keeps both its
+                // source index and completed pointer live across the loop call.
+                // MWCC routes the one-use scale through r0 rather than claiming
+                // an argument register between those two saved lifetimes.
+                let preference = if self.locations.iter().any(|(name, location)| {
+                    name.starts_with(crate::analysis::MEMBER_ARRAY_CALL_CURSOR_PREFIX)
+                        && location.register == destination
+                }) {
+                    GENERAL_SCRATCH
+                } else {
+                    index_register
+                };
+                self.fresh_virtual_general_preferring(preference)
             };
             if stride.is_power_of_two() {
                 self.output

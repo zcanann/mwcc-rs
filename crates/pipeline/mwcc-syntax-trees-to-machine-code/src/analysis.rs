@@ -9,6 +9,9 @@ pub(crate) const PRESCALED_POINTER_TABLE_INDEX_PREFIX: &str =
     "__mwcc_pointer_table_byte_offset_";
 pub(crate) const PRESCALED_MEMBER_ARRAY_INDEX_PREFIX: &str =
     "__mwcc_member_array_byte_offset_";
+/// Internal local introduced when repeated member-array call arguments are
+/// strength-reduced to one loop-carried element cursor.
+pub(crate) const MEMBER_ARRAY_CALL_CURSOR_PREFIX: &str = "__mwcc_member_array_cursor_";
 
 pub(crate) fn is_prescaled_byte_offset(expression: &Expression) -> bool {
     matches!(expression, Expression::Variable(name)
