@@ -14,6 +14,14 @@ pub(super) fn pointer_member_stride(operand: &Expression) -> Option<u32> {
     }
 }
 
+fn pointer_cast_arithmetic_stride(target_type: Type) -> Option<u32> {
+    match target_type {
+        Type::StructPointer { element_size } if element_size > 1 => Some(element_size),
+        Type::Pointer(pointee) if pointee.size() > 1 => Some(u32::from(pointee.size())),
+        _ => None,
+    }
+}
+
 /// Recover the address carried by an aggregate-reference dereference.
 ///
 /// C++ reference bindings are represented as `StructPointer` values in the
@@ -461,6 +469,30 @@ impl Generator {
             let register = self.member_base_register(base)?;
             return Ok(Some((register, u32::from(element.size()))));
         }
+        // A cast changes the arithmetic element type even though it does not
+        // change the address value. Recover that explicit stride before the
+        // generic integer-add path can fold an unscaled constant (`(int*)p +
+        // 4` advances by 16 bytes, not four).
+        if let Expression::Cast {
+            target_type,
+            operand,
+        } = operand
+        {
+            if let Some(size) = pointer_cast_arithmetic_stride(*target_type) {
+                let register = leaf_name(operand)
+                    .filter(|name| !self.frame_slots.contains_key(*name))
+                    .and_then(|name| self.lookup_general(name));
+                let register = match register {
+                    Some(register) => register,
+                    None => {
+                        let register = self.fresh_virtual_general_preferring(3);
+                        self.evaluate_general(operand, register)?;
+                        register
+                    }
+                };
+                return Ok(Some((register, size)));
+            }
+        }
         // A pointer-valued member is an address value, not inline array
         // storage. Load that pointer once, then scale arithmetic by its
         // recovered pointee type (`object->vectors[index]`, for example).
@@ -895,6 +927,23 @@ mod tests {
             Some(4)
         );
         assert_eq!(pointer_member_stride(&member(Type::UnsignedInt)), None);
+    }
+
+    #[test]
+    fn pointer_casts_supply_their_arithmetic_element_stride() {
+        assert_eq!(
+            pointer_cast_arithmetic_stride(Type::Pointer(Pointee::Int)),
+            Some(4)
+        );
+        assert_eq!(
+            pointer_cast_arithmetic_stride(Type::StructPointer { element_size: 96 }),
+            Some(96)
+        );
+        assert_eq!(
+            pointer_cast_arithmetic_stride(Type::Pointer(Pointee::UnsignedChar)),
+            None
+        );
+        assert_eq!(pointer_cast_arithmetic_stride(Type::UnsignedInt), None);
     }
 
     #[test]
