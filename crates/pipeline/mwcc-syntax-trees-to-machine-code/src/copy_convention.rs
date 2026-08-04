@@ -97,6 +97,7 @@ impl Generator {
         if self.callee_saved.len() == 2 && self.callee_saved_float == 2 {
             normalize_saved_frame_call_arguments(&mut self.output.instructions);
         }
+        normalize_saved_literal_indirect_call_arguments(&mut self.output.instructions);
         normalize_saved_two_literal_call_arguments(&mut self.output.instructions);
         normalize_saved_literal_call_arguments(&mut self.output.instructions);
         let Some(start) = self.output.instructions.windows(3).position(|window| {
@@ -173,6 +174,32 @@ impl Generator {
             Instruction::move_register(destination, source)
         };
         self.output.instructions.push(instruction);
+    }
+}
+
+/// A retained object forwarded to a linkage-first indirect callback beside one
+/// literal is an ordinary value materialization. The `mtlr`/`blrl` suffix
+/// distinguishes this packet from a branch-arm phi copy.
+fn normalize_saved_literal_indirect_call_arguments(instructions: &mut [Instruction]) {
+    for index in 0..instructions.len().saturating_sub(3) {
+        let source = match &instructions[index..index + 4] {
+            [
+                Instruction::Or {
+                    a: 3,
+                    s: source,
+                    b: duplicate,
+                },
+                Instruction::AddImmediate { d: 4, a: 0, .. },
+                Instruction::MoveToLinkRegister { s: 12 },
+                Instruction::BranchToLinkRegisterAndLink,
+            ] if source == duplicate && (14..=31).contains(source) => *source,
+            _ => continue,
+        };
+        instructions[index] = Instruction::AddImmediate {
+            d: 3,
+            a: source,
+            immediate: 0,
+        };
     }
 }
 
@@ -442,6 +469,31 @@ mod tests {
             Instruction::AddImmediate {
                 d: 3,
                 a: 31,
+                immediate: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn materializes_a_saved_object_for_a_one_literal_indirect_call() {
+        let mut instructions = [
+            Instruction::move_register(3, 30),
+            Instruction::AddImmediate {
+                d: 4,
+                a: 0,
+                immediate: 1,
+            },
+            Instruction::MoveToLinkRegister { s: 12 },
+            Instruction::BranchToLinkRegisterAndLink,
+        ];
+
+        normalize_saved_literal_indirect_call_arguments(&mut instructions);
+
+        assert!(matches!(
+            instructions[0],
+            Instruction::AddImmediate {
+                d: 3,
+                a: 30,
                 immediate: 0
             }
         ));
