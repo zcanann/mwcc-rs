@@ -307,6 +307,7 @@ mod structured_loop_invariants;
 mod structured_loop_address_invariants;
 mod structured_loop_jump_table_bases;
 mod structured_loop_integer_conversion_high;
+mod structured_loop_conversion_bias;
 mod structured_loop_global_byte_cursor;
 mod structured_loop_member_array_offset;
 mod structured_loop_member_element_base;

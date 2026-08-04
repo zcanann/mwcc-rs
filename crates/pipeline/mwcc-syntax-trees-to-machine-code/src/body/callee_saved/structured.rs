@@ -2036,6 +2036,8 @@ impl Generator {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let loop_conversion_bias_home = (!loop_jump_table_homes.is_empty())
+            .then(|| self.fresh_virtual_float_preferring(26));
         if let Some(layout) = &unoptimized_frame_call_homes {
             for (parameter_index, parameter) in saved_parameters.iter().enumerate() {
                 let Some(preferred) = layout.preference(&parameter.name) else {
@@ -3746,7 +3748,8 @@ impl Generator {
             // for the rounded result. Declare the entire ABI-contiguous range
             // before allocation so frame materialization can preserve both.
             .max(u8::from(retained_sqrtf_spill.is_some()) * 4)
-            .max(u8::from(periodic_float_normalization.is_some()) * 4);
+            .max(u8::from(periodic_float_normalization.is_some()) * 4)
+            .max(u8::from(loop_conversion_bias_home.is_some()) * 6);
         let mut saved_float_parameter_copies =
             Vec::with_capacity(saved_float_parameters.len());
         for (parameter_index, parameter) in saved_float_parameters.iter().enumerate() {
@@ -4691,9 +4694,11 @@ impl Generator {
                 self.hoist_structured_loop_integer_conversion_high(loop_jump_table_homes[2]);
             let tables =
                 self.hoist_structured_loop_jump_table_bases(&loop_jump_table_homes[..2]);
+            let bias = loop_conversion_bias_home
+                .is_some_and(|home| self.hoist_structured_loop_conversion_bias(home));
             if capture {
                 eprintln!(
-                    "structured loop invariant schedule: tables={tables} conversion={conversion}"
+                    "structured loop invariant schedule: tables={tables} conversion={conversion} bias={bias}"
                 );
             }
         }
