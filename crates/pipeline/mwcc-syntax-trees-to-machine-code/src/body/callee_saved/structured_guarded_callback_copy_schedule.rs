@@ -30,9 +30,59 @@ impl Generator {
         }) else {
             return;
         };
+        if let Some(snapshot) = callback_result_snapshot(&self.output.instructions) {
+            let Instruction::CompareLogicalWordImmediate { a, .. } =
+                &mut self.output.instructions[snapshot + 2]
+            else {
+                unreachable!("the callback result comparison was recognized")
+            };
+            *a = 3;
+            crate::remove_instruction_retargeting_to_next(self, snapshot + 1);
+        }
+        if let Some(reload) = countdown_guard_reload(
+            &self.output.instructions,
+            receiver,
+            plan.member_offset,
+        ) {
+            crate::remove_instruction_retargeting_to_next(self, reload);
+        }
         normalize_instructions(&mut self.output.instructions, receiver);
         schedule_copy_placement(self, receiver);
     }
+}
+
+fn callback_result_snapshot(instructions: &[Instruction]) -> Option<usize> {
+    instructions.windows(3).position(|window| {
+        matches!(window, [
+            Instruction::BranchToLinkRegisterAndLink,
+            Instruction::AddImmediate { d: 0, a: 3, immediate: 0 },
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 1 },
+        ])
+    })
+}
+
+fn countdown_guard_reload(
+    instructions: &[Instruction],
+    receiver: u8,
+    offset: i16,
+) -> Option<usize> {
+    instructions.windows(7).enumerate().find_map(|(start, window)| {
+        matches!(window, [
+            Instruction::AddImmediate { d: 4, a, immediate },
+            Instruction::LoadWord { d: 3, a: load_base, offset: load_offset },
+            Instruction::CompareWordImmediate { a: 3, immediate: 0 },
+            Instruction::BranchConditionalForward { .. },
+            Instruction::LoadWord { d: 3, a: reload_base, offset: reload_offset },
+            Instruction::AddImmediate { d: 0, a: 3, immediate: -1 },
+            Instruction::StoreWord { s: 0, a: 4, offset: 0 },
+        ] if *a == receiver
+            && *immediate == offset
+            && *load_base == receiver
+            && *load_offset == offset
+            && *reload_base == receiver
+            && *reload_offset == offset)
+        .then_some(start + 4)
+    })
 }
 
 fn schedule_copy_placement(generator: &mut Generator, receiver: u8) {
@@ -169,6 +219,27 @@ mod tests {
             Instruction::BranchAndLink { target: "add".into() },
         ];
         assert_eq!(derived_list_argument_copy(&list, 30), Some(0));
+    }
+
+    #[test]
+    fn recognizes_redundant_callback_and_countdown_copies() {
+        let callback = vec![
+            Instruction::BranchToLinkRegisterAndLink,
+            Instruction::AddImmediate { d: 0, a: 3, immediate: 0 },
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 1 },
+        ];
+        assert_eq!(callback_result_snapshot(&callback), Some(0));
+
+        let countdown = vec![
+            Instruction::AddImmediate { d: 4, a: 30, immediate: 52 },
+            Instruction::LoadWord { d: 3, a: 30, offset: 52 },
+            Instruction::CompareWordImmediate { a: 3, immediate: 0 },
+            Instruction::BranchConditionalForward { options: 4, condition_bit: 1, target: 7 },
+            Instruction::LoadWord { d: 3, a: 30, offset: 52 },
+            Instruction::AddImmediate { d: 0, a: 3, immediate: -1 },
+            Instruction::StoreWord { s: 0, a: 4, offset: 0 },
+        ];
+        assert_eq!(countdown_guard_reload(&countdown, 30, 52), Some(4));
     }
 
 }
