@@ -201,6 +201,7 @@ mod sorted_intrusive_global_insert;
 mod sorted_intrusive_insert;
 mod store_fill;
 mod store_return_schedule;
+mod stack_trace_report_loop_schedule;
 mod stored_guarded_global_callback;
 mod shared_float_store_literal;
 mod shared_mask_word;
