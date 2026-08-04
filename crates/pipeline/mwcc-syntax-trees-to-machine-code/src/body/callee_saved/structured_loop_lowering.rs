@@ -13,8 +13,13 @@ use mwcc_syntax_trees::ArmBody;
 pub(super) fn lower_structured_loops(
     function: &Function,
     global_array_sizes: &std::collections::HashMap<String, u32>,
+    preserve_asm_tainted_for_entries: bool,
 ) -> Option<Function> {
-    let mut lowering = LoopLowering::new(&function.statements, global_array_sizes);
+    let mut lowering = LoopLowering::new(
+        &function.statements,
+        global_array_sizes,
+        preserve_asm_tainted_for_entries,
+    );
     let statements = lowering.lower_statements(&function.statements, None)?;
     lowering.changed.then(|| {
         let mut lowered = function.clone();
@@ -91,6 +96,7 @@ struct LoopTargets<'a> {
 
 struct LoopLowering<'a> {
     global_array_sizes: &'a std::collections::HashMap<String, u32>,
+    preserve_asm_tainted_for_entries: bool,
     used_labels: std::collections::HashSet<String>,
     next_loop: usize,
     changed: bool,
@@ -100,11 +106,13 @@ impl<'a> LoopLowering<'a> {
     fn new(
         statements: &[Statement],
         global_array_sizes: &'a std::collections::HashMap<String, u32>,
+        preserve_asm_tainted_for_entries: bool,
     ) -> Self {
         let mut used_labels = std::collections::HashSet::new();
         collect_labels(statements, &mut used_labels);
         Self {
             global_array_sizes,
+            preserve_asm_tainted_for_entries,
             used_labels,
             next_loop: 0,
             changed: false,
@@ -237,10 +245,29 @@ impl<'a> LoopLowering<'a> {
         if let Some(initializer) = initializer {
             push_effect_expressions(initializer, output);
         }
-        // An always-true pre-test loop enters its body directly. Retaining the
-        // generic jump-to-condition creates an otherwise dead entry trampoline
-        // before polling loops such as `while (1) { if (done) break; }`.
-        if kind != LoopKind::DoWhile && condition.and_then(constant_value).is_none_or(|value| value == 0) {
+        let needs_entry_test = kind != LoopKind::DoWhile
+            && condition
+                .and_then(constant_value)
+                .is_none_or(|value| value == 0);
+        if kind == LoopKind::For && self.preserve_asm_tainted_for_entries {
+            // GC/1.2.5's optimizer keeps two otherwise-empty entry labels
+            // after an earlier asm function. A counted loop whose initializer
+            // proves its first test true enters the body through a third label;
+            // other for-loops retain their ordinary jump to the condition.
+            for _ in 0..2 {
+                let padding = self.fresh_label("asm_entry");
+                output.push(Statement::Goto(padding.clone()));
+                output.push(Statement::Label(padding));
+            }
+            if first_iteration_is_proven(initializer, condition) {
+                output.push(Statement::Goto(body_label.clone()));
+            } else if needs_entry_test {
+                output.push(Statement::Goto(condition_label.clone()));
+            }
+            // An always-true pre-test loop enters its body directly. Retaining the
+            // generic jump-to-condition creates an otherwise dead entry trampoline
+            // before polling loops such as `while (1) { if (done) break; }`.
+        } else if needs_entry_test {
             output.push(Statement::Goto(condition_label.clone()));
         }
         output.push(Statement::Label(body_label.clone()));
@@ -275,6 +302,51 @@ impl<'a> LoopLowering<'a> {
                 return label;
             }
         }
+    }
+}
+
+fn first_iteration_is_proven(
+    initializer: Option<&Expression>,
+    condition: Option<&Expression>,
+) -> bool {
+    let Some(Expression::Binary {
+        operator,
+        left,
+        right,
+    }) = condition
+    else {
+        return false;
+    };
+    let Expression::Variable(name) = left.as_ref() else {
+        return false;
+    };
+    let Some(left) = initializer.and_then(|initializer| assigned_constant(initializer, name)) else {
+        return false;
+    };
+    let Some(right) = constant_value(right) else {
+        return false;
+    };
+    match operator {
+        BinaryOperator::Equal => left == right,
+        BinaryOperator::NotEqual => left != right,
+        BinaryOperator::Less => left < right,
+        BinaryOperator::LessEqual => left <= right,
+        BinaryOperator::Greater => left > right,
+        BinaryOperator::GreaterEqual => left >= right,
+        _ => false,
+    }
+}
+
+fn assigned_constant(expression: &Expression, name: &str) -> Option<i64> {
+    match expression {
+        Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(target) if target == name) =>
+        {
+            constant_value(value)
+        }
+        Expression::Comma { left, right } => assigned_constant(right, name)
+            .or_else(|| assigned_constant(left, name)),
+        _ => None,
     }
 }
 
@@ -404,7 +476,7 @@ mod tests {
             peephole_disabled: false,
         };
 
-        let lowered = lower_structured_loops(&function, &Default::default())
+        let lowered = lower_structured_loops(&function, &Default::default(), false)
             .expect("ordinary loop should lower");
 
         assert!(lowered.statements.iter().any(|statement| matches!(
@@ -421,6 +493,50 @@ mod tests {
             .statements
             .iter()
             .any(|statement| matches!(statement, Statement::Loop { .. })));
+    }
+
+    #[test]
+    fn preserves_three_asm_tainted_counted_loop_entry_edges() {
+        let counted = Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(Expression::Assign {
+                target: Box::new(Expression::Variable("i".into())),
+                value: Box::new(Expression::IntegerLiteral(0)),
+            }),
+            condition: Some(Expression::Binary {
+                operator: BinaryOperator::Less,
+                left: Box::new(Expression::Variable("i".into())),
+                right: Box::new(Expression::IntegerLiteral(16)),
+            }),
+            step: None,
+            body: vec![Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![Expression::Variable("i".into())],
+            })],
+        };
+        let lowered = lower_structured_loops(
+            &function(vec![counted]),
+            &Default::default(),
+            true,
+        )
+        .expect("the counted loop should lower");
+
+        assert!(matches!(
+            lowered.statements.as_slice(),
+            [
+                Statement::Assign { name, .. },
+                Statement::Goto(first),
+                Statement::Label(first_label),
+                Statement::Goto(second),
+                Statement::Label(second_label),
+                Statement::Goto(body),
+                Statement::Label(body_label),
+                ..
+            ] if name == "i"
+                && first == first_label
+                && second == second_label
+                && body == body_label
+        ));
     }
 
     #[test]
@@ -457,7 +573,7 @@ mod tests {
             row_bytes: None,
         });
 
-        let lowered = lower_structured_loops(&function, &Default::default())
+        let lowered = lower_structured_loops(&function, &Default::default(), false)
             .expect("a loop inside a retained switch should lower");
         let Statement::Switch { arms, .. } = &lowered.statements[0] else {
             panic!("the source switch should remain visible");
@@ -577,7 +693,7 @@ mod tests {
             peephole_disabled: false,
         };
 
-        function = lower_structured_loops(&function, &Default::default())
+        function = lower_structured_loops(&function, &Default::default(), false)
             .expect("empty false do-while should be removed");
 
         assert!(function.statements.is_empty());
@@ -613,7 +729,7 @@ mod tests {
             peephole_disabled: false,
         };
 
-        function = lower_structured_loops(&function, &Default::default())
+        function = lower_structured_loops(&function, &Default::default(), false)
             .expect("nonempty false do-while should lower");
 
         assert_eq!(

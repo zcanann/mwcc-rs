@@ -631,16 +631,24 @@ impl Generator {
         }
         // Keep source loops visible to definite-assignment and lifetime
         // planning. Their canonical label/goto graph is only the emission view.
-        let lowered_structured_function =
-            lower_structured_loops(function, &self.global_array_sizes);
+        let preserve_asm_tainted_for_entries = function.preceded_by_asm
+            && self.behavior.frame_convention == FrameConvention::LinkageFirst;
+        let lowered_structured_function = lower_structured_loops(
+            function,
+            &self.global_array_sizes,
+            preserve_asm_tainted_for_entries,
+        );
         let structured_function = lowered_structured_function.as_ref().unwrap_or(function);
         let emission_switches =
             lower_structured_switches_for_emission(&structured_switch_source);
         let emission_switch_function = emission_switches
             .as_ref()
             .unwrap_or(&structured_switch_source);
-        let lowered_emission_function =
-            lower_structured_loops(emission_switch_function, &self.global_array_sizes);
+        let lowered_emission_function = lower_structured_loops(
+            emission_switch_function,
+            &self.global_array_sizes,
+            preserve_asm_tainted_for_entries,
+        );
         let emission_function = lowered_emission_function
             .as_ref()
             .unwrap_or(emission_switch_function);

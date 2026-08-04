@@ -794,6 +794,7 @@ impl Generator {
         let lowered = super::structured_loop_lowering::lower_structured_loops(
             function,
             &self.global_array_sizes,
+            false,
         );
         self.output.anonymous_label_bump += super::structured::structured_hidden_label_count(
             &lowered
