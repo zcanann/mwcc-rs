@@ -358,6 +358,36 @@ impl Parser {
         }
     }
 
+    /// Parse one compile-time scalar array element and serialize it at the
+    /// target width. This local-array path has no modeled startup transaction
+    /// in which to materialize a non-constant floating expression, so reject
+    /// that case after sharing the ordinary constant-expression parser and
+    /// folder.
+    pub(crate) fn parse_folded_scalar_initializer_bytes(
+        &mut self,
+        element_type: Type,
+    ) -> Compilation<Vec<u8>> {
+        let value = self.parse_scalar_constant(element_type)?;
+        if self.unfolded_float_element.take().is_some() {
+            return Err(Diagnostic::error(
+                "a non-constant local array initializer is not supported yet (roadmap)",
+            ));
+        }
+        Ok(match element_type {
+            Type::Float | Type::Int | Type::UnsignedInt => {
+                (value as u32).to_be_bytes().to_vec()
+            }
+            Type::Double => (value as u64).to_be_bytes().to_vec(),
+            Type::Char | Type::UnsignedChar => vec![value as u8],
+            Type::Short | Type::UnsignedShort => (value as u16).to_be_bytes().to_vec(),
+            _ => {
+                return Err(Diagnostic::error(
+                    "this local array initializer element type is not supported yet (roadmap)",
+                ))
+            }
+        })
+    }
+
     /// Parse one struct value `{ f0, f1, ... }` for the layout `tag`, folding each
     /// field with its own type (the flat `parse_constant_initializer` cannot, since a
     /// struct mixes field types — notably `float`). Fields are taken in offset order;

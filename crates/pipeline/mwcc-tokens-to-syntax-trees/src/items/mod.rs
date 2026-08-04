@@ -5164,41 +5164,9 @@ impl Parser {
                                     if *self.peek() == Token::BraceClose {
                                         break;
                                     }
-                                    // A float-literal element (optionally negated) keeps the direct
-                                    // read; any other element is a CONSTANT EXPRESSION — enums,
-                                    // shifts, arithmetic (`1 << 4`, `-A`) — parsed and folded.
-                                    let is_float = matches!(
-                                        self.peek(),
-                                        Token::FloatLiteral(_) | Token::DoubleLiteral(_)
-                                    ) || (*self.peek() == Token::Minus
-                                        && matches!(
-                                            self.peek_at(1),
-                                            Token::FloatLiteral(_) | Token::DoubleLiteral(_)
-                                        ));
-                                    if is_float {
-                                        let negative = self.eat_keyword(Token::Minus);
-                                        let value = match self.advance().clone() {
-                                            Token::FloatLiteral(value)
-                                            | Token::DoubleLiteral(value) => value,
-                                            _ => unreachable!(),
-                                        };
-                                        let value = if negative { -value } else { value };
-                                        match declared_type {
-                                        Type::Float => bytes.extend_from_slice(&(value as f32).to_be_bytes()),
-                                        Type::Double => bytes.extend_from_slice(&value.to_be_bytes()),
-                                        _ => return Err(Diagnostic::error("a float element in an integer static array is not supported yet (roadmap)")),
-                                    }
-                                    } else {
-                                        let value = self.parse_integer_constant()?;
-                                        match declared_type {
-                                        Type::Float => bytes.extend_from_slice(&(value as f32).to_be_bytes()),
-                                        Type::Double => bytes.extend_from_slice(&(value as f64).to_be_bytes()),
-                                        Type::Int | Type::UnsignedInt => bytes.extend_from_slice(&(value as i32).to_be_bytes()),
-                                        Type::Char | Type::UnsignedChar => bytes.push(value as u8),
-                                        Type::Short | Type::UnsignedShort => bytes.extend_from_slice(&(value as i16).to_be_bytes()),
-                                        _ => return Err(Diagnostic::error("a static local array initializer element is not supported yet (roadmap)")),
-                                    }
-                                    }
+                                    bytes.extend_from_slice(
+                                        &self.parse_folded_scalar_initializer_bytes(declared_type)?,
+                                    );
                                     count += 1;
                                     if !self.eat_keyword(Token::Comma) {
                                         break;

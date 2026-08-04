@@ -4745,6 +4745,31 @@ blr\n\
     }
 
     #[test]
+    fn folds_floating_expressions_in_automatic_array_initializers() {
+        let source = r#"
+            int probe(void) {
+                double const ratios[2] = {230.0 / 256.0, -1.0 / 4.0};
+                return 0;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let local = &unit.functions[0].locals[0];
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&(230.0f64 / 256.0).to_be_bytes());
+        expected.extend_from_slice(&(-1.0f64 / 4.0).to_be_bytes());
+
+        assert_eq!(local.array_length, Some(2));
+        assert_eq!(local.data_bytes.as_deref(), Some(expected.as_slice()));
+    }
+
+    #[test]
     fn serializes_automatic_struct_array_initializer() {
         let source = r#"
             typedef struct Vec { float x, y, z; } Vec;
