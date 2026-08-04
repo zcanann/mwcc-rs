@@ -629,6 +629,14 @@ impl Generator {
                 }
             }
         }
+        if self.try_emit_non_power_member_pointer_add(
+            operator,
+            left,
+            right,
+            destination,
+        )? {
+            return Ok(true);
+        }
         // Identify the pointer and integer operands (`i + p` is commutative).
         let (pointer_register, size, integer) =
             if let Some((register, size)) = self.pointer_arithmetic_base(left)? {
