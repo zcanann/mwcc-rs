@@ -4702,6 +4702,7 @@ impl Generator {
                 );
             }
         }
+        self.reuse_structured_float_clamp_literals();
         Ok(true)
     }
 
