@@ -320,6 +320,16 @@ impl Generator {
     /// nonzero fixed-address family in the function. The boolean tells the
     /// caller to emit the defining `lis`.
     fn claim_const_address_base(&mut self, high: i16) -> Option<(u8, bool)> {
+        self.claim_const_address_base_avoiding(high, Vec::new())
+    }
+
+    /// Variant used when the surrounding schedule already owns physical
+    /// registers that the new fixed-address base must not occupy.
+    fn claim_const_address_base_avoiding(
+        &mut self,
+        high: i16,
+        avoid: Vec<u8>,
+    ) -> Option<(u8, bool)> {
         if let Some(&base) = self.const_address_bases.get(&high) {
             return Some((base, false));
         }
@@ -332,7 +342,7 @@ impl Generator {
             }
             self.const_address_bases.clear();
         }
-        let base = self.fresh_virtual_general();
+        let base = self.fresh_virtual_general_avoiding(avoid);
         self.const_address_bases.insert(high, base);
         Some((base, true))
     }
@@ -401,7 +411,37 @@ impl Generator {
             if high == 0 {
                 return Ok(false);
             }
-            let Some(&base) = self.const_address_bases.get(&high) else {
+            let base = if let Some(&base) = self.const_address_bases.get(&high) {
+                base
+            } else if constant_value(value) == Some(0) {
+                // A null store following a call has no reusable fixed-address
+                // base. mwcc materializes the zero first, then the address high
+                // half (`li r0,0; lis base,hi; stw r0,lo(base)`). Keep the base
+                // out of r0 and the EABI result/first-argument lane; the latter
+                // remains the preferred home for a following call argument.
+                let Some((base, materialize)) = self.claim_const_address_base_avoiding(
+                    high,
+                    vec![
+                        GENERAL_SCRATCH,
+                        mwcc_target::Eabi::general_result().number,
+                    ],
+                ) else {
+                    return Ok(false);
+                };
+                let source = self.place_store_value(value, pointee)?;
+                if materialize {
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate_shifted(base, high));
+                }
+                self.output.instructions.push(displacement_store(
+                    pointee,
+                    source,
+                    base,
+                    displacement,
+                )?);
+                return Ok(true);
+            } else {
                 return Ok(false);
             };
             let restore = self.reserved.insert(base);
