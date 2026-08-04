@@ -1329,6 +1329,7 @@ fn lower_function_body(
     if !function.peephole_disabled {
         generator.fold_recorded_boolean_zero_tests();
     }
+    generator.schedule_narrow_guarded_zero_member_reset();
     generator.schedule_structured_heap_transactions();
     generator.normalize_float_to_int_scratch_images();
     generator.schedule_structured_global_base_epilogue();
@@ -1908,6 +1909,31 @@ pub(crate) fn remap_machine_function_indices(
         }
     }
     remap_branch_targets(&mut output.instructions, permutation);
+}
+
+/// Permute one contiguous instruction region while preserving every durable
+/// instruction-index owner. Schedulers express destination order as indices
+/// into the original region.
+pub(crate) fn permute_machine_function_region(
+    output: &mut mwcc_machine_code::MachineFunction,
+    start: usize,
+    schedule: &[usize],
+) {
+    debug_assert!(start + schedule.len() <= output.instructions.len());
+    debug_assert!({
+        let mut ordered = schedule.to_vec();
+        ordered.sort_unstable();
+        ordered == (0..schedule.len()).collect::<Vec<_>>()
+    });
+    let original = output.instructions[start..start + schedule.len()].to_vec();
+    for (destination, &source) in schedule.iter().enumerate() {
+        output.instructions[start + destination] = original[source].clone();
+    }
+    let mut permutation = (0..output.instructions.len()).collect::<Vec<_>>();
+    for (new_index, &old_index) in schedule.iter().enumerate() {
+        permutation[start + old_index] = start + new_index;
+    }
+    remap_machine_function_indices(output, &permutation);
 }
 
 /// Move one instruction earlier after labels have been resolved, preserving
