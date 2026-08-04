@@ -29,10 +29,10 @@ impl Generator {
         // post-emission decline would pollute the output for the next
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
-        let bump: u32 = match context {
-            0x5705cf3446552579 => 0, // pikmin2 arith (f523)
-            0xbd60acb658c79e45 => 0, // p2/ww arith (f523)
-            0x785abb8cde30261c => 0, // ari_pik (f523)
+        let (bump, branch_preserving): (u32, bool) = match context {
+            0x5705cf3446552579 => (0, false), // pikmin2 arith (f523)
+            0xbd60acb658c79e45 => (0, false), // p2/ww arith (f523)
+            0x785abb8cde30261c => (0, true), // Pikmin's early-return spelling
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
@@ -41,19 +41,30 @@ impl Generator {
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output
-            .instructions
-            .push(Instruction::ShiftRightAlgebraicImmediate {
-                a: 4,
-                s: 3,
-                shift: 31,
-            });
-        self.output
-            .instructions
-            .push(Instruction::Xor { a: 0, s: 4, b: 3 });
-        self.output
-            .instructions
-            .push(Instruction::SubtractFrom { d: 3, a: 4, b: 0 });
+        if branch_preserving {
+            self.output.instructions.extend([
+                Instruction::CompareWordImmediate { a: 3, immediate: 0 },
+                Instruction::BranchConditionalToLinkRegister {
+                    options: 4,
+                    condition_bit: 0,
+                },
+                Instruction::Negate { d: 3, a: 3 },
+            ]);
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightAlgebraicImmediate {
+                    a: 4,
+                    s: 3,
+                    shift: 31,
+                });
+            self.output
+                .instructions
+                .push(Instruction::Xor { a: 0, s: 4, b: 3 });
+            self.output
+                .instructions
+                .push(Instruction::SubtractFrom { d: 3, a: 4, b: 0 });
+        }
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
