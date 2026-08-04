@@ -51,6 +51,7 @@ mod linkage_first_data_anchor;
 mod linkage_first_data_anchor_strings;
 mod linkage_first_anchor_only_schedule;
 mod linkage_first_data_anchor_schedule;
+mod linkage_first_dense_variadic_anchor_schedule;
 mod linkage_first_inlined_switch_schedule;
 mod linkage_first_instruction_array_schedule;
 mod linkage_first_inline_aggregate_frame;

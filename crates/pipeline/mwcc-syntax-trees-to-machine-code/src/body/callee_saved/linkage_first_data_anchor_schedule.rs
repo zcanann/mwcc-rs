@@ -8,6 +8,7 @@
 #[allow(unused_imports)]
 use super::*;
 use super::linkage_first_anchor_only_schedule::is_anchor_only_prefix;
+use super::linkage_first_dense_variadic_anchor_schedule::schedule_dense_variadic_anchor_prefix;
 
 impl Generator {
     pub(crate) fn schedule_linkage_first_data_anchor_frame(&mut self) {
@@ -16,7 +17,8 @@ impl Generator {
         {
             return;
         }
-        if is_entry_parameter_anchor_prefix(
+        if schedule_dense_variadic_anchor_prefix(self) {
+        } else if is_entry_parameter_anchor_prefix(
             &self.output.instructions,
             self.frame_size,
         ) {
