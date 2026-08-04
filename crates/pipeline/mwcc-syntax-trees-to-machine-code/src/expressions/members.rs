@@ -1573,6 +1573,9 @@ impl Generator {
         index: &Expression,
         destination: u8,
     ) -> Compilation<()> {
+        if self.try_emit_nested_pointer_table_subscript(base, index, destination)? {
+            return Ok(());
+        }
         if self.try_emit_nested_member_array_load(base, index, destination)? {
             return Ok(());
         }

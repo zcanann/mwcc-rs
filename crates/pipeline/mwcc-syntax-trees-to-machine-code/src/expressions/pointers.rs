@@ -697,6 +697,9 @@ impl Generator {
     /// nothing; a pointer-typed struct member (`*p->q`) loads the pointer value
     /// into the base's register first, reusing it as mwcc does.
     pub(crate) fn resolve_pointer(&mut self, base: &Expression) -> Compilation<(Pointee, u8)> {
+        if let Some(pointer) = self.try_resolve_nested_pointer_table_entry(base)? {
+            return Ok(pointer);
+        }
         // `matrix[row]` on a flattened automatic array is a row pointer. Form
         // that address from the frame slot and recorded row stride so a
         // following `[column]` can use the ordinary subscript machinery.

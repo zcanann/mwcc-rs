@@ -54,6 +54,7 @@ mod nested_global_member_pointer_store;
 mod nested_global_member_pointer_variable_store;
 mod nested_member_array_load;
 mod nested_member_array_store;
+mod nested_pointer_table;
 mod non_power_struct_member_store;
 mod operands;
 mod passes;
