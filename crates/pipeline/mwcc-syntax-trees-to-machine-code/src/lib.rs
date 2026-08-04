@@ -1080,6 +1080,8 @@ fn lower_function_body(
     generator.schedule_inlined_acceleration_select();
     generator.schedule_inlined_symmetric_float_clamp();
     generator.schedule_structured_float_or_groups();
+    generator.schedule_structured_float_clamp_scale();
+    generator.schedule_structured_aggregate_normalize_frame();
     generator.schedule_symmetric_sum_clamp();
     generator.schedule_bounded_acceleration();
     generator.schedule_joystick_count_updates();

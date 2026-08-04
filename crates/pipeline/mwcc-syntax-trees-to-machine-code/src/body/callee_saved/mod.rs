@@ -120,6 +120,7 @@ mod structured_counted_call_retry;
 mod structured_constructor_schedule;
 mod structured_copy_packet_schedule;
 mod structured_call_accumulator;
+mod structured_aggregate_normalize_schedule;
 mod structured_aggregate_slots;
 mod structured_by_value_aggregate_arguments;
 mod structured_deferred_interference;
