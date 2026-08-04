@@ -17,68 +17,72 @@ struct StackTraceReportLoopPlan {
 
 impl Generator {
     pub(crate) fn schedule_stack_trace_report_loop(&mut self) {
+        if !self.behavior.schedule_latency_slots {
+            return;
+        }
         let Some(plan) = stack_trace_report_loop_plan(&self.output.instructions) else {
             return;
         };
-        debug_assert_ne!(plan.old_counter, plan.old_pointer);
-
-        basic_block_schedule::permute_contents(&mut self.output, plan.start, [1, 0]);
-        basic_block_schedule::permute_contents(
-            &mut self.output,
-            plan.start + 5,
-            [2, 1, 3, 0, 4, 5],
-        );
-
-        const POINTER: u8 = 25;
-        const COUNTER: u8 = 26;
-        let Instruction::LoadWord { d, .. } = &mut self.output.instructions[plan.start] else {
-            unreachable!("the initial back-chain load was matched")
-        };
-        *d = POINTER;
-        let Instruction::AddImmediate { d, .. } =
-            &mut self.output.instructions[plan.start + 1]
-        else {
-            unreachable!("the counter initialization was matched")
-        };
-        *d = COUNTER;
-        let Instruction::LoadWord { a, .. } = &mut self.output.instructions[plan.start + 5] else {
-            unreachable!("the first report load was matched")
-        };
-        *a = POINTER;
-        self.output.instructions[plan.start + 6] = Instruction::move_register(4, POINTER);
-        let Instruction::LoadWord { a, .. } = &mut self.output.instructions[plan.start + 7] else {
-            unreachable!("the second report load was matched")
-        };
-        *a = POINTER;
-        self.output.instructions[plan.start + 11] = Instruction::LoadWord {
-            d: POINTER,
-            a: POINTER,
-            offset: 0,
-        };
-        let Instruction::CompareLogicalWordImmediate { a, .. } =
-            &mut self.output.instructions[plan.start + 12]
-        else {
-            unreachable!("the null back-chain test was matched")
-        };
-        *a = POINTER;
-        let Instruction::AddImmediateShifted { a, .. } =
-            &mut self.output.instructions[plan.start + 14]
-        else {
-            unreachable!("the sentinel back-chain test was matched")
-        };
-        *a = POINTER;
-        let Instruction::CompareLogicalWordImmediate { a, .. } =
-            &mut self.output.instructions[plan.start + 17]
-        else {
-            unreachable!("the iteration bound was matched")
-        };
-        *a = COUNTER;
-        self.output.instructions[plan.start + 18] = Instruction::AddImmediate {
-            d: COUNTER,
-            a: COUNTER,
-            immediate: 1,
-        };
+        apply_stack_trace_report_loop_plan(&mut self.output, plan);
     }
+}
+
+fn apply_stack_trace_report_loop_plan(
+    output: &mut mwcc_machine_code::MachineFunction,
+    plan: StackTraceReportLoopPlan,
+) {
+    debug_assert_ne!(plan.old_counter, plan.old_pointer);
+
+    basic_block_schedule::permute_contents(output, plan.start, [1, 0]);
+    basic_block_schedule::permute_contents(output, plan.start + 5, [2, 1, 3, 0, 4, 5]);
+
+    const POINTER: u8 = 25;
+    const COUNTER: u8 = 26;
+    let Instruction::LoadWord { d, .. } = &mut output.instructions[plan.start] else {
+        unreachable!("the initial back-chain load was matched")
+    };
+    *d = POINTER;
+    let Instruction::AddImmediate { d, .. } = &mut output.instructions[plan.start + 1] else {
+        unreachable!("the counter initialization was matched")
+    };
+    *d = COUNTER;
+    let Instruction::LoadWord { a, .. } = &mut output.instructions[plan.start + 5] else {
+        unreachable!("the first report load was matched")
+    };
+    *a = POINTER;
+    output.instructions[plan.start + 6] = Instruction::move_register(4, POINTER);
+    let Instruction::LoadWord { a, .. } = &mut output.instructions[plan.start + 7] else {
+        unreachable!("the second report load was matched")
+    };
+    *a = POINTER;
+    output.instructions[plan.start + 11] = Instruction::LoadWord {
+        d: POINTER,
+        a: POINTER,
+        offset: 0,
+    };
+    let Instruction::CompareLogicalWordImmediate { a, .. } =
+        &mut output.instructions[plan.start + 12]
+    else {
+        unreachable!("the null back-chain test was matched")
+    };
+    *a = POINTER;
+    let Instruction::AddImmediateShifted { a, .. } =
+        &mut output.instructions[plan.start + 14]
+    else {
+        unreachable!("the sentinel back-chain test was matched")
+    };
+    *a = POINTER;
+    let Instruction::CompareLogicalWordImmediate { a, .. } =
+        &mut output.instructions[plan.start + 17]
+    else {
+        unreachable!("the iteration bound was matched")
+    };
+    *a = COUNTER;
+    output.instructions[plan.start + 18] = Instruction::AddImmediate {
+        d: COUNTER,
+        a: COUNTER,
+        immediate: 1,
+    };
 }
 
 fn stack_trace_report_loop_plan(instructions: &[Instruction]) -> Option<StackTraceReportLoopPlan> {
@@ -199,9 +203,8 @@ fn stack_trace_report_loop_plan(instructions: &[Instruction]) -> Option<StackTra
 mod tests {
     use super::*;
 
-    #[test]
-    fn recognizes_a_guarded_back_chain_report_loop() {
-        let instructions = vec![
+    fn guarded_back_chain_report_loop() -> Vec<Instruction> {
+        vec![
             Instruction::AddImmediate { d: 25, a: 0, immediate: 0 },
             Instruction::LoadWord { d: 29, a: 28, offset: 4 },
             Instruction::Branch { target: 3 },
@@ -234,7 +237,12 @@ mod tests {
                 condition_bit: 0,
                 target: 5,
             },
-        ];
+        ]
+    }
+
+    #[test]
+    fn recognizes_a_guarded_back_chain_report_loop() {
+        let instructions = guarded_back_chain_report_loop();
         assert_eq!(
             stack_trace_report_loop_plan(&instructions),
             Some(StackTraceReportLoopPlan {
@@ -242,6 +250,55 @@ mod tests {
                 old_counter: 25,
                 old_pointer: 29,
             })
+        );
+    }
+
+    #[test]
+    fn assigns_phase_local_homes_without_moving_loop_boundaries() {
+        let mut output = mwcc_machine_code::MachineFunction {
+            instructions: guarded_back_chain_report_loop(),
+            ..Default::default()
+        };
+        let plan = stack_trace_report_loop_plan(&output.instructions).unwrap();
+
+        apply_stack_trace_report_loop_plan(&mut output, plan);
+
+        assert_eq!(
+            &output.instructions[..8],
+            &[
+                Instruction::LoadWord { d: 25, a: 28, offset: 4 },
+                Instruction::AddImmediate { d: 26, a: 0, immediate: 0 },
+                Instruction::Branch { target: 3 },
+                Instruction::Branch { target: 4 },
+                Instruction::Branch { target: 12 },
+                Instruction::LoadWord { d: 5, a: 25, offset: 0 },
+                Instruction::move_register(4, 25),
+                Instruction::LoadWord { d: 6, a: 25, offset: 4 },
+            ]
+        );
+        assert_eq!(
+            output.instructions[11],
+            Instruction::LoadWord { d: 25, a: 25, offset: 0 }
+        );
+        assert_eq!(
+            output.instructions[12],
+            Instruction::CompareLogicalWordImmediate { a: 25, immediate: 0 }
+        );
+        assert_eq!(
+            output.instructions[17],
+            Instruction::CompareLogicalWordImmediate { a: 26, immediate: 16 }
+        );
+        assert_eq!(
+            output.instructions[18],
+            Instruction::AddImmediate { d: 26, a: 26, immediate: 1 }
+        );
+        assert_eq!(
+            output.instructions[19],
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 0,
+                target: 5,
+            }
         );
     }
 }
