@@ -98,6 +98,7 @@ mod linkage_first_condition_member_reuse;
 mod linkage_first_disjoint_scratch_frame;
 mod linkage_first_guarded_global_member_base;
 mod linkage_first_pointer_publication;
+mod linkage_first_post_asm_variadic_store_schedule;
 mod formatter_buffer_copy_schedule;
 mod formatter_character_schedule;
 mod formatter_position_schedule;

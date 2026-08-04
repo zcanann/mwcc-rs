@@ -1246,6 +1246,7 @@ fn lower_function_body(
     generator.schedule_patched_status_initialization_chain();
     generator.canonicalize_linkage_first_post_asm_linkage();
     generator.schedule_linkage_first_post_asm_function_address();
+    generator.schedule_linkage_first_post_asm_variadic_store();
     generator.schedule_structured_repeated_value_inlined_byte_appends();
     generator.schedule_pointer_table_index_cursor_prologue();
     generator.schedule_indexed_allocation_pair();
