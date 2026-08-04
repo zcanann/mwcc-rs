@@ -2191,9 +2191,12 @@ impl Generator {
             if let Some(register) = self.condition_member_register(operand) {
                 return Ok(register);
             }
-            self.emit_member_load(base, offset, member_type, None, GENERAL_SCRATCH)?;
-            self.record_condition_member_value(operand, GENERAL_SCRATCH);
-            return Ok(GENERAL_SCRATCH);
+            let destination = self
+                .preferred_condition_member_register(operand)
+                .unwrap_or(GENERAL_SCRATCH);
+            self.emit_member_load(base, offset, member_type, None, destination)?;
+            self.record_condition_member_value(operand, destination);
+            return Ok(destination);
         }
         // A full-word memory load (`*p`, `a[i]`) goes into the scratch; the caller
         // then compares it. (A narrow signed load needs a record-form extend

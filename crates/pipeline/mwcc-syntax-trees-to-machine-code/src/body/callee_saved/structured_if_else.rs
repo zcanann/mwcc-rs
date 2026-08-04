@@ -37,6 +37,10 @@ impl Generator {
                 then_body,
                 else_body,
             );
+        let condition_member_handoff =
+            super::structured_guarded_member_handoff::plan_within_condition(
+                condition,
+            );
         let mut branch_entry_cache =
             super::structured_if_else_branch_entry_cache::plan(
                 condition,
@@ -93,6 +97,12 @@ impl Generator {
             condition,
             branch_entry_cache.is_some() || guarded_member_handoff.is_some(),
         );
+        if let Some(plan) = &condition_member_handoff {
+            self.prefer_condition_member_register(
+                &plan.member,
+                plan.preferred_register,
+            );
+        }
         struct ConditionBranches {
             enter_then: Vec<usize>,
             enter_else: Vec<usize>,

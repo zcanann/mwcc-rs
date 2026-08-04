@@ -14,6 +14,11 @@ pub(super) struct Plan<'a> {
     pub(super) preferred_register: u8,
 }
 
+pub(super) struct ConditionPlan {
+    pub(super) member: Expression,
+    pub(super) preferred_register: u8,
+}
+
 pub(super) fn plan<'a>(
     condition: &Expression,
     then_body: &'a [Statement],
@@ -37,6 +42,29 @@ pub(super) fn plan_either_arm<'a>(
     else_body: &'a [Statement],
 ) -> Option<Plan<'a>> {
     plan(condition, then_body).or_else(|| plan(condition, else_body))
+}
+
+pub(super) fn plan_within_condition(condition: &Expression) -> Option<ConditionPlan> {
+    let Expression::Binary {
+        operator: BinaryOperator::LogicalAnd,
+        left,
+        right,
+    } = condition
+    else {
+        return None;
+    };
+    let member = tested_pointer_member(left)?;
+    let mut called_through_member = false;
+    super::structured_expression_visit::visit_expression(right, &mut |expression| {
+        if let Expression::CallThrough { target, .. } = expression {
+            called_through_member |=
+                crate::condition_member_cache::same_member(member, target);
+        }
+    });
+    called_through_member.then(|| ConditionPlan {
+        member: member.clone(),
+        preferred_register: 12,
+    })
 }
 
 fn tested_pointer_member(expression: &Expression) -> Option<&Expression> {
@@ -132,5 +160,31 @@ mod tests {
             unreachable!()
         };
         assert!(std::ptr::eq(plan.followup, expected));
+    }
+
+    #[test]
+    fn recognizes_a_short_circuit_call_through_the_tested_member() {
+        let condition = Expression::Binary {
+            operator: BinaryOperator::LogicalAnd,
+            left: Box::new(callback()),
+            right: Box::new(Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left: Box::new(Expression::CallThrough {
+                    target: Box::new(callback()),
+                    arguments: vec![Expression::Variable("object".into())],
+                }),
+                right: Box::new(Expression::IntegerLiteral(1)),
+            }),
+        };
+        let plan = plan_within_condition(&condition)
+            .expect("short-circuit callback handoff");
+        assert_eq!(plan.preferred_register, 12);
+        assert!(crate::condition_member_cache::same_member(
+            &plan.member,
+            match &condition {
+                Expression::Binary { left, .. } => left,
+                _ => unreachable!(),
+            },
+        ));
     }
 }

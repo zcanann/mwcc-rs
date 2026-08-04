@@ -22,6 +22,7 @@ struct ConditionMemberValue {
 pub(crate) struct ConditionMemberCache {
     active: bool,
     values: Vec<ConditionMemberValue>,
+    preferred_registers: Vec<(Expression, u8)>,
     assignment_reuse: Option<Expression>,
     derived_minus_one: Option<ConditionMemberValue>,
 }
@@ -70,6 +71,39 @@ impl Generator {
         previous: ConditionMemberCache,
     ) {
         self.condition_member_cache = previous;
+    }
+
+    pub(crate) fn prefer_condition_member_register(
+        &mut self,
+        member: &Expression,
+        register: u8,
+    ) {
+        if !self.condition_member_cache.active {
+            return;
+        }
+        self.condition_member_cache
+            .preferred_registers
+            .retain(|(planned, _)| !same_member(planned, member));
+        self.condition_member_cache
+            .preferred_registers
+            .push((member.clone(), register));
+    }
+
+    pub(crate) fn preferred_condition_member_register(
+        &self,
+        member: &Expression,
+    ) -> Option<u8> {
+        self.condition_member_cache
+            .active
+            .then(|| {
+                self.condition_member_cache
+                    .preferred_registers
+                    .iter()
+                    .rev()
+                    .find(|(planned, _)| same_member(planned, member))
+                    .map(|(_, register)| *register)
+            })
+            .flatten()
     }
 
     pub(crate) fn condition_member_cache_rebased(
@@ -153,6 +187,9 @@ impl Generator {
         if !self.condition_member_cache.active || !cacheable_member(operand, self) {
             return;
         }
+        self.condition_member_cache
+            .preferred_registers
+            .retain(|(planned, _)| !same_member(planned, operand));
         self.condition_member_cache
             .values
             .retain(|value| !same_member(&value.expression, operand));

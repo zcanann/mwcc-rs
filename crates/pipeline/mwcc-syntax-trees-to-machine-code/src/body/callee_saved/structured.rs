@@ -4962,6 +4962,10 @@ impl Generator {
                             condition,
                             then_body,
                         );
+                    let condition_member_handoff =
+                        super::structured_guarded_member_handoff::plan_within_condition(
+                            condition,
+                        );
                     let guarded_followup =
                         guarded_store_value
                             .or(nested_condition)
@@ -5014,6 +5018,12 @@ impl Generator {
                                     || guarded_member_handoff.is_some(),
                             )
                         });
+                    if let Some(plan) = &condition_member_handoff {
+                        self.prefer_condition_member_register(
+                            &plan.member,
+                            plan.preferred_register,
+                        );
+                    }
                     // A fallthrough value may still live in its incoming
                     // physical register even when the condition has no call.
                     // Keep condition temporaries out of those homes until the
