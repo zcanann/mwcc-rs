@@ -481,8 +481,16 @@ fn find_staggered_entry_member_saved_home(
 /// parent diamond is complete that join may itself be the parent's
 /// skip-to-continuation branch. This applies equally to a conditional false
 /// edge and an unconditional arm exit.
-pub(super) fn thread_forward_unconditional_branch_chains(instructions: &mut [Instruction]) {
+pub(super) fn thread_forward_unconditional_branch_chains(
+    instructions: &mut [Instruction],
+    preserve_three_branch_entry_chains: bool,
+) {
     for index in 0..instructions.len() {
+        if preserve_three_branch_entry_chains
+            && crate::branch_cleanup::three_branch_entry_chain_member(instructions, index)
+        {
+            continue;
+        }
         let target = match instructions[index] {
             Instruction::Branch { target }
             | Instruction::BranchConditionalForward { target, .. } => target,
@@ -804,10 +812,27 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
 
-        thread_forward_unconditional_branch_chains(&mut instructions);
+        thread_forward_unconditional_branch_chains(&mut instructions, false);
 
         assert_eq!(instructions[0], Instruction::Branch { target: 4 });
         assert_eq!(instructions[2], Instruction::Branch { target: 4 });
+    }
+
+    #[test]
+    fn preserves_a_build_163_three_branch_loop_entry_packet() {
+        let mut instructions = vec![
+            Instruction::Branch { target: 1 },
+            Instruction::Branch { target: 2 },
+            Instruction::Branch { target: 3 },
+            Instruction::load_immediate(3, 1),
+            Instruction::BranchToLinkRegister,
+        ];
+
+        thread_forward_unconditional_branch_chains(&mut instructions, true);
+
+        assert_eq!(instructions[0], Instruction::Branch { target: 1 });
+        assert_eq!(instructions[1], Instruction::Branch { target: 2 });
+        assert_eq!(instructions[2], Instruction::Branch { target: 3 });
     }
 
     #[test]
@@ -824,7 +849,7 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
 
-        thread_forward_unconditional_branch_chains(&mut instructions);
+        thread_forward_unconditional_branch_chains(&mut instructions, false);
 
         assert_eq!(
             instructions[0],

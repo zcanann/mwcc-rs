@@ -3887,7 +3887,10 @@ impl Generator {
         }
         self.fold_structured_conditional_gotos();
         resolve_structured_switch_joins(&mut self.output.instructions);
-        thread_forward_unconditional_branch_chains(&mut self.output.instructions);
+        thread_forward_unconditional_branch_chains(
+            &mut self.output.instructions,
+            preserve_asm_tainted_for_entries,
+        );
         if let Some(layout) = &loop_member_receiver_layout {
             layout.coalesce_receiver_load(self, homes[0], homes[3]);
         }

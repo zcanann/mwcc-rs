@@ -44,7 +44,10 @@ pub(crate) fn thread_conditional_branch_targets(instructions: &mut [Instruction]
 /// MWCC retargets the conditional directly to `fallback`. Restrict this pass to
 /// functions without secondary instruction-index owners until the common
 /// remapper covers those owners too.
-pub(crate) fn collapse_forwarding_branch_blocks(generator: &mut Generator) {
+pub(crate) fn collapse_forwarding_branch_blocks(
+    generator: &mut Generator,
+    preserve_three_branch_entry_chains: bool,
+) {
     if !generator.output.entry_points.is_empty()
         || !generator.output.jump_tables.is_empty()
         || !generator.output.data_section_displacements.is_empty()
@@ -56,6 +59,7 @@ pub(crate) fn collapse_forwarding_branch_blocks(generator: &mut Generator) {
     while let Some((index, landing)) = forwarding_branch_block(
         &generator.output.instructions,
         allow_unreferenced,
+        preserve_three_branch_entry_chains,
     ) {
         for instruction in &mut generator.output.instructions {
             match instruction {
@@ -76,8 +80,14 @@ pub(crate) fn collapse_forwarding_branch_blocks(generator: &mut Generator) {
 ///
 /// Labels and incoming branches are retargeted to that same successor by the
 /// common removal helper, so the instruction has no control-flow effect.
-pub(crate) fn remove_fallthrough_branches(generator: &mut Generator) {
-    while let Some(index) = fallthrough_branch(&generator.output.instructions) {
+pub(crate) fn remove_fallthrough_branches(
+    generator: &mut Generator,
+    preserve_three_branch_entry_chains: bool,
+) {
+    while let Some(index) = fallthrough_branch(
+        &generator.output.instructions,
+        preserve_three_branch_entry_chains,
+    ) {
         remove_instruction_retargeting_to_next(generator, index);
     }
 }
@@ -129,19 +139,25 @@ fn tight_polling_call_loop(instructions: &[Instruction], start: usize) -> Option
     })
 }
 
-fn fallthrough_branch(instructions: &[Instruction]) -> Option<usize> {
+fn fallthrough_branch(
+    instructions: &[Instruction],
+    preserve_three_branch_entry_chains: bool,
+) -> Option<usize> {
     instructions
         .iter()
         .enumerate()
         .find_map(|(index, instruction)| {
-            matches!(instruction, Instruction::Branch { target } if *target == index + 1)
-                .then_some(index)
+            (matches!(instruction, Instruction::Branch { target } if *target == index + 1)
+                && !(preserve_three_branch_entry_chains
+                    && three_branch_entry_chain_member(instructions, index)))
+            .then_some(index)
         })
 }
 
 fn forwarding_branch_block(
     instructions: &[Instruction],
     allow_unreferenced: bool,
+    preserve_three_branch_entry_chains: bool,
 ) -> Option<(usize, usize)> {
     (1..instructions.len()).find_map(|index| {
         let Instruction::Branch { target: landing } = instructions[index] else {
@@ -149,6 +165,8 @@ fn forwarding_branch_block(
         };
         if landing <= index
             || !matches!(instructions[index - 1], Instruction::Branch { target } if target != index)
+            || (preserve_three_branch_entry_chains
+                && three_branch_entry_chain_member(instructions, index))
         {
             return None;
         }
@@ -164,11 +182,38 @@ fn forwarding_branch_block(
     })
 }
 
+/// Build 163 can retain a three-edge entry packet for each source `for` loop
+/// after an earlier asm definition. The first two edges are no-op label hops;
+/// the third either falls into a proven first iteration or reaches the ordinary
+/// pre-test. They otherwise look exactly like generic forwarding blocks, so
+/// recognize the two removable members while the complete packet is visible.
+pub(crate) fn three_branch_entry_chain_member(
+    instructions: &[Instruction],
+    index: usize,
+) -> bool {
+    [index.checked_sub(2), index.checked_sub(1), Some(index)]
+        .into_iter()
+        .flatten()
+        .any(|start| {
+            let Some(end) = start.checked_add(3) else {
+                return false;
+            };
+            matches!(
+                instructions.get(start..end),
+                Some([
+                    Instruction::Branch { target: middle },
+                    Instruction::Branch { target: tail },
+                    Instruction::Branch { .. },
+                ]) if *middle == start + 1 && *tail == start + 2
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         fallthrough_branch, forwarding_branch_block, thread_conditional_branch_targets,
-        tight_polling_call_loop,
+        three_branch_entry_chain_member, tight_polling_call_loop,
     };
     use mwcc_machine_code::Instruction;
 
@@ -187,7 +232,7 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
 
-        assert_eq!(forwarding_branch_block(&instructions, false), Some((3, 4)));
+        assert_eq!(forwarding_branch_block(&instructions, false, false), Some((3, 4)));
     }
 
     #[test]
@@ -200,8 +245,8 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
 
-        assert_eq!(forwarding_branch_block(&instructions, true), Some((2, 3)));
-        assert_eq!(forwarding_branch_block(&instructions, false), None);
+        assert_eq!(forwarding_branch_block(&instructions, true, false), Some((2, 3)));
+        assert_eq!(forwarding_branch_block(&instructions, false, false), None);
     }
 
     #[test]
@@ -212,7 +257,7 @@ mod tests {
             Instruction::Branch { target: 0 },
         ];
 
-        assert_eq!(fallthrough_branch(&instructions), Some(1));
+        assert_eq!(fallthrough_branch(&instructions, false), Some(1));
     }
 
     #[test]
@@ -248,7 +293,27 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
 
-        assert_eq!(forwarding_branch_block(&instructions, false), None);
+        assert_eq!(forwarding_branch_block(&instructions, false, false), None);
+    }
+
+    #[test]
+    fn identifies_every_member_of_a_three_branch_entry_packet() {
+        let instructions = [
+            Instruction::load_immediate(3, 0),
+            Instruction::Branch { target: 2 },
+            Instruction::Branch { target: 3 },
+            Instruction::Branch { target: 7 },
+            Instruction::load_immediate(4, 1),
+            Instruction::load_immediate(5, 2),
+            Instruction::BranchToLinkRegister,
+            Instruction::BranchToLinkRegister,
+        ];
+
+        assert!(three_branch_entry_chain_member(&instructions, 1));
+        assert!(three_branch_entry_chain_member(&instructions, 2));
+        assert!(three_branch_entry_chain_member(&instructions, 3));
+        assert_eq!(forwarding_branch_block(&instructions, false, true), None);
+        assert_eq!(fallthrough_branch(&instructions, true), None);
     }
 
     #[test]

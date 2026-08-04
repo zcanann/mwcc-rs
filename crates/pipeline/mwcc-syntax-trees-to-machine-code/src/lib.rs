@@ -7,7 +7,7 @@
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{FrameInfo, Instruction, MachineFunction, RelocationTarget};
 use mwcc_syntax_trees::{Function, GlobalDeclaration, LocalDataRelocationTarget};
-use mwcc_versions::{Behavior, CompilerConfig};
+use mwcc_versions::{Behavior, CompilerConfig, FrameConvention};
 use std::collections::{HashMap, HashSet};
 
 mod analysis;
@@ -822,9 +822,17 @@ fn lower_function_body(
                 &mut generator.output.instructions,
             );
         }
-        branch_cleanup::collapse_forwarding_branch_blocks(&mut generator);
+        let preserve_three_branch_entry_chains = function.preceded_by_asm
+            && generator.behavior.frame_convention == FrameConvention::LinkageFirst;
+        branch_cleanup::collapse_forwarding_branch_blocks(
+            &mut generator,
+            preserve_three_branch_entry_chains,
+        );
         if generator.structured_cfg_cleanup_owner {
-            branch_cleanup::remove_fallthrough_branches(&mut generator);
+            branch_cleanup::remove_fallthrough_branches(
+                &mut generator,
+                preserve_three_branch_entry_chains,
+            );
         }
     }
     collapse_conditional_skip_to_backward_branch(&mut generator);
