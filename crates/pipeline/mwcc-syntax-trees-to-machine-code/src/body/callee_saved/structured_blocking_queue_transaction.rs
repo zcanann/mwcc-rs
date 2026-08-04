@@ -505,3 +505,7 @@ fn member(expression: &Expression, owner: &str, expected_offset: u32) -> bool {
             if *offset == expected_offset
                 && matches!(base.as_ref(), Expression::Variable(name) if name == owner))
 }
+
+#[cfg(test)]
+#[path = "structured_blocking_queue_transaction_tests.rs"]
+mod tests;
