@@ -11,6 +11,7 @@ use mwcc_versions::{Behavior, CompilerConfig, FrameConvention};
 use std::collections::{HashMap, HashSet};
 
 mod analysis;
+mod allocation_debug;
 mod allocation_diagnostics;
 mod allocation_frame;
 mod arithmetic;
@@ -1485,6 +1486,7 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
     let used = allocation.assigned_callee_saved(&generator.constraints);
     allocation_diagnostics::report_pressure(generator, &liveness, &allocation, &used);
     generator.reconcile_allocated_general_frame(&allocation, &used)?;
+    allocation_debug::reconcile_variable_locations(&mut generator.locations, &allocation);
     mwcc_vreg::apply(&mut generator.output.instructions, &allocation);
     // FRAME-METADATA CONSISTENCY: every callee-saved register the allocation used
     // must correspond to a save slot the arm declared (generator.callee_saved, one
