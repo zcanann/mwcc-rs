@@ -2739,7 +2739,7 @@ impl Generator {
                     "a global-array element offset out of displacement range (roadmap)",
                 )
             })?;
-            let index_register = self.general_register_of_leaf(index_leaf)?;
+            let index_register = self.materialize_index_operand(index_leaf)?;
             if self.emit_legacy_global_array_constant_store(
                 name,
                 pointee,
@@ -2802,7 +2802,7 @@ impl Generator {
         } else {
             self.general_register_of_leaf(value)?
         };
-        let index_register = self.general_register_of_leaf(index)?;
+        let index_register = self.materialize_index_operand(index)?;
         if self.emit_legacy_global_array_variable_store(
             name,
             total_size,
