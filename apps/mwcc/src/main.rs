@@ -3140,6 +3140,9 @@ mod tests {
     #[path = "fixed_triplet_float_dispatch.rs"]
     mod fixed_triplet_float_dispatch;
 
+    #[path = "global_object_array_repair.rs"]
+    mod global_object_array_repair;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 

@@ -1196,6 +1196,9 @@ impl Generator {
         if self.try_fixed_triplet_float_dispatch(function)? {
             return Ok(());
         }
+        if self.try_global_object_array_repair(function)? {
+            return Ok(());
+        }
         // Inline expansion exposes member-index searches before broad loop
         // lowering can discard their explicit pointer induction variable.
         if self.try_counted_member_pointer_search(function)? {
