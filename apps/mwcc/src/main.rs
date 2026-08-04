@@ -3137,6 +3137,9 @@ mod tests {
     #[path = "bounded_global_ring_remove.rs"]
     mod bounded_global_ring_remove;
 
+    #[path = "fixed_triplet_float_dispatch.rs"]
+    mod fixed_triplet_float_dispatch;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 

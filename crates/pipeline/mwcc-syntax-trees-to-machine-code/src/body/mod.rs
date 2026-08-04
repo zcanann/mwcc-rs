@@ -17,6 +17,7 @@ mod leaf_tail_append_schedule;
 mod leaf_singly_linked_unlink_schedule;
 mod release_to_global_manager;
 mod bounded_global_ring_remove;
+mod fixed_triplet_float_dispatch;
 mod leading_shared_zero_bitfield_guard;
 mod linker_table_initialization;
 mod linkage_first_address_argument_schedule;
