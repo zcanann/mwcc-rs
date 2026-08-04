@@ -1200,9 +1200,13 @@ impl Generator {
             return;
         };
 
-        if link_store > 2 {
-            self.move_plain_linkage_instruction_before(link_store, 2);
-            link_store = 2;
+        let safe_link_store = plain_linkage_link_store_slot(
+            &self.output.instructions,
+            link_store,
+        );
+        if link_store > safe_link_store {
+            self.move_plain_linkage_instruction_before(link_store, safe_link_store);
+            link_store = safe_link_store;
         }
 
         let mut frame_update = self
@@ -1220,6 +1224,14 @@ impl Generator {
                 )
             })
             .unwrap_or(frame_update);
+        if plain_linkage_memory_condition_crossed_frame(
+            &self.output.instructions,
+            link_store,
+            frame_update,
+        ) {
+            self.move_plain_linkage_instruction_before(frame_update, link_store + 1);
+            frame_update = link_store + 1;
+        }
         self.delay_plain_frame_update_past_condition_prefix(frame_update);
         frame_update = self
             .output
@@ -1651,6 +1663,53 @@ impl Generator {
             }
         }
     }
+}
+
+/// Choose the latest first linkage-latency slot that cannot expose the live LR
+/// value in r0 to an intervening instruction. Most ready scalar work uses ABI
+/// argument registers and may remain between `mflr` and the save; an r0 use or
+/// definition must remain below it.
+fn plain_linkage_link_store_slot(instructions: &[Instruction], link_store: usize) -> usize {
+    instructions
+        .get(1..link_store)
+        .and_then(|prefix| {
+            prefix.iter().position(|instruction| {
+                mwcc_vreg::register_operands(instruction).iter().any(|operand| {
+                    operand.class == mwcc_vreg::Class::General && operand.register == 0
+                })
+            })
+        })
+        .map(|offset| offset + 1)
+        .unwrap_or(2)
+        .min(link_store)
+}
+
+/// A load-backed condition is not issued above build 163's final stack update.
+/// Prefix rotation can expose this shape when selection placed the delayed LR
+/// save after the condition load, so restore the frame boundary before filling
+/// its register-only latency slots.
+fn plain_linkage_memory_condition_crossed_frame(
+    instructions: &[Instruction],
+    link_store: usize,
+    frame_update: usize,
+) -> bool {
+    if link_store + 1 >= frame_update {
+        return false;
+    }
+    let prefix = &instructions[link_store + 1..frame_update];
+    let Some(Instruction::LoadWord { d, .. }) = prefix.first() else {
+        return false;
+    };
+    let loaded = *d;
+    prefix.len() > 1
+        && prefix[1..].iter().all(|instruction| {
+            matches!(
+                instruction,
+                Instruction::CompareWordImmediate { a, .. }
+                    | Instruction::CompareLogicalWordImmediate { a, .. }
+                    if *a == loaded
+            )
+        })
 }
 
 fn normalize_build163_direct_call_left_shifts(
@@ -2626,6 +2685,54 @@ mod tests {
             plain_linkage_relocated_call_argument(&instructions, &relocations, 2),
             None,
         );
+    }
+
+    #[test]
+    fn link_store_precedes_a_latency_candidate_that_touches_r0() {
+        let instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::LoadWord {
+                d: 0,
+                a: 3,
+                offset: 32,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+        ];
+
+        assert_eq!(plain_linkage_link_store_slot(&instructions, 2), 1);
+    }
+
+    #[test]
+    fn memory_condition_stays_below_the_plain_frame_update() {
+        let instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 3,
+                offset: 32,
+            },
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -8,
+            },
+        ];
+
+        assert!(plain_linkage_memory_condition_crossed_frame(
+            &instructions,
+            1,
+            4,
+        ));
     }
 
     #[test]

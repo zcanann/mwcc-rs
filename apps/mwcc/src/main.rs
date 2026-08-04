@@ -3113,6 +3113,9 @@ mod tests {
     #[path = "returned_loop_accumulator.rs"]
     mod returned_loop_accumulator;
 
+    #[path = "guarded_member_early_return.rs"]
+    mod guarded_member_early_return;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 

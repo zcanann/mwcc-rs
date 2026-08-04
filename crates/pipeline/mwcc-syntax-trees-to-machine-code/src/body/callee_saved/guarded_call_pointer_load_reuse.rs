@@ -95,8 +95,10 @@ fn preserve_guarded_call_pointer_value(
 }
 
 fn guarded_call_pointer_reload(instructions: &[Instruction]) -> Option<(usize, usize)> {
-    instructions.windows(5).enumerate().find_map(|(start, window)| {
-        match window {
+    instructions
+        .windows(5)
+        .enumerate()
+        .find_map(|(start, window)| match window {
             [
                 Instruction::LoadWord {
                     d: tested,
@@ -127,8 +129,62 @@ fn guarded_call_pointer_reload(instructions: &[Instruction]) -> Option<(usize, u
                 Some((start, start + 3))
             }
             _ => None,
-        }
-    })
+        })
+        .or_else(|| guarded_early_return_pointer_reload(instructions))
+}
+
+/// Recognize the complementary CFG where null returns a constant and the
+/// non-null edge enters a call. The member identity is unchanged across the
+/// two return-only instructions, so the tested value can become r3 directly.
+fn guarded_early_return_pointer_reload(instructions: &[Instruction]) -> Option<(usize, usize)> {
+    instructions
+        .windows(8)
+        .enumerate()
+        .find_map(|(start, window)| {
+            let [
+                Instruction::LoadWord {
+                    d: tested,
+                    a: tested_base,
+                    offset: tested_offset,
+                },
+                Instruction::CompareLogicalWordImmediate {
+                    a: compared,
+                    immediate: 0,
+                },
+                Instruction::BranchConditionalForward {
+                    options: 4,
+                    condition_bit: 2,
+                    target: call_edge,
+                },
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: 0,
+                    ..
+                },
+                Instruction::Branch { target: join },
+                Instruction::LoadWord {
+                    d: 3,
+                    a: argument_base,
+                    offset: argument_offset,
+                },
+                Instruction::BranchAndLink { .. },
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: 0,
+                    ..
+                },
+            ] = window
+            else {
+                return None;
+            };
+            (tested == compared
+                && *tested != 3
+                && tested_base == argument_base
+                && tested_offset == argument_offset
+                && *call_edge == start + 5
+                && *join > start + 7)
+                .then_some((start, start + 5))
+        })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -329,6 +385,36 @@ mod tests {
     #[test]
     fn preserves_a_reload_when_the_branch_has_another_join() {
         assert_eq!(guarded_call_pointer_reload(&guarded_reload(6)), None);
+    }
+
+    #[test]
+    fn recognizes_a_reload_on_the_taken_edge_of_an_early_return() {
+        let instructions = vec![
+            Instruction::LoadWord {
+                d: 0,
+                a: 3,
+                offset: 32,
+            },
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 5,
+            },
+            Instruction::load_immediate(3, 0),
+            Instruction::Branch { target: 11 },
+            Instruction::LoadWord {
+                d: 3,
+                a: 3,
+                offset: 32,
+            },
+            Instruction::BranchAndLink {
+                target: "stop".into(),
+            },
+            Instruction::load_immediate(3, 1),
+        ];
+
+        assert_eq!(guarded_call_pointer_reload(&instructions), Some((0, 5)));
     }
 
     #[test]
