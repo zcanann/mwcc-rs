@@ -1190,6 +1190,9 @@ impl Generator {
         if self.try_release_to_global_manager(function)? {
             return Ok(());
         }
+        if self.try_allocate_from_global_pool(function)? {
+            return Ok(());
+        }
         if self.try_bounded_global_ring_remove(function)? {
             return Ok(());
         }

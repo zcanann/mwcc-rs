@@ -3133,6 +3133,8 @@ mod tests {
 
     #[path = "release_to_global_manager.rs"]
     mod release_to_global_manager;
+    #[path = "allocate_from_global_pool.rs"]
+    mod allocate_from_global_pool;
 
     #[path = "bounded_global_ring_remove.rs"]
     mod bounded_global_ring_remove;
