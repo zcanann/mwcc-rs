@@ -311,6 +311,7 @@ mod structured_preloop_alias;
 mod structured_precomposition_home_layout;
 mod structured_precomposition_entry_schedule;
 mod structured_precomposition_tail_schedule;
+mod structured_state_validation_schedule;
 mod structured_parameter_home_reuse;
 mod structured_prologue;
 mod structured_release_schedule;
