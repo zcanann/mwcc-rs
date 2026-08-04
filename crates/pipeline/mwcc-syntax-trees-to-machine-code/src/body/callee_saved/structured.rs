@@ -350,6 +350,15 @@ impl Generator {
                 function,
             );
         let function = loop_member_array_addresses.as_ref().unwrap_or(function);
+        let entry_member_address = (self.behavior.frame_convention
+            == FrameConvention::LinkageFirst
+            && loop_member_array_addresses.is_some())
+        .then(|| super::structured_entry_member_address::materialize(function))
+        .flatten();
+        let function = entry_member_address
+            .as_ref()
+            .map(|materialization| &materialization.function)
+            .unwrap_or(function);
         let reduced_member_array_offsets =
             super::structured_loop_member_array_offset::strength_reduce_member_array_offsets(
                 function,
@@ -4293,6 +4302,9 @@ impl Generator {
             &mut self.output.instructions,
             preserve_asm_tainted_for_entries,
         );
+        if let Some(materialization) = &entry_member_address {
+            materialization.schedule_entry(self);
+        }
         if let Some(layout) = &loop_member_receiver_layout {
             layout.coalesce_receiver_load(self, homes[0], homes[3]);
         }

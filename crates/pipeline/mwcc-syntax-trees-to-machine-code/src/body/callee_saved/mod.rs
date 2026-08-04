@@ -302,6 +302,7 @@ mod structured_loop_address_invariants;
 mod structured_loop_global_byte_cursor;
 mod structured_loop_member_array_offset;
 mod structured_loop_member_array_addresses;
+mod structured_entry_member_address;
 mod structured_split_scalar_array_frame;
 mod structured_passive_frame_scalar_mirrors;
 mod structured_global_byte_loop_layout;

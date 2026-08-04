@@ -2647,7 +2647,11 @@ impl Generator {
                 // `&local.field` composes the aggregate's frame displacement
                 // with the field displacement. The aggregate has no GPR home:
                 // its address is formed directly from r1, just like `&local`.
-                if let Some(slot) = self.frame_slots.get(name) {
+                if let Some(slot) = self
+                    .frame_slots
+                    .get(name)
+                    .filter(|_| !self.passive_frame_scalar_mirrors.contains(name))
+                {
                     let offset = checked_frame_member_offset(slot.offset, *offset)?;
                     self.output.instructions.push(Instruction::AddImmediate {
                         d: destination,

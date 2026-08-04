@@ -424,19 +424,32 @@ impl HomeLayout {
         parameter_reuse: &super::structured_parameter_home_reuse::StructuredParameterHomeReuse,
         home_count: usize,
     ) -> Option<Self> {
+        let loop_addresses: Vec<_> = deferred_locals
+            .iter()
+            .filter(|local| local.name.starts_with(ADDRESS_PREFIX))
+            .copied()
+            .collect();
+        let entry_address = deferred_locals.iter().find(|local| {
+            local
+                .name
+                .starts_with(super::structured_entry_member_address::ADDRESS_PREFIX)
+        });
         if eager_local_count != 2
             || saved_parameter_count != 1
-            || deferred_locals.len() != 2
+            || loop_addresses.len() != 2
+            || deferred_locals.len() != 2 + usize::from(entry_address.is_some())
             || deferred_homes.group_count != 2
             || home_count != 5
-            || !deferred_locals
-                .iter()
-                .all(|local| local.name.starts_with(ADDRESS_PREFIX))
         {
             return None;
         }
-        let first = parameter_reuse.home_index(deferred_homes.group(&deferred_locals[0].name));
-        let second = parameter_reuse.home_index(deferred_homes.group(&deferred_locals[1].name));
+        let first = parameter_reuse.home_index(deferred_homes.group(&loop_addresses[0].name));
+        let second = parameter_reuse.home_index(deferred_homes.group(&loop_addresses[1].name));
+        if entry_address.is_some_and(|entry| {
+            parameter_reuse.home_index(deferred_homes.group(&entry.name)) != first
+        }) {
+            return None;
+        }
         Some(Self {
             preferences: std::collections::HashMap::from([
                 (0, 29),
