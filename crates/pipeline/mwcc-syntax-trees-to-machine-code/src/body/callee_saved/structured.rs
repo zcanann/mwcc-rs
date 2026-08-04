@@ -1063,6 +1063,16 @@ impl Generator {
                 &saved_parameters,
                 &deferred_saved_locals,
             );
+        let aggregate_only_frame = frame_arrays.is_empty()
+            && !aggregate_frame_locals.is_empty()
+            && frame_scalar_parameters.is_empty()
+            && frame_scalar_locals.is_empty();
+        let aggregate_entry_base = structured_aggregate_entry_base(
+            self.behavior.frame_convention,
+            aggregate_only_frame,
+            self.entry_parameter_words,
+        )
+        .ok_or_else(|| Diagnostic::error("structured aggregate entry table is too large"))?;
         let frame_scalar_prefix = (self.behavior.frame_convention
             == FrameConvention::LinkageFirst
             && (!frame_arrays.is_empty() || compact_narrow_scalar_frame.is_some()))
@@ -1121,7 +1131,8 @@ impl Generator {
         let mut local_region_bytes = if let Some(layout) = &interleaved_frame_layout {
             layout.local_region_bytes()
         } else if !aggregate_frame_locals.is_empty() || aggregate_call_copy_bytes != 0 {
-            let mut end = 8u32
+            let mut end = u32::try_from(aggregate_entry_base)
+                .map_err(|_| Diagnostic::error("structured aggregate frame is out of range"))?
                 .checked_add(u32::try_from(aggregate_call_copy_bytes).map_err(|_| {
                     Diagnostic::error("structured aggregate copy area is out of range")
                 })?)
@@ -2090,10 +2101,6 @@ impl Generator {
                 // allocator's physical saved-register count.
                 extra_scalar_words += deferred_saved_locals.len();
             }
-            let aggregate_only_frame = frame_arrays.is_empty()
-                && !aggregate_frame_locals.is_empty()
-                && frame_scalar_parameters.is_empty()
-                && frame_scalar_locals.is_empty();
             let array_offset = if let Some(frame) = &variadic_output_frame {
                 frame.array_offset
             } else {
@@ -2114,7 +2121,9 @@ impl Generator {
                             .expect("the broad aggregate layout was recognized")
                             .aggregate_base_offset()
                     }
-                    FrameConvention::LinkageFirst if aggregate_only_frame => 8,
+                    FrameConvention::LinkageFirst if aggregate_only_frame => {
+                        aggregate_entry_base
+                    }
                     FrameConvention::LinkageFirst => {
                         let words = if global_member_search_entry {
                             extra_scalar_words
@@ -2171,7 +2180,10 @@ impl Generator {
                 }
             }
             if self.behavior.frame_convention == FrameConvention::LinkageFirst {
-                let occupied_base = if variadic_output_frame.is_some() {
+                let occupied_base = if variadic_output_frame.is_some()
+                    || (aggregate_only_frame
+                        && self.behavior.frame_convention == FrameConvention::LinkageFirst)
+                {
                     8
                 } else if frame_arrays.is_empty()
                     && linkage_first_scalar_local_table_bytes != 0
@@ -2672,6 +2684,25 @@ impl Generator {
             && self.behavior.frame_convention == FrameConvention::LinkageFirst
             && homes.is_empty()
         {
+            self.output.instructions.extend([
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 4,
+                },
+                Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -plan.frame_size,
+                },
+            ]);
+        } else if aggregate_only_frame
+            && self.behavior.frame_convention == FrameConvention::LinkageFirst
+        {
+            // Legacy aggregate frames publish the caller's LR in its incoming
+            // linkage area before moving r1. This remains true for small
+            // aggregate functions that do not cross the dense-save threshold.
             self.output.instructions.extend([
                 Instruction::MoveFromLinkRegister { d: 0 },
                 Instruction::StoreWord {
@@ -5665,6 +5696,19 @@ impl Generator {
     }
 }
 
+fn structured_aggregate_entry_base(
+    frame_convention: FrameConvention,
+    aggregate_only_frame: bool,
+    entry_parameter_words: usize,
+) -> Option<i16> {
+    if frame_convention != FrameConvention::LinkageFirst || !aggregate_only_frame {
+        return Some(8);
+    }
+    i16::try_from(entry_parameter_words.checked_mul(4)?)
+        .ok()?
+        .checked_add(8)
+}
+
 fn structured_return_is_supported(function: &Function) -> bool {
     (function.return_type == Type::Void && function.return_expression.is_none())
         || (matches!(
@@ -6036,6 +6080,30 @@ pub(super) fn logical_or_groups(expression: &Expression) -> Option<Vec<Vec<&Expr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linkage_first_aggregate_objects_follow_the_incoming_parameter_table() {
+        assert_eq!(
+            structured_aggregate_entry_base(FrameConvention::LinkageFirst, true, 0),
+            Some(8)
+        );
+        assert_eq!(
+            structured_aggregate_entry_base(FrameConvention::LinkageFirst, true, 1),
+            Some(12)
+        );
+        assert_eq!(
+            structured_aggregate_entry_base(FrameConvention::LinkageFirst, true, 3),
+            Some(20)
+        );
+        assert_eq!(
+            structured_aggregate_entry_base(FrameConvention::Predecrement, true, 3),
+            Some(8)
+        );
+        assert_eq!(
+            structured_aggregate_entry_base(FrameConvention::LinkageFirst, false, 3),
+            Some(8)
+        );
+    }
 
     fn call_result_temporary_function(terminal_value: Expression) -> Function {
         Function {
