@@ -1675,7 +1675,7 @@ impl Generator {
                 )?);
                 return Ok(());
             }
-            let index_register = self.general_register_of_leaf(index)?;
+            let index_register = self.materialize_index_operand(index)?;
             let size = element.size();
             let scaled = if size == 1 {
                 index_register
