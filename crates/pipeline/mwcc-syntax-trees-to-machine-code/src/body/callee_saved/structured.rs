@@ -1343,6 +1343,15 @@ impl Generator {
             &ephemeral_locals,
             dense_loop_window,
         );
+        let dense_loop_home_preferences = super::structured_loop_register_pressure::
+            plan_dense_loop_saved_home_preferences(
+                function,
+                &ephemeral_locals,
+                dense_loop_window,
+                &saved_parameters,
+                eager_saved_locals.len(),
+                parameter_home_reuse.fresh_group_count,
+            );
         let loop_assertion_strings =
             (value_home_count == 4).then_some(planned_loop_assertion_strings).flatten();
         let base_home_count = value_home_count + 2 * usize::from(loop_assertion_strings.is_some());
@@ -1897,6 +1906,10 @@ impl Generator {
                     first_saved,
                     home_index,
                 ) {
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) =
+                    dense_loop_home_preferences.preference(home_index)
+                {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if with_frame_array && eager_saved_locals.is_empty() && count <= 18 {
                     let preferred = if dense_entry_prefix && deferred_home_plan.group_count == 1 {
@@ -3778,10 +3791,23 @@ impl Generator {
                 self.transient_condition_float_call_results
                     .insert(local.name.clone());
             }
-            let alias = pure_local_alias(local)
+            // A statement-time forwarding alias begins after entry calls may
+            // have clobbered the ABI register. Share the parameter's durable
+            // saved home; declaration-time aliases below intentionally retain
+            // the current incoming-register behavior.
+            let forwarded_saved_home = dense_loop_home_preferences
+                .forwarded_parameter(&local.name)
+                .and_then(|source| {
+                    saved_parameter_homes
+                        .iter()
+                        .find(|(name, _, _)| name == source)
+                })
+                .map(|(_, home, _)| *home);
+            let declaration_alias = pure_local_alias(local)
                 .and_then(|name| self.locations.get(name))
                 .filter(|location| location.class == class)
                 .map(|location| location.register);
+            let alias = forwarded_saved_home.or(declaration_alias);
             let temporary = alias.unwrap_or_else(|| match class {
                 ValueClass::General if rounded_byte_pointer == Some(local.name.as_str()) => {
                     self.fresh_virtual_general_preferring(Eabi::general_result().number)
