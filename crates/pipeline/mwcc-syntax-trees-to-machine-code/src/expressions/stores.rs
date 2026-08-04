@@ -640,14 +640,16 @@ impl Generator {
                 return Ok(());
             }
         }
+        // A scalar within a constant-index inline struct array can appear as
+        // either an outer Index or an indexed Member in the compact IR.
+        if self.try_emit_embedded_struct_array_store(target, value)? {
+            return Ok(());
+        }
         // `local[index] = value` for a frame-resident array. Constant indices
         // fold to a displacement from r1; the array's pointer-shaped location
         // supplies its element width while value-position evaluation still
         // decays the variable to the slot address.
         if let Expression::Index { base, index } = target {
-            if self.try_emit_embedded_struct_array_store(target, value)? {
-                return Ok(());
-            }
             if self.try_emit_fixed_address_identity_store(target, value)? {
                 return Ok(());
             }

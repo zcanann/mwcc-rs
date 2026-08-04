@@ -68,6 +68,43 @@ fn scalar<'a>(
     })
 }
 
+fn member_scalar(target: &Expression) -> Option<EmbeddedStructScalar<'_>> {
+    let Expression::Member {
+        base,
+        offset: member_offset,
+        member_type,
+        index_stride: Some(index_stride),
+    } = target
+    else {
+        return None;
+    };
+    let Expression::Index {
+        base: inline_array,
+        ..
+    } = base.as_ref()
+    else {
+        return None;
+    };
+    let Expression::Member {
+        member_type: Type::Struct { size, .. },
+        ..
+    } = inline_array.as_ref()
+    else {
+        return None;
+    };
+    if index_stride != size {
+        return None;
+    }
+    let embedded = element(base)?;
+    let element = pointee_of_type(*member_type)?;
+    let offset = embedded.offset.checked_add(*member_offset)?;
+    Some(EmbeddedStructScalar {
+        aggregate: embedded.aggregate,
+        offset,
+        element,
+    })
+}
+
 impl Generator {
     pub(super) fn try_emit_embedded_struct_array_address(
         &mut self,
@@ -112,10 +149,12 @@ impl Generator {
         target: &Expression,
         value: &Expression,
     ) -> Compilation<bool> {
-        let Expression::Index { base, index } = target else {
-            return Ok(false);
+        let access = match target {
+            Expression::Index { base, index } => scalar(base, index),
+            Expression::Member { .. } => member_scalar(target),
+            _ => None,
         };
-        let Some(access) = scalar(base, index) else {
+        let Some(access) = access else {
             return Ok(false);
         };
         let offset = i16::try_from(access.offset).map_err(|_| {
@@ -176,5 +215,18 @@ mod tests {
         .expect("constant scalar access should classify");
         assert_eq!(access.offset, 208);
         assert_eq!(access.element, Pointee::Float);
+    }
+
+    #[test]
+    fn folds_a_scalar_member_of_the_constant_row() {
+        let member = Expression::Member {
+            base: Box::new(rows()),
+            offset: 3,
+            member_type: Type::UnsignedChar,
+            index_stride: Some(12),
+        };
+        let access = member_scalar(&member).expect("constant row member should classify");
+        assert_eq!(access.offset, 203);
+        assert_eq!(access.element, Pointee::UnsignedChar);
     }
 }
