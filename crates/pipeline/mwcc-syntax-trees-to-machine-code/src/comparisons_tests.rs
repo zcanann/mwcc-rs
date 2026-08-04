@@ -489,7 +489,7 @@ fn address_taken_scalar_large_equality_uses_a_nonzero_addis_source() {
 
 #[test]
 fn frame_address_and_global_pointer_keep_distinct_compare_operands() {
-    let function = Function {
+    let mut function = Function {
         return_type: Type::Void,
         name: "install_frame".into(),
         is_static: false,
@@ -559,6 +559,34 @@ fn frame_address_and_global_pointer_keep_distinct_compare_operands() {
             ] if *frame != 0 && a == frame
         )),
         "frame/global comparison instructions: {:?}",
+        machine.instructions,
+    );
+
+    let Statement::If { condition, .. } = &mut function.statements[1] else {
+        unreachable!("the comparison test owns a trailing if")
+    };
+    let Expression::Binary { right, .. } = condition else {
+        unreachable!("the trailing if owns a binary comparison")
+    };
+    *right = Box::new(Expression::Dereference {
+        pointer: Box::new(Expression::Cast {
+            target_type: Type::Pointer(mwcc_syntax_trees::Pointee::Pointer),
+            operand: Box::new(Expression::IntegerLiteral(0x8000_00d8)),
+        }),
+    });
+    let machine = lower(&function);
+
+    assert!(
+        machine.instructions.windows(4).any(|window| matches!(
+            window,
+            [
+                Instruction::AddImmediateShifted { d: base, .. },
+                Instruction::AddImmediate { d: frame, a: 1, .. },
+                Instruction::LoadWord { d: 0, a, offset: 216 },
+                Instruction::CompareLogicalWord { a: compared, b: 0 },
+            ] if *frame != 0 && a == base && compared == frame
+        )),
+        "frame/fixed-address comparison instructions: {:?}",
         machine.instructions,
     );
 }

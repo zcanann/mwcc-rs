@@ -15,12 +15,6 @@ impl Generator {
         left: &Expression,
         right: &Expression,
     ) -> Compilation<Option<(u8, u8)>> {
-        if self.behavior.global_addressing != mwcc_versions::GlobalAddressing::Absolute
-            || self.behavior.absolute_access_style
-                != mwcc_versions::AbsoluteAccessStyle::FoldedDisplacement
-        {
-            return Ok(None);
-        }
         let (frame_name, compare_address) = match left {
             Expression::Variable(name) => (name, false),
             Expression::AddressOf { operand } => match operand.as_ref() {
@@ -37,6 +31,60 @@ impl Generator {
         else {
             return Ok(None);
         };
+        if compare_address {
+            if let Expression::Dereference { pointer } = right {
+                if let Some((pointee, address)) =
+                    crate::expressions::const_address_pointer(pointer)
+                {
+                    let (high, low) = crate::expressions::split_address(address);
+                    let fixed_base = if high == 0 {
+                        0
+                    } else {
+                        let Some((base, materialize)) =
+                            self.claim_const_address_base_avoiding(high, Vec::new())
+                        else {
+                            return Ok(None);
+                        };
+                        if materialize {
+                            self.output
+                                .instructions
+                                .push(Instruction::load_immediate_shifted(base, high));
+                        }
+                        base
+                    };
+                    let frame_address =
+                        self.fresh_virtual_general_avoiding(vec![GENERAL_SCRATCH]);
+                    self.prefer_virtual_general(frame_address, 4);
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: frame_address,
+                        a: 1,
+                        immediate: slot.offset,
+                    });
+                    self.output.instructions.push(crate::expressions::displacement_load(
+                        pointee,
+                        GENERAL_SCRATCH,
+                        fixed_base,
+                        low,
+                    )?);
+                    self.output
+                        .instructions
+                        .push(Instruction::CompareLogicalWord {
+                            a: frame_address,
+                            b: GENERAL_SCRATCH,
+                        });
+                    return Ok(Some(
+                        false_branch_bo_bi(operator)
+                            .expect("comparison operator was selected"),
+                    ));
+                }
+            }
+        }
+        if self.behavior.global_addressing != mwcc_versions::GlobalAddressing::Absolute
+            || self.behavior.absolute_access_style
+                != mwcc_versions::AbsoluteAccessStyle::FoldedDisplacement
+        {
+            return Ok(None);
+        }
         let Expression::Variable(global_name) = right else {
             return Ok(None);
         };

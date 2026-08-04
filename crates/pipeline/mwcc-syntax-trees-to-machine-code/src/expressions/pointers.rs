@@ -325,7 +325,7 @@ impl Generator {
 
     /// Variant used when the surrounding schedule already owns physical
     /// registers that the new fixed-address base must not occupy.
-    fn claim_const_address_base_avoiding(
+    pub(crate) fn claim_const_address_base_avoiding(
         &mut self,
         high: i16,
         avoid: Vec<u8>,
