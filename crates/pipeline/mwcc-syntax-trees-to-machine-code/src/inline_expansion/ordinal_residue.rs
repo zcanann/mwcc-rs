@@ -25,7 +25,7 @@ pub(super) fn context_snapshot_clear_adjustment(
         && calls.get("OSClearContext") == Some(&2)
         && calls.get("OSGetCurrentContext") == Some(&1))
         .then_some(OrdinalAdjustment {
-            pre_constant_discount: 1,
+            pre_constant_discount: 2,
             post_constant_residue: 1,
         })
 }
@@ -128,7 +128,7 @@ mod tests {
         assert_eq!(
             context_snapshot_clear_adjustment(&calls, 2, 1),
             Some(OrdinalAdjustment {
-                pre_constant_discount: 1,
+                pre_constant_discount: 2,
                 post_constant_residue: 1,
             })
         );
