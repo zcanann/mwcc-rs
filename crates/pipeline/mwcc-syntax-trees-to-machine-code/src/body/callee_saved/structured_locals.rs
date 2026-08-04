@@ -78,7 +78,24 @@ pub(super) fn plan_deferred_saved_homes(
     function: &Function,
     locals: &[&LocalDeclaration],
 ) -> Option<DeferredSavedHomePlan> {
-    plan_deferred_saved_homes_with_reuse(function, locals, true)
+    plan_deferred_saved_homes_with_reuse(
+        function,
+        locals,
+        true,
+        &std::collections::HashSet::new(),
+    )
+}
+
+/// Preserve a fresh source home for selected deferred definitions while still
+/// allowing later values to reuse that home when ordinary interference permits.
+/// This models values whose allocation identity is established at definition,
+/// rather than turning off lifetime reuse for the entire function.
+pub(super) fn plan_deferred_saved_homes_with_fresh_names(
+    function: &Function,
+    locals: &[&LocalDeclaration],
+    fresh_names: &std::collections::HashSet<&str>,
+) -> Option<DeferredSavedHomePlan> {
+    plan_deferred_saved_homes_with_reuse(function, locals, true, fresh_names)
 }
 
 /// Retain one home per source value when allocation preceded a later semantic
@@ -88,13 +105,19 @@ pub(super) fn plan_distinct_deferred_saved_homes(
     function: &Function,
     locals: &[&LocalDeclaration],
 ) -> Option<DeferredSavedHomePlan> {
-    plan_deferred_saved_homes_with_reuse(function, locals, false)
+    plan_deferred_saved_homes_with_reuse(
+        function,
+        locals,
+        false,
+        &std::collections::HashSet::new(),
+    )
 }
 
 fn plan_deferred_saved_homes_with_reuse(
     function: &Function,
     locals: &[&LocalDeclaration],
     allow_reuse: bool,
+    fresh_names: &std::collections::HashSet<&str>,
 ) -> Option<DeferredSavedHomePlan> {
     let mut intervals = Vec::with_capacity(locals.len());
     for local in locals {
@@ -148,6 +171,7 @@ fn plan_deferred_saved_homes_with_reuse(
         let existing_group_count = group_last_reads.len();
         let group = (allow_reuse
             && !name.starts_with("__mwcc_value_")
+            && !fresh_names.contains(name)
             && load_batch_position != Some(0)
             && !preserves_pre_frame_home)
             .then(|| {

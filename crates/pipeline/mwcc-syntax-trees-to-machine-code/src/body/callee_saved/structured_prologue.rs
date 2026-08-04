@@ -75,8 +75,55 @@ pub(super) fn repeated_indirect_member_loop_home_preference(
         && eager_home_count == 0
         && parameter_home_count == 3
         && total_home_count == 5)
-        .then(|| [31, 30, 26, 27, 28].get(home_index).copied())
+        .then(|| [31, 30, 26, 28, 27].get(home_index).copied())
         .flatten()
+}
+
+/// A direct-call result introduced between repeated inlined cursor walks keeps
+/// its own source home. Otherwise ordinary LIFO reuse consumes the first
+/// cursor's expired home before the sibling walk can reclaim it.
+pub(super) fn repeated_indirect_member_loop_fresh_call_results<'a>(
+    enabled: bool,
+    function: &'a Function,
+    deferred_locals: &[&'a LocalDeclaration],
+) -> std::collections::HashSet<&'a str> {
+    if !enabled {
+        return std::collections::HashSet::new();
+    }
+    deferred_locals
+        .iter()
+        .filter(|local| {
+            !super::structured_locals::structured_name_occurs_in_loop(function, &local.name)
+                && statements_assign_direct_call(&function.statements, &local.name)
+        })
+        .map(|local| local.name.as_str())
+        .collect()
+}
+
+fn statements_assign_direct_call(statements: &[Statement], name: &str) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Assign {
+            name: assigned,
+            value: Expression::Call { .. },
+        } => assigned == name,
+        Statement::Loop { body, .. } => statements_assign_direct_call(body, name),
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            statements_assign_direct_call(then_body, name)
+                || statements_assign_direct_call(else_body, name)
+        }
+        Statement::Switch { arms, default, .. } => {
+            arms.iter().any(|arm| {
+                matches!(&arm.body, mwcc_syntax_trees::ArmBody::Statements(body)
+                    if statements_assign_direct_call(body, name))
+            }) || matches!(default, Some(mwcc_syntax_trees::ArmBody::Statements(body))
+                if statements_assign_direct_call(body, name))
+        }
+        _ => false,
+    })
 }
 
 fn collect_indirect_member_loops(
@@ -578,7 +625,7 @@ mod tests {
             (0..5)
                 .map(|index| repeated_indirect_member_loop_home_preference(true, 0, 3, 5, index))
                 .collect::<Vec<_>>(),
-            [Some(31), Some(30), Some(26), Some(27), Some(28)]
+            [Some(31), Some(30), Some(26), Some(28), Some(27)]
         );
         assert_eq!(
             repeated_indirect_member_loop_home_preference(true, 1, 3, 6, 0),

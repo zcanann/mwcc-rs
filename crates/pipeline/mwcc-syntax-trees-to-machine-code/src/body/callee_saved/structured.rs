@@ -140,7 +140,8 @@ use super::structured_precomposition_home_layout::StructuredPrecompositionHomeLa
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_frame_address_null_select,
     is_unobserved_local_assignment, plan_deferred_saved_homes,
-    plan_distinct_deferred_saved_homes, plan_ephemeral_locals,
+    plan_deferred_saved_homes_with_fresh_names, plan_distinct_deferred_saved_homes,
+    plan_ephemeral_locals,
 };
 use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 use super::structured_parameter_frame_origin::has_straight_line_post_call_indirect_access;
@@ -149,6 +150,7 @@ use super::structured_complement_product_pair::StructuredComplementProductPair;
 use super::structured_prologue::{
     dense_entry_owns_parameter_copies, saved_home_stores_precede_initialization,
     repeated_indirect_member_loop_home_preference,
+    repeated_indirect_member_loop_fresh_call_results,
     repeated_indirect_member_loops_own_dense_range, uses_dense_saved_register_range,
 };
 use super::structured_register_width::assigned_register_width;
@@ -1097,11 +1099,25 @@ impl Generator {
             &eager_saved_locals,
             &saved_parameter_names,
         );
+        let repeated_indirect_member_loops =
+            repeated_indirect_member_loops_own_dense_range(function);
+        let fresh_repeated_loop_call_results =
+            repeated_indirect_member_loop_fresh_call_results(
+                repeated_indirect_member_loops,
+                function,
+                &deferred_saved_locals,
+            );
         let deferred_home_plan = if recovered_general_homes.is_some()
             || unoptimized_leaf_homes.is_some()
             || unoptimized_frame_call_homes.is_some()
         {
             plan_distinct_deferred_saved_homes(function, &deferred_saved_locals)
+        } else if !fresh_repeated_loop_call_results.is_empty() {
+            plan_deferred_saved_homes_with_fresh_names(
+                function,
+                &deferred_saved_locals,
+                &fresh_repeated_loop_call_results,
+            )
         } else if self.inline_source_call_survivors.is_empty() {
             plan_deferred_saved_homes(function, &deferred_saved_locals)
         } else {
@@ -1641,8 +1657,6 @@ impl Generator {
         let loop_assertion_saved_range = loop_assertion_strings.is_some();
         let dense_unused_array_state_transfer =
             unused_array_state_transfer && count == 5;
-        let repeated_indirect_member_loops =
-            repeated_indirect_member_loops_own_dense_range(function);
         self.structured_repeated_indirect_member_loop_entry = repeated_indirect_member_loops
             && eager_saved_locals.is_empty()
             && saved_parameters.len() == 3

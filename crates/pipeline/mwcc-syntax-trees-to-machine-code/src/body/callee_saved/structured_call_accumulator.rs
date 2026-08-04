@@ -9,29 +9,79 @@
 use super::*;
 
 pub(super) fn call_accumulator_names(function: &Function) -> std::collections::HashSet<&str> {
-    function
-        .statements
-        .iter()
-        .filter_map(|statement| {
-            let Statement::Assign { name, value } = statement else {
-                return None;
-            };
-            is_call_accumulator_value(name, value).then_some(name.as_str())
-        })
-        .collect()
+    let mut names = std::collections::HashSet::new();
+    collect_call_accumulator_names(&function.statements, &mut names);
+    names
+}
+
+fn collect_call_accumulator_names<'a>(
+    statements: &'a [Statement],
+    names: &mut std::collections::HashSet<&'a str>,
+) {
+    for statement in statements {
+        match statement {
+            Statement::Assign { name, value } => {
+                if is_call_accumulator_value(name, value) {
+                    names.insert(name);
+                }
+            }
+            Statement::Loop { body, .. } => {
+                collect_call_accumulator_names(body, names);
+            }
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_call_accumulator_names(then_body, names);
+                collect_call_accumulator_names(else_body, names);
+            }
+            Statement::Switch { arms, default, .. } => {
+                for arm in arms {
+                    if let mwcc_syntax_trees::ArmBody::Statements(body) = &arm.body {
+                        collect_call_accumulator_names(body, names);
+                    }
+                }
+                if let Some(mwcc_syntax_trees::ArmBody::Statements(body)) = default {
+                    collect_call_accumulator_names(body, names);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 pub(super) fn call_accumulator_assignment_count(function: &Function) -> u32 {
-    function
-        .statements
+    count_call_accumulator_assignments(&function.statements)
+}
+
+fn count_call_accumulator_assignments(statements: &[Statement]) -> u32 {
+    statements
         .iter()
-        .filter(|statement| {
-            matches!(
-                statement,
-                Statement::Assign { name, value } if is_call_accumulator_value(name, value)
-            )
+        .map(|statement| match statement {
+            Statement::Assign { name, value } => u32::from(is_call_accumulator_value(name, value)),
+            Statement::Loop { body, .. } => count_call_accumulator_assignments(body),
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => count_call_accumulator_assignments(then_body)
+                .saturating_add(count_call_accumulator_assignments(else_body)),
+            Statement::Switch { arms, default, .. } => arms
+                .iter()
+                .filter_map(|arm| match &arm.body {
+                    mwcc_syntax_trees::ArmBody::Statements(body) => Some(body.as_slice()),
+                    mwcc_syntax_trees::ArmBody::Return(_) => None,
+                })
+                .chain(default.iter().filter_map(|body| match body {
+                    mwcc_syntax_trees::ArmBody::Statements(body) => Some(body.as_slice()),
+                    mwcc_syntax_trees::ArmBody::Return(_) => None,
+                }))
+                .map(count_call_accumulator_assignments)
+                .fold(0, u32::saturating_add),
+            _ => 0,
         })
-        .count() as u32
+        .fold(0, u32::saturating_add)
 }
 
 pub(super) fn in_place_call_combined_return_name(function: &Function) -> Option<&str> {
@@ -140,6 +190,13 @@ fn is_call_accumulator_value(name: &str, value: &Expression) -> bool {
     }
 }
 
+fn reuses_accumulator_value_lane(
+    repeated_indirect_member_loop_entry: bool,
+    include_previous: bool,
+) -> bool {
+    repeated_indirect_member_loop_entry && include_previous
+}
+
 impl Generator {
     pub(super) fn try_emit_structured_in_place_call_combine(
         &mut self,
@@ -210,9 +267,26 @@ impl Generator {
         } else {
             None
         };
-        let destination = preference
-            .map(|register| self.fresh_virtual_general_preferring(register))
-            .unwrap_or_else(|| self.fresh_virtual_general());
+        // A repeated inlined callback walk is one mutable reduction in MWCC's
+        // value graph. Keep its virtual identity across each `|=` so allocation
+        // sees the complete lifetime and can leave the value in r29. Ordinary
+        // accumulator chains retain their measured versioned destinations.
+        let destination = if reuses_accumulator_value_lane(
+            self.structured_repeated_indirect_member_loop_entry,
+            include_previous,
+        ) {
+            let previous = previous.expect("an in-place accumulator has a previous value");
+            // This lane is not one of the source-declared saved homes: it is
+            // optimizer state introduced by the inlined reduction. Its r29
+            // preference leaves the later, non-overlapping source local in
+            // the planned r27 home and makes the physical save suffix dense.
+            self.prefer_virtual_general(previous, 29);
+            previous
+        } else {
+            preference
+                .map(|register| self.fresh_virtual_general_preferring(register))
+                .unwrap_or_else(|| self.fresh_virtual_general())
+        };
 
         self.evaluate(call, Type::Int, Eabi::general_result().number)?;
         self.output
@@ -425,5 +499,47 @@ impl Generator {
         };
         self.output.instructions.splice(start.., replacement);
         true
+    }
+}
+
+#[cfg(test)]
+mod value_lane_tests {
+    use super::*;
+
+    #[test]
+    fn discovers_an_accumulator_nested_in_a_loop_body() {
+        let statements = vec![Statement::Loop {
+            kind: mwcc_syntax_trees::LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: vec![Statement::Assign {
+                name: "error".to_owned(),
+                value: Expression::Binary {
+                    operator: BinaryOperator::BitOr,
+                    left: Box::new(Expression::Variable("error".to_owned())),
+                    right: Box::new(Expression::Unary {
+                        operator: UnaryOperator::LogicalNot,
+                        operand: Box::new(Expression::Call {
+                            name: "operation".to_owned(),
+                            arguments: Vec::new(),
+                        }),
+                    }),
+                },
+            }],
+        }];
+        let mut names = std::collections::HashSet::new();
+
+        collect_call_accumulator_names(&statements, &mut names);
+
+        assert_eq!(names, std::collections::HashSet::from(["error"]));
+        assert_eq!(count_call_accumulator_assignments(&statements), 1);
+    }
+
+    #[test]
+    fn repeated_indirect_walks_keep_their_reduction_in_one_value_lane() {
+        assert!(reuses_accumulator_value_lane(true, true));
+        assert!(!reuses_accumulator_value_lane(true, false));
+        assert!(!reuses_accumulator_value_lane(false, true));
     }
 }
