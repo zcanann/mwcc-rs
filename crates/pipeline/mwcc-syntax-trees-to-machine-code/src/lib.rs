@@ -1096,6 +1096,7 @@ fn lower_function_body(
     generator.schedule_terminal_wrapper_mutating_inline(function);
     generator.schedule_call_condition_live_in_arguments();
     generator.schedule_guarded_report_store(function);
+    generator.schedule_guarded_member_call_entry();
     // Whole-body owners, generic scheduling, and physical allocation converge
     // here. Apply final cross-owner schedules only when their complete measured
     // physical instruction region is present.

@@ -2981,6 +2981,9 @@ mod tests {
     #[path = "guarded_member_receiver_reuse.rs"]
     mod guarded_member_receiver_reuse;
 
+    #[path = "guarded_member_call_entry.rs"]
+    mod guarded_member_call_entry;
+
     #[path = "float_conditions.rs"]
     mod float_conditions;
 

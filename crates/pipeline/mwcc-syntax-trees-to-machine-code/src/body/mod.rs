@@ -3,6 +3,7 @@
 //! Split by family (fire 525); behavior-identical to the former single body.rs.
 
 mod call_prologue;
+mod guarded_member_call_entry_schedule;
 mod callback_publication_schedule;
 mod call_result_if_else;
 mod call_result_member_callback_guard;
