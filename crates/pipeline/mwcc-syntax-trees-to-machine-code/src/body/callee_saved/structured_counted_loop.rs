@@ -145,7 +145,9 @@ impl Plan {
                 target: body,
             };
         crate::remove_instruction_retargeting_to_next(generator, tail_compare + 1);
-        self.schedule_preheader_invariants(generator);
+        if self.schedule_preheader_invariants(generator) {
+            generator.structured_dense_counted_loop_entry_owner = true;
+        }
         true
     }
 

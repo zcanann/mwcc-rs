@@ -641,6 +641,7 @@ fn lower_function_body(
         structured_repeated_call_poll_owner: false,
         structured_nonreturning: false,
         structured_global_byte_loop_layout_owner: false,
+        structured_dense_counted_loop_entry_owner: false,
         structured_member_array_offset_owner: false,
         passive_frame_scalar_mirrors: HashSet::new(),
         structured_broad_global_base_layout_owner: false,
@@ -976,6 +977,7 @@ fn lower_function_body(
     generator.schedule_leading_int_to_float_argument();
     generator.hoist_structured_loop_float_zero();
     schedule_instructions(&mut generator);
+    generator.schedule_dense_counted_loop_entry();
     generator.schedule_materialized_fixed_bank_store();
     generator.fuse_adjacent_materialized_fixed_bank_stores();
     generator.fuse_linkage_first_fixed_bank_region();
