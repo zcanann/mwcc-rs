@@ -671,6 +671,18 @@ fn advance_expression(expression: &Expression, name: &str, prior_call: &mut bool
             *prior_call = false;
             read_after
         }
+        Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(_)) =>
+        {
+            // A chained scalar assignment is represented inside the outer
+            // assignment's value (`a = (b = (c = 0))`).  The outer target is
+            // not a read and has no evaluation effects, so retain expression
+            // sequencing while looking for a nested definition of `name`.
+            // Falling through to the generic read/call query would miss that
+            // definition and incorrectly carry an earlier call across the
+            // freshly assigned value.
+            advance_expression(value, name, prior_call)
+        }
         Expression::Comma { left, right } => {
             let left_read = advance_expression(left, name, prior_call);
             left_read | advance_expression(right, name, prior_call)
@@ -755,6 +767,21 @@ mod tests {
         };
         let mut prior_call = true;
         assert!(!advance_expression(&expression, "alias", &mut prior_call));
+        assert!(!prior_call);
+    }
+
+    #[test]
+    fn chained_scalar_assignment_starts_each_nested_lifetime_after_a_call() {
+        let expression = assign(
+            "outer",
+            assign(
+                "middle",
+                assign("candidate", Expression::IntegerLiteral(0)),
+            ),
+        );
+        let mut prior_call = true;
+
+        assert!(!advance_expression(&expression, "candidate", &mut prior_call));
         assert!(!prior_call);
     }
 
