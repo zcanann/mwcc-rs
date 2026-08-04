@@ -1112,6 +1112,7 @@ fn lower_function_body(
     generator.normalize_scratch_copy_convention();
     generator.schedule_saved_base_call_argument();
     generator.normalize_guarded_callback_single_argument_receivers(function);
+    generator.schedule_guarded_callback_nullable_member_chain(function);
     generator.finalize_exclusive_arm_copy_encodings();
     generator.schedule_linkage_first_function_address();
     generator.schedule_linkage_first_global_member_callback();

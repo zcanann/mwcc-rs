@@ -16,18 +16,7 @@ impl Generator {
         let Some(plan) = super::structured_guarded_member_lvalue::recognize(function) else {
             return;
         };
-        let Some(receiver) = self.output.instructions.windows(2).find_map(|window| {
-            matches!(window, [
-                Instruction::AddImmediate { d: 4, a, immediate },
-                Instruction::LoadWord { a: load_base, offset, .. },
-            ] if *immediate == plan.member_offset
-                && *a == *load_base
-                && *offset == plan.member_offset)
-            .then(|| match window[0] {
-                Instruction::AddImmediate { a, .. } => a,
-                _ => unreachable!(),
-            })
-        }) else {
+        let Some(receiver) = retained_receiver(&self.output.instructions, plan.member_offset) else {
             return;
         };
         if let Some(snapshot) = callback_result_snapshot(&self.output.instructions) {
@@ -49,6 +38,21 @@ impl Generator {
         normalize_instructions(&mut self.output.instructions, receiver);
         schedule_copy_placement(self, receiver);
     }
+}
+
+pub(super) fn retained_receiver(instructions: &[Instruction], member_offset: i16) -> Option<u8> {
+    instructions.windows(2).find_map(|window| {
+        matches!(window, [
+            Instruction::AddImmediate { d: 4, a, immediate },
+            Instruction::LoadWord { a: load_base, offset, .. },
+        ] if *immediate == member_offset
+            && *a == *load_base
+            && *offset == member_offset)
+        .then(|| match window[0] {
+            Instruction::AddImmediate { a, .. } => a,
+            _ => unreachable!(),
+        })
+    })
 }
 
 fn callback_result_snapshot(instructions: &[Instruction]) -> Option<usize> {
