@@ -44,6 +44,14 @@ impl Generator {
             // latency with the format address before loading the second word.
             permute_basic_block_contents(&mut self.output, start, [1, 0, 2, 3, 4]);
         }
+
+        while let Some((start, index)) = indexed_word_pair_report(&self.output.instructions) {
+            // The two member loads are independent of both saved-index
+            // arguments. Start each load early and retain the copied index in
+            // the encoding MWCC selects after physical allocation.
+            permute_basic_block_contents(&mut self.output, start, [2, 1, 4, 0, 3, 5, 6]);
+            self.output.instructions[start + 1] = Instruction::move_register(4, index);
+        }
     }
 
     fn move_report_instruction_before(&mut self, from: usize, to: usize) {
@@ -139,6 +147,51 @@ fn two_word_member_report(instructions: &[Instruction]) -> Option<usize> {
                 && first_offset != second_offset
                 && target == "OSReport"
         )
+    })
+}
+
+fn indexed_word_pair_report(instructions: &[Instruction]) -> Option<(usize, u8)> {
+    instructions.windows(7).enumerate().find_map(|(start, window)| {
+        let [
+            Instruction::AddImmediate {
+                d: 3,
+                a: format_base,
+                ..
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: first_index,
+                immediate: 0,
+            },
+            Instruction::LoadWord {
+                d: 5,
+                a: first_base,
+                offset: first_offset,
+            },
+            Instruction::AddImmediate {
+                d: 6,
+                a: second_index,
+                immediate: 4,
+            },
+            Instruction::LoadWord {
+                d: 7,
+                a: second_base,
+                offset: second_offset,
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink { target },
+        ] = window
+        else {
+            return None;
+        };
+        ((14..=31).contains(format_base)
+            && (14..=31).contains(first_index)
+            && first_index == second_index
+            && (14..=31).contains(first_base)
+            && first_base == second_base
+            && second_offset.checked_sub(*first_offset) == Some(16)
+            && target == "OSReport")
+            .then_some((start, *first_index))
     })
 }
 
@@ -363,5 +416,41 @@ mod tests {
             },
         ];
         assert_eq!(two_word_member_report(&instructions), Some(0));
+    }
+
+    #[test]
+    fn recognizes_indexed_word_pair_report_arguments() {
+        let instructions = [
+            Instruction::AddImmediate {
+                d: 3,
+                a: 31,
+                immediate: 232,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 25,
+                immediate: 0,
+            },
+            Instruction::LoadWord {
+                d: 5,
+                a: 27,
+                offset: 420,
+            },
+            Instruction::AddImmediate {
+                d: 6,
+                a: 25,
+                immediate: 4,
+            },
+            Instruction::LoadWord {
+                d: 7,
+                a: 27,
+                offset: 436,
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink {
+                target: "OSReport".into(),
+            },
+        ];
+        assert_eq!(indexed_word_pair_report(&instructions), Some((0, 25)));
     }
 }
