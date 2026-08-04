@@ -1533,19 +1533,12 @@ impl Generator {
                     Some((_, _, right_type)),
                 ) = (as_member(left), as_member(right))
                 {
-                    let operand_registers: std::collections::HashSet<u8> = self
-                        .registers_used_by(left)
-                        .into_iter()
-                        .chain(self.registers_used_by(right))
-                        .collect();
-                    let newly_reserved: Vec<u8> = operand_registers
-                        .into_iter()
-                        .filter(|register| self.reserved.insert(*register))
-                        .collect();
-                    let left_register = self.lowest_free_general()?;
-                    for register in newly_reserved {
-                        self.reserved.remove(&register);
-                    }
+                    // Give the first load a virtual result rather than choosing
+                    // a physical temporary before liveness is known. Allocation
+                    // can then coalesce it with a dying member base (`lwz r4,
+                    // off(r4)`) while still keeping a shared or later-used base
+                    // distinct. The second value remains in r0 for the compare.
+                    let left_register = self.fresh_virtual_general();
                     self.evaluate_general(left, left_register)?;
                     let inserted = self.reserved.insert(left_register);
                     let right_result = self.evaluate_general(right, GENERAL_SCRATCH);

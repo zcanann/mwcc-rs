@@ -2945,6 +2945,8 @@ mod tests {
     mod implicit_int_to_float_argument;
     #[path = "float_intrinsics.rs"]
     mod float_intrinsics;
+    #[path = "member_compare_allocation.rs"]
+    mod member_compare_allocation;
     #[path = "read_only_pool_addressing.rs"]
     mod read_only_pool_addressing;
     #[path = "narrow_shifted_divisor.rs"]
