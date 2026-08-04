@@ -3309,7 +3309,7 @@ impl Generator {
             } else if pooled_dense_inline_save {
                 self.emit_structured_array_pool_parameter_copies(&saved_parameter_homes);
             } else {
-                for (parameter_index, (_, home, incoming)) in
+                for (parameter_index, (name, home, incoming)) in
                     saved_parameter_homes.iter().enumerate()
                 {
                     if !dense_saved_range {
@@ -3319,9 +3319,15 @@ impl Generator {
                             plan.frame_size,
                         );
                     }
-                    self.output
-                        .instructions
-                        .push(Instruction::move_register(*home, *incoming));
+                    if split_scalar_array_frame.is_none()
+                        || !passive_frame_scalar_mirrors
+                            .as_ref()
+                            .is_some_and(|plan| plan.contains(name))
+                    {
+                        self.output
+                            .instructions
+                            .push(Instruction::move_register(*home, *incoming));
+                    }
                 }
             }
             if !dense_saved_range {
@@ -3493,13 +3499,24 @@ impl Generator {
             }
             let initializer_start = self.output.instructions.len();
             let mut location_register = home;
+            let initialized_from_split_frame = split_scalar_array_frame.is_some()
+                && passive_frame_scalar_mirrors
+                    .as_ref()
+                    .is_some_and(|plan| plan.contains(&local.name))
+                && frame_scalar_locals
+                    .iter()
+                    .any(|framed| framed.name == local.name);
             let is_round_up_base = dense_eager_round_up
                 .as_ref()
                 .is_some_and(|round_up| round_up.base_name == local.name);
             let is_rounded_pointer = dense_eager_round_up
                 .as_ref()
                 .is_some_and(|round_up| round_up.pointer_name == local.name);
-            if is_round_up_base {
+            if initialized_from_split_frame {
+                // The source initializer is emitted into its authoritative
+                // frame image below, then the saved mirror is reloaded from
+                // that slot. Do not create a second direct value definition.
+            } else if is_round_up_base {
                 let temporary = self.fresh_virtual_general_preferring(3);
                 self.evaluate_structured_initializer(
                     function,
@@ -4001,6 +4018,41 @@ impl Generator {
                 self.emit_store(&Expression::Variable(local.name.clone()), initializer)?;
             }
         }
+        if split_scalar_array_frame.is_some() {
+            for parameter in &frame_scalar_parameters {
+                let slot = self.frame_slots[&parameter.name];
+                self.output.instructions.push(crate::frame::spill_instruction(
+                    slot.parameter_register
+                        .expect("address-taken parameter has an incoming register"),
+                    slot,
+                ));
+                if let Some((_, home, _)) = saved_parameter_homes
+                    .iter()
+                    .find(|(name, _, _)| name == &parameter.name)
+                    .filter(|_| {
+                        passive_frame_scalar_mirrors
+                            .as_ref()
+                            .is_some_and(|plan| plan.contains(&parameter.name))
+                    })
+                {
+                    self.output.instructions.push(Instruction::LoadWord {
+                        d: *home,
+                        a: 1,
+                        offset: slot.offset,
+                    });
+                    self.locations
+                        .get_mut(&parameter.name)
+                        .expect("saved frame parameter was eligibility checked")
+                        .register = *home;
+                }
+                if periodic_float_normalization
+                    .as_ref()
+                    .is_some_and(|plan| plan.owns_frame_parameter(&parameter.name))
+                {
+                    self.locations.remove(&parameter.name);
+                }
+            }
+        }
         for local in &frame_scalar_locals {
             if frame_publication
                 .as_ref()
@@ -4011,8 +4063,28 @@ impl Generator {
             if let Some(initializer) = &local.initializer {
                 self.emit_store(&Expression::Variable(local.name.clone()), initializer)?;
             }
+            if split_scalar_array_frame.is_some()
+                && passive_frame_scalar_mirrors
+                    .as_ref()
+                    .is_some_and(|plan| plan.contains(&local.name))
+            {
+                let slot = self.frame_slots[&local.name];
+                let home = self
+                    .locations
+                    .get(&local.name)
+                    .expect("saved frame local was eligibility checked")
+                    .register;
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: home,
+                    a: 1,
+                    offset: slot.offset,
+                });
+            }
         }
         for parameter in &frame_scalar_parameters {
+            if split_scalar_array_frame.is_some() {
+                continue;
+            }
             let slot = self.frame_slots[&parameter.name];
             self.output.instructions.push(crate::frame::spill_instruction(
                 slot.parameter_register
