@@ -162,6 +162,14 @@ fn case_ranges_are_contiguous(ranges: &[CaseRange]) -> bool {
     })
 }
 
+fn default_body_is_empty(default: Option<&ArmBody>) -> bool {
+    match default {
+        None => true,
+        Some(ArmBody::Statements(statements)) => statements.is_empty(),
+        Some(ArmBody::Return(_)) => false,
+    }
+}
+
 fn dispatch_range_is_supported(
     ranges: &[CaseRange],
     lo: usize,
@@ -292,6 +300,7 @@ impl Generator {
             .collect::<std::collections::HashMap<_, _>>();
         let mut body_start = vec![0usize; arms.len()];
         let mut join_branches = Vec::new();
+        let trailing_default_is_empty = default_body_is_empty(default);
         for (source_index, arm) in arms.iter().enumerate() {
             body_start[sorted_index_by_value[&arm.value]] = self.output.instructions.len();
             self.reset_structured_switch_edge_caches();
@@ -324,7 +333,7 @@ impl Generator {
             };
             if falls_through_body
                 && !arm.falls_through
-                && (source_index + 1 != arms.len() || default.is_some())
+                && (source_index + 1 != arms.len() || !trailing_default_is_empty)
             {
                 join_branches.push(self.output.instructions.len());
                 self.output
@@ -590,6 +599,16 @@ impl Generator {
 mod tests {
     use super::*;
     use mwcc_syntax_trees::SwitchArm;
+
+    #[test]
+    fn distinguishes_an_empty_default_from_an_emitting_default() {
+        let empty = ArmBody::Statements(Vec::new());
+        let emitting = ArmBody::Statements(vec![Statement::Return(None)]);
+
+        assert!(default_body_is_empty(None));
+        assert!(default_body_is_empty(Some(&empty)));
+        assert!(!default_body_is_empty(Some(&emitting)));
+    }
 
     #[test]
     fn recognizes_sparse_labels_that_share_the_following_body() {
