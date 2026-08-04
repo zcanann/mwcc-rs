@@ -573,7 +573,7 @@ impl Generator {
                             {
                                 if arguments.is_empty()
                                     && !self.prototyped_names.contains(callee)
-                                    && !is_intrinsic_call(callee)
+                                    && !is_intrinsic_call(callee, arguments.len())
                                     && !matches!(
                                         self.call_return_types.get(callee),
                                         Some(Type::Float | Type::Double)
@@ -1833,7 +1833,7 @@ impl Generator {
                         return Ok(result);
                     }
                 }
-                if !is_intrinsic_call(name) {
+                if !is_intrinsic_call(name, arguments.len()) {
                     if !matches!(
                         self.call_return_types.get(name),
                         Some(Type::Float | Type::Double)

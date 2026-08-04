@@ -547,7 +547,13 @@ impl Generator {
             }
             Expression::MemberAddress { base, offset, .. } => self.emit_member_address(base, *offset, destination),
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),
-            Expression::Call { name, arguments } => self.emit_call(name, arguments, Some(destination), false),
+            Expression::Call { name, arguments } => {
+                if self.try_emit_integer_intrinsic(name, arguments, destination)? {
+                    Ok(())
+                } else {
+                    self.emit_call(name, arguments, Some(destination), false)
+                }
+            }
             Expression::Assign { target, value } => self.emit_assign(target, value, destination),
             // The comma operator is byte-exact only in proven value positions: a store
             // value (peeled in `place_store_value`) and a flat-arithmetic binary operand

@@ -63,6 +63,7 @@ mod inline_expansion;
 mod inline_sqrtf;
 mod inline_source_order;
 mod inline_summaries;
+mod intrinsics;
 mod legacy_comparisons;
 mod legacy_dual_float_condition;
 mod narrow;

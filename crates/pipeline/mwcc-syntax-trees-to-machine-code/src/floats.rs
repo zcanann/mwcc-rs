@@ -3,6 +3,7 @@
 use crate::analysis::*;
 use crate::casts::IntToFloatSchedule;
 use crate::generator::*;
+use crate::intrinsics::is_float_intrinsic_call;
 use crate::operands::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
@@ -28,7 +29,7 @@ impl Generator {
         else {
             return Ok(false);
         };
-        if !crate::analysis::is_intrinsic_call(name)
+        if !is_float_intrinsic_call(name, arguments.len())
             || arguments.iter().any(crate::analysis::expression_has_call)
         {
             return Ok(false);
@@ -134,7 +135,9 @@ impl Generator {
             // NOT an out-of-line call: `f64 fabs(f64 x) { return __fabs(x); }` -> `fabs f1,f1`.
             // A register leaf abs's in place from its own register; a memory load / sub-
             // expression goes through the scratch — the same operand placement as fneg.
-            Expression::Call { name, arguments } if name == "__fabs" && arguments.len() == 1 => {
+            Expression::Call { name, arguments }
+                if is_float_intrinsic_call(name, arguments.len()) =>
+            {
                 let operand = &arguments[0];
                 let source = if self.is_float_located(operand) {
                     self.emit_located_operand(operand, FLOAT_SCRATCH)?;

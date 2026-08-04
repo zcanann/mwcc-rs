@@ -2,6 +2,7 @@
 
 use crate::analysis::indexed_root_name;
 use crate::generator::*;
+use crate::intrinsics::is_intrinsic_call;
 use mwcc_core::Compilation;
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{
@@ -753,7 +754,7 @@ impl Generator {
         // reserved conversion scratch in their frame; the frame normalizer
         // selects its final non-overlapping offset.
         if let Expression::Call { name, arguments } = operand {
-            if !crate::analysis::is_intrinsic_call(name)
+            if !is_intrinsic_call(name, arguments.len())
                 && !matches!(
                     self.call_return_types.get(name),
                     Some(Type::Float | Type::Double)

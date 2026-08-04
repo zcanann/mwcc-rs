@@ -15,6 +15,8 @@ use mwcc_syntax_trees::{
 use mwcc_machine_code::{Relocation, RelocationKind, RelocationTarget};
 use mwcc_versions::SymbolTraversalStyle;
 
+use crate::intrinsics::is_intrinsic_call;
+
 /// The data and call references collected during the traversal, kept apart so the
 /// data group can be emitted ahead of the call group.
 struct Names<'a> {
@@ -138,6 +140,9 @@ fn is_leaf(expression: &Expression) -> bool {
 
 fn contains_call(expression: &Expression) -> bool {
     match expression {
+        Expression::Call { name, arguments } if is_intrinsic_call(name, arguments.len()) => {
+            arguments.iter().any(contains_call)
+        }
         Expression::Call { .. }
         | Expression::CallThrough { .. }
         | Expression::VirtualCall { .. }
@@ -382,6 +387,12 @@ fn collect(expression: &Expression, names: &mut Names) {
         // A call registers its arguments (left to right) as data references, then
         // the callee into the call group (emitted after all data references).
         Expression::Call { name, arguments } => {
+            if is_intrinsic_call(name, arguments.len()) {
+                for argument in arguments {
+                    collect(argument, names);
+                }
+                return;
+            }
             if names.traversal == SymbolTraversalStyle::LegacyCreationOrder
                 && arguments.iter().skip(1).any(contains_call)
             {

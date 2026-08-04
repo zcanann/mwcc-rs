@@ -252,6 +252,7 @@ pub(crate) use canonical_boolean::source_proven_canonical_boolean_locals;
 pub(crate) use passes::*;
 
 pub(crate) use crate::analysis::*;
+pub(crate) use crate::intrinsics::*;
 pub(crate) use member_float_normalize::lower_member_float_normalize;
 pub(crate) use member_linefeed::lower_member_linefeed;
 pub(crate) use member_rect_control::lower_member_rect_control;

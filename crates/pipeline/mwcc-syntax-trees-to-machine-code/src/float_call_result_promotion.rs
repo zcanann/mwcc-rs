@@ -4,9 +4,9 @@
 //! This expression owner marshals the integer call, converts r3 through the
 //! call-result magic-bias schedule, and combines it with the preserved value.
 
-use crate::analysis::is_intrinsic_call;
 use crate::casts::IntToFloatSchedule;
 use crate::generator::Generator;
+use crate::intrinsics::is_intrinsic_call;
 use crate::operands::{float_combine, Operands};
 use mwcc_core::Compilation;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Type};
@@ -14,8 +14,8 @@ use mwcc_target::Eabi;
 
 impl Generator {
     pub(crate) fn is_integer_call_promoted_to_float(&self, expression: &Expression) -> bool {
-        matches!(expression, Expression::Call { name, .. }
-            if !is_intrinsic_call(name)
+        matches!(expression, Expression::Call { name, arguments }
+            if !is_intrinsic_call(name, arguments.len())
                 && !matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)))
     }
 
@@ -83,7 +83,7 @@ impl Generator {
         let Expression::Call { name, arguments } = call else {
             unreachable!("the call-result promotion shape was matched")
         };
-        if is_intrinsic_call(name)
+        if is_intrinsic_call(name, arguments.len())
             || matches!(
                 self.call_return_types.get(name),
                 Some(Type::Float | Type::Double)

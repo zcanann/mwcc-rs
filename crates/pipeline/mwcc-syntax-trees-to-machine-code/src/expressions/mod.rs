@@ -42,6 +42,7 @@ mod globals;
 mod global_member_pointer_indexed_store;
 mod implicit_narrow_store;
 mod integer_abs_pair_binary;
+mod integer_intrinsics;
 mod index_operand;
 mod indexed_call_result_store;
 mod indexed_rmw;
@@ -93,6 +94,7 @@ pub(crate) use passes::*;
 
 pub(crate) use crate::analysis::*;
 pub(crate) use crate::generator::*;
+pub(crate) use crate::intrinsics::*;
 pub(crate) use crate::operands::*;
 pub(crate) use mwcc_core::{Compilation, Diagnostic};
 pub(crate) use mwcc_machine_code::{Instruction, RelocationKind};

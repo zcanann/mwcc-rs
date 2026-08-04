@@ -100,7 +100,7 @@ impl Generator {
                 Expression::Call {
                     name: callee,
                     arguments,
-                } if is_intrinsic_call(callee) => match arguments.as_slice() {
+                } if is_float_intrinsic_call(callee, arguments.len()) => match arguments.as_slice() {
                     [Expression::Variable(source)] => (source, true),
                     _ => return Ok(false),
                 },

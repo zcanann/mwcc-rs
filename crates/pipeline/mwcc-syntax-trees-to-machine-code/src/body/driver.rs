@@ -5387,7 +5387,7 @@ impl Generator {
                             return Ok(());
                         }
                     }
-                    if !is_intrinsic_call(name)
+                    if !is_intrinsic_call(name, arguments.len())
                         && !matches!(
                             self.call_return_types.get(name),
                             Some(Type::Float | Type::Double)
@@ -5417,7 +5417,8 @@ impl Generator {
                 // is an integer addition followed by one conversion; routing
                 // it through the floating binary walker would incorrectly try
                 // to convert both select operands independently.
-                if !matches!(expression, Expression::Call { name, .. } if is_intrinsic_call(name))
+                if !matches!(expression, Expression::Call { name, arguments }
+                    if is_float_intrinsic_call(name, arguments.len()))
                     && !self.is_float_operand(expression)
                     && !self.is_float_call_value(expression)
                 {

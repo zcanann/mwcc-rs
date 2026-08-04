@@ -3,6 +3,8 @@
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type, UnaryOperator};
 use std::collections::HashSet;
 
+use crate::intrinsics::{is_integer_intrinsic_call, is_intrinsic_call};
+
 pub(crate) const PRESCALED_POINTER_TABLE_INDEX_PREFIX: &str =
     "__mwcc_pointer_table_byte_offset_";
 
@@ -1110,18 +1112,12 @@ pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>)
     }
 }
 
-/// Names mwcc lowers to a single instruction rather than an out-of-line call, so
-/// they do NOT make a function non-leaf: the `__fabs` floating absolute-value intrinsic.
-pub(crate) fn is_intrinsic_call(name: &str) -> bool {
-    name == "__fabs"
-}
-
 /// Whether an expression contains a call anywhere.
 pub(crate) fn expression_has_call(expression: &Expression) -> bool {
     match expression {
-        // An intrinsic (`__fabs`) is not a real call, but a real call in its ARGUMENT
+        // An intrinsic is not a real call, but a real call in its ARGUMENT
         // still makes the function non-leaf, so recurse into the arguments.
-        Expression::Call { name, arguments } if is_intrinsic_call(name) => {
+        Expression::Call { name, arguments } if is_intrinsic_call(name, arguments.len()) => {
             arguments.iter().any(expression_has_call)
         }
         Expression::Call { .. } => true,
@@ -1171,6 +1167,9 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
 /// Used to decide whether a comma operand can be peeled to its right value or must defer.
 pub(crate) fn expression_has_side_effect(expression: &Expression) -> bool {
     match expression {
+        Expression::Call { name, arguments } if is_intrinsic_call(name, arguments.len()) => {
+            arguments.iter().any(expression_has_side_effect)
+        }
         Expression::Call { .. }
         | Expression::CallThrough { .. }
         | Expression::VirtualCall { .. }
@@ -1296,7 +1295,8 @@ pub(crate) fn is_complex(expression: &Expression) -> bool {
             | Expression::Unary { .. }
             | Expression::Conditional { .. }
             | Expression::Cast { .. }
-    )
+    ) || matches!(expression, Expression::Call { name, arguments }
+        if is_integer_intrinsic_call(name, arguments.len()))
 }
 
 /// The Sethi-Ullman register need of an expression: the number of registers
@@ -1312,6 +1312,11 @@ pub(crate) fn is_complex(expression: &Expression) -> bool {
 ///
 pub(crate) fn register_need(expression: &Expression) -> u32 {
     match expression {
+        Expression::Call { name, arguments }
+            if is_integer_intrinsic_call(name, arguments.len()) =>
+        {
+            register_need(&arguments[0]).max(2)
+        }
         Expression::Binary { left, right, .. } => {
             let left_need = register_need(left);
             let right_need = register_need(right);
