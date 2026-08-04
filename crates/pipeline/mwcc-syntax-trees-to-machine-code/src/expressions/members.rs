@@ -249,6 +249,9 @@ impl Generator {
         offset: u32,
         destination: u8,
     ) -> Compilation<()> {
+        if self.try_emit_embedded_struct_array_address(base, offset, destination)? {
+            return Ok(());
+        }
         let retained_global_element = match base {
             Expression::Index { base, index } => {
                 match (base.as_ref(), index.as_ref()) {
@@ -1573,6 +1576,9 @@ impl Generator {
         index: &Expression,
         destination: u8,
     ) -> Compilation<()> {
+        if self.try_emit_embedded_struct_array_load(base, index, destination)? {
+            return Ok(());
+        }
         if self.try_emit_nested_pointer_table_subscript(base, index, destination)? {
             return Ok(());
         }

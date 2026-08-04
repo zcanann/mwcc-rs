@@ -22,6 +22,7 @@ mod computed_index_subscript;
 mod computed_indexed_rmw;
 mod complement_logical;
 mod driver;
+mod embedded_struct_array;
 mod frame_aggregate_copy;
 mod frame_array_indexed_load;
 mod frame_array_indexed_store;

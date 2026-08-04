@@ -44,6 +44,41 @@ enum SwitchCompareOperand {
 }
 
 impl Generator {
+    /// Evaluate a switch operand after C/C++ integral promotion. Narrow entry
+    /// parameters still carry unspecified high bits in their ABI register, so
+    /// every switch topology shares this one canonicalization policy.
+    fn switch_scrutinee_register(&mut self, scrutinee: &Expression) -> Compilation<u8> {
+        match scrutinee {
+            Expression::Variable(name) => {
+                let location = self.locations.get(name).ok_or_else(|| {
+                    Diagnostic::error("switch scrutinee is not a known variable (roadmap)")
+                })?;
+                if location.class != ValueClass::General {
+                    return Err(Diagnostic::error(
+                        "only an integer switch scrutinee is supported yet (roadmap)",
+                    ));
+                }
+                let (source, width, signed) =
+                    (location.register, location.width, location.signed);
+                if width < 32 && self.parameter_names.contains(name) {
+                    self.emit_widen(GENERAL_SCRATCH, source, width, signed);
+                    Ok(GENERAL_SCRATCH)
+                } else {
+                    Ok(source)
+                }
+            }
+            Expression::Call { .. } | Expression::CallThrough { .. } => {
+                let result = Eabi::general_result().number;
+                self.evaluate_general(scrutinee, result)?;
+                Ok(result)
+            }
+            _ => {
+                self.evaluate_general(scrutinee, GENERAL_SCRATCH)?;
+                Ok(GENERAL_SCRATCH)
+            }
+        }
+    }
+
     /// Emit a statement-bodied comparison-tree switch whose case bodies join
     /// the function's ordinary continuation.
     ///
@@ -80,28 +115,7 @@ impl Generator {
             }
         };
 
-        let register = match scrutinee {
-            Expression::Variable(name) => {
-                let location = self.locations.get(name).ok_or_else(|| {
-                    Diagnostic::error("switch scrutinee is not a known variable (roadmap)")
-                })?;
-                if location.class != ValueClass::General {
-                    return Err(Diagnostic::error(
-                        "only an integer switch scrutinee is supported yet (roadmap)",
-                    ));
-                }
-                location.register
-            }
-            Expression::Call { .. } | Expression::CallThrough { .. } => {
-                let result = Eabi::general_result().number;
-                self.evaluate_general(scrutinee, result)?;
-                result
-            }
-            _ => {
-                self.evaluate_general(scrutinee, GENERAL_SCRATCH)?;
-                GENERAL_SCRATCH
-            }
-        };
+        let register = self.switch_scrutinee_register(scrutinee)?;
 
         let mut sorted: Vec<&SwitchArm> = arms.iter().collect();
         sorted.sort_by_key(|arm| arm.value);
@@ -435,28 +449,7 @@ impl Generator {
         return_type: Type,
         result: u8,
     ) -> Compilation<()> {
-        // The scrutinee must already live in a general register (a bare integer
-        // parameter or local). The comparisons read it directly.
-        let register = match scrutinee {
-            Expression::Variable(name) => {
-                let location = self.locations.get(name).ok_or_else(|| {
-                    Diagnostic::error("switch scrutinee is not a known variable (roadmap)")
-                })?;
-                if !matches!(location.class, ValueClass::General) {
-                    return Err(Diagnostic::error(
-                        "only an integer switch scrutinee is supported yet (roadmap)",
-                    ));
-                }
-                location.register
-            }
-            // A non-variable scrutinee (`switch(n & 3)`) evaluates into the general scratch
-            // register first, exactly as mwcc does (`clrlwi r0,r3,30`); the comparison tree
-            // then reads that register. evaluate_general defers any scrutinee it cannot lower.
-            _ => {
-                self.evaluate_general(scrutinee, GENERAL_SCRATCH)?;
-                GENERAL_SCRATCH
-            }
-        };
+        let register = self.switch_scrutinee_register(scrutinee)?;
 
         // Sort the arms by value; the dispatch assumes ascending, distinct values.
         let mut sorted: Vec<&SwitchArm> = arms.iter().collect();
@@ -598,23 +591,7 @@ impl Generator {
         arms: &[SwitchArm],
         default_statements: Option<&[Statement]>,
     ) -> Compilation<()> {
-        let register = match scrutinee {
-            Expression::Variable(name) => {
-                let location = self.locations.get(name).ok_or_else(|| {
-                    Diagnostic::error("switch scrutinee is not a known variable (roadmap)")
-                })?;
-                if !matches!(location.class, ValueClass::General) {
-                    return Err(Diagnostic::error(
-                        "only an integer switch scrutinee is supported yet (roadmap)",
-                    ));
-                }
-                location.register
-            }
-            _ => {
-                self.evaluate_general(scrutinee, GENERAL_SCRATCH)?;
-                GENERAL_SCRATCH
-            }
-        };
+        let register = self.switch_scrutinee_register(scrutinee)?;
         let mut sorted: Vec<&SwitchArm> = arms.iter().collect();
         sorted.sort_by_key(|arm| arm.value);
         if sorted.is_empty() {
