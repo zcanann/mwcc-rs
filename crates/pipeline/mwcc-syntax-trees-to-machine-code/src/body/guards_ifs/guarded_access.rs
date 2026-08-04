@@ -60,6 +60,14 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
+        if self.behavior.integer_select_style
+            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+        {
+            // Build 163 keeps the source diamond's three anonymous CFG nodes
+            // even though neither arm needs a merge value. They precede this
+            // function's pool and therefore advance every later object too.
+            self.output.anonymous_label_bump += 3;
+        }
         Ok(true)
     }
 }

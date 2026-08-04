@@ -1189,6 +1189,12 @@ fn compile(
     )
         + cxx_reference_bound_scalar_temporaries
             * usize::from(behavior.cxx_reference_bound_scalar_temporary_label_bump);
+    let member_function_class_bump =
+        cxx_analysis_residues::member_function_class_ordinal_bump(cxx_inline_facts, behavior);
+    // Scalar reference images are created before Build 163 closes the class
+    // definitions that supplied their discarded inline bodies.
+    let literal_temporary_inline_frontier =
+        cxx_inline_bump.saturating_sub(member_function_class_bump);
     let cxx_analysis_residues = is_cxx
         .then(|| {
             cxx_analysis_residues::recognize(
@@ -1270,7 +1276,7 @@ fn compile(
             cxx_analysis_residues::literal_float_temporaries(
                 &cxx_reference_temporary_analysis.materialized_float_words,
                 config.build.initial_anonymous_counter,
-                cxx_inline_bump,
+                literal_temporary_inline_frontier,
                 behavior.cxx_reference_bound_scalar_temporary_label_bump,
             )
         })
@@ -1284,14 +1290,20 @@ fn compile(
             behavior.cxx_reference_binding_executable_label_discount,
             behavior.cxx_initial_reference_binding_executable_label_discount,
         );
-    let executable_frontier_discount =
+    let executable_frontier_discount = if cxx_literal_temporaries.is_some() {
+        // The retained words prove that executable lowering starts before the
+        // later class-close labels. The words themselves replace their excess
+        // binding weight through `literal_temporary_bump_discount` below.
+        member_function_class_bump
+    } else {
         cxx_analysis_residues::executable_frontier_discount(
             reference_binding_executable_discount,
             cxx_inline_facts.control_flow_labels
                 + cxx_inline_facts.instantiated_template_control_flow_labels,
             behavior.emitted_vtable_inline_control_flow_replay_weight,
             emits_weak_vtable_closure,
-        );
+        )
+    };
     let prototype_name_bump = if config
         .build
         .profile
@@ -1318,6 +1330,7 @@ fn compile(
             "cxx-unit-ordinal-accounting inline={cxx_inline_bump} \
              declaration={unit_declaration_bump} prototype={prototype_name_bump} \
              literal-discount={literal_temporary_bump_discount} \
+             class-close-discount={member_function_class_bump} \
              executable-discount={executable_frontier_discount} \
              emitted-vtable-replay={emits_weak_vtable_closure}"
         );
@@ -1437,7 +1450,10 @@ fn compile(
         .as_ref()
         .map_or(0, |residues| residues.per_function_constant_bump);
     if per_function_constant_bump != 0 {
-        for function in &mut machine_functions {
+        for function in machine_functions
+            .iter_mut()
+            .filter(|function| function.weak_inline)
+        {
             function.constant_number_adjust += per_function_constant_bump;
         }
     }
@@ -1800,6 +1816,12 @@ fn compile(
                                 string_pool.insert(string_bytes.clone(), name.clone());
                                 let mut object_bytes = string_bytes.clone();
                                 object_bytes.push(0);
+                                let preassigned_ordinal =
+                                    string_ordinal_positions::preassigned_file_scope_ordinal(
+                                        global.functions_before,
+                                        leading_source_ordinal_bump,
+                                        string_counter,
+                                    );
                                 defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
                                     section: None,
                                     anonymous_adjust: 0,
@@ -1818,11 +1840,9 @@ fn compile(
                                         && !read_only_small_data,
                                     is_static: true,
                                     is_explicit_zero: false,
-                                    preassigned_anonymous_ordinal:
-                                        (leading_source_ordinal_bump != 0).then_some(
-                                            leading_source_ordinal_bump + string_counter,
-                                        ),
-                                    preassigned_ordinal_advances_counter: true,
+                                    preassigned_anonymous_ordinal: preassigned_ordinal,
+                                    preassigned_ordinal_advances_counter:
+                                        preassigned_ordinal.is_some(),
                                     preassigned_pool_prefix_credit: 0,
                                     relocations: Vec::new(),
                                 });

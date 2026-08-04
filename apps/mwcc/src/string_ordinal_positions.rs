@@ -9,6 +9,21 @@
 use mwcc_machine_code::MachineFunction;
 use std::collections::HashSet;
 
+/// Preserve an up-front file string's source-prefix number without taking a
+/// string declared between functions out of the executable counter walk.
+///
+/// Between-function strings are initially represented by `@@fileN`
+/// placeholders. Their final number is assigned at the declaration boundary;
+/// marking one preassigned here would make the object writer skip that slot.
+pub(crate) fn preassigned_file_scope_ordinal(
+    functions_before: usize,
+    leading_source_bump: u32,
+    eager_string_counter: u32,
+) -> Option<u32> {
+    (functions_before == 0 && leading_source_bump != 0)
+        .then_some(leading_source_bump + eager_string_counter)
+}
+
 pub(crate) fn apply_multiple_new_string_residue(functions: &mut [MachineFunction], residue: u8) {
     if residue == 0 {
         return;
@@ -37,6 +52,13 @@ pub(crate) fn apply_multiple_new_string_residue(functions: &mut [MachineFunction
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_upfront_file_strings_are_preassigned() {
+        assert_eq!(preassigned_file_scope_ordinal(0, 11, 1), Some(12));
+        assert_eq!(preassigned_file_scope_ordinal(1, 11, 1), None);
+        assert_eq!(preassigned_file_scope_ordinal(0, 0, 1), None);
+    }
 
     #[test]
     fn charges_only_the_trailing_transaction_owner_that_introduces_multiple_strings() {

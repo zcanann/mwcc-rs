@@ -58,6 +58,15 @@ pub(crate) fn accesses_pointer(expression: &Expression, pointer: &str) -> bool {
             is_pointer(base.as_ref())
                 || matches!(base.as_ref(), Expression::Dereference { pointer: inner } if is_pointer(inner.as_ref()))
         }
+        // Pure scalar transforms do not make a protected access speculative.
+        // Keep following the value until the member/dereference rooted at the
+        // guarded pointer is found (`p->bits >> shift & mask`, casts, negation).
+        Expression::Binary { left, right, .. } => {
+            accesses_pointer(left, pointer) || accesses_pointer(right, pointer)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            accesses_pointer(operand, pointer)
+        }
         _ => false,
     }
 }
@@ -2126,6 +2135,29 @@ mod tests {
             attribute_alignment: None,
             row_bytes: None,
         }
+    }
+
+    #[test]
+    fn guarded_pointer_access_survives_pure_bitfield_transforms() {
+        let member = Expression::Member {
+            base: Box::new(Expression::Variable("pointer".into())),
+            offset: 0,
+            member_type: Type::UnsignedInt,
+            index_stride: None,
+        };
+        let shifted = Expression::Binary {
+            operator: BinaryOperator::ShiftRight,
+            left: Box::new(member),
+            right: Box::new(Expression::IntegerLiteral(27)),
+        };
+        let masked = Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: Box::new(shifted),
+            right: Box::new(Expression::IntegerLiteral(3)),
+        };
+
+        assert!(accesses_pointer(&masked, "pointer"));
+        assert!(!accesses_pointer(&masked, "other"));
     }
 
     #[test]

@@ -48,9 +48,9 @@ pub struct LiteralTemporaries {
     /// A retained literal consumes one real object slot instead, so callers
     /// remove the excess from source-positioned declaration accounting.
     pub declaration_bump_discount: usize,
-    /// A retained run created after earlier header analysis leaves one
-    /// constant-pool slot between each emitted function's string front and
-    /// numeric pool. A run at the initial counter has no such gap.
+    /// Immediate weak materializations close inside the caller's analysis
+    /// transaction. This credit participates in that rebase only; ordinary
+    /// emitted functions do not inherit a pool gap from a discarded inline.
     pub per_function_constant_bump: i32,
 }
 
@@ -131,15 +131,9 @@ pub fn inline_fact_ordinal_bump(
     let control_flow_weight = behavior.cxx_inline_control_flow_label_weight
         + u8::from(emitted_vtable_replay)
             * behavior.emitted_vtable_inline_control_flow_replay_weight;
-    let member_function_class_bump = facts.member_function_class_definitions
-        * usize::from(behavior.cxx_member_function_class_definition_label_bump);
-    let member_function_class_discount = if facts.member_function_class_definitions == 0 {
-        0
-    } else {
-        usize::from(behavior.cxx_initial_member_function_class_definition_label_discount)
-    };
+    let member_function_class_bump = member_function_class_ordinal_bump(facts, behavior);
     facts.class_definitions * usize::from(behavior.cxx_class_definition_label_bump)
-        + member_function_class_bump.saturating_sub(member_function_class_discount)
+        + member_function_class_bump
         + facts.inline_definitions * usize::from(behavior.cxx_inline_definition_label_bump)
         + facts.inline_definitions
             * usize::from(behavior.deferred_cxx_inline_definition_label_bump)
@@ -161,6 +155,26 @@ pub fn inline_fact_ordinal_bump(
         + facts.virtual_destructors
             * usize::from(behavior.cxx_virtual_destructor_label_bump)
         + facts.direct_calls * usize::from(behavior.cxx_inline_ipa_call_label_bump)
+}
+
+/// Labels reserved while closing in-class member definitions.
+///
+/// Build 163 materializes scalar reference temporaries before this class-close
+/// transaction. Keeping the component separate lets both the retained-object
+/// and executable frontiers stop at the same compiler phase instead of
+/// compensating with an unrelated reference-binding discount.
+pub fn member_function_class_ordinal_bump(
+    facts: mwcc_syntax_trees::CxxInlineOrdinalFacts,
+    behavior: mwcc_versions::Behavior,
+) -> usize {
+    let bump = facts.member_function_class_definitions
+        * usize::from(behavior.cxx_member_function_class_definition_label_bump);
+    let shared_baseline = if facts.member_function_class_definitions == 0 {
+        0
+    } else {
+        usize::from(behavior.cxx_initial_member_function_class_definition_label_discount)
+    };
+    bump.saturating_sub(shared_baseline)
 }
 
 pub fn literal_float_temporaries(
@@ -582,7 +596,8 @@ mod tests {
     use super::{
         build163_action_analysis_capture, discarded_inline_aggregate_image,
         executable_frontier_discount, inline_fact_ordinal_bump, literal_float_temporaries,
-        reference_binding_executable_discount, word_object, zero_capture, zero_object,
+        member_function_class_ordinal_bump, reference_binding_executable_discount, word_object,
+        zero_capture, zero_object,
     };
     use mwcc_syntax_trees::{CxxInlineOrdinalFacts, DiscardedInlineAggregateImage};
     use mwcc_versions::{
@@ -598,7 +613,19 @@ mod tests {
             ..CxxInlineOrdinalFacts::default()
         };
 
+        assert_eq!(member_function_class_ordinal_bump(facts, behavior), 161);
         assert_eq!(inline_fact_ordinal_bump(facts, behavior, false), 161);
+    }
+
+    #[test]
+    fn build_163_scalar_temporary_frontier_precedes_class_close_labels() {
+        let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
+        let facts = CxxInlineOrdinalFacts {
+            member_function_class_definitions: 35,
+            ..CxxInlineOrdinalFacts::default()
+        };
+
+        assert_eq!(member_function_class_ordinal_bump(facts, behavior), 34);
     }
 
     #[test]
