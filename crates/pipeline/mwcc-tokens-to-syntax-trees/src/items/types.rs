@@ -136,6 +136,32 @@ impl Parser {
         }
     }
 
+    /// Consume the pointer portion of a scalar declarator. Built-in spellings
+    /// and scalar typedefs must share this path: after alias substitution,
+    /// `s32 **children` has exactly the same storage and C++ ABI identity as
+    /// `int **children`.
+    fn parse_scalar_pointer_declarator(&mut self, base: Type) -> Compilation<Type> {
+        debug_assert_eq!(*self.peek(), Token::Star);
+        self.advance();
+        self.last_cxx_pointer_depth = 1;
+        self.last_cxx_pointer_base = Some(base);
+        if matches!(self.peek(), Token::Identifier(word) if word == "const") {
+            self.last_pointer_const = true;
+        }
+        self.consume_trailing_qualifiers();
+        if *self.peek() == Token::Star {
+            self.advance();
+            self.last_cxx_pointer_depth = 2;
+            self.consume_trailing_qualifiers();
+            let inner = match base {
+                Type::Int | Type::UnsignedInt => Pointee::WordPointer,
+                _ => Pointee::Pointer,
+            };
+            return Ok(Type::Pointer(inner));
+        }
+        Ok(Type::Pointer(pointee_of(base)?))
+    }
+
     /// Consume one or more constant array dimensions and return the total byte
     /// extent plus the first-index stride for a multidimensional declaration.
     /// Keeping the arithmetic here gives C structs, unions, and C++ classes one
@@ -572,17 +598,19 @@ impl Parser {
                     self.last_cxx_pointer_depth = 1;
                     self.last_cxx_function_type = Some(function_type);
                 }
+                self.consume_trailing_qualifiers();
                 if *self.peek() == Token::Star {
+                    if !matches!(aliased, Type::Pointer(_) | Type::StructPointer { .. }) {
+                        return self.parse_scalar_pointer_declarator(aliased);
+                    }
                     self.advance();
                     if self.last_cxx_function_type.is_some() {
                         self.last_cxx_pointer_depth = self.last_cxx_pointer_depth.saturating_add(1);
                     }
+                    self.consume_trailing_qualifiers();
                     // A star on an already-pointer typedef (`voidfunctionptr*`)
                     // is a pointer-to-pointer: word element, inner untracked.
-                    if matches!(aliased, Type::Pointer(_) | Type::StructPointer { .. }) {
-                        return Ok(Type::Pointer(Pointee::Pointer));
-                    }
-                    return Ok(Type::Pointer(pointee_of(aliased)?));
+                    return Ok(Type::Pointer(Pointee::Pointer));
                 }
                 return Ok(aliased);
             }
@@ -752,30 +780,7 @@ impl Parser {
         // POINTER OBJECT read-only (routes a global to `.sdata2`), unlike a leading
         // `const void*` (pointee-const) — tracked separately in `last_pointer_const`.
         if *self.peek() == Token::Star {
-            self.advance();
-            self.last_cxx_pointer_depth = 1;
-            self.last_cxx_pointer_base = Some(base);
-            if matches!(self.peek(), Token::Identifier(word) if word == "const") {
-                self.last_pointer_const = true;
-            }
-            self.consume_trailing_qualifiers();
-            // A SECOND `*` is a pointer-to-pointer (`char **end`, `int **pp`):
-            // word-sized element. When the inner scalar is a 32-bit integer word
-            // (`int **`, `unsigned **`) the double deref `**pp` is a plain `lwz`,
-            // so record `WordPointer` to let codegen emit the chained load. The
-            // narrow (`char`/`short`), float and long-long inners keep the opaque
-            // `Pointer` — their `**pp` would need `lbz`/`lha`/`lfs`, so they defer.
-            if *self.peek() == Token::Star {
-                self.advance();
-                self.last_cxx_pointer_depth = 2;
-                self.consume_trailing_qualifiers();
-                let inner = match base {
-                    Type::Int | Type::UnsignedInt => Pointee::WordPointer,
-                    _ => Pointee::Pointer,
-                };
-                return Ok(Type::Pointer(inner));
-            }
-            return Ok(Type::Pointer(pointee_of(base)?));
+            return self.parse_scalar_pointer_declarator(base);
         }
         Ok(base)
     }

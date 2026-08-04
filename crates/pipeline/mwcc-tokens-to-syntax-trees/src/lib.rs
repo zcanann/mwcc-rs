@@ -415,7 +415,8 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
 mod tests {
     use super::*;
     use mwcc_syntax_trees::{
-        BinaryOperator, Expression, LocalDataRelocation, LocalDataRelocationTarget, Statement, Type,
+        BinaryOperator, Expression, LocalDataRelocation, LocalDataRelocationTarget, Pointee,
+        Statement, Type,
     };
 
     fn located(source: &str) -> Vec<LocatedToken> {
@@ -2548,6 +2549,45 @@ blr\n\
                 .unwrap()
                 .offset,
             24
+        );
+    }
+
+    #[test]
+    fn scalar_typedef_double_pointers_preserve_class_layout_and_abi_identity() {
+        let source = r#"
+            typedef int s32;
+            class Hierarchy {
+            public:
+                s32 node_count;
+                unsigned int* node_ids;
+                s32* parent_indices;
+                s32** child_arrays;
+            };
+            s32 compiled(s32** values) { return **values; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.aggregate_definitions["Hierarchy"].byte_size, 16);
+        let child_arrays = unit.aggregate_definitions["Hierarchy"]
+            .members
+            .iter()
+            .find(|member| member.name == "child_arrays")
+            .unwrap();
+        assert_eq!(child_arrays.offset, 12);
+        assert_eq!(
+            child_arrays.declared_type,
+            Type::Pointer(Pointee::WordPointer)
+        );
+        assert_eq!(unit.functions[0].name, "compiled__FPPi");
+        assert_eq!(
+            unit.functions[0].parameters[0].parameter_type,
+            Type::Pointer(Pointee::WordPointer)
         );
     }
 
