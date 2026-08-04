@@ -30,6 +30,7 @@ mod condition_global_cache;
 mod condition_member_cache;
 mod control_flow;
 mod copy_convention;
+mod copy_sign_frame;
 mod cxx_abi;
 mod cxx_temporary_arguments;
 mod dag_emitter;
@@ -1277,6 +1278,7 @@ fn lower_function_body(
     generator.schedule_materialized_vec3_product(function);
     generator.schedule_structured_dense_destroy_loop();
     generator.schedule_structured_global_pointer_replacement();
+    generator.schedule_copy_sign_frame(function);
     if !function.peephole_disabled {
         generator.fold_recorded_boolean_zero_tests();
     }

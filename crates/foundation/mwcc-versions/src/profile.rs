@@ -257,6 +257,17 @@ pub enum IntegerSelectStyle {
     BranchPreserving,
 }
 
+/// Stack-frame and sign-mask lowering for the fdlibm `copysign` word splice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopySignStyle {
+    /// Insert the magnitude bits into the sign source directly.
+    FusedInsertion,
+    /// Clear the sign source to its high bit before inserting the magnitude.
+    ExplicitSignMask,
+    /// The explicit mask with Build 163's compact two-double spill frame.
+    ExplicitSignMaskCompactFrame,
+}
+
 /// Instruction family used when a relational/equality expression itself
 /// materializes an integer 0/1 result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1169,6 +1180,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         IntegerSelectStyle::Branchless
     }
 
+    fn copy_sign_style(&self) -> CopySignStyle {
+        CopySignStyle::FusedInsertion
+    }
+
     fn integer_comparison_value_style(&self) -> IntegerComparisonValueStyle {
         IntegerComparisonValueStyle::ModernBitwise
     }
@@ -1620,6 +1635,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn copy_sign_style(&self) -> CopySignStyle {
+        CopySignStyle::ExplicitSignMask
+    }
+
     fn unoptimized_global_array_index_style(&self) -> GlobalArrayIndexStyle {
         GlobalArrayIndexStyle::Indexed
     }
@@ -1818,6 +1837,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn copy_sign_style(&self) -> CopySignStyle {
+        CopySignStyle::ExplicitSignMask
+    }
+
     fn unoptimized_global_array_index_style(&self) -> GlobalArrayIndexStyle {
         GlobalArrayIndexStyle::Indexed
     }
@@ -2126,6 +2149,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn copy_sign_style(&self) -> CopySignStyle {
+        CopySignStyle::ExplicitSignMaskCompactFrame
+    }
+
     fn complex_structured_dense_switch_labels_per_arm(&self) -> u8 {
         4
     }

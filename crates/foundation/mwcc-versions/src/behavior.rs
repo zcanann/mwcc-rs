@@ -16,7 +16,7 @@ use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal, SchedulingM
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CallDispatcherStyle, CoefficientTableRelocationStyle, CommaValuePlacementStyle,
-    ComputedStoreIssueStyle, ConstantStoreScheduleStyle, DataSectionRelocationStyle,
+    ComputedStoreIssueStyle, ConstantStoreScheduleStyle, CopySignStyle, DataSectionRelocationStyle,
     CxxConstructorInlineOrdinalWeights, DeferredFunctionEmissionStyle,
     DiscardedInlineAggregateImageStyle, FieldMergeStyle, FixedAddressConstantStoreStyle,
     FixedAddressParameterizedRmwStyle,
@@ -697,6 +697,8 @@ pub struct Behavior {
     pub va_arg_schedule_style: VaArgScheduleStyle,
     /// Lowering of canonical integer boolean ternaries.
     pub integer_select_style: IntegerSelectStyle,
+    /// Frame and mask policy for the fdlibm copy-sign word splice.
+    pub copy_sign_style: CopySignStyle,
     /// Instruction family for integer comparisons materialized as 0/1 values.
     pub integer_comparison_value_style: IntegerComparisonValueStyle,
     /// Whether a computed same-width narrow return emits its explicit cast.
@@ -1150,6 +1152,7 @@ impl Behavior {
             narrow_guard_schedule_style: config.build.profile.narrow_guard_schedule_style(),
             va_arg_schedule_style: config.build.profile.va_arg_schedule_style(),
             integer_select_style: config.build.profile.integer_select_style(),
+            copy_sign_style: config.build.profile.copy_sign_style(),
             integer_comparison_value_style: config.build.profile.integer_comparison_value_style(),
             narrow_computed_return_style: config.build.profile.narrow_computed_return_style(),
             signed_power_of_two_division_style: config
