@@ -242,6 +242,18 @@ impl Plan {
             }
             crate::move_instruction_before_retargeting_source_to_next(generator, from, to);
         }
+        let Some(index_start) = generator.output.instructions.iter().position(|instruction| {
+            matches!(
+                instruction,
+                Instruction::AddImmediate { d, a: 0, immediate: 0 } if *d == index
+            )
+        }) else {
+            return false;
+        };
+        // The state diamond originally joined at the loop initializer. The
+        // constants hoisted immediately before it are now part of that
+        // preheader on every path, so widen the join to the first hoist.
+        crate::retarget_instruction_destinations(generator, index_start, preheader_start);
         // Extending these definitions around the loop changes linear-scan
         // order. Record MWCC's preheader homes as preferences: interference
         // remains authoritative, while the canonical dense loop receives the

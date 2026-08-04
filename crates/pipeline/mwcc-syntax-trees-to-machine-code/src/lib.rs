@@ -1916,18 +1916,22 @@ pub(crate) fn move_instruction_before_retargeting_source_to_next(
     debug_assert!(to < from);
     debug_assert!(from + 1 < generator.output.instructions.len());
     let continuation = from + 1;
-    retarget_exact_branch_destinations(
-        &mut generator.output.instructions,
-        from,
-        continuation,
-    );
-    retarget_exact_jump_table_destinations(
-        &mut generator.output.jump_tables,
-        from,
-        continuation,
-    );
-    generator.labels.retarget_bindings(from, continuation);
+    retarget_instruction_destinations(generator, from, continuation);
     move_instruction_before_retargeting(generator, from, to);
+}
+
+/// Move every control-flow destination from one existing instruction to
+/// another without changing instruction ownership. Resolved branches, jump
+/// tables, and still-recorded label bindings are one semantic label and must
+/// be updated together.
+pub(crate) fn retarget_instruction_destinations(
+    generator: &mut Generator,
+    from: usize,
+    to: usize,
+) {
+    retarget_exact_branch_destinations(&mut generator.output.instructions, from, to);
+    retarget_exact_jump_table_destinations(&mut generator.output.jump_tables, from, to);
+    generator.labels.retarget_bindings(from, to);
 }
 
 /// Remove one instruction after labels have been resolved, preserving every
