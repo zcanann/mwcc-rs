@@ -126,6 +126,7 @@ use super::structured_loop_register_pressure::{
 use super::structured_loop_mutated_parameters::loop_mutated_parameters;
 use super::structured_loop_member_receiver_layout::StructuredLoopMemberReceiverLayout;
 use super::structured_loop_call_publication_layout::StructuredLoopCallPublicationLayout;
+use super::structured_multi_phase_variadic_home_layout::StructuredMultiPhaseVariadicHomeLayout;
 use super::structured_object_collision_loop_layout::StructuredObjectCollisionLoopLayout;
 use super::structured_object_collision_loop_schedule::schedule_object_collision_loop_entry;
 use super::structured_preloop_alias::fold_preloop_comma_pointer_alias;
@@ -1363,6 +1364,25 @@ impl Generator {
         let has_standalone_data_anchor = self.data_section_anchor.is_some()
             && array_pool_plan.is_none()
             && reused_data_anchor_home_index.is_none();
+        let multi_phase_variadic_home_layout = StructuredMultiPhaseVariadicHomeLayout::plan(
+            function,
+            self.behavior.frame_convention,
+            with_frame_array,
+            has_standalone_data_anchor,
+            &self.variadic_callees,
+            &eager_saved_locals,
+            &saved_parameters,
+            &deferred_saved_locals,
+            &deferred_home_plan,
+            &parameter_home_reuse,
+            count,
+        );
+        if capture {
+            eprintln!(
+                "structured multi-phase variadic home layout: {}",
+                multi_phase_variadic_home_layout.is_some(),
+            );
+        }
         let exclusive_arm_home_layout = ExclusiveArmHomeLayout::plan(
             with_frame_array,
             has_standalone_data_anchor,
@@ -1631,6 +1651,11 @@ impl Generator {
                 {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = object_collision_loop_layout
+                    .as_ref()
+                    .and_then(|layout| layout.preference(home_index))
+                {
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = multi_phase_variadic_home_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
                 {
