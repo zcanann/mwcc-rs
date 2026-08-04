@@ -1,15 +1,25 @@
-//! Build-163 register schedule at a two-group floating-point `||` boundary.
+//! Build-163 register schedules for floating-point `||` boundaries.
 //!
 //! MWCC retains each group's value operands but rematerializes the shared zero
 //! literal when control advances to the second group. Keeping this policy out
 //! of the general condition cache preserves its dominance rules and confines
 //! the physical register permutation to the complete measured shape.
+//!
+//! A homogeneous chain of member-vs-literal alternatives has a different
+//! policy: the common literal remains in `f1`, the first member remains in
+//! `f2`, and later members use `f0`. This is safe across the short-circuit
+//! edges because every path reaching a later comparison has executed the first
+//! literal load, while the decisive true edges leave the chain entirely.
 
 #[allow(unused_imports)]
 use super::*;
 
 impl Generator {
     pub(crate) fn schedule_structured_float_or_groups(&mut self) {
+        while let Some(plan) = chained_float_literal_or(&self.output) {
+            plan.apply(self);
+        }
+
         let Some(start) = self
             .output
             .instructions
@@ -103,6 +113,175 @@ impl Generator {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ChainedFloatLiteralOr {
+    start: usize,
+    terms: usize,
+}
+
+impl ChainedFloatLiteralOr {
+    fn apply(self, generator: &mut Generator) {
+        let first_value = self.start;
+        let first_literal = self.start + 1;
+        let first_compare = self.start + 2;
+        let Instruction::LoadFloatSingle { d, .. } =
+            &mut generator.output.instructions[first_value]
+        else {
+            unreachable!("the chained float OR value was recognized")
+        };
+        *d = 2;
+        let Instruction::LoadFloatSingle { d, .. } =
+            &mut generator.output.instructions[first_literal]
+        else {
+            unreachable!("the chained float OR literal was recognized")
+        };
+        *d = 1;
+        generator.output.instructions[first_compare] =
+            Instruction::FloatCompareOrdered { a: 2, b: 1 };
+
+        for term in 1..self.terms {
+            let value = self.start + term * 4;
+            let compare = value + 2;
+            let Instruction::LoadFloatSingle { d, .. } =
+                &mut generator.output.instructions[value]
+            else {
+                unreachable!("the chained float OR value was recognized")
+            };
+            *d = 0;
+            generator.output.instructions[compare] =
+                Instruction::FloatCompareOrdered { a: 0, b: 1 };
+        }
+
+        // Remove from the tail so the indices above remain those of the
+        // recognized stream. The common removal helper updates branches,
+        // labels, relocations, and every other instruction-index owner.
+        for term in (1..self.terms).rev() {
+            crate::remove_instruction_retargeting_to_next(
+                generator,
+                self.start + term * 4 + 1,
+            );
+        }
+    }
+}
+
+fn chained_float_literal_or(
+    output: &mwcc_machine_code::MachineFunction,
+) -> Option<ChainedFloatLiteralOr> {
+    for start in 0..output.instructions.len() {
+        let Some((base, first_offset, options, condition_bit)) =
+            chained_float_literal_term(output, start)
+        else {
+            continue;
+        };
+        let first_literal = start + 1;
+        let mut terms = 1usize;
+        loop {
+            let next = start + terms * 4;
+            let Some((next_base, next_offset, next_options, next_condition_bit)) =
+                chained_float_literal_term(output, next)
+            else {
+                break;
+            };
+            if next_base != base
+                || next_offset != first_offset.checked_add((terms as i16) * 4)?
+                || next_condition_bit != condition_bit
+                || !schedule_relocations::same_relocated_value(
+                    &output.relocations,
+                    &output.constants,
+                    first_literal,
+                    next + 1,
+                )
+            {
+                break;
+            }
+            terms += 1;
+            if next_options == (options ^ 8) {
+                break;
+            }
+            if next_options != options {
+                terms -= 1;
+                break;
+            }
+        }
+        if terms < 3 {
+            continue;
+        }
+        let end = start + terms * 4;
+        let intermediate_branches_match = (0..terms - 1).all(|term| {
+            matches!(
+                output.instructions[start + term * 4 + 3],
+                Instruction::BranchConditionalForward {
+                    options: branch_options,
+                    condition_bit: branch_bit,
+                    target,
+                } if branch_options == options
+                    && branch_bit == condition_bit
+                    && target == end
+            )
+        });
+        let final_branch_matches = matches!(
+            output.instructions[end - 1],
+            Instruction::BranchConditionalForward {
+                options: branch_options,
+                condition_bit: branch_bit,
+                target,
+            } if branch_options == (options ^ 8)
+                && branch_bit == condition_bit
+                && target > end
+        );
+        if intermediate_branches_match && final_branch_matches {
+            return Some(ChainedFloatLiteralOr { start, terms });
+        }
+    }
+    None
+}
+
+fn chained_float_literal_term(
+    output: &mwcc_machine_code::MachineFunction,
+    start: usize,
+) -> Option<(u8, i16, u8, u8)> {
+    let [value, literal, compare, branch] = output.instructions.get(start..start + 4)? else {
+        return None;
+    };
+    let Instruction::LoadFloatSingle {
+        d: 1,
+        a: base,
+        offset,
+    } = value
+    else {
+        return None;
+    };
+    if *base == 0
+        || !matches!(
+            literal,
+            Instruction::LoadFloatSingle {
+                d: 0,
+                a: 0,
+                offset: 0,
+            }
+        )
+        || !matches!(compare, Instruction::FloatCompareOrdered { a: 1, b: 0 })
+    {
+        return None;
+    }
+    let literal_is_pool_load = output.relocations.iter().any(|relocation| {
+        relocation.instruction_index == start + 1
+            && relocation.kind == RelocationKind::EmbSda21
+    });
+    if !literal_is_pool_load {
+        return None;
+    }
+    let Instruction::BranchConditionalForward {
+        options,
+        condition_bit,
+        ..
+    } = branch
+    else {
+        return None;
+    };
+    Some((*base, *offset, *options, *condition_bit))
+}
+
 fn is_coalesced_float_or_groups(window: &[Instruction]) -> bool {
     matches!(window, [
         Instruction::LoadFloatSingle { d: 1, .. },
@@ -134,6 +313,74 @@ fn is_coalesced_float_or_groups(window: &[Instruction]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mwcc_machine_code::{PoolConstant, Relocation, RelocationTarget};
+
+    #[test]
+    fn recognizes_a_homogeneous_three_member_literal_or_chain() {
+        let branch = |options, target| Instruction::BranchConditionalForward {
+            options,
+            condition_bit: 1,
+            target,
+        };
+        let mut instructions = Vec::new();
+        for (term, offset) in [4, 8, 12].into_iter().enumerate() {
+            instructions.extend([
+                Instruction::LoadFloatSingle {
+                    d: 1,
+                    a: 29,
+                    offset,
+                },
+                Instruction::LoadFloatSingle {
+                    d: 0,
+                    a: 0,
+                    offset: 0,
+                },
+                Instruction::FloatCompareOrdered { a: 1, b: 0 },
+                branch(if term == 2 { 4 } else { 12 }, if term == 2 { 15 } else { 12 }),
+            ]);
+        }
+        instructions.extend([
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 1,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 1,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 1,
+            },
+        ]);
+        let output = mwcc_machine_code::MachineFunction {
+            instructions,
+            relocations: [1usize, 5, 9]
+                .into_iter()
+                .map(|instruction_index| Relocation {
+                    instruction_index,
+                    kind: RelocationKind::EmbSda21,
+                    target: RelocationTarget::Constant(0),
+                })
+                .collect(),
+            constants: vec![PoolConstant {
+                bits: 1.0f32.to_bits().into(),
+                byte_width: 4,
+                static_slot: false,
+                image: false,
+                force_new: false,
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            chained_float_literal_or(&output),
+            Some(ChainedFloatLiteralOr { start: 0, terms: 3 })
+        );
+    }
 
     #[test]
     fn recognizes_two_coalesced_float_or_groups() {
