@@ -1063,6 +1063,7 @@ fn lower_function_body(
             || retained_sqrtf_frame,
         generator.behavior.saved_float_epilogue_style,
     )?;
+    generator.schedule_allocated_float_helper_epilogue();
     generator.schedule_unoptimized_inline_float_restore_order();
     generator.finalize_unoptimized_leaf_source_homes();
     // Build 163 shares the selected body schedule, but wraps GPR survivors in a

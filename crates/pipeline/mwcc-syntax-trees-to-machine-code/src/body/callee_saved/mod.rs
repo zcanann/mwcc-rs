@@ -4,6 +4,7 @@
 
 mod allocated_float_frame;
 mod allocated_float_frame_linkage_first;
+mod allocated_float_helper_epilogue;
 mod addressable_return_frame_schedule;
 mod combine;
 mod async_state_callback;
