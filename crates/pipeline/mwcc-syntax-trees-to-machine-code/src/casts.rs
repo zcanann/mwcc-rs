@@ -24,6 +24,13 @@ pub(crate) enum IntToFloatSchedule {
 }
 
 impl Generator {
+    /// Keep the two halves of a finalized `fctiwz` scratch packet on the same
+    /// doubleword. Frame relayout can move the extracted low-word load after
+    /// selection; the paired `stfd` must follow that final displacement.
+    pub(crate) fn normalize_float_to_int_scratch_images(&mut self) {
+        normalize_float_to_int_scratch_images(&mut self.output.instructions);
+    }
+
     pub(crate) fn integer_cast_is_value_identity(
         &self,
         target_type: Type,
@@ -1353,9 +1360,87 @@ impl Generator {
     }
 }
 
+fn normalize_float_to_int_scratch_images(instructions: &mut [Instruction]) {
+    for index in 0..instructions.len().saturating_sub(2) {
+        if !matches!(
+            instructions[index],
+            Instruction::ConvertToIntegerWordZero { .. }
+        ) {
+            continue;
+        }
+        let load_offset = match instructions[index + 2] {
+            Instruction::LoadWord {
+                a: 1,
+                offset,
+                ..
+            } => offset,
+            _ => continue,
+        };
+        let Some(store_offset) = load_offset.checked_sub(4) else {
+            continue;
+        };
+        if let Instruction::StoreFloatDouble {
+            a: 1,
+            offset,
+            ..
+        } = &mut instructions[index + 1]
+        {
+            *offset = store_offset;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn float_to_int_scratch_store_tracks_the_final_low_word_load() {
+        let mut instructions = vec![
+            Instruction::ConvertToIntegerWordZero { d: 0, b: 1 },
+            Instruction::StoreFloatDouble {
+                s: 0,
+                a: 1,
+                offset: 8,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            },
+        ];
+
+        normalize_float_to_int_scratch_images(&mut instructions);
+
+        assert!(matches!(
+            instructions[1],
+            Instruction::StoreFloatDouble { offset: 16, .. }
+        ));
+    }
+
+    #[test]
+    fn float_to_int_scratch_store_preserves_an_already_coherent_packet() {
+        let mut instructions = vec![
+            Instruction::ConvertToIntegerWordZero { d: 0, b: 1 },
+            Instruction::StoreFloatDouble {
+                s: 0,
+                a: 1,
+                offset: 16,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            },
+        ];
+
+        normalize_float_to_int_scratch_images(&mut instructions);
+
+        assert!(matches!(
+            instructions[1],
+            Instruction::StoreFloatDouble { offset: 16, .. }
+        ));
+    }
 
     #[test]
     fn same_type_member_cast_is_a_storage_identity() {
