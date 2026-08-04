@@ -192,6 +192,10 @@ pub struct MachineFunction {
     /// Whether the function performs an int<->float conversion. mwcc's anonymous
     /// `@N` counter starts one higher for such functions.
     pub has_conversion: bool,
+    /// Anonymous-label cost of a conversion for this compiler generation.
+    /// Later mainline compilers charge one; Build 163 performs the conversion
+    /// without advancing the source-analysis ordinal stream.
+    pub conversion_anonymous_label_bump: u8,
     /// Mid-pool `@N` gaps: (constant index, extra numbers consumed BEFORE that
     /// constant is numbered) — an int<->float conversion's internal label sits
     /// between the constants it separates (k_tan's @69 -> @71 jump).
@@ -268,6 +272,10 @@ pub struct MachineFunction {
     /// A dense `switch`'s jump table; `None` unless the function dispatches through
     /// one. The writer materializes it as an anonymous `@N` object in `.data`.
     pub jump_tables: Vec<JumpTable>,
+    /// Number all jump tables immediately before this constant index. Legacy
+    /// pool construction can discover dispatch tables between scalar constant
+    /// transactions; `None` retains the usual after-constants placement.
+    pub jump_table_number_before_constant: Option<usize>,
     /// An anonymous read-only data BLOB this function references (`@N` in
     /// `.rodata` via ADDR16_HA/LO — e.g. __strtold's 42-byte zero table).
     /// Numbered like the jump table: `anonymous_offset` past the function's
@@ -361,6 +369,7 @@ impl MachineFunction {
             static_locals: Vec::new(),
             static_local_adjust: 0,
             has_conversion: false,
+            conversion_anonymous_label_bump: 1,
             constant_number_gaps: Vec::new(),
             constant_number_adjust: 0,
             constant_pool_prefix_padding: 0,
@@ -381,6 +390,7 @@ impl MachineFunction {
             pre_scheduled: false,
             frame: None,
             jump_tables: Vec::new(),
+            jump_table_number_before_constant: None,
             anonymous_rodata: Vec::new(),
             strings_are_const: false,
             local_undefined_callees: Vec::new(),
@@ -399,7 +409,7 @@ impl MachineFunction {
     /// Anonymous-label work charged before this function's pool/unwind block.
     /// Object and fragmented-debug numbering must consume the same value.
     pub fn object_anonymous_bump(&self) -> u32 {
-        u32::from(self.has_conversion)
+        u32::from(self.has_conversion) * u32::from(self.conversion_anonymous_label_bump)
             + 3 * u32::from(self.has_float_branch)
             + self.anonymous_label_bump
     }

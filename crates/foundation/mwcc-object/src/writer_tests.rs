@@ -137,6 +137,7 @@ fn weak_function(name: &'static str) -> FunctionObject<'static> {
         string_number_after_rodata: None,
         string_names: Vec::new(),
         jump_tables: Vec::new(),
+        jump_table_number_before_constant: None,
         anonymous_rodata: Vec::new(),
         local_undefined_callees: Vec::new(),
         symbol_order: Vec::new(),
@@ -145,6 +146,26 @@ fn weak_function(name: &'static str) -> FunctionObject<'static> {
         implicit_external_callees: Vec::new(),
         early_implicit_external_callees: Vec::new(),
     }
+}
+
+#[test]
+fn interleaved_jump_tables_resume_at_the_next_pool_ordinal() {
+    let tables = [
+        crate::JumpTable {
+            entries: vec![4],
+            anonymous_offset: 1,
+        },
+        crate::JumpTable {
+            entries: vec![8],
+            anonymous_offset: 1,
+        },
+    ];
+    let mut next_pool_ordinal = 277;
+    assert_eq!(
+        assign_interleaved_jump_table_numbers(&mut next_pool_ordinal, &tables),
+        [278, 279]
+    );
+    assert_eq!(next_pool_ordinal, 280);
 }
 
 #[test]
@@ -178,6 +199,8 @@ fn deferred_body_can_complete_reference_discovery_before_its_symbol() {
             sdata2_writable: true,
             function_symbol_order: FunctionSymbolOrder::LegacyDeferred,
             asm_absolute_references_before_function: false,
+            early_static_functions_after_first_pool: false,
+            bss_anchor_after_first_local_object: false,
             weak_vtable_function_symbol_tail: false,
             owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: true,
@@ -246,6 +269,8 @@ fn compiler_register_helpers_precede_function_first_body_symbols() {
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::FunctionFirst,
             asm_absolute_references_before_function: false,
+            early_static_functions_after_first_pool: false,
+            bss_anchor_after_first_local_object: false,
             weak_vtable_function_symbol_tail: false,
             owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: false,
@@ -698,6 +723,8 @@ fn data_relocations_follow_interleaved_creation_order() {
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
             asm_absolute_references_before_function: false,
+            early_static_functions_after_first_pool: false,
+            bss_anchor_after_first_local_object: false,
             weak_vtable_function_symbol_tail: false,
             owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: false,
@@ -828,6 +855,7 @@ fn analysis_constant_placement_is_independent_of_counter_advancement() {
         string_number_after_rodata: None,
         string_names: Vec::new(),
         jump_tables: Vec::new(),
+        jump_table_number_before_constant: None,
         anonymous_rodata: Vec::new(),
         local_undefined_callees: Vec::new(),
         symbol_order: Vec::new(),
@@ -849,6 +877,8 @@ fn analysis_constant_placement_is_independent_of_counter_advancement() {
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
             asm_absolute_references_before_function: false,
+            early_static_functions_after_first_pool: false,
+            bss_anchor_after_first_local_object: false,
             weak_vtable_function_symbol_tail: false,
             owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: false,
@@ -952,6 +982,8 @@ fn function_pool_prefix_padding_precedes_alignment_of_its_first_fresh_slot() {
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
             asm_absolute_references_before_function: false,
+            early_static_functions_after_first_pool: false,
+            bss_anchor_after_first_local_object: false,
             weak_vtable_function_symbol_tail: false,
             owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: false,
@@ -1260,6 +1292,8 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::Deferred,
             asm_absolute_references_before_function: false,
+            early_static_functions_after_first_pool: false,
+            bss_anchor_after_first_local_object: false,
             weak_vtable_function_symbol_tail: false,
             owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: false,
@@ -1387,6 +1421,8 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
             asm_absolute_references_before_function: false,
+            early_static_functions_after_first_pool: false,
+            bss_anchor_after_first_local_object: false,
             weak_vtable_function_symbol_tail: false,
             owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: false,
@@ -1475,6 +1511,8 @@ fn code_data_anchor_precedes_pools_when_full_data_is_declared_upfront() {
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
             asm_absolute_references_before_function: false,
+            early_static_functions_after_first_pool: false,
+            bss_anchor_after_first_local_object: false,
             weak_vtable_function_symbol_tail: false,
             owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: false,
@@ -1545,6 +1583,8 @@ fn code_data_anchor_follows_earlier_static_functions_before_an_owned_string() {
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
             asm_absolute_references_before_function: false,
+            early_static_functions_after_first_pool: false,
+            bss_anchor_after_first_local_object: false,
             weak_vtable_function_symbol_tail: false,
             owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: false,
@@ -1679,6 +1719,8 @@ fn const_pointer_arrays_emit_reverse_rodata_relocations() {
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
             asm_absolute_references_before_function: false,
+            early_static_functions_after_first_pool: false,
+            bss_anchor_after_first_local_object: false,
             weak_vtable_function_symbol_tail: false,
             owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: false,

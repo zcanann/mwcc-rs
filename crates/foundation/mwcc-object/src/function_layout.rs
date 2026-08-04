@@ -172,6 +172,7 @@ mod tests {
             string_number_after_rodata: None,
             string_names: Vec::new(),
             jump_tables: Vec::new(),
+            jump_table_number_before_constant: None,
             anonymous_rodata: Vec::new(),
             local_undefined_callees: Vec::new(),
             symbol_order: Vec::new(),

@@ -298,6 +298,7 @@ pub fn assemble_object(
                     anonymous_offset: table.anonymous_offset,
                 })
                 .collect(),
+            jump_table_number_before_constant: function.jump_table_number_before_constant,
             anonymous_rodata: function
                 .anonymous_rodata
                 .iter()

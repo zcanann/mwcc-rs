@@ -13,6 +13,7 @@ use mwcc_versions::{Behavior, FunctionOrdinalAccountingStyle};
 use std::collections::HashSet;
 
 mod automatic_image_conversion;
+mod build163;
 
 /// Build 163 assigns retained inline-initializer nodes after a function's
 /// strings. Move those ordinals out of the pool-front block and reinsert them
@@ -67,6 +68,9 @@ pub(crate) fn apply_with_behavior(
     output: &mut MachineFunction,
     behavior: &Behavior,
 ) {
+    if behavior.legacy_float_cast_schedule {
+        build163::apply(function, output);
+    }
     let empty_then_residue = empty_conditional_then_count(&function.statements)
         * u32::from(behavior.empty_conditional_then_label_bump);
     output.anonymous_label_bump += empty_then_residue;

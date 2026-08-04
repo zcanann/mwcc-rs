@@ -44,6 +44,13 @@ pub struct ObjectFormat {
     /// current function symbol. GC/1.1p1 does; later build-163 compilers keep
     /// those operands in the post-entry asm event stream.
     pub asm_absolute_references_before_function: bool,
+    /// Build 163 registers file-scope static prototypes after the first
+    /// function's anonymous pool transaction rather than at the local-data
+    /// frontier.
+    pub early_static_functions_after_first_pool: bool,
+    /// Build 163 creates a referenced `.bss` section anchor immediately after
+    /// the first local object at offset zero.
+    pub bss_anchor_after_first_local_object: bool,
     /// Weak vtable-owned inline functions keep forward text layout but expose
     /// reverse-slot symbol discovery after ordinary source functions.
     pub weak_vtable_function_symbol_tail: bool,
@@ -328,6 +335,9 @@ pub struct FunctionObject<'a> {
     /// `@N` object in `.data`, fills the per-entry `ADDR32` relocations to this
     /// function, and resolves this function's `JumpTable` `.text` relocations.
     pub jump_tables: Vec<JumpTable>,
+    /// Number the jump-table group immediately before this pool constant.
+    /// `None` uses the ordinary after-constants ordering.
+    pub jump_table_number_before_constant: Option<usize>,
     /// Anonymous `.rodata` blobs (`@N` via ADDR16_HA/LO), numbered before the
     /// pool constants (measured on __strtold: table @26, pool @147).
     pub anonymous_rodata: Vec<AnonymousRodataObject>,

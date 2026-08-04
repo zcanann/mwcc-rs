@@ -11,7 +11,8 @@
 use crate::{
     layout_code_sections, CommentFormat, DataObject, DataSectionDisplacementTarget,
     DebugRelocationTarget, DebugSymbolBinding, DebugSymbolPlacement, FunctionObject,
-    FunctionSymbolOrder, ObjectInput, RelocationTarget, Sdata2Constant, TextRelocation,
+    FunctionSymbolOrder, JumpTable, ObjectInput, RelocationTarget, Sdata2Constant,
+    TextRelocation,
 };
 
 use std::collections::HashMap;
@@ -1633,8 +1634,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             rodata_blob_numbers.push(numbers_of_blobs);
         }
         let mut numbers = Vec::new();
+        let mut numbers_of_tables = None;
         let mut static_slot_seen = 0u32;
         for (constant_index, constant) in function.constants.iter().enumerate() {
+            if function.jump_table_number_before_constant == Some(constant_index) {
+                numbers_of_tables = Some(assign_interleaved_jump_table_numbers(
+                    &mut number,
+                    &function.jump_tables,
+                ));
+            }
             // An initialized auto array's pooled WORD IMAGE numbers at the
             // function's STATIC-LOCAL slot (`counter - 1`, past any owned
             // statics), outside the pool block and consuming no pool number
@@ -1681,12 +1689,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         constant_numbers.push(numbers);
         // A dense switch's jump table is numbered after the function's internal
         // labels (a label per case, the dispatch, and an explicit `default:`).
-        let mut numbers_of_tables = Vec::new();
-        for table in &function.jump_tables {
-            let number_of_table = number + table.anonymous_offset;
-            number = number_of_table;
-            numbers_of_tables.push(number_of_table);
-        }
+        let numbers_of_tables = numbers_of_tables
+            .unwrap_or_else(|| assign_jump_table_numbers(&mut number, &function.jump_tables));
         jump_table_numbers.push(numbers_of_tables);
         number += function.post_constant_bump;
         if function.frame.is_some() {
@@ -2219,6 +2223,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         && data_relocation_targets_section(".rodata");
     let rodata_anchor_needed = rodata_anchor_needed_by_code || rodata_anchor_needed_by_data;
     let mut rodata_anchor_emitted = false;
+    let mut bss_anchor_emitted = false;
     // A data-initializer relocation creates the writable anchor at the first
     // source `.data` declaration, even when that declaration has external
     // linkage and its own symbol belongs to the later GLOBAL run. Code-only
@@ -2318,6 +2323,24 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 comment_values.push((1, input.object_format.rodata_anchor_comment_flags));
                 rodata_anchor_emitted = true;
             }
+            if input.object_format.bss_anchor_after_first_local_object
+                && bss_anchor_needed_by_code
+                && !bss_anchor_emitted
+                && data_section[object.name] == ".bss"
+            {
+                local_data_symbols.insert("...bss.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                write_symbol(
+                    &mut symtab,
+                    strtab.add("...bss.0"),
+                    0,
+                    0,
+                    0,
+                    0,
+                    index_of(".bss") as u16,
+                );
+                comment_values.push((1, 0));
+                bss_anchor_emitted = true;
+            }
         }
     }
     // A pinned sequence can contain both zero statics and static functions.
@@ -2325,7 +2348,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // zero statics materialize at first reference while static functions appear
     // at a prior declaration or definition, interleaved with those data symbols.
     // Names not in the pin continue through the general policies below.
-    let mut bss_anchor_emitted = false;
     for name in local_symbol_order {
         if name == "...bss.0" && bss_anchor_needed_by_code && !bss_anchor_emitted {
             local_data_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
@@ -2558,39 +2580,45 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }};
     }
-    // A `static` function forward-declared by a prototype had its LOCAL FUNC
-    // symbol created at that first declaration — so it emits here (after the
-    // static data run, before the per-function `@N`/FUNC blocks), in prototype
-    // order, ahead of statics first seen at their definition. The per-function
-    // loop below skips any function emitted here (measured: OSAlarm's
-    // `DecrementerExceptionHandler`, prototyped at the top of the file).
-    for name in input.early_static_function_symbols {
-        if let Some(index) = functions.iter().position(|function| {
-            function.is_static && !function.implicit_local && function.name == name.as_str()
-        }) {
-            if emitted_early_func.insert(index) {
-                let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
-                write_symbol(
-                    &mut symtab,
-                    strtab.add(functions[index].name),
-                    function_offset[index],
-                    function_size[index],
-                    STB_LOCAL_FUNC,
-                    0,
-                    index_of(function_section(index)) as u16,
-                );
-                comment_values.push((
-                    input.object_format.code_alignment,
-                    if functions[index].force_active {
-                        FORCE_ACTIVE_FLAG
-                    } else {
-                        0
-                    },
-                ));
-                function_symbols[index] = symbol;
-                local_function_symbols.insert(functions[index].name, symbol);
+    macro_rules! emit_early_static_function_symbols {
+        () => {{
+            for name in input.early_static_function_symbols {
+                if let Some(index) = functions.iter().position(|function| {
+                    function.is_static
+                        && !function.implicit_local
+                        && function.name == name.as_str()
+                }) {
+                    if emitted_early_func.insert(index) {
+                        let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
+                        write_symbol(
+                            &mut symtab,
+                            strtab.add(functions[index].name),
+                            function_offset[index],
+                            function_size[index],
+                            STB_LOCAL_FUNC,
+                            0,
+                            index_of(function_section(index)) as u16,
+                        );
+                        comment_values.push((
+                            input.object_format.code_alignment,
+                            if functions[index].force_active {
+                                FORCE_ACTIVE_FLAG
+                            } else {
+                                0
+                            },
+                        ));
+                        function_symbols[index] = symbol;
+                        local_function_symbols.insert(functions[index].name, symbol);
+                    }
+                }
             }
-        }
+        }};
+    }
+    // A `static` function forward-declared by a prototype normally emits after
+    // static data and before per-function `@N` blocks. Build 163 delays this
+    // declaration event until the first function's pool transaction closes.
+    if !input.object_format.early_static_functions_after_first_pool {
+        emit_early_static_function_symbols!();
     }
     for (index, function) in functions.iter().enumerate() {
         if owned_rtti_local_frontier == Some(index) {
@@ -2895,7 +2923,22 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
         let mut symbols = Vec::new();
+        let mut symbols_of_tables = None;
         for (constant_index, constant) in function.constants.iter().enumerate() {
+            if function.jump_table_number_before_constant == Some(constant_index) {
+                symbols_of_tables = Some(emit_jump_table_symbols(
+                    &mut symtab,
+                    &mut strtab,
+                    &mut comment_values,
+                    &function.jump_tables,
+                    &jump_table_numbers[index],
+                    &jump_table_offset[index],
+                    function
+                        .jump_tables
+                        .first()
+                        .map_or(0, |_| index_of(".data") as u16),
+                ));
+            }
             if function.string_number_after_constants == Some(constant_index as u32) {
                 for name in &function.string_names {
                     if local_data_symbols.contains_key(name.as_str()) {
@@ -3027,23 +3070,24 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
         // Each jump table is a 4-aligned local `@N` object in `.data`,
         // symbols in creation (numbering) order.
-        let mut symbols_of_tables = Vec::new();
-        for (table_index, table) in function.jump_tables.iter().enumerate() {
-            symbols_of_tables.push((symtab.len() / SYMBOL_SIZE) as u32);
-            let name = strtab.add(&format!("@{}", jump_table_numbers[index][table_index]));
-            let size = table.entries.len() as u32 * 4;
-            write_symbol(
+        let symbols_of_tables = symbols_of_tables.unwrap_or_else(|| {
+            emit_jump_table_symbols(
                 &mut symtab,
-                name,
-                jump_table_offset[index][table_index].unwrap(),
-                size,
-                STB_LOCAL_OBJECT,
-                0,
-                index_of(".data") as u16,
-            );
-            comment_values.push((4, 0));
-        }
+                &mut strtab,
+                &mut comment_values,
+                &function.jump_tables,
+                &jump_table_numbers[index],
+                &jump_table_offset[index],
+                function
+                    .jump_tables
+                    .first()
+                    .map_or(0, |_| index_of(".data") as u16),
+            )
+        });
         jump_table_symbols.push(symbols_of_tables);
+        if index == 0 && input.object_format.early_static_functions_after_first_pool {
+            emit_early_static_function_symbols!();
+        }
         if let Some(debug) = debug {
             for symbol in debug.symbols.iter().filter(|symbol| {
                 symbol.binding == DebugSymbolBinding::Local
@@ -5293,6 +5337,57 @@ fn align8(value: u32) -> u32 {
 fn adjusted_pool_number(base: u32, adjustment: i32) -> u32 {
     u32::try_from(i64::from(base) + i64::from(adjustment))
         .expect("pool-number adjustment must remain non-negative")
+}
+
+fn assign_jump_table_numbers(number: &mut u32, tables: &[JumpTable]) -> Vec<u32> {
+    tables
+        .iter()
+        .map(|table| {
+            let number_of_table = *number + table.anonymous_offset;
+            *number = number_of_table;
+            number_of_table
+        })
+        .collect()
+}
+
+fn assign_interleaved_jump_table_numbers(number: &mut u32, tables: &[JumpTable]) -> Vec<u32> {
+    let numbers = assign_jump_table_numbers(number, tables);
+    if !numbers.is_empty() {
+        // The final table owns `number`; resume the scalar pool at the next
+        // free ordinal.
+        *number += 1;
+    }
+    numbers
+}
+
+fn emit_jump_table_symbols(
+    symtab: &mut Vec<u8>,
+    strtab: &mut StringTable,
+    comment_values: &mut Vec<(u32, u32)>,
+    tables: &[JumpTable],
+    numbers: &[u32],
+    offsets: &[Option<u32>],
+    data_section: u16,
+) -> Vec<u32> {
+    tables
+        .iter()
+        .enumerate()
+        .map(|(table_index, table)| {
+            let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
+            let name = strtab.add(&format!("@{}", numbers[table_index]));
+            write_symbol(
+                symtab,
+                name,
+                offsets[table_index].expect("jump table must have a data offset"),
+                table.entries.len() as u32 * 4,
+                STB_LOCAL_OBJECT,
+                0,
+                data_section,
+            );
+            comment_values.push((4, 0));
+            symbol
+        })
+        .collect()
 }
 
 fn constant_alignment(constant: &Sdata2Constant) -> u32 {
