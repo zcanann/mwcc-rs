@@ -130,6 +130,7 @@ impl Generator {
         paired_single_frame: bool,
         restores_before_gpr_helper_setup: bool,
         branches_enter_float_restores: bool,
+        epilogue_style: mwcc_versions::SavedFloatEpilogueStyle,
     ) -> Compilation<()> {
         let registers = required_float_save_range(self.callee_saved_float, registers)
             .map_err(Diagnostic::error)?;
@@ -146,6 +147,8 @@ impl Generator {
                     paired_single_frame,
                     restores_before_gpr_helper_setup,
                     branches_enter_float_restores,
+                    epilogue_style
+                        == mwcc_versions::SavedFloatEpilogueStyle::LinkReloadBeforeFinalRestore,
                 )
                 .map_err(Diagnostic::error)?
             }
@@ -211,6 +214,7 @@ fn materialize_predecrement_frame(
     paired_single_frame: bool,
     restores_before_gpr_helper_setup: bool,
     branches_enter_float_restores: bool,
+    link_reload_before_final_restore: bool,
 ) -> Result<(Vec<usize>, i16), &'static str> {
     let expected: Vec<u8> = (0..registers.len())
         .map(|index| 31u8.saturating_sub(index as u8))
@@ -317,6 +321,21 @@ fn materialize_predecrement_frame(
                 })
         })
         .ok_or("allocated FPR frame has no epilogue restore point")?;
+    let split_final_restore_around_link_reload = link_reload_before_final_restore
+        && !instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::BranchConditionalForward { .. } | Instruction::Branch { .. }
+            )
+        })
+        && matches!(
+            instructions[restore_at],
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset,
+            } if offset == link_offset
+        );
 
     if instructions.iter().any(|instruction| {
         matches!(
@@ -408,6 +427,8 @@ fn materialize_predecrement_frame(
     let save_at = link_store + 1;
     let mut permutation = vec![0usize; old_len];
     let mut rebuilt = Vec::with_capacity(old_len + saves.len() + restores.len());
+    let mut trailing_restore = split_final_restore_around_link_reload
+        .then(|| restores.pop().expect("a saved FPR has a final restore"));
     for (index, instruction) in old.into_iter().enumerate() {
         if index == save_at {
             rebuilt.append(&mut saves);
@@ -419,6 +440,11 @@ fn materialize_predecrement_frame(
         }
         permutation[index] = restore_entry.unwrap_or(rebuilt.len());
         rebuilt.push(instruction);
+        if index == restore_at {
+            if let Some(restore) = trailing_restore.take() {
+                rebuilt.push(restore);
+            }
+        }
     }
     *instructions = rebuilt;
     Ok((permutation, frame_growth))
@@ -629,6 +655,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mainline_link_reload_splits_the_final_float_restore_packet() {
+        let mut instructions = vec![
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            },
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::FloatMove { d: 31, b: 2 },
+            Instruction::BranchAndLink {
+                target: "transform".into(),
+            },
+            Instruction::FloatAddSingle {
+                d: 1,
+                a: 1,
+                b: 31,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+
+        materialize_predecrement_frame(
+            &mut instructions,
+            &[31],
+            0,
+            true,
+            false,
+            false,
+            true,
+        )
+        .expect("mainline saved-FPR frame");
+
+        let result = instructions
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::FloatAddSingle { .. }))
+            .expect("floating result");
+        assert!(matches!(
+            &instructions[result..result + 5],
+            [
+                Instruction::FloatAddSingle { .. },
+                Instruction::PairedSingleQuantizedLoad { d: 31, .. },
+                Instruction::LoadWord { d: 0, .. },
+                Instruction::LoadFloatDouble { d: 31, .. },
+                Instruction::MoveToLinkRegister { s: 0 },
+            ]
+        ));
+    }
+
+    #[test]
     fn selects_paired_restore_encoding_from_the_signed_twelve_bit_range() {
         assert!(matches!(
             paired_single_restore(31, 2047).as_slice(),
@@ -699,7 +789,15 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
         let (_, frame_growth) =
-            materialize_predecrement_frame(&mut instructions, &[31, 30], 0, true, false, false)
+            materialize_predecrement_frame(
+                &mut instructions,
+                &[31, 30],
+                0,
+                true,
+                false,
+                false,
+                false,
+            )
                 .unwrap();
 
         assert_eq!(frame_growth, 32);
@@ -736,7 +834,15 @@ mod tests {
         ];
 
         let (_, frame_growth) =
-            materialize_predecrement_frame(&mut instructions, &[31], 2, true, false, false)
+            materialize_predecrement_frame(
+                &mut instructions,
+                &[31],
+                2,
+                true,
+                false,
+                false,
+                false,
+            )
                 .unwrap();
 
         assert_eq!(frame_growth, 16);
@@ -794,7 +900,15 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
         let (permutation, frame_growth) =
-            materialize_predecrement_frame(&mut instructions, &[31, 30], 1, true, false, false)
+            materialize_predecrement_frame(
+                &mut instructions,
+                &[31, 30],
+                1,
+                true,
+                false,
+                false,
+                false,
+            )
                 .unwrap();
 
         assert_eq!(frame_growth, 32);
@@ -881,7 +995,15 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
         let (_, frame_growth) =
-            materialize_predecrement_frame(&mut instructions, &[31], 1, false, false, false)
+            materialize_predecrement_frame(
+                &mut instructions,
+                &[31],
+                1,
+                false,
+                false,
+                false,
+                false,
+            )
                 .unwrap();
 
         assert_eq!(frame_growth, 16);
@@ -940,7 +1062,15 @@ mod tests {
         ];
 
         let (permutation, _) =
-            materialize_predecrement_frame(&mut instructions, &[31], 5, true, true, true)
+            materialize_predecrement_frame(
+                &mut instructions,
+                &[31],
+                5,
+                true,
+                true,
+                true,
+                false,
+            )
                 .expect("direct paired-single frame");
 
         let restore = instructions

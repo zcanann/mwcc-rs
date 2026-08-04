@@ -35,7 +35,8 @@ use crate::profile::{
     PlainLinkageEpilogueStyle, PointerCallStoreEpilogueStyle, PunnedConditionalWritebackStyle,
     PunnedFloatFrameConvention, PunnedLadderConditionStyle, PunnedShiftWritebackStyle,
     QueueServiceInliningStyle,
-    RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SavedGprEpilogueStyle,
+    RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle,
+    SavedFloatEpilogueStyle, SavedGprEpilogueStyle,
     SharedFloatDagStyle, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
     StoredGlobalReadStyle, SymbolTraversalStyle, TrigDispatcherStyle, TrigQuadrantDispatchStyle,
     TrigZeroConstantPlacement, VaArgScheduleStyle, ValueTrackedMutationStyle,
@@ -683,6 +684,8 @@ pub struct Behavior {
     pub plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
     /// LR restore order for a linkage-first frame with saved GPRs.
     pub saved_gpr_epilogue_style: SavedGprEpilogueStyle,
+    /// Post-call result and restore order for allocator-selected saved FPRs.
+    pub saved_float_epilogue_style: SavedFloatEpilogueStyle,
     /// Whether a structured early LR write must move behind the complete saved-GPR/stack tail.
     pub structured_saved_gpr_stack_first: bool,
     /// Whether the SDK DVD FST loader uses build 163's early saved-LR issue
@@ -1141,6 +1144,7 @@ impl Behavior {
             frame_convention: config.build.profile.frame_convention(),
             plain_linkage_epilogue_style: config.build.profile.plain_linkage_epilogue_style(),
             saved_gpr_epilogue_style: config.build.profile.saved_gpr_epilogue_style(),
+            saved_float_epilogue_style: config.build.profile.saved_float_epilogue_style(),
             structured_saved_gpr_stack_first: config
                 .build
                 .profile
@@ -1726,6 +1730,40 @@ impl Behavior {
 mod tests {
     use super::*;
     use crate::{build, flags::CharDefault};
+
+    #[test]
+    fn saved_float_epilogue_schedule_tracks_optimizer_generation() {
+        for compiler_build in [build::GC_1_1, build::GC_1_1P1, build::GC_1_2_5] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build))
+                    .saved_float_epilogue_style,
+                SavedFloatEpilogueStyle::LinkReloadBeforeResult,
+            );
+        }
+        for compiler_build in [
+            build::GC_1_2_5N,
+            build::GC_1_3,
+            build::GC_1_3_2,
+            build::GC_2_0,
+            build::GC_2_0P1,
+            build::GC_2_5,
+            build::GC_2_6,
+            build::GC_2_7,
+        ] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build))
+                    .saved_float_epilogue_style,
+                SavedFloatEpilogueStyle::LinkReloadBeforeFinalRestore,
+            );
+        }
+        for compiler_build in [build::GC_3_0A3, build::WII_1_0] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build))
+                    .saved_float_epilogue_style,
+                SavedFloatEpilogueStyle::LinkReloadAfterFloatRestores,
+            );
+        }
+    }
 
     #[test]
     fn dynamic_local_alignment_begins_with_the_242_generation() {

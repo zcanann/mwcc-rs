@@ -39,6 +39,21 @@ pub enum SavedGprEpilogueStyle {
     StackRestoreBeforeLinkRegisterReload,
 }
 
+/// Ordering of a post-call floating result relative to the saved-LR reload and
+/// allocator-selected FPR restores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedFloatEpilogueStyle {
+    /// The original 2.3.3 distributions issue the LR load first, then compute
+    /// the floating result and restore every saved FPR.
+    LinkReloadBeforeResult,
+    /// Nintendo's build 163 and the 2.4.x generation compute the result first,
+    /// then issue LR immediately before the final double-lane FPR restore.
+    LinkReloadBeforeFinalRestore,
+    /// The 4.x generation computes the result, restores every FPR, and only
+    /// then issues the saved-LR load.
+    LinkReloadAfterFloatRestores,
+}
+
 /// Restore order after a call result is stored through a saved pointer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerCallStoreEpilogueStyle {
@@ -1135,6 +1150,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         SavedGprEpilogueStyle::LinkRegisterAfterStackRestore
     }
 
+    /// Schedule for a call result that consumes an allocator-selected saved
+    /// FPR. The 2.4.x mainline overlaps LR-load latency with the final `lfd`.
+    fn saved_float_epilogue_style(&self) -> SavedFloatEpilogueStyle {
+        SavedFloatEpilogueStyle::LinkReloadBeforeFinalRestore
+    }
+
     /// Whether structured owners must defer an explicitly early LR write until
     /// every saved GPR and the stack pointer have been restored.
     fn structured_saved_gpr_stack_first(&self) -> bool {
@@ -1648,6 +1669,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn saved_float_epilogue_style(&self) -> SavedFloatEpilogueStyle {
+        SavedFloatEpilogueStyle::LinkReloadAfterFloatRestores
+    }
+
     fn copy_sign_style(&self) -> CopySignStyle {
         CopySignStyle::ExplicitSignMask
     }
@@ -1850,6 +1875,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn saved_float_epilogue_style(&self) -> SavedFloatEpilogueStyle {
+        SavedFloatEpilogueStyle::LinkReloadAfterFloatRestores
+    }
+
     fn copy_sign_style(&self) -> CopySignStyle {
         CopySignStyle::ExplicitSignMask
     }
@@ -2139,6 +2168,7 @@ impl CodegenProfile for Gc132Build81 {
 pub struct Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle,
+    saved_float_epilogue_style: SavedFloatEpilogueStyle,
     structured_saved_gpr_stack_first: bool,
     dvd_fst_loader_early_epilogue: bool,
 }
@@ -2146,6 +2176,7 @@ pub struct Gc233Build163 {
 pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved,
+    saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeResult,
     structured_saved_gpr_stack_first: false,
     dvd_fst_loader_early_epilogue: false,
 };
@@ -2153,6 +2184,7 @@ pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
 pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterAfterStackRestore,
+    saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeResult,
     structured_saved_gpr_stack_first: false,
     dvd_fst_loader_early_epilogue: true,
 };
@@ -2160,6 +2192,7 @@ pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
 pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterAfterStackRestore,
+    saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeFinalRestore,
     structured_saved_gpr_stack_first: true,
     dvd_fst_loader_early_epilogue: false,
 };
@@ -2167,6 +2200,7 @@ pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
 pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::StackRestoreBeforeReload,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload,
+    saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeResult,
     structured_saved_gpr_stack_first: true,
     dvd_fst_loader_early_epilogue: false,
 };
@@ -2313,6 +2347,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn saved_gpr_epilogue_style(&self) -> SavedGprEpilogueStyle {
         self.saved_gpr_epilogue_style
+    }
+
+    fn saved_float_epilogue_style(&self) -> SavedFloatEpilogueStyle {
+        self.saved_float_epilogue_style
     }
 
     fn structured_saved_gpr_stack_first(&self) -> bool {

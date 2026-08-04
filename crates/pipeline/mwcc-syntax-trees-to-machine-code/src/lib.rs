@@ -999,9 +999,10 @@ fn lower_function_body(
     generator.strip_artificial_leaf_linkage()?;
     generator.schedule_unoptimized_inline_float_transaction_handoffs();
     generator.schedule_unoptimized_inline_float_loop_handoffs();
-    // Issue the epilogue's saved-LR reload right after the last call (ahead of the
-    // post-call computation), as mwcc does — a final pass on the physical stream.
-    hoist_link_register_reload(&mut generator);
+    // Issue the epilogue's saved-LR reload at the generation-specific point in
+    // the physical post-call stream. Mainline follows a call-result chain that
+    // consumes a preserved FPR; older 2.3.3 distributions issue LR first.
+    hoist_link_register_reload(&mut generator, &allocated_float_saves);
     schedule_shared_epilogue_link_reload(&mut generator);
     // Symmetrically, delay the prologue's saved-LR store past the first call's ready
     // argument materializations (mwcc fills the mflr->store latency gap).
@@ -1028,6 +1029,7 @@ fn lower_function_body(
         body::branches_enter_float_restores(function)
             || generator.unoptimized_inline_float_transaction_homes
             || retained_sqrtf_frame,
+        generator.behavior.saved_float_epilogue_style,
     )?;
     generator.schedule_unoptimized_inline_float_restore_order();
     generator.finalize_unoptimized_leaf_source_homes();
@@ -1489,7 +1491,7 @@ fn schedule_instructions(generator: &mut Generator) {
 
 /// Move the epilogue's saved-LR reload up to right after the last call, remapping
 /// relocation indices through the resulting permutation.
-fn hoist_link_register_reload(generator: &mut Generator) {
+fn hoist_link_register_reload(generator: &mut Generator, saved_float_registers: &[u8]) {
     if generator.owns_link_register_schedule || !generator.behavior.schedule_latency_slots {
         return;
     }
@@ -1509,7 +1511,13 @@ fn hoist_link_register_reload(generator: &mut Generator) {
     {
         return;
     }
-    let permutation = mwcc_vreg::hoist_link_register_reload(&mut generator.output.instructions);
+    let follows_saved_float_result = generator.behavior.saved_float_epilogue_style
+        != mwcc_versions::SavedFloatEpilogueStyle::LinkReloadBeforeResult;
+    let permutation = mwcc_vreg::hoist_link_register_reload(
+        &mut generator.output.instructions,
+        saved_float_registers,
+        follows_saved_float_result,
+    );
     remap_instruction_indices(generator, &permutation);
 }
 

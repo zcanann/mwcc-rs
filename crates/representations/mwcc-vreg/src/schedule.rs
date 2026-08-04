@@ -94,14 +94,18 @@ fn is_store(instruction: &Instruction) -> bool {
     )
 }
 
-/// Hoist the epilogue's saved-LR reload (`lwz r0, frame+4(r1)`) up to immediately
-/// after the last call, ahead of any post-call computation — reproducing mwcc,
-/// which issues that load early so its latency overlaps the post-call work. The
-/// reload is the `LoadWord { d: 0, a: 1, .. }` directly before the `mtlr`. It may
-/// move past instructions that neither read nor write r0, but must stay after the
-/// last `bl`. Returns the `old index -> new index` permutation (identity when
-/// nothing moves) so the caller can remap relocation indices.
-pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<usize> {
+/// Hoist the epilogue's saved-LR reload (`lwz r0, frame+4(r1)`) toward the last
+/// call so its latency overlaps independent post-call work. Some compiler
+/// generations first issue the floating result chain that consumes a saved FPR;
+/// `follow_saved_float_result` selects that measured policy and
+/// `saved_float_registers` identifies the physical preserved bank. The reload
+/// is the `LoadWord { d: 0, a: 1, .. }` directly before `mtlr`. Returns the
+/// `old index -> new index` permutation so callers can remap relocations.
+pub fn hoist_link_register_reload(
+    instructions: &mut Vec<Instruction>,
+    saved_float_registers: &[u8],
+    follow_saved_float_result: bool,
+) -> Vec<usize> {
     let identity: Vec<usize> = (0..instructions.len()).collect();
     // Intra-function control flow makes the saved-LR reload a join point — it
     // commonly sits at a SHARED epilogue reached by several edges (early returns),
@@ -181,11 +185,20 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
     }) else {
         return identity;
     };
+    let mut target = if follow_saved_float_result {
+        leading_saved_float_result_chain_end(
+            &instructions[call + 1..reload],
+            saved_float_registers,
+        )
+        .map(|length| call + 1 + length)
+        .unwrap_or(call + 1)
+    } else {
+        call + 1
+    };
     // mwcc issues a high-latency op that depends on the call result — a `mullw` combining the result
     // with a saved value — right after the call, overlapping its multi-cycle latency with the LR-reload
     // load. So the reload sits AFTER such a multiply, not before it. (Only a multiply whose destination
     // is not r0, so the reload does not clobber its result.)
-    let mut target = call + 1;
     while target < reload
         && matches!(&instructions[target], Instruction::MultiplyLow { d, .. } if *d != 0)
     {
@@ -221,6 +234,58 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
             }
         })
         .collect()
+}
+
+/// Length of the leading, register-only floating chain rooted at ABI return
+/// register f1 when that chain consumes at least one allocator-selected saved
+/// FPR. Tracking definitions rather than matching opcodes lets fused, unary,
+/// and multi-instruction results share the same dependency rule while memory
+/// operations and comparisons remain natural boundaries.
+fn leading_saved_float_result_chain_end(
+    instructions: &[Instruction],
+    saved_float_registers: &[u8],
+) -> Option<usize> {
+    if saved_float_registers.is_empty() {
+        return None;
+    }
+    let mut result_registers = vec![1u8];
+    let mut consumes_saved = false;
+    let mut length = 0;
+    for instruction in instructions {
+        let operands = register_operands(instruction);
+        if operands.is_empty()
+            || operands.iter().any(|operand| operand.class != Class::Float)
+        {
+            break;
+        }
+        let uses: Vec<u8> = operands
+            .iter()
+            .filter(|operand| operand.role == RegisterRole::Use)
+            .map(|operand| operand.register)
+            .collect();
+        let definitions: Vec<u8> = operands
+            .iter()
+            .filter(|operand| operand.role == RegisterRole::Define)
+            .map(|operand| operand.register)
+            .collect();
+        if definitions.is_empty()
+            || !uses
+                .iter()
+                .any(|register| result_registers.contains(register))
+        {
+            break;
+        }
+        consumes_saved |= uses
+            .iter()
+            .any(|register| saved_float_registers.contains(register));
+        for register in definitions {
+            if !result_registers.contains(&register) {
+                result_registers.push(register);
+            }
+        }
+        length += 1;
+    }
+    consumes_saved.then_some(length)
 }
 
 /// Drop integer and float self-moves the register allocator produces when it colors a
@@ -833,6 +898,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn saved_float_result_chain_can_precede_the_link_reload() {
+        let mut stream = vec![
+            Instruction::BranchAndLink {
+                target: "transform".into(),
+            },
+            Instruction::FloatAddSingle {
+                d: 1,
+                a: 1,
+                b: 31,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 36,
+            },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::BranchToLinkRegister,
+        ];
+
+        let permutation = hoist_link_register_reload(&mut stream, &[31], true);
+
+        assert!(matches!(stream[1], Instruction::FloatAddSingle { .. }));
+        assert!(matches!(stream[2], Instruction::LoadWord { d: 0, .. }));
+        assert_eq!(permutation, [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn call_result_only_float_work_still_follows_the_link_reload() {
+        let mut stream = vec![
+            Instruction::BranchAndLink {
+                target: "transform".into(),
+            },
+            Instruction::FloatNegate { d: 1, b: 1 },
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::BranchToLinkRegister,
+        ];
+
+        let permutation = hoist_link_register_reload(&mut stream, &[31], true);
+
+        assert!(matches!(stream[1], Instruction::LoadWord { d: 0, .. }));
+        assert!(matches!(stream[2], Instruction::FloatNegate { .. }));
+        assert_eq!(permutation, [0, 2, 1, 3, 4]);
+    }
+
+    #[test]
     fn shared_epilogue_issues_link_reload_before_scalar_return_load() {
         let mut stream = vec![
             Instruction::BranchConditionalForward {
@@ -867,7 +982,7 @@ mod tests {
             Instruction::BranchToLinkRegister,
         ];
 
-        let permutation = hoist_link_register_reload(&mut stream);
+        let permutation = hoist_link_register_reload(&mut stream, &[], false);
         assert!(matches!(stream[3], Instruction::LoadWord { d: 0, .. }));
         assert!(matches!(stream[4], Instruction::LoadByteZero { d: 3, .. }));
         assert_eq!(permutation, [0, 1, 2, 4, 3, 5, 6, 7]);
