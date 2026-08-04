@@ -13,6 +13,7 @@ use super::*;
 pub(super) struct Plan {
     object: String,
     member_offset: i16,
+    clear_offset: Option<i16>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -24,7 +25,13 @@ struct MemberKey {
 pub(super) fn recognize(function: &Function) -> Option<Plan> {
     let mut decrements = Vec::new();
     let mut callbacks = Vec::new();
-    collect_candidates(&function.statements, &mut decrements, &mut callbacks);
+    let mut clears = Vec::new();
+    collect_candidates(
+        &function.statements,
+        &mut decrements,
+        &mut callbacks,
+        &mut clears,
+    );
     let mut matches = decrements
         .into_iter()
         .filter(|candidate| callbacks.contains(candidate));
@@ -32,9 +39,17 @@ pub(super) fn recognize(function: &Function) -> Option<Plan> {
     if matches.next().is_some() {
         return None;
     }
+    let mut matching_clears = clears
+        .into_iter()
+        .filter(|clear| clear.object == candidate.object);
+    let clear_offset = matching_clears.next().map(|clear| clear.offset);
+    if matching_clears.next().is_some() {
+        return None;
+    }
     Some(Plan {
         object: candidate.object,
         member_offset: candidate.offset,
+        clear_offset,
     })
 }
 
@@ -69,8 +84,36 @@ impl Plan {
         ) else {
             return false;
         };
+        let clear = self.clear_offset.and_then(|offset| {
+            clear_region(
+                &generator.output.instructions,
+                object,
+                offset,
+                callback.store + 1,
+            )
+        });
 
         let callback_address = generator.fresh_virtual_general_preferring(27);
+        if let Some((clear, clear_member_offset)) = clear.zip(self.clear_offset) {
+            let Instruction::StoreByte {
+                a,
+                offset: store_offset,
+                ..
+            } =
+                &mut generator.output.instructions[clear.store]
+            else {
+                unreachable!("the guarded byte clear was recognized")
+            };
+            *a = callback_address;
+            *store_offset = 0;
+            insert_address(
+                generator,
+                clear.start,
+                callback_address,
+                object,
+                clear_member_offset,
+            );
+        }
         let Instruction::StoreWord { a, offset, .. } =
             &mut generator.output.instructions[callback.store]
         else {
@@ -93,6 +136,18 @@ impl Plan {
         };
         *a = 4;
         *offset = 0;
+        let Instruction::LoadWord { d, .. } =
+            &mut generator.output.instructions[decrement.start]
+        else {
+            unreachable!("the decrement guard load was recognized")
+        };
+        *d = 3;
+        let Instruction::CompareWordImmediate { a, .. } =
+            &mut generator.output.instructions[decrement.start + 1]
+        else {
+            unreachable!("the decrement guard compare was recognized")
+        };
+        *a = 3;
         insert_address(generator, decrement.start, 4, object, self.member_offset);
         true
     }
@@ -185,10 +240,43 @@ fn callback_region(
     match_found
 }
 
+fn clear_region(
+    instructions: &[Instruction],
+    object: u8,
+    offset: i16,
+    after: usize,
+) -> Option<Region> {
+    instructions[after..]
+        .windows(7)
+        .enumerate()
+        .find_map(|(relative, window)| {
+            let start = after + relative;
+            let [
+                Instruction::LoadByteZero { d: compared, a: load_base, offset: load_offset },
+                Instruction::CompareLogicalWordImmediate { a: compare, immediate: 0 },
+                Instruction::BranchConditionalForward { .. },
+                _,
+                Instruction::BranchAndLink { .. },
+                Instruction::AddImmediate { d: zero, a: 0, immediate: 0 },
+                Instruction::StoreByte { s: stored, a: store_base, offset: store_offset },
+            ] = window else {
+                return None;
+            };
+            (*load_base == object
+                && *load_offset == offset
+                && *compare == *compared
+                && *stored == *zero
+                && *store_base == object
+                && *store_offset == offset)
+                .then_some(Region { start, store: start + 6 })
+        })
+}
+
 fn collect_candidates(
     statements: &[Statement],
     decrements: &mut Vec<MemberKey>,
     callbacks: &mut Vec<MemberKey>,
+    clears: &mut Vec<MemberKey>,
 ) {
     for statement in statements {
         match statement {
@@ -204,11 +292,16 @@ fn collect_candidates(
                     if let Some(candidate) = callback_then_store(condition, then_body) {
                         callbacks.push(candidate);
                     }
+                    if let Some(candidate) = direct_call_then_clear(condition, then_body) {
+                        clears.push(candidate);
+                    }
                 }
-                collect_candidates(then_body, decrements, callbacks);
-                collect_candidates(else_body, decrements, callbacks);
+                collect_candidates(then_body, decrements, callbacks, clears);
+                collect_candidates(else_body, decrements, callbacks, clears);
             }
-            Statement::Loop { body, .. } => collect_candidates(body, decrements, callbacks),
+            Statement::Loop { body, .. } => {
+                collect_candidates(body, decrements, callbacks, clears)
+            }
             _ => {}
         }
     }
@@ -269,6 +362,21 @@ fn callback_then_store(condition: &Expression, then_body: &[Statement]) -> Optio
     (callback.object == member.object
         && arguments.first().and_then(variable) == Some(member.object.as_str())
         && crate::analysis::structurally_equal(stored, left))
+    .then_some(member)
+}
+
+fn direct_call_then_clear(condition: &Expression, then_body: &[Statement]) -> Option<MemberKey> {
+    let member = member_key(condition)?;
+    let [
+        Statement::Expression(Expression::Call { arguments, .. }),
+        Statement::Store { target, value },
+    ] = then_body
+    else {
+        return None;
+    };
+    (arguments.first().and_then(variable) == Some(member.object.as_str())
+        && crate::analysis::structurally_equal(target, condition)
+        && crate::analysis::constant_value(value) == Some(0))
     .then_some(member)
 }
 
@@ -344,6 +452,30 @@ mod tests {
             ],
             else_body: Vec::new(),
         };
+        let clear = Statement::If {
+            condition: Expression::Member {
+                base: Box::new(Expression::Variable("object".into())),
+                offset: 3,
+                member_type: Type::UnsignedChar,
+                index_stride: None,
+            },
+            then_body: vec![
+                Statement::Expression(Expression::Call {
+                    name: "flush".into(),
+                    arguments: vec![Expression::Variable("object".into())],
+                }),
+                Statement::Store {
+                    target: Expression::Member {
+                        base: Box::new(Expression::Variable("object".into())),
+                        offset: 3,
+                        member_type: Type::UnsignedChar,
+                        index_stride: None,
+                    },
+                    value: Expression::IntegerLiteral(0),
+                },
+            ],
+            else_body: Vec::new(),
+        };
         let function = Function {
             return_type: Type::Void,
             name: "update".into(),
@@ -351,7 +483,7 @@ mod tests {
             is_weak: false,
             parameters: Vec::new(),
             locals: Vec::new(),
-            statements: vec![decrement, callback],
+            statements: vec![decrement, callback, clear],
             guards: Vec::new(),
             return_expression: None,
             section: None,
@@ -365,5 +497,6 @@ mod tests {
         let plan = recognize(&function).expect("countdown callback pair");
         assert_eq!(plan.object, "object");
         assert_eq!(plan.member_offset, 52);
+        assert_eq!(plan.clear_offset, Some(3));
     }
 }
