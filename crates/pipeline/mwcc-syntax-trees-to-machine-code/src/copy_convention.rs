@@ -8,7 +8,8 @@ impl Generator {
     /// Patched build 159 forwards the first pointer argument as an address copy
     /// and lets the adjacent pointer-difference argument consume the second
     /// source directly. Build 163's general materialization policy otherwise
-    /// leaves a redundant r0 snapshot in this four-instruction call packet.
+    /// leaves either a redundant r0 snapshot or its add-immediate copy spelling
+    /// in this call packet.
     pub(crate) fn normalize_patched_build159_pointer_difference_call(&mut self) {
         if self.behavior.frame_convention != mwcc_versions::FrameConvention::LinkageFirst
             || self.behavior.plain_linkage_epilogue_style
@@ -22,7 +23,7 @@ impl Generator {
             .iter()
             .map(|relocation| relocation.instruction_index)
             .collect();
-        let Some((start, start_source, end_source)) = self
+        if let Some((start, start_source, end_source)) = self
             .output
             .instructions
             .windows(4)
@@ -34,16 +35,34 @@ impl Generator {
                     .then(|| patched_pointer_difference_call(window).map(|pair| (index, pair.0, pair.1)))
                     .flatten()
             })
+        {
+            self.output.instructions[start] = Instruction::move_register(3, start_source);
+            self.output.instructions[start + 2] = Instruction::SubtractFrom {
+                d: 4,
+                a: start_source,
+                b: end_source,
+            };
+            crate::remove_instruction_retargeting_to_next(self, start + 1);
+            return;
+        }
+
+        let Some((start, start_source)) = self
+            .output
+            .instructions
+            .windows(3)
+            .enumerate()
+            .find_map(|(index, window)| {
+                (!relocated.contains(&index) && !relocated.contains(&(index + 1)))
+                    .then(|| {
+                        compact_patched_pointer_difference_call(window)
+                            .map(|source| (index, source))
+                    })
+                    .flatten()
+            })
         else {
             return;
         };
         self.output.instructions[start] = Instruction::move_register(3, start_source);
-        self.output.instructions[start + 2] = Instruction::SubtractFrom {
-            d: 4,
-            a: start_source,
-            b: end_source,
-        };
-        crate::remove_instruction_retargeting_to_next(self, start + 1);
     }
 
     /// Nonreturning linkage-first functions keep register copies in their `mr`
@@ -178,6 +197,22 @@ fn patched_pointer_difference_call(window: &[Instruction]) -> Option<(u8, u8)> {
     (*start != 0 && *end != 0 && start != end && a == start).then_some((*start, *end))
 }
 
+fn compact_patched_pointer_difference_call(window: &[Instruction]) -> Option<u8> {
+    let [
+        Instruction::AddImmediate {
+            d: 3,
+            a: start,
+            immediate: 0,
+        },
+        Instruction::SubtractFrom { d: 4, a, b: end },
+        Instruction::BranchAndLink { .. },
+    ] = window
+    else {
+        return None;
+    };
+    (*start != 0 && *end != 0 && start != end && a == start).then_some(*start)
+}
+
 /// A retained object forwarded beside an address-taken frame aggregate is a
 /// value materialization, not an address-preservation copy. Build 163 spells
 /// each such first argument as `addi r3,saved,0`.
@@ -297,6 +332,26 @@ mod tests {
         ];
 
         assert_eq!(patched_pointer_difference_call(&instructions), Some((4, 5)));
+    }
+
+    #[test]
+    fn recognizes_a_compact_forwarded_pointer_difference_call_packet() {
+        let instructions = [
+            Instruction::AddImmediate {
+                d: 3,
+                a: 4,
+                immediate: 0,
+            },
+            Instruction::SubtractFrom { d: 4, a: 4, b: 5 },
+            Instruction::BranchAndLink {
+                target: "flush".into(),
+            },
+        ];
+
+        assert_eq!(
+            compact_patched_pointer_difference_call(&instructions),
+            Some(4)
+        );
     }
 
     #[test]
