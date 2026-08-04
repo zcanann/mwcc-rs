@@ -1433,6 +1433,11 @@ impl Generator {
                     };
                     return self.emit_condition_test(&normalized);
                 }
+                if let Some(branch) =
+                    self.try_emit_post_step_immediate_condition(*operator, left, right)?
+                {
+                    return Ok(branch);
+                }
                 // For a signed arithmetic result compared with zero, mwcc uses
                 // the record form of the final arithmetic instruction and
                 // branches directly from CR0 (`add.` followed by `ble`, etc.).

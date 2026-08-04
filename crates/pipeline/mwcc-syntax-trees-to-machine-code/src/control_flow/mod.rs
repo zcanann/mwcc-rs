@@ -22,6 +22,7 @@ mod nested_phi_select;
 mod narrow_member_compare;
 mod negated_short_circuit;
 mod passes;
+mod post_step_condition;
 mod record_condition;
 mod record_mask;
 mod select;
