@@ -122,6 +122,15 @@ pub fn owned_closure_counter(
     }
 }
 
+/// Whether the closure's root type name already lives on the executable-body
+/// frontier. Such a pooled name replaces the ordinary close-boundary slot;
+/// an unpooled closure opens only after that boundary has completed.
+pub fn owned_closure_reuses_body_name(globals: &[DefinedGlobal]) -> bool {
+    owned_closure_ordinal_order(globals)
+        .iter()
+        .any(Option::is_none)
+}
+
 /// Reuse a function-owned string object when it carries the exact bytes of an
 /// RTTI type name. Build 163 performs this pooling before assigning the
 /// remaining RTTI helper ordinals.
@@ -286,7 +295,7 @@ mod tests {
     use super::{
         analysis_counter, coalesce_name_strings, fragmented_debug_counter,
         owned_closure_analysis_floor, owned_closure_body_counter, owned_closure_counter,
-        owned_closure_ordinal_order, resolve, AnalysisWeights,
+        owned_closure_ordinal_order, owned_closure_reuses_body_name, resolve, AnalysisWeights,
     };
     use mwcc_machine_code_to_object::{DataRelocation, DefinedGlobal};
     use mwcc_syntax_trees::CxxInlineOrdinalFacts;
@@ -372,6 +381,7 @@ mod tests {
             owned_closure_ordinal_order(&globals),
             [Some(boss_name.into()), Some(boss_bases.into()), Some(base_name.into())]
         );
+        assert!(!owned_closure_reuses_body_name(&globals));
     }
 
     #[test]
@@ -395,6 +405,7 @@ mod tests {
             owned_closure_ordinal_order(&globals),
             [None, Some(boss_bases.into())]
         );
+        assert!(owned_closure_reuses_body_name(&globals));
         resolve(&mut globals, 389, true);
         assert!(globals.iter().any(|global| global.name == "@389"));
     }

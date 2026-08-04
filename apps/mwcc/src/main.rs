@@ -2187,6 +2187,7 @@ fn compile(
         + unit.global_destructor_records.len() as u32)
         .max(analysis_counter_floor);
     let mut last_ordinary_body_counter = counter;
+    let mut last_ordinary_closed_counter = counter;
     let mut numbered_constant: std::collections::HashSet<(u64, u8)> =
         std::collections::HashSet::new();
     let mut function_string_objects: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
@@ -2441,6 +2442,9 @@ fn compile(
             });
         counter = (number + u32::from(post_function_bump))
             .saturating_sub(machine_function.post_function_counter_rollback);
+        if !machine_function.is_weak {
+            last_ordinary_closed_counter = counter;
+        }
         for relocation in &mut machine_function.relocations {
             match &relocation.target {
                 mwcc_machine_code::RelocationTarget::External(name) => {
@@ -2567,6 +2571,21 @@ fn compile(
         }
     }
     if config.flags.rtti {
+        // Resolve body-owned names before choosing the weak closure frontier:
+        // a pooled root name replaces the ordinary close-boundary slot.
+        if behavior.cxx_rtti_names_share_function_strings {
+            cxx_rtti_names::coalesce_name_strings(
+                &mut defined_globals,
+                &function_string_objects,
+            );
+        }
+        let closure_body_counter = if cxx_rtti_names::owned_closure_reuses_body_name(
+            &defined_globals,
+        ) {
+            last_ordinary_body_counter
+        } else {
+            last_ordinary_closed_counter
+        };
         // RTTI helper names are reserved by the class/declaration analysis
         // walk, before executable function bodies advance the ordinary pool
         // counter. Keep this timeline independent from function lowering.
@@ -2576,7 +2595,7 @@ fn compile(
                 cxx_rtti_names::owned_closure_analysis_floor(
                     cxx_rtti_names::owned_closure_body_counter(
                         counter,
-                        last_ordinary_body_counter,
+                        closure_body_counter,
                         emits_weak_vtable_closure,
                     ),
                     &defined_globals,
@@ -2610,6 +2629,7 @@ fn compile(
             eprintln!(
                 "rtti-ordinal-frontier final-body={counter} \
                  last-ordinary={last_ordinary_body_counter} \
+                 last-closed={last_ordinary_closed_counter} \
                  owned-floor={owned_closure_analysis_floor} \
                  selected={ordinary_rtti_analysis_counter}"
             );
@@ -2623,12 +2643,6 @@ fn compile(
         } else {
             ordinary_rtti_analysis_counter
         };
-        if behavior.cxx_rtti_names_share_function_strings {
-            cxx_rtti_names::coalesce_name_strings(
-                &mut defined_globals,
-                &function_string_objects,
-            );
-        }
         cxx_rtti_names::resolve(
             &mut defined_globals,
             rtti_analysis_counter,
