@@ -1205,6 +1205,9 @@ impl Generator {
         if self.try_release_list_bank_to_global(function)? {
             return Ok(());
         }
+        if self.try_intrusive_list_pop(function)? {
+            return Ok(());
+        }
         if self.try_bounded_global_ring_remove(function)? {
             return Ok(());
         }

@@ -3149,6 +3149,8 @@ mod tests {
     mod dsp_channel_parameter_update;
     #[path = "release_list_bank_to_global.rs"]
     mod release_list_bank_to_global;
+    #[path = "intrusive_list_pop.rs"]
+    mod intrusive_list_pop;
 
     #[path = "bounded_global_ring_remove.rs"]
     mod bounded_global_ring_remove;
