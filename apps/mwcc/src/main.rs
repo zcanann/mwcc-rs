@@ -3155,6 +3155,8 @@ mod tests {
     mod audio_manager_defaults;
     #[path = "audio_channel_defaults.rs"]
     mod audio_channel_defaults;
+    #[path = "global_struct_array_initialization.rs"]
+    mod global_struct_array_initialization;
 
     #[path = "bounded_global_ring_remove.rs"]
     mod bounded_global_ring_remove;

@@ -1214,6 +1214,9 @@ impl Generator {
         if self.try_audio_channel_defaults(function)? {
             return Ok(());
         }
+        if self.try_global_struct_array_initialization(function)? {
+            return Ok(());
+        }
         if self.try_bounded_global_ring_remove(function)? {
             return Ok(());
         }
