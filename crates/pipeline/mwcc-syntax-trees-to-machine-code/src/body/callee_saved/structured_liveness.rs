@@ -146,23 +146,33 @@ fn inline_terminal_call_result_alias(
             .is_some_and(|expression| expression_reads_name(expression, name))
 }
 
-fn contains_terminal_call_result_alias(expression: &Expression, name: &str) -> bool {
+fn contains_terminal_call_result_alias(
+    expression: &Expression,
+    name: &str,
+) -> bool {
     let Expression::Comma { left, right } = expression else {
         return false;
     };
-    let packet = matches!(
-        (left.as_ref(), right.as_ref()),
-        (
-            Expression::Assign { target, value },
-            Expression::Variable(read),
-        ) if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name)
-            && read == name
+    let packet = matches!(left.as_ref(), Expression::Assign { target, value }
+        if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name)
             && matches!(value.as_ref(), Expression::Call { .. })
-            && !expression_reads_name(value, name)
-    );
+            && !expression_reads_name(value, name))
+        && terminal_alias_projection(right, name);
     packet
         || contains_terminal_call_result_alias(left, name)
         || contains_terminal_call_result_alias(right, name)
+}
+
+fn terminal_alias_projection(expression: &Expression, name: &str) -> bool {
+    match expression {
+        Expression::Variable(read) => read == name,
+        Expression::Comma { left, right } => {
+            !expression_reads_name(left, name)
+                && !expression_has_side_effect(left)
+                && terminal_alias_projection(right, name)
+        }
+        _ => false,
+    }
 }
 
 fn immediate_call_result_zero_guard(
@@ -217,14 +227,10 @@ fn expression_ends_in_call(expression: &Expression) -> bool {
         | Expression::VirtualCall { .. } => true,
         Expression::Comma { left, right } => {
             expression_ends_in_call(right)
-                || matches!(
-                    (left.as_ref(), right.as_ref()),
-                    (
-                        Expression::Assign { target, value },
-                        Expression::Variable(read),
-                    ) if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == read)
-                        && matches!(value.as_ref(), Expression::Call { .. })
-                )
+                || matches!(left.as_ref(), Expression::Assign { target, value }
+                    if matches!(target.as_ref(), Expression::Variable(assigned)
+                        if terminal_alias_projection(right, assigned))
+                        && matches!(value.as_ref(), Expression::Call { .. }))
         }
         _ => false,
     }
@@ -763,6 +769,76 @@ mod tests {
     fn inline_terminal_call_result_alias_is_volatile() {
         assert!(inline_terminal_call_result_alias(
             &inline_result_alias(false),
+            None,
+            "temporary"
+        ));
+    }
+
+    #[test]
+    fn guarded_transparent_terminal_alias_is_volatile() {
+        let statements = vec![
+            Statement::Assign {
+                name: "outer".into(),
+                value: Expression::Comma {
+                    left: Box::new(Expression::Assign {
+                        target: Box::new(Expression::Variable("temporary".into())),
+                        value: Box::new(Expression::Call {
+                            name: "issue".into(),
+                            arguments: Vec::new(),
+                        }),
+                    }),
+                    right: Box::new(Expression::Comma {
+                        left: Box::new(Expression::Cast {
+                            target_type: mwcc_syntax_trees::Type::Void,
+                            operand: Box::new(Expression::IntegerLiteral(0)),
+                        }),
+                        right: Box::new(Expression::Variable("temporary".into())),
+                    }),
+                },
+            },
+            Statement::If {
+                condition: Expression::Binary {
+                    operator: mwcc_syntax_trees::BinaryOperator::Equal,
+                    left: Box::new(Expression::Variable("outer".into())),
+                    right: Box::new(Expression::IntegerLiteral(0)),
+                },
+                then_body: vec![Statement::Return(Some(Expression::IntegerLiteral(-1)))],
+                else_body: Vec::new(),
+            },
+        ];
+
+        assert!(immediate_call_result_zero_guard(&statements, None, "outer"));
+        assert!(inline_terminal_call_result_alias(
+            &statements,
+            None,
+            "temporary"
+        ));
+    }
+
+    #[test]
+    fn a_calling_terminal_projection_keeps_the_alias_live() {
+        let statements = vec![Statement::Assign {
+            name: "outer".into(),
+            value: Expression::Comma {
+                left: Box::new(Expression::Assign {
+                    target: Box::new(Expression::Variable("temporary".into())),
+                    value: Box::new(Expression::Call {
+                        name: "issue".into(),
+                        arguments: Vec::new(),
+                    }),
+                }),
+                right: Box::new(Expression::Comma {
+                    left: Box::new(Expression::Call {
+                        name: "observe".into(),
+                        arguments: Vec::new(),
+                    }),
+                    right: Box::new(Expression::Variable("temporary".into())),
+                }),
+            },
+        }];
+
+        assert!(!inline_terminal_call_result_alias(
+            &statements,
             None,
             "temporary"
         ));
