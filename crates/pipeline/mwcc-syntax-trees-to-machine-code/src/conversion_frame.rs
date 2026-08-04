@@ -16,16 +16,64 @@ impl Generator {
     /// conversion images. Existing cast/store/arithmetic paths retain their
     /// established frame ownership.
     pub(crate) fn count_integer_to_float_conversions(&self, function: &Function) -> usize {
+        fn expression_is_float(
+            generator: &Generator,
+            declared_float_values: &HashSet<&str>,
+            expression: &Expression,
+        ) -> bool {
+            if matches!(
+                expression,
+                Expression::Variable(name) if declared_float_values.contains(name.as_str())
+            ) || generator.is_float_value(expression)
+                || generator.is_float_operand(expression)
+                || matches!(expression, Expression::Call { name, .. }
+                    if matches!(generator.call_return_types.get(name), Some(Type::Float | Type::Double)))
+            {
+                return true;
+            }
+            match expression {
+                Expression::FloatLiteral(_) => true,
+                Expression::Cast { target_type, .. }
+                | Expression::Member {
+                    member_type: target_type,
+                    ..
+                } => matches!(target_type, Type::Float | Type::Double),
+                Expression::Binary {
+                    operator:
+                        BinaryOperator::Add
+                        | BinaryOperator::Subtract
+                        | BinaryOperator::Multiply
+                        | BinaryOperator::Divide,
+                    left,
+                    right,
+                } => {
+                    expression_is_float(generator, declared_float_values, left)
+                        || expression_is_float(generator, declared_float_values, right)
+                }
+                Expression::Unary { operand, .. } => {
+                    expression_is_float(generator, declared_float_values, operand)
+                }
+                Expression::Conditional {
+                    when_true,
+                    when_false,
+                    ..
+                } => {
+                    expression_is_float(generator, declared_float_values, when_true)
+                        || expression_is_float(generator, declared_float_values, when_false)
+                }
+                Expression::Comma { right, .. } => {
+                    expression_is_float(generator, declared_float_values, right)
+                }
+                _ => false,
+            }
+        }
+
         fn needs_conversion(
             generator: &Generator,
             declared_float_values: &HashSet<&str>,
             expression: &Expression,
         ) -> bool {
-            !(matches!(
-                expression,
-                Expression::Variable(name) if declared_float_values.contains(name.as_str())
-            ) || generator.is_float_value(expression)
-                || generator.is_float_operand(expression))
+            !expression_is_float(generator, declared_float_values, expression)
                 && constant_value(expression).is_none()
         }
 
@@ -312,12 +360,7 @@ impl Generator {
                 return 0;
             }
             let is_float = |value: &Expression| {
-                matches!(
-                    value,
-                    Expression::Variable(name)
-                        if declared_float_values.contains(name.as_str())
-                ) || generator.is_float_value(value)
-                    || generator.is_float_operand(value)
+                expression_is_float(generator, declared_float_values, value)
             };
             match (is_float(left), is_float(right)) {
                 (true, false) => usize::from(needs_conversion(
@@ -413,6 +456,9 @@ impl Generator {
     }
 
     pub(crate) fn claim_int_to_float_scratch(&mut self) -> Compilation<i16> {
+        if let Some(base) = self.shared_numeric_conversion_scratch {
+            return Ok(base);
+        }
         if self.int_to_float_scratch_next == 0 {
             self.int_to_float_scratch_next = 8;
         }

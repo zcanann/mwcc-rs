@@ -3086,6 +3086,9 @@ mod tests {
     #[path = "adjacent_linear_interpolation.rs"]
     mod adjacent_linear_interpolation;
 
+    #[path = "numeric_conversion_block_scratch.rs"]
+    mod numeric_conversion_block_scratch;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 

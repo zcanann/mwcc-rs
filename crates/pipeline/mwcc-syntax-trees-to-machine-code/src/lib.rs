@@ -28,6 +28,7 @@ mod conversion_frame;
 mod condition_float_cache;
 mod condition_global_cache;
 mod condition_member_cache;
+mod conversion_scratch_scope;
 mod control_flow;
 mod copy_convention;
 mod copy_sign_frame;
@@ -705,6 +706,7 @@ fn lower_function_body(
         float_to_int_scratch_end: 0,
         int_to_float_scratch_next: 0,
         int_to_float_scratch_end: 0,
+        shared_numeric_conversion_scratch: None,
         preserve_guarded_named_local_values: false,
         reuse_scratch_constant: false,
         scratch_constant: None,
@@ -1285,6 +1287,7 @@ fn lower_function_body(
     }
     generator.schedule_structured_heap_transactions();
     generator.normalize_float_to_int_scratch_images();
+    generator.schedule_structured_global_base_epilogue();
     generator.normalize_nintendo_saved_gpr_epilogue();
 
     // Debug lowering consumes final physical allocation, not the frontend's

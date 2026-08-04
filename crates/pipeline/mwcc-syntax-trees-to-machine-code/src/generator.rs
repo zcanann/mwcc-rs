@@ -692,6 +692,11 @@ pub(crate) struct Generator {
     pub(crate) int_to_float_scratch_next: i16,
     /// Exclusive end of a structured body's pre-planned int-to-float range.
     pub(crate) int_to_float_scratch_end: i16,
+    /// One basic-block-scoped numeric conversion image shared by both
+    /// conversion directions. `Some(base)` means every claim returns `base`;
+    /// straight-line conversion clusters retain their ordinary disjoint
+    /// ranges and leave this unset.
+    pub(crate) shared_numeric_conversion_scratch: Option<i16>,
     /// A structured named local owns each guarded pointer load. Preserve the
     /// local's scratch value and forward it to r3 instead of treating the pair
     /// as two direct member expressions eligible for load elimination.

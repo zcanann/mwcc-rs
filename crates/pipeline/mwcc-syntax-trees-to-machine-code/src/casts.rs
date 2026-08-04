@@ -23,6 +23,36 @@ pub(crate) enum IntToFloatSchedule {
     CallResult,
 }
 
+/// Whether a floating conversion to this integer type owns an `fctiwz`
+/// stack image. Full-width unsigned conversions call `__cvt_fp2unsigned`
+/// instead, so charging them to the conversion frame creates dead lanes and
+/// can prevent unrelated signed/int-to-float images from sharing a block
+/// slot. Narrow unsigned conversions remain here because store truncation can
+/// intentionally use the signed `fctiwz` packet.
+fn float_to_integer_type_uses_scratch(value_type: Type) -> bool {
+    matches!(
+        value_type,
+        Type::Int
+            | Type::Char
+            | Type::UnsignedChar
+            | Type::Short
+            | Type::UnsignedShort
+            | Type::LongLong
+    )
+}
+
+fn float_to_integer_pointee_uses_scratch(pointee: Pointee) -> bool {
+    matches!(
+        pointee,
+        Pointee::Int
+            | Pointee::Char
+            | Pointee::UnsignedChar
+            | Pointee::Short
+            | Pointee::UnsignedShort
+            | Pointee::LongLong
+    )
+}
+
 impl Generator {
     /// Keep the two halves of a finalized `fctiwz` scratch packet on the same
     /// doubleword. Frame relayout can move the extracted low-word load after
@@ -80,19 +110,7 @@ impl Generator {
                     .iter()
                     .map(|local| (local.name.as_str(), local.declared_type)),
             )
-            .filter(|(_, value_type)| {
-                matches!(
-                    value_type,
-                    Type::Int
-                        | Type::UnsignedInt
-                        | Type::Char
-                        | Type::UnsignedChar
-                        | Type::Short
-                        | Type::UnsignedShort
-                        | Type::LongLong
-                        | Type::UnsignedLongLong
-                )
-            })
+            .filter(|(_, value_type)| float_to_integer_type_uses_scratch(*value_type))
             .map(|(name, _)| name)
             .collect::<std::collections::HashSet<_>>();
 
@@ -154,7 +172,7 @@ impl Generator {
             value: &Expression,
         ) -> bool {
             generator.store_target_pointee(target).is_some_and(|pointee| {
-                !matches!(pointee, Pointee::Float | Pointee::Double)
+                float_to_integer_pointee_uses_scratch(pointee)
                     && expression_is_float(generator, declared_float_values, value)
                     && generator
                         .folded_float_store_constant(value, pointee)
@@ -188,17 +206,8 @@ impl Generator {
                     operand,
                 } => {
                     usize::from(
-                        matches!(
-                            target_type,
-                            Type::Int
-                                | Type::UnsignedInt
-                                | Type::Char
-                                | Type::UnsignedChar
-                                | Type::Short
-                                | Type::UnsignedShort
-                                | Type::LongLong
-                                | Type::UnsignedLongLong
-                        ) && expression_is_float(generator, declared_float_values, operand)
+                        float_to_integer_type_uses_scratch(*target_type)
+                            && expression_is_float(generator, declared_float_values, operand)
                     ) + expression_count(generator, declared_float_values, operand)
                 }
                 Expression::Unary { operand, .. }
@@ -247,7 +256,7 @@ impl Generator {
                                 *index,
                             )
                             .is_some_and(|parameter_type| {
-                                !matches!(parameter_type, Type::Float | Type::Double)
+                                float_to_integer_type_uses_scratch(parameter_type)
                                     && expression_is_float(
                                         generator,
                                         declared_float_values,
@@ -460,34 +469,16 @@ impl Generator {
                 let initializer = local.initializer.as_ref()?;
                 Some(
                     usize::from(
-                        matches!(
-                            local.declared_type,
-                            Type::Int
-                                | Type::UnsignedInt
-                                | Type::Char
-                                | Type::UnsignedChar
-                                | Type::Short
-                                | Type::UnsignedShort
-                                | Type::LongLong
-                                | Type::UnsignedLongLong
-                        ) && expression_is_float(self, &declared_float_values, initializer),
+                        float_to_integer_type_uses_scratch(local.declared_type)
+                            && expression_is_float(self, &declared_float_values, initializer),
                     ) + expression_count(self, &declared_float_values, initializer),
                 )
             })
             .sum::<usize>();
         let return_count = function.return_expression.as_ref().map_or(0, |expression| {
             usize::from(
-                matches!(
-                    function.return_type,
-                    Type::Int
-                        | Type::UnsignedInt
-                        | Type::Char
-                        | Type::UnsignedChar
-                        | Type::Short
-                        | Type::UnsignedShort
-                        | Type::LongLong
-                        | Type::UnsignedLongLong
-                ) && expression_is_float(self, &declared_float_values, expression),
+                float_to_integer_type_uses_scratch(function.return_type)
+                    && expression_is_float(self, &declared_float_values, expression),
             ) + expression_count(self, &declared_float_values, expression)
         });
         local_initializer_count
@@ -548,6 +539,9 @@ impl Generator {
     /// grow the single frame push as additional conversions are encountered.
     /// Callee-saved bodies must pre-plan their range before emitting a prologue.
     pub(crate) fn claim_float_to_int_scratch(&mut self) -> Compilation<i16> {
+        if let Some(base) = self.shared_numeric_conversion_scratch {
+            return Ok(base);
+        }
         if self.float_to_int_scratch_next == 0 {
             if self.non_leaf || self.frame_size != 0 {
                 return Err(mwcc_core::Diagnostic::error(

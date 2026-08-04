@@ -1186,7 +1186,31 @@ impl Generator {
                 .checked_sub(8)
                 .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
         }
-        if int_to_float_conversion_count != 0 {
+        let shares_one_numeric_conversion_lane = variadic_output_frame.is_none()
+            && frame_arrays.is_empty()
+            && aggregate_frame_locals.is_empty()
+            && frame_scalar_parameters.is_empty()
+            && frame_scalar_locals.is_empty()
+            && self.basic_blocks_use_one_numeric_conversion_lane(
+                function,
+                int_to_float_conversion_count,
+                float_to_int_conversion_count,
+            );
+        if shares_one_numeric_conversion_lane {
+            let occupied_end = 8i16
+                .checked_add(local_region_bytes)
+                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+            let conversion_base = occupied_end
+                .checked_add(7)
+                .map(|end| end & !7)
+                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+            self.plan_shared_numeric_conversion_scratch(
+                conversion_base,
+                int_to_float_conversion_count != 0,
+                float_to_int_conversion_count != 0,
+            )?;
+            local_region_bytes = conversion_base;
+        } else if int_to_float_conversion_count != 0 {
             let occupied_end = 8i16
                 .checked_add(local_region_bytes)
                 .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
@@ -1207,7 +1231,7 @@ impl Generator {
                 .checked_sub(8)
                 .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
         }
-        if float_to_int_conversion_count != 0 {
+        if !shares_one_numeric_conversion_lane && float_to_int_conversion_count != 0 {
             let occupied_end = 8i16
                 .checked_add(local_region_bytes)
                 .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
