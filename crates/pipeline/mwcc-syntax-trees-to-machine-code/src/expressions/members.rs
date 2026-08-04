@@ -376,7 +376,7 @@ impl Generator {
     /// Split an arbitrary 32-bit member offset into MWCC's address adjustment
     /// and signed D-form displacement. Small offsets remain a single load/store;
     /// larger offsets use `addis base,base,ha(offset)` before the access.
-    fn emit_member_base_adjustment(&mut self, base: u8, offset: u32) -> i16 {
+    pub(super) fn emit_member_base_adjustment(&mut self, base: u8, offset: u32) -> i16 {
         let (high_adjusted, low) = split_address(offset);
         if high_adjusted != 0 {
             self.output
@@ -493,6 +493,15 @@ impl Generator {
                 pointer,
                 displacement,
             )?);
+            return Ok(());
+        }
+        if self.try_emit_member_pointer_array_member_load(
+            base,
+            offset,
+            member_type,
+            index_stride,
+            destination,
+        )? {
             return Ok(());
         }
         // `a[i].field`: scale the index by the struct size, then load at the field

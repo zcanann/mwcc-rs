@@ -48,6 +48,7 @@ mod linkage_first_fixed_bank_region;
 mod linkage_first_fixed_bank_self_copy;
 mod materialized_bitand_constant;
 mod member_array_constant_store;
+mod member_pointer_array_member_load;
 mod member_pointer_arithmetic_schedule;
 mod member_pointer_constant_indexed_store;
 mod member_indexed_global_array_store;
