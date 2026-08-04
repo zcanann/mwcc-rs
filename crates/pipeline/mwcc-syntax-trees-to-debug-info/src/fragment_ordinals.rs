@@ -188,7 +188,7 @@ impl OrdinalState {
             .iter()
             .find_map(|blob| blob.static_slot_prefix_bump)
             .map_or(0, |prefix| {
-                prefix
+                prefix.saturating_sub(machine.fragmented_debug_static_slot_discount)
                     + if strings_at_front {
                         machine.new_string_count
                     } else {
@@ -230,7 +230,7 @@ fn invalid_fragment_ordinal() -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_machine_code::FrameInfo;
+    use mwcc_machine_code::{AnonymousRodata, FrameInfo};
     use mwcc_versions::GC_3_0A3;
 
     fn constant(bits: u64) -> PoolConstant {
@@ -262,6 +262,32 @@ mod tests {
         assert_eq!(
             fragment_ordinals(&[function], GC_3_0A3, 6, 3).unwrap(),
             (7, 8)
+        );
+    }
+
+    #[test]
+    fn conversion_gap_restores_only_the_untraversed_image_prefix() {
+        let mut function = MachineFunction::new("scale");
+        function.has_conversion = true;
+        function.anonymous_label_bump = 3;
+        function.constants.push(PoolConstant {
+            bits: 0x4330_0000_8000_0000,
+            byte_width: 8,
+            static_slot: false,
+            image: false,
+            force_new: false,
+        });
+        function.constant_number_gaps.push((0, 2));
+        function.anonymous_rodata.push(AnonymousRodata {
+            bytes: vec![0; 16],
+            static_slot_prefix_bump: Some(3),
+            anonymous_offset: 0,
+        });
+        function.fragmented_debug_static_slot_discount = 2;
+
+        assert_eq!(
+            fragment_ordinals(&[function], GC_3_0A3, 7, 3).unwrap(),
+            (12, 13)
         );
     }
 

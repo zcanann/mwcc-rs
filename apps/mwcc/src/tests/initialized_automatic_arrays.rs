@@ -1,4 +1,51 @@
+use super::elf_object::symbols;
 use crate::{compile, SourceLanguage};
+
+#[test]
+fn numbers_conversion_bias_after_automatic_image_source_work() {
+    let source = br#"
+        int scale2(int value, unsigned index) {
+            const double table[2] = {0.5, 1.5};
+            return value * table[index];
+        }
+
+        int scale8(int value, unsigned index) {
+            const double table[8] = {
+                0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5
+            };
+            return value * table[index];
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let object = compile(
+        source,
+        "automatic-image-conversion-ordinals.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_3_0A3,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("automatic image conversions should retain their source ordinals");
+    let anonymous = symbols(&object)
+        .into_iter()
+        .filter_map(|(name, section, _, _)| name.starts_with('@').then_some((name, section)))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        anonymous,
+        [
+            ("@7".into(), ".rodata".into()),
+            ("@10".into(), ".sdata2".into()),
+            ("@18".into(), ".rodata".into()),
+        ]
+    );
+}
 
 #[test]
 fn copies_a_short_double_array_through_one_rodata_image() {

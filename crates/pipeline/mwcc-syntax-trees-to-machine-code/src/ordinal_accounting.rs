@@ -12,6 +12,8 @@ use mwcc_syntax_trees::{
 use mwcc_versions::{Behavior, FunctionOrdinalAccountingStyle};
 use std::collections::HashSet;
 
+mod automatic_image_conversion;
+
 /// Build 163 assigns retained inline-initializer nodes after a function's
 /// strings. Move those ordinals out of the pool-front block and reinsert them
 /// immediately before the first constant. Functions without strings keep the
@@ -299,6 +301,7 @@ pub(crate) fn apply_unit(
 ) {
     apply_deferred_constant_scopes(machine_functions);
     resolve_gc41_automatic_image_slots(functions, machine_functions, style);
+    automatic_image_conversion::apply_unit(functions, machine_functions, style);
     if style != FunctionOrdinalAccountingStyle::Gc41Ipa || machine_functions.is_empty() {
         return;
     }
@@ -499,7 +502,7 @@ mod tests {
     };
     use mwcc_versions::{CompilerConfig, GC_1_2_5N};
 
-    fn function() -> Function {
+    pub(super) fn function() -> Function {
         Function {
             return_type: Type::Int,
             name: "probe".to_string(),

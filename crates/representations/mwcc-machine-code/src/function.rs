@@ -239,6 +239,10 @@ pub struct MachineFunction {
     /// Extra `@N` numbers consumed AFTER this function's pooled constants
     /// and before its extab pair (the nested punned-guard's inner block).
     pub post_constant_label_bump: u32,
+    /// Portion of an automatic image's static-slot prefix already represented
+    /// by a later mid-pool gap in GC 4.1 fragmented-debug numbering. Object
+    /// emission still restores the complete prefix between function blocks.
+    pub fragmented_debug_static_slot_discount: u32,
     /// Override the build-wide anonymous-counter gap after this function.
     /// Most functions use the ABI generation's default; semantically inlined
     /// helper families can retain additional compiler bookkeeping slots.
@@ -363,6 +367,7 @@ impl MachineFunction {
             deferred_next_constant_scope_bump: 0,
             leading_source_anonymous_bump_override: None,
             post_constant_label_bump: 0,
+            fragmented_debug_static_slot_discount: 0,
             post_function_anonymous_bump: None,
             post_function_counter_rollback: 0,
             pre_scheduled: false,
