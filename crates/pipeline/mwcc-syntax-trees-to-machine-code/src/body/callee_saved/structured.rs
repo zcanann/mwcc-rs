@@ -199,14 +199,18 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        let suppressed_constant =
-            repeated_store_constant_exceeds_home_capacity(function);
+        let suppressed_constant = repeated_store_constant_exceeds_home_capacity(
+            function,
+            self.behavior.use_lmw_stmw,
+        );
         let counted_call_retry = normalize_counted_call_retry(function);
         let mut rewritten = counted_call_retry
             .clone()
             .unwrap_or_else(|| function.clone());
         let mut changed = counted_call_retry.is_some();
-        while let Some(next) = retain_repeated_store_constant_across_call(&rewritten) {
+        while let Some(next) =
+            retain_repeated_store_constant_across_call(&rewritten, self.behavior.use_lmw_stmw)
+        {
             rewritten = next;
             changed = true;
         }
@@ -1425,6 +1429,7 @@ impl Generator {
             global_member_search_entry,
             parameter_home_reuse
                 .reuses_parameter_home(eager_saved_locals.len(), saved_parameters.len()),
+            self.behavior.use_lmw_stmw,
         ) || dense_unused_array_state_transfer;
         let dense_retained_local_table = (dense_frame
             && self.behavior.frame_convention == FrameConvention::LinkageFirst
@@ -2521,9 +2526,14 @@ impl Generator {
                 LegacyCalleeSavedFrameLayout::ReserveForwardedParameterLane;
         }
         let pooled_dense_inline_save = array_pool_plan.is_some();
+        let dense_predecrement_inline_save = dense_saved_range
+            && self.behavior.frame_convention == FrameConvention::Predecrement
+            && self.behavior.use_lmw_stmw
+            && !pooled_dense_inline_save;
         let dense_save_helper = dense_saved_range
             && self.behavior.frame_convention == FrameConvention::Predecrement
-            && !pooled_dense_inline_save;
+            && !pooled_dense_inline_save
+            && !dense_predecrement_inline_save;
         let dense_inline_save =
             dense_saved_range && self.behavior.frame_convention == FrameConvention::LinkageFirst;
         if dense_saved_range && array_pool_plan.is_none() {
@@ -2556,6 +2566,25 @@ impl Generator {
                     a: 1,
                     offset: plan.frame_size - 4 * frame_saved_count as i16,
                 });
+        } else if dense_predecrement_inline_save {
+            self.output.instructions.extend([
+                Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -plan.frame_size,
+                },
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: plan.frame_size + 4,
+                },
+                Instruction::StoreMultipleWord {
+                    s: frame_first_saved as u8,
+                    a: 1,
+                    offset: plan.frame_size - 4 * frame_saved_count as i16,
+                },
+            ]);
         } else if dense_inline_save {
             self.output.instructions.extend([
                 Instruction::MoveFromLinkRegister { d: 0 },
@@ -3958,7 +3987,10 @@ impl Generator {
             // An always-true loop with no reachable source return has no edge
             // into the shared function tail.  MWCC omits both the implicit
             // return value and the otherwise-unreachable restore sequence.
-        } else if dense_inline_save || pooled_dense_inline_save {
+        } else if dense_inline_save
+            || dense_predecrement_inline_save
+            || pooled_dense_inline_save
+        {
             self.output.instructions.extend([
                 Instruction::LoadMultipleWord {
                     d: frame_first_saved as u8,

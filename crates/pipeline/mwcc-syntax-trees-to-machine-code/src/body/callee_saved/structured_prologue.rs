@@ -43,8 +43,9 @@ pub(super) fn uses_dense_saved_register_range(
     saved_home_count: usize,
     global_member_search_entry: bool,
     reuses_parameter_home: bool,
+    use_lmw_stmw: bool,
 ) -> bool {
-    (with_frame_array || saved_home_count >= 9)
+    (with_frame_array || saved_home_count >= 9 || (use_lmw_stmw && saved_home_count >= 5))
         && saved_home_count <= 18
         && (saved_home_count >= 5 || (global_member_search_entry && saved_home_count >= 4))
         && (eager_local_count == 0 || reuses_parameter_home)
@@ -482,8 +483,9 @@ mod tests {
 
     #[test]
     fn expired_parameter_reuse_enables_a_dense_eager_frame() {
-        assert!(uses_dense_saved_register_range(true, 4, 12, false, true));
-        assert!(!uses_dense_saved_register_range(true, 4, 12, false, false));
+        assert!(uses_dense_saved_register_range(true, 4, 12, false, true, false));
+        assert!(!uses_dense_saved_register_range(true, 4, 12, false, false, false));
+        assert!(uses_dense_saved_register_range(false, 0, 5, false, false, true));
     }
 
     #[test]

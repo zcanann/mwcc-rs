@@ -9,16 +9,26 @@ use super::*;
 
 const MAX_RETAINED_CONSTANT_HOME_PRESSURE: usize = 4;
 
-pub(super) fn repeated_store_constant_exceeds_home_capacity(function: &Function) -> bool {
-    if existing_call_live_value_count(function) < MAX_RETAINED_CONSTANT_HOME_PRESSURE {
+fn retained_constant_home_capacity(use_lmw_stmw: bool) -> usize {
+    MAX_RETAINED_CONSTANT_HOME_PRESSURE + usize::from(use_lmw_stmw)
+}
+
+pub(super) fn repeated_store_constant_exceeds_home_capacity(
+    function: &Function,
+    use_lmw_stmw: bool,
+) -> bool {
+    if existing_call_live_value_count(function) < retained_constant_home_capacity(use_lmw_stmw) {
         return false;
     }
     let mut statements = function.statements.clone();
     rewrite_statement_list(&mut statements, "__mwcc_retained_constant_probe").is_some()
 }
 
-pub(super) fn retain_repeated_store_constant_across_call(function: &Function) -> Option<Function> {
-    if existing_call_live_value_count(function) >= MAX_RETAINED_CONSTANT_HOME_PRESSURE {
+pub(super) fn retain_repeated_store_constant_across_call(
+    function: &Function,
+    use_lmw_stmw: bool,
+) -> Option<Function> {
+    if existing_call_live_value_count(function) >= retained_constant_home_capacity(use_lmw_stmw) {
         return None;
     }
     let occupied = function
@@ -68,6 +78,25 @@ fn existing_call_live_value_count(function: &Function) -> usize {
 }
 
 fn rewrite_statement_list(statements: &mut Vec<Statement>, name: &str) -> Option<i64> {
+    for index in 0..statements.len() {
+        let Statement::Loop { body, .. } = &mut statements[index] else {
+            continue;
+        };
+        let constants = loop_store_constants(body);
+        for constant in constants {
+            if rewrite_guarded_second_store(body, constant, name, false) {
+                statements.insert(
+                    index,
+                    Statement::Assign {
+                        name: name.to_owned(),
+                        value: Expression::IntegerLiteral(constant),
+                    },
+                );
+                return Some(constant);
+            }
+        }
+    }
+
     for statement in statements.iter_mut() {
         let nested = match statement {
             Statement::If {
@@ -143,6 +172,42 @@ fn rewrite_statement_list(statements: &mut Vec<Statement>, name: &str) -> Option
         }
     }
     None
+}
+
+fn loop_store_constants(statements: &[Statement]) -> Vec<i64> {
+    let mut constants = Vec::new();
+    for statement in statements {
+        if let Some(constant) = store_integer_constant(statement) {
+            if i32::try_from(constant).is_ok() && !constants.contains(&constant) {
+                constants.push(constant);
+            }
+        }
+        match statement {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                for constant in loop_store_constants(then_body)
+                    .into_iter()
+                    .chain(loop_store_constants(else_body))
+                {
+                    if !constants.contains(&constant) {
+                        constants.push(constant);
+                    }
+                }
+            }
+            Statement::Loop { body, .. } => {
+                for constant in loop_store_constants(body) {
+                    if !constants.contains(&constant) {
+                        constants.push(constant);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    constants
 }
 
 fn rewrite_guarded_second_store(
@@ -354,11 +419,55 @@ mod tests {
     fn preserves_the_constant_lane_without_allocating_a_fifth_saved_home() {
         let pressured = pressure_function(MAX_RETAINED_CONSTANT_HOME_PRESSURE);
 
-        assert!(repeated_store_constant_exceeds_home_capacity(&pressured));
-        assert!(retain_repeated_store_constant_across_call(&pressured).is_none());
+        assert!(repeated_store_constant_exceeds_home_capacity(&pressured, false));
+        assert!(retain_repeated_store_constant_across_call(&pressured, false).is_none());
+        assert!(!repeated_store_constant_exceeds_home_capacity(&pressured, true));
+        assert!(retain_repeated_store_constant_across_call(&pressured, true).is_some());
 
         let available = pressure_function(MAX_RETAINED_CONSTANT_HOME_PRESSURE - 1);
-        assert!(!repeated_store_constant_exceeds_home_capacity(&available));
-        assert!(retain_repeated_store_constant_across_call(&available).is_some());
+        assert!(!repeated_store_constant_exceeds_home_capacity(&available, false));
+        assert!(retain_repeated_store_constant_across_call(&available, false).is_some());
+    }
+
+    #[test]
+    fn retains_a_store_constant_reused_by_a_call_bearing_loop() {
+        let mut statements = vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::Variable("running".into())),
+            step: None,
+            body: vec![
+                Statement::Expression(Expression::Call {
+                    name: "destroy".into(),
+                    arguments: Vec::new(),
+                }),
+                Statement::Store {
+                    target: Expression::Variable("slot".into()),
+                    value: Expression::IntegerLiteral(0),
+                },
+            ],
+        }];
+
+        assert_eq!(
+            rewrite_statement_list(&mut statements, "__retained"),
+            Some(0)
+        );
+        assert!(matches!(
+            statements.as_slice(),
+            [
+                Statement::Assign { name, .. },
+                Statement::Loop { body, .. },
+            ] if name == "__retained"
+                && matches!(
+                    body.as_slice(),
+                    [
+                        Statement::Expression(Expression::Call { .. }),
+                        Statement::Store {
+                            value: Expression::Variable(value),
+                            ..
+                        },
+                    ] if value == name
+                )
+        ));
     }
 }
