@@ -391,6 +391,17 @@ impl MachineFunction {
             + self.anonymous_label_bump
     }
 
+    /// Whether this function creates an anonymous object before its unwind
+    /// records. Fragmented debug layout and object symbol ordering both use
+    /// this boundary; keep the ownership predicate with the representation.
+    pub fn owns_anonymous_payload(&self) -> bool {
+        self.new_string_count != 0
+            || !self.constants.is_empty()
+            || !self.anonymous_rodata.is_empty()
+            || !self.jump_tables.is_empty()
+            || !self.static_locals.is_empty()
+    }
+
     /// Intern a pool constant, returning its index. Equal constants share one slot
     /// (mwcc pools identical constants).
     pub fn intern_constant(&mut self, bits: u64, byte_width: u8) -> usize {

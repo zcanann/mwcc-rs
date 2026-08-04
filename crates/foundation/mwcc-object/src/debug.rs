@@ -105,6 +105,9 @@ pub enum DebugSymbolBinding {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DebugSymbolPlacement {
     Early,
+    /// After this function's strings/read-only images/constants, immediately
+    /// before its unwind records.
+    BeforeFunctionUnwind(usize),
     AfterFunctionLocals(usize),
 }
 

@@ -8,6 +8,7 @@
 //! function/type families can reuse the same fragmentation owner.
 
 use mwcc_core::{Compilation, Diagnostic};
+use mwcc_dwarf1::Tag;
 use mwcc_machine_code::MachineFunction;
 use mwcc_object::{
     layout_function_placements, DebugLayout, DebugRelocationKind, DebugRelocationTarget,
@@ -17,27 +18,46 @@ use mwcc_object::{
 use mwcc_syntax_trees::{TranslationUnit, Type};
 use mwcc_versions::CompilerBuild;
 
+use super::fragment_ordinals::{
+    class_fragment_ordinals, fragment_ordinals, fragmented_post_framed_bump,
+};
 use super::legacy::data::{fragmented_plan, FragmentedDataItem};
 
-pub(super) fn lower_simple_void_functions(
+pub(super) fn lower_functions_without_file_data(
     unit: &TranslationUnit,
     machine_functions: &[MachineFunction],
     build: CompilerBuild,
+    first_function_anonymous_counter: u32,
     code_alignment: u32,
     mut sections: DebugSections,
 ) -> Compilation<DebugSections> {
     let post_framed_bump = fragmented_post_framed_bump(build);
-    let (first_ordinal, line_end_ordinal) =
-        fragment_ordinals(machine_functions, build, post_framed_bump)?;
+    let (first_ordinal, line_end_ordinal) = fragment_ordinals(
+        machine_functions,
+        build,
+        first_function_anonymous_counter,
+        post_framed_bump,
+    )?;
     let line_header = format!(".line..{first_ordinal}");
     let line_end_name = format!(".line..{line_end_ordinal}");
     let compile_unit = format!(".dwarf.0011..{}", line_end_ordinal + 1);
-    let first_null_name = format!(".dwarf.0000..{}", line_end_ordinal + 2);
-    let second_null_name = format!(".dwarf.0000..{}", line_end_ordinal + 3);
 
     let compile_unit_size = read_u32(&sections.debug, 0)?;
-    let (debug_fragments, first_null_offset, second_null_offset, second_null_size) =
-        debug_fragment_boundaries(unit, &sections.debug, compile_unit_size)?;
+    let (
+        type_fragments,
+        debug_fragments,
+        first_null_offset,
+        second_null_offset,
+        second_null_size,
+    ) = debug_fragment_boundaries(
+        unit,
+        &sections.debug,
+        compile_unit_size,
+        line_end_ordinal + 2,
+    )?;
+    let first_null_ordinal = line_end_ordinal + 2 + type_fragments.len() as u32;
+    let first_null_name = format!(".dwarf.0000..{first_null_ordinal}");
+    let second_null_name = format!(".dwarf.0000..{}", first_null_ordinal + 1);
     let placements = machine_functions
         .iter()
         .map(|function| FunctionPlacement {
@@ -59,11 +79,16 @@ pub(super) fn lower_simple_void_functions(
         || sections.line[0..4] != (sections.line.len() as u32).to_be_bytes()
     {
         return Err(Diagnostic::error(
-            "debug-info: invalid GC 4.1 simple-function fragment boundaries",
+            "debug-info: invalid GC 4.1 function fragment boundaries",
         ));
     }
 
     let closing_placement = DebugSymbolPlacement::AfterFunctionLocals(unit.functions.len() - 1);
+    let line_header_placement = if machine_functions[0].owns_anonymous_payload() {
+        DebugSymbolPlacement::BeforeFunctionUnwind(0)
+    } else {
+        DebugSymbolPlacement::Early
+    };
     sections.layout = DebugLayout::AfterDataGrouped;
     sections.post_framed_function_anonymous_bump_override = Some(post_framed_bump);
     sections.symbols = vec![
@@ -75,7 +100,7 @@ pub(super) fn lower_simple_void_functions(
             1,
             DebugSymbolBinding::Local,
             0,
-            DebugSymbolPlacement::Early,
+            line_header_placement,
         ),
         symbol(
             line_end_name,
@@ -97,6 +122,20 @@ pub(super) fn lower_simple_void_functions(
             0,
             closing_placement,
         ),
+    ];
+    for fragment in &type_fragments {
+        sections.symbols.push(symbol(
+            fragment.name.clone(),
+            DebugSection::Debug,
+            fragment.offset,
+            fragment.size,
+            1,
+            DebugSymbolBinding::Local,
+            0,
+            closing_placement,
+        ));
+    }
+    sections.symbols.extend([
         symbol(
             first_null_name,
             DebugSection::Debug,
@@ -117,7 +156,7 @@ pub(super) fn lower_simple_void_functions(
             0,
             closing_placement,
         ),
-    ];
+    ]);
     for ((function, line), debug) in unit
         .functions
         .iter()
@@ -151,6 +190,10 @@ pub(super) fn lower_simple_void_functions(
     for relocation in &mut sections.line_relocations {
         relocation.kind = DebugRelocationKind::UnalignedAddress32;
     }
+    let all_debug_fragments = type_fragments
+        .iter()
+        .chain(&debug_fragments)
+        .collect::<Vec<_>>();
     for relocation in &mut sections.debug_relocations {
         relocation.kind = DebugRelocationKind::UnalignedAddress32;
         match &relocation.target {
@@ -161,9 +204,34 @@ pub(super) fn lower_simple_void_functions(
                 relocation.target = DebugRelocationTarget::Symbol(line_header.clone());
             }
             DebugRelocationTarget::Section(name) if name == ".debug" => {
-                if let Some(fragment) = debug_fragments
+                let target_offset = u32::try_from(relocation.addend).unwrap_or(u32::MAX);
+                let is_sibling = relocation
+                    .offset
+                    .checked_sub(2)
+                    .and_then(|start| {
+                        sections
+                            .debug
+                            .get(start as usize..relocation.offset as usize)
+                    }) == Some(&[0x00, 0x12][..]);
+                let exact_target = (!is_sibling).then(|| {
+                    all_debug_fragments
+                        .iter()
+                        .copied()
+                        .find(|fragment| fragment.offset == target_offset)
+                });
+                let source_relative = all_debug_fragments
                     .iter()
+                    .copied()
                     .find(|fragment| fragment.contains(relocation.offset))
+                    .filter(|fragment| fragment.contains_including_end(target_offset));
+                let containing_target = all_debug_fragments
+                    .iter()
+                    .copied()
+                    .find(|fragment| fragment.contains(target_offset));
+                if let Some(fragment) = exact_target
+                    .flatten()
+                    .or(source_relative)
+                    .or(containing_target)
                 {
                     relocation.target = DebugRelocationTarget::Symbol(fragment.name.clone());
                     relocation.addend -= fragment.offset as i32;
@@ -194,12 +262,17 @@ pub(super) fn lower_functions_with_aggregate_data(
     unit: &TranslationUnit,
     machine_functions: &[MachineFunction],
     build: CompilerBuild,
+    first_function_anonymous_counter: u32,
     code_alignment: u32,
     mut sections: DebugSections,
 ) -> Compilation<DebugSections> {
     let post_framed_bump = fragmented_post_framed_bump(build);
-    let (first_ordinal, line_end_ordinal) =
-        fragment_ordinals(machine_functions, build, post_framed_bump)?;
+    let (first_ordinal, line_end_ordinal) = fragment_ordinals(
+        machine_functions,
+        build,
+        first_function_anonymous_counter,
+        post_framed_bump,
+    )?;
     let line_header = format!(".line..{first_ordinal}");
     let compile_unit = format!(".dwarf.0011..{}", line_end_ordinal + 1);
     let compile_unit_size = read_u32(&sections.debug, 0)?;
@@ -377,6 +450,7 @@ pub(super) fn lower_class_unit(
     unit: &TranslationUnit,
     machine_functions: &[MachineFunction],
     build: CompilerBuild,
+    first_function_anonymous_counter: u32,
     code_alignment: u32,
     mut sections: DebugSections,
 ) -> Compilation<DebugSections> {
@@ -392,8 +466,12 @@ pub(super) fn lower_class_unit(
     let vtable = format!("__vt__{}", class.encoded_name);
     let rtti = format!("__RTTI__{}", class.encoded_name);
     let post_framed_bump = fragmented_post_framed_bump(build);
-    let (first_ordinal, line_end_ordinal) =
-        class_fragment_ordinals(machine_functions, build, post_framed_bump)?;
+    let (first_ordinal, line_end_ordinal) = class_fragment_ordinals(
+        machine_functions,
+        build,
+        first_function_anonymous_counter,
+        post_framed_bump,
+    )?;
     let compile_unit_size = read_u32(&sections.debug, 0)?;
     let boundaries = class_fragment_boundaries(
         &sections.debug,
@@ -1072,6 +1150,10 @@ impl FragmentBoundary {
     fn contains(&self, offset: u32) -> bool {
         offset >= self.offset && offset < self.offset + self.size
     }
+
+    fn contains_including_end(&self, offset: u32) -> bool {
+        offset >= self.offset && offset <= self.offset + self.size
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1084,8 +1166,66 @@ fn debug_fragment_boundaries(
     unit: &TranslationUnit,
     bytes: &[u8],
     compile_unit_size: u32,
-) -> Compilation<(Vec<FragmentBoundary>, u32, u32, u32)> {
-    let (fragments, cursor) = function_fragment_boundaries(unit, bytes, compile_unit_size)?;
+    first_type_ordinal: u32,
+) -> Compilation<(
+    Vec<FragmentBoundary>,
+    Vec<FragmentBoundary>,
+    u32,
+    u32,
+    u32,
+)> {
+    let mut cursor = compile_unit_size;
+    let mut type_fragments = Vec::new();
+    let mut ordinal = first_type_ordinal;
+    loop {
+        let size = read_u32(bytes, cursor)?;
+        if size == 4 {
+            break;
+        }
+        let tag = read_u16(bytes, cursor + 4)?;
+        if tag == Tag::GlobalSubroutine as u16 || tag == Tag::LocalSubroutine as u16 {
+            break;
+        }
+        if !matches!(
+            tag,
+            value if value == Tag::ArrayType as u16
+                || value == Tag::ClassType as u16
+                || value == Tag::EnumerationType as u16
+                || value == Tag::ModifiedType as u16
+                || value == Tag::StructureType as u16
+                || value == Tag::UnionType as u16
+        ) {
+            return Err(Diagnostic::error(format!(
+                "debug-info: unsupported GC 4.1 top-level DWARF tag 0x{tag:04x}",
+            )));
+        }
+        let offset = cursor;
+        cursor = advance_record(bytes, cursor)?;
+        if tag == Tag::ClassType as u16
+            || tag == Tag::StructureType as u16
+            || tag == Tag::UnionType as u16
+        {
+            while read_u32(bytes, cursor)? != 4 {
+                if read_u16(bytes, cursor + 4)? != Tag::Member as u16 {
+                    return Err(Diagnostic::error(
+                        "debug-info: invalid GC 4.1 aggregate child record",
+                    ));
+                }
+                cursor = advance_record(bytes, cursor)?;
+            }
+            cursor += 4;
+        }
+        type_fragments.push(FragmentBoundary {
+            name: format!(".dwarf.{tag:04x}..{ordinal}"),
+            offset,
+            size: cursor - offset,
+        });
+        ordinal = ordinal
+            .checked_add(1)
+            .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 type ordinal"))?;
+    }
+
+    let (fragments, cursor) = function_fragment_boundaries(unit, bytes, cursor)?;
     let first_null_offset = cursor;
     if read_u32(bytes, first_null_offset)? != 4 {
         return Err(Diagnostic::error(
@@ -1110,6 +1250,7 @@ fn debug_fragment_boundaries(
         ));
     }
     Ok((
+        type_fragments,
         fragments,
         first_null_offset,
         second_null_offset,
@@ -1126,12 +1267,30 @@ fn function_fragment_boundaries(
     let mut fragments = Vec::with_capacity(unit.functions.len());
     for function in &unit.functions {
         let offset = cursor;
+        let tag = read_u16(bytes, cursor + 4)?;
+        if tag != Tag::GlobalSubroutine as u16 && tag != Tag::LocalSubroutine as u16 {
+            return Err(Diagnostic::error(format!(
+                "debug-info: expected a GC 4.1 function fragment, found tag 0x{tag:04x}",
+            )));
+        }
         cursor = advance_record(bytes, cursor)?;
-        if !function.statements.is_empty() {
+        let mut owns_children = false;
+        loop {
+            let size = read_u32(bytes, cursor)?;
+            if size == 4 {
+                break;
+            }
+            let tag = read_u16(bytes, cursor + 4)?;
+            if tag != Tag::FormalParameter as u16 && tag != Tag::LocalVariable as u16 {
+                break;
+            }
             cursor = advance_record(bytes, cursor)?;
+            owns_children = true;
+        }
+        if owns_children {
             if read_u32(bytes, cursor)? != 4 {
                 return Err(Diagnostic::error(
-                    "debug-info: invalid GC 4.1 parameter-list terminator",
+                    "debug-info: invalid GC 4.1 function-child terminator",
                 ));
             }
             cursor += 4;
@@ -1199,86 +1358,6 @@ fn line_fragment_boundaries(
     Ok(fragments)
 }
 
-fn fragment_ordinals(
-    machine_functions: &[MachineFunction],
-    build: CompilerBuild,
-    post_framed_bump: u8,
-) -> Compilation<(u32, u32)> {
-    let mut counter = u32::from(build.initial_anonymous_counter);
-    let first_prefix = ordinal_bump_before_unwind(&machine_functions[0])?;
-    let first_ordinal = counter
-        .checked_add(first_prefix.saturating_sub(1))
-        .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal"))?;
-    let mut close_ordinal = None;
-    for (index, machine) in machine_functions.iter().enumerate() {
-        let mut number = counter
-            .checked_add(ordinal_bump_before_unwind(machine)?)
-            .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal"))?;
-        if machine.frame.is_some() {
-            number = number
-                .checked_add(2)
-                .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal"))?;
-        }
-        if index + 1 == machine_functions.len() {
-            close_ordinal = Some(
-                number
-                    .checked_add(u32::from(machine.frame.is_none()))
-                    .ok_or_else(|| {
-                        Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal")
-                    })?,
-            );
-        }
-        let post_function_bump = machine.post_function_anonymous_bump.unwrap_or_else(|| {
-            if machine.frame.is_some() {
-                post_framed_bump
-            } else {
-                build.post_leaf_function_anonymous_bump
-            }
-        });
-        counter = number
-            .checked_add(u32::from(post_function_bump))
-            .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal"))?
-            .checked_sub(machine.post_function_counter_rollback)
-            .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal"))?;
-    }
-    Ok((
-        first_ordinal,
-        close_ordinal.expect("a simple-function debug unit is nonempty"),
-    ))
-}
-
-fn class_fragment_ordinals(
-    machine_functions: &[MachineFunction],
-    build: CompilerBuild,
-    post_framed_bump: u8,
-) -> Compilation<(u32, u32)> {
-    if build.version != (4, 1, 0) {
-        return Err(Diagnostic::error(
-            "debug-info: fragmented class ordinals are only measured for GC 4.1",
-        ));
-    }
-    let (ordinary_first, _ordinary_end) =
-        fragment_ordinals(machine_functions, build, post_framed_bump)?;
-    let first = ordinary_first
-        .checked_add(2)
-        .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 class ordinal"))?;
-    let end = first
-        .checked_add(7)
-        .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 class ordinal"))?;
-    Ok((first, end))
-}
-
-fn fragmented_post_framed_bump(build: CompilerBuild) -> u8 {
-    if build.version == (4, 1, 0) {
-        // With `-sym on`, GC 4.1 moves one of the ordinary four framed
-        // post-function ordinals into the function's preceding analysis block.
-        // Two consecutive framed functions expose a three-ordinal transition.
-        3
-    } else {
-        build.post_framed_function_anonymous_bump
-    }
-}
-
 fn function_binding(is_static: bool, is_weak: bool) -> DebugSymbolBinding {
     if is_weak {
         DebugSymbolBinding::Weak
@@ -1306,39 +1385,20 @@ fn function_comment_flags(
     }
 }
 
-/// Return the anonymous work preceding a pool-free function's unwind records.
-///
-/// The simple-void family owns no strings, constants, read-only blobs, or jump
-/// tables. Its fragmented line header is therefore the last ordinal before the
-/// unwind pair: instruction-selection work plus the generation-specific hidden
-/// labels charged after constants. Keep that relationship explicit here until
-/// the fragmented router admits functions with object payloads, which require a
-/// full translation-unit ordinal plan rather than another local sum.
-fn ordinal_bump_before_unwind(machine: &MachineFunction) -> Compilation<u32> {
-    if !machine.string_literals.is_empty()
-        || !machine.constants.is_empty()
-        || !machine.anonymous_rodata.is_empty()
-        || !machine.jump_tables.is_empty()
-        || !machine.static_locals.is_empty()
-    {
-        return Err(Diagnostic::error(
-            "debug-info: GC 4.1 simple-function fragment unexpectedly owns anonymous payload",
-        ));
-    }
-    machine
-        .object_anonymous_bump()
-        .checked_add(machine.fragmented_debug_anonymous_bump)
-        .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal"))?
-        .checked_add(machine.post_constant_label_bump)
-        .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal"))
-}
-
 fn read_u32(bytes: &[u8], offset: u32) -> Compilation<u32> {
     let start = offset as usize;
     let value = bytes
         .get(start..start + 4)
         .ok_or_else(|| Diagnostic::error("debug-info: truncated GC 4.1 DWARF record"))?;
     Ok(u32::from_be_bytes(value.try_into().unwrap()))
+}
+
+fn read_u16(bytes: &[u8], offset: u32) -> Compilation<u16> {
+    let start = offset as usize;
+    let value = bytes
+        .get(start..start + 2)
+        .ok_or_else(|| Diagnostic::error("debug-info: truncated GC 4.1 DWARF record"))?;
+    Ok(u16::from_be_bytes(value.try_into().unwrap()))
 }
 
 fn symbol(

@@ -161,12 +161,24 @@ pub fn lower_function(
     );
     if std::env::var_os("MWCC_DIAGNOSTIC_ANONYMOUS_ORDINALS").is_some() {
         eprintln!(
-            "anonymous-ordinals {}: front={} constants={} strings={} frame={} jumps={:?} post={} rollback={}",
+            "anonymous-ordinals {}: front={} fragment={} constants={} gaps={:?} adjust={} strings={} frame={} rodata={:?} jumps={:?} post={} rollback={}",
             function.name,
             output.object_anonymous_bump(),
+            output.fragmented_debug_anonymous_bump,
             output.constants.len(),
+            output.constant_number_gaps,
+            output.constant_number_adjust,
             output.string_literals.len(),
             output.frame.is_some(),
+            output
+                .anonymous_rodata
+                .iter()
+                .map(|blob| (
+                    blob.bytes.len(),
+                    blob.static_slot_prefix_bump,
+                    blob.anonymous_offset,
+                ))
+                .collect::<Vec<_>>(),
             output
                 .jump_tables
                 .iter()

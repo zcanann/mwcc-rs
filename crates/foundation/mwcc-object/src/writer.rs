@@ -2985,6 +2985,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             }
         }
+        if let Some(debug) = debug {
+            for symbol in debug.symbols.iter().filter(|symbol| {
+                symbol.binding == DebugSymbolBinding::Local
+                    && symbol.placement == DebugSymbolPlacement::BeforeFunctionUnwind(index)
+            }) {
+                emit_debug_symbol!(symbol);
+            }
+        }
         if let Some(frame) = &frame_numbers[index] {
             extab_entry_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
             let extab_name = strtab.add(&format!("@{}", frame.extab));

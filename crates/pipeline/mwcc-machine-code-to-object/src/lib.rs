@@ -265,7 +265,17 @@ pub fn assemble_object(
                         }
                 } else {
                     0
-                },
+                }
+                + u32::from(
+                    function_index == 0
+                        && function.frame.is_some()
+                        && function.owns_anonymous_payload()
+                        && debug.as_ref().is_some_and(|sections| {
+                            sections
+                                .post_framed_function_anonymous_bump_override
+                                .is_some()
+                        }),
+                ),
             post_function_anonymous_bump: function.post_function_anonymous_bump,
             post_function_counter_rollback: function.post_function_counter_rollback,
             constant_number_gaps: function.constant_number_gaps.clone(),

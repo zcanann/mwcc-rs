@@ -4,6 +4,7 @@
 //! machine representation supplies final code sizes and deferred layout state.
 //! DWARF byte encoding and ELF container policy remain in their own crates.
 
+mod fragment_ordinals;
 mod fragmented;
 mod legacy;
 mod source_view;
@@ -27,6 +28,7 @@ pub fn lower_debug_info(
     is_cxx: bool,
     source: &[u8],
     build: CompilerBuild,
+    first_function_anonymous_counter: u32,
     code_alignment: u32,
 ) -> Compilation<Option<DebugSections>> {
     // Debug sections describe emitted definitions, not merely parsed source.
@@ -68,6 +70,7 @@ pub fn lower_debug_info(
             unit,
             machine_functions,
             build,
+            first_function_anonymous_counter,
             code_alignment,
             grouped,
         )
@@ -103,10 +106,11 @@ pub fn lower_debug_info(
                 build,
                 code_alignment,
             )?;
-            return fragmented::lower_simple_void_functions(
+            return fragmented::lower_functions_without_file_data(
                 unit,
                 machine_functions,
                 build,
+                first_function_anonymous_counter,
                 code_alignment,
                 grouped,
             )
@@ -126,6 +130,7 @@ pub fn lower_debug_info(
                 unit,
                 machine_functions,
                 build,
+                first_function_anonymous_counter,
                 code_alignment,
                 grouped,
             )

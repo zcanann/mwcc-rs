@@ -2855,6 +2855,11 @@ fn compile(
         .iter()
         .map(|global| global.name.clone())
         .collect();
+    // Fragmented debug symbols share the object writer's anonymous-ordinal
+    // stream. Pass its resolved translation-unit base rather than making the
+    // debug stage reconstruct source-analysis floors from syntax artifacts.
+    let first_function_anonymous_counter = u32::from(object_format.initial_anonymous_counter)
+        + object_format.leading_source_anonymous_bump;
     let debug = if config.flags.debug_info {
         mwcc_syntax_trees_to_debug_info::lower_debug_info(
             &unit,
@@ -2865,6 +2870,7 @@ fn compile(
             is_cxx,
             source,
             config.build,
+            first_function_anonymous_counter,
             code_alignment,
         )?
     } else {
