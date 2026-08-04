@@ -345,6 +345,11 @@ impl Generator {
         let function = reduced_member_array_call_cursors
             .as_ref()
             .unwrap_or(function);
+        let loop_member_array_addresses =
+            super::structured_loop_member_array_addresses::materialize_loop_member_array_addresses(
+                function,
+            );
+        let function = loop_member_array_addresses.as_ref().unwrap_or(function);
         let reduced_member_array_offsets =
             super::structured_loop_member_array_offset::strength_reduce_member_array_offsets(
                 function,
@@ -1395,6 +1400,15 @@ impl Generator {
                 &parameter_home_reuse,
                 count,
             );
+        let member_array_address_layout =
+            super::structured_loop_member_array_addresses::HomeLayout::plan(
+                eager_saved_locals.len(),
+                saved_parameters.len(),
+                &deferred_saved_locals,
+                &deferred_home_plan,
+                &parameter_home_reuse,
+                count,
+            );
         if capture {
             eprintln!(
                 "structured object collision loop layout: {} \
@@ -1568,6 +1582,9 @@ impl Generator {
             self.behavior.use_lmw_stmw,
         ) || dense_unused_array_state_transfer
             || (member_array_offset_layout.is_some()
+                && self.behavior.use_lmw_stmw
+                && with_frame_array)
+            || (member_array_address_layout.is_some()
                 && self.behavior.use_lmw_stmw
                 && with_frame_array);
         let dense_retained_local_table = (dense_frame
@@ -1759,6 +1776,11 @@ impl Generator {
                 {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = member_array_offset_layout
+                    .as_ref()
+                    .and_then(|layout| layout.preference(home_index))
+                {
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = member_array_address_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
                 {

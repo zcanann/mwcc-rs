@@ -156,34 +156,40 @@ fn embedded_aggregate_address_tail(
 
 impl Generator {
     /// Materialize `&object.embedded[index]` when `embedded` is an inline
-    /// aggregate array element. The member expression denotes storage at
-    /// `object + member_offset`; it must not be evaluated as a scalar struct
-    /// load before indexing.
+    /// member array. Struct-valued member expressions and scalar member-address
+    /// expressions both denote storage at `object + member_offset`; neither
+    /// may be loaded before indexing.
     ///
     /// MWCC scales the index first, then preserves an overlapping result/base
     /// register in r0 before adding the member displacement. Keeping the scaled
     /// value virtual lets the allocator reuse the index register when its value
     /// dies here without clobbering an index that remains live afterward.
-    pub(crate) fn try_emit_embedded_aggregate_element_address(
+    pub(crate) fn try_emit_embedded_member_array_element_address(
         &mut self,
         array: &Expression,
         index: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
-        let Expression::Member {
-            base,
-            offset,
-            member_type: Type::Struct { size, .. },
-            index_stride: None,
-        } = array
-        else {
-            return Ok(false);
+        let (base, offset, stride) = match array {
+            Expression::Member {
+                base,
+                offset,
+                member_type: Type::Struct { size, .. },
+                index_stride: None,
+            } => (base.as_ref(), *offset, *size),
+            Expression::MemberAddress {
+                base,
+                offset,
+                element,
+                index_stride: None,
+            } => (base.as_ref(), *offset, u32::from(element.size())),
+            _ => return Ok(false),
         };
-        if *size == 0 {
+        if stride == 0 {
             return Ok(false);
         }
-        let offset = i16::try_from(*offset).map_err(|_| {
-            Diagnostic::error("embedded aggregate array offset out of range (roadmap)")
+        let offset = i16::try_from(offset).map_err(|_| {
+            Diagnostic::error("embedded member array offset out of range (roadmap)")
         })?;
         // A member array is often indexed by another member of the same
         // aggregate (`queue.events[queue.next]`).  That index is a load, not a
@@ -198,7 +204,7 @@ impl Generator {
                 self.evaluate_general(index, GENERAL_SCRATCH)?;
                 (GENERAL_SCRATCH, true)
             };
-        let scaled = if *size == 1 {
+        let scaled = if stride == 1 {
             index_register
         } else {
             let scaled = if disposable_index {
@@ -206,16 +212,16 @@ impl Generator {
             } else {
                 self.fresh_virtual_general_preferring(index_register)
             };
-            if size.is_power_of_two() {
+            if stride.is_power_of_two() {
                 self.output
                     .instructions
                     .push(Instruction::ShiftLeftImmediate {
                         a: scaled,
                         s: index_register,
-                        shift: size.trailing_zeros() as u8,
+                        shift: stride.trailing_zeros() as u8,
                     });
             } else {
-                let immediate = i16::try_from(*size).map_err(|_| {
+                let immediate = i16::try_from(stride).map_err(|_| {
                     Diagnostic::error(
                         "embedded aggregate array element is too large to scale (roadmap)",
                     )
@@ -1423,6 +1429,15 @@ impl Generator {
                 } else {
                     self.general_register_of(name)
                 }
+            }
+            // A retained pointer-to-pointer element address represents an
+            // lvalue slot. Chasing it produces the struct pointer used as this
+            // member's base while preserving the retained slot address for a
+            // later reload after calls.
+            Expression::Dereference { .. } => {
+                let register = self.fresh_virtual_general_preferring(3);
+                self.evaluate_general(base, register)?;
+                Ok(register)
             }
             // A source-proven one-word wrapper member denotes the wrapper's
             // complete pointer value. When that member becomes the base of a

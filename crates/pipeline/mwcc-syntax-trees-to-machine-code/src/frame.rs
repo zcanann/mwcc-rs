@@ -2607,7 +2607,7 @@ impl Generator {
             }
         }
         if let Expression::Index { base, index } = operand {
-            if self.try_emit_embedded_aggregate_element_address(base, index, destination)? {
+            if self.try_emit_embedded_member_array_element_address(base, index, destination)? {
                 return Ok(());
             }
             // `&a[i]` for a file-scope ARRAY global is the element ADDRESS `&a + i*size` (an
