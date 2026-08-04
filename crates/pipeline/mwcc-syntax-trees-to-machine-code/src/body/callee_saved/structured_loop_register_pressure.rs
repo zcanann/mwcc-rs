@@ -165,11 +165,37 @@ fn reads_before_assignment(statements: &[Statement], name: &str) -> bool {
                 name: assigned,
                 value,
             } if assigned == name => return expression_reads_name(value, name),
+            Statement::Assign { value, .. }
+                if scalar_assignment_chain_defines_without_read(value, name) =>
+            {
+                return false;
+            }
             _ if statement_references_name(statement, name) => return true,
             _ => {}
         }
     }
     false
+}
+
+/// Whether a right-nested scalar assignment chain gives `name` a fresh value
+/// before any read of its incoming value.
+///
+/// The parser represents `a = b = c = 0` as one outer statement whose value
+/// contains the `b` and `c` definitions.  Treating those target occurrences as
+/// reads makes iteration-local flags look loop-carried and gives them saved-GPR
+/// preferences.  Restrict this proof to the pure scalar chain; other expression
+/// shapes retain the conservative reference scan above.
+fn scalar_assignment_chain_defines_without_read(expression: &Expression, name: &str) -> bool {
+    let Expression::Assign { target, value } = expression else {
+        return false;
+    };
+    let Expression::Variable(assigned) = target.as_ref() else {
+        return false;
+    };
+    if assigned == name {
+        return !expression_reads_name(value, name);
+    }
+    scalar_assignment_chain_defines_without_read(value, name)
 }
 
 #[cfg(test)]
@@ -315,5 +341,32 @@ mod tests {
         assert_eq!(plan.preference_for("v0"), Some(30));
         assert_eq!(plan.preference_for("v4"), Some(27));
         assert_eq!(plan.preference_for("v5"), None);
+    }
+
+    #[test]
+    fn chained_iteration_resets_are_not_loop_carried() {
+        let locals: Vec<_> = (0..DENSE_SAVED_GPR_COUNT)
+            .map(|index| local(&format!("v{index}")))
+            .collect();
+        let references: Vec<_> = locals.iter().collect();
+        let reset = Statement::Assign {
+            name: "v17".into(),
+            value: Expression::Assign {
+                target: Box::new(Expression::Variable("v0".into())),
+                value: Box::new(Expression::IntegerLiteral(0)),
+            },
+        };
+        let mut body = vec![reset, read("v0")];
+        body.extend(locals[1..].iter().map(|local| read(&local.name)));
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body,
+        }];
+
+        let plan = plan_dense_loop_carried_locals(&statements, &references);
+        assert_eq!(plan.preference_for("v0"), None);
     }
 }
