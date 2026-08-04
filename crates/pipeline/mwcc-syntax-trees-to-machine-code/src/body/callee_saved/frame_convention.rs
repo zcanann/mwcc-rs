@@ -864,19 +864,23 @@ impl Generator {
         match self.behavior.saved_gpr_epilogue_style {
             mwcc_versions::SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved => {}
             mwcc_versions::SavedGprEpilogueStyle::LinkRegisterAfterStackRestore => {
-                for index in 0..self.output.instructions.len().saturating_sub(1) {
-                    if matches!(
-                        self.output.instructions[index],
-                        Instruction::MoveToLinkRegister { s: 0 }
-                    ) && matches!(
-                        self.output.instructions[index + 1],
-                        Instruction::AddImmediate {
-                            d: 1,
-                            a: 1,
-                            immediate
-                        } if immediate == new_size
-                    ) {
-                        self.output.instructions.swap(index, index + 1);
+                if self.behavior.structured_saved_gpr_stack_first {
+                    self.normalize_link_register_after_stack_restore(new_size);
+                } else {
+                    for index in 0..self.output.instructions.len().saturating_sub(1) {
+                        if matches!(
+                            self.output.instructions[index],
+                            Instruction::MoveToLinkRegister { s: 0 }
+                        ) && matches!(
+                            self.output.instructions[index + 1],
+                            Instruction::AddImmediate {
+                                d: 1,
+                                a: 1,
+                                immediate
+                            } if immediate == new_size
+                        ) {
+                            self.output.instructions.swap(index, index + 1);
+                        }
                     }
                 }
             }
@@ -885,6 +889,38 @@ impl Generator {
             }
         }
         self.frame_size = new_size;
+    }
+
+    /// Structured owners can request an early LR write independently of the
+    /// generation's teardown policy. Nintendo build 163 instead completes the
+    /// entire trailing saved-GPR run and restores SP before writing LR. Move
+    /// every intervening instruction ahead of `mtlr` through the shared
+    /// index-retargeting primitive so labels and relocations retain identity.
+    fn normalize_link_register_after_stack_restore(&mut self, frame_size: i16) {
+        let Some(mut link_restore) = self.output.instructions.iter().rposition(|instruction| {
+            matches!(instruction, Instruction::MoveToLinkRegister { s: 0 })
+        }) else {
+            return;
+        };
+        let Some(stack_restore) = self.output.instructions[link_restore + 1..]
+            .iter()
+            .position(|instruction| {
+                matches!(instruction,
+                    Instruction::AddImmediate { d: 1, a: 1, immediate }
+                        if *immediate == frame_size)
+            })
+            .map(|offset| link_restore + 1 + offset)
+        else {
+            return;
+        };
+        while link_restore < stack_restore {
+            crate::move_instruction_before_retargeting(
+                self,
+                link_restore + 1,
+                link_restore,
+            );
+            link_restore += 1;
+        }
     }
 
     fn normalize_restored_stack_saved_gpr_epilogue(

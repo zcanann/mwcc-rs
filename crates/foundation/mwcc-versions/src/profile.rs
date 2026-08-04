@@ -1135,6 +1135,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         SavedGprEpilogueStyle::LinkRegisterAfterStackRestore
     }
 
+    /// Whether structured owners must defer an explicitly early LR write until
+    /// every saved GPR and the stack pointer have been restored.
+    fn structured_saved_gpr_stack_first(&self) -> bool {
+        false
+    }
+
     /// The original build-163 distribution issues the DVD FST loader's saved
     /// LR restore before its final GPR reload. Nintendo's distribution of the
     /// same compiler build uses the ordinary saved-GPR epilogue schedule.
@@ -2133,30 +2139,35 @@ impl CodegenProfile for Gc132Build81 {
 pub struct Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle,
+    structured_saved_gpr_stack_first: bool,
     dvd_fst_loader_early_epilogue: bool,
 }
 
 pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved,
+    structured_saved_gpr_stack_first: false,
     dvd_fst_loader_early_epilogue: false,
 };
 
 pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterAfterStackRestore,
+    structured_saved_gpr_stack_first: false,
     dvd_fst_loader_early_epilogue: true,
 };
 
 pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterAfterStackRestore,
+    structured_saved_gpr_stack_first: true,
     dvd_fst_loader_early_epilogue: false,
 };
 
 pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::StackRestoreBeforeReload,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload,
+    structured_saved_gpr_stack_first: true,
     dvd_fst_loader_early_epilogue: false,
 };
 
@@ -2302,6 +2313,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn saved_gpr_epilogue_style(&self) -> SavedGprEpilogueStyle {
         self.saved_gpr_epilogue_style
+    }
+
+    fn structured_saved_gpr_stack_first(&self) -> bool {
+        self.structured_saved_gpr_stack_first
     }
 
     fn dvd_fst_loader_early_epilogue(&self) -> bool {

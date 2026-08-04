@@ -683,6 +683,8 @@ pub struct Behavior {
     pub plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
     /// LR restore order for a linkage-first frame with saved GPRs.
     pub saved_gpr_epilogue_style: SavedGprEpilogueStyle,
+    /// Whether a structured early LR write must move behind the complete saved-GPR/stack tail.
+    pub structured_saved_gpr_stack_first: bool,
     /// Whether the SDK DVD FST loader uses build 163's early saved-LR issue
     /// slot instead of the distribution's ordinary saved-GPR epilogue.
     pub dvd_fst_loader_early_epilogue: bool,
@@ -1139,6 +1141,10 @@ impl Behavior {
             frame_convention: config.build.profile.frame_convention(),
             plain_linkage_epilogue_style: config.build.profile.plain_linkage_epilogue_style(),
             saved_gpr_epilogue_style: config.build.profile.saved_gpr_epilogue_style(),
+            structured_saved_gpr_stack_first: config
+                .build
+                .profile
+                .structured_saved_gpr_stack_first(),
             dvd_fst_loader_early_epilogue: config
                 .build
                 .profile
@@ -2273,6 +2279,8 @@ mod tests {
             build_163_nintendo.saved_gpr_epilogue_style,
             SavedGprEpilogueStyle::LinkRegisterAfterStackRestore
         );
+        assert!(!build_163.structured_saved_gpr_stack_first);
+        assert!(build_163_nintendo.structured_saved_gpr_stack_first);
         assert!(build_163.dvd_fst_loader_early_epilogue);
         assert!(!build_163_nintendo.dvd_fst_loader_early_epilogue);
     }
