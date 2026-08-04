@@ -316,6 +316,7 @@ mod structured_fixed_byte_copy_loop;
 mod structured_guarded_call_argument_reuse;
 mod structured_small_switch_control;
 mod structured_byte_call_argument_schedule;
+mod structured_effecter_product_clamp_schedule;
 mod structured_loop_global_byte_cursor;
 mod structured_loop_member_array_offset;
 mod structured_loop_member_element_base;

@@ -4707,6 +4707,7 @@ impl Generator {
         self.reuse_structured_guarded_call_argument();
         self.expand_structured_small_switch_control();
         self.schedule_structured_byte_call_arguments();
+        self.schedule_structured_effecter_product_clamp();
         self.reuse_structured_float_clamp_literals();
         Ok(true)
     }

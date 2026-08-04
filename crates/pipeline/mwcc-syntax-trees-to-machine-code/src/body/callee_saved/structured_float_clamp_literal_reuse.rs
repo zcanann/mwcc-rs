@@ -33,7 +33,7 @@ struct Plan {
 }
 
 fn plans(output: &MachineFunction) -> Vec<Plan> {
-    output
+    let mut plans = output
         .instructions
         .windows(4)
         .enumerate()
@@ -69,7 +69,52 @@ fn plans(output: &MachineFunction) -> Vec<Plan> {
                 literal: *literal,
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    plans.extend(
+        output
+            .instructions
+            .windows(7)
+            .enumerate()
+            .filter_map(|(start, window)| delayed_product_plan(output, start, window)),
+    );
+    plans.sort_unstable_by_key(|plan| plan.assignment);
+    plans.dedup_by_key(|plan| plan.assignment);
+    plans
+}
+
+/// The effecter product fills both the literal-to-compare and compare-to-branch
+/// issue slots.  The literal remains live because neither product instruction
+/// nor the intervening member load writes its FPR.
+fn delayed_product_plan(
+    output: &MachineFunction,
+    start: usize,
+    window: &[Instruction],
+) -> Option<Plan> {
+    let [
+        Instruction::LoadFloatSingle { d: literal, a: 0, offset: 0 },
+        Instruction::FloatMultiplySingle { d: first_product, .. },
+        Instruction::LoadFloatSingle { d: third_factor, .. },
+        Instruction::FloatCompareOrdered { a: value, b: compared },
+        Instruction::FloatMultiplySingle { d: final_product, .. },
+        Instruction::BranchConditionalForward { target, .. },
+        Instruction::LoadFloatSingle { d: assigned, a: 0, offset: 0 },
+    ] = window
+    else {
+        return None;
+    };
+    let assignment = start + 6;
+    (literal == compared
+        && value == assigned
+        && first_product != literal
+        && third_factor != literal
+        && final_product != literal
+        && *target > assignment
+        && same_constant_relocation(output, start, assignment))
+        .then_some(Plan {
+            assignment,
+            value: *value,
+            literal: *literal,
+        })
 }
 
 fn same_constant_relocation(output: &MachineFunction, left: usize, right: usize) -> bool {
@@ -150,5 +195,37 @@ mod tests {
         ];
 
         assert!(plans(&output).is_empty());
+    }
+
+    #[test]
+    fn reuses_a_literal_across_product_issue_slots() {
+        let mut output = MachineFunction::default();
+        let zero = output.intern_constant(u64::from(0.0f32.to_bits()), 4);
+        output.instructions = vec![
+            Instruction::LoadFloatSingle { d: 0, a: 0, offset: 0 },
+            Instruction::FloatMultiplySingle { d: 1, a: 2, c: 1 },
+            Instruction::LoadFloatSingle { d: 2, a: 30, offset: 260 },
+            Instruction::FloatCompareOrdered { a: 31, b: 0 },
+            Instruction::FloatMultiplySingle { d: 30, a: 2, c: 1 },
+            Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: 8 },
+            Instruction::LoadFloatSingle { d: 31, a: 0, offset: 0 },
+        ];
+        output.relocations = vec![
+            Relocation {
+                instruction_index: 0,
+                kind: RelocationKind::EmbSda21,
+                target: RelocationTarget::Constant(zero),
+            },
+            Relocation {
+                instruction_index: 6,
+                kind: RelocationKind::EmbSda21,
+                target: RelocationTarget::Constant(zero),
+            },
+        ];
+
+        assert_eq!(
+            plans(&output),
+            vec![Plan { assignment: 6, value: 31, literal: 0 }]
+        );
     }
 }
