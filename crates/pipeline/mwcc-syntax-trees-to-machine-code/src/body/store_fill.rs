@@ -949,7 +949,12 @@ impl Generator {
     /// scaling) does not.
     pub(crate) fn is_scratch_safe_store_target(&self, target: &Expression) -> bool {
         match target {
-            Expression::Member { base, .. } => matches!(base.as_ref(), Expression::Variable(_)),
+            Expression::Member { base, .. } => {
+                matches!(base.as_ref(), Expression::Variable(_))
+                    || matches!(base.as_ref(), Expression::AddressOf { operand }
+                        if matches!(operand.as_ref(), Expression::Variable(name)
+                            if self.frame_slots.contains_key(name)))
+            }
             Expression::Dereference { pointer } => {
                 matches!(pointer.as_ref(), Expression::Variable(_))
             }
