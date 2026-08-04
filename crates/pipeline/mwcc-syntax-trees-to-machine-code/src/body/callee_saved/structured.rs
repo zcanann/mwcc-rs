@@ -141,6 +141,7 @@ use super::structured_locals::{
     plan_distinct_deferred_saved_homes, plan_ephemeral_locals,
 };
 use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
+use super::structured_parameter_frame_origin::has_straight_line_post_call_indirect_access;
 use super::structured_eager_home_reuse::StructuredEagerHomeReuse;
 use super::structured_complement_product_pair::StructuredComplementProductPair;
 use super::structured_prologue::{
@@ -2656,7 +2657,7 @@ impl Generator {
             && paired_subobject_initialization.is_none()
             && !saved_parameters.is_empty()
             && !saved_parameters.iter().any(|parameter| {
-                has_straight_line_post_call_store_through(
+                has_straight_line_post_call_indirect_access(
                     &function.statements,
                     &parameter.name,
                 )
@@ -6034,28 +6035,6 @@ fn has_only_call_result_temporaries(function: &Function) -> bool {
     })
 }
 
-/// A saved entry pointer published through after an earlier call retains its
-/// optimizer entry-table identity even when the function has no source locals.
-/// Keep this deliberately straight-line: nested control-flow owners have their
-/// own retained-lane policies and should not be reclassified by a broad scan.
-fn has_straight_line_post_call_store_through(
-    statements: &[Statement],
-    parameter: &str,
-) -> bool {
-    let mut prior_call = false;
-    for statement in statements {
-        if prior_call
-            && matches!(statement,
-                Statement::Store { target, .. }
-                    if expression_reads_name(target, parameter))
-        {
-            return true;
-        }
-        prior_call |= statement_has_call(statement);
-    }
-    false
-}
-
 fn is_sequenced_call_result_local(statements: &[Statement], candidate: &str) -> bool {
     statements.iter().any(|statement| match statement {
         Statement::Assign {
@@ -6333,7 +6312,7 @@ mod tests {
             },
         ];
 
-        assert!(has_straight_line_post_call_store_through(
+        assert!(has_straight_line_post_call_indirect_access(
             &statements,
             "owner"
         ));

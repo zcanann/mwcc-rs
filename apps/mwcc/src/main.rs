@@ -3107,6 +3107,9 @@ mod tests {
     #[path = "materialized_pointer_snapshot.rs"]
     mod materialized_pointer_snapshot;
 
+    #[path = "post_call_member_parameter_frame.rs"]
+    mod post_call_member_parameter_frame;
+
     #[path = "mixed_integer_float_fusion.rs"]
     mod mixed_integer_float_fusion;
 
