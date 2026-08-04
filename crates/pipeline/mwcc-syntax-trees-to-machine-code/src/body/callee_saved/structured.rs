@@ -2055,6 +2055,14 @@ impl Generator {
                         8
                     }
                     FrameConvention::LinkageFirst if single_value_inlined_byte_append => 8,
+                    FrameConvention::LinkageFirst
+                        if aggregate_only_frame && broad_global_base_layout.is_some() =>
+                    {
+                        broad_global_base_layout
+                            .as_ref()
+                            .expect("the broad aggregate layout was recognized")
+                            .aggregate_base_offset()
+                    }
                     FrameConvention::LinkageFirst if aggregate_only_frame => 8,
                     FrameConvention::LinkageFirst => {
                         let words = if global_member_search_entry {
@@ -2378,13 +2386,10 @@ impl Generator {
                 );
             }
         }
-        if broad_global_base_layout
-            .as_ref()
-            .is_some_and(StructuredBroadGlobalBaseLayout::retains_linkage_lane)
-        {
+        if let Some(layout) = &broad_global_base_layout {
             plan.frame_size = plan
                 .frame_size
-                .checked_add(8)
+                .checked_add(layout.retained_linkage_bytes())
                 .map(|size| (size + 7) / 8 * 8)
                 .ok_or_else(|| Diagnostic::error("structured broad global frame is too large"))?;
         }

@@ -48,8 +48,12 @@ impl StructuredBroadGlobalBaseLayout {
         self.preferences.get(name).copied()
     }
 
-    pub(super) fn retains_linkage_lane(&self) -> bool {
-        true
+    pub(super) fn aggregate_base_offset(&self) -> i16 {
+        16
+    }
+
+    pub(super) fn retained_linkage_bytes(&self) -> i16 {
+        8
     }
 }
 
@@ -84,5 +88,7 @@ mod tests {
         assert_eq!(layout.preference("read_size"), Some(29));
         assert_eq!(layout.preference("frame"), Some(28));
         assert_eq!(layout.preference("__mwcc_loop_address_0"), Some(27));
+        assert_eq!(layout.aggregate_base_offset(), 16);
+        assert_eq!(layout.retained_linkage_bytes(), 8);
     }
 }
