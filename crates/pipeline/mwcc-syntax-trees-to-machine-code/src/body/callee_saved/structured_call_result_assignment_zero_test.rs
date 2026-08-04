@@ -11,7 +11,7 @@ use super::*;
 
 impl Generator {
     pub(crate) fn fold_structured_call_result_assignment_zero_tests(&mut self) {
-        if self.output.pre_scheduled {
+        if self.output.pre_scheduled && self.structured_global_base_cache.is_none() {
             return;
         }
         while let Some(copy) =
