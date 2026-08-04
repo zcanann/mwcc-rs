@@ -1135,6 +1135,13 @@ pub trait CodegenProfile: core::fmt::Debug {
         SavedGprEpilogueStyle::LinkRegisterAfterStackRestore
     }
 
+    /// The original build-163 distribution issues the DVD FST loader's saved
+    /// LR restore before its final GPR reload. Nintendo's distribution of the
+    /// same compiler build uses the ordinary saved-GPR epilogue schedule.
+    fn dvd_fst_loader_early_epilogue(&self) -> bool {
+        false
+    }
+
     /// Restore order for a call-result store through a saved pointer when the
     /// O4 latency scheduler is active.
     fn pointer_call_store_epilogue_style(&self) -> PointerCallStoreEpilogueStyle {
@@ -2126,26 +2133,31 @@ impl CodegenProfile for Gc132Build81 {
 pub struct Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle,
+    dvd_fst_loader_early_epilogue: bool,
 }
 
 pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved,
+    dvd_fst_loader_early_epilogue: false,
 };
 
 pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterAfterStackRestore,
+    dvd_fst_loader_early_epilogue: true,
 };
 
 pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterAfterStackRestore,
+    dvd_fst_loader_early_epilogue: false,
 };
 
 pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::StackRestoreBeforeReload,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload,
+    dvd_fst_loader_early_epilogue: false,
 };
 
 impl CodegenProfile for Gc233Build163 {
@@ -2290,6 +2302,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn saved_gpr_epilogue_style(&self) -> SavedGprEpilogueStyle {
         self.saved_gpr_epilogue_style
+    }
+
+    fn dvd_fst_loader_early_epilogue(&self) -> bool {
+        self.dvd_fst_loader_early_epilogue
     }
 
     fn data_section_relocation_style(&self) -> DataSectionRelocationStyle {

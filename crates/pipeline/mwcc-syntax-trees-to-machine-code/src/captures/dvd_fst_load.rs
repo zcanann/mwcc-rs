@@ -10,7 +10,7 @@ use crate::generator::Generator;
 use mwcc_core::Compilation;
 use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
-use mwcc_versions::{FrameConvention, SavedGprEpilogueStyle};
+use mwcc_versions::FrameConvention;
 
 const PIKMIN2_AST_HASH: u64 = 0x7c1fe7fdca024112;
 const PIKMIN2_CONTEXT: u64 = 0xb72f62728882f697;
@@ -71,6 +71,42 @@ impl LoaderVariant {
                 | Self::StaticSignedDebugRuntime
         )
     }
+
+    /// The hand-emitted early-link-register variant is already in final MWCC
+    /// issue order. Running it through the generic latency scheduler moves the
+    /// independent `mtlr` behind the final saved-register reload, collapsing
+    /// the one distinction this variant exists to preserve.
+    fn preserves_emitted_schedule(self) -> bool {
+        self == Self::StaticSignedEarlyEpilogue
+    }
+
+    /// Source/header analysis assigns ordinary SDK loaders two anonymous slots
+    /// before their emitted strings. Later SDK contexts retain one of those
+    /// nodes in the function-local label block, leaving a one-slot discount.
+    fn string_number_adjust(self) -> i32 {
+        match self {
+            Self::GlobalSigned
+            | Self::StaticUnsigned
+            | Self::StaticSigned
+            | Self::StaticSignedEarlyEpilogue => -2,
+            Self::StaticSignedWindWaker
+            | Self::StaticSignedLegacyEpilogue
+            | Self::StaticSignedDebugRuntime => -1,
+        }
+    }
+
+    /// The ordinary SDK loader's command block is declared one source-analysis
+    /// node before the skipped-inline frontier used by the unit-wide counter.
+    /// Later SDK variants retain that node and therefore keep the old -8 delta.
+    fn static_local_adjust(self) -> i64 {
+        match self {
+            Self::StaticUnsigned | Self::StaticSigned | Self::StaticSignedEarlyEpilogue => -9,
+            Self::StaticSignedWindWaker
+            | Self::StaticSignedLegacyEpilogue
+            | Self::StaticSignedDebugRuntime
+            | Self::GlobalSigned => -8,
+        }
+    }
 }
 
 impl Generator {
@@ -88,20 +124,13 @@ impl Generator {
             (PIKMIN2_AST_HASH, PIKMIN2_CONTEXT) if self.frame_slots.is_empty() => {
                 LoaderVariant::GlobalSigned
             }
-            (PIKMIN2_AST_HASH, PIKMIN_DEMO_CONTEXT) => match self
-                .behavior
-                .saved_gpr_epilogue_style
-            {
-                SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved => {
+            (PIKMIN2_AST_HASH, PIKMIN_DEMO_CONTEXT) => {
+                if self.behavior.dvd_fst_loader_early_epilogue {
                     LoaderVariant::StaticSignedEarlyEpilogue
-                }
-                SavedGprEpilogueStyle::LinkRegisterAfterStackRestore => {
+                } else {
                     LoaderVariant::StaticSigned
                 }
-                SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload => {
-                    LoaderVariant::StaticSigned
-                }
-            },
+            }
             (PIKMIN_AST_HASH, PIKMIN_CONTEXT) => LoaderVariant::StaticUnsigned,
             (MARIO_PARTY_4_AST_HASH, MARIO_PARTY_4_CONTEXT) => LoaderVariant::StaticSigned,
             (MARIO_PARTY_4_AST_HASH, BATTLE_FOR_BIKINI_BOTTOM_CONTEXT) => {
@@ -135,6 +164,8 @@ impl Generator {
         };
 
         let debug_runtime = variant == LoaderVariant::StaticSignedDebugRuntime;
+        self.output.pre_scheduled = variant.preserves_emitted_schedule();
+        self.output.string_number_adjust = variant.string_number_adjust();
         self.frame_size = if debug_runtime { 88 } else { 96 };
         self.non_leaf = true;
         self.callee_saved = if debug_runtime {
@@ -143,9 +174,7 @@ impl Generator {
             vec![31, 30, 29]
         };
         if variant.has_static_command_block() {
-            // Header-inline accounting at this declaration point is eight
-            // labels lower than the unit-wide skipped-inline pre-bump.
-            self.output.static_local_adjust = -8;
+            self.output.static_local_adjust = variant.static_local_adjust();
         }
         self.output.anonymous_label_bump += match variant {
             // The source's dead seven-case drive-state switch is optimized out

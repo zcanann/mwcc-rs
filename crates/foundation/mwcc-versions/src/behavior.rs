@@ -683,6 +683,9 @@ pub struct Behavior {
     pub plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
     /// LR restore order for a linkage-first frame with saved GPRs.
     pub saved_gpr_epilogue_style: SavedGprEpilogueStyle,
+    /// Whether the SDK DVD FST loader uses build 163's early saved-LR issue
+    /// slot instead of the distribution's ordinary saved-GPR epilogue.
+    pub dvd_fst_loader_early_epilogue: bool,
     /// Restore order after storing a call result through a saved pointer.
     pub pointer_call_store_epilogue_style: PointerCallStoreEpilogueStyle,
     /// Whether stack-using leaf functions carry unwind-table entries.
@@ -1136,6 +1139,10 @@ impl Behavior {
             frame_convention: config.build.profile.frame_convention(),
             plain_linkage_epilogue_style: config.build.profile.plain_linkage_epilogue_style(),
             saved_gpr_epilogue_style: config.build.profile.saved_gpr_epilogue_style(),
+            dvd_fst_loader_early_epilogue: config
+                .build
+                .profile
+                .dvd_fst_loader_early_epilogue(),
             pointer_call_store_epilogue_style: config
                 .build
                 .profile
@@ -2266,6 +2273,8 @@ mod tests {
             build_163_nintendo.saved_gpr_epilogue_style,
             SavedGprEpilogueStyle::LinkRegisterAfterStackRestore
         );
+        assert!(build_163.dvd_fst_loader_early_epilogue);
+        assert!(!build_163_nintendo.dvd_fst_loader_early_epilogue);
     }
 
     #[test]
