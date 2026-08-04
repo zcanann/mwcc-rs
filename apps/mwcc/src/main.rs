@@ -1284,26 +1284,10 @@ fn compile(
     let literal_temporary_bump_discount = cxx_literal_temporaries
         .as_ref()
         .map_or(0, |residues| residues.declaration_bump_discount);
-    let reference_binding_executable_discount =
-        cxx_analysis_residues::reference_binding_executable_discount(
-            cxx_reference_bound_scalar_temporaries,
-            behavior.cxx_reference_binding_executable_label_discount,
-            behavior.cxx_initial_reference_binding_executable_label_discount,
-        );
-    let executable_frontier_discount = if cxx_literal_temporaries.is_some() {
-        // The retained words prove that executable lowering starts before the
-        // later class-close labels. The words themselves replace their excess
-        // binding weight through `literal_temporary_bump_discount` below.
-        member_function_class_bump
-    } else {
-        cxx_analysis_residues::executable_frontier_discount(
-            reference_binding_executable_discount,
-            cxx_inline_facts.control_flow_labels
-                + cxx_inline_facts.instantiated_template_control_flow_labels,
-            behavior.emitted_vtable_inline_control_flow_replay_weight,
-            emits_weak_vtable_closure,
-        )
-    };
+    // Executable lowering starts before the class-close transaction. Scalar
+    // reference bindings remain part of that executable frontier whether or
+    // not their literal images survive as data objects.
+    let executable_frontier_discount = member_function_class_bump;
     let prototype_name_bump = if config
         .build
         .profile

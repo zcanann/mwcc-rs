@@ -212,42 +212,6 @@ pub fn literal_float_temporaries(
     })
 }
 
-/// Work used to discover scalar-reference bindings can precede retained
-/// analysis objects without remaining on the later executable-body frontier.
-/// Build 163 shares the first binding's baseline with the surrounding class
-/// walk, so only subsequent bindings are discounted there.
-pub fn reference_binding_executable_discount(
-    binding_count: usize,
-    per_binding: u8,
-    initial: u8,
-) -> usize {
-    binding_count
-        .saturating_mul(usize::from(per_binding))
-        .saturating_sub(if binding_count == 0 {
-            0
-        } else {
-            usize::from(initial)
-        })
-}
-
-/// Select the frontend work that does not reach executable-body numbering.
-///
-/// An owned weak-vtable pass replays inline control flow into its analysis
-/// closure, replacing the ordinary reference-binding discount at this
-/// frontier. Units without that replay retain the reference discount.
-pub fn executable_frontier_discount(
-    reference_binding_discount: usize,
-    control_flow_labels: usize,
-    replay_weight: u8,
-    emitted_vtable_replay: bool,
-) -> usize {
-    if emitted_vtable_replay {
-        control_flow_labels.saturating_mul(usize::from(replay_weight))
-    } else {
-        reference_binding_discount
-    }
-}
-
 /// Recover Build 163's retained zero halfword from the second analysis pass
 /// which materializes a weak vtable closure.
 ///
@@ -595,9 +559,8 @@ fn object(
 mod tests {
     use super::{
         build163_action_analysis_capture, discarded_inline_aggregate_image,
-        executable_frontier_discount, inline_fact_ordinal_bump, literal_float_temporaries,
-        member_function_class_ordinal_bump, reference_binding_executable_discount, word_object,
-        zero_capture, zero_object,
+        inline_fact_ordinal_bump, literal_float_temporaries,
+        member_function_class_ordinal_bump, word_object, zero_capture, zero_object,
     };
     use mwcc_syntax_trees::{CxxInlineOrdinalFacts, DiscardedInlineAggregateImage};
     use mwcc_versions::{
@@ -618,33 +581,15 @@ mod tests {
     }
 
     #[test]
-    fn build_163_scalar_temporary_frontier_precedes_class_close_labels() {
+    fn build_163_executable_frontier_precedes_class_close_labels() {
         let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
-        let facts = CxxInlineOrdinalFacts {
-            member_function_class_definitions: 35,
-            ..CxxInlineOrdinalFacts::default()
-        };
-
-        assert_eq!(member_function_class_ordinal_bump(facts, behavior), 34);
-    }
-
-    #[test]
-    fn build_163_executable_frontier_shares_the_first_reference_binding() {
-        let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
-        assert_eq!(
-            reference_binding_executable_discount(
-                25,
-                behavior.cxx_reference_binding_executable_label_discount,
-                behavior.cxx_initial_reference_binding_executable_label_discount,
-            ),
-            24
-        );
-    }
-
-    #[test]
-    fn weak_vtable_replay_replaces_the_reference_binding_discount() {
-        assert_eq!(executable_frontier_discount(21, 136, 1, true), 136);
-        assert_eq!(executable_frontier_discount(24, 158, 1, false), 24);
+        for (definitions, expected) in [(35, 34), (39, 38)] {
+            let facts = CxxInlineOrdinalFacts {
+                member_function_class_definitions: definitions,
+                ..CxxInlineOrdinalFacts::default()
+            };
+            assert_eq!(member_function_class_ordinal_bump(facts, behavior), expected);
+        }
     }
 
     #[test]
