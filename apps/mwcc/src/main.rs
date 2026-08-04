@@ -3135,6 +3135,8 @@ mod tests {
     mod release_to_global_manager;
     #[path = "allocate_from_global_pool.rs"]
     mod allocate_from_global_pool;
+    #[path = "wait_queue_drain.rs"]
+    mod wait_queue_drain;
 
     #[path = "bounded_global_ring_remove.rs"]
     mod bounded_global_ring_remove;

@@ -1193,6 +1193,9 @@ impl Generator {
         if self.try_allocate_from_global_pool(function)? {
             return Ok(());
         }
+        if self.try_wait_queue_drain(function)? {
+            return Ok(());
+        }
         if self.try_bounded_global_ring_remove(function)? {
             return Ok(());
         }
