@@ -498,6 +498,14 @@ impl Generator {
         } else {
             Vec::new()
         };
+        let split_scalar_array_frame =
+            super::structured_split_scalar_array_frame::Layout::plan(
+                function,
+                loop_member_array_addresses.is_some(),
+                self.behavior.frame_convention,
+                frame_scalar_parameters.len(),
+                &frame_scalar_locals,
+            );
         if frame_scalar_parameters.iter().any(|parameter| {
             !matches!(
                 class_of(parameter.parameter_type),
@@ -1205,6 +1213,11 @@ impl Generator {
         } else {
             scalar_only_frame_bytes
         };
+        if let Some(layout) = &split_scalar_array_frame {
+            local_region_bytes = layout
+                .local_region_bytes(local_region_bytes)
+                .ok_or_else(|| Diagnostic::error("structured split scalar frame is too large"))?;
+        }
         if let Some(frame) = &variadic_output_frame {
             local_region_bytes = frame
                 .local_end
@@ -2296,7 +2309,7 @@ impl Generator {
                 // allocator's physical saved-register count.
                 extra_scalar_words += deferred_saved_locals.len();
             }
-            let array_offset = if let Some(frame) = &variadic_output_frame {
+            let ordinary_array_offset = if let Some(frame) = &variadic_output_frame {
                 frame.array_offset
             } else {
                 match self.behavior.frame_convention {
@@ -2335,6 +2348,13 @@ impl Generator {
                             .map_or(table_end, |prefix| table_end.max(prefix.end_offset()))
                     }
                 }
+            };
+            let array_offset = if let Some(layout) = &split_scalar_array_frame {
+                layout.array_offset(ordinary_array_offset).ok_or_else(|| {
+                    Diagnostic::error("structured split scalar array offset is too large")
+                })?
+            } else {
+                ordinary_array_offset
             };
             if !aggregate_frame_locals.is_empty() {
                 // Predecrement frames without arrays place address-taken
@@ -2509,9 +2529,14 @@ impl Generator {
                 variadic_output_frame.is_none()
                     && interleaved_frame_layout.is_none()
                     && dense_retained_local_table_bytes == 0
+                    && split_scalar_array_frame.is_none()
             });
             let mut scalar_offset =
-                if let Some(frame) = &variadic_output_frame {
+                if let Some(layout) = &split_scalar_array_frame {
+                    layout.parameter_scalar_offset(array_offset).ok_or_else(|| {
+                        Diagnostic::error("structured split parameter table is too large")
+                    })?
+                } else if let Some(frame) = &variadic_output_frame {
                     frame.scalar_offset
                 } else if frame_arrays.is_empty() {
                     if self.behavior.frame_convention == FrameConvention::LinkageFirst
@@ -2585,6 +2610,13 @@ impl Generator {
                         .checked_add(4)
                         .ok_or_else(|| Diagnostic::error("structured scalar frame is too large"))?;
                 }
+            }
+            if let Some(layout) = &split_scalar_array_frame {
+                scalar_offset = layout
+                    .local_scalar_offset(array_offset, frame_array_bytes)
+                    .ok_or_else(|| {
+                        Diagnostic::error("structured split local table is too large")
+                    })?;
             }
             for local in frame_scalar_locals.iter().rev() {
                 let (slot_offset, slot_size) = use_scalar_prefix

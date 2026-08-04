@@ -6,7 +6,7 @@
 //! that source-layout residue; the structured frame owner decides when the
 //! linkage-first layout exposes it.
 
-use mwcc_syntax_trees::{Function, Type};
+use mwcc_syntax_trees::{Function, LocalDeclaration, Type};
 
 use super::structured_locals::body_reads_local;
 
@@ -18,9 +18,29 @@ pub(super) struct UnobservedScalarTable {
 
 impl UnobservedScalarTable {
     pub(super) fn plan(function: &Function) -> Option<Self> {
+        Self::measure(function, function.locals.iter())
+    }
+
+    /// Measure source scalar residue which precedes the first automatic array.
+    /// Linkage-first frames keep this declaration-order prefix below the array
+    /// even when the values themselves disappear during optimization.
+    pub(super) fn plan_before_first_array(function: &Function) -> Option<Self> {
+        Self::measure(
+            function,
+            function
+                .locals
+                .iter()
+                .take_while(|local| local.array_length.is_none()),
+        )
+    }
+
+    fn measure<'a>(
+        function: &Function,
+        locals: impl Iterator<Item = &'a LocalDeclaration>,
+    ) -> Option<Self> {
         let mut end = 0u32;
         let mut count = 0usize;
-        for local in function.locals.iter().filter(|local| {
+        for local in locals.filter(|local| {
             !local.is_static
                 && local.array_length.is_none()
                 && !body_reads_local(&function.statements, &local.name)
@@ -126,6 +146,28 @@ mod tests {
         assert_eq!(
             UnobservedScalarTable::plan(&function),
             Some(UnobservedScalarTable { bytes: 4, count: 1 })
+        );
+    }
+
+    #[test]
+    fn stops_the_prefix_measurement_at_the_first_array() {
+        let mut array = local("array", Type::Int);
+        array.array_length = Some(4);
+        let function = function(
+            vec![
+                local("prefix", Type::Pointer(mwcc_syntax_trees::Pointee::Int)),
+                array,
+                local("suffix", Type::Int),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(
+            UnobservedScalarTable::plan_before_first_array(&function),
+            Some(UnobservedScalarTable { bytes: 4, count: 1 })
+        );
+        assert_eq!(
+            UnobservedScalarTable::plan(&function),
+            Some(UnobservedScalarTable { bytes: 8, count: 2 })
         );
     }
 }
