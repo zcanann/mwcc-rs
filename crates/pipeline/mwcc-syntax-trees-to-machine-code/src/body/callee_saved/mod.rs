@@ -312,6 +312,7 @@ mod structured_precomposition_home_layout;
 mod structured_precomposition_entry_schedule;
 mod structured_precomposition_tail_schedule;
 mod structured_state_validation_schedule;
+mod structured_state_read_entry_schedule;
 mod structured_stream_sync_entry_schedule;
 mod structured_parameter_home_reuse;
 mod structured_prologue;
