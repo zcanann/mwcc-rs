@@ -3139,6 +3139,8 @@ mod tests {
     mod wait_queue_drain;
     #[path = "fixed_list_bank_transfer.rs"]
     mod fixed_list_bank_transfer;
+    #[path = "dsp_channel_parameter_update.rs"]
+    mod dsp_channel_parameter_update;
 
     #[path = "bounded_global_ring_remove.rs"]
     mod bounded_global_ring_remove;

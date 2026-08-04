@@ -1199,6 +1199,9 @@ impl Generator {
         if self.try_fixed_list_bank_transfer(function)? {
             return Ok(());
         }
+        if self.try_dsp_channel_parameter_update(function)? {
+            return Ok(());
+        }
         if self.try_bounded_global_ring_remove(function)? {
             return Ok(());
         }

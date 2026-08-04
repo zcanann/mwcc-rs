@@ -19,6 +19,7 @@ mod release_to_global_manager;
 mod allocate_from_global_pool;
 mod wait_queue_drain;
 mod fixed_list_bank_transfer;
+mod dsp_channel_parameter_update;
 mod bounded_global_ring_remove;
 mod fixed_triplet_float_dispatch;
 mod global_object_array_repair;
