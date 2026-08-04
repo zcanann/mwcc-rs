@@ -1062,27 +1062,21 @@ impl Generator {
         self.output.instructions[..=link_store].rotate_left(1);
         remap_prefix_rotate_left(&mut self.output.relocations, link_store);
         self.schedule_plain_linkage_first_latency(link_store);
-        let first_call = self
+        let first_direct_call = self
             .output
             .instructions
             .iter()
-            .position(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
-            .unwrap_or(self.output.instructions.len());
+            .position(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }));
+        let first_call = first_direct_call.unwrap_or(self.output.instructions.len());
         // A pointer reinterpretation can leave an overlapping incoming
         // argument copy as `mr` in the semantic emitter. Build 163 represents
-        // each one-register left shift as a collision-resolving `addi`.
-        for instruction in &mut self.output.instructions[..first_call] {
-            let Instruction::Or { a, s, b } = *instruction else {
-                continue;
-            };
-            if b == s && s == a.saturating_add(1) && (3..=9).contains(&a) {
-                *instruction = Instruction::AddImmediate {
-                    d: a,
-                    a: s,
-                    immediate: 0,
-                };
-            }
-        }
+        // each one-register left shift as a collision-resolving `addi`. This
+        // belongs to direct-call argument marshaling: a virtual or other
+        // indirect receiver remains an address copy spelled `mr`.
+        normalize_build163_direct_call_left_shifts(
+            &mut self.output.instructions,
+            first_direct_call,
+        );
         // A discarded call followed by a constant result reloads LR first.
         // The two writes are independent; this is build 163's measured plain
         // frame order, distinct from a control-flow join's constant epilogue.
@@ -1595,6 +1589,27 @@ impl Generator {
                 self.emit_linkage_first_nonleaf_prologue(&[]);
                 self.output.instructions.len() - 2
             }
+        }
+    }
+}
+
+fn normalize_build163_direct_call_left_shifts(
+    instructions: &mut [Instruction],
+    first_direct_call: Option<usize>,
+) {
+    let Some(first_direct_call) = first_direct_call else {
+        return;
+    };
+    for instruction in &mut instructions[..first_direct_call] {
+        let Instruction::Or { a, s, b } = *instruction else {
+            continue;
+        };
+        if b == s && s == a.saturating_add(1) && (3..=9).contains(&a) {
+            *instruction = Instruction::AddImmediate {
+                d: a,
+                a: s,
+                immediate: 0,
+            };
         }
     }
 }
@@ -2115,6 +2130,42 @@ fn remap_prefix_rotate_left(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build163_direct_call_left_shift_uses_add_immediate_zero() {
+        let mut instructions = vec![
+            Instruction::move_register(3, 4),
+            Instruction::BranchAndLink {
+                target: "callee".into(),
+            },
+        ];
+
+        normalize_build163_direct_call_left_shifts(&mut instructions, Some(1));
+
+        assert!(matches!(
+            instructions[0],
+            Instruction::AddImmediate {
+                d: 3,
+                a: 4,
+                immediate: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn build163_indirect_receiver_left_shift_remains_a_logical_copy() {
+        let mut instructions = vec![
+            Instruction::move_register(3, 4),
+            Instruction::BranchToLinkRegisterAndLink,
+        ];
+
+        normalize_build163_direct_call_left_shifts(&mut instructions, None);
+
+        assert!(matches!(
+            instructions[0],
+            Instruction::Or { a: 3, s: 4, b: 4 }
+        ));
+    }
 
     #[test]
     fn planned_conversion_alignment_absorbs_a_shared_retained_lane() {
