@@ -4957,9 +4957,19 @@ impl Generator {
                                 _ => None,
                             })
                             .flatten();
+                    let guarded_member_handoff =
+                        super::structured_guarded_member_handoff::plan(
+                            condition,
+                            then_body,
+                        );
                     let guarded_followup =
                         guarded_store_value
                             .or(nested_condition)
+                            .or_else(|| {
+                                guarded_member_handoff
+                                    .as_ref()
+                                    .map(|plan| plan.followup)
+                            })
                             .or(guarded_value_followup);
                     let joined_followup = guarded_followup.is_none().then(|| {
                         followup_after_call_free_join(
@@ -5000,7 +5010,8 @@ impl Generator {
                         .unwrap_or_else(|| {
                             self.begin_condition_member_cache_with_edge_reuse(
                                 condition,
-                                nested_condition.is_some(),
+                                nested_condition.is_some()
+                                    || guarded_member_handoff.is_some(),
                             )
                         });
                     // A fallthrough value may still live in its incoming
@@ -5261,9 +5272,16 @@ impl Generator {
                             Eabi::FIRST_GENERAL_ARGUMENT,
                         );
                     }
+                    if let Some(plan) = &guarded_member_handoff {
+                        self.fix_condition_member_value_register(
+                            &plan.member,
+                            plan.preferred_register,
+                        );
+                    }
                     self.release_reserved_physical_homes(reserved_fallthrough_homes);
-                    let guarded_true_member_cache =
-                        nested_condition.map(|_| self.condition_member_cache.clone());
+                    let guarded_true_member_cache = (nested_condition.is_some()
+                        || guarded_member_handoff.is_some())
+                    .then(|| self.condition_member_cache.clone());
                     self.restore_condition_member_cache(previous_member_cache);
                     let carry_fallthrough_cache = matches!(
                         then_body.last(),

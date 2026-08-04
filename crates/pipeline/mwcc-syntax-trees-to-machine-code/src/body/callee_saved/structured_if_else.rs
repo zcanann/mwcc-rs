@@ -31,6 +31,11 @@ impl Generator {
                 then_body,
                 else_body,
             );
+        let mut guarded_member_handoff =
+            super::structured_guarded_member_handoff::plan(
+                condition,
+                then_body,
+            );
         let mut branch_entry_cache =
             super::structured_if_else_branch_entry_cache::plan(
                 condition,
@@ -85,7 +90,7 @@ impl Generator {
         let previous_float_cache = self.begin_composed_condition_float_cache(condition);
         let previous_member_cache = self.begin_condition_member_cache_with_edge_reuse(
             condition,
-            branch_entry_cache.is_some(),
+            branch_entry_cache.is_some() || guarded_member_handoff.is_some(),
         );
         struct ConditionBranches {
             enter_then: Vec<usize>,
@@ -206,12 +211,20 @@ impl Generator {
                 branch_entry_cache = None;
             }
         }
+        if let Some(plan) = guarded_member_handoff.as_ref() {
+            if !self.fix_condition_member_value_register(
+                &plan.member,
+                plan.preferred_register,
+            ) {
+                guarded_member_handoff = None;
+            }
+        }
         let branch_entry_global_cache = branch_entry_cache
             .as_ref()
             .map(|_| self.condition_global_values.clone());
-        let branch_entry_member_cache = branch_entry_cache
-            .as_ref()
-            .map(|_| self.condition_member_cache.clone());
+        let branch_entry_member_cache = (branch_entry_cache.is_some()
+            || guarded_member_handoff.is_some())
+        .then(|| self.condition_member_cache.clone());
         self.restore_condition_member_cache(previous_member_cache);
         let retained_multiply_plan = condition_abs_value(condition).and_then(|value| {
             let source = self.observed_condition_float_register(value)?;
