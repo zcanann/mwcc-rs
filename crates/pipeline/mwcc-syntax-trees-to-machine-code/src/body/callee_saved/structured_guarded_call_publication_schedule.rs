@@ -10,6 +10,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use mwcc_machine_code::MachineFunction;
 
 const SCHEDULE: [usize; 39] = [
     0, 1, 7, 2, 3, 6, 4, 5, 9, 8, 13, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21,
@@ -18,43 +19,44 @@ const SCHEDULE: [usize; 39] = [
 
 impl Generator {
     pub(crate) fn schedule_structured_guarded_call_publication(&mut self) -> bool {
-        let shape = guarded_call_publication(&self.output.instructions);
         if self.behavior.frame_convention != FrameConvention::LinkageFirst
-            || !self.behavior.use_lmw_stmw
             || self.frame_size != 32
             || self.callee_saved.len() != 5
-            || !shape
         {
             return false;
         }
 
-        super::structured_conversion_call_schedule::permute_region(
-            &mut self.output,
-            0,
-            &SCHEDULE,
-        );
-
-        self.output.instructions[9] = Instruction::StoreWord {
-            s: 0,
-            a: 4,
-            offset: 0,
-        };
-        self.output.instructions[10] = Instruction::Branch { target: 31 };
-        self.output.instructions[11] = Instruction::move_register(3, 30);
-        self.output.instructions[13] = Instruction::move_register(29, 3);
-        self.output.instructions[18] = Instruction::AddImmediate {
-            d: 3,
-            a: 29,
-            immediate: 0,
-        };
-        self.output.instructions[28] = Instruction::move_register(3, 29);
-        self.output.instructions[36] = Instruction::LoadWord {
-            d: 0,
-            a: 1,
-            offset: 4,
-        };
-        true
+        schedule_guarded_call_publication(&mut self.output)
     }
+}
+
+fn schedule_guarded_call_publication(output: &mut MachineFunction) -> bool {
+    if !guarded_call_publication(&output.instructions) {
+        return false;
+    }
+
+    super::structured_conversion_call_schedule::permute_region(output, 0, &SCHEDULE);
+
+    output.instructions[9] = Instruction::StoreWord {
+        s: 0,
+        a: 4,
+        offset: 0,
+    };
+    output.instructions[10] = Instruction::Branch { target: 31 };
+    output.instructions[11] = Instruction::move_register(3, 30);
+    output.instructions[13] = Instruction::move_register(29, 3);
+    output.instructions[18] = Instruction::AddImmediate {
+        d: 3,
+        a: 29,
+        immediate: 0,
+    };
+    output.instructions[28] = Instruction::move_register(3, 29);
+    output.instructions[36] = Instruction::LoadWord {
+        d: 0,
+        a: 1,
+        offset: 4,
+    };
+    true
 }
 
 fn guarded_call_publication(instructions: &[Instruction]) -> bool {
@@ -163,15 +165,7 @@ mod tests {
             target: RelocationTarget::External("get".into()),
         });
 
-        assert!(guarded_call_publication(&output.instructions));
-        super::structured_conversion_call_schedule::permute_region(&mut output, 0, &SCHEDULE);
-        output.instructions[9] = Instruction::StoreWord { s: 0, a: 4, offset: 0 };
-        output.instructions[10] = Instruction::Branch { target: 31 };
-        output.instructions[11] = Instruction::move_register(3, 30);
-        output.instructions[13] = Instruction::move_register(29, 3);
-        output.instructions[18] = Instruction::AddImmediate { d: 3, a: 29, immediate: 0 };
-        output.instructions[28] = Instruction::move_register(3, 29);
-        output.instructions[36] = Instruction::LoadWord { d: 0, a: 1, offset: 4 };
+        assert!(schedule_guarded_call_publication(&mut output));
 
         assert_eq!(output.relocations[0].instruction_index, 12);
         assert!(matches!(output.instructions[10], Instruction::Branch { target: 31 }));
