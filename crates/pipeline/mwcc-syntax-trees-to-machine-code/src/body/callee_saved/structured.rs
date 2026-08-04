@@ -369,6 +369,13 @@ impl Generator {
                 function,
             );
         let function = reduced_member_array_offsets.as_ref().unwrap_or(function);
+        let materialized_member_element_bases =
+            super::structured_loop_member_element_base::materialize_member_element_bases(
+                function,
+            );
+        let function = materialized_member_element_bases
+            .as_ref()
+            .unwrap_or(function);
         // Macro-expanded display-list packets are an input normalization for
         // this general structured path. More exact semantic owners run before
         // reaching here and retain their original packet statements.
@@ -1597,7 +1604,11 @@ impl Generator {
             .as_ref()
             .map_or(first_saved, |plan| {
                 first_saved.min(usize::from(plan.first_saved_register))
-            });
+            })
+            .min(member_array_offset_layout.as_ref().map_or(
+                first_saved,
+                |layout| usize::from(layout.first_saved_register()),
+            ));
         let frame_saved_count = 32usize.saturating_sub(frame_first_saved);
         // A five-instruction runtime trampoline is copied into one automatic
         // word array and passed to a call. Build 163 keeps that array directly

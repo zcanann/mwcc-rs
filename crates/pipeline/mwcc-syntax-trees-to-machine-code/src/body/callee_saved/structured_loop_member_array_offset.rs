@@ -254,9 +254,39 @@ impl HomeLayout {
         parameter_reuse: &super::structured_parameter_home_reuse::StructuredParameterHomeReuse,
         home_count: usize,
     ) -> Option<Self> {
-        if eager_local_count != 0
-            || saved_parameter_count != 1
-            || deferred_locals.len() != 2
+        if eager_local_count != 0 || saved_parameter_count != 1 {
+            return None;
+        }
+        if deferred_locals.len() == 3
+            && deferred_homes.group_count == 3
+            && home_count == 4
+        {
+            let element = deferred_locals.iter().find(|local| {
+                local
+                    .name
+                    .starts_with(super::structured_loop_member_element_base::PREFIX)
+            })?;
+            let offset = deferred_locals.iter().find(|local| {
+                local
+                    .name
+                    .starts_with(crate::analysis::PRESCALED_MEMBER_ARRAY_INDEX_PREFIX)
+            })?;
+            let index = deferred_locals
+                .iter()
+                .find(|local| local.name != offset.name && local.name != element.name)?;
+            let index_home = parameter_reuse.home_index(deferred_homes.group(&index.name));
+            let offset_home = parameter_reuse.home_index(deferred_homes.group(&offset.name));
+            let element_home = parameter_reuse.home_index(deferred_homes.group(&element.name));
+            return Some(Self {
+                preferences: std::collections::HashMap::from([
+                    (0, 30),
+                    (index_home, 31),
+                    (offset_home, 29),
+                    (element_home, 25),
+                ]),
+            });
+        }
+        if deferred_locals.len() != 2
             || deferred_homes.group_count != 2
             || home_count != 3
         {
@@ -283,6 +313,17 @@ impl HomeLayout {
 
     pub(super) fn preference(&self, home: usize) -> Option<u8> {
         self.preferences.get(&home).copied()
+    }
+
+    /// Lowest physical register covered by this layout's dense save image.
+    /// Sparse semantic homes still make `stmw`/`lmw` preserve every register
+    /// between the lowest preference and r31.
+    pub(super) fn first_saved_register(&self) -> u8 {
+        self.preferences
+            .values()
+            .copied()
+            .min()
+            .expect("a member-array home layout has preferences")
     }
 }
 
