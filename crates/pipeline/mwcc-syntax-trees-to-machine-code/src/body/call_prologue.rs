@@ -4,14 +4,12 @@
 use super::*;
 
 impl Generator {
-    /// Restore patched build 159's strict plain-linkage prefix after an earlier
-    /// inline-assembly definition carried scheduler state into this function.
-    /// Ordinary functions in the same build still fill the linkage latency
-    /// slots with ready call-argument setup.
-    pub(crate) fn canonicalize_patched_build159_post_asm_linkage(&mut self) {
+    /// Restore the strict linkage-first prefix after an earlier inline-assembly
+    /// definition carried scheduler state into this function. Ordinary
+    /// functions in the same build still fill the linkage latency slots with
+    /// ready call-argument setup.
+    pub(crate) fn canonicalize_linkage_first_post_asm_linkage(&mut self) {
         if self.behavior.frame_convention != FrameConvention::LinkageFirst
-            || self.behavior.plain_linkage_epilogue_style
-                != PlainLinkageEpilogueStyle::StackRestoreBeforeReload
             || !self.preceded_by_asm
             || !self.non_leaf
             || !self.callee_saved.is_empty()
@@ -110,11 +108,7 @@ impl Generator {
     /// linkage-write hazards.
     pub(crate) fn hoist_leading_arg_moves(&mut self, lr_store_index: Option<usize>) {
         let Some(store) = lr_store_index else { return };
-        if self.behavior.frame_convention == FrameConvention::LinkageFirst
-            && self.behavior.plain_linkage_epilogue_style
-                == PlainLinkageEpilogueStyle::StackRestoreBeforeReload
-            && self.preceded_by_asm
-        {
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst && self.preceded_by_asm {
             return;
         }
         if self.hoist_leading_int_to_float_argument(store) {

@@ -31,6 +31,22 @@ impl Generator {
         });
     }
 
+    /// After an asm-tainted linkage-first prefix has been restored, form a
+    /// two-argument callback in the first argument lane before overwriting that
+    /// lane with the leading integer argument. Build 163 emits
+    /// `lis r3,callback; addi r4,r3,callback; li r3,C` for this packet.
+    pub(crate) fn schedule_linkage_first_post_asm_function_address(&mut self) {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst
+            || !self.preceded_by_asm
+        {
+            return;
+        }
+        let function_symbols = &self.call_return_types;
+        schedule_post_asm_function_address_argument(&mut self.output, &|name| {
+            function_symbols.contains_key(name)
+        });
+    }
+
     /// Fill the first linkage slot for the compact eager/deferred inline
     /// frame. This stream has forward assertion branches, so the ordinary
     /// branch-free entry scheduler declines it; the retained-lane shape gives
@@ -513,6 +529,66 @@ fn schedule_function_address_low(
     remap_relocations_for_move(&mut output.relocations, low, stack_update);
 }
 
+fn schedule_post_asm_function_address_argument(
+    output: &mut mwcc_machine_code::MachineFunction,
+    is_function_symbol: &dyn Fn(&str) -> bool,
+) {
+    let first = Eabi::FIRST_GENERAL_ARGUMENT;
+    let second = first + 1;
+    let Some(start) = output.instructions.windows(7).position(|window| {
+        matches!(window,
+            [
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
+                Instruction::AddImmediateShifted { d, a: 0, .. },
+                Instruction::AddImmediate { d: constant, a: 0, .. },
+                Instruction::AddImmediate { d: completed, a: base, .. },
+                Instruction::BranchAndLink { .. },
+            ] if *d == second && *constant == first && *completed == second && *base == second)
+    }) else {
+        return;
+    };
+    let high = start + 3;
+    let low = start + 5;
+    let Some(target) = output.relocations.iter().find_map(|relocation| {
+        if relocation.instruction_index != high || relocation.kind != RelocationKind::Addr16Ha {
+            return None;
+        }
+        let mwcc_machine_code::RelocationTarget::External(target) = &relocation.target else {
+            return None;
+        };
+        is_function_symbol(target).then_some(target.clone())
+    }) else {
+        return;
+    };
+    if !output.relocations.iter().any(|relocation| {
+        relocation.instruction_index == low
+            && relocation.kind == RelocationKind::Addr16Lo
+            && matches!(&relocation.target,
+                mwcc_machine_code::RelocationTarget::External(name) if name == &target)
+    }) {
+        return;
+    }
+
+    let Instruction::AddImmediateShifted { d, .. } = &mut output.instructions[high] else {
+        unreachable!("post-asm callback high was recognized")
+    };
+    *d = first;
+    let Instruction::AddImmediate { a, .. } = &mut output.instructions[low] else {
+        unreachable!("post-asm callback low was recognized")
+    };
+    *a = first;
+    output.instructions.swap(start + 4, start + 5);
+    for relocation in &mut output.relocations {
+        relocation.instruction_index = match relocation.instruction_index {
+            index if index == start + 4 => start + 5,
+            index if index == start + 5 => start + 4,
+            index => index,
+        };
+    }
+}
+
 fn touches_general_register(instruction: &Instruction, register: u8) -> bool {
     mwcc_vreg::register_operands(instruction)
         .into_iter()
@@ -555,6 +631,42 @@ fn remap_branch_targets_for_move(instructions: &mut [Instruction], from: usize, 
 mod tests {
     use super::*;
     use mwcc_machine_code::{Relocation, RelocationKind, RelocationTarget};
+
+    #[test]
+    fn post_asm_callback_borrows_the_first_argument_lane() {
+        let mut output = mwcc_machine_code::MachineFunction::new("install");
+        output.instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -8 },
+            Instruction::load_immediate_shifted(4, 0),
+            Instruction::load_immediate(3, 7),
+            Instruction::AddImmediate { d: 4, a: 4, immediate: 0 },
+            Instruction::BranchAndLink { target: "set".into() },
+        ];
+        output.relocations = vec![
+            Relocation {
+                instruction_index: 3,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::External("callback".into()),
+            },
+            Relocation {
+                instruction_index: 5,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::External("callback".into()),
+            },
+        ];
+
+        schedule_post_asm_function_address_argument(&mut output, &|name| name == "callback");
+
+        assert!(matches!(output.instructions[3],
+            Instruction::AddImmediateShifted { d: 3, .. }));
+        assert!(matches!(output.instructions[4],
+            Instruction::AddImmediate { d: 4, a: 3, .. }));
+        assert!(matches!(output.instructions[5],
+            Instruction::AddImmediate { d: 3, a: 0, immediate: 7 }));
+        assert_eq!(output.relocations[1].instruction_index, 4);
+    }
 
     #[test]
     fn guarded_saved_copies_follow_the_complete_save_range() {

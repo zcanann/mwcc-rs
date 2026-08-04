@@ -1244,7 +1244,8 @@ fn lower_function_body(
     generator.normalize_patched_build159_pointer_difference_call();
     generator.schedule_legacy_member_constant_store_run();
     generator.schedule_patched_status_initialization_chain();
-    generator.canonicalize_patched_build159_post_asm_linkage();
+    generator.canonicalize_linkage_first_post_asm_linkage();
+    generator.schedule_linkage_first_post_asm_function_address();
     generator.schedule_structured_repeated_value_inlined_byte_appends();
     generator.schedule_pointer_table_index_cursor_prologue();
     generator.schedule_indexed_allocation_pair();
