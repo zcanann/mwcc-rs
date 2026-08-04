@@ -287,6 +287,15 @@ impl Generator {
                 {
                     return Ok(());
                 }
+                if self.try_emit_saved_float_leaf_call_arithmetic(
+                    *operator,
+                    left,
+                    right,
+                    destination,
+                    double,
+                )? {
+                    return Ok(());
+                }
                 if self.try_emit_negated_leaf_call_add(
                     *operator,
                     left,
