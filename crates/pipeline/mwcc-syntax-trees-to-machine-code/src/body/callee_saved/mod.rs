@@ -170,6 +170,7 @@ mod structured_frame_pointer_update_reuse;
 mod structured_guarded_frame_pointer_update_schedule;
 mod structured_global_index_cache;
 mod structured_global_base_cache;
+mod structured_global_base_entry_schedule;
 mod structured_global_member_address_cache;
 mod structured_global_member_address_schedule;
 mod structured_multi_member_cache_entry_schedule;

@@ -1201,6 +1201,7 @@ fn lower_function_body(
     generator.schedule_structured_guarded_frame_pointer_updates();
     generator.schedule_structured_inlined_byte_appends();
     generator.schedule_structured_single_inlined_byte_append();
+    generator.schedule_structured_global_base_entry();
     generator.schedule_structured_broad_global_base_loop();
     generator.schedule_structured_global_byte_loop();
     generator.finalize_structured_compact_narrow_scalar_frame();
