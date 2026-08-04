@@ -1220,6 +1220,9 @@ impl Generator {
         if self.try_bounded_global_ring_enqueue(function)? {
             return Ok(());
         }
+        if self.try_global_ring_service(function)? {
+            return Ok(());
+        }
         if self.try_bounded_global_ring_remove(function)? {
             return Ok(());
         }

@@ -98,6 +98,7 @@ mod global_doubly_linked_remove;
 mod global_doubly_linked_append_trace;
 mod global_status_snapshot_access;
 mod global_pointer_table_link_search;
+mod global_ring_service;
 mod memory_access_transaction;
 mod memory_map_validation;
 mod extended_register_access;
