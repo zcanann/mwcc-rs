@@ -329,6 +329,18 @@ impl Generator {
         self.structured_prescaled_pointer_table_index =
             prescaled_pointer_table_index.is_some();
         let function = prescaled_pointer_table_index.as_ref().unwrap_or(function);
+        let reduced_member_array_call_cursors = self
+            .behavior
+            .schedule_latency_slots
+            .then(|| {
+                super::structured_member_array_call_cursor::strength_reduce_member_array_call_cursors(
+                    function,
+                )
+            })
+            .flatten();
+        let function = reduced_member_array_call_cursors
+            .as_ref()
+            .unwrap_or(function);
         // Macro-expanded display-list packets are an input normalization for
         // this general structured path. More exact semantic owners run before
         // reaching here and retain their original packet statements.
