@@ -1,0 +1,149 @@
+use crate::{compile, SourceLanguage};
+
+#[test]
+fn initializes_channel_defaults_from_optional_manager() {
+    let source = br#"
+        struct Object;
+        struct DspChannel { unsigned char bytes[40]; };
+        struct Route { unsigned short value; };
+        struct Manager {
+            unsigned int count;
+            unsigned int reserved;
+            struct Object* lists[4];
+            float gains[5];
+            short primary[8];
+            short secondary[8];
+            short distance;
+            unsigned short routing[6];
+            unsigned char modes[6];
+            unsigned char mode_a;
+            unsigned char mode_b;
+            unsigned char bytes[3];
+            unsigned char padding[3];
+            unsigned int flags;
+            unsigned short rate;
+            unsigned short padding2;
+            int enabled;
+        };
+        struct Channel {
+            unsigned char prefix[2];
+            unsigned char state;
+            unsigned char padding0;
+            struct Manager* manager;
+            struct Channel** owner;
+            unsigned char pause;
+            unsigned char padding1[3];
+            struct DspChannel* dsp;
+            unsigned int value0;
+            unsigned int value1;
+            unsigned int value2;
+            unsigned char gap0[8];
+            int* callback0;
+            int* callback1;
+            int argument0;
+            int argument1;
+            void* slots[4];
+            unsigned char gap1[112];
+            unsigned char bytes[3];
+            unsigned char gap2[77];
+            struct Route routing[6];
+            unsigned char gap3[12];
+            unsigned int flags;
+            unsigned short rate;
+            unsigned short serial;
+            unsigned char tail[24];
+        };
+
+        void initialize_channel(struct Channel* channel) {
+            int i;
+            int j;
+            int k;
+            channel->callback0 = 0;
+            channel->callback1 = 0;
+            channel->argument0 = 0;
+            channel->argument1 = 0;
+            channel->dsp = 0;
+            channel->pause = 0;
+            channel->value0 = 0;
+            channel->value1 = 0;
+            channel->value2 = 0;
+            if (channel->manager == 0) {
+                channel->routing[0].value = 336;
+                channel->routing[1].value = 528;
+                channel->routing[2].value = 850;
+                channel->routing[3].value = 1042;
+                channel->routing[4].value = 0;
+                channel->routing[5].value = 0;
+                channel->flags = 65793;
+                channel->rate = 600;
+                channel->bytes[0] = 26;
+                channel->bytes[1] = 1;
+                channel->bytes[2] = 1;
+            } else {
+                for (i = 0; i < 6; i++)
+                    channel->routing[i].value = channel->manager->routing[i];
+                channel->flags = channel->manager->flags;
+                channel->rate = channel->manager->rate;
+                for (j = 0; j < 3; j++)
+                    channel->bytes[j] = channel->manager->bytes[j];
+            }
+            for (k = 0; k < 4; k++)
+                channel->slots[k] = 0;
+            channel->state = 0;
+            channel->serial++;
+            if ((int)channel->serial == 0)
+                channel->serial = 1;
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    flags.inline_enabled = false;
+    let object = compile(
+        source,
+        "audio-channel-defaults.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the audio channel defaults should compile");
+
+    let expected = [
+        0x39, 0x00, 0x00, 0x00, 0x91, 0x03, 0x00, 0x28, 0x91, 0x03, 0x00, 0x2c,
+        0x91, 0x03, 0x00, 0x30, 0x91, 0x03, 0x00, 0x34, 0x91, 0x03, 0x00, 0x10,
+        0x99, 0x03, 0x00, 0x0c, 0x91, 0x03, 0x00, 0x14, 0x91, 0x03, 0x00, 0x18,
+        0x91, 0x03, 0x00, 0x1c, 0x80, 0x03, 0x00, 0x04, 0x28, 0x00, 0x00, 0x00,
+        0x40, 0x82, 0x00, 0x58, 0x38, 0x00, 0x01, 0x50, 0x3c, 0x80, 0x00, 0x01,
+        0xb0, 0x03, 0x01, 0x08, 0x38, 0xa0, 0x02, 0x10, 0x38, 0x00, 0x03, 0x52,
+        0x38, 0xe0, 0x04, 0x12, 0xb0, 0xa3, 0x01, 0x0a, 0x38, 0xc4, 0x01, 0x01,
+        0x38, 0xa0, 0x02, 0x58, 0x38, 0x80, 0x00, 0x1a, 0xb0, 0x03, 0x01, 0x0c,
+        0x38, 0x00, 0x00, 0x01, 0xb0, 0xe3, 0x01, 0x0e, 0xb1, 0x03, 0x01, 0x10,
+        0xb1, 0x03, 0x01, 0x12, 0x90, 0xc3, 0x01, 0x20, 0xb0, 0xa3, 0x01, 0x24,
+        0x98, 0x83, 0x00, 0xb8, 0x98, 0x03, 0x00, 0xb9, 0x98, 0x03, 0x00, 0xba,
+        0x48, 0x00, 0x00, 0x68, 0x38, 0x00, 0x00, 0x06, 0x7c, 0x09, 0x03, 0xa6,
+        0x80, 0xa3, 0x00, 0x04, 0x38, 0x88, 0x00, 0x4e, 0x38, 0x08, 0x01, 0x08,
+        0x39, 0x08, 0x00, 0x02, 0x7c, 0x85, 0x22, 0x2e, 0x7c, 0x83, 0x03, 0x2e,
+        0x42, 0x00, 0xff, 0xe8, 0x80, 0x83, 0x00, 0x04, 0x38, 0x00, 0x00, 0x03,
+        0x38, 0xc0, 0x00, 0x00, 0x80, 0x84, 0x00, 0x68, 0x90, 0x83, 0x01, 0x20,
+        0x80, 0x83, 0x00, 0x04, 0xa0, 0x84, 0x00, 0x6c, 0xb0, 0x83, 0x01, 0x24,
+        0x7c, 0x09, 0x03, 0xa6, 0x80, 0xa3, 0x00, 0x04, 0x38, 0x86, 0x00, 0x62,
+        0x38, 0x06, 0x00, 0xb8, 0x38, 0xc6, 0x00, 0x01, 0x7c, 0x85, 0x20, 0xae,
+        0x7c, 0x83, 0x01, 0xae, 0x42, 0x00, 0xff, 0xe8, 0x38, 0x00, 0x00, 0x04,
+        0x38, 0x80, 0x00, 0x00, 0x38, 0xa0, 0x00, 0x00, 0x7c, 0x09, 0x03, 0xa6,
+        0x38, 0x04, 0x00, 0x38, 0x38, 0x84, 0x00, 0x04, 0x7c, 0xa3, 0x01, 0x2e,
+        0x42, 0x00, 0xff, 0xf4, 0x38, 0x00, 0x00, 0x00, 0x98, 0x03, 0x00, 0x02,
+        0xa0, 0x83, 0x01, 0x26, 0x38, 0x04, 0x00, 0x01, 0xb0, 0x03, 0x01, 0x26,
+        0xa0, 0x03, 0x01, 0x26, 0x2c, 0x00, 0x00, 0x00, 0x4c, 0x82, 0x00, 0x20,
+        0x38, 0x00, 0x00, 0x01, 0xb0, 0x03, 0x01, 0x26, 0x4e, 0x80, 0x00, 0x20,
+    ];
+    assert!(
+        object.windows(expected.len()).any(|bytes| bytes == expected),
+        "audio channel initialization body was not found in object: {:02x?}",
+        object
+    );
+}
