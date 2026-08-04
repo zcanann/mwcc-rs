@@ -3606,10 +3606,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // first implicit call: earlier explicit references precede that event
         // and all later references follow it. A static function already has its
         // LOCAL symbol, so its body stream stays in discovery order throughout.
-        let creation_ordered = matches!(
+        let creation_ordered = (matches!(
             input.object_format.function_symbol_order,
             FunctionSymbolOrder::ReferencesFirst | FunctionSymbolOrder::FunctionFirst
-        )
+        ) || function.body_references_precede_symbol)
         .then(|| ordered.clone());
         // An IMPLICITLY-declared callee's symbol is created by mwcc at its call site inside
         // the body, so it is emitted AFTER the function symbol; an explicitly-declared
@@ -3967,6 +3967,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     }
                 }
                 emit_referenced!(source_ordered);
+            } else if function.body_references_precede_symbol {
+                emit_referenced!(source_ordered);
+                emit_function_symbol!(index);
             } else if function.is_static {
                 // Prologue helpers are created before the body. With no GLOBAL
                 // function-symbol event to divide the body stream, explicit and

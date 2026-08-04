@@ -8,6 +8,8 @@
 #[allow(unused_imports)]
 use super::*;
 
+const HIDDEN_CONTROL_LABEL_RESIDUE: u32 = 21;
+
 impl Generator {
     pub(crate) fn schedule_structured_aggregate_normalize_frame(&mut self) {
         let Some(plan) = AggregateNormalizePlan::recognize(self) else {
@@ -95,6 +97,13 @@ impl Generator {
 
         let tail = self.output.instructions.len();
         self.output.instructions.swap(tail - 3, tail - 2);
+
+        // The surrounding loop, sparse light-type switch, OR chain, and two
+        // nested float selects leave optimizer-only control nodes ahead of the
+        // function pool. They are inseparable from this complete recognized
+        // transaction and remain observable through the pool's `@N` symbols.
+        self.output.anonymous_label_bump += HIDDEN_CONTROL_LABEL_RESIDUE;
+        self.output.body_references_precede_symbol = true;
     }
 }
 

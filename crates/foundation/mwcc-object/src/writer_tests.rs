@@ -128,6 +128,7 @@ fn weak_function(name: &'static str) -> FunctionObject<'static> {
         constant_number_adjust: 0,
         constant_pool_prefix_padding: 0,
         phantom_externals: Vec::new(),
+        body_references_precede_symbol: false,
         post_constant_bump: 0,
         post_function_anonymous_bump: None,
         post_function_counter_rollback: 0,
@@ -144,6 +145,72 @@ fn weak_function(name: &'static str) -> FunctionObject<'static> {
         implicit_external_callees: Vec::new(),
         early_implicit_external_callees: Vec::new(),
     }
+}
+
+#[test]
+fn deferred_body_can_complete_reference_discovery_before_its_symbol() {
+    let mut function = weak_function("owner");
+    function.is_weak = false;
+    function.weak_inline = false;
+    function.body_references_precede_symbol = true;
+    function.symbol_order = vec!["first".into(), "second".into()];
+    function.implicit_external_callees = function.symbol_order.clone();
+    function.relocations = function
+        .symbol_order
+        .iter()
+        .cloned()
+        .map(|name| crate::TextRelocation {
+            offset: 0,
+            elf_type: 10,
+            target: crate::RelocationTarget::External(name),
+        })
+        .collect();
+    let object = write_object(&ObjectInput {
+        source_name: "ordered.cpp",
+        object_format: ObjectFormat {
+            comment: CommentFormat {
+                marker: 8,
+                version: (2, 0, 1),
+                pooling_enabled: true,
+            },
+            emb_sda21_offset: 0,
+            code_alignment: 4,
+            sdata2_writable: true,
+            function_symbol_order: FunctionSymbolOrder::LegacyDeferred,
+            asm_absolute_references_before_function: false,
+            weak_vtable_function_symbol_tail: false,
+            owned_rtti_closure_relocation_order: false,
+            initialized_globals_before_deferred_functions: true,
+            local_data_symbols_in_declaration_order: false,
+            small_zero_statics_in_declaration_order: false,
+            small_zero_data_in_declaration_order: false,
+            rodata_anchor_before_data_symbols: false,
+            rodata_anchor_comment_flags: 0,
+            data_relocations_use_section_anchors: false,
+            data_anchor_comment_flags: 0,
+            initial_anonymous_counter: 5,
+            leading_source_anonymous_bump: 0,
+            post_leaf_function_anonymous_bump: 0,
+            post_framed_function_anonymous_bump: 0,
+        },
+        functions: vec![function],
+        data_objects: Vec::new(),
+        small_data: true,
+        emit_mwcats: false,
+        inline_asm_symbols: &[],
+        early_static_function_symbols: &[],
+        early_undefined_externals: &[],
+        section_function_declarations: &[],
+        section_externals: &[],
+        local_symbol_order: &[],
+        debug: None,
+    });
+    let names = symbol_names(&object);
+    let first = names.iter().position(|name| name == "first").unwrap();
+    let second = names.iter().position(|name| name == "second").unwrap();
+    let owner = names.iter().position(|name| name == "owner").unwrap();
+
+    assert_eq!((first + 1, second + 1), (second, owner));
 }
 
 #[test]
@@ -680,6 +747,7 @@ fn analysis_constant_placement_is_independent_of_counter_advancement() {
         constant_number_adjust: 0,
         constant_pool_prefix_padding: 4,
         phantom_externals: Vec::new(),
+        body_references_precede_symbol: false,
         post_constant_bump: 0,
         post_function_anonymous_bump: None,
         post_function_counter_rollback: 0,

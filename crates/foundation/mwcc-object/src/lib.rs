@@ -299,6 +299,9 @@ pub struct FunctionObject<'a> {
     pub constant_pool_prefix_padding: u8,
     /// UND externals with no relocation, emitted first among the externals.
     pub phantom_externals: Vec<String>,
+    /// Complete this body's reference-discovery event stream before emitting
+    /// its global function symbol, overriding a function-first unit profile.
+    pub body_references_precede_symbol: bool,
     /// `@N` numbers consumed after the constants, before the extab pair.
     pub post_constant_bump: u32,
     /// Function-specific override for the build-wide anonymous-counter gap

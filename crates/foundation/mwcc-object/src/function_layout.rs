@@ -163,6 +163,7 @@ mod tests {
             constant_number_adjust: 0,
             constant_pool_prefix_padding: 0,
             phantom_externals: Vec::new(),
+            body_references_precede_symbol: false,
             post_constant_bump: 0,
             post_function_anonymous_bump: None,
             post_function_counter_rollback: 0,

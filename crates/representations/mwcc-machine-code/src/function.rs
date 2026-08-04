@@ -207,6 +207,10 @@ pub struct MachineFunction {
     /// a later-dropped inline body (strikers' __frsqrte). Emitted FIRST among
     /// this function's externals.
     pub phantom_externals: Vec<String>,
+    /// This deferred body completes external-reference discovery before
+    /// registering its own global function symbol. Most deferred bodies expose
+    /// the opposite event order selected by the translation-unit profile.
+    pub body_references_precede_symbol: bool,
     /// Whether the function emits a floating-point conditional branch. mwcc's
     /// anonymous `@N` counter advances by three for such a branch.
     pub has_float_branch: bool,
@@ -351,6 +355,7 @@ impl MachineFunction {
             string_number_adjust: 0,
             keep_named_const_scalars: Vec::new(),
             phantom_externals: Vec::new(),
+            body_references_precede_symbol: false,
             has_float_branch: false,
             anonymous_label_bump: 0,
             fragmented_debug_anonymous_bump: 0,
