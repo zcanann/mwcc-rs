@@ -1331,15 +1331,29 @@ impl Generator {
                 // load as a scratch-scheduling barrier and restart the leaf run.
                 let indexed_source = matches!(value, Expression::Index { .. })
                     && !matches!(pointee, Pointee::Float | Pointee::Double);
+                let computed_general_source = !matches!(pointee, Pointee::Float | Pointee::Double)
+                    && !matches!(value, Expression::Variable(_) | Expression::Index { .. })
+                    && constant_value(value).is_none()
+                    && !matches!(
+                        value,
+                        Expression::Cast {
+                            target_type: Type::Pointer(_) | Type::StructPointer { .. },
+                            operand,
+                        } if matches!(operand.as_ref(), Expression::Variable(name)
+                            if self.locations.get(name).and_then(|location| location.pointee).is_some()
+                                || matches!(self.globals.get(name), Some(Type::Pointer(_) | Type::StructPointer { .. })))
+                    );
+                let scratch_barrier = indexed_source || computed_general_source;
                 if self.emitted_leaf_variable_index_store_since_scratch_barrier
-                    && !indexed_source
+                    && !scratch_barrier
                 {
                     return Err(Diagnostic::error("a second variable-index subscript store needs look-ahead index scheduling (roadmap)"));
                 }
-                self.emitted_leaf_variable_index_store_since_scratch_barrier = !indexed_source;
-                // A variable index uses the scratch for scaling, so the value must
-                // be a leaf (it stays in its own register) — no temporary, so release
-                // the address reservation up front.
+                self.emitted_leaf_variable_index_store_since_scratch_barrier = !scratch_barrier;
+                // A variable index uses the scratch for scaling. Leaf values
+                // already live in their own register; computed general values
+                // are materialized into an allocator-owned virtual below. The
+                // address no longer needs an explicit reservation in either case.
                 if restore {
                     self.reserved.remove(&address);
                 }
@@ -1369,6 +1383,7 @@ impl Generator {
                     && !byte_literal
                     && !wide_zero_literal
                     && !simple_pointer_cast
+                    && !computed_general_source
                 {
                     return Err(Diagnostic::error(
                         "store with a variable index needs a simple value (roadmap)",
@@ -1382,6 +1397,15 @@ impl Generator {
                     // The indexed load itself needs r0 for its scale. Keep its
                     // result in a separately allocated value register so the
                     // target's following scale cannot overwrite it.
+                    let source = self.fresh_virtual_general_preferring(
+                        Eabi::FIRST_GENERAL_ARGUMENT + 2,
+                    );
+                    self.evaluate_general(value, source)?;
+                    source
+                } else if computed_general_source {
+                    // Preserve a computed integer value in an allocator-owned
+                    // register while r0 scales the destination index. This is
+                    // the general form of the indexed-load transaction above.
                     let source = self.fresh_virtual_general_preferring(
                         Eabi::FIRST_GENERAL_ARGUMENT + 2,
                     );

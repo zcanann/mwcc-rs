@@ -1123,6 +1123,22 @@ impl Parser {
         }
     }
 
+    /// Executable parameter types for a recovered C++ callable selected by
+    /// its final ABI name. Name resolution and reference-address lowering are
+    /// deliberately separate, but every call spelling must consume the same
+    /// selected signature after overload resolution.
+    pub(crate) fn resolved_cxx_call_parameters(&self, mangled: &str) -> Option<Vec<Type>> {
+        self.cxx_free_functions
+            .values()
+            .chain(self.cxx_static_methods.values())
+            .chain(self.cxx_constructors.values())
+            .chain(self.cxx_instance_methods.values())
+            .chain(self.cxx_explicit_instance_methods.values())
+            .flatten()
+            .find(|method| method.mangled == mangled)
+            .map(|method| method.parameters.clone())
+    }
+
     /// Strict overload lookup used only while recovering overloaded arithmetic
     /// from a discarded inline. Unlike ordinary call lookup, a missing
     /// aggregate identity is not allowed to match an aggregate-reference
@@ -5381,11 +5397,11 @@ impl Parser {
         Ok(Some(mangled))
     }
 
-    /// Convert concrete aggregate lvalues passed to reference parameters into
-    /// their EABI addresses. Source syntax omits `&`, but the syntax tree must
-    /// retain the pointer value or codegen will try to load an entire aggregate
-    /// into one argument register.
-    pub(crate) fn lower_cxx_aggregate_reference_arguments(
+    /// Convert concrete lvalues passed to pointer-shaped C++ reference
+    /// parameters into their EABI addresses. Source syntax omits `&`, but the
+    /// syntax tree must retain the address or codegen will pass the referenced
+    /// scalar/aggregate value in the argument register.
+    pub(crate) fn lower_cxx_reference_arguments(
         &self,
         parameters: &[Type],
         arguments: Vec<Expression>,
@@ -5395,14 +5411,21 @@ impl Parser {
             .into_iter()
             .enumerate()
             .map(|(index, argument)| {
-                if matches!(parameters.get(index), Some(Type::StructPointer { .. }))
-                    && (matches!(
-                        self.cxx_expression_type(&argument),
-                        Some(Type::Struct { .. })
-                    ) || matches!(&argument, Expression::Index { .. })
+                let argument_type = self.cxx_expression_type(&argument);
+                let aggregate_lvalue = matches!(argument_type, Some(Type::Struct { .. }))
+                    || matches!(&argument, Expression::Index { .. })
                         && (self.cxx_expression_struct_tag(&argument).is_some()
-                            || single_argument
-                                && self.expression_struct_tag.is_some()))
+                            || single_argument && self.expression_struct_tag.is_some());
+                let scalar_lvalue = argument_type.is_some_and(is_cxx_arithmetic_type)
+                    && matches!(
+                        &argument,
+                        Expression::Variable(_)
+                            | Expression::Dereference { .. }
+                            | Expression::Member { .. }
+                            | Expression::Index { .. }
+                    );
+                if matches!(parameters.get(index), Some(Type::StructPointer { .. }))
+                    && (aggregate_lvalue || scalar_lvalue)
                 {
                     Expression::AddressOf {
                         operand: Box::new(argument),
@@ -5467,7 +5490,7 @@ impl Parser {
                         .expect("candidate selection requires every omitted default")
                 }),
         );
-        self.lower_cxx_aggregate_reference_arguments(&signature.parameters, arguments)
+        self.lower_cxx_reference_arguments(&signature.parameters, arguments)
     }
 
     /// Whether source class metadata declares a zero-argument constructor.

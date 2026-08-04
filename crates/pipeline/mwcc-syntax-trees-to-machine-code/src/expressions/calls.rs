@@ -1,9 +1,10 @@
 //! Call emission and argument marshaling.
 
 use super::call_argument_types::{
-    affine_variable_argument, aggregate_reference_source, assigned_general_name,
+    affine_variable_argument, assigned_general_name,
     classify_call_argument, narrow_general_argument,
-    outgoing_general_stack_offset, AggregateReferenceSource, CallArgumentPlacement,
+    outgoing_general_stack_offset, reference_argument_source, CallArgumentPlacement,
+    ReferenceArgumentSource,
 };
 #[allow(unused_imports)]
 use super::*;
@@ -1276,7 +1277,7 @@ impl Generator {
                 }
                 next_float += 1;
             } else {
-                let aggregate_reference = aggregate_reference_source(
+                let reference_argument = reference_argument_source(
                     argument,
                     parameter_type,
                     |pointer| {
@@ -1295,9 +1296,9 @@ impl Generator {
                         }
                     },
                 );
-                let general_argument = match aggregate_reference {
-                    Some(AggregateReferenceSource::Address(address)) => address,
-                    Some(AggregateReferenceSource::Lvalue(lvalue)) => lvalue,
+                let general_argument = match reference_argument {
+                    Some(ReferenceArgumentSource::Address(address)) => address,
+                    Some(ReferenceArgumentSource::Lvalue(lvalue)) => lvalue,
                     None => argument,
                 };
                 if prematerialized_general.is_some_and(|(later, _, _)| later == index) {
@@ -1503,8 +1504,8 @@ impl Generator {
                             "general argument {index} to '{name}' needs an unreserved outgoing stack slot"
                         )));
                     }
-                    let evaluated = match aggregate_reference {
-                        Some(AggregateReferenceSource::Lvalue(lvalue)) => {
+                    let evaluated = match reference_argument {
+                        Some(ReferenceArgumentSource::Lvalue(lvalue)) => {
                             self.emit_address_of(lvalue, next_general)
                         }
                         _ => self.evaluate_general(general_argument, next_general),
@@ -1513,8 +1514,8 @@ impl Generator {
                         .map_err(|mut diagnostic| {
                             diagnostic.message.push_str(&format!(
                                 " (while evaluating general argument {index} to '{name}', \
-                                 parameter {parameter_type:?}, aggregate-reference-address={})",
-                                aggregate_reference.is_some(),
+                                 parameter {parameter_type:?}, reference-address={})",
+                                reference_argument.is_some(),
                             ));
                             diagnostic
                         })?;
@@ -1526,8 +1527,8 @@ impl Generator {
                 } else if let Some((source, _, _)) = downward_word_copy {
                     self.emit_integer_materialization_copy(next_general, source);
                 } else {
-                    let evaluated = match aggregate_reference {
-                        Some(AggregateReferenceSource::Lvalue(lvalue)) => {
+                    let evaluated = match reference_argument {
+                        Some(ReferenceArgumentSource::Lvalue(lvalue)) => {
                             self.emit_address_of(lvalue, next_general)
                         }
                         _ => self.evaluate_general(general_argument, next_general),
@@ -1536,8 +1537,8 @@ impl Generator {
                         .map_err(|mut diagnostic| {
                             diagnostic.message.push_str(&format!(
                                 " (while evaluating general argument {index} to '{name}', \
-                                 parameter {parameter_type:?}, aggregate-reference-address={})",
-                                aggregate_reference.is_some(),
+                                 parameter {parameter_type:?}, reference-address={})",
+                                reference_argument.is_some(),
                             ));
                             diagnostic
                         })?;

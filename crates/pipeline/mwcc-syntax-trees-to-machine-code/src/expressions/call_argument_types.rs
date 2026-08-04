@@ -165,7 +165,7 @@ pub(crate) fn source_parameter_type(
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum AggregateReferenceSource<'a> {
+pub(super) enum ReferenceArgumentSource<'a> {
     /// `*p` passed by reference: the address expression is already `p`.
     Address(&'a Expression),
     /// A struct-valued lvalue such as `object.member`: form `&lvalue`.
@@ -173,26 +173,32 @@ pub(super) enum AggregateReferenceSource<'a> {
 }
 
 /// A C++ reference parameter is represented as a struct pointer in the compact
-/// ABI types. Recover the source address rather than trying to scalar-load the
-/// aggregate value.
-pub(super) fn aggregate_reference_source<'a>(
+/// ABI types. Recover the source address rather than trying to load the scalar
+/// or aggregate value into the argument register.
+pub(super) fn reference_argument_source<'a>(
     argument: &'a Expression,
     parameter_type: Option<Type>,
     source_size: impl FnOnce(&Expression) -> Option<u32>,
-) -> Option<AggregateReferenceSource<'a>> {
+) -> Option<ReferenceArgumentSource<'a>> {
     let Some(Type::StructPointer { element_size }) = parameter_type else {
         return None;
     };
     let compatible = |size| element_size == 0 || size == element_size;
     match argument {
         Expression::Dereference { pointer } => {
-            let source_size = source_size(pointer)?;
-            compatible(source_size).then_some(AggregateReferenceSource::Address(pointer))
+            let source_size = match pointer.as_ref() {
+                Expression::Cast {
+                    target_type: Type::Pointer(pointee),
+                    ..
+                } => Some(u32::from(pointee.size())),
+                _ => source_size(pointer),
+            }?;
+            compatible(source_size).then_some(ReferenceArgumentSource::Address(pointer))
         }
         Expression::Member {
             member_type: Type::Struct { size, .. },
             ..
-        } if compatible(*size) => Some(AggregateReferenceSource::Lvalue(argument)),
+        } if compatible(*size) => Some(ReferenceArgumentSource::Lvalue(argument)),
         _ => None,
     }
 }
@@ -328,26 +334,49 @@ mod tests {
         };
 
         assert!(matches!(
-            aggregate_reference_source(
+            reference_argument_source(
                 &argument,
                 Some(Type::StructPointer { element_size: 108 }),
                 |_| Some(108),
             ),
-            Some(AggregateReferenceSource::Address(Expression::Variable(name)))
+            Some(ReferenceArgumentSource::Address(Expression::Variable(name)))
                 if name == "object"
         ));
-        assert!(aggregate_reference_source(
+        assert!(reference_argument_source(
             &argument,
             Some(Type::StructPointer { element_size: 64 }),
             |_| Some(108),
         )
         .is_none());
-        assert!(aggregate_reference_source(
+        assert!(reference_argument_source(
             &argument,
             Some(Type::StructPointer { element_size: 0 }),
             |_| Some(108),
         )
         .is_some());
+    }
+
+    #[test]
+    fn passes_a_dereferenced_scalar_reference_as_its_address() {
+        let pointer = Expression::Cast {
+            target_type: Type::Pointer(Pointee::Int),
+            operand: Box::new(Expression::Variable("depth".into())),
+        };
+        let argument = Expression::Dereference {
+            pointer: Box::new(pointer),
+        };
+
+        assert!(matches!(
+            reference_argument_source(
+                &argument,
+                Some(Type::StructPointer { element_size: 0 }),
+                |_| None,
+            ),
+            Some(ReferenceArgumentSource::Address(Expression::Cast {
+                target_type: Type::Pointer(Pointee::Int),
+                operand,
+            })) if matches!(operand.as_ref(), Expression::Variable(name) if name == "depth")
+        ));
     }
 
     #[test]
@@ -360,12 +389,12 @@ mod tests {
         };
 
         assert!(matches!(
-            aggregate_reference_source(
+            reference_argument_source(
                 &member,
                 Some(Type::StructPointer { element_size: 0 }),
                 |_| None,
             ),
-            Some(AggregateReferenceSource::Lvalue(Expression::Member {
+            Some(ReferenceArgumentSource::Lvalue(Expression::Member {
                 offset: 68,
                 ..
             }))

@@ -3210,6 +3210,7 @@ impl Parser {
             let mut parameters = Vec::new();
             let mut cxx_parameters = Vec::new();
             let mut cxx_reference_parameters = std::collections::HashSet::new();
+            let mut cxx_scalar_reference_parameters = std::collections::HashMap::new();
             let mut cxx_const_object_parameters = std::collections::HashSet::new();
             let mut is_variadic = false;
             // Row-stride records are scoped to ONE function's parameters — a stale
@@ -3343,6 +3344,9 @@ impl Parser {
                         }
                         if is_reference && !name.is_empty() {
                             cxx_reference_parameters.insert(name.clone());
+                            if let Ok(pointee) = pointee_of(cxx_source_type) {
+                                cxx_scalar_reference_parameters.insert(name.clone(), pointee);
+                            }
                         }
                         if struct_tag.is_some() && cxx_pointee_const && !name.is_empty() {
                             cxx_const_object_parameters.insert(name.clone());
@@ -3743,6 +3747,7 @@ impl Parser {
                 function_is_static,
                 parameters,
                 cxx_reference_parameters,
+                cxx_scalar_reference_parameters,
                 cxx_const_object_parameters,
             );
             self.namespace_stack.truncate(body_namespace_depth);
@@ -4717,6 +4722,7 @@ impl Parser {
         is_static: bool,
         parameters: Vec<Parameter>,
         cxx_reference_parameters: std::collections::HashSet<String>,
+        cxx_scalar_reference_parameters: std::collections::HashMap<String, Pointee>,
         cxx_const_object_parameters: std::collections::HashSet<String>,
     ) -> Compilation<Function> {
         let debug_function_name = name.clone();
@@ -4745,6 +4751,7 @@ impl Parser {
         self.variable_types.clear();
         self.variable_array_bytes.clear();
         self.cxx_reference_variables = cxx_reference_parameters;
+        self.cxx_scalar_reference_pointees = cxx_scalar_reference_parameters;
         self.cxx_const_object_variables = cxx_const_object_parameters;
         for parameter in &parameters {
             self.variable_types

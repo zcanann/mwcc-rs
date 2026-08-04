@@ -645,6 +645,23 @@ impl Parser {
         *probe.peek() == Token::ParenClose
     }
 
+    /// Form the source value of a named object after block-shadow resolution.
+    /// Scalar C++ references occupy pointer-shaped parameter storage, but the
+    /// source name is an lvalue for the pointee. Keeping that implicit
+    /// dereference here makes every downstream read, update, explicit
+    /// address-of, and call argument observe the same representation.
+    fn named_object_value(&self, name: String) -> Expression {
+        let Some(&pointee) = self.cxx_scalar_reference_pointees.get(&name) else {
+            return Expression::Variable(name);
+        };
+        Expression::Dereference {
+            pointer: Box::new(Expression::Cast {
+                target_type: Type::Pointer(pointee),
+                operand: Box::new(Expression::Variable(name)),
+            }),
+        }
+    }
+
     pub(crate) fn factor(&mut self) -> Compilation<Expression> {
         // prefix dereference: `*pointer`
         if *self.peek() == Token::Star {
@@ -919,22 +936,36 @@ impl Parser {
                             let name = if let Some(namespace) =
                                 self.resolve_scoped_cxx_namespace_name(&scope)
                             {
-                                self.resolve_qualified_free_cxx_call(
-                                &namespace,
-                                &member,
-                                &arguments,
-                            )?
-                            .ok_or_else(|| {
-                                Diagnostic::error(format!(
-                                    "C++ namespace function call '{namespace}::{member}' is unavailable (roadmap)"
-                                ))
-                            })?
+                                let name = self
+                                    .resolve_qualified_free_cxx_call(
+                                        &namespace,
+                                        &member,
+                                        &arguments,
+                                    )?
+                                    .ok_or_else(|| {
+                                        Diagnostic::error(format!(
+                                            "C++ namespace function call '{namespace}::{member}' is unavailable (roadmap)"
+                                        ))
+                                    })?;
+                                if let Some(parameters) =
+                                    self.resolved_cxx_call_parameters(&name)
+                                {
+                                    arguments =
+                                        self.lower_cxx_reference_arguments(&parameters, arguments);
+                                }
+                                name
                             } else if let Some(name) = self.resolve_explicit_instance_member_call(
                                 &scope,
                                 &member,
                                 arguments.len(),
                             )? {
                                 self.record_inline_template_member_instantiation(&scope, &member);
+                                if let Some(parameters) =
+                                    self.resolved_cxx_call_parameters(&name)
+                                {
+                                    arguments =
+                                        self.lower_cxx_reference_arguments(&parameters, arguments);
+                                }
                                 arguments.insert(0, Expression::Variable("this".to_owned()));
                                 name
                             } else {
@@ -944,6 +975,12 @@ impl Parser {
                                     arguments.len(),
                                 )?;
                                 self.record_inline_template_member_instantiation(&scope, &member);
+                                if let Some(parameters) =
+                                    self.resolved_cxx_call_parameters(&name)
+                                {
+                                    arguments =
+                                        self.lower_cxx_reference_arguments(&parameters, arguments);
+                                }
                                 name
                             };
                             Expression::Call { name, arguments }
@@ -1012,7 +1049,7 @@ impl Parser {
                                 ..
                             }
                         ) {
-                            arguments = self.lower_cxx_aggregate_reference_arguments(
+                            arguments = self.lower_cxx_reference_arguments(
                                 member_call.parameters(),
                                 arguments,
                             );
@@ -1117,9 +1154,22 @@ impl Parser {
                                 let name = if self.cplusplus || self.default_cplusplus {
                                     match self.resolve_cxx_data_object(&name) {
                                         Some(data_object) => data_object,
-                                        None => self
+                                        None => match self
                                             .resolve_free_cxx_call(&name, &arguments)?
-                                            .unwrap_or(name),
+                                        {
+                                            Some(mangled) => {
+                                                if let Some(parameters) =
+                                                    self.resolved_cxx_call_parameters(&mangled)
+                                                {
+                                                    arguments = self.lower_cxx_reference_arguments(
+                                                        &parameters,
+                                                        arguments,
+                                                    );
+                                                }
+                                                mangled
+                                            }
+                                            None => name,
+                                        },
                                     }
                                 } else {
                                     name
@@ -1148,7 +1198,7 @@ impl Parser {
                 Token::Identifier(name) => {
                     let resolved = self.resolve_block_rename(name.clone());
                     if self.variable_types.contains_key(&resolved) || resolved != name {
-                        Expression::Variable(resolved)
+                        self.named_object_value(resolved)
                     } else if let Some(member) = self
                         .current_member_scope
                         .as_deref()
@@ -2010,7 +2060,7 @@ impl Parser {
             });
         if !retained_inline_call || retained_inline_aggregate_value {
             arguments =
-                self.lower_cxx_aggregate_reference_arguments(member_call.parameters(), arguments);
+                self.lower_cxx_reference_arguments(member_call.parameters(), arguments);
         }
         Ok(match member_call {
             crate::cxx::ImplicitMemberCall::Static {

@@ -357,6 +357,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         template_aliases: HashMap::new(),
         variable_structs: HashMap::new(),
         cxx_reference_variables: std::collections::HashSet::new(),
+        cxx_scalar_reference_pointees: HashMap::new(),
         cxx_const_object_variables: std::collections::HashSet::new(),
         function_return_structs: HashMap::new(),
         function_return_fundamentals: HashMap::new(),
@@ -2318,6 +2319,74 @@ blr\n\
                 Expression::AddressOf { operand: source }
             ] if matches!(object.as_ref(), Expression::Member { offset: 4, .. })
                 && matches!(source.as_ref(), Expression::Variable(name) if name == "source")
+        ));
+    }
+
+    #[test]
+    fn treats_a_scalar_reference_name_as_the_referenced_lvalue() {
+        let source = r#"
+            void update(int& depth) {
+                depth = depth + 1;
+                update(depth);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        let function = &unit.functions[0];
+        assert_eq!(
+            function.parameters[0].parameter_type,
+            Type::StructPointer { element_size: 0 }
+        );
+        let scalar_reference = |expression: &Expression| {
+            matches!(
+                expression,
+                Expression::Dereference { pointer }
+                    if matches!(pointer.as_ref(), Expression::Cast {
+                        target_type: Type::Pointer(Pointee::Int),
+                        operand,
+                    } if matches!(operand.as_ref(), Expression::Variable(name) if name == "depth"))
+            )
+        };
+        assert!(matches!(
+            &function.statements[0],
+            Statement::Store {
+                target,
+                value: Expression::Binary { left, .. },
+            } if scalar_reference(target) && scalar_reference(left)
+        ));
+        assert!(matches!(
+            &function.statements[1],
+            Statement::Expression(Expression::Call { arguments, .. })
+                if matches!(arguments.as_slice(), [Expression::AddressOf { operand }]
+                    if scalar_reference(operand))
+        ));
+    }
+
+    #[test]
+    fn passes_an_ordinary_scalar_lvalue_by_address_to_a_reference_parameter() {
+        let source = r#"
+            void take(int&);
+            void caller(int value) { take(value); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].statements[0],
+            Statement::Expression(Expression::Call { arguments, .. })
+                if matches!(arguments.as_slice(), [Expression::AddressOf { operand }]
+                    if matches!(operand.as_ref(), Expression::Variable(name) if name == "value"))
         ));
     }
 

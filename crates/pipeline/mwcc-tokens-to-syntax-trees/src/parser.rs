@@ -499,6 +499,11 @@ pub(crate) struct Parser {
     /// distinction prevents ordinary `T*` assignments from entering aggregate
     /// field-copy scalarization while preserving `T const&` setters.
     pub(crate) cxx_reference_variables: std::collections::HashSet<String>,
+    /// Scalar subset of `cxx_reference_variables`, retaining the referenced
+    /// value type after the executable parameter has become an ABI pointer.
+    /// Bare uses are lvalues loaded and stored through that pointer; aggregate
+    /// references keep their existing struct-aware representation.
+    pub(crate) cxx_scalar_reference_pointees: HashMap<String, Pointee>,
     /// Function-scoped aggregate objects whose source declaration makes the
     /// reached object const (`T const&`, `T const*`, or a const aggregate
     /// value). Executable pointer types erase this qualification.
