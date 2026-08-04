@@ -518,6 +518,7 @@ fn lower_function_body(
         variadic_definition,
         variadic_callees: variadic_definitions.clone(),
         output: MachineFunction::new(function.name.clone()),
+        compiler_generated_symbols: Vec::new(),
         labels: mwcc_vreg::Labels::default(),
         locations: HashMap::new(),
         // A `const` global is read-only and mwcc *folds* its value into each reader
@@ -882,6 +883,11 @@ fn lower_function_body(
                 expanded_symbol_source.as_ref().unwrap_or(function),
                 &generator.call_return_types,
                 generator.behavior.symbol_traversal_style,
+            );
+            symbol_order::interleave_compiler_generated_calls(
+                &mut generator.output.symbol_order,
+                &generator.compiler_generated_symbols,
+                &generator.output.relocations,
             );
         }
     }

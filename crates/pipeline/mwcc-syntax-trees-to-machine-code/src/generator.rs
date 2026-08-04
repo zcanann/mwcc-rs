@@ -343,6 +343,10 @@ pub(crate) struct Generator {
     /// argument registers are live and clear it for general-only calls.
     pub(crate) variadic_callees: HashSet<String>,
     pub(crate) output: MachineFunction,
+    /// Symbols introduced by instruction selection rather than present in the
+    /// source AST. Final symbol discovery interleaves these compiler-created
+    /// calls with source calls at their lowering position.
+    pub(crate) compiler_generated_symbols: Vec<String>,
     /// Branch labels awaiting resolution — the multi-block emission substrate.
     /// Resolved into `output.instructions` once body emission completes.
     pub(crate) labels: mwcc_vreg::Labels,

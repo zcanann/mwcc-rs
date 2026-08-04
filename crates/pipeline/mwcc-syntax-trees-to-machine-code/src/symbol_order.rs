@@ -12,6 +12,7 @@
 use mwcc_syntax_trees::{
     AsmItem, AsmOperand, BinaryOperator, Expression, Function, Statement, Type,
 };
+use mwcc_machine_code::{Relocation, RelocationKind, RelocationTarget};
 use mwcc_versions::SymbolTraversalStyle;
 
 /// The data and call references collected during the traversal, kept apart so the
@@ -81,6 +82,49 @@ pub(crate) fn referenced_names(
     let mut seen = std::collections::HashSet::new();
     ordered.retain(|name| seen.insert(name.clone()));
     ordered
+}
+
+/// Insert compiler-created call targets into the source-derived symbol stream.
+///
+/// Source traversal deliberately keeps data references ahead of calls and can
+/// differ from final instruction order. A runtime helper has no source node,
+/// however, so MWCC creates its symbol while lowering the conversion. Compare
+/// it only with other direct-call references: this preserves the source data
+/// group while placing the hidden call before the next call lowered after it.
+pub(crate) fn interleave_compiler_generated_calls(
+    ordered: &mut Vec<String>,
+    generated: &[String],
+    relocations: &[Relocation],
+) {
+    let first_direct_call = |wanted: &str| {
+        relocations
+            .iter()
+            .filter(|relocation| relocation.kind == RelocationKind::Rel24)
+            .filter_map(|relocation| match &relocation.target {
+                RelocationTarget::External(name) if name == wanted => {
+                    Some(relocation.instruction_index)
+                }
+                _ => None,
+            })
+            .min()
+    };
+    let mut events: Vec<_> = generated
+        .iter()
+        .filter_map(|name| first_direct_call(name).map(|index| (index, name)))
+        .collect();
+    events.sort_by_key(|(index, _)| *index);
+    for (event_index, name) in events {
+        if ordered.iter().any(|listed| listed == name) {
+            continue;
+        }
+        let insertion = ordered
+            .iter()
+            .position(|listed| {
+                first_direct_call(listed).is_some_and(|index| index > event_index)
+            })
+            .unwrap_or(ordered.len());
+        ordered.insert(insertion, name.clone());
+    }
 }
 
 /// A leaf operand — a name or a literal — needs no computation; everything else is
@@ -371,5 +415,34 @@ fn collect(expression: &Expression, names: &mut Names) {
             names.push_call(constructor.clone());
         }
         Expression::Assign { target, value } => collect_assignment(target, value, names),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn relocation(index: usize, kind: RelocationKind, name: &str) -> Relocation {
+        Relocation {
+            instruction_index: index,
+            kind,
+            target: RelocationTarget::External(name.to_owned()),
+        }
+    }
+
+    #[test]
+    fn generated_call_is_interleaved_without_disturbing_the_data_group() {
+        let mut ordered = vec!["global".into(), "before".into(), "after".into()];
+        let generated = vec!["__runtime".into()];
+        let relocations = vec![
+            relocation(20, RelocationKind::EmbSda21, "global"),
+            relocation(4, RelocationKind::Rel24, "before"),
+            relocation(8, RelocationKind::Rel24, "__runtime"),
+            relocation(12, RelocationKind::Rel24, "after"),
+        ];
+
+        interleave_compiler_generated_calls(&mut ordered, &generated, &relocations);
+
+        assert_eq!(ordered, ["global", "before", "__runtime", "after"]);
     }
 }

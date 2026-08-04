@@ -126,6 +126,14 @@ impl Generator {
         if !self.try_emit_scaled_float_to_unsigned_argument(operand)? {
             self.evaluate_float(operand, Eabi::float_result().number)?;
         }
+        if !self
+            .compiler_generated_symbols
+            .iter()
+            .any(|name| name == FLOAT_TO_UNSIGNED)
+        {
+            self.compiler_generated_symbols
+                .push(FLOAT_TO_UNSIGNED.to_owned());
+        }
         self.emit_call(FLOAT_TO_UNSIGNED, &[], Some(destination), false)
     }
 
