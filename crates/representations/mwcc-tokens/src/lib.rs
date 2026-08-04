@@ -38,6 +38,8 @@ pub enum Token {
     // identifiers and literals
     Identifier(String),
     IntegerLiteral(i64),
+    /// An integer literal carrying an explicit `u`/`U` suffix.
+    UnsignedIntegerLiteral(i64),
     /// A decimal floating literal with an explicit `f`/`F` suffix.
     FloatLiteral(f64),
     /// An unsuffixed decimal floating literal, whose C type is `double`.

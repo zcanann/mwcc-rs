@@ -34,12 +34,13 @@ impl Generator {
                         b: amount,
                     });
                     self.emit_condition_mask_and(value_register, GENERAL_SCRATCH);
-                    self.emit_post_asm_mask_compare(value, GENERAL_SCRATCH)?;
+                    self.emit_post_asm_mask_compare(value, mask, GENERAL_SCRATCH)?;
                     return Ok(true);
                 }
             }
         }
-        let Some(mask) = constant_value(mask).and_then(|value| u32::try_from(value).ok()) else {
+        let Some(mask_value) = constant_value(mask).and_then(|value| u32::try_from(value).ok())
+        else {
             return Ok(false);
         };
         let register_leaf = leaf_name(value).and_then(|name| self.lookup_general(name));
@@ -53,7 +54,7 @@ impl Generator {
         if register_leaf.is_none() && !memory_value {
             return Ok(false);
         }
-        if let Some((begin, end)) = mask_to_run(mask) {
+        if let Some((begin, end)) = mask_to_run(mask_value) {
             let source = if let Some(register) = register_leaf {
                 register
             } else {
@@ -76,13 +77,13 @@ impl Generator {
                     end,
                 });
             }
-            self.emit_post_asm_mask_compare(value, GENERAL_SCRATCH)?;
+            self.emit_post_asm_mask_compare(value, mask, GENERAL_SCRATCH)?;
         } else {
             // A discontiguous wide mask cannot use rlwinm. MWCC forms it in
             // r0, keeps the loaded value in the next available register, and
             // lets `and.` both consume the mask and set CR0 for the branch.
-            let low = mask as u16 as i16;
-            let high = ((i64::from(mask) - i64::from(low)) >> 16) as i16;
+            let low = mask_value as u16 as i16;
+            let high = ((i64::from(mask_value) - i64::from(low)) >> 16) as i16;
             let high_register = self.fresh_virtual_general();
             self.output
                 .instructions
@@ -100,7 +101,7 @@ impl Generator {
                 register
             };
             self.emit_condition_mask_and(source, GENERAL_SCRATCH);
-            self.emit_post_asm_mask_compare(value, GENERAL_SCRATCH)?;
+            self.emit_post_asm_mask_compare(value, mask, GENERAL_SCRATCH)?;
         }
         Ok(true)
     }
@@ -124,16 +125,14 @@ impl Generator {
 
     fn emit_post_asm_mask_compare(
         &mut self,
-        source: &Expression,
+        value: &Expression,
+        mask: &Expression,
         result: u8,
     ) -> Compilation<()> {
         if !self.preceded_by_asm {
             return Ok(());
         }
-        let promoted_signed = self
-            .unpromoted_integer_width(source)
-            .is_some_and(|width| width < 32)
-            || self.signedness_of(source)?;
+        let promoted_signed = self.usual_integer_binary_signedness(value, mask)?;
         let instruction = if promoted_signed {
             Instruction::CompareWordImmediate {
                 a: result,

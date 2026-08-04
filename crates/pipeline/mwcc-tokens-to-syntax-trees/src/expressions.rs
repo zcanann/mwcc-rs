@@ -868,6 +868,10 @@ impl Parser {
         } else {
             match self.advance() {
                 Token::IntegerLiteral(value) => Expression::IntegerLiteral(value),
+                Token::UnsignedIntegerLiteral(value) => Expression::Cast {
+                    target_type: Type::UnsignedInt,
+                    operand: Box::new(Expression::IntegerLiteral(value)),
+                },
                 Token::FloatLiteral(value) => Expression::FloatLiteral(value),
                 Token::DoubleLiteral(value) => Expression::Cast {
                     target_type: Type::Double,

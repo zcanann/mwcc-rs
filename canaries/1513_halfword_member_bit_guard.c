@@ -31,6 +31,13 @@ void halfword_member_bit_clear(Context* context)
     }
 }
 
+void halfword_member_unsigned_bit_guard(Context* context)
+{
+    if (context->state & 1U) {
+        active();
+    }
+}
+
 void word_member_bit_guard(Context* context)
 {
     if (context->flags & 1) {
