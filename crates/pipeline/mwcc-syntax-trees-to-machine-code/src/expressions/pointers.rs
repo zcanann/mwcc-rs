@@ -352,8 +352,11 @@ impl Generator {
 
     /// Store `value` to constant `address + offset` (a `*(T *)C = v` or `(*(struct S *)C).f = v`).
     /// The address base is materialized before the value and kept clear of the value's input
-    /// registers, mirroring the absolute global store. Returns `false` (caller defers) when the
-    /// displacement overflows i16.
+    /// registers, mirroring the absolute global store. When an earlier access
+    /// already retained the same high-half base, a computed value may be
+    /// evaluated under that base's reservation before the store. Returns
+    /// `false` when the displacement overflows i16 or a computed value would
+    /// require a new base to be materialized after it.
     pub(crate) fn emit_const_address_store(
         &mut self,
         pointee: Pointee,
@@ -395,7 +398,21 @@ impl Generator {
                 _ => false,
             };
         if !is_register_leaf {
-            return Ok(false);
+            if high == 0 {
+                return Ok(false);
+            }
+            let Some(&base) = self.const_address_bases.get(&high) else {
+                return Ok(false);
+            };
+            let restore = self.reserved.insert(base);
+            let source = self.place_store_value(value, pointee)?;
+            if restore {
+                self.reserved.remove(&base);
+            }
+            self.output
+                .instructions
+                .push(displacement_store(pointee, source, base, displacement)?);
+            return Ok(true);
         }
         if high == 0 {
             let source = self.place_store_value(value, pointee)?;

@@ -15,6 +15,7 @@ struct CursorPlan {
     cursor_base: Expression,
     element: Pointee,
     element_offset: i64,
+    step_elements: i64,
 }
 
 pub(super) fn strength_reduce_member_array_call_cursors(
@@ -31,12 +32,33 @@ pub(super) fn strength_reduce_member_array_call_cursors(
     let mut statements = Vec::with_capacity(function.statements.len());
     let mut changed = false;
 
-    for statement in &function.statements {
-        let Some(plan) = plan(statement) else {
-            statements.push(statement.clone());
-            continue;
-        };
-        let cursor = fresh_name(&mut used, &mut next_name);
+    statements.extend(function.statements.iter().map(|statement| {
+        reduce_statement(
+            statement,
+            &mut used,
+            &mut next_name,
+            &mut declarations,
+            &mut changed,
+        )
+    }));
+
+    changed.then(|| {
+        let mut reduced = function.clone();
+        reduced.locals.extend(declarations);
+        reduced.statements = statements;
+        reduced
+    })
+}
+
+fn reduce_statement(
+    statement: &Statement,
+    used: &mut std::collections::HashSet<String>,
+    next_name: &mut usize,
+    declarations: &mut Vec<LocalDeclaration>,
+    changed: &mut bool,
+) -> Statement {
+    if let Some(plan) = plan(statement) {
+        let cursor = fresh_name(used, next_name);
         declarations.push(LocalDeclaration {
             declared_type: Type::Pointer(plan.element),
             name: cursor.clone(),
@@ -50,16 +72,49 @@ pub(super) fn strength_reduce_member_array_call_cursors(
             attribute_alignment: None,
             row_bytes: None,
         });
-        statements.push(rewrite_loop(statement, &plan, &cursor));
-        changed = true;
+        *changed = true;
+        return rewrite_loop(statement, &plan, &cursor);
     }
-
-    changed.then(|| {
-        let mut reduced = function.clone();
-        reduced.locals.extend(declarations);
-        reduced.statements = statements;
-        reduced
-    })
+    match statement {
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => Statement::If {
+            condition: condition.clone(),
+            then_body: then_body
+                .iter()
+                .map(|statement| {
+                    reduce_statement(statement, used, next_name, declarations, changed)
+                })
+                .collect(),
+            else_body: else_body
+                .iter()
+                .map(|statement| {
+                    reduce_statement(statement, used, next_name, declarations, changed)
+                })
+                .collect(),
+        },
+        Statement::Loop {
+            kind,
+            initializer,
+            condition,
+            step,
+            body,
+        } => Statement::Loop {
+            kind: *kind,
+            initializer: initializer.clone(),
+            condition: condition.clone(),
+            step: step.clone(),
+            body: body
+                .iter()
+                .map(|statement| {
+                    reduce_statement(statement, used, next_name, declarations, changed)
+                })
+                .collect(),
+        },
+        _ => statement.clone(),
+    }
 }
 
 fn plan(statement: &Statement) -> Option<CursorPlan> {
@@ -74,9 +129,8 @@ fn plan(statement: &Statement) -> Option<CursorPlan> {
         return None;
     };
     let index = zero_initializer(initializer)?;
-    if unit_step_index(step)? != index
-        || !crate::analysis::expression_reads_name(condition, index)
-    {
+    let (step_index, step_elements) = counted_step(step)?;
+    if step_index != index || !crate::analysis::expression_reads_name(condition, index) {
         return None;
     }
     let [Statement::Expression(Expression::Call { arguments, .. })] = body.as_slice() else {
@@ -84,7 +138,7 @@ fn plan(statement: &Statement) -> Option<CursorPlan> {
     };
 
     for argument in arguments {
-        let Expression::Index { base, index: used } = argument else {
+        let Some((base, used)) = indexed_argument(argument) else {
             continue;
         };
         let Expression::MemberAddress {
@@ -92,12 +146,15 @@ fn plan(statement: &Statement) -> Option<CursorPlan> {
             offset,
             element,
             index_stride: None,
-        } = base.as_ref()
+        } = base
         else {
             continue;
         };
         let element_size = i64::from(element.size());
-        if !matches!(element, Pointee::Int | Pointee::UnsignedInt)
+        if !matches!(
+            element,
+            Pointee::Int | Pointee::UnsignedInt | Pointee::Float | Pointee::Double
+        )
             || i64::from(*offset) % element_size != 0
             || relative_index(used, index).is_none()
         {
@@ -106,14 +163,11 @@ fn plan(statement: &Statement) -> Option<CursorPlan> {
         let element_offset = i64::from(*offset) / element_size;
         let matching = arguments
             .iter()
-            .filter_map(|argument| match argument {
-                Expression::Index {
-                    base: other_base,
-                    index: other_index,
-                } if crate::analysis::structurally_equal(base, other_base) => {
-                    relative_index(other_index, index)
-                }
-                _ => None,
+            .filter_map(|argument| {
+                let (other_base, other_index) = indexed_argument(argument)?;
+                crate::analysis::structurally_equal(base, other_base)
+                    .then(|| relative_index(other_index, index))
+                    .flatten()
             })
             .collect::<Vec<_>>();
         if matching.len() >= 2
@@ -127,7 +181,7 @@ fn plan(statement: &Statement) -> Option<CursorPlan> {
         {
             return Some(CursorPlan {
                 index: index.to_owned(),
-                array: base.as_ref().clone(),
+                array: base.clone(),
                 cursor_base: Expression::MemberAddress {
                     base: owner.clone(),
                     offset: 0,
@@ -136,6 +190,7 @@ fn plan(statement: &Statement) -> Option<CursorPlan> {
                 },
                 element: *element,
                 element_offset,
+                step_elements,
             });
         }
     }
@@ -152,23 +207,32 @@ fn zero_initializer(expression: &Expression) -> Option<&str> {
     (crate::analysis::constant_value(value) == Some(0)).then_some(index)
 }
 
-fn unit_step_index(expression: &Expression) -> Option<&str> {
+fn counted_step(expression: &Expression) -> Option<(&str, i64)> {
     let Expression::Assign { target, value } = expression else {
         return None;
     };
     let Expression::Variable(index) = target.as_ref() else {
         return None;
     };
-    matches!(
-        value.as_ref(),
-        Expression::Binary {
-            operator: BinaryOperator::Add,
-            left,
-            right,
-        } if matches!(left.as_ref(), Expression::Variable(name) if name == index)
-            && crate::analysis::constant_value(right) == Some(1)
-    )
-    .then_some(index)
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left,
+        right,
+    } = value.as_ref()
+    else {
+        return None;
+    };
+    let step = crate::analysis::constant_value(right)?;
+    (matches!(left.as_ref(), Expression::Variable(name) if name == index) && step > 0)
+        .then_some((index.as_str(), step))
+}
+
+fn indexed_argument(expression: &Expression) -> Option<(&Expression, &Expression)> {
+    match expression {
+        Expression::Index { base, index } => Some((base, index)),
+        Expression::Cast { operand, .. } => indexed_argument(operand),
+        _ => None,
+    }
 }
 
 fn relative_index(expression: &Expression, index: &str) -> Option<i64> {
@@ -235,7 +299,7 @@ fn rewrite_loop(statement: &Statement, plan: &CursorPlan, cursor: &str) -> State
                 value: Box::new(Expression::Binary {
                     operator: BinaryOperator::Add,
                     left: Box::new(Expression::Variable(cursor.to_owned())),
-                    right: Box::new(Expression::IntegerLiteral(1)),
+                    right: Box::new(Expression::IntegerLiteral(plan.step_elements)),
                 }),
             }),
         }),
@@ -254,25 +318,37 @@ fn rewrite_call(statement: &Statement, plan: &CursorPlan, cursor: &str) -> State
         name: name.clone(),
         arguments: arguments
             .iter()
-            .map(|argument| {
-                let Expression::Index { base, index } = argument else {
-                    return argument.clone();
-                };
-                if !crate::analysis::structurally_equal(base, &plan.array) {
-                    return argument.clone();
-                }
-                let Some(relative) = relative_index(index, &plan.index) else {
-                    return argument.clone();
-                };
-                Expression::Index {
-                    base: Box::new(Expression::Variable(cursor.to_owned())),
-                    index: Box::new(Expression::IntegerLiteral(
-                        relative + plan.element_offset,
-                    )),
-                }
-            })
+            .map(|argument| rewrite_argument(argument, plan, cursor))
             .collect(),
     })
+}
+
+fn rewrite_argument(argument: &Expression, plan: &CursorPlan, cursor: &str) -> Expression {
+    if let Expression::Cast {
+        target_type,
+        operand,
+    } = argument
+    {
+        return Expression::Cast {
+            target_type: *target_type,
+            operand: Box::new(rewrite_argument(operand, plan, cursor)),
+        };
+    }
+    let Expression::Index { base, index } = argument else {
+        return argument.clone();
+    };
+    if !crate::analysis::structurally_equal(base, &plan.array) {
+        return argument.clone();
+    }
+    let Some(relative) = relative_index(index, &plan.index) else {
+        return argument.clone();
+    };
+    Expression::Index {
+        base: Box::new(Expression::Variable(cursor.to_owned())),
+        index: Box::new(Expression::IntegerLiteral(
+            relative + plan.element_offset,
+        )),
+    }
 }
 
 fn fresh_name(
@@ -305,6 +381,10 @@ mod tests {
     }
 
     fn counted_call(arguments: Vec<Expression>) -> Statement {
+        counted_call_with_step(arguments, 1)
+    }
+
+    fn counted_call_with_step(arguments: Vec<Expression>, step: i64) -> Statement {
         Statement::Loop {
             kind: LoopKind::For,
             initializer: Some(Expression::Assign {
@@ -321,7 +401,7 @@ mod tests {
                 value: Box::new(Expression::Binary {
                     operator: BinaryOperator::Add,
                     left: Box::new(Expression::Variable("i".into())),
-                    right: Box::new(Expression::IntegerLiteral(1)),
+                    right: Box::new(Expression::IntegerLiteral(step)),
                 }),
             }),
             body: vec![Statement::Expression(Expression::Call {
@@ -414,5 +494,75 @@ mod tests {
     fn leaves_a_single_member_array_argument_alone() {
         let source = function(counted_call(vec![word(Expression::Variable("i".into()))]));
         assert!(strength_reduce_member_array_call_cursors(&source).is_none());
+    }
+
+    #[test]
+    fn carries_casted_double_elements_with_the_loop_stride() {
+        let double = |index| Expression::Cast {
+            target_type: Type::UnsignedInt,
+            operand: Box::new(Expression::Index {
+                base: Box::new(Expression::MemberAddress {
+                    base: Box::new(Expression::Variable("context".into())),
+                    offset: 144,
+                    element: Pointee::Double,
+                    index_stride: None,
+                }),
+                index: Box::new(index),
+            }),
+        };
+        let next = Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: Box::new(Expression::Variable("i".into())),
+            right: Box::new(Expression::IntegerLiteral(1)),
+        };
+        let source = function(Statement::If {
+            condition: Expression::Variable("enabled".into()),
+            then_body: vec![counted_call_with_step(
+                vec![
+                    double(Expression::Variable("i".into())),
+                    double(next),
+                ],
+                2,
+            )],
+            else_body: Vec::new(),
+        });
+        let reduced = strength_reduce_member_array_call_cursors(&source)
+            .expect("the casted double pair should acquire a cursor");
+
+        assert!(matches!(
+            reduced.locals.last(),
+            Some(LocalDeclaration {
+                declared_type: Type::Pointer(Pointee::Double),
+                ..
+            })
+        ));
+        let Statement::If { then_body, .. } = &reduced.statements[0] else {
+            panic!("expected the containing conditional")
+        };
+        let [Statement::Loop { step, body, .. }] = then_body.as_slice() else {
+            panic!("expected the rewritten loop")
+        };
+        assert!(matches!(
+            step,
+            Some(Expression::Comma { right, .. })
+                if matches!(right.as_ref(), Expression::Assign { value, .. }
+                    if matches!(value.as_ref(), Expression::Binary { right, .. }
+                        if crate::analysis::constant_value(right) == Some(2)))
+        ));
+        let [Statement::Expression(Expression::Call { arguments, .. })] = body.as_slice() else {
+            panic!("expected the rewritten call")
+        };
+        assert!(matches!(
+            &arguments[0],
+            Expression::Cast { operand, .. }
+                if matches!(operand.as_ref(), Expression::Index { index, .. }
+                    if crate::analysis::constant_value(index) == Some(18))
+        ));
+        assert!(matches!(
+            &arguments[1],
+            Expression::Cast { operand, .. }
+                if matches!(operand.as_ref(), Expression::Index { index, .. }
+                    if crate::analysis::constant_value(index) == Some(19))
+        ));
     }
 }
