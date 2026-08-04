@@ -1602,6 +1602,36 @@ impl Generator {
                     return Ok(false_branch_bo_bi(*operator)
                         .expect("is_comparison restricts the operator"));
                 }
+                // A computed value and a member load also need simultaneous
+                // homes. In particular, a preincrement assignment publishes
+                // its updated member and yields that same value; independently
+                // placing both comparison operands in r0 lets the following
+                // member load overwrite it and silently emits `cmpw r0,r0`.
+                // The ordinary located-operand planner gives the computed side
+                // a virtual lifetime and reserves the member base while the
+                // other side is materialized.
+                let computed = |expression: &Expression| {
+                    is_complex(expression) || matches!(expression, Expression::Assign { .. })
+                };
+                if (computed(left) && as_member(right).is_some())
+                    || (as_member(left).is_some() && computed(right))
+                {
+                    let operands = self.place_general_operands(*operator, left, right)?;
+                    let signed = self.usual_integer_binary_signedness(left, right)?;
+                    if signed {
+                        self.output.instructions.push(Instruction::CompareWord {
+                            a: operands.left,
+                            b: operands.right,
+                        });
+                    } else {
+                        self.output.instructions.push(Instruction::CompareLogicalWord {
+                            a: operands.left,
+                            b: operands.right,
+                        });
+                    }
+                    return Ok(false_branch_bo_bi(*operator)
+                        .expect("is_comparison restricts the operator"));
+                }
                 // `unsigned u > 0` / `0 < u` is `u != 0`, and `unsigned u <= 0` / `0 >= u` is
                 // `u == 0` — as a branch mwcc uses the equality idiom (`bne`/`beq`), not the
                 // unsigned relational one (`bgt`/`ble`). Rewrite to the equality and recurse, the

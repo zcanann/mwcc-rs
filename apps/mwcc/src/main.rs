@@ -2972,6 +2972,9 @@ mod tests {
     #[path = "bounded_member_assignment.rs"]
     mod bounded_member_assignment;
 
+    #[path = "member_preincrement_condition.rs"]
+    mod member_preincrement_condition;
+
     #[path = "float_conditions.rs"]
     mod float_conditions;
 
