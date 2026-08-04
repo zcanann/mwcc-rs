@@ -298,6 +298,7 @@ pub(crate) fn apply_unit(
     style: FunctionOrdinalAccountingStyle,
 ) {
     apply_deferred_constant_scopes(machine_functions);
+    resolve_gc41_automatic_image_slots(functions, machine_functions, style);
     if style != FunctionOrdinalAccountingStyle::Gc41Ipa || machine_functions.is_empty() {
         return;
     }
@@ -335,6 +336,65 @@ pub(crate) fn apply_unit(
         }
     }
     machine_functions[0].anonymous_label_bump += unit_front_bump;
+}
+
+/// Resolve declaration-time automatic images after the unit-wide source-name
+/// analysis is known.
+///
+/// GC 4.1 initially charges every named function parameter to the unit front,
+/// although the first automatic image is numbered at its source position. The
+/// first such image therefore credits parameters from later definitions in
+/// addition to its function-local front labels. The object writer restores a
+/// static-slot credit after each function, so every later image in the unit
+/// applies that same source-position credit again.
+fn resolve_gc41_automatic_image_slots(
+    functions: &[Function],
+    machine_functions: &mut [MachineFunction],
+    style: FunctionOrdinalAccountingStyle,
+) {
+    if !matches!(
+        style,
+        FunctionOrdinalAccountingStyle::Gc41 | FunctionOrdinalAccountingStyle::Gc41Ipa
+    ) {
+        return;
+    }
+
+    let source_credit = machine_functions
+        .iter()
+        .find(|machine| {
+            machine
+                .anonymous_rodata
+                .iter()
+                .any(|blob| blob.static_slot_prefix_bump.is_some())
+        })
+        .and_then(|machine| {
+            functions
+                .iter()
+                .position(|function| function.name == machine.name)
+        })
+        .map_or(0, |source_index| {
+            functions[source_index + 1..]
+                .iter()
+                .map(|function| function.parameters.len() as u32)
+                .sum()
+        });
+    for machine in machine_functions {
+        if !machine
+            .anonymous_rodata
+            .iter()
+            .any(|blob| blob.static_slot_prefix_bump.is_some())
+        {
+            continue;
+        }
+        let front_credit = machine.object_anonymous_bump().saturating_sub(1);
+        if let Some(blob) = machine
+            .anonymous_rodata
+            .iter_mut()
+            .find(|blob| blob.static_slot_prefix_bump.is_some())
+        {
+            blob.static_slot_prefix_bump = Some(front_credit + source_credit);
+        }
+    }
 }
 
 fn apply_deferred_constant_scopes(machine_functions: &mut [MachineFunction]) {
@@ -458,6 +518,43 @@ mod tests {
             text_deferred: false,
             peephole_disabled: false,
         }
+    }
+
+    fn source_slot(bytes: usize) -> mwcc_machine_code::AnonymousRodata {
+        mwcc_machine_code::AnonymousRodata {
+            bytes: vec![0; bytes],
+            static_slot_prefix_bump: Some(0),
+            anonymous_offset: 0,
+        }
+    }
+
+    #[test]
+    fn gc41_source_slots_credit_later_function_parameter_analysis() {
+        let mut first = function();
+        first.name = "first".into();
+        let mut second = function();
+        second.name = "second".into();
+        second.parameters.push(mwcc_syntax_trees::Parameter {
+            parameter_type: Type::Int,
+            name: "value".into(),
+        });
+
+        let mut first_machine = MachineFunction::new("first");
+        first_machine.anonymous_label_bump = 3;
+        first_machine.anonymous_rodata.push(source_slot(16));
+        let mut second_machine = MachineFunction::new("second");
+        second_machine.anonymous_label_bump = 3;
+        second_machine.anonymous_rodata.push(source_slot(16));
+        let mut machines = [first_machine, second_machine];
+
+        resolve_gc41_automatic_image_slots(
+            &[first, second],
+            &mut machines,
+            FunctionOrdinalAccountingStyle::Gc41,
+        );
+
+        assert_eq!(machines[0].anonymous_rodata[0].static_slot_prefix_bump, Some(3));
+        assert_eq!(machines[1].anonymous_rodata[0].static_slot_prefix_bump, Some(3));
     }
 
     #[test]

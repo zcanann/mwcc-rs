@@ -1,6 +1,50 @@
 use crate::{compile, SourceLanguage};
 
 #[test]
+fn copies_a_short_double_array_through_one_rodata_image() {
+    let source = br#"
+        void consume(const double*);
+
+        double initialize(unsigned index) {
+            const double table[8] = {
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0
+            };
+            consume(table);
+            return table[index];
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let object = compile(
+        source,
+        "short-double-array-image.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_3_0A3,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("a short double array should use its direct image transaction");
+
+    // lfdu f7,image(r4); lfd f6..f0; stfd f7..f0,8..64(r1).
+    let transaction = [
+        0xcc, 0xe4, 0x00, 0x00, 0xc8, 0xc4, 0x00, 0x08, 0xc8, 0xa4, 0x00, 0x10,
+        0xc8, 0x84, 0x00, 0x18, 0xc8, 0x64, 0x00, 0x20, 0xc8, 0x44, 0x00, 0x28,
+        0xc8, 0x24, 0x00, 0x30, 0xc8, 0x04, 0x00, 0x38, 0xd8, 0xe1, 0x00, 0x08,
+        0xd8, 0xc1, 0x00, 0x10, 0xd8, 0xa1, 0x00, 0x18, 0xd8, 0x81, 0x00, 0x20,
+        0xd8, 0x61, 0x00, 0x28, 0xd8, 0x41, 0x00, 0x30, 0xd8, 0x21, 0x00, 0x38,
+        0xd8, 0x01, 0x00, 0x40,
+    ];
+    assert!(object
+        .windows(transaction.len())
+        .any(|bytes| bytes == transaction));
+}
+
+#[test]
 fn zero_fills_the_implicit_tail_of_an_initialized_automatic_array() {
     let source = br#"
         void consume(char*);

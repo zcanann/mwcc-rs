@@ -73,6 +73,11 @@ impl Generator {
         }
         if self.behavior.frame_convention == FrameConvention::Predecrement {
             if let Some(plan) =
+                super::structured_double_array_image::plan(arrays, image_sources)
+            {
+                return self.emit_structured_double_array_image(plan);
+            }
+            if let Some(plan) =
                 super::structured_array_pool::plan_structured_array_pool(arrays, image_sources)
             {
                 return self.emit_structured_array_pool(arrays, image_sources, &plan);
