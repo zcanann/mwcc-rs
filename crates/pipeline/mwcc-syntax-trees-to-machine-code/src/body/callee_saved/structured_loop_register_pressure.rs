@@ -1,17 +1,22 @@
-//! Dense saved-GPR windows for high-pressure structured loops.
+//! Saved-GPR windows for high-pressure structured loops.
 //!
-//! MWCC reserves the complete `r14..r31` window before allocating a loop whose
-//! source value graph already spans at least that many scalar temporaries.  The
-//! frame decision must happen before virtual-register allocation: discovering
-//! the pressure later can grow an existing dense range, but cannot change an
-//! individually saved frame into the helper-based contiguous form.
+//! MWCC gives each scalar role used by one lexical loop a loop-wide allocation
+//! interval.  Retained call homes occupy the same register bank, and only the
+//! ten volatile GPRs (`r3..r12`) absorb that combined pressure for free.  The
+//! remaining roles form a descending saved-GPR suffix.  Frame planning needs
+//! that suffix width before virtual-register allocation: discovering pressure
+//! later can grow a dense range, but cannot change an individually saved frame
+//! into the helper-based contiguous form.
 
 #[allow(unused_imports)]
 use super::*;
 
 use super::structured_locals::body_uses_local;
+use mwcc_syntax_trees::Parameter;
+use std::collections::HashSet;
 
 pub(super) const DENSE_SAVED_GPR_COUNT: usize = 18;
+const VOLATILE_GPR_COUNT: usize = 10;
 
 const DENSE_LOOP_CARRIED_REGISTERS: [u8; 4] = [30, 29, 28, 27];
 
@@ -81,6 +86,138 @@ pub(super) fn plan_dense_loop_register_window(
             .or_else(|| plan_dense_loop_register_window(else_body, ephemeral_locals)),
         _ => None,
     })
+}
+
+/// Return the complete saved suffix required by the highest-pressure lexical
+/// loop after accounting for call-retained homes already present in the frame.
+///
+/// The older complete-window signal above remains intentionally separate: it
+/// gates a narrow frame-publication shape before retained homes have been
+/// planned.  This calculation owns the ordinary frame width once that retained
+/// count is known.
+pub(super) fn plan_dense_loop_saved_register_window(
+    function: &Function,
+    ephemeral_locals: &[&LocalDeclaration],
+    retained_home_count: usize,
+    retained_parameters: &[&Parameter],
+) -> Option<usize> {
+    let loop_role_count = maximum_loop_register_role_count(
+        &function.statements,
+        ephemeral_locals,
+        &function.locals,
+    )?;
+    let forwarded_parameter_homes = preloop_forwarded_parameter_home_count(
+        function,
+        ephemeral_locals,
+        retained_parameters,
+    );
+    saved_register_window(
+        loop_role_count,
+        retained_home_count,
+        forwarded_parameter_homes,
+    )
+}
+
+fn saved_register_window(
+    loop_role_count: usize,
+    retained_home_count: usize,
+    forwarded_parameter_home_count: usize,
+) -> Option<usize> {
+    let retained_pressure = retained_home_count
+        .saturating_sub(forwarded_parameter_home_count.min(retained_home_count));
+    let total_pressure = loop_role_count.checked_add(retained_pressure)?;
+    let saved_count = total_pressure
+        .saturating_sub(VOLATILE_GPR_COUNT)
+        .min(DENSE_SAVED_GPR_COUNT);
+    (saved_count > retained_home_count).then_some(saved_count)
+}
+
+fn maximum_loop_register_role_count(
+    statements: &[Statement],
+    ephemeral_locals: &[&LocalDeclaration],
+    function_locals: &[LocalDeclaration],
+) -> Option<usize> {
+    statements
+        .iter()
+        .filter_map(|statement| match statement {
+            Statement::Loop { body, .. } => {
+                let general_locals = ephemeral_locals
+                    .iter()
+                    .filter(|local| {
+                        class_of(local.declared_type).ok() == Some(ValueClass::General)
+                            && body_uses_local(std::slice::from_ref(statement), &local.name)
+                    })
+                    .count();
+                let automatic_array_addresses = function_locals
+                    .iter()
+                    .filter(|local| {
+                        !local.is_static
+                            && local.array_length.is_some()
+                            && body_uses_local(std::slice::from_ref(statement), &local.name)
+                    })
+                    .count();
+                let loop_roles = general_locals.checked_add(automatic_array_addresses)?;
+                Some(
+                    maximum_loop_register_role_count(body, ephemeral_locals, function_locals)
+                        .map_or(loop_roles, |nested| loop_roles.max(nested)),
+                )
+            }
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => maximum_loop_register_role_count(
+                then_body,
+                ephemeral_locals,
+                function_locals,
+            )
+                .into_iter()
+                .chain(maximum_loop_register_role_count(
+                    else_body,
+                    ephemeral_locals,
+                    function_locals,
+                ))
+                .max(),
+            _ => None,
+        })
+        .max()
+}
+
+/// Count retained parameter homes whose incoming value is renamed into an
+/// ephemeral loop role before the first top-level loop. The renamed role is
+/// already present in `loop_role_count`, so retaining both would count one
+/// physical interval twice (`pbyPcmData -> pSrc` and `pbyAdpcmData -> pDst` in
+/// WENC). Nested-loop prefixes remain conservative until their CFG path is
+/// available here.
+fn preloop_forwarded_parameter_home_count(
+    function: &Function,
+    ephemeral_locals: &[&LocalDeclaration],
+    retained_parameters: &[&Parameter],
+) -> usize {
+    let prefix = function
+        .statements
+        .iter()
+        .take_while(|statement| !matches!(statement, Statement::Loop { .. }));
+    let mut forwarded = HashSet::new();
+    for statement in prefix {
+        let Statement::Assign {
+            name,
+            value: Expression::Variable(source),
+        } = statement
+        else {
+            continue;
+        };
+        if ephemeral_locals.iter().any(|local| {
+            local.name == *name
+                && class_of(local.declared_type).ok() == Some(ValueClass::General)
+        }) && retained_parameters
+            .iter()
+            .any(|parameter| parameter.name == *source)
+        {
+            forwarded.insert(source.as_str());
+        }
+    }
+    forwarded.len()
 }
 
 fn dense_loop_statement<'a>(
@@ -250,6 +387,84 @@ mod tests {
     }
 
     #[test]
+    fn converts_loop_roles_and_retained_homes_into_one_saved_suffix() {
+        let locals: Vec<_> = (0..DENSE_SAVED_GPR_COUNT)
+            .map(|index| local(&format!("v{index}")))
+            .collect();
+        let references: Vec<_> = locals.iter().collect();
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: locals.iter().map(|local| read(&local.name)).collect(),
+        }];
+
+        assert_eq!(
+            saved_register_window(
+                maximum_loop_register_role_count(&statements, &references, &[]).unwrap(),
+                5,
+                0,
+            ),
+            Some(13)
+        );
+    }
+
+    #[test]
+    fn coalesces_forwarded_parameter_homes_and_counts_an_array_address_role() {
+        assert_eq!(saved_register_window(19, 5, 2), Some(12));
+        assert_eq!(saved_register_window(20, 5, 2), Some(13));
+    }
+
+    #[test]
+    fn leaves_a_retained_home_plan_alone_below_volatile_capacity() {
+        let locals: Vec<_> = (0..6)
+            .map(|index| local(&format!("v{index}")))
+            .collect();
+        let references: Vec<_> = locals.iter().collect();
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: locals.iter().map(|local| read(&local.name)).collect(),
+        }];
+
+        assert_eq!(
+            saved_register_window(
+                maximum_loop_register_role_count(&statements, &references, &[]).unwrap(),
+                4,
+                0,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn caps_loop_pressure_at_the_architectural_saved_bank() {
+        let locals: Vec<_> = (0..30)
+            .map(|index| local(&format!("v{index}")))
+            .collect();
+        let references: Vec<_> = locals.iter().collect();
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: locals.iter().map(|local| read(&local.name)).collect(),
+        }];
+
+        assert_eq!(
+            saved_register_window(
+                maximum_loop_register_role_count(&statements, &references, &[]).unwrap(),
+                3,
+                0,
+            ),
+            Some(DENSE_SAVED_GPR_COUNT)
+        );
+    }
+
+    #[test]
     fn does_not_combine_pressure_from_separate_loops() {
         let locals: Vec<_> = (0..DENSE_SAVED_GPR_COUNT)
             .map(|index| local(&format!("v{index}")))
@@ -274,6 +489,14 @@ mod tests {
 
         assert_eq!(
             plan_dense_loop_register_window(&statements, &references),
+            None
+        );
+        assert_eq!(
+            saved_register_window(
+                maximum_loop_register_role_count(&statements, &references, &[]).unwrap(),
+                0,
+                0,
+            ),
             None
         );
     }

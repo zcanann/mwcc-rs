@@ -1313,6 +1313,13 @@ impl Generator {
         let value_home_count = eager_saved_locals.len()
             + saved_parameters.len()
             + parameter_home_reuse.fresh_group_count;
+        let dense_loop_window = super::structured_loop_register_pressure::
+            plan_dense_loop_saved_register_window(
+                function,
+                &ephemeral_locals,
+                value_home_count,
+                &saved_parameters,
+            );
         let loop_assertion_strings =
             (value_home_count == 4).then_some(planned_loop_assertion_strings).flatten();
         let base_home_count = value_home_count + 2 * usize::from(loop_assertion_strings.is_some());
