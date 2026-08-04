@@ -32,10 +32,17 @@ impl Generator {
             //   format; index; load A; reload A; index+16; load B; reload B; crclr
             // Build 163 hides both load latencies and retains each loaded value:
             //   load B; index; load A; format; crclr; copy A; copy B; index+16
-            permute_duplicate_word_pair_report(&mut self.output, start);
+            permute_basic_block_contents(&mut self.output, start, [5, 1, 2, 0, 7, 3, 6, 4, 8]);
             self.output.instructions[start + 1] = Instruction::move_register(4, index);
             self.output.instructions[start + 5] = Instruction::move_register(6, 5);
             self.output.instructions[start + 6] = Instruction::move_register(9, 8);
+        }
+
+        while let Some(start) = two_word_member_report(&self.output.instructions) {
+            // Selection order computes the saved format address first. Build
+            // 163 starts the first independent member load, then fills its
+            // latency with the format address before loading the second word.
+            permute_basic_block_contents(&mut self.output, start, [1, 0, 2, 3, 4]);
         }
     }
 
@@ -71,21 +78,21 @@ impl Generator {
 
 }
 
-fn permute_duplicate_word_pair_report(
+fn permute_basic_block_contents<const N: usize>(
     output: &mut mwcc_machine_code::MachineFunction,
     start: usize,
+    order: [usize; N],
 ) {
-    const ORDER: [usize; 9] = [5, 1, 2, 0, 7, 3, 6, 4, 8];
-    let old = output.instructions[start..start + ORDER.len()].to_vec();
-    for (new, old_index) in ORDER.into_iter().enumerate() {
+    let old = output.instructions[start..start + N].to_vec();
+    for (new, old_index) in order.into_iter().enumerate() {
         output.instructions[start + new] = old[old_index].clone();
     }
-    let mut old_to_new = [0usize; ORDER.len()];
-    for (new, old_index) in ORDER.into_iter().enumerate() {
+    let mut old_to_new = [0usize; N];
+    for (new, old_index) in order.into_iter().enumerate() {
         old_to_new[old_index] = new;
     }
     let remap_owner = |instruction_index: &mut usize| {
-        if (start..start + ORDER.len()).contains(instruction_index) {
+        if (start..start + N).contains(instruction_index) {
             *instruction_index = start + old_to_new[*instruction_index - start];
         }
     };
@@ -102,6 +109,37 @@ fn permute_duplicate_word_pair_report(
     // enter at `start`, now the hoisted load. Labels and branch targets
     // intentionally remain attached to the block boundary, not to the old
     // first (format-address) instruction.
+}
+
+fn two_word_member_report(instructions: &[Instruction]) -> Option<usize> {
+    instructions.windows(5).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: format_base,
+                    ..
+                },
+                Instruction::LoadWord {
+                    d: 4,
+                    a: first_base,
+                    offset: first_offset,
+                },
+                Instruction::LoadWord {
+                    d: 5,
+                    a: second_base,
+                    offset: second_offset,
+                },
+                Instruction::ConditionRegisterClear { d: 6 },
+                Instruction::BranchAndLink { target },
+            ] if (14..=31).contains(format_base)
+                && (14..=31).contains(first_base)
+                && first_base == second_base
+                && first_offset != second_offset
+                && target == "OSReport"
+        )
+    })
 }
 
 fn duplicate_word_pair_report(instructions: &[Instruction]) -> Option<(usize, u8)> {
@@ -284,7 +322,7 @@ mod tests {
             },
         ];
 
-        permute_duplicate_word_pair_report(&mut output, 3);
+        permute_basic_block_contents(&mut output, 3, [5, 1, 2, 0, 7, 3, 6, 4, 8]);
 
         assert!(matches!(
             output.instructions[3],
@@ -299,5 +337,31 @@ mod tests {
             output.instructions[12],
             Instruction::BranchConditionalForward { target: 3, .. }
         ));
+    }
+
+    #[test]
+    fn recognizes_two_word_members_after_a_saved_format_address() {
+        let instructions = [
+            Instruction::AddImmediate {
+                d: 3,
+                a: 31,
+                immediate: 116,
+            },
+            Instruction::LoadWord {
+                d: 4,
+                a: 28,
+                offset: 132,
+            },
+            Instruction::LoadWord {
+                d: 5,
+                a: 28,
+                offset: 128,
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink {
+                target: "OSReport".into(),
+            },
+        ];
+        assert_eq!(two_word_member_report(&instructions), Some(0));
     }
 }
