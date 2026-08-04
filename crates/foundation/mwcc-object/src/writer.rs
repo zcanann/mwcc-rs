@@ -712,9 +712,12 @@ fn apply_data_section_displacements(
             }
         };
         let start = *byte_offset as usize;
-        let selected = i16::from_be_bytes([text[start], text[start + 1]]);
-        let displacement = i16::try_from(i64::from(selected) + i64::from(target_offset))
-            .expect("late data displacement must fit a D-form immediate");
+        let selected = u16::from_be_bytes([text[start], text[start + 1]]);
+        // This field is the low half of a section-relative address, not an
+        // independently range-checked source displacement.  Large sections
+        // can select a 64 KiB page with a retained `addis` and use the wrapped
+        // low half here (for example `.bss + 0x14080` becomes `0x4080`).
+        let displacement = selected.wrapping_add(target_offset as u16);
         text[start..start + 2].copy_from_slice(&displacement.to_be_bytes());
     }
 }

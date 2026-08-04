@@ -958,6 +958,21 @@ fn bss_section_displacements_add_to_selected_member_offsets() {
 }
 
 #[test]
+fn bss_section_displacements_retain_the_selected_page_low_half() {
+    let mut text = vec![0x80, 0x05, 0, 0];
+    let sections = HashMap::from([("ring", ".bss")]);
+    let offsets = HashMap::from([("ring", 0x1_4080)]);
+    apply_data_section_displacements(
+        &mut text,
+        &[(2, DataSectionDisplacementTarget::Symbol("ring".to_owned()))],
+        &sections,
+        &offsets,
+        &[],
+    );
+    assert_eq!(text, [0x80, 0x05, 0x40, 0x80]);
+}
+
+#[test]
 fn anonymous_rodata_displacements_add_the_final_blob_offset() {
     let mut text = vec![0x80, 0xa3, 0, 4];
     apply_data_section_displacements(
