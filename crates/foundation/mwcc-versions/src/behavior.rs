@@ -890,6 +890,9 @@ pub struct Behavior {
     pub fixed_address_poll_address_style: FixedAddressPollAddressStyle,
     /// Whether verified compound queue callers inline the service helper CFG.
     pub queue_service_inlining_style: QueueServiceInliningStyle,
+    /// Whether a source-visible, one-store scalar member setter is duplicated
+    /// at each ordinary call site.
+    pub repeatable_scalar_member_setter_inlining: bool,
     /// Whether deferred compilation inlines a structurally verified bounded
     /// append helper into an endian-selecting scalar stack pack.
     pub endian_stack_pack_inlining_style: EndianStackPackInliningStyle,
@@ -1483,6 +1486,10 @@ impl Behavior {
                 .profile
                 .fixed_address_poll_address_style(),
             queue_service_inlining_style: config.build.profile.queue_service_inlining_style(),
+            repeatable_scalar_member_setter_inlining: config
+                .build
+                .profile
+                .repeatable_scalar_member_setter_inlining(),
             endian_stack_pack_inlining_style: config
                 .build
                 .profile

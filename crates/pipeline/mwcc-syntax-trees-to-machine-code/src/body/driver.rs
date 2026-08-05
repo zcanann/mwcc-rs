@@ -1766,7 +1766,10 @@ impl Generator {
         if self.try_call_result_product_return(function)? {
             return Ok(());
         }
-        if let Some(mut expanded) = self.inline_bodies.expand_selective_calls(function) {
+        if let Some(mut expanded) = self.inline_bodies.expand_selective_calls(
+            function,
+            self.behavior.repeatable_scalar_member_setter_inlining,
+        ) {
             if self.behavior.inline_initializer_ordinals_follow_strings
                 && (expanded.pre_constant_ordinal_discount != 0
                     || expanded.post_constant_ordinal_residue != 0)

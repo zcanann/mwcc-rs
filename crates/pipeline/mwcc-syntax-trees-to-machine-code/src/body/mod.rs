@@ -125,6 +125,7 @@ mod formatter_character_schedule;
 mod formatter_position_schedule;
 mod frame_row_string_append_schedule;
 mod guarded_formatter_member_cache_schedule;
+mod guarded_indexed_member_setter_schedule;
 mod guarded_integer_constant_reuse;
 mod float_friction_select;
 mod float_call_guard_return;

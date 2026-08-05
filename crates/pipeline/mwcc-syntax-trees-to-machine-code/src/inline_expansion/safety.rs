@@ -117,6 +117,38 @@ pub(super) fn automatic_composable_function(function: &Function) -> bool {
     ordinary || parameter_select
 }
 
+/// A leaf setter small enough for the 2.4.x automatic inliner to duplicate at
+/// every source-visible call site. The complete scalar/member proof keeps the
+/// repeatable lane from broadening to pointer escapes or compound updates.
+pub(super) fn repeatable_scalar_member_setter_callee(function: &Function) -> bool {
+    let [base, value] = function.parameters.as_slice() else {
+        return false;
+    };
+    let [Statement::Store {
+        target:
+            Expression::Member {
+                base: member_base,
+                member_type,
+                index_stride: None,
+                ..
+            },
+        value: stored_value,
+    }] = function.statements.as_slice()
+    else {
+        return false;
+    };
+    function.return_type == Type::Void
+        && function.locals.is_empty()
+        && function.guards.is_empty()
+        && function.return_expression.is_none()
+        && matches!(base.parameter_type, Type::Pointer(_) | Type::StructPointer { .. })
+        && value.parameter_type == *member_type
+        && !matches!(value.parameter_type, Type::Void | Type::Struct { .. })
+        && matches!(member_base.as_ref(), Expression::Variable(name) if name == &base.name)
+        && matches!(stored_value, Expression::Variable(name) if name == &value.name)
+        && composable_function(function)
+}
+
 /// A one-use ordinary scalar helper that whole-file IPA can substitute as a
 /// value expression without exposing caller-visible storage.
 ///
@@ -1349,6 +1381,34 @@ mod tests {
             text_deferred: false,
             peephole_disabled: false,
         }
+    }
+
+    #[test]
+    fn recognizes_a_repeatable_scalar_member_setter() {
+        let mut function = scalar_parameter_function();
+        function.parameters.insert(
+            0,
+            Parameter {
+                parameter_type: Type::StructPointer { element_size: 32 },
+                name: "record".into(),
+            },
+        );
+        function.statements.push(Statement::Store {
+            target: Expression::Member {
+                base: Box::new(Expression::Variable("record".into())),
+                offset: 4,
+                member_type: Type::Int,
+                index_stride: None,
+            },
+            value: Expression::Variable("value".into()),
+        });
+
+        assert!(repeatable_scalar_member_setter_callee(&function));
+        function.statements.push(Statement::Expression(Expression::Call {
+            name: "observe".into(),
+            arguments: Vec::new(),
+        }));
+        assert!(!repeatable_scalar_member_setter_callee(&function));
     }
 
     #[test]

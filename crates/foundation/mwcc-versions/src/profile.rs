@@ -1699,6 +1699,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         QueueServiceInliningStyle::InlineVerifiedCallers
     }
 
+    fn repeatable_scalar_member_setter_inlining(&self) -> bool {
+        true
+    }
+
     fn endian_stack_pack_inlining_style(&self) -> EndianStackPackInliningStyle {
         EndianStackPackInliningStyle::InlineVerifiedAppend
     }
@@ -2685,6 +2689,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn queue_service_inlining_style(&self) -> QueueServiceInliningStyle {
         QueueServiceInliningStyle::KeepServiceCallOutOfLine
+    }
+
+    fn repeatable_scalar_member_setter_inlining(&self) -> bool {
+        false
     }
 
     fn narrow_compound_shift_style(&self) -> NarrowCompoundShiftStyle {

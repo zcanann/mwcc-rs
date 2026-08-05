@@ -28,8 +28,9 @@ use returns::rewrite_inline_returns;
 use safety::{
     automatic_composable_function, bounded_switch_transaction_callee, composable_function,
     materializable_arguments, multi_call_transaction_callee, parameter_requires_materialization,
-    repeatable_guarded_call_callee, repeatable_terminal_wrapper_callee, stable_argument,
-    stable_arguments, stable_local_values, terminal_scalar_arguments,
+    repeatable_guarded_call_callee, repeatable_scalar_member_setter_callee,
+    repeatable_terminal_wrapper_callee, stable_argument, stable_arguments, stable_local_values,
+    terminal_scalar_arguments,
 };
 use std::collections::{HashMap, HashSet};
 use substitution::{substitute_expression, substitute_statement};
@@ -700,6 +701,27 @@ impl InlineBodySet {
         expanded.expand_calls_with_facts_policy(function, true)
     }
 
+    /// Expand the 2.4.x generation's repeatable one-store member setters.
+    /// Visibility and semantic eligibility were proven while building the
+    /// repeatable body set; the caller controls the measured generation gate.
+    fn expand_repeatable_scalar_member_setter_calls(
+        &self,
+        function: &Function,
+    ) -> Option<ExpandedCalls> {
+        let bodies = self
+            .repeatable_bodies
+            .iter()
+            .filter(|(_, body)| repeatable_scalar_member_setter_callee(body))
+            .map(|(name, body)| (name.clone(), body.clone()))
+            .collect::<HashMap<_, _>>();
+        if bodies.is_empty() {
+            return None;
+        }
+        let mut expanded = self.clone();
+        expanded.bodies.extend(bodies);
+        expanded.expand_calls_with_facts_policy(function, true)
+    }
+
     /// Expand several repeatable small definitions inside one bounded caller.
     ///
     /// Whole-file IPA selectively duplicates ordinary helpers in compact,
@@ -1033,8 +1055,15 @@ impl InlineBodySet {
     ///
     /// Frame and section-anchor planning call this same owner before emission,
     /// so they analyze the exact AST that the lowering driver will later use.
-    pub(crate) fn expand_selective_calls(&self, function: &Function) -> Option<ExpandedCalls> {
-        self.expand_visible_global_scalar_transactions(function)
+    pub(crate) fn expand_selective_calls(
+        &self,
+        function: &Function,
+        repeatable_scalar_member_setters: bool,
+    ) -> Option<ExpandedCalls> {
+        repeatable_scalar_member_setters
+            .then(|| self.expand_repeatable_scalar_member_setter_calls(function))
+            .flatten()
+            .or_else(|| self.expand_visible_global_scalar_transactions(function))
             .or_else(|| self.expand_mixed_bounded_transactions(function))
             .or_else(|| self.expand_bounded_guarded_value_transactions(function))
             .or_else(|| self.expand_repeatable_guarded_calls(function))
@@ -1044,8 +1073,12 @@ impl InlineBodySet {
     }
 
     /// Effective expanded source for read-only planning passes.
-    pub(crate) fn expanded_function_for_planning(&self, function: &Function) -> Option<Function> {
-        self.expand_selective_calls(function)
+    pub(crate) fn expanded_function_for_planning(
+        &self,
+        function: &Function,
+        repeatable_scalar_member_setters: bool,
+    ) -> Option<Function> {
+        self.expand_selective_calls(function, repeatable_scalar_member_setters)
             .map(|expanded| expanded.function)
             .or_else(|| self.expand_calls(function))
     }
