@@ -184,12 +184,18 @@ impl Generator {
             },
         ]);
         self.bind_label(iteration);
-        self.output.instructions.extend([
-            Instruction::AddImmediate {
-                d: ERROR,
-                a: POSITION,
-                immediate: 0,
+        self.output.instructions.push(
+            if self.behavior.frame_convention == FrameConvention::Predecrement {
+                Instruction::move_register(ERROR, POSITION)
+            } else {
+                Instruction::AddImmediate {
+                    d: ERROR,
+                    a: POSITION,
+                    immediate: 0,
+                }
             },
+        );
+        self.output.instructions.extend([
             Instruction::AddImmediate {
                 d: INDEX,
                 a: INDEX,
