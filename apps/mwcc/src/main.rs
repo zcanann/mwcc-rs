@@ -1592,12 +1592,13 @@ fn compile(
         .and_then(|capture| capture.owned_rtti_counter);
     let mut defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> =
         cxx_analysis_residues.map_or_else(Vec::new, |capture| capture.objects);
-    defined_globals.extend(cxx_analysis_residues::discarded_inline_aggregate_images(
-        &unit,
-        behavior.discarded_inline_aggregate_image_style,
-        behavior,
-        emits_weak_vtable_closure,
-    ));
+    let discarded_inline_aggregate_images =
+        cxx_analysis_residues::discarded_inline_aggregate_images(
+            &unit,
+            behavior.discarded_inline_aggregate_image_style,
+            behavior,
+            emits_weak_vtable_closure,
+        );
     if let Some(residue) = build163_vtable_const_residue {
         defined_globals.push(residue);
     }
@@ -2150,6 +2151,11 @@ fn compile(
         });
         defined_globals.extend(pooled_string_globals.drain(..));
     }
+    // Dropped-inline automatic images keep their frontend-assigned anonymous
+    // identity, but MWCC lays their storage after source globals. Inserting
+    // them up front shifted weak `.sdata2` objects and introduced alignment
+    // padding even when every symbol ordinal was already exact.
+    defined_globals.extend(discarded_inline_aggregate_images);
     let first_destructor_record = (1
         + leading_source_ordinal_bump
         + string_counter

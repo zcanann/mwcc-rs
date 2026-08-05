@@ -2300,6 +2300,7 @@ mod tests {
             behavior.cxx_parameter_initializer_ordinal_weights,
             Some(CxxParameterInitializerOrdinalWeights {
                 scalar_list_base: 2,
+                heterogeneous_scalar_list: 2,
                 scalar_member: 3,
                 string_member: 14,
             })

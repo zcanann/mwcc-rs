@@ -8,9 +8,9 @@ use std::collections::{HashMap, HashSet};
 
 use mwcc_tokens::Token;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ParameterMemberKind {
-    Scalar,
+    Scalar(String),
     String,
 }
 
@@ -24,6 +24,33 @@ pub(crate) struct ParameterMemberFields(HashMap<String, ParameterMemberKind>);
 pub(crate) struct ParameterInitializerFacts {
     pub scalar_members: usize,
     pub string_members: usize,
+    pub heterogeneous_scalar_types: bool,
+}
+
+fn parameter_scalar_type_fingerprint(tokens: &[Token]) -> String {
+    tokens
+        .iter()
+        .map(|token| match token {
+            Token::KeywordFloat => "float".to_string(),
+            Token::KeywordInt => "int".to_string(),
+            Token::KeywordChar => "char".to_string(),
+            Token::KeywordShort => "short".to_string(),
+            Token::KeywordUnsigned => "unsigned".to_string(),
+            Token::Identifier(name) => match name.as_str() {
+                "f32" => "float".to_string(),
+                "f64" => "double".to_string(),
+                "s8" => "signed char".to_string(),
+                "u8" => "unsigned char".to_string(),
+                "s16" => "short".to_string(),
+                "u16" => "unsigned short".to_string(),
+                "s32" => "int".to_string(),
+                "u32" => "unsigned int".to_string(),
+                _ => name.clone(),
+            },
+            _ => format!("{token:?}"),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Discover direct `Parm<T>` data members without entering nested classes or
@@ -58,19 +85,27 @@ pub(crate) fn parameter_member_fields(tokens: &[Token]) -> ParameterMemberFields
 
         let mut template_depth = 1usize;
         let mut cursor = index + 2;
-        let mut kind = ParameterMemberKind::Scalar;
+        let type_start = cursor;
+        let mut string = false;
         while template_depth > 0 {
             match tokens.get(cursor) {
                 Some(Token::Less) => template_depth += 1,
                 Some(Token::Greater) => template_depth -= 1,
                 Some(Token::Identifier(name)) if name.rsplit("::").next() == Some("String") => {
-                    kind = ParameterMemberKind::String;
+                    string = true;
                 }
                 Some(Token::EndOfFile) | None => return ParameterMemberFields(fields),
                 _ => {}
             }
             cursor += 1;
         }
+        let kind = if string {
+            ParameterMemberKind::String
+        } else {
+            ParameterMemberKind::Scalar(parameter_scalar_type_fingerprint(
+                &tokens[type_start..cursor - 1],
+            ))
+        };
         let Some(Token::Identifier(field)) = tokens.get(cursor) else {
             index = cursor;
             continue;
@@ -106,6 +141,7 @@ pub(crate) fn constructor_parameter_initializers(
     index += 1;
     let mut facts = ParameterInitializerFacts::default();
     let mut counted = HashSet::new();
+    let mut scalar_types = HashSet::new();
     while index < declaration.len() {
         let mut target = None;
         while index < declaration.len()
@@ -138,16 +174,14 @@ pub(crate) fn constructor_parameter_initializers(
             }
             index += 1;
         }
-        if let Some(kind) = target.and_then(|target| {
-            fields
-                .0
-                .get(target)
-                .copied()
-                .filter(|_| counted.insert(target.to_owned()))
-        }) {
-            match kind {
-                ParameterMemberKind::Scalar => facts.scalar_members += 1,
-                ParameterMemberKind::String => facts.string_members += 1,
+        if let Some(target) = target.filter(|target| counted.insert((*target).to_owned())) {
+            match fields.0.get(target) {
+                Some(ParameterMemberKind::Scalar(scalar_type)) => {
+                    facts.scalar_members += 1;
+                    scalar_types.insert(scalar_type.as_str());
+                }
+                Some(ParameterMemberKind::String) => facts.string_members += 1,
+                None => {}
             }
         }
         if declaration.get(index) == Some(&Token::Comma) {
@@ -156,6 +190,7 @@ pub(crate) fn constructor_parameter_initializers(
             break;
         }
     }
+    facts.heterogeneous_scalar_types = scalar_types.len() > 1;
     facts
 }
 
@@ -334,5 +369,6 @@ mod tests {
         let facts = constructor_parameter_initializers(&tokens[constructor..body], &fields);
         assert_eq!(facts.scalar_members, 1);
         assert_eq!(facts.string_members, 1);
+        assert!(!facts.heterogeneous_scalar_types);
     }
 }

@@ -125,6 +125,7 @@ pub struct CxxConstructorInlineOrdinalWeights {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CxxParameterInitializerOrdinalWeights {
     pub scalar_list_base: u8,
+    pub heterogeneous_scalar_list: u8,
     pub scalar_member: u8,
     pub string_member: u8,
 }
@@ -2419,9 +2420,11 @@ impl CodegenProfile for Gc233Build163 {
         &self,
     ) -> Option<CxxParameterInitializerOrdinalWeights> {
         // Build 163 probes: one scalar member advances 5 labels, two advance
-        // 8, and a String-valued member independently advances 14.
+        // 8, mixing scalar template types adds 2, and a String-valued member
+        // independently advances 14.
         Some(CxxParameterInitializerOrdinalWeights {
             scalar_list_base: 2,
+            heterogeneous_scalar_list: 2,
             scalar_member: 3,
             string_member: 14,
         })

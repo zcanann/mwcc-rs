@@ -147,6 +147,8 @@ pub fn inline_fact_ordinal_bump(
         .cxx_parameter_initializer_ordinal_weights
         .map_or(0, |weights| {
             facts.scalar_parameter_initializer_lists * usize::from(weights.scalar_list_base)
+                + facts.heterogeneous_scalar_parameter_initializer_lists
+                    * usize::from(weights.heterogeneous_scalar_list)
                 + facts.scalar_parameter_member_initializers
                     * usize::from(weights.scalar_member)
                 + facts.string_parameter_member_initializers
@@ -618,12 +620,13 @@ mod tests {
         let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
         let facts = CxxInlineOrdinalFacts {
             scalar_parameter_initializer_lists: 1,
+            heterogeneous_scalar_parameter_initializer_lists: 1,
             scalar_parameter_member_initializers: 2,
             string_parameter_member_initializers: 1,
             ..CxxInlineOrdinalFacts::default()
         };
 
-        assert_eq!(inline_fact_ordinal_bump(facts, behavior, false), 22);
+        assert_eq!(inline_fact_ordinal_bump(facts, behavior, false), 24);
     }
 
     #[test]

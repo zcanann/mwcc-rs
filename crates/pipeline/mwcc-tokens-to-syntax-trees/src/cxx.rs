@@ -2010,6 +2010,11 @@ impl Parser {
                                     parameter_initializers.string_members;
                                 self.cxx_inline_ordinal_facts.scalar_parameter_initializer_lists +=
                                     usize::from(parameter_initializers.scalar_members > 0);
+                                self.cxx_inline_ordinal_facts
+                                    .heterogeneous_scalar_parameter_initializer_lists +=
+                                    usize::from(
+                                        parameter_initializers.heterogeneous_scalar_types,
+                                    );
                             }
                             self.inline_cxx_members.insert((class.clone(), member));
                             self.cxx_inline_ordinal_facts.inline_definitions += 1;
@@ -2212,6 +2217,9 @@ impl Parser {
         self.cxx_inline_ordinal_facts.control_flow_labels += facts.control_flow_labels;
         self.cxx_inline_ordinal_facts.scalar_parameter_initializer_lists +=
             facts.scalar_parameter_initializer_lists;
+        self.cxx_inline_ordinal_facts
+            .heterogeneous_scalar_parameter_initializer_lists +=
+            facts.heterogeneous_scalar_parameter_initializer_lists;
         self.cxx_inline_ordinal_facts
             .scalar_parameter_member_initializers += facts.scalar_parameter_member_initializers;
         self.cxx_inline_ordinal_facts

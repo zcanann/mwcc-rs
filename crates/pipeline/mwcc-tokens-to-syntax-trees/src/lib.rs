@@ -4630,6 +4630,7 @@ blr\n\
                 control_flow_labels: 0,
                 instantiated_template_control_flow_labels: 0,
                 scalar_parameter_initializer_lists: 0,
+                heterogeneous_scalar_parameter_initializer_lists: 0,
                 scalar_parameter_member_initializers: 0,
                 string_parameter_member_initializers: 0,
             }
@@ -4673,6 +4674,11 @@ blr\n\
             unit.cxx_inline_ordinal_facts
                 .scalar_parameter_member_initializers,
             2
+        );
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts
+                .heterogeneous_scalar_parameter_initializer_lists,
+            1
         );
         assert_eq!(
             unit.cxx_inline_ordinal_facts

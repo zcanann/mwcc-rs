@@ -331,6 +331,10 @@ pub struct CxxInlineOrdinalFacts {
     /// `Parm<T>` member. Early frontends retain a shared analysis transaction
     /// before visiting the individual scalar members.
     pub scalar_parameter_initializer_lists: usize,
+    /// Constructor initializer lists containing more than one scalar
+    /// `Parm<T>` specialization. Build 163 retains an additional shared
+    /// transaction when the scalar template type changes within one list.
+    pub heterogeneous_scalar_parameter_initializer_lists: usize,
     /// Scalar and string-valued `Parm<T>` member initializers in discarded
     /// in-class constructors. Their frontend analysis costs are distinct.
     pub scalar_parameter_member_initializers: usize,
