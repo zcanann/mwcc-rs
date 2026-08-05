@@ -52,7 +52,7 @@ impl Generator {
     }
 
     fn retain_inlined_switch_default_edge(&mut self) {
-        let Some(start) = self.output.instructions.windows(6).position(|window| {
+        while let Some(start) = self.output.instructions.windows(6).position(|window| {
             matches!(
                 window,
                 [
@@ -68,26 +68,25 @@ impl Generator {
                     Instruction::BranchAndLink { target },
                 ] if target == "OSCancelThread"
             )
-        }) else {
-            return;
-        };
-        let Instruction::BranchConditionalForward { target: old_skip, .. } =
-            self.output.instructions[start + 4]
-        else {
-            unreachable!("inlined switch default edge was recognized")
-        };
-        let insertion = start + 5;
-        crate::insert_instruction_retargeting(
-            self,
-            insertion,
-            Instruction::Branch { target: 0 },
-        );
-        let skip = old_skip + usize::from(old_skip >= insertion);
-        self.output.instructions[start + 4] = Instruction::BranchConditionalForward {
-            options: 12,
-            condition_bit: 2,
-            target: start + 6,
-        };
-        self.output.instructions[insertion] = Instruction::Branch { target: skip };
+        }) {
+            let Instruction::BranchConditionalForward { target: old_skip, .. } =
+                self.output.instructions[start + 4]
+            else {
+                unreachable!("inlined switch default edge was recognized")
+            };
+            let insertion = start + 5;
+            crate::insert_instruction_retargeting(
+                self,
+                insertion,
+                Instruction::Branch { target: 0 },
+            );
+            let skip = old_skip + usize::from(old_skip >= insertion);
+            self.output.instructions[start + 4] = Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: start + 6,
+            };
+            self.output.instructions[insertion] = Instruction::Branch { target: skip };
+        }
     }
 }

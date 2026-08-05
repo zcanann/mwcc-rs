@@ -443,6 +443,11 @@ pub(crate) struct Generator {
     /// entry packet whose source order and copy spelling are finalized only
     /// after saved-home allocation.
     pub(crate) structured_repeated_indirect_member_loop_entry: bool,
+    /// A repeated-member caller ends in another cursor walk followed by a run
+    /// of calls into one fixed-address bank. Build 163 overlaps the earlier
+    /// reduction with a later cursor and retains the bank high half in an
+    /// expired parameter home.
+    pub(crate) structured_repeated_indirect_member_loop_fixed_address_tail: Option<String>,
     /// Scalars whose source address is materialized only into an otherwise
     /// dead local. Their frame image remains ABI-visible, but no executable
     /// alias can mutate it, so ordinary reads use the retained register mirror.

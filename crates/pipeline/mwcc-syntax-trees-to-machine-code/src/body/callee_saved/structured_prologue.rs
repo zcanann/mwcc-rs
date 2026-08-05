@@ -66,6 +66,7 @@ pub(super) fn repeated_indirect_member_loops_own_dense_range(function: &Function
 
 pub(super) fn repeated_indirect_member_loop_home_preference(
     enabled: bool,
+    fixed_address_tail: bool,
     eager_home_count: usize,
     parameter_home_count: usize,
     total_home_count: usize,
@@ -74,10 +75,95 @@ pub(super) fn repeated_indirect_member_loop_home_preference(
     if !enabled || eager_home_count != 0 || parameter_home_count != 3 {
         return None;
     }
+    if fixed_address_tail && total_home_count == 5 {
+        return [31, 30, 27, 28, 29].get(home_index).copied();
+    }
     match total_home_count {
         5 => [31, 30, 26, 28, 27].get(home_index).copied(),
         6 => [31, 30, 26, 28, 27, 29].get(home_index).copied(),
         _ => None,
+    }
+}
+
+/// A tail of four or more calls whose first arguments occupy the same 64 KiB
+/// fixed-address bank keeps that bank's high half across the calls. Recognize
+/// the semantic call run before lowering; the physical scheduler can then
+/// reuse a dead saved home without keying the decision to source names.
+pub(super) fn repeated_fixed_address_call_tail(function: &Function) -> Option<&str> {
+    statements_have_fixed_address_call_run(&function.statements)
+}
+
+fn statements_have_fixed_address_call_run(statements: &[Statement]) -> Option<&str> {
+    let mut key = None;
+    let mut run = 0;
+    for statement in statements {
+        let call = match statement {
+            Statement::Expression(Expression::Call {
+                name,
+                arguments,
+            }) => arguments
+                .first()
+                .and_then(fixed_call_address)
+                .map(|address| (name.as_str(), address)),
+            _ => None,
+        };
+        if let Some((callee, address)) = call {
+            let next_key = (callee, address & 0xffff_0000);
+            if key == Some(next_key) {
+                run += 1;
+            } else {
+                key = Some(next_key);
+                run = 1;
+            }
+            if run >= 4 {
+                return Some(callee);
+            }
+        } else {
+            key = None;
+            run = 0;
+        }
+        let nested = match statement {
+            Statement::Loop { body, .. } => statements_have_fixed_address_call_run(body),
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => statements_have_fixed_address_call_run(then_body)
+                .or_else(|| statements_have_fixed_address_call_run(else_body)),
+            Statement::Switch { arms, default, .. } => {
+                arms
+                    .iter()
+                    .find_map(|arm| match &arm.body {
+                        mwcc_syntax_trees::ArmBody::Statements(body) => {
+                            statements_have_fixed_address_call_run(body)
+                        }
+                        mwcc_syntax_trees::ArmBody::Return(_) => None,
+                    })
+                    .or_else(|| match default {
+                        Some(mwcc_syntax_trees::ArmBody::Statements(body)) => {
+                            statements_have_fixed_address_call_run(body)
+                        }
+                        _ => None,
+                    })
+            }
+            _ => None,
+        };
+        if nested.is_some() {
+            return nested;
+        }
+    }
+    None
+}
+
+fn fixed_call_address(expression: &Expression) -> Option<u32> {
+    match expression {
+        Expression::Cast { operand, .. } => fixed_call_address(operand),
+        Expression::Binary {
+            operator: BinaryOperator::Add,
+            left,
+            right,
+        } => Some(fixed_call_address(left)?.wrapping_add(fixed_call_address(right)?)),
+        _ => constant_value(expression).map(|value| value as u32),
     }
 }
 
@@ -625,20 +711,57 @@ mod tests {
         assert!(uses_dense_saved_register_range(false, true, 1, 5, false, false, true));
         assert_eq!(
             (0..5)
-                .map(|index| repeated_indirect_member_loop_home_preference(true, 0, 3, 5, index))
+                .map(|index| {
+                    repeated_indirect_member_loop_home_preference(
+                        true, false, 0, 3, 5, index,
+                    )
+                })
                 .collect::<Vec<_>>(),
             [Some(31), Some(30), Some(26), Some(28), Some(27)]
         );
         assert_eq!(
-            repeated_indirect_member_loop_home_preference(true, 1, 3, 6, 0),
+            repeated_indirect_member_loop_home_preference(true, false, 1, 3, 6, 0),
             None
         );
         assert_eq!(
             (0..6)
-                .map(|index| repeated_indirect_member_loop_home_preference(true, 0, 3, 6, index))
+                .map(|index| {
+                    repeated_indirect_member_loop_home_preference(
+                        true, false, 0, 3, 6, index,
+                    )
+                })
                 .collect::<Vec<_>>(),
             [Some(31), Some(30), Some(26), Some(28), Some(27), Some(29)]
         );
+        assert_eq!(
+            (0..5)
+                .map(|index| {
+                    repeated_indirect_member_loop_home_preference(
+                        true, true, 0, 3, 5, index,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            [Some(31), Some(30), Some(27), Some(28), Some(29)]
+        );
+    }
+
+    #[test]
+    fn recognizes_a_repeated_fixed_address_call_bank() {
+        let call = |address| {
+            Statement::Expression(Expression::Call {
+                name: "clear".into(),
+                arguments: vec![Expression::IntegerLiteral(address)],
+            })
+        };
+        let four = vec![
+            call(0x8000_0040),
+            call(0x8000_00d4),
+            call(0x8000_00f4),
+            call(0x8000_3000),
+        ];
+
+        assert_eq!(statements_have_fixed_address_call_run(&four), Some("clear"));
+        assert_eq!(statements_have_fixed_address_call_run(&four[..3]), None);
     }
 
     #[test]

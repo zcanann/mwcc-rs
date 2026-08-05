@@ -151,7 +151,8 @@ use super::structured_prologue::{
     dense_entry_owns_parameter_copies, saved_home_stores_precede_initialization,
     repeated_indirect_member_loop_home_preference,
     repeated_indirect_member_loop_fresh_call_results,
-    repeated_indirect_member_loops_own_dense_range, uses_dense_saved_register_range,
+    repeated_indirect_member_loops_own_dense_range, repeated_fixed_address_call_tail,
+    uses_dense_saved_register_range,
 };
 use super::structured_register_width::assigned_register_width;
 use super::structured_state_transfer_layout::is_unused_array_state_transfer;
@@ -1101,6 +1102,11 @@ impl Generator {
         );
         let repeated_indirect_member_loops =
             repeated_indirect_member_loops_own_dense_range(function);
+        self.structured_repeated_indirect_member_loop_fixed_address_tail =
+            repeated_indirect_member_loops
+                .then(|| repeated_fixed_address_call_tail(function))
+                .flatten()
+                .map(str::to_owned);
         let fresh_repeated_loop_call_results =
             repeated_indirect_member_loop_fresh_call_results(
                 repeated_indirect_member_loops,
@@ -1831,6 +1837,8 @@ impl Generator {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = repeated_indirect_member_loop_home_preference(
                     self.structured_repeated_indirect_member_loop_entry,
+                    self.structured_repeated_indirect_member_loop_fixed_address_tail
+                        .is_some(),
                     eager_saved_locals.len(),
                     saved_parameters.len(),
                     count,
@@ -2817,6 +2825,17 @@ impl Generator {
             plan.frame_size = plan.frame_size.checked_add(entry_table_bytes).ok_or_else(|| {
                 Diagnostic::error("structured repeated-loop frame is too large")
             })?;
+        }
+        if self
+            .structured_repeated_indirect_member_loop_fixed_address_tail
+            .is_some()
+        {
+            plan.frame_size = plan
+                .frame_size
+                .checked_add(8)
+                .ok_or_else(|| {
+                    Diagnostic::error("structured fixed-address tail frame is too large")
+                })?;
         }
         self.non_leaf = true;
         self.structured_global_byte_loop_layout_owner = global_byte_loop_layout.is_some();

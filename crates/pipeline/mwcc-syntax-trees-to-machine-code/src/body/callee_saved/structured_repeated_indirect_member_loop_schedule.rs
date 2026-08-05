@@ -30,6 +30,12 @@ impl Generator {
         }
         normalize_outer_loop_boolean(&mut self.output.instructions);
         normalize_thread_walk_cursor(&mut self.output.instructions);
+        if let Some(callee) = self
+            .structured_repeated_indirect_member_loop_fixed_address_tail
+            .clone()
+        {
+            self.retain_fixed_address_call_bank(&callee);
+        }
         normalize_reset_tail_copies(&mut self.output.instructions);
     }
 
@@ -58,17 +64,20 @@ impl Generator {
         else {
             return;
         };
-        if second_load < 2
-            || !is_entry_result_copy(&self.output.instructions[second_load - 2])
-            || !is_zero_initializer(&self.output.instructions[second_load - 1])
+        if second_load >= 2
+            && is_entry_result_copy(&self.output.instructions[second_load - 2])
+            && is_zero_initializer(&self.output.instructions[second_load - 1])
         {
-            return;
+            self.move_before_retaining_block_entry(second_load, second_load - 2);
+            let copy = second_load - 1;
+            let (destination, incoming) = entry_parameter_copy(&self.output.instructions[copy])
+                .expect("repeated-loop result copy was recognized");
+            self.output.instructions[copy] = Instruction::move_register(destination, incoming);
+        } else if second_load != 0
+            && is_zero_initializer(&self.output.instructions[second_load - 1])
+        {
+            self.move_before_retaining_block_entry(second_load, second_load - 1);
         }
-        self.move_before_retaining_block_entry(second_load, second_load - 2);
-        let copy = second_load - 1;
-        let (destination, incoming) = entry_parameter_copy(&self.output.instructions[copy])
-            .expect("repeated-loop result copy was recognized");
-        self.output.instructions[copy] = Instruction::move_register(destination, incoming);
     }
 
     fn schedule_repeated_member_loop_callback_packets(&mut self) {
@@ -97,6 +106,69 @@ impl Generator {
     fn move_before_retaining_block_entry(&mut self, from: usize, to: usize) {
         crate::retarget_instruction_destinations(self, to, from);
         crate::move_instruction_before_retargeting(self, from, to);
+    }
+
+    fn retain_fixed_address_call_bank(&mut self, callee: &str) {
+        let Some(reboot) = self.output.instructions.windows(3).position(|window| {
+            matches!(
+                window,
+                [
+                    Instruction::AddImmediate { d: 3, a, immediate: 0 },
+                    Instruction::AddImmediate { d: 4, immediate: 0, .. },
+                    Instruction::BranchAndLink { target },
+                ] if *a >= 14 && target == "__OSReboot"
+            )
+        }) else {
+            return;
+        };
+        let Instruction::AddImmediate { a: bank, .. } = self.output.instructions[reboot] else {
+            unreachable!("the reboot-code home was recognized")
+        };
+        let mut first = true;
+        let mut search = reboot + 3;
+        while let Some(start) = self.output.instructions[search..]
+            .windows(5)
+            .position(|window| is_fixed_address_call_packet(window, callee))
+            .map(|offset| search + offset)
+        {
+            if first {
+                let Instruction::AddImmediateShifted { immediate, .. } =
+                    self.output.instructions[start]
+                else {
+                    unreachable!("the fixed-address high half was recognized")
+                };
+                self.output.instructions[start] = Instruction::AddImmediateShifted {
+                    d: bank,
+                    a: 0,
+                    immediate,
+                };
+                let Instruction::AddImmediate { d, immediate, .. } =
+                    self.output.instructions[start + 1]
+                else {
+                    unreachable!("the fixed-address low half was recognized")
+                };
+                self.output.instructions[start + 1] = Instruction::AddImmediate {
+                    d,
+                    a: bank,
+                    immediate,
+                };
+                first = false;
+                search = start + 5;
+            } else {
+                let Instruction::AddImmediate { d, immediate, .. } =
+                    self.output.instructions[start + 1]
+                else {
+                    unreachable!("the fixed-address low half was recognized")
+                };
+                self.output.instructions[start + 1] = Instruction::AddImmediate {
+                    d,
+                    a: bank,
+                    immediate,
+                };
+                crate::remove_instruction_retargeting_to_next(self, start);
+                search = start + 4;
+            }
+        }
     }
 
 }
@@ -176,32 +248,37 @@ fn normalize_outer_loop_boolean(instructions: &mut [Instruction]) {
 }
 
 fn normalize_thread_walk_cursor(instructions: &mut [Instruction]) {
-    let Some(load) = instructions.iter().position(|instruction| {
-        matches!(instruction, Instruction::LoadWord { d: 29, offset: 764, .. })
-    }) else {
-        return;
-    };
-    let Some(copy) = instructions[load + 1..]
+    let mut search = 0;
+    while let Some(load) = instructions[search..]
         .iter()
         .position(|instruction| {
-            matches!(
-                instruction,
-                Instruction::AddImmediate { d: 3, a: 29, immediate: 0 }
-            )
+            matches!(instruction, Instruction::LoadWord { d: 29, offset: 764, .. })
         })
-        .map(|offset| load + 1 + offset)
-    else {
-        return;
-    };
-    let Instruction::LoadWord { a, offset, .. } = instructions[load] else {
-        unreachable!("thread walk cursor load was recognized")
-    };
-    instructions[load] = Instruction::LoadWord { d: 28, a, offset };
-    instructions[copy] = Instruction::move_register(3, 28);
+        .map(|offset| search + offset)
+    {
+        let Some(copy) = instructions[load + 1..]
+            .iter()
+            .position(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::AddImmediate { d: 3, a: 29, immediate: 0 }
+                )
+            })
+            .map(|offset| load + 1 + offset)
+        else {
+            return;
+        };
+        let Instruction::LoadWord { a, offset, .. } = instructions[load] else {
+            unreachable!("thread walk cursor load was recognized")
+        };
+        instructions[load] = Instruction::LoadWord { d: 28, a, offset };
+        instructions[copy] = Instruction::move_register(3, 28);
+        search = copy + 1;
+    }
 }
 
 fn normalize_reset_tail_copies(instructions: &mut [Instruction]) {
-    let Some(start) = instructions.windows(7).position(|window| {
+    let Some(start) = instructions.windows(4).position(|window| {
         matches!(
             window,
             [
@@ -209,19 +286,36 @@ fn normalize_reset_tail_copies(instructions: &mut [Instruction]) {
                 Instruction::AddImmediate { d: 3, a: 30, immediate: 0 },
                 Instruction::AddImmediate { d: 4, a: 31, immediate: 0 },
                 Instruction::BranchAndLink { target: reboot },
-                Instruction::AddImmediate { d: 3, a: 27, immediate: 0 },
-                Instruction::BranchAndLink { target: restore },
-                _,
             ] if scheduler == "OSEnableScheduler"
                 && reboot == "__OSReboot"
-                && restore == "OSRestoreInterrupts"
         )
     }) else {
         return;
     };
     instructions[start + 1] = Instruction::move_register(3, 30);
     instructions[start + 2] = Instruction::move_register(4, 31);
-    instructions[start + 4] = Instruction::move_register(3, 27);
+    if matches!(
+        instructions.get(start + 4..start + 6),
+        Some([
+            Instruction::AddImmediate { d: 3, a: 27, immediate: 0 },
+            Instruction::BranchAndLink { target },
+        ]) if target == "OSRestoreInterrupts"
+    ) {
+        instructions[start + 4] = Instruction::move_register(3, 27);
+    }
+}
+
+fn is_fixed_address_call_packet(window: &[Instruction], callee: &str) -> bool {
+    matches!(
+        window,
+        [
+            Instruction::AddImmediateShifted { d: 3, a: 0, .. },
+            Instruction::AddImmediate { d: 3, a: 3, .. },
+            Instruction::AddImmediate { d: 4, a: 0, immediate: 0 },
+            Instruction::AddImmediate { d: 5, a: 0, .. },
+            Instruction::BranchAndLink { target },
+        ] if target == callee
+    )
 }
 
 fn schedule_entry_parameter_copies(instructions: &mut [Instruction], enabled: bool) {
@@ -245,7 +339,7 @@ fn schedule_entry_parameter_copies(instructions: &mut [Instruction], enabled: bo
 }
 
 fn is_dense_entry_packet(window: &[Instruction]) -> bool {
-    let [Instruction::StoreMultipleWord { s: 26, a: 1, .. }, first, second, third] = window
+    let [Instruction::StoreMultipleWord { s: 26 | 27, a: 1, .. }, first, second, third] = window
     else {
         return false;
     };

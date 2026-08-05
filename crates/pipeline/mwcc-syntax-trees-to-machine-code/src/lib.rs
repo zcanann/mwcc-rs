@@ -647,6 +647,7 @@ fn lower_function_body(
         structured_dense_counted_loop_entry_owner: false,
         structured_member_array_offset_owner: false,
         structured_repeated_indirect_member_loop_entry: false,
+        structured_repeated_indirect_member_loop_fixed_address_tail: None,
         passive_frame_scalar_mirrors: HashSet::new(),
         structured_broad_global_base_layout_owner: false,
         structured_shared_switch_global_value: None,
