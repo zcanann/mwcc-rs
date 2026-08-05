@@ -3225,6 +3225,7 @@ impl Parser {
             let mut cxx_reference_parameters = std::collections::HashSet::new();
             let mut cxx_scalar_reference_parameters = std::collections::HashMap::new();
             let mut cxx_const_object_parameters = std::collections::HashSet::new();
+            let mut asm_register_parameters = std::collections::HashSet::new();
             let mut is_variadic = false;
             // Row-stride records are scoped to ONE function's parameters — a stale
             // entry from a previous function would mis-stride a same-named variable.
@@ -3255,7 +3256,11 @@ impl Parser {
                         is_variadic = true;
                         break;
                     }
+                    let parameter_start = self.position;
                     let mut parameter_type = self.parse_type()?;
+                    let parameter_is_register = self.tokens[parameter_start..self.position]
+                        .iter()
+                        .any(|token| matches!(token, Token::Identifier(word) if word == "register"));
                     let cxx_source_type = parameter_type;
                     let cxx_is_wchar = self.last_type_was_wchar;
                     let cxx_source_is_aggregate_value = self.last_type_was_aggregate_reference;
@@ -3313,6 +3318,9 @@ impl Parser {
                     if let Some((name, name_position, callback_type)) =
                         self.try_cxx_function_pointer_declarator(callback_return_type)?
                     {
+                        if parameter_is_register && !name.is_empty() {
+                            asm_register_parameters.insert(name.clone());
+                        }
                         if let Some(name_position) = name_position {
                             self.record_named_parameter_at(name_position);
                         }
@@ -3343,6 +3351,9 @@ impl Parser {
                             parameter_type,
                             array_typedef_marker,
                         )?;
+                        if parameter_is_register && !name.is_empty() {
+                            asm_register_parameters.insert(name.clone());
+                        }
                         if !name.is_empty() {
                             if let Some(tag) = &struct_tag {
                                 self.variable_structs.insert(name.clone(), tag.clone());
@@ -3799,6 +3810,7 @@ impl Parser {
                 cxx_reference_parameters,
                 cxx_scalar_reference_parameters,
                 cxx_const_object_parameters,
+                asm_register_parameters,
             );
             self.namespace_stack.truncate(body_namespace_depth);
             self.current_member_scope = previous_member_scope;
@@ -4774,6 +4786,7 @@ impl Parser {
         cxx_reference_parameters: std::collections::HashSet<String>,
         cxx_scalar_reference_parameters: std::collections::HashMap<String, Pointee>,
         cxx_const_object_parameters: std::collections::HashSet<String>,
+        asm_register_parameters: std::collections::HashSet<String>,
     ) -> Compilation<Function> {
         let debug_function_name = name.clone();
         self.current_debug_function_name = Some(debug_function_name.clone());
@@ -4814,6 +4827,7 @@ impl Parser {
                 );
             }
         }
+        self.configure_embedded_asm_parameters(&parameters, &asm_register_parameters);
 
         // Zero or more local declarations precede the return statement. A
         // statement that begins with a type keyword is a local declaration;
@@ -5677,6 +5691,7 @@ impl Parser {
             );
         }
         self.current_debug_function_name = None;
+        self.asm_parameters.clear();
         Ok(Function {
             return_type,
             name,

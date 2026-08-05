@@ -10,6 +10,41 @@ use mwcc_syntax_trees::{
 use mwcc_tokens::Token;
 
 impl Parser {
+    /// Bind C `register` parameters to their incoming EABI general registers
+    /// while parsing embedded asm blocks. Floating parameters use the separate
+    /// FPR argument sequence and therefore do not consume a GPR; multiword and
+    /// aggregate values advance the ABI cursor but are not representable as one
+    /// named asm operand in the compact instruction model.
+    pub(crate) fn configure_embedded_asm_parameters(
+        &mut self,
+        parameters: &[Parameter],
+        register_parameters: &std::collections::HashSet<String>,
+    ) {
+        self.asm_parameters.clear();
+        let mut next_general = 3u8;
+        for parameter in parameters {
+            let words = match parameter.parameter_type {
+                Type::Float | Type::Double | Type::Void => 0,
+                Type::LongLong | Type::UnsignedLongLong => 2,
+                Type::Struct { size, .. } => {
+                    u8::try_from(size.div_ceil(4).max(1)).unwrap_or(u8::MAX)
+                }
+                _ => 1,
+            };
+            if words == 1
+                && next_general <= 10
+                && register_parameters.contains(&parameter.name)
+            {
+                self.asm_parameters.push((
+                    parameter.name.clone(),
+                    next_general,
+                    self.variable_structs.get(&parameter.name).cloned(),
+                ));
+            }
+            next_general = next_general.saturating_add(words);
+        }
+    }
+
     /// Parse a Metrowerks inline-`asm` function. Storage qualifiers are already consumed;
     /// `asm_after_return_type` selects between `asm void f()` and `void asm f()`.
     /// The remainder of the C signature is scanned
@@ -692,4 +727,61 @@ fn parse_asm_register(word: &str) -> Option<AsmOperand> {
         return index(digits).map(AsmOperand::Fpr);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mwcc_syntax_trees::{AsmItem, AsmOperand};
+
+    #[test]
+    fn binds_embedded_asm_array_bases_to_register_parameters() {
+        let source = r#"
+            typedef float Mtx[3][4];
+            void identity(register Mtx matrix) {
+                asm {
+                    psq_st f0, 8(matrix), 0, 0
+                }
+            }
+        "#;
+        let unit = crate::parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].inline_asm_blocks[0].items.as_slice(),
+            [AsmItem::Instruction(instruction)]
+                if instruction.operands[1]
+                    == AsmOperand::Memory { displacement: 8, base: 3 }
+        ));
+    }
+
+    #[test]
+    fn floating_parameters_do_not_consume_embedded_asm_gprs() {
+        let source = r#"
+            void store(register float amount, register int* output) {
+                asm {
+                    stw r3, 0(output)
+                }
+            }
+        "#;
+        let unit = crate::parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].inline_asm_blocks[0].items.as_slice(),
+            [AsmItem::Instruction(instruction)]
+                if instruction.operands[1]
+                    == AsmOperand::Memory { displacement: 0, base: 3 }
+        ));
+    }
 }
