@@ -3033,6 +3033,14 @@ impl Generator {
         if self.try_ordered_early_return_branch(function)? {
             return Ok(());
         }
+        // The vec3 square-sum arm owns the measured single-precision latency
+        // schedule after spelling-only locals have been normalized away.
+        if self.try_float_vec3_square_sum_return(function)? {
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
+            return Ok(());
+        }
         // The FLOAT DAG arm claims double multiply-add trees with named
         // double locals BEFORE value tracking and the int-oriented folds:
         // folding a single-use float local (v = z*x) duplicates the shared z

@@ -11,6 +11,8 @@
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression};
 
+mod vec3_square_sum;
+
 /// A value in the lowered tree: a parameter's DAG value id or a node index.
 #[derive(Clone, Copy)]
 enum Operand {

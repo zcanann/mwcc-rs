@@ -3037,6 +3037,9 @@ mod tests {
     #[path = "float_conditions.rs"]
     mod float_conditions;
 
+    #[path = "returned_float_assignment.rs"]
+    mod returned_float_assignment;
+
     #[path = "terminal_switch.rs"]
     mod terminal_switch;
 

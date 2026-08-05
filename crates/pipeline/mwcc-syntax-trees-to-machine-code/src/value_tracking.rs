@@ -549,6 +549,21 @@ impl Generator {
             return Ok(false);
         }
         let inlined = substitute(return_expression, &values);
+        // A declaration without an initializer followed by exactly one assignment
+        // and `return local` has no persistent source-level accumulator identity.
+        // Re-enter whole-body selection with the spelling-only local removed so
+        // specialized expression owners (notably the floating DAG scheduler) see
+        // the same direct return tree that MWCC optimizes.
+        if is_single_definition_return_local(function) {
+            let direct = Function {
+                locals: Vec::new(),
+                statements: Vec::new(),
+                return_expression: Some(inlined),
+                ..function.clone()
+            };
+            self.evaluate_body(&direct)?;
+            return Ok(true);
+        }
         // Inlining a computed local into an additive chain (`t = a + b; … t + c` ->
         // `(a+b)+c`) makes us lower it like a *direct* multi-term sum, which mwcc
         // reassociates (`mr r0,r3; add r3,r4,r5; add r3,r0,r3`). But mwcc keeps the
@@ -1038,6 +1053,35 @@ impl Generator {
         self.emit_epilogue_and_return();
         Ok(true)
     }
+}
+
+fn is_single_definition_return_local(function: &Function) -> bool {
+    let [local] = function.locals.as_slice() else {
+        return false;
+    };
+    if local.initializer.is_some()
+        || local.is_static
+        || local.is_volatile
+        || local.array_length.is_some()
+        || !matches!(
+            function.return_expression.as_ref(),
+            Some(Expression::Variable(name)) if name == &local.name
+        )
+    {
+        return false;
+    }
+
+    let mut definitions = 0usize;
+    for statement in &function.statements {
+        match statement {
+            Statement::Assign { name, .. } if name == &local.name => definitions += 1,
+            Statement::Expression(Expression::IntegerLiteral(_)) => {}
+            Statement::Expression(Expression::Cast { operand, .. })
+                if matches!(operand.as_ref(), Expression::IntegerLiteral(_)) => {}
+            _ => return false,
+        }
+    }
+    definitions == 1
 }
 
 fn repeated_float_member_store_literal(statements: &[Statement]) -> Option<(f64, bool)> {
