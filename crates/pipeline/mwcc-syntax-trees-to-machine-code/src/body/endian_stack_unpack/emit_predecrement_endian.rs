@@ -18,6 +18,13 @@ pub(super) fn emit(
     read: &InlineRead,
 ) {
     let registers = match plan.width {
+        2 => Registers {
+            buffer: 27,
+            selected: 29,
+            length: 30,
+            error: 31,
+            output: 28,
+        },
         4 => Registers {
             buffer: 27,
             selected: 28,

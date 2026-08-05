@@ -98,7 +98,7 @@ impl Generator {
                         emit_predecrement_direct::emit(self, plan, &read);
                         Ok(true)
                     }
-                    StackUnpack::Endian(plan) if matches!(plan.width, 4 | 8) => {
+                    StackUnpack::Endian(plan) if matches!(plan.width, 2 | 4 | 8) => {
                         emit_predecrement_endian::emit(self, plan, &read);
                         Ok(true)
                     }
