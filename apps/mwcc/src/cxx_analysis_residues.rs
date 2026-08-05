@@ -132,8 +132,18 @@ pub fn inline_fact_ordinal_bump(
         + u8::from(emitted_vtable_replay)
             * behavior.emitted_vtable_inline_control_flow_replay_weight;
     let member_function_class_bump = member_function_class_ordinal_bump(facts, behavior);
+    let parameter_initializer_bump = behavior
+        .cxx_parameter_initializer_ordinal_weights
+        .map_or(0, |weights| {
+            facts.scalar_parameter_initializer_lists * usize::from(weights.scalar_list_base)
+                + facts.scalar_parameter_member_initializers
+                    * usize::from(weights.scalar_member)
+                + facts.string_parameter_member_initializers
+                    * usize::from(weights.string_member)
+        });
     facts.class_definitions * usize::from(behavior.cxx_class_definition_label_bump)
         + member_function_class_bump
+        + parameter_initializer_bump
         + facts.inline_definitions * usize::from(behavior.cxx_inline_definition_label_bump)
         + facts.inline_definitions
             * usize::from(behavior.deferred_cxx_inline_definition_label_bump)
@@ -590,6 +600,19 @@ mod tests {
             };
             assert_eq!(member_function_class_ordinal_bump(facts, behavior), expected);
         }
+    }
+
+    #[test]
+    fn build_163_charges_discarded_parameter_member_initializers_by_kind() {
+        let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
+        let facts = CxxInlineOrdinalFacts {
+            scalar_parameter_initializer_lists: 1,
+            scalar_parameter_member_initializers: 2,
+            string_parameter_member_initializers: 1,
+            ..CxxInlineOrdinalFacts::default()
+        };
+
+        assert_eq!(inline_fact_ordinal_bump(facts, behavior, false), 22);
     }
 
     #[test]

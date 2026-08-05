@@ -327,6 +327,14 @@ pub struct CxxInlineOrdinalFacts {
     /// specializations are instantiated by a retained source call. Template
     /// definitions alone do not enter this stream.
     pub instantiated_template_control_flow_labels: usize,
+    /// In-class constructor initializer lists containing at least one scalar
+    /// `Parm<T>` member. Early frontends retain a shared analysis transaction
+    /// before visiting the individual scalar members.
+    pub scalar_parameter_initializer_lists: usize,
+    /// Scalar and string-valued `Parm<T>` member initializers in discarded
+    /// in-class constructors. Their frontend analysis costs are distinct.
+    pub scalar_parameter_member_initializers: usize,
+    pub string_parameter_member_initializers: usize,
 }
 
 /// Constant aggregate image created while analyzing an inline body which is

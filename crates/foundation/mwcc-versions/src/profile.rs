@@ -120,6 +120,15 @@ pub struct CxxConstructorInlineOrdinalWeights {
     pub value_body: u8,
 }
 
+/// Anonymous-label transaction left by compiling and discarding an in-class
+/// constructor whose initializer list builds `Parm<T>` members.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CxxParameterInitializerOrdinalWeights {
+    pub scalar_list_base: u8,
+    pub scalar_member: u8,
+    pub string_member: u8,
+}
+
 /// Lowering family for SDK-style 64-bit stopwatch initialization and wait
 /// transactions. These functions exercise paired integer values, volatile
 /// pair spills, and EABI conversion helpers as one inseparable schedule.
@@ -1012,6 +1021,12 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn cxx_constructor_inline_ordinal_weights(
         &self,
     ) -> Option<CxxConstructorInlineOrdinalWeights> {
+        None
+    }
+
+    fn cxx_parameter_initializer_ordinal_weights(
+        &self,
+    ) -> Option<CxxParameterInitializerOrdinalWeights> {
         None
     }
 
@@ -2397,6 +2412,18 @@ impl CodegenProfile for Gc233Build163 {
             leading_initializer: 1,
             statement_body: 1,
             value_body: 3,
+        })
+    }
+
+    fn cxx_parameter_initializer_ordinal_weights(
+        &self,
+    ) -> Option<CxxParameterInitializerOrdinalWeights> {
+        // Build 163 probes: one scalar member advances 5 labels, two advance
+        // 8, and a String-valued member independently advances 14.
+        Some(CxxParameterInitializerOrdinalWeights {
+            scalar_list_base: 2,
+            scalar_member: 3,
+            string_member: 14,
         })
     }
 

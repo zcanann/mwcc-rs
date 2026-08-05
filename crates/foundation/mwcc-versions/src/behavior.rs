@@ -18,7 +18,8 @@ use crate::profile::{
     CallDispatcherStyle, ClearedLowBitPowerSelectStyle, CoefficientTableRelocationStyle,
     CommaValuePlacementStyle, ComputedByteIndexedRmwStyle,
     ComputedStoreIssueStyle, ConstantStoreScheduleStyle, CopySignStyle, DataSectionRelocationStyle,
-    CxxConstructorInlineOrdinalWeights, DeferredFunctionEmissionStyle,
+    CxxConstructorInlineOrdinalWeights, CxxParameterInitializerOrdinalWeights,
+    DeferredFunctionEmissionStyle,
     DiscardedInlineAggregateImageStyle, FieldMergeStyle, FixedAddressConstantStoreStyle,
     FixedAddressParameterizedRmwStyle,
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
@@ -583,6 +584,9 @@ pub struct Behavior {
     pub inline_initializer_ordinals_follow_strings: bool,
     /// Optional constructor-specific inline-composition transaction.
     pub cxx_constructor_inline_ordinal_weights: Option<CxxConstructorInlineOrdinalWeights>,
+    /// Optional discarded `Parm<T>` constructor-initializer transaction.
+    pub cxx_parameter_initializer_ordinal_weights:
+        Option<CxxParameterInitializerOrdinalWeights>,
     /// Inherited RTTI handles without a vtable owner remain local.
     pub orphaned_cxx_rtti_handle_is_local: bool,
     /// Materialize vtables owned by weak all-inline primary bases.
@@ -1019,6 +1023,10 @@ impl Behavior {
                 .build
                 .profile
                 .cxx_constructor_inline_ordinal_weights(),
+            cxx_parameter_initializer_ordinal_weights: config
+                .build
+                .profile
+                .cxx_parameter_initializer_ordinal_weights(),
             orphaned_cxx_rtti_handle_is_local: config
                 .build
                 .profile
@@ -2278,6 +2286,14 @@ mod tests {
                 leading_initializer: 1,
                 statement_body: 1,
                 value_body: 3,
+            })
+        );
+        assert_eq!(
+            behavior.cxx_parameter_initializer_ordinal_weights,
+            Some(CxxParameterInitializerOrdinalWeights {
+                scalar_list_base: 2,
+                scalar_member: 3,
+                string_member: 14,
             })
         );
         assert!(behavior.orphaned_cxx_rtti_handle_is_local);

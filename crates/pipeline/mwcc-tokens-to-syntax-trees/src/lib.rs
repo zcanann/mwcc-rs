@@ -4548,7 +4548,55 @@ blr\n\
                 direct_calls: 1,
                 control_flow_labels: 0,
                 instantiated_template_control_flow_labels: 0,
+                scalar_parameter_initializer_lists: 0,
+                scalar_parameter_member_initializers: 0,
+                string_parameter_member_initializers: 0,
             }
+        );
+    }
+
+    #[test]
+    fn records_parameter_member_initializer_facts_from_nested_classes() {
+        let source = r#"
+            class String {};
+            template <typename T> class Parm {};
+            class GameFlow {
+            public:
+                class Parms {
+                    Parm<float> hour;
+                    Parm<int> ability;
+                    Parm<String> title;
+                public:
+                    Parms()
+                        : hour(this, 7.0f, 0.0f, 0.0f, "p00", "hour")
+                        , ability(this, 1, 0, 0, "p01", "ability")
+                        , title(this, String(), String(), String(), "p02", "title")
+                    {}
+                };
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts.scalar_parameter_initializer_lists,
+            1
+        );
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts
+                .scalar_parameter_member_initializers,
+            2
+        );
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts
+                .string_parameter_member_initializers,
+            1
         );
     }
 

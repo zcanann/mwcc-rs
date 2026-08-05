@@ -12,8 +12,8 @@ use mwcc_syntax_trees::{
 use mwcc_tokens::{LocatedToken, Token};
 
 use crate::cxx_analysis_facts::{
-    function_declaration_virtuality, inline_control_flow_labels,
-    nested_explicit_virtual_declarations,
+    constructor_parameter_initializers, function_declaration_virtuality,
+    inline_control_flow_labels, nested_explicit_virtual_declarations, parameter_member_fields,
 };
 use crate::items::{pointee_of, type_alignment, type_size};
 use crate::parser::{
@@ -1862,6 +1862,7 @@ impl Parser {
         // Discover static data declarations first so `return sCurrentHeap;`
         // resolves even when the declaration follows the accessor body.
         self.capture_cxx_static_data_members(body_start, &class);
+        let parameter_fields = parameter_member_fields(&self.tokens[body_start..]);
         let mut prototypes = Vec::new();
         let mut brace_depth = 1i32;
         let mut paren_depth = 0i32;
@@ -1907,7 +1908,10 @@ impl Parser {
                 {
                     explicitly_inline = true;
                 }
-                if token == &Token::ParenOpen {
+                // The first class-scope parameter list names the member. A
+                // constructor's later initializer calls are still at class
+                // brace depth one and must not overwrite `__ct`.
+                if token == &Token::ParenOpen && member_name.is_none() {
                     member_name = index
                         .checked_sub(1)
                         .and_then(|previous| self.tokens.get(previous))
@@ -1992,11 +1996,25 @@ impl Parser {
                     // method body, hence implicitly inline.
                     if brace_depth == 1 && paren_depth == 0 {
                         if let Some(member) = member_name.take() {
+                            let declaration = &self.tokens[member_declaration_start..index];
+                            if member == "__ct" {
+                                let parameter_initializers = constructor_parameter_initializers(
+                                    declaration,
+                                    &parameter_fields,
+                                );
+                                self.cxx_inline_ordinal_facts
+                                    .scalar_parameter_member_initializers +=
+                                    parameter_initializers.scalar_members;
+                                self.cxx_inline_ordinal_facts
+                                    .string_parameter_member_initializers +=
+                                    parameter_initializers.string_members;
+                                self.cxx_inline_ordinal_facts.scalar_parameter_initializer_lists +=
+                                    usize::from(parameter_initializers.scalar_members > 0);
+                            }
                             self.inline_cxx_members.insert((class.clone(), member));
                             self.cxx_inline_ordinal_facts.inline_definitions += 1;
                             self.cxx_inline_ordinal_facts.inline_definition_parameters +=
                                 member_parameter_count.unwrap_or(0);
-                            let declaration = &self.tokens[member_declaration_start..index];
                             let is_virtual = declaration.iter().any(
                                 |token| matches!(token, Token::Identifier(word) if word == "virtual"),
                             );
@@ -2166,6 +2184,12 @@ impl Parser {
         self.cxx_inline_ordinal_facts.virtual_destructors += facts.virtual_destructors;
         self.cxx_inline_ordinal_facts.direct_calls += facts.direct_calls;
         self.cxx_inline_ordinal_facts.control_flow_labels += facts.control_flow_labels;
+        self.cxx_inline_ordinal_facts.scalar_parameter_initializer_lists +=
+            facts.scalar_parameter_initializer_lists;
+        self.cxx_inline_ordinal_facts
+            .scalar_parameter_member_initializers += facts.scalar_parameter_member_initializers;
+        self.cxx_inline_ordinal_facts
+            .string_parameter_member_initializers += facts.string_parameter_member_initializers;
         self.cxx_temporary_construction_targets
             .extend(probe.cxx_temporary_construction_targets);
         self.cxx_nonvirtual_destructor_classes
