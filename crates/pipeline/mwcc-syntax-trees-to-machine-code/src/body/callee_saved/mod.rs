@@ -223,6 +223,7 @@ mod structured_inline_residue;
 mod structured_inlined_byte_append_schedule;
 mod structured_repeated_value_inlined_byte_append_schedule;
 mod structured_repeated_indirect_member_loop_schedule;
+mod structured_repeated_indirect_member_loop_cfg;
 mod structured_saved_value_inlined_byte_append;
 mod structured_single_inlined_byte_append;
 mod structured_inlined_address_receiver_schedule;

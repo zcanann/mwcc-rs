@@ -67,6 +67,26 @@ pub(super) fn remove_assignments(statements: Vec<Statement>, result_name: &str) 
         .collect()
 }
 
+/// Reduce only straight-line accumulator updates to their call effects. Loop
+/// updates retain their source reduction because MWCC has already formed the
+/// loop-carried value before discovering that the final inline result is dead.
+pub(super) fn remove_straight_line_accumulator_updates(
+    statements: Vec<Statement>,
+    result_name: &str,
+) -> Vec<Statement> {
+    statements
+        .into_iter()
+        .map(|statement| match statement {
+            Statement::Assign { name, value } if name == result_name => {
+                discarded_accumulator_effect(&value, result_name)
+                    .map(Statement::Expression)
+                    .unwrap_or(Statement::Assign { name, value })
+            }
+            other => other,
+        })
+        .collect()
+}
+
 fn remove_assignment(statement: Statement, result_name: &str) -> Option<Statement> {
     match statement {
         Statement::Assign { name, value } if name == result_name => {
@@ -322,5 +342,47 @@ mod tests {
         }];
 
         assert!(statements_read_name(&statements, "result"));
+    }
+
+    #[test]
+    fn removes_only_straight_line_discarded_accumulator_effects() {
+        let update = || Expression::Binary {
+            operator: BinaryOperator::BitOr,
+            left: Box::new(variable("result")),
+            right: Box::new(Expression::Unary {
+                operator: UnaryOperator::LogicalNot,
+                operand: Box::new(Expression::Call {
+                    name: "sync".to_owned(),
+                    arguments: Vec::new(),
+                }),
+            }),
+        };
+        let statements = vec![
+            Statement::Loop {
+                kind: mwcc_syntax_trees::LoopKind::While,
+                initializer: None,
+                condition: Some(variable("cursor")),
+                step: None,
+                body: vec![Statement::Assign {
+                    name: "result".to_owned(),
+                    value: update(),
+                }],
+            },
+            Statement::Assign {
+                name: "result".to_owned(),
+                value: update(),
+            },
+        ];
+
+        let pruned = remove_straight_line_accumulator_updates(statements, "result");
+
+        assert!(matches!(
+            pruned.as_slice(),
+            [
+                Statement::Loop { body, .. },
+                Statement::Expression(Expression::Call { name, .. }),
+            ] if matches!(body.as_slice(), [Statement::Assign { name, .. }] if name == "result")
+                && name == "sync"
+        ));
     }
 }

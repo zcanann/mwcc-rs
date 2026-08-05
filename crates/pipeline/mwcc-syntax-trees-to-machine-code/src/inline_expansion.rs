@@ -1438,6 +1438,13 @@ impl InlineBodySet {
                 substituted =
                     discarded_result::remove_assignments(substituted, substituted_result);
             }
+        } else if let Some(result_name) = guarded_accumulator {
+            if let Some(Expression::Variable(substituted_result)) = replacements.get(result_name) {
+                substituted = discarded_result::remove_straight_line_accumulator_updates(
+                    substituted,
+                    substituted_result,
+                );
+            }
         }
         // Guards are trailing early returns in the callee's executable body.
         // Rebind them to a private forward boundary and, for value-position

@@ -1282,6 +1282,8 @@ fn lower_function_body(
         );
         remap_instruction_indices(&mut generator, &address);
     }
+    generator.retain_repeated_indirect_member_loop_cfg_residue();
+    generator.finalize_repeated_indirect_member_loop_image();
     // Word-load narrowing participates in the generic global-address latency
     // pass above. Reapply the idempotent assembly-barrier packet owner after
     // that pass so its final saved-buffer forwarding order remains canonical.
