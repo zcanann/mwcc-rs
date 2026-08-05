@@ -41,7 +41,7 @@ use crate::profile::{
     SharedFloatDagStyle, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
     StoredGlobalReadStyle, SymbolTraversalStyle, TrigDispatcherStyle, TrigQuadrantDispatchStyle,
     TrigZeroConstantPlacement, VaArgScheduleStyle, ValueTrackedMutationStyle,
-    WideCallResultMaskStyle, WideConstantAddSchedule,
+    VirtualCallDispatchSchedule, WideCallResultMaskStyle, WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -647,6 +647,8 @@ pub struct Behavior {
     /// Issue order for the three loads that copy an aggregate into an indirect call's argument
     /// area while independent linkage and argument setup is available.
     pub nested_global_dispatch_schedule: NestedGlobalDispatchSchedule,
+    /// Placement of a primary-vtable target load relative to call-free explicit arguments.
+    pub virtual_call_dispatch_schedule: VirtualCallDispatchSchedule,
     /// Scheduling of a leading pointer store around a punned frame guard.
     pub leading_frame_guard_store_style: LeadingFrameGuardStoreStyle,
     /// Materialization order for null-guarded constructor-style member stores.
@@ -1108,6 +1110,10 @@ impl Behavior {
             long_long_timer_style: config.build.profile.long_long_timer_style(),
             wide_call_result_mask_style: config.build.profile.wide_call_result_mask_style(),
             nested_global_dispatch_schedule: config.build.profile.nested_global_dispatch_schedule(),
+            virtual_call_dispatch_schedule: config
+                .build
+                .profile
+                .virtual_call_dispatch_schedule(),
             leading_frame_guard_store_style: config.build.profile.leading_frame_guard_store_style(),
             guarded_member_initialization_style: config
                 .build
@@ -2253,6 +2259,10 @@ mod tests {
             20
         );
         assert_eq!(behavior.frame_convention, FrameConvention::LinkageFirst);
+        assert_eq!(
+            behavior.virtual_call_dispatch_schedule,
+            VirtualCallDispatchSchedule::InterleaveTwoStepArgument
+        );
         assert_eq!(behavior.immediate_weak_caller_scope_label_bump, 3);
         assert_eq!(behavior.retained_vtable_const_residue_ordinal, Some(190));
         assert_eq!(behavior.cxx_inline_control_flow_label_weight, 1);

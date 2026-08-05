@@ -150,6 +150,16 @@ pub enum NestedGlobalDispatchSchedule {
     EarlyAggregateLoads,
 }
 
+/// Placement of primary-vtable target loads relative to explicit arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirtualCallDispatchSchedule {
+    /// Evaluate every ABI argument before loading the vtable and target slot.
+    ArgumentsBeforeDispatch,
+    /// Alternate the two dispatch loads with a two-load explicit argument:
+    /// vptr, argument base, target slot, argument member.
+    InterleaveTwoStepArgument,
+}
+
 /// Schedule of a leading `*pointer = constant` around a punned frame guard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeadingFrameGuardStoreStyle {
@@ -1101,6 +1111,12 @@ pub trait CodegenProfile: core::fmt::Debug {
 
     fn nested_global_dispatch_schedule(&self) -> NestedGlobalDispatchSchedule {
         NestedGlobalDispatchSchedule::SequentialAggregateCopy
+    }
+
+    /// Whether an in-place primary receiver stages its virtual target before
+    /// evaluating call-free explicit arguments.
+    fn virtual_call_dispatch_schedule(&self) -> VirtualCallDispatchSchedule {
+        VirtualCallDispatchSchedule::ArgumentsBeforeDispatch
     }
 
     fn leading_frame_guard_store_style(&self) -> LeadingFrameGuardStoreStyle {
@@ -2297,6 +2313,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn virtual_call_dispatch_schedule(&self) -> VirtualCallDispatchSchedule {
+        VirtualCallDispatchSchedule::InterleaveTwoStepArgument
+    }
+
     fn cleared_low_bit_power_select_style(&self) -> ClearedLowBitPowerSelectStyle {
         ClearedLowBitPowerSelectStyle::BranchPreserving
     }

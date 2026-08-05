@@ -266,3 +266,56 @@ fn preserves_a_cast_incoming_word_while_forming_a_string_argument() {
         .windows(arguments.len())
         .any(|bytes| bytes == arguments));
 }
+
+#[test]
+fn interleaves_legacy_virtual_dispatch_with_a_reference_argument_load() {
+    let source = br#"
+        struct Graphics {};
+        struct System {
+            char padding[588];
+            Graphics* graphics;
+        };
+        extern System* gsys;
+
+        class GameApp {
+        public:
+            virtual void first();
+            virtual void second();
+            virtual void third();
+            virtual void draw(Graphics&);
+            void renderall();
+        };
+
+        void GameApp::renderall() {
+            draw(*gsys->graphics);
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let object = compile(
+        source,
+        "legacy-virtual-reference-argument.cpp",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        },
+        Some(SourceLanguage::Cxx),
+        None,
+        false,
+    )
+    .expect("the virtual reference argument should compile");
+
+    // Exact GC/1.2.5n schedule measured from Pikmin's GameApp::renderall:
+    // alternate the independent vtable and global-member dependency chains.
+    let scheduled_loads = [
+        0x81, 0x83, 0x00, 0x00, // lwz r12,0(r3)
+        0x80, 0x80, 0x00, 0x00, // lwz r4,gsys@sda21(0)
+        0x81, 0x8c, 0x00, 0x14, // lwz r12,20(r12)
+        0x80, 0x84, 0x02, 0x4c, // lwz r4,588(r4)
+    ];
+    assert!(object
+        .windows(scheduled_loads.len())
+        .any(|bytes| bytes == scheduled_loads));
+}

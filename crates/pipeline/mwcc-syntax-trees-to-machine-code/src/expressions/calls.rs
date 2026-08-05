@@ -8,7 +8,7 @@ use super::call_argument_types::{
 };
 #[allow(unused_imports)]
 use super::*;
-use mwcc_versions::FrameConvention;
+use mwcc_versions::{FrameConvention, VirtualCallDispatchSchedule};
 
 impl Generator {
     /// Preserve an indirect callee across argument marshaling in r12. The copy
@@ -57,9 +57,9 @@ impl Generator {
     }
 
     /// Emit a primary-vtable virtual call. The object is both the implicit
-    /// first EABI argument and the address used for dispatch. Argument
-    /// marshaling runs first; unsupported call-bearing later arguments defer in
-    /// the ordinary argument scheduler before any unsafe sequence is emitted.
+    /// first EABI argument and the address used for dispatch. The active build
+    /// profile decides how independent dispatch and argument dependency chains
+    /// are scheduled.
     pub(crate) fn emit_virtual_call(
         &mut self,
         object: &Expression,
@@ -228,6 +228,56 @@ impl Generator {
             _ => object.clone(),
         };
         let object_register = Eabi::FIRST_GENERAL_ARGUMENT + u8::from(hidden_result.is_some());
+        let two_step_argument = arguments.first().map(|argument| match argument {
+            // A C++ reference argument retains the source `&*pointer` wrapper;
+            // ABI marshaling canonically evaluates the enclosed pointer value.
+            Expression::AddressOf { operand }
+                if matches!(operand.as_ref(), Expression::Dereference { .. }) =>
+            {
+                let Expression::Dereference { pointer, .. } = operand.as_ref() else {
+                    unreachable!("the reference wrapper was matched")
+                };
+                pointer.as_ref()
+            }
+            other => other,
+        });
+        let interleave_dispatch = hidden_result.is_none()
+            && self.behavior.virtual_call_dispatch_schedule
+                == VirtualCallDispatchSchedule::InterleaveTwoStepArgument
+            && self
+                .leaf_info(&object_argument)
+                .ok()
+                .is_some_and(|(register, width, _)| {
+                    register == object_register && width == 32
+                })
+            && arguments.len() == 1
+            && matches!(two_step_argument, Some(Expression::Member {
+                base,
+                member_type: Type::Int
+                    | Type::UnsignedInt
+                    | Type::Pointer(_)
+                    | Type::StructPointer { .. },
+                index_stride: None,
+                ..
+            }) if matches!(base.as_ref(), Expression::Variable(global)
+                if self.globals.contains_key(global)
+                    && self.behavior.global_addressing == GlobalAddressing::SmallData));
+        let vptr_offset = i16::try_from(vptr_offset)
+            .map_err(|_| Diagnostic::error("a virtual-table pointer offset is out of range"))?;
+        let slot_offset = i16::try_from(slot_offset)
+            .map_err(|_| Diagnostic::error("a virtual-table slot offset is out of range"))?;
+
+        if interleave_dispatch {
+            // The receiver is already in its ABI home. Start the dispatch
+            // dependency chain; the slot load is inserted between the two
+            // argument loads after ordinary marshaling proves that exact shape.
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 12,
+                a: object_register,
+                offset: vptr_offset,
+            });
+        }
+        let argument_start = self.output.instructions.len();
         let dispatch_register = if let Some(result_address) = hidden_result {
             // With a saved leaf receiver and no explicit arguments, MWCC stages
             // `this` in r4 before forming the hidden-result address in r3. The
@@ -265,20 +315,31 @@ impl Generator {
             saved_receiver.unwrap_or(object_register)
         };
 
-        let vptr_offset = i16::try_from(vptr_offset)
-            .map_err(|_| Diagnostic::error("a virtual-table pointer offset is out of range"))?;
-        let slot_offset = i16::try_from(slot_offset)
-            .map_err(|_| Diagnostic::error("a virtual-table slot offset is out of range"))?;
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 12,
-            a: dispatch_register,
-            offset: vptr_offset,
-        });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 12,
-            a: 12,
-            offset: slot_offset,
-        });
+        if interleave_dispatch {
+            if self.output.instructions.len() != argument_start + 2 {
+                return Err(Diagnostic::error(
+                    "legacy virtual-call interleaving expected a two-instruction argument",
+                ));
+            }
+            let from = self.output.instructions.len();
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 12,
+                a: 12,
+                offset: slot_offset,
+            });
+            crate::move_instruction_before_retargeting(self, from, argument_start + 1);
+        } else {
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 12,
+                a: dispatch_register,
+                offset: vptr_offset,
+            });
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 12,
+                a: 12,
+                offset: slot_offset,
+            });
+        }
         if variadic {
             self.emit_variadic_condition(arguments);
         }
