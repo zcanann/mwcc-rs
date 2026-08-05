@@ -30,7 +30,7 @@ fn indexed_global<'a>(expression: &'a Expression, index: &str) -> Option<&'a str
     var(found, index).then_some(global)
 }
 
-fn setter_offset(function: &Function) -> Option<i16> {
+pub(super) fn setter_offset(function: &Function) -> Option<i16> {
     let [base, value] = function.parameters.as_slice() else {
         return None;
     };

@@ -7,12 +7,12 @@
 #[allow(unused_imports)]
 use super::*;
 
-struct RangeGuardedArrayAddress<'a> {
-    index: &'a str,
-    result: &'a str,
-    array: &'a str,
-    bound: i16,
-    stride: i16,
+pub(super) struct RangeGuardedArrayAddress<'a> {
+    pub(super) index: &'a str,
+    pub(super) result: &'a str,
+    pub(super) array: &'a str,
+    pub(super) bound: i16,
+    pub(super) stride: i16,
 }
 
 fn variable(expression: &Expression, expected: &str) -> bool {
@@ -26,7 +26,7 @@ fn null_pointer_constant(expression: &Expression) -> bool {
     }
 }
 
-fn classify<'a>(
+pub(super) fn classify<'a>(
     function: &'a Function,
     globals: &std::collections::HashMap<String, Type>,
     global_array_sizes: &std::collections::HashMap<String, u32>,
