@@ -11104,6 +11104,78 @@ blr\n\
     }
 
     #[test]
+    fn decays_a_global_character_array_while_resolving_a_free_overload() {
+        let source = r#"
+            void* resource(const char* archive, const char* name);
+            void* resource(const char* archive, int index);
+            static const char archive[] = "Always";
+            void* select(int index) { return resource(archive, index); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Call { name, .. })
+                if name == "resource__FPCci"
+        ));
+    }
+
+    #[test]
+    fn preserves_pointer_element_type_when_indexing_an_array_for_overload_resolution() {
+        let source = r#"
+            int inspect(const char* text);
+            int inspect(int value);
+            static const char* names[] = {"Always"};
+            int select(int index) { return inspect(names[index]); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Call { name, .. })
+                if name == "inspect__FPCc"
+        ));
+    }
+
+    #[test]
+    fn resolves_an_integer_overload_from_nested_global_array_indices() {
+        let source = r#"
+            void* resource(const char* archive, const char* name);
+            void* resource(const char* archive, int index);
+            static unsigned metadata[1][2] = {{4, 1}};
+            static char* names[2] = {"", "A_SMTile"};
+            void* select(unsigned kind) {
+                return resource(names[metadata[kind][1]], metadata[kind][0]);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Call { name, .. })
+                if name == "resource__FPCci"
+        ));
+    }
+
+    #[test]
     fn known_scalar_overload_arguments_ignore_prior_aggregate_identity() {
         let source = r#"
             struct View {};

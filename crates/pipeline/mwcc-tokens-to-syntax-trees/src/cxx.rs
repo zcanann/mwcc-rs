@@ -1191,7 +1191,7 @@ impl Parser {
                         }
                         (Some(_), None) | (None, Some(_)) => false,
                         (None, None) => self
-                            .cxx_expression_type(argument)
+                            .cxx_overload_argument_type(argument)
                             .is_none_or(|actual| method.parameters.get(index) == Some(&actual)),
                     }
                 })
@@ -1376,7 +1376,7 @@ impl Parser {
                 (Some(_), None) | (None, Some(_)) => return false,
                 (None, None) => {}
             }
-            self.cxx_expression_type(argument)
+            self.cxx_overload_argument_type(argument)
                 .is_none_or(|actual| parameters.get(index) == Some(&actual))
         })
     }
@@ -1405,7 +1405,7 @@ impl Parser {
             }
             let (Some(expected), Some(actual)) = (
                 parameters.get(index).copied(),
-                self.cxx_expression_type(argument),
+                self.cxx_overload_argument_type(argument),
             ) else {
                 return false;
             };
@@ -1425,7 +1425,20 @@ impl Parser {
             Expression::FloatLiteral(_) => Some(Type::Float),
             Expression::Cast { target_type, .. } => Some(*target_type),
             Expression::Member { member_type, .. } => Some(*member_type),
-            Expression::Dereference { pointer } | Expression::Index { base: pointer, .. } => {
+            Expression::Index { base, .. } => {
+                if let Some(element) = self.cxx_indexed_array_element_type(base) {
+                    return Some(element);
+                }
+                match self.cxx_expression_type(base)? {
+                    Type::Pointer(pointee) => Some(pointee.element()),
+                    Type::StructPointer { element_size } => Some(Type::Struct {
+                        size: element_size,
+                        align: 1,
+                    }),
+                    _ => None,
+                }
+            }
+            Expression::Dereference { pointer } => {
                 match self.cxx_expression_type(pointer)? {
                     Type::Pointer(pointee) => Some(pointee.element()),
                     Type::StructPointer { element_size } => Some(Type::Struct {
@@ -1436,6 +1449,58 @@ impl Parser {
                 }
             }
             _ => None,
+        }
+    }
+
+    /// Apply array-to-pointer conversion only while comparing overload
+    /// arguments. Other type consumers need the variable's declared lvalue
+    /// type; decaying it globally changes reference binding and lowering.
+    fn cxx_overload_argument_type(&self, expression: &Expression) -> Option<Type> {
+        if let Expression::Variable(name) = expression {
+            if let Some(element) = self.cxx_array_element_type(name) {
+                return Self::cxx_decay_array_element_type(element);
+            }
+        }
+        self.cxx_expression_type(expression)
+    }
+
+    /// Recover an array's declared element type before ordinary expression
+    /// typing applies C++'s array-to-pointer conversion. Locals and globals
+    /// retain their array extent in separate metadata because the compact
+    /// executable type intentionally stores only the element type.
+    fn cxx_array_element_type(&self, name: &str) -> Option<Type> {
+        if self.variable_array_bytes.contains_key(name) {
+            return self.variable_types.get(name).copied();
+        }
+        self.global_sizes
+            .get(name)
+            .and_then(|(_, element_bytes)| element_bytes.map(|_| ()))
+            .and_then(|()| self.global_types.get(name).copied())
+    }
+
+    /// Follow a fully-subscripted flattened array back to its declaration.
+    /// Multi-dimensional globals are stored as one flat executable array, so
+    /// every completed `table[row][column]` expression still has the declared
+    /// scalar element type even though an intermediate row value has no
+    /// standalone compact type.
+    fn cxx_indexed_array_element_type(&self, base: &Expression) -> Option<Type> {
+        match base {
+            Expression::Variable(name) => self.cxx_array_element_type(name),
+            Expression::Index { base, .. } => self.cxx_indexed_array_element_type(base),
+            _ => None,
+        }
+    }
+
+    /// Apply the value-context array decay used by overload resolution. The
+    /// executable AST flattens pointer-to-pointer and aggregate identity, but
+    /// both remain correctly classified as general-register addresses here.
+    fn cxx_decay_array_element_type(element: Type) -> Option<Type> {
+        match element {
+            Type::Struct { size, .. } => Some(Type::StructPointer { element_size: size }),
+            Type::Pointer(_) | Type::StructPointer { .. } => {
+                Some(Type::Pointer(Pointee::Pointer))
+            }
+            scalar => pointee_of(scalar).ok().map(Type::Pointer),
         }
     }
 
