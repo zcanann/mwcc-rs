@@ -783,12 +783,12 @@ impl Generator {
         let mut survivors: std::collections::HashSet<&str> = candidates
             .into_iter()
             .filter(|name| {
-                (!retained_sqrtf_is_only_call
-                    && read_after_possible_call_in_function(function, name))
-                    || self.inline_source_call_survivors.contains(*name)
-                    || (self.one_word_aggregate_locals.contains(*name)
-                    && body_uses_local(&function.statements, name)
-                    && function.statements.iter().any(statement_has_call))
+                !retained_sqrtf_is_only_call
+                    && (read_after_possible_call_in_function(function, name)
+                        || self.inline_source_call_survivors.contains(*name)
+                        || (self.one_word_aggregate_locals.contains(*name)
+                            && body_uses_local(&function.statements, name)
+                            && function.statements.iter().any(statement_has_call)))
             })
             .collect();
         survivors.retain(|name| {
@@ -831,11 +831,13 @@ impl Generator {
         if let Some(plan) = &unoptimized_frame_call_homes {
             survivors.extend(plan.names());
         }
-        survivors.extend(
-            super::super::materialized_float_assignment::materialized_float_assignment_names(
-                function,
-            ),
-        );
+        if !retained_sqrtf_is_only_call {
+            survivors.extend(
+                super::super::materialized_float_assignment::materialized_float_assignment_names(
+                    function,
+                ),
+            );
+        }
         let call_accumulators = call_accumulator_names(function);
         // Entry-initialized locals rank ahead of incoming parameters. Deferred
         // locals introduced by nested declarations or inline expansion rank
@@ -3842,10 +3844,6 @@ impl Generator {
                     .as_ref()
                     .map_or(0, |plan| plan.saved_count()),
             )
-            // Retained sqrtf lowering owns f31 for the Newton estimate and f28
-            // for the rounded result. Declare the entire ABI-contiguous range
-            // before allocation so frame materialization can preserve both.
-            .max(u8::from(retained_sqrtf_spill.is_some()) * 4)
             .max(u8::from(periodic_float_normalization.is_some()) * 4)
             .max(u8::from(loop_conversion_bias_home.is_some()) * 6);
         let mut saved_float_parameter_copies =

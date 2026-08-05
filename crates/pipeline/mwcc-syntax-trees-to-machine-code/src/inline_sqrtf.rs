@@ -268,26 +268,34 @@ impl Generator {
         let join = self.fresh_label();
         self.emit_branch_conditional_to(4, 1, nonpositive);
 
-        let guess = self.fresh_virtual_float_preferring(31);
+        // The canonical SDK body is a leaf transaction. MWCC keeps its four
+        // live values in volatile f1..f4; assigning the estimate a saved-FPR
+        // preference manufactures a save frame that the source compiler never
+        // emits. Keep the constants live across all three iterations and
+        // overwrite the estimate only after its square has been captured, which
+        // is the measured Newton schedule and removes the false overlap with a
+        // separate half-estimate temporary.
+        let guess = self.fresh_virtual_float_preferring(1);
         self.output
             .instructions
             .push(Instruction::FloatReciprocalSqrtEstimate { d: guess, b: input });
-        let half_guess = self.fresh_virtual_float_preferring(2);
+        let half = self.fresh_virtual_float_preferring(3);
+        self.load_double_constant(half, 0.5f64.to_bits());
+        let three = self.fresh_virtual_float_preferring(2);
+        self.load_double_constant(three, 3.0f64.to_bits());
         for _ in 0..3 {
-            self.load_double_constant(FLOAT_SCRATCH, 0.5f64.to_bits());
-            self.output
-                .instructions
-                .push(Instruction::FloatMultiplyDouble {
-                    d: half_guess,
-                    a: FLOAT_SCRATCH,
-                    c: guess,
-                });
-            self.load_double_constant(1, 3.0f64.to_bits());
             self.output
                 .instructions
                 .push(Instruction::FloatMultiplyDouble {
                     d: FLOAT_SCRATCH,
                     a: guess,
+                    c: guess,
+                });
+            self.output
+                .instructions
+                .push(Instruction::FloatMultiplyDouble {
+                    d: guess,
+                    a: half,
                     c: guess,
                 });
             self.output
@@ -301,14 +309,14 @@ impl Generator {
                 .instructions
                 .push(Instruction::FloatSubtractDouble {
                     d: FLOAT_SCRATCH,
-                    a: 1,
+                    a: three,
                     b: FLOAT_SCRATCH,
                 });
             self.output
                 .instructions
                 .push(Instruction::FloatMultiplyDouble {
                     d: guess,
-                    a: half_guess,
+                    a: guess,
                     c: FLOAT_SCRATCH,
                 });
         }
