@@ -239,6 +239,15 @@ impl Generator {
         let Expression::CallThrough { target, arguments } = call else {
             return Ok(false);
         };
+        if self.try_prepare_global_member_forward_indirect_call(target, arguments)? {
+            self.output
+                .instructions
+                .push(Instruction::MoveToCountRegister { s: 12 });
+            self.output
+                .instructions
+                .push(Instruction::BranchToCountRegister);
+            return Ok(true);
+        }
         if !arguments.is_empty()
             || !matches!(
                 target.as_ref(),

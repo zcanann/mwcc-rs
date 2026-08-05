@@ -8,7 +8,11 @@
 use super::*;
 
 impl Generator {
-    pub(super) fn try_emit_global_member_forward_indirect_call(
+    /// Materialize the address and callee for a pass-through call through a
+    /// member of a global record.  Both linked calls and terminal sibling
+    /// transfers use the first unoccupied argument lane for the record base;
+    /// r12 remains exclusively the indirect callee.
+    pub(in crate::body) fn try_prepare_global_member_forward_indirect_call(
         &mut self,
         target: &Expression,
         arguments: &[Expression],
@@ -48,6 +52,17 @@ impl Generator {
             a: base,
             offset,
         });
+        Ok(true)
+    }
+
+    pub(super) fn try_emit_global_member_forward_indirect_call(
+        &mut self,
+        target: &Expression,
+        arguments: &[Expression],
+    ) -> Compilation<bool> {
+        if !self.try_prepare_global_member_forward_indirect_call(target, arguments)? {
+            return Ok(false);
+        }
         self.emit_indirect_branch_and_link(12);
         Ok(true)
     }
