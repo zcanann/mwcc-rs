@@ -931,8 +931,9 @@ pub struct Behavior {
     /// Whether whole-file IPA may replace a terminal call/return with a sibling
     /// branch after marshaling its arguments.
     pub tail_call_optimization: bool,
-    /// Whether the 4.x optimizer turns a terminal indirect call into an
-    /// unlinked `bctr` sibling call without requiring whole-file IPA.
+    /// Whether the 4.x optimizer at `-O2` or higher turns a terminal indirect
+    /// call into an unlinked `bctr` sibling call without requiring whole-file
+    /// IPA.
     pub terminal_indirect_tail_call: bool,
 }
 
@@ -1522,7 +1523,8 @@ impl Behavior {
             scheduler_enabled: config.flags.scheduler_enabled,
             contract_floating_point: config.flags.fp_contract,
             tail_call_optimization: config.flags.whole_file_optimization_enabled(),
-            terminal_indirect_tail_call: config.build.profile.terminal_indirect_tail_call(),
+            terminal_indirect_tail_call: config.build.profile.terminal_indirect_tail_call()
+                && config.flags.optimization >= Optimization::O2,
         }
     }
 
@@ -2647,6 +2649,28 @@ mod tests {
             assert!(ipa.tail_call_optimization);
             assert_eq!(ipa.trig_dispatcher_ipa_label_bump, 4);
         }
+    }
+
+    #[test]
+    fn modern_indirect_sibling_calls_start_at_o2() {
+        for (optimization, expected) in [
+            (Optimization::O0, false),
+            (Optimization::O1, false),
+            (Optimization::O2, true),
+            (Optimization::O3, true),
+            (Optimization::O4, true),
+        ] {
+            let mut config = CompilerConfig::new(build::WII_1_0);
+            config.flags.optimization = optimization;
+            assert_eq!(
+                Behavior::resolve(&config).terminal_indirect_tail_call,
+                expected,
+                "{optimization:?}"
+            );
+        }
+
+        let legacy = Behavior::resolve(&CompilerConfig::new(build::GC_2_7));
+        assert!(!legacy.terminal_indirect_tail_call);
     }
 
     #[test]
