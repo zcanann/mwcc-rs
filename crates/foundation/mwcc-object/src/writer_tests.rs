@@ -1196,6 +1196,50 @@ fn deferred_weak_vtable_waits_for_its_function_reference() {
 }
 
 #[test]
+fn build_163_deferred_large_zero_object_is_registered_upfront() {
+    let object = DataObject {
+        name: "records",
+        size: 0x19b0,
+        alignment: 8,
+        comment_alignment: 8,
+        initial_bytes: None,
+        is_const: false,
+        force_full_data_section: false,
+        is_static: false,
+        force_active: false,
+        is_explicit_zero: false,
+        preassigned_anonymous_ordinal: None,
+        preassigned_ordinal_advances_counter: false,
+        preassigned_pool_prefix_credit: 0,
+        relocations: Vec::new(),
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: false,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: None,
+    };
+    assert!(deferred_large_zero_object_is_upfront(
+        &object,
+        FunctionSymbolOrder::LegacyDeferred,
+        true,
+        ".bss"
+    ));
+    assert!(deferred_large_zero_object_is_upfront(
+        &object,
+        FunctionSymbolOrder::Deferred,
+        true,
+        ".bss"
+    ));
+    assert!(!deferred_large_zero_object_is_upfront(
+        &object,
+        FunctionSymbolOrder::LegacyDeferred,
+        true,
+        ".sbss"
+    ));
+}
+
+#[test]
 fn grouped_debug_data_relocations_restore_source_declaration_order() {
     let data = [
         DataObject {

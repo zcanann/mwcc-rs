@@ -43,6 +43,28 @@ fn initialized_object_is_upfront(
         && (object.functions_before == 0 || initialized_globals_before_deferred_functions)
 }
 
+/// Build 163's deferred analysis registers a source-leading full-size zero
+/// object before visiting the reversed body stream. Small zero objects retain
+/// the ordinary `.sbss` declaration/reference rules; this transaction is
+/// specific to `.bss`, whose storage declaration has already been committed as
+/// a full-data object before deferred function compilation begins.
+fn deferred_large_zero_object_is_upfront(
+    object: &DataObject<'_>,
+    function_symbol_order: FunctionSymbolOrder,
+    initialized_globals_before_deferred_functions: bool,
+    section: &str,
+) -> bool {
+    matches!(
+        function_symbol_order,
+        FunctionSymbolOrder::LegacyDeferred | FunctionSymbolOrder::Deferred
+    )
+        && initialized_globals_before_deferred_functions
+        && object.functions_before == 0
+        && !object.is_static
+        && object.initial_bytes.is_none()
+        && section == ".bss"
+}
+
 /// Metrowerks' private section type for `.mwcats.text` (readelf renders it as
 /// "LOUSER+0x4a2a82c2").
 const SHT_MWCATS: u32 = 0xCA2A_82C2;
@@ -3556,6 +3578,17 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // UNINITIALIZED zero globals trail the functions in reverse. (Large `.bss`
     // follows its own reference-order rule, untouched here.)
     for object in &input.data_objects {
+        if deferred_large_zero_object_is_upfront(
+            object,
+            input.object_format.function_symbol_order,
+            input
+                .object_format
+                .initialized_globals_before_deferred_functions,
+            data_section[object.name],
+        ) {
+            emit_defined_data_symbol!(object.name);
+            continue;
+        }
         if is_initialized_run_object(object)
             && initialized_object_is_upfront(
                 object,
