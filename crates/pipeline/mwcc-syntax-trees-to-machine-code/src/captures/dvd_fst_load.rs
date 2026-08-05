@@ -42,6 +42,7 @@ enum LoaderVariant {
     StaticUnsigned,
     StaticSigned,
     StaticSignedWindWaker,
+    StaticSignedTwilightPrincess,
     StaticSignedEarlyEpilogue,
     StaticSignedLegacyEpilogue,
     StaticSignedDebugRuntime,
@@ -54,6 +55,7 @@ impl LoaderVariant {
             Self::StaticUnsigned
                 | Self::StaticSigned
                 | Self::StaticSignedWindWaker
+                | Self::StaticSignedTwilightPrincess
                 | Self::StaticSignedEarlyEpilogue
                 | Self::StaticSignedLegacyEpilogue
                 | Self::StaticSignedDebugRuntime
@@ -66,6 +68,7 @@ impl LoaderVariant {
             Self::GlobalSigned
                 | Self::StaticSigned
                 | Self::StaticSignedWindWaker
+                | Self::StaticSignedTwilightPrincess
                 | Self::StaticSignedEarlyEpilogue
                 | Self::StaticSignedLegacyEpilogue
                 | Self::StaticSignedDebugRuntime
@@ -92,6 +95,7 @@ impl LoaderVariant {
             Self::StaticSignedWindWaker
             | Self::StaticSignedLegacyEpilogue
             | Self::StaticSignedDebugRuntime => -1,
+            Self::StaticSignedTwilightPrincess => 0,
         }
     }
 
@@ -102,6 +106,7 @@ impl LoaderVariant {
         match self {
             Self::StaticUnsigned | Self::StaticSigned | Self::StaticSignedEarlyEpilogue => -9,
             Self::StaticSignedWindWaker
+            | Self::StaticSignedTwilightPrincess
             | Self::StaticSignedLegacyEpilogue
             | Self::StaticSignedDebugRuntime
             | Self::GlobalSigned => -8,
@@ -145,7 +150,7 @@ impl Generator {
             (MELEE_AND_OCARINA_AST_HASH, OCARINA_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
             (MELEE_AND_OCARINA_AST_HASH, STRIKERS_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
             (MELEE_AND_OCARINA_AST_HASH, TWILIGHT_PRINCESS_CONTEXT) => {
-                LoaderVariant::StaticSignedWindWaker
+                LoaderVariant::StaticSignedTwilightPrincess
             }
             (TWILIGHT_PRINCESS_DEBUG_AST_HASH, TWILIGHT_PRINCESS_DEBUG_CONTEXT) => {
                 LoaderVariant::StaticSignedDebugRuntime
@@ -181,6 +186,7 @@ impl Generator {
             // of `.text` but leaves nine optimizer labels ahead of the string
             // pool in these builds.
             LoaderVariant::StaticSignedWindWaker
+            | LoaderVariant::StaticSignedTwilightPrincess
             | LoaderVariant::StaticSignedLegacyEpilogue
             | LoaderVariant::StaticSignedDebugRuntime => 9,
             _ => 0,
@@ -343,6 +349,7 @@ impl Generator {
             LoaderVariant::StaticUnsigned
             | LoaderVariant::StaticSigned
             | LoaderVariant::StaticSignedWindWaker
+            | LoaderVariant::StaticSignedTwilightPrincess
             | LoaderVariant::StaticSignedEarlyEpilogue
             | LoaderVariant::StaticSignedLegacyEpilogue
             | LoaderVariant::StaticSignedDebugRuntime => "block",
@@ -649,5 +656,23 @@ impl Generator {
             a: 0,
             immediate: 0,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LoaderVariant;
+
+    #[test]
+    fn twilight_princess_keeps_the_full_loader_string_frontier() {
+        assert_eq!(LoaderVariant::StaticSignedWindWaker.string_number_adjust(), -1);
+        assert_eq!(
+            LoaderVariant::StaticSignedTwilightPrincess.string_number_adjust(),
+            0
+        );
+        assert_eq!(
+            LoaderVariant::StaticSignedTwilightPrincess.static_local_adjust(),
+            -8
+        );
     }
 }
