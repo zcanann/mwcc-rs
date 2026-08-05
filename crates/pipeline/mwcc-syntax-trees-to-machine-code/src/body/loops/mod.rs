@@ -15,6 +15,7 @@ mod fixed_port_zero_fill;
 mod global_list_teardown;
 mod guarded_payload_membership;
 mod guarded_byte_copy;
+mod indexed_call_store;
 mod indexed_calls;
 mod inlined_byte_append;
 mod inlined_list_append;

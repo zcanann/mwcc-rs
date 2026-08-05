@@ -684,6 +684,7 @@ impl InlineBodySet {
     pub(crate) fn expand_repeatable_loop_calls(
         &self,
         function: &Function,
+        repeatable_scalar_member_setters: bool,
     ) -> Option<ExpandedCalls> {
         let [Statement::Loop { body, .. }] = function.statements.as_slice() else {
             return None;
@@ -691,13 +692,24 @@ impl InlineBodySet {
         let eligible = body.iter().any(|statement| {
             matches!(statement,
                 Statement::Expression(Expression::Call { name, .. })
-                    if self.repeatable_bodies.contains_key(name))
+                    if self.repeatable_bodies.get(name).is_some_and(|callee| {
+                        repeatable_scalar_member_setters
+                            || !repeatable_scalar_member_setter_callee(callee)
+                    }))
         });
         if !eligible {
             return None;
         }
         let mut expanded = self.clone();
-        expanded.bodies.extend(self.repeatable_bodies.clone());
+        expanded.bodies.extend(
+            self.repeatable_bodies
+                .iter()
+                .filter(|(_, callee)| {
+                    repeatable_scalar_member_setters
+                        || !repeatable_scalar_member_setter_callee(callee)
+                })
+                .map(|(name, callee)| (name.clone(), callee.clone())),
+        );
         expanded.expand_calls_with_facts_policy(function, true)
     }
 
@@ -1068,7 +1080,9 @@ impl InlineBodySet {
             .or_else(|| self.expand_bounded_guarded_value_transactions(function))
             .or_else(|| self.expand_repeatable_guarded_calls(function))
             .or_else(|| self.expand_repeatable_bounded_caller_calls(function))
-            .or_else(|| self.expand_repeatable_loop_calls(function))
+            .or_else(|| {
+                self.expand_repeatable_loop_calls(function, repeatable_scalar_member_setters)
+            })
             .or_else(|| self.expand_repeatable_terminal_wrapper_call(function))
     }
 
@@ -4069,7 +4083,7 @@ mod tests {
         );
         assert!(bodies.expand_calls(&ordinary_caller).is_none());
         let expanded = bodies
-            .expand_repeatable_loop_calls(&loop_caller)
+            .expand_repeatable_loop_calls(&loop_caller, false)
             .expect("the loop call should be eligible for repeated automatic inlining");
         assert!(matches!(expanded.function.statements.as_slice(), [
             Statement::Loop { body, .. }

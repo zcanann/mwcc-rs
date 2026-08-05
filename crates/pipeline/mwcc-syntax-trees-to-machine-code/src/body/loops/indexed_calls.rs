@@ -16,6 +16,9 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
+        if self.try_indexed_call_store_sequence_loop(function)? {
+            return Ok(true);
+        }
         if self.behavior.frame_convention != FrameConvention::LinkageFirst
             || self.behavior.plain_linkage_epilogue_style
                 != PlainLinkageEpilogueStyle::StackRestoreBeforeReload

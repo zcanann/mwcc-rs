@@ -880,6 +880,20 @@ pub(super) fn stable_arguments(
     if unstable.is_empty() {
         return true;
     }
+    // A verified one-store member setter consumes both parameters exactly
+    // once.  A changing indexed address such as `&objects[i]` is therefore
+    // safe to substitute directly when forming the store: it is neither
+    // duplicated nor moved across another effect.  This is narrower than
+    // treating changing lvalue addresses as generally stable.
+    if repeatable_scalar_member_setter_callee(function)
+        && matches!(arguments, [Expression::AddressOf { .. }, value]
+            if stable_argument(value, stable_variables))
+        && arguments
+            .iter()
+            .all(|argument| !crate::analysis::expression_has_side_effect(argument))
+    {
+        return true;
+    }
     let [unstable_index] = unstable.as_slice() else {
         return false;
     };
@@ -1409,6 +1423,38 @@ mod tests {
             arguments: Vec::new(),
         }));
         assert!(!repeatable_scalar_member_setter_callee(&function));
+    }
+
+    #[test]
+    fn admits_a_changing_indexed_address_for_a_one_store_setter() {
+        let mut function = scalar_parameter_function();
+        function.parameters.insert(
+            0,
+            Parameter {
+                parameter_type: Type::StructPointer { element_size: 32 },
+                name: "record".into(),
+            },
+        );
+        function.statements.push(Statement::Store {
+            target: Expression::Member {
+                base: Box::new(Expression::Variable("record".into())),
+                offset: 4,
+                member_type: Type::Int,
+                index_stride: None,
+            },
+            value: Expression::Variable("value".into()),
+        });
+        let arguments = [
+            Expression::AddressOf {
+                operand: Box::new(Expression::Index {
+                    base: Box::new(Expression::Variable("records".into())),
+                    index: Box::new(Expression::Variable("i".into())),
+                }),
+            },
+            Expression::IntegerLiteral(0),
+        ];
+
+        assert!(stable_arguments(&function, &arguments, &HashSet::new()));
     }
 
     #[test]
