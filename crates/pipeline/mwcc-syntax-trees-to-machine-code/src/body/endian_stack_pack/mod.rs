@@ -29,8 +29,9 @@ impl Generator {
                 emit_linkage_first::emit(self, &plan);
                 Ok(true)
             }
-            FrameConvention::Predecrement if plan.width == 8 => {
-                let should_inline = self.behavior.deferred_inlining
+            FrameConvention::Predecrement => {
+                let should_inline = plan.width == 8
+                    && self.behavior.deferred_inlining
                     && self.behavior.automatic_inlining_enabled
                     && match self.behavior.endian_stack_pack_inlining_style {
                         mwcc_versions::EndianStackPackInliningStyle::InlineVerifiedAppend => true,
