@@ -1123,6 +1123,7 @@ fn lower_function_body(
     generator.schedule_guarded_callback_nullable_member_chain(function);
     generator.schedule_guarded_callback_oscillator_loop(function);
     generator.finalize_exclusive_arm_copy_encodings();
+    generator.schedule_stacked_callback_arguments();
     generator.schedule_linkage_first_function_address();
     generator.schedule_linkage_first_global_member_callback();
     generator.schedule_linkage_first_global_member_forward();
