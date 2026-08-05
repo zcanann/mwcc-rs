@@ -2286,7 +2286,7 @@ mod tests {
             behavior.emitted_vtable_inline_control_flow_replay_weight,
             1
         );
-        assert_eq!(behavior.cxx_virtual_destructor_label_bump, 1);
+        assert_eq!(behavior.cxx_virtual_destructor_label_bump, 2);
         assert_eq!(
             behavior.cxx_constructor_inline_ordinal_weights,
             Some(CxxConstructorInlineOrdinalWeights {

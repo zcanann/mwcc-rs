@@ -2401,7 +2401,7 @@ impl CodegenProfile for Gc233Build163 {
     }
 
     fn cxx_virtual_destructor_label_bump(&self) -> u8 {
-        1
+        2
     }
 
     fn cxx_constructor_inline_ordinal_weights(
