@@ -1335,6 +1335,7 @@ fn lower_function_body(
         generator.fold_recorded_boolean_zero_tests();
     }
     generator.schedule_narrow_guarded_zero_member_reset(function);
+    generator.schedule_wide_guarded_zero_member_reset(function);
     generator.schedule_structured_heap_transactions();
     generator.normalize_float_to_int_scratch_images();
     generator.schedule_structured_global_base_epilogue();

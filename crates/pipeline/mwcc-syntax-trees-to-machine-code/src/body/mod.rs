@@ -39,6 +39,7 @@ mod joystick_count_schedule;
 mod grab_mash_schedule;
 mod mixed_member_zero_reset_schedule;
 mod narrow_guarded_zero_member_reset_schedule;
+mod wide_guarded_zero_member_reset_schedule;
 mod one_word_aggregate;
 mod return_store_schedule;
 mod canonical_boolean;
