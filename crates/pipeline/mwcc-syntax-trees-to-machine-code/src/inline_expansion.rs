@@ -4099,6 +4099,104 @@ mod tests {
     }
 
     #[test]
+    fn repeatable_loop_policy_keeps_legacy_member_setters_out_of_line() {
+        let setter = function(
+            "setter",
+            vec![
+                Parameter {
+                    parameter_type: Type::StructPointer { element_size: 32 },
+                    name: "record".into(),
+                },
+                Parameter {
+                    parameter_type: Type::Int,
+                    name: "value".into(),
+                },
+            ],
+            vec![Statement::Store {
+                target: Expression::Member {
+                    base: Box::new(Expression::Variable("record".into())),
+                    offset: 4,
+                    member_type: Type::Int,
+                    index_stride: None,
+                },
+                value: Expression::Variable("value".into()),
+            }],
+        );
+        let indexed_record = || Expression::AddressOf {
+            operand: Box::new(Expression::Index {
+                base: Box::new(Expression::Variable("records".into())),
+                index: Box::new(Expression::Variable("i".into())),
+            }),
+        };
+        let mut loop_caller = function(
+            "loop_caller",
+            Vec::new(),
+            vec![Statement::Loop {
+                kind: LoopKind::For,
+                initializer: Some(Expression::Assign {
+                    target: Box::new(Expression::Variable("i".into())),
+                    value: Box::new(Expression::IntegerLiteral(0)),
+                }),
+                condition: Some(Expression::Binary {
+                    operator: BinaryOperator::Less,
+                    left: Box::new(Expression::Variable("i".into())),
+                    right: Box::new(Expression::IntegerLiteral(3)),
+                }),
+                step: Some(Expression::Assign {
+                    target: Box::new(Expression::Variable("i".into())),
+                    value: Box::new(Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left: Box::new(Expression::Variable("i".into())),
+                        right: Box::new(Expression::IntegerLiteral(1)),
+                    }),
+                }),
+                body: vec![Statement::Expression(Expression::Call {
+                    name: "setter".into(),
+                    arguments: vec![indexed_record(), Expression::IntegerLiteral(0)],
+                })],
+            }],
+        );
+        loop_caller.locals.push(LocalDeclaration {
+            declared_type: Type::Int,
+            name: "i".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        });
+        let ordinary_caller = function(
+            "ordinary_caller",
+            vec![Parameter {
+                parameter_type: Type::StructPointer { element_size: 32 },
+                name: "record".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "setter".into(),
+                arguments: vec![
+                    Expression::Variable("record".into()),
+                    Expression::IntegerLiteral(1),
+                ],
+            })],
+        );
+        let bodies = InlineBodySet::analyze_with_definitions(
+            &[setter, loop_caller.clone(), ordinary_caller],
+            &[],
+        );
+
+        assert!(bodies
+            .expand_repeatable_loop_calls(&loop_caller, false)
+            .is_none());
+        assert!(bodies
+            .expand_repeatable_loop_calls(&loop_caller, true)
+            .is_some());
+    }
+
+    #[test]
     fn bounded_caller_inlines_only_the_post_definition_repeated_calls() {
         let helper = |name: &str| {
             function(
