@@ -326,6 +326,30 @@ pub(super) fn assemble_line(
             let [d, b] = fprs(mnemonic, operands)?;
             Instruction::FloatMove { d, b }
         }
+        "ps_add" => {
+            let [d, a, b] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleAdd { d, a, b }
+        }
+        "ps_sub" => {
+            let [d, a, b] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleSubtract { d, a, b }
+        }
+        "ps_mul" => {
+            let [d, a, c] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleMultiply { d, a, c }
+        }
+        "ps_madd" => {
+            let [d, a, c, b] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleMultiplyAdd { d, a, c, b }
+        }
+        "ps_sum0" => {
+            let [d, a, c, b] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleSum0 { d, a, c, b }
+        }
+        "ps_sum1" => {
+            let [d, a, c, b] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleSum1 { d, a, c, b }
+        }
         "ps_mr" => {
             let [d, b] = fprs(mnemonic, operands)?;
             Instruction::PairedSingleMove { d, b }
@@ -1232,6 +1256,54 @@ mod tests {
             Instruction::PairedSingleMove { d: 31, b: 0 }.encode(),
             0x13e0_0090
         );
+    }
+
+    #[test]
+    fn assembles_measured_paired_single_arithmetic() {
+        let cases = [
+            (
+                "ps_add",
+                vec![AsmOperand::Fpr(1), AsmOperand::Fpr(2), AsmOperand::Fpr(3)],
+                Instruction::PairedSingleAdd { d: 1, a: 2, b: 3 },
+                0x1022_182a,
+            ),
+            (
+                "ps_sub",
+                vec![AsmOperand::Fpr(4), AsmOperand::Fpr(5), AsmOperand::Fpr(6)],
+                Instruction::PairedSingleSubtract { d: 4, a: 5, b: 6 },
+                0x1085_3028,
+            ),
+            (
+                "ps_mul",
+                vec![AsmOperand::Fpr(7), AsmOperand::Fpr(8), AsmOperand::Fpr(9)],
+                Instruction::PairedSingleMultiply { d: 7, a: 8, c: 9 },
+                0x10e8_0272,
+            ),
+            (
+                "ps_madd",
+                vec![AsmOperand::Fpr(10), AsmOperand::Fpr(11), AsmOperand::Fpr(12), AsmOperand::Fpr(13)],
+                Instruction::PairedSingleMultiplyAdd { d: 10, a: 11, c: 12, b: 13 },
+                0x114b_6b3a,
+            ),
+            (
+                "ps_sum0",
+                vec![AsmOperand::Fpr(14), AsmOperand::Fpr(15), AsmOperand::Fpr(16), AsmOperand::Fpr(17)],
+                Instruction::PairedSingleSum0 { d: 14, a: 15, c: 16, b: 17 },
+                0x11cf_8c14,
+            ),
+            (
+                "ps_sum1",
+                vec![AsmOperand::Fpr(18), AsmOperand::Fpr(19), AsmOperand::Fpr(20), AsmOperand::Fpr(21)],
+                Instruction::PairedSingleSum1 { d: 18, a: 19, c: 20, b: 21 },
+                0x1253_ad16,
+            ),
+        ];
+
+        for (mnemonic, operands, expected, word) in cases {
+            let assembled = assemble(mnemonic, operands).unwrap();
+            assert_eq!(assembled, expected);
+            assert_eq!(assembled.encode(), word);
+        }
     }
 
     #[test]

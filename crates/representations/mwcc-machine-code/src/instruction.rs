@@ -219,6 +219,18 @@ pub enum Instruction {
     FloatReciprocalSqrtEstimate { d: u8, b: u8 },
     /// `fmr frD, frB`
     FloatMove { d: u8, b: u8 },
+    /// `ps_add frD, frA, frB` — add both paired-single lanes.
+    PairedSingleAdd { d: u8, a: u8, b: u8 },
+    /// `ps_sub frD, frA, frB` — subtract both paired-single lanes.
+    PairedSingleSubtract { d: u8, a: u8, b: u8 },
+    /// `ps_mul frD, frA, frC` — multiply both paired-single lanes.
+    PairedSingleMultiply { d: u8, a: u8, c: u8 },
+    /// `ps_madd frD, frA, frC, frB` — multiply-add both paired-single lanes.
+    PairedSingleMultiplyAdd { d: u8, a: u8, c: u8, b: u8 },
+    /// `ps_sum0 frD, frA, frC, frB` — sum lane zero and copy lane one from `frB`.
+    PairedSingleSum0 { d: u8, a: u8, c: u8, b: u8 },
+    /// `ps_sum1 frD, frA, frC, frB` — copy lane zero from `frB` and sum lane one.
+    PairedSingleSum1 { d: u8, a: u8, c: u8, b: u8 },
     /// `ps_mr frD, frB` — Gekko paired-single register move.
     PairedSingleMove { d: u8, b: u8 },
     /// `fneg frD, frB`
@@ -406,6 +418,12 @@ impl Instruction {
                 | FloatMultiplyAddSingle { .. }
                 | FloatMultiplySubtractSingle { .. }
                 | FloatNegativeMultiplySubtractSingle { .. }
+                | PairedSingleAdd { .. }
+                | PairedSingleSubtract { .. }
+                | PairedSingleMultiply { .. }
+                | PairedSingleMultiplyAdd { .. }
+                | PairedSingleSum0 { .. }
+                | PairedSingleSum1 { .. }
         )
     }
 
@@ -444,6 +462,12 @@ impl Instruction {
                 | FloatSelect { .. }
                 | RoundToSingle { .. }
                 | FloatMove { .. }
+                | PairedSingleAdd { .. }
+                | PairedSingleSubtract { .. }
+                | PairedSingleMultiply { .. }
+                | PairedSingleMultiplyAdd { .. }
+                | PairedSingleSum0 { .. }
+                | PairedSingleSum1 { .. }
                 | PairedSingleMove { .. }
                 | FloatNegate { .. }
                 | FloatAbsolute { .. }
@@ -492,6 +516,12 @@ impl Instruction {
             | FloatMultiplySubtractSingle { d, .. }
             | FloatNegativeMultiplySubtractSingle { d, .. }
             | FloatNegativeMultiplyAddSingle { d, .. }
+            | PairedSingleAdd { d, .. }
+            | PairedSingleSubtract { d, .. }
+            | PairedSingleMultiply { d, .. }
+            | PairedSingleMultiplyAdd { d, .. }
+            | PairedSingleSum0 { d, .. }
+            | PairedSingleSum1 { d, .. }
             | FloatAddDouble { d, .. }
             | FloatSubtractDouble { d, .. }
             | FloatMultiplyDouble { d, .. }

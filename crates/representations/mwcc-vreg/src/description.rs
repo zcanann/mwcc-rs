@@ -181,12 +181,14 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         }
         // Float arithmetic — all operands float.
         FloatAddSingle { d, a, b } | FloatSubtractSingle { d, a, b } | FloatDivideSingle { d, a, b }
-        | FloatAddDouble { d, a, b } | FloatSubtractDouble { d, a, b } | FloatDivideDouble { d, a, b } => {
+        | FloatAddDouble { d, a, b } | FloatSubtractDouble { d, a, b } | FloatDivideDouble { d, a, b }
+        | PairedSingleAdd { d, a, b } | PairedSingleSubtract { d, a, b } => {
             visit(D, F, d);
             visit(U, F, a);
             visit(U, F, b);
         }
-        FloatMultiplySingle { d, a, c } | FloatMultiplyDouble { d, a, c } => {
+        FloatMultiplySingle { d, a, c } | FloatMultiplyDouble { d, a, c }
+        | PairedSingleMultiply { d, a, c } => {
             visit(D, F, d);
             visit(U, F, a);
             visit(U, F, c);
@@ -196,7 +198,10 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         | FloatNegativeMultiplyAddSingle { d, a, c, b }
         | FloatSelect { d, a, c, b }
         | FloatMultiplyAddDouble { d, a, c, b } | FloatMultiplySubtractDouble { d, a, c, b }
-        | FloatNegativeMultiplySubtractDouble { d, a, c, b } => {
+        | FloatNegativeMultiplySubtractDouble { d, a, c, b }
+        | PairedSingleMultiplyAdd { d, a, c, b }
+        | PairedSingleSum0 { d, a, c, b }
+        | PairedSingleSum1 { d, a, c, b } => {
             visit(D, F, d);
             visit(U, F, a);
             visit(U, F, c);
@@ -342,6 +347,13 @@ mod tests {
         let fma = Instruction::FloatMultiplyAddSingle { d: 1, a: 2, c: 3, b: 4 };
         assert_eq!(defs(&fma), [(Class::Float, 1)]);
         assert_eq!(uses(&fma), [(Class::Float, 2), (Class::Float, 3), (Class::Float, 4)]);
+    }
+
+    #[test]
+    fn a_paired_sum_defines_one_float_and_uses_three() {
+        let sum = Instruction::PairedSingleSum0 { d: 5, a: 6, c: 7, b: 8 };
+        assert_eq!(defs(&sum), [(Class::Float, 5)]);
+        assert_eq!(uses(&sum), [(Class::Float, 6), (Class::Float, 7), (Class::Float, 8)]);
     }
 
     #[test]

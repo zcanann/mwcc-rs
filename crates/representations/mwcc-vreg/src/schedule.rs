@@ -675,6 +675,8 @@ fn latency_rank(instruction: &Instruction) -> u8 {
         | FloatMultiplyAddSingle { .. }
         | FloatMultiplySubtractSingle { .. }
         | FloatNegativeMultiplySubtractSingle { .. }
+        | PairedSingleMultiply { .. }
+        | PairedSingleMultiplyAdd { .. }
         | FloatMultiplyDouble { .. }
         | FloatMultiplyAddDouble { .. }
         | FloatMultiplySubtractDouble { .. }
