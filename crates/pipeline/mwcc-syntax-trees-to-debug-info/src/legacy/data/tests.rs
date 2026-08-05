@@ -26,6 +26,31 @@ fn const_pointer_types_retain_typedef_source_identity() {
 }
 
 #[test]
+fn unsigned_long_long_uses_measured_legacy_fundamental_encoding() {
+    assert_eq!(
+        source_fundamental_type(SourceFundamentalType::UnsignedLongLong)
+            .expect("source fundamental type"),
+        FundamentalType::UnsignedLongLong
+    );
+    assert_eq!(
+        fundamental_type(Type::UnsignedLongLong).expect("lowered fundamental type"),
+        FundamentalType::UnsignedLongLong
+    );
+
+    let attribute = member_type_attribute(
+        Type::Pointer(Pointee::UnsignedLongLong),
+        None,
+        Some(SourceFundamentalType::UnsignedLongLong),
+    )
+    .expect("unsigned long long pointer type");
+    assert_eq!(attribute.name, AttributeName::ModifiedFundamentalType);
+    assert_eq!(
+        attribute.value,
+        AttributeValue::Block2(vec![1, 0x82, 0x08])
+    );
+}
+
+#[test]
 fn function_local_aggregates_extend_the_data_type_chain_before_functions() {
     let source = br#"
         typedef struct Color {

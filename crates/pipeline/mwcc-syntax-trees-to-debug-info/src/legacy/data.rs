@@ -1334,11 +1334,7 @@ fn source_fundamental_type(source: SourceFundamentalType) -> Compilation<Fundame
         SourceFundamentalType::Double => FundamentalType::Double,
         SourceFundamentalType::Void => FundamentalType::Void,
         SourceFundamentalType::SignedLongLong => FundamentalType::SignedLongLong,
-        SourceFundamentalType::UnsignedLongLong => {
-            return Err(Diagnostic::error(
-                "debug-info: unsigned long long has no measured legacy fundamental encoding yet",
-            ))
-        }
+        SourceFundamentalType::UnsignedLongLong => FundamentalType::UnsignedLongLong,
     })
 }
 
@@ -1427,9 +1423,9 @@ fn fundamental_type(declared_type: Type) -> Compilation<FundamentalType> {
         Type::Float => FundamentalType::Float,
         Type::Double => FundamentalType::Double,
         Type::LongLong => FundamentalType::SignedLongLong,
+        Type::UnsignedLongLong => FundamentalType::UnsignedLongLong,
         Type::Void => FundamentalType::Void,
-        Type::UnsignedLongLong
-        | Type::Pointer(_)
+        Type::Pointer(_)
         | Type::StructPointer { .. }
         | Type::Struct { .. } => {
             return Err(Diagnostic::error(format!(

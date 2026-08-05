@@ -67,6 +67,9 @@ pub enum FundamentalType {
     Double = 0x000f,
     Void = 0x0014,
     SignedLongLong = 0x8008,
+    /// CodeWarrior's vendor extension for `unsigned long long`. Measured from
+    /// GC/1.3 debug information; it is not adjacent to the signed encoding.
+    UnsignedLongLong = 0x8208,
 }
 
 /// An attribute value. Its variant determines the DWARF 1 form nibble.
