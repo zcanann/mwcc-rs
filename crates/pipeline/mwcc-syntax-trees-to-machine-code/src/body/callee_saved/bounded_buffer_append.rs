@@ -7,6 +7,8 @@
 #[allow(unused_imports)]
 use super::*;
 
+mod emit_predecrement;
+
 struct AppendPlan<'a> {
     callee: &'a str,
     capacity: i16,
@@ -235,10 +237,16 @@ impl Generator {
         let Some(plan) = classify(function) else {
             return Ok(false);
         };
+        if !self.frame_slots.is_empty() {
+            return Ok(false);
+        }
+        if self.behavior.frame_convention == FrameConvention::Predecrement {
+            emit_predecrement::emit(self, &plan);
+            return Ok(true);
+        }
         if self.behavior.frame_convention != FrameConvention::LinkageFirst
             || self.behavior.plain_linkage_epilogue_style
                 != PlainLinkageEpilogueStyle::StackRestoreBeforeReload
-            || !self.frame_slots.is_empty()
         {
             return Ok(false);
         }
