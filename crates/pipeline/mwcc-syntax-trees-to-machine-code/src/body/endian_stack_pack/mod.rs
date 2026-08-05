@@ -11,12 +11,40 @@ use super::*;
 mod emit_linkage_first;
 mod emit_predecrement_call;
 mod emit_predecrement_inline;
+mod emit_predecrement_loop;
 mod recognize;
+mod recognize_loop;
 
 use recognize::{classify, classify_inline_append};
+use recognize_loop::classify_pack_loop;
 
 impl Generator {
     pub(crate) fn try_endian_stack_pack(&mut self, function: &Function) -> Compilation<bool> {
+        if let Some(loop_plan) = classify_pack_loop(function) {
+            if self.behavior.frame_convention != FrameConvention::Predecrement
+                || self.behavior.global_addressing != GlobalAddressing::Absolute
+                || !self.behavior.deferred_inlining
+                || !self.behavior.automatic_inlining_enabled
+                || self.inline_bodies.definition_call_count(loop_plan.wrapper) != 1
+            {
+                return Ok(false);
+            }
+            let Some(wrapper) = self
+                .inline_bodies
+                .definition_body(loop_plan.wrapper)
+                .and_then(|definition| classify(definition, &self.globals))
+            else {
+                return Ok(false);
+            };
+            if wrapper.width != 4 {
+                return Ok(false);
+            }
+            let flag = wrapper.flag.to_owned();
+            let callee = wrapper.callee.to_owned();
+            emit_predecrement_loop::emit(self, &loop_plan, &flag, &callee);
+            return Ok(true);
+        }
+
         let Some(plan) = classify(function, &self.globals) else {
             return Ok(false);
         };
