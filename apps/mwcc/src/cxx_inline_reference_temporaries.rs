@@ -44,6 +44,23 @@ pub fn analyze(unit: &TranslationUnit) -> Analysis {
     total
 }
 
+/// Analyze in-class definitions completed before a source-positioned retained
+/// object. Namespace-scope inline definitions are charged by the later unit
+/// walk; only member definitions share the class-body image timeline.
+pub fn analyze_member_prefix(unit: &TranslationUnit, definitions: usize) -> Analysis {
+    let mut seen = HashSet::new();
+    unit.skipped_inline_definitions
+        .iter()
+        .take(definitions)
+        .filter(|function| {
+            unit.cxx_in_class_inline_function_names
+                .contains(&function.name)
+        })
+        .filter(|function| seen.insert(function.name.as_str()))
+        .map(|function| analyze_function(function, &unit.cxx_const_reference_parameter_types))
+        .sum()
+}
+
 impl std::ops::Add for Analysis {
     type Output = Self;
 

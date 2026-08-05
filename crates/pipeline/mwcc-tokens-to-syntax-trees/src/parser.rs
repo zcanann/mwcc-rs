@@ -763,6 +763,11 @@ pub(crate) struct Parser {
     pub(crate) section_prototypes_with_prior_plain_declaration: std::collections::HashSet<String>,
     /// Names of SKIPPED inline definitions — a call to one defers the unit.
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
+    /// Names whose semantic bodies were captured from in-class definitions.
+    /// Kept separately from the general skipped-inline pool because early
+    /// frontend ordinal timelines charge member and namespace definitions at
+    /// different source phases.
+    pub(crate) cxx_in_class_inline_function_names: std::collections::HashSet<String>,
     /// Fully parsed bodies of skipped inline definitions. These are never
     /// emitted, but downstream interprocedural summaries may prove a call-site
     /// expansion from their semantics instead of inferring it from a name.

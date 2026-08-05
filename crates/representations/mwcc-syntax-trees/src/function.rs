@@ -351,6 +351,9 @@ pub struct DiscardedInlineAggregateImage {
     /// Their weighted ordinals share the sparse object stream even though the
     /// ordinary function-pool walk applies them later.
     pub preceding_cxx_inline_facts: CxxInlineOrdinalFacts,
+    /// Number of semantic skipped-inline definitions completed before this
+    /// image was created, used to rebase earlier reference-binding analysis.
+    pub preceding_skipped_inline_definitions: usize,
 }
 
 /// Source-to-AST inline substitutions whose syntax no longer exists in the
@@ -460,6 +463,10 @@ pub struct TranslationUnit {
     /// C++ member declarations recovered by class analysis rather than the
     /// ordinary top-level prototype parser, stored by emitted ABI identity.
     pub cxx_declared_function_names: std::collections::HashSet<String>,
+    /// Semantic bodies captured from definitions written inside a class body.
+    /// Legacy frontend residue distinguishes these from namespace-scope
+    /// `inline` definitions even though both are absent from emitted code.
+    pub cxx_in_class_inline_function_names: std::collections::HashSet<String>,
     /// Source-written function-parameter names whose declarations survive the
     /// front-end analysis walk. The historical field name is retained for
     /// capture compatibility.

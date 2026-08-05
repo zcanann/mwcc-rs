@@ -1381,6 +1381,9 @@ impl Parser {
                 &mut self.static_function_prototype_positions,
             ),
             cxx_declared_function_names: std::mem::take(&mut self.cxx_declared_function_names),
+            cxx_in_class_inline_function_names: std::mem::take(
+                &mut self.cxx_in_class_inline_function_names,
+            ),
             named_prototype_parameters: self.named_prototype_parameters,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
             plain_inline_asm_helpers: std::mem::take(&mut self.plain_inline_asm_helpers),
@@ -4369,11 +4372,34 @@ impl Parser {
                                             alignment: u32::from(layout.align),
                                             preceding_cxx_inline_facts: self
                                                 .cxx_inline_ordinal_facts,
+                                            preceding_skipped_inline_definitions: self
+                                                .skipped_inline_definitions
+                                                .len(),
                                         },
                                     );
                                     bump += 1;
                                 }
                             }
+                        }
+                        if let Some(bytes) =
+                            crate::inline_body_analysis::character_array_automatic_initializer(
+                                &self.tokens,
+                                index,
+                            )
+                        {
+                            let ordinal = (self.skipped_inline_functions + bump + 1) as u32;
+                            self.discarded_inline_aggregate_images.push(
+                                mwcc_syntax_trees::DiscardedInlineAggregateImage {
+                                    ordinal,
+                                    bytes,
+                                    alignment: 1,
+                                    preceding_cxx_inline_facts: self.cxx_inline_ordinal_facts,
+                                    preceding_skipped_inline_definitions: self
+                                        .skipped_inline_definitions
+                                        .len(),
+                                },
+                            );
+                            bump += 1;
                         }
                     }
                     let mut startup_bump = bump;

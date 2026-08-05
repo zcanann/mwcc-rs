@@ -922,6 +922,10 @@ fn compile(
         );
         eprintln!("skipped-inline-ordinal-total {}", unit.skipped_inline_functions);
         eprintln!(
+            "discarded-inline-aggregate-images {:#?}",
+            unit.discarded_inline_aggregate_images
+        );
+        eprintln!(
             "function-inline-prebumps {:#?}",
             unit.function_inline_prebumps
         );

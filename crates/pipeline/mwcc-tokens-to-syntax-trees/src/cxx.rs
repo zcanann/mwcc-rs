@@ -2083,6 +2083,30 @@ impl Parser {
                                         _ => None,
                                     }),
                             );
+                            if self.retain_discarded_inline_aggregate_images {
+                                if let Some(bytes) = crate::inline_body_analysis::
+                                    character_array_automatic_initializer(
+                                        &self.tokens,
+                                        body_start - 1,
+                                    )
+                                {
+                                    self.discarded_inline_aggregate_images.push(
+                                        mwcc_syntax_trees::DiscardedInlineAggregateImage {
+                                            ordinal: (self.skipped_inline_functions + 1) as u32,
+                                            bytes,
+                                            alignment: 1,
+                                            // The local image ordinal is rebased by class
+                                            // analysis already completed at this source point.
+                                            preceding_cxx_inline_facts:
+                                                self.cxx_inline_ordinal_facts,
+                                            preceding_skipped_inline_definitions: self
+                                                .skipped_inline_definitions
+                                                .len(),
+                                        },
+                                    );
+                                    self.skipped_inline_functions += 1;
+                                }
+                            }
                             self.capture_cxx_inline_definition(declaration_start, index, &class);
                         }
                         explicitly_inline = false;
@@ -2168,6 +2192,8 @@ impl Parser {
         probe.cxx_inline_ordinal_facts = mwcc_syntax_trees::CxxInlineOrdinalFacts::default();
         probe.cxx_temporary_construction_targets.clear();
         let _ = probe.capture_cxx_class_declarations();
+        self.cxx_in_class_inline_function_names
+            .extend(probe.cxx_in_class_inline_function_names.iter().cloned());
         let facts = probe.cxx_inline_ordinal_facts;
         self.cxx_inline_ordinal_facts.class_definitions += facts.class_definitions;
         self.cxx_inline_ordinal_facts
@@ -2364,6 +2390,8 @@ impl Parser {
                 }
             }
             self.skipped_inline_names.insert(function.name.clone());
+            self.cxx_in_class_inline_function_names
+                .insert(function.name.clone());
             if !self
                 .skipped_inline_definitions
                 .iter()

@@ -282,6 +282,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         plain_function_prototypes: std::collections::HashSet::new(),
         section_prototypes_with_prior_plain_declaration: std::collections::HashSet::new(),
         skipped_inline_names: std::collections::HashSet::new(),
+        cxx_in_class_inline_function_names: std::collections::HashSet::new(),
         skipped_inline_definitions: std::sync::Arc::new(Vec::new()),
         skipped_inline_signatures: Vec::new(),
         recover_skipped_inline_definition: false,
@@ -743,8 +744,50 @@ mod tests {
                     class_definitions: 1,
                     ..mwcc_syntax_trees::CxxInlineOrdinalFacts::default()
                 },
+                preceding_skipped_inline_definitions: 0,
             }]
         );
+    }
+
+    #[test]
+    fn retains_character_array_image_from_discarded_inline() {
+        let unit = parse_located_translation_unit_with_behavior(
+            located(
+                "struct Holder { \
+                     static bool candidate(char value) { \
+                         const char text[] = { value, '\\0' }; return use(text); } \
+                 }; \
+                 int compiled(int value) { return value; }",
+            ),
+            true,
+            true,
+            1,
+            3,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            true,
+            0,
+            0,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(unit.skipped_inline_functions, 1);
+        let [image] = unit.discarded_inline_aggregate_images.as_slice() else {
+            panic!("expected one discarded character-array image");
+        };
+        assert_eq!(image.ordinal, 1);
+        assert_eq!(image.bytes, [0, 0]);
+        assert_eq!(image.alignment, 1);
+        assert_eq!(image.preceding_cxx_inline_facts.class_definitions, 1);
+        assert_eq!(image.preceding_cxx_inline_facts.inline_definitions, 1);
+        assert_eq!(image.preceding_skipped_inline_definitions, 0);
     }
 
     #[test]
@@ -2109,6 +2152,44 @@ blr\n\
             .any(|(name, return_type, parameters)| name == "append_one"
                 && *return_type == Type::Int
                 && parameters.len() == 2));
+    }
+
+    #[test]
+    fn distinguishes_in_class_from_namespace_inline_definitions() {
+        let source = r#"
+            extern void sink(int);
+            class Holder {
+            public:
+                void member(int value) { sink(value); }
+            };
+            inline void helper(int value) { sink(value); }
+            int compiled(void) { return 3; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let member = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name.contains("member"))
+            .expect("in-class definition");
+        let helper = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name.contains("helper"))
+            .expect("namespace definition");
+
+        assert!(unit
+            .cxx_in_class_inline_function_names
+            .contains(&member.name));
+        assert!(!unit
+            .cxx_in_class_inline_function_names
+            .contains(&helper.name));
     }
 
     #[test]

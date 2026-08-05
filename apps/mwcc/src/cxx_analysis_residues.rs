@@ -72,11 +72,22 @@ pub fn discarded_inline_aggregate_images(
     unit.discarded_inline_aggregate_images
         .iter()
         .map(|image| {
+            let preceding_reference_bindings =
+                crate::cxx_inline_reference_temporaries::analyze_member_prefix(
+                    unit,
+                    image.preceding_skipped_inline_definitions,
+                )
+                .binding_count;
             let ordinal_adjustment = inline_fact_ordinal_bump(
                 image.preceding_cxx_inline_facts,
                 behavior,
                 emitted_vtable_replay,
-            );
+            ) + preceding_reference_bindings
+                * usize::from(
+                    behavior
+                        .cxx_reference_bound_scalar_temporary_label_bump
+                        .saturating_sub(1),
+                );
             discarded_inline_aggregate_image(image, style, ordinal_adjustment)
         })
         .collect()
@@ -689,6 +700,7 @@ mod tests {
             bytes: vec![0, 0, 0, 0],
             alignment: 2,
             preceding_cxx_inline_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts::default(),
+            preceding_skipped_inline_definitions: 0,
         };
 
         let initialized = discarded_inline_aggregate_image(

@@ -1106,11 +1106,15 @@ impl Behavior {
                 }
                 (style, _) => style,
             },
-            discarded_inline_aggregate_image_style: match config.build.version {
-                version if version < (1, 3, 0) => {
+            // `CompilerBuild::version` is mwcceppc's internal version (2.3.3,
+            // 2.4.x, ...), not the CodeWarrior product label. Storage changed
+            // at the product-version boundaries named by the registry.
+            discarded_inline_aggregate_image_style: match config.build.label {
+                "GC/1.1" | "GC/1.1p1" | "GC/1.2.5" | "GC/1.2.5n" => {
                     DiscardedInlineAggregateImageStyle::Initialized
                 }
-                version if version < (3, 0, 0) => {
+                "GC/1.3" | "GC/1.3.2" | "GC/1.3.2r" | "GC/2.0" | "GC/2.0p1"
+                | "GC/2.5" | "GC/2.6" | "GC/2.7" => {
                     DiscardedInlineAggregateImageStyle::ZeroFill
                 }
                 _ => DiscardedInlineAggregateImageStyle::None,
@@ -2273,6 +2277,10 @@ mod tests {
         );
         assert_eq!(behavior.immediate_weak_caller_scope_label_bump, 3);
         assert_eq!(behavior.retained_vtable_const_residue_ordinal, Some(190));
+        assert_eq!(
+            behavior.discarded_inline_aggregate_image_style,
+            DiscardedInlineAggregateImageStyle::Initialized
+        );
         assert_eq!(behavior.cxx_inline_control_flow_label_weight, 1);
         assert_eq!(
             behavior.emitted_vtable_inline_control_flow_replay_weight,

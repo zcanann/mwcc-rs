@@ -149,6 +149,70 @@ pub(crate) fn same_class_automatic_initializer(
     None
 }
 
+/// Recover a brace-initialized character array automatic from a discarded
+/// inline body. Build 163 creates a zero-filled source image before runtime
+/// initializer expressions are evaluated, so non-constant elements retain
+/// zero placeholders alongside literal bytes.
+pub(crate) fn character_array_automatic_initializer(
+    tokens: &[Token],
+    body_open: usize,
+) -> Option<Vec<u8>> {
+    if tokens.get(body_open) != Some(&Token::BraceOpen) {
+        return None;
+    }
+    let mut body_depth = 1usize;
+    let mut index = body_open + 1;
+    while index < tokens.len() && body_depth != 0 {
+        match tokens.get(index) {
+            Some(Token::BraceOpen) => body_depth += 1,
+            Some(Token::BraceClose) => body_depth = body_depth.saturating_sub(1),
+            Some(Token::KeywordChar) => {
+                let name = index + 1;
+                let bracket_open = index + 2;
+                if !matches!(tokens.get(name), Some(Token::Identifier(_)))
+                    || tokens.get(bracket_open) != Some(&Token::BracketOpen)
+                {
+                    index += 1;
+                    continue;
+                }
+                let (length, bracket_close) = match tokens.get(bracket_open + 1) {
+                    Some(Token::BracketClose) => (None, bracket_open + 1),
+                    Some(Token::IntegerLiteral(length)) if *length >= 0 => {
+                        (usize::try_from(*length).ok(), bracket_open + 2)
+                    }
+                    _ => {
+                        index += 1;
+                        continue;
+                    }
+                };
+                let equals = bracket_close + 1;
+                let initializer_open = bracket_close + 2;
+                if tokens.get(bracket_close) != Some(&Token::BracketClose)
+                    || tokens.get(equals) != Some(&Token::Equals)
+                    || tokens.get(initializer_open) != Some(&Token::BraceOpen)
+                {
+                    index += 1;
+                    continue;
+                }
+                let values = aggregate_initializer_scalars(tokens, initializer_open)?;
+                let mut bytes = values
+                    .into_iter()
+                    .map(|value| match value {
+                        AggregateInitializerScalar::Integer(value) => value as u8,
+                        AggregateInitializerScalar::Float(_)
+                        | AggregateInitializerScalar::Runtime => 0,
+                    })
+                    .collect::<Vec<_>>();
+                bytes.resize(length.unwrap_or(bytes.len()).max(bytes.len()), 0);
+                return Some(bytes);
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
 fn returned_class(tokens: &[Token], declaration_start: usize, body_open: usize) -> Option<String> {
     tokens
         .get(declaration_start..body_open)?
@@ -508,8 +572,8 @@ fn is_specifier(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        const_local_declarators, local_aggregate_definitions, local_declarators,
-        same_class_automatic,
+        character_array_automatic_initializer, const_local_declarators,
+        local_aggregate_definitions, local_declarators, same_class_automatic,
     };
     use mwcc_tokens::Token;
 
@@ -594,5 +658,21 @@ mod tests {
             .position(|token| *token == Token::BraceOpen)
             .unwrap();
         assert_eq!(local_aggregate_definitions(&tokens, open), 2);
+    }
+
+    #[test]
+    fn retains_zero_placeholders_in_discarded_character_array_images() {
+        let tokens = mwcc_source_to_tokens::tokenize(
+            "bool contains(char c) { const char text[] = { c, '\\0' }; return use(text); }",
+        )
+        .unwrap();
+        let open = tokens
+            .iter()
+            .position(|token| *token == Token::BraceOpen)
+            .unwrap();
+        assert_eq!(
+            character_array_automatic_initializer(&tokens, open),
+            Some(vec![0, 0])
+        );
     }
 }
