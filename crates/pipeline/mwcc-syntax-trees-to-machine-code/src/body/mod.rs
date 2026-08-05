@@ -169,6 +169,7 @@ mod inlined_doubly_linked_list_transfer;
 mod inlined_local_select;
 mod inlined_quadratic_float_map_loop;
 mod inlined_object_make;
+mod indexed_global_object_initialization;
 mod ladders;
 mod legacy_constant_store;
 mod leading_store_guard;

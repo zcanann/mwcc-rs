@@ -1187,6 +1187,9 @@ impl Generator {
         // local-pointer aliases are not later mistaken for entry parameters.
         self.known_locals
             .extend(function.locals.iter().map(|local| local.name.clone()));
+        if self.try_indexed_global_object_initialization(function)? {
+            return Ok(());
+        }
         if self.try_release_to_global_manager(function)? {
             return Ok(());
         }
