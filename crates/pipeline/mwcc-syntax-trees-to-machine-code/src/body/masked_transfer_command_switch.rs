@@ -240,19 +240,19 @@ fn classify(function: &Function) -> Option<TransferCommandSwitch> {
     {
         return None;
     }
-    let [Statement::Assign {
-        name,
-        value:
-            Expression::Binary {
-                operator: BinaryOperator::BitAnd,
-                left,
-                right,
-            },
-    }, Statement::Switch {
+    let [Statement::Assign { name, value }, Statement::Switch {
         scrutinee,
         arms,
         default: Some(default),
     }] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::BitAnd,
+        left,
+        right,
+    } = peel_indexed_update_provenance(value)
     else {
         return None;
     };

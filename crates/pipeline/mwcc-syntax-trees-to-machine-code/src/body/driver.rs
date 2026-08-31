@@ -2817,6 +2817,12 @@ impl Generator {
         if self.try_call_live_counter_loop(function)? {
             return Ok(());
         }
+        // The legacy serial-device switch owns its linkage frame, jump table,
+        // and guarded transfer calls. Keep this exact semantic owner ahead of
+        // the general structured frame compiler.
+        if self.try_masked_transfer_command_switch(function)? {
+            return Ok(());
+        }
         if self.try_callee_saved_structured_frame_body(function)? {
             return Ok(());
         }
@@ -3085,9 +3091,6 @@ impl Generator {
             return Ok(());
         }
         if self.try_masked_word_store_switch(function)? {
-            return Ok(());
-        }
-        if self.try_masked_transfer_command_switch(function)? {
             return Ok(());
         }
         if self.try_unoptimized_source_home_leaf_body(function)? {
