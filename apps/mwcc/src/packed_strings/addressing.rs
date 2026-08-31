@@ -181,6 +181,9 @@ fn schedule_zero_offset_base_lows(function: &mut MachineFunction, base: &str) {
             Instruction::AddImmediate { d, .. } => d,
             _ => continue,
         };
+        if is_reloadable_nested_tail_packet(function, position, packed_base) {
+            continue;
+        }
         while position + 1 < function.instructions.len()
             && ready_zero_offset_argument_setup(&function.instructions[position + 1], packed_base)
             && !is_control_entry(function, position)
@@ -190,6 +193,31 @@ fn schedule_zero_offset_base_lows(function: &mut MachineFunction, base: &str) {
             position += 1;
         }
     }
+}
+
+fn is_reloadable_nested_tail_packet(
+    function: &MachineFunction,
+    low: usize,
+    packed_base: u8,
+) -> bool {
+    let Some(start) = low.checked_sub(2) else {
+        return false;
+    };
+    matches!(
+        function.instructions.get(start..low + 3),
+        Some([
+            Instruction::AddImmediateShifted { d: string, a: 0, .. },
+            Instruction::AddImmediateShifted { d: array, a: 0, .. },
+            Instruction::AddImmediate { d: string_low, a: string_base, .. },
+            Instruction::Or { a: result, s: 3, b: 3 },
+            Instruction::AddImmediate { d: 3, a: array_base, .. },
+        ]) if *string == packed_base
+            && *string_low == packed_base
+            && *string_base == packed_base
+            && *array >= 6
+            && *array_base == *array
+            && *result == packed_base + 1
+    )
 }
 
 fn is_control_entry(function: &MachineFunction, position: usize) -> bool {
@@ -767,6 +795,59 @@ mod tests {
             Instruction::AddImmediate { d: 3, a: 1, .. }
         ));
         assert_eq!(function.relocations[1].instruction_index, 1);
+    }
+
+    #[test]
+    fn preserves_a_reloadable_nested_tail_argument_packet() {
+        let mut function = MachineFunction::new("probe");
+        function.instructions = vec![
+            Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediateShifted {
+                d: 6,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 0,
+            },
+            Instruction::move_register(5, 3),
+            Instruction::AddImmediate {
+                d: 3,
+                a: 6,
+                immediate: 0,
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+        function.relocations = vec![
+            Relocation {
+                instruction_index: 0,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::External("@stringBase0".to_owned()),
+            },
+            Relocation {
+                instruction_index: 2,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::External("@stringBase0".to_owned()),
+            },
+        ];
+
+        materialize_function_offsets(&mut function, "@stringBase0");
+
+        assert!(matches!(
+            function.instructions[2..5],
+            [
+                Instruction::AddImmediate { d: 4, a: 4, .. },
+                Instruction::Or { a: 5, s: 3, b: 3 },
+                Instruction::AddImmediate { d: 3, a: 6, .. },
+            ]
+        ));
+        assert_eq!(function.relocations[1].instruction_index, 2);
     }
 
     #[test]
