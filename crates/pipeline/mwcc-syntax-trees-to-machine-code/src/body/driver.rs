@@ -3726,6 +3726,16 @@ impl Generator {
                 return Ok(());
             }
         }
+        // Sign-directed member decay is a nested leaf diamond whose measured
+        // schedule shares the initial member and pooled-zero loads across both
+        // arms. Claim it before the broad leaf if/else owner lowers each arm
+        // independently and loses those shared values.
+        if self.try_symmetric_float_decay(function)? {
+            return Ok(());
+        }
+        if self.try_symmetric_float_decay_return(function)? {
+            return Ok(());
+        }
         // A LEAF if/else diamond (both arms store) with a return continuation — the JOIN
         // (materialized return) and TWO-EXIT (return value already in r3) forms. See
         // body/if_else.rs.
@@ -4051,12 +4061,6 @@ impl Generator {
         // A two-sided member clamp retains one load and returns directly from
         // the lower arm instead of lowering the nested source ifs separately.
         if self.try_symmetric_float_clamp(function)? {
-            return Ok(());
-        }
-        if self.try_symmetric_float_decay(function)? {
-            return Ok(());
-        }
-        if self.try_symmetric_float_decay_return(function)? {
             return Ok(());
         }
         // Targeted member acceleration keeps the current value and pooled zero

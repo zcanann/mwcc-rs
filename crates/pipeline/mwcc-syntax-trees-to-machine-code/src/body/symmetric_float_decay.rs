@@ -43,14 +43,19 @@ fn update_store(
     adjustment: &str,
     operator: BinaryOperator,
 ) -> bool {
-    matches!(statement,
-        Statement::Store {
-            target,
-            value: Expression::Binary { operator: actual, left, right },
-        } if *actual == operator
-            && same_member(target, member)
-            && same_member(left, member)
-            && matches!(right.as_ref(), Expression::Variable(name) if name == adjustment))
+    let Statement::Store { target, value } = statement else {
+        return false;
+    };
+    let value = match value {
+        Expression::IndexedUpdateValue { value } => value.as_ref(),
+        value => value,
+    };
+    matches!(value,
+        Expression::Binary { operator: actual, left, right }
+            if *actual == operator
+                && same_member(target, member)
+                && same_member(left, member)
+                && matches!(right.as_ref(), Expression::Variable(name) if name == adjustment))
 }
 
 fn zero_crossing_clamp(
@@ -225,10 +230,12 @@ mod tests {
         };
         let update = |operator| Statement::Store {
             target: member(32),
-            value: Expression::Binary {
-                operator,
-                left: Box::new(member(32)),
-                right: Box::new(Expression::Variable("amount".into())),
+            value: Expression::IndexedUpdateValue {
+                value: Box::new(Expression::Binary {
+                    operator,
+                    left: Box::new(member(32)),
+                    right: Box::new(Expression::Variable("amount".into())),
+                }),
             },
         };
         let clamp = |operator| Statement::If {
