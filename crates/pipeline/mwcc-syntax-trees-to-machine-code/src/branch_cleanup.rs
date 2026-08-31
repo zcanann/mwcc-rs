@@ -176,9 +176,20 @@ fn forwarding_branch_block(
                 Instruction::BranchConditionalForward { target, .. }
                     | Instruction::Branch { target }
                     if *target == index
+                )
+        });
+        let shared_landing = index.checked_sub(3).is_some_and(|start| {
+            matches!(
+                instructions.get(start..=index),
+                Some([
+                    Instruction::BranchConditionalForward { target, .. },
+                    Instruction::AddImmediate { d: 3, a: 0, .. },
+                    Instruction::Branch { .. },
+                    Instruction::Branch { target: forwarding_landing },
+                ]) if *target == landing && *forwarding_landing == landing
             )
         });
-        (allow_unreferenced || has_incoming).then_some((index, landing))
+        (allow_unreferenced || has_incoming || shared_landing).then_some((index, landing))
     })
 }
 
@@ -247,6 +258,24 @@ mod tests {
 
         assert_eq!(forwarding_branch_block(&instructions, true, false), Some((2, 3)));
         assert_eq!(forwarding_branch_block(&instructions, false, false), None);
+    }
+
+    #[test]
+    fn recognizes_an_unreferenced_forwarder_to_a_shared_conditional_landing() {
+        let instructions = [
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 4,
+            },
+            Instruction::load_immediate(3, 2),
+            Instruction::Branch { target: 5 },
+            Instruction::Branch { target: 4 },
+            Instruction::load_immediate(3, 0),
+            Instruction::BranchToLinkRegister,
+        ];
+
+        assert_eq!(forwarding_branch_block(&instructions, false, false), Some((3, 4)));
     }
 
     #[test]
