@@ -548,6 +548,17 @@ impl Generator {
             && entry_lane_bytes == 8
             && inline_lane_bytes == 8
             && physical_saved.len() == 2;
+        // A statement helper expanded during body evaluation can introduce an
+        // inline-residue lane after the source-level frame facts were recorded.
+        // When its only survivor is the same entry parameter already occupying
+        // one saved home, both counters describe that one physical value-table
+        // lane rather than adjacent storage.
+        let shares_late_inline_entry_lane = self.frame_slots.is_empty()
+            && self.initial_inline_expansion_frame_bytes == 0
+            && entry_lane_bytes == 8
+            && inline_lane_bytes == 8
+            && physical_saved.len() == 1
+            && parameter_derived_home_before_call;
         let has_planned_conversion_scratch =
             self.float_to_int_scratch_end != 0 || self.int_to_float_scratch_end != 0;
         let planned_conversion_scratch_end = self
@@ -575,7 +586,10 @@ impl Generator {
             inline_lane_bytes
         } else if let Some(shared_bytes) = shared_inline_conversion_bytes {
             shared_bytes
-        } else if shares_inline_aggregate_lane || shares_inline_eager_lane {
+        } else if shares_inline_aggregate_lane
+            || shares_inline_eager_lane
+            || shares_late_inline_entry_lane
+        {
             entry_lane_bytes.max(inline_lane_bytes)
         } else {
             entry_lane_bytes.saturating_add(inline_lane_bytes)
