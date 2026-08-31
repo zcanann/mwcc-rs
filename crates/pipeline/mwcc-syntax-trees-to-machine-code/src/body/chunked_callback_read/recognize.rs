@@ -44,7 +44,7 @@ fn assignment<'a>(statement: &'a Statement, expected: &str) -> Option<&'a Expres
     let Statement::Assign { name, value } = statement else {
         return None;
     };
-    (name == expected).then_some(value)
+    (name == expected).then(|| peel_indexed_update_provenance(value))
 }
 
 fn direct_call(expression: &Expression) -> Option<(&str, &[Expression])> {
@@ -443,13 +443,16 @@ pub(super) fn classify(function: &Function) -> Option<ChunkedCallbackRead> {
     }
     let Statement::Store {
         target: advanced_position,
-        value:
-            Expression::Binary {
-                operator: BinaryOperator::Add,
-                left: old_position,
-                right: position_step,
-            },
+        value: advanced_value,
     } = position_advance
+    else {
+        return None;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left: old_position,
+        right: position_step,
+    } = peel_indexed_update_provenance(advanced_value)
     else {
         return None;
     };

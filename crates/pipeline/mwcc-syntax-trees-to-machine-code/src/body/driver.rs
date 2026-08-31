@@ -2823,6 +2823,12 @@ impl Generator {
         if self.try_masked_transfer_command_switch(function)? {
             return Ok(());
         }
+        // The aligned chunk reader owns five call-live homes and the complete
+        // callback/direct-read loop schedule. It must precede the broad framed
+        // structured emitter, which cannot recover that allocation afterward.
+        if self.try_chunked_callback_read(function)? {
+            return Ok(());
+        }
         if self.try_callee_saved_structured_frame_body(function)? {
             return Ok(());
         }
@@ -3997,9 +4003,6 @@ impl Generator {
                 return Ok(());
             }
             if self.try_bounded_buffer_read(function)? {
-                return Ok(());
-            }
-            if self.try_chunked_callback_read(function)? {
                 return Ok(());
             }
             // General structured body with values spanning conditional calls:
