@@ -1185,6 +1185,12 @@ impl Generator {
         if self.try_inlined_short_circuit_call_loop(function)? {
             return Ok(());
         }
+        // Integer-quantized float arithmetic with an optional second scale
+        // owns one shared conversion frame and a cross-expression schedule.
+        // Claim it before broad float/local lowering splits those images.
+        if self.try_conditional_float_requantize(function)? {
+            return Ok(());
+        }
         if self.try_inlined_quadratic_float_map_loop(function)? {
             return Ok(());
         }
@@ -4082,11 +4088,6 @@ impl Generator {
         // An in-place float update followed by a clamp is one scheduling
         // region: the optional bound negation fills the first member-load gap.
         if self.try_leading_float_update_clamp(function)? {
-            return Ok(());
-        }
-        // A float result rounded through int, conditionally scaled, and rounded
-        // again shares one 64-byte conversion frame and one signed-int bias.
-        if self.try_conditional_float_requantize(function)? {
             return Ok(());
         }
         // A zero-denominator guard followed by a scaled float-to-index table
