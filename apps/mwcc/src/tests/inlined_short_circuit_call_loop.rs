@@ -1,3 +1,4 @@
+use super::elf_object::function_bytes;
 use crate::{compile, SourceLanguage};
 
 #[test]
@@ -64,5 +65,5 @@ fn matches_a_multi_use_helper_expanded_inside_a_list_walk() {
         0x83, 0xc1, 0x00, 0x18, 0x83, 0xa1, 0x00, 0x14, 0x83, 0x81, 0x00, 0x10,
         0x38, 0x21, 0x00, 0x20, 0x7c, 0x08, 0x03, 0xa6, 0x4e, 0x80, 0x00, 0x20,
     ];
-    assert!(object.windows(expected.len()).any(|bytes| bytes == expected));
+    assert_eq!(function_bytes(&object, "compiled"), expected);
 }

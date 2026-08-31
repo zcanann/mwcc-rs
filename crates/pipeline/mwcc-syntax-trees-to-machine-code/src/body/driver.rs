@@ -1179,6 +1179,12 @@ impl Generator {
                 }
             }
         }
+        // A selectively expanded helper inside a list walk has an exact
+        // four-home call schedule. Claim the expanded tree before any broader
+        // loop owner can discard that helper-specific liveness shape.
+        if self.try_inlined_short_circuit_call_loop(function)? {
+            return Ok(());
+        }
         if self.try_inlined_quadratic_float_map_loop(function)? {
             return Ok(());
         }
@@ -3996,12 +4002,6 @@ impl Generator {
             // inside the outer global-state query and reuses the selected
             // object home for the result.
             if self.try_inlined_nested_status_query(function)? {
-                return Ok(());
-            }
-            // A small multi-use helper expanded at its sole loop call site can
-            // leave the iterator, selected object, and entry arguments live
-            // across calls in the loop body.
-            if self.try_inlined_short_circuit_call_loop(function)? {
                 return Ok(());
             }
             // SDK list walks which snapshot `next` before conditionally calling

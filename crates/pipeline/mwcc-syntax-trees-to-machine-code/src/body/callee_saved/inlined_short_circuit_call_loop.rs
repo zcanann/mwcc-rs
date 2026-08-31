@@ -138,16 +138,20 @@ impl Generator {
         let Some(retained_array_bytes) = retained_array_bytes else {
             return Ok(false);
         };
-        let plan = mwcc_vreg::FramePlan::with_local_region(
-            homes.clone(),
-            retained_array_bytes,
-        );
+        let Some(local_region_bytes) = i16::try_from(self.legacy_inline_expansion_frame_bytes)
+            .ok()
+            .and_then(|inline_bytes| retained_array_bytes.checked_add(inline_bytes))
+        else {
+            return Ok(false);
+        };
+        let plan = mwcc_vreg::FramePlan::with_local_region(homes.clone(), local_region_bytes);
         self.non_leaf = true;
-        // This owner has incorporated the expanded helper's retained local
-        // region into `plan`; the generic post-pass must not add it again.
+        // This owner has incorporated arrays and the expanded helper's retained
+        // local region into `plan`; the frame convention separately retains
+        // MWCC's entry-parameter table.
         self.legacy_inline_expansion_frame_bytes = 0;
         self.legacy_callee_saved_frame_layout =
-            LegacyCalleeSavedFrameLayout::PreserveLogicalSize;
+            LegacyCalleeSavedFrameLayout::RetainEntryParameterTable;
         self.frame_size = plan.frame_size;
         self.callee_saved = homes.clone();
         self.output.instructions.extend([
@@ -175,9 +179,11 @@ impl Generator {
                 _ => None,
             };
             if let Some(incoming) = incoming {
-                self.output
-                    .instructions
-                    .push(Instruction::move_register(home, incoming));
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: home,
+                    a: incoming,
+                    immediate: 0,
+                });
             }
         }
 
