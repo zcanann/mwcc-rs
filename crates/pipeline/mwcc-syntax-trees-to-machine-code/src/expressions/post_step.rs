@@ -226,25 +226,29 @@ impl Generator {
             // entry register cannot also retain the stepped local across a
             // call, so split its new value into an allocatable lane. Once the
             // local already owns a virtual lane, update it in place.
-            let fused_entry_copy = source != destination
-                && self.output.instructions.last().is_some_and(|instruction| {
-                    matches!(
-                        instruction,
-                        Instruction::Or { a, s, b }
-                            if *a == source && *s == destination && *b == destination
-                    ) || matches!(
-                        instruction,
-                        Instruction::AddImmediate { d, a, immediate: 0 }
-                            if *d == source && *a == destination
-                    )
-                });
-            if fused_entry_copy {
+            let fused_entry_home = self.output.instructions.last().and_then(|instruction| {
+                let home = match instruction {
+                    Instruction::Or { a, s, b }
+                        if *s == destination && *b == destination => *a,
+                    Instruction::AddImmediate { d, a, immediate: 0 }
+                        if *a == destination => *d,
+                    _ => return None,
+                };
+                (home == source
+                    || (source == destination && self.callee_saved.contains(&home)))
+                .then_some(home)
+            });
+            if let Some(home) = fused_entry_home {
                 self.output.instructions.pop();
                 self.output.instructions.push(Instruction::AddImmediate {
-                    d: source,
+                    d: home,
                     a: destination,
                     immediate: amount,
                 });
+                self.locations
+                    .get_mut(name.as_str())
+                    .expect("postfix local location disappeared")
+                    .register = home;
                 return Ok(());
             }
             if source != destination {
