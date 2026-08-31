@@ -96,6 +96,31 @@ impl Generator {
             .relocations
             .sort_by_key(|relocation| relocation.instruction_index);
     }
+
+    /// The final allocator can coalesce the timer term onto r5 after this pass
+    /// has made the earlier bitfield storage byte live through the whole guard.
+    /// Repair that collision on the physical stream; MWCC uses r4 for the
+    /// independent timer load and comparison while r5 survives to `rlwimi`.
+    pub(crate) fn normalize_guarded_bitfield_storage_cache_timer(&mut self) {
+        let Some(start) = self
+            .output
+            .instructions
+            .windows(21)
+            .position(is_guarded_bitfield_timer_collision)
+        else {
+            return;
+        };
+        let Instruction::LoadByteZero { d, .. } =
+            &mut self.output.instructions[start + 14]
+        else {
+            unreachable!("guarded timer load changed after recognition")
+        };
+        *d = 4;
+        let Instruction::CompareWord { a, .. } = &mut self.output.instructions[start + 16] else {
+            unreachable!("guarded timer comparison changed after recognition")
+        };
+        *a = 4;
+    }
 }
 
 fn is_guarded_bitfield_storage_cache(window: &[Instruction]) -> bool {
@@ -133,6 +158,26 @@ fn is_guarded_bitfield_storage_cache(window: &[Instruction]) -> bool {
         && inserted == s)
 }
 
+fn is_guarded_bitfield_timer_collision(window: &[Instruction]) -> bool {
+    matches!(window, [
+        Instruction::LoadByteZero { d: 5, a: receiver, offset: storage_offset },
+        Instruction::RotateAndMaskRecord { a: 0, s: 5, .. },
+        Instruction::BranchConditionalForward { .. },
+        _, _, _, _, _, _, _, _, _, _,
+        Instruction::BranchConditionalForward { .. },
+        Instruction::LoadByteZero { d: 5, a: timer_base, offset: timer_offset },
+        Instruction::LoadWord { d: 0, a: 6, .. },
+        Instruction::CompareWord { a: 5, b: 0 },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::AddImmediate { d: 0, a: 0, immediate: 1 },
+        Instruction::RotateAndMaskInsert { a: 5, s: 0, .. },
+        Instruction::StoreByte { s: 5, a: store_base, offset: store_offset },
+    ] if receiver == timer_base
+        && receiver == store_base
+        && storage_offset == store_offset
+        && storage_offset != timer_offset)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +213,40 @@ mod tests {
         ];
 
         assert!(is_guarded_bitfield_storage_cache(&instructions));
+    }
+
+    #[test]
+    fn recognizes_a_timer_coalesced_onto_retained_bitfield_storage() {
+        let mut instructions = vec![Instruction::load_immediate(0, 0); 21];
+        instructions[0] = Instruction::LoadByteZero { d: 5, a: 3, offset: 8730 };
+        instructions[1] = Instruction::RotateAndMaskRecord {
+            a: 0,
+            s: 5,
+            shift: 29,
+            begin: 31,
+            end: 31,
+        };
+        for &index in &[2, 13, 17] {
+            instructions[index] = Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 21,
+            };
+        }
+        instructions[14] = Instruction::LoadByteZero { d: 5, a: 3, offset: 1649 };
+        instructions[15] = Instruction::LoadWord { d: 0, a: 6, offset: 140 };
+        instructions[16] = Instruction::CompareWord { a: 5, b: 0 };
+        instructions[18] = Instruction::load_immediate(0, 1);
+        instructions[19] = Instruction::RotateAndMaskInsert {
+            a: 5,
+            s: 0,
+            shift: 3,
+            begin: 28,
+            end: 28,
+        };
+        instructions[20] = Instruction::StoreByte { s: 5, a: 3, offset: 8730 };
+
+        assert!(is_guarded_bitfield_timer_collision(&instructions));
     }
 
 }

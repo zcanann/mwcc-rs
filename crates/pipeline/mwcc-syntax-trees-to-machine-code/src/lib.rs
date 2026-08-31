@@ -1334,6 +1334,7 @@ fn lower_function_body(
     generator.schedule_structured_global_pointer_replacement();
     generator.schedule_copy_sign_frame(function);
     generator.schedule_guarded_member_decrement_arm_pointer();
+    generator.normalize_guarded_bitfield_storage_cache_timer();
     if !function.peephole_disabled {
         generator.fold_recorded_boolean_zero_tests();
     }
