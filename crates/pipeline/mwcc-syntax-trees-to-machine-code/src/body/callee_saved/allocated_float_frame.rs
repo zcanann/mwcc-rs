@@ -137,6 +137,13 @@ impl Generator {
         if registers.is_empty() {
             return Ok(());
         }
+        // The scalar parameter-store packet is a measured exception to the
+        // ordinary Gekko save lane: MWCC preserves only the double half when
+        // the saved value crosses one call and is consumed solely by `stfs`.
+        // Keep this decision next to frame materialization so arithmetic
+        // survivors continue to preserve their paired-single half.
+        let paired_single_frame = paired_single_frame
+            && !uses_compact_scalar_parameter_lane(&self.output.instructions, &registers);
         let saved_gpr_count = self.callee_saved.len();
         let (permutation, frame_growth, helper_calls) = match self.behavior.frame_convention {
             FrameConvention::Predecrement => {
@@ -205,6 +212,25 @@ impl Generator {
             .ok_or_else(|| Diagnostic::error("allocated FPR frame is too large"))?;
         Ok(())
     }
+}
+
+fn uses_compact_scalar_parameter_lane(
+    instructions: &[Instruction],
+    registers: &[u8],
+) -> bool {
+    let [register] = registers else {
+        return false;
+    };
+    instructions.windows(3).any(|window| {
+        matches!(
+            window,
+            [
+                Instruction::FloatMove { d, .. },
+                Instruction::BranchAndLink { .. },
+                Instruction::StoreFloatSingle { s, .. },
+            ] if d == register && s == register
+        )
+    })
 }
 
 /// Resolve the ABI save range from selection's declared saved-float homes and
@@ -685,6 +711,47 @@ mod declared_range_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_the_single_scalar_parameter_store_lane() {
+        let instructions = [
+            Instruction::FloatMove { d: 31, b: 1 },
+            Instruction::BranchAndLink {
+                target: "set_endpoints".into(),
+            },
+            Instruction::StoreFloatSingle {
+                s: 31,
+                a: 30,
+                offset: 28,
+            },
+        ];
+
+        assert!(uses_compact_scalar_parameter_lane(&instructions, &[31]));
+        assert!(!uses_compact_scalar_parameter_lane(
+            &instructions,
+            &[31, 30]
+        ));
+    }
+
+    #[test]
+    fn arithmetic_float_survivors_keep_their_paired_lane() {
+        let instructions = [
+            Instruction::FloatMove { d: 31, b: 2 },
+            Instruction::BranchAndLink {
+                target: "transform".into(),
+            },
+            Instruction::FloatAddSingle {
+                d: 1,
+                a: 1,
+                b: 31,
+            },
+        ];
+
+        assert!(!uses_compact_scalar_parameter_lane(
+            &instructions,
+            &[31]
+        ));
+    }
 
     #[test]
     fn mainline_link_reload_splits_the_final_float_restore_packet() {
