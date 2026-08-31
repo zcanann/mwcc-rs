@@ -93,6 +93,9 @@ pub struct InlineBodySet {
     /// flow; lookup alone never makes them callable or composable.
     retained_definitions: HashMap<String, Function>,
     bodies: HashMap<String, Function>,
+    /// One-use ordinary bodies visible across source-order boundaries only to
+    /// whole-file IPA. Ordinary automatic inlining continues to use `bodies`.
+    whole_file_bodies: HashMap<String, Function>,
     /// Ordinary small definitions that MWCC may expand selectively at hot
     /// structured call sites even when the TU calls them more than once.
     repeatable_bodies: HashMap<String, Function>,
@@ -308,6 +311,15 @@ impl InlineBodySet {
                 .entry(function.name.clone())
                 .or_insert_with(|| function.clone());
         }
+        let whole_file_bodies = definitions
+            .iter()
+            .filter(|function| {
+                function.is_static
+                    && automatic_composable_function(function)
+                    && call_counts.get(&function.name).copied() == Some(1)
+            })
+            .map(|function| (function.name.clone(), function.clone()))
+            .collect();
         let repeatable_bodies = definitions
             .iter()
             .filter(|function| {
@@ -473,6 +485,7 @@ impl InlineBodySet {
                 .map(|function| (function.name.clone(), function.clone()))
                 .collect(),
             bodies,
+            whole_file_bodies,
             repeatable_bodies,
             bounded_caller_bodies,
             definition_positions: definitions
@@ -1122,6 +1135,19 @@ impl InlineBodySet {
 
     pub(crate) fn expand_calls_with_facts(&self, function: &Function) -> Option<ExpandedCalls> {
         self.expand_calls_with_facts_policy(function, false)
+    }
+
+    /// Whole-file IPA can see a static one-use definition even when its source
+    /// body follows the caller. Extend only the ordinary body map for this
+    /// transaction; retained-inline requirements and repeatable policies stay
+    /// unchanged.
+    pub(crate) fn expand_whole_file_calls_with_facts(
+        &self,
+        function: &Function,
+    ) -> Option<ExpandedCalls> {
+        let mut expanded = self.clone();
+        expanded.bodies.extend(self.whole_file_bodies.clone());
+        expanded.expand_calls_with_facts_policy(function, false)
     }
 
     fn expand_calls_with_facts_policy(

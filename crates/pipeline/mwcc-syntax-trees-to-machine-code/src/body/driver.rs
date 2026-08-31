@@ -1952,8 +1952,18 @@ impl Generator {
             }
             return result;
         }
-        if calls_inline_candidate {
-            if let Some(expanded) = self.inline_bodies.expand_calls_with_facts(function) {
+        if calls_inline_candidate || self.behavior.whole_file_optimization {
+            let whole_file_expansion = self
+                .behavior
+                .whole_file_optimization
+                .then(|| {
+                    self.inline_bodies
+                        .expand_whole_file_calls_with_facts(function)
+                })
+                .flatten();
+            if let Some(expanded) = whole_file_expansion
+                .or_else(|| self.inline_bodies.expand_calls_with_facts(function))
+            {
                 if std::env::var_os("MWCC_DIAGNOSTIC_ANONYMOUS_ORDINALS").is_some() {
                     eprintln!(
                         "inline-ordinals {}: lane=automatic statement={} value={} retained={} advances={} weight={} value_frame={}",
