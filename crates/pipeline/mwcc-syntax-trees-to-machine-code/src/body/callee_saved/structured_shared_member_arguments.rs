@@ -19,16 +19,21 @@ impl Generator {
         }
         let mut pairs = Vec::new();
         let mut cursor = 0;
-        for (call_name, base_name) in calls {
-            let Some(base_register) = self.lookup_general(base_name) else {
+        for call_plan in calls {
+            let Some(base_register) = self.lookup_general(call_plan.base) else {
                 return;
             };
+            if call_plan.has_trailing_leaf {
+                // Its load/copy/load/rotate order is already emitted directly.
+                // The physical copy spelling is repaired after allocation.
+                continue;
+            }
             let Some((call, first)) = self.output.instructions[cursor..]
                 .iter()
                 .enumerate()
                 .filter_map(|(relative, instruction)| {
                     let call = cursor + relative;
-                    matches!(instruction, Instruction::BranchAndLink { target } if target == call_name)
+                    matches!(instruction, Instruction::BranchAndLink { target } if target == call_plan.name)
                         .then(|| call.checked_sub(3).map(|first| (call, first)))
                         .flatten()
                 })
@@ -59,9 +64,51 @@ impl Generator {
             self.labels.moved_before(first + 1, first);
         }
     }
+
+    /// Allocation applies build 163's general `addi d,s,0` materialization
+    /// convention after the structured scheduler has formed this packet. The
+    /// measured independent third-argument latency fill is an exception and
+    /// retains `mr`, so repair it on the final physical instruction stream.
+    pub(crate) fn normalize_structured_shared_member_argument_copies(
+        &mut self,
+        function: &Function,
+    ) {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst {
+            return;
+        }
+        let call_names = recognize(function)
+            .into_iter()
+            .filter(|plan| plan.has_trailing_leaf)
+            .map(|plan| plan.name)
+            .collect::<std::collections::HashSet<_>>();
+        if call_names.is_empty() {
+            return;
+        }
+        for first in 0..self.output.instructions.len().saturating_sub(4) {
+            let source = match &self.output.instructions[first..first + 5] {
+                [
+                    Instruction::LoadByteZero { d: 4, a: second_base, .. },
+                    Instruction::AddImmediate { d: 5, a: source, immediate: 0 },
+                    Instruction::LoadByteZero { d: 3, a: first_base, .. },
+                    Instruction::RotateAndMask { a: 4, s: 4, .. },
+                    Instruction::BranchAndLink { target },
+                ] if first_base == second_base
+                    && *source != 0
+                    && call_names.contains(target.as_str()) => *source,
+                _ => continue,
+            };
+            self.output.instructions[first + 1] = Instruction::move_register(5, source);
+        }
+    }
 }
 
-fn recognize(function: &Function) -> Vec<(&str, &str)> {
+struct SharedMemberCall<'a> {
+    name: &'a str,
+    base: &'a str,
+    has_trailing_leaf: bool,
+}
+
+fn recognize(function: &Function) -> Vec<SharedMemberCall<'_>> {
     let mut calls = Vec::new();
     collect_statement_calls(&function.statements, &mut calls);
     calls
@@ -69,7 +116,7 @@ fn recognize(function: &Function) -> Vec<(&str, &str)> {
 
 fn collect_statement_calls<'a>(
     statements: &'a [Statement],
-    calls: &mut Vec<(&'a str, &'a str)>,
+    calls: &mut Vec<SharedMemberCall<'a>>,
 ) {
     for statement in statements {
         match statement {
@@ -96,12 +143,18 @@ fn collect_statement_calls<'a>(
 
 fn collect_expression_calls<'a>(
     expression: &'a Expression,
-    calls: &mut Vec<(&'a str, &'a str)>,
+    calls: &mut Vec<SharedMemberCall<'a>>,
 ) {
     match expression {
         Expression::Call { name, arguments } => {
-            if let Some(base) = shared_byte_and_bitfield_arguments(arguments) {
-                calls.push((name, base));
+            if let Some((base, has_trailing_leaf)) =
+                shared_byte_and_bitfield_arguments(arguments)
+            {
+                calls.push(SharedMemberCall {
+                    name,
+                    base,
+                    has_trailing_leaf,
+                });
             }
             for argument in arguments {
                 collect_expression_calls(argument, calls);
@@ -139,17 +192,22 @@ fn collect_expression_calls<'a>(
     }
 }
 
-fn shared_byte_and_bitfield_arguments(arguments: &[Expression]) -> Option<&str> {
-    let [
-        Expression::Member {
-            base: first_base,
-            member_type: Type::UnsignedChar,
-            index_stride: None,
-            ..
-        },
-        Expression::BitFieldRead { storage, .. },
-    ] = arguments
+fn shared_byte_and_bitfield_arguments(arguments: &[Expression]) -> Option<(&str, bool)> {
+    let (first, bit_field, has_trailing_leaf) = match arguments {
+        [first, bit_field] => (first, bit_field, false),
+        [first, bit_field, Expression::Variable(_)] => (first, bit_field, true),
+        _ => return None,
+    };
+    let Expression::Member {
+        base: first_base,
+        member_type: Type::UnsignedChar,
+        index_stride: None,
+        ..
+    } = first
     else {
+        return None;
+    };
+    let Expression::BitFieldRead { storage, .. } = bit_field else {
         return None;
     };
     let Expression::Member {
@@ -166,5 +224,5 @@ fn shared_byte_and_bitfield_arguments(arguments: &[Expression]) -> Option<&str> 
     else {
         return None;
     };
-    (first_name == second_name).then_some(first_name.as_str())
+    (first_name == second_name).then_some((first_name.as_str(), has_trailing_leaf))
 }
