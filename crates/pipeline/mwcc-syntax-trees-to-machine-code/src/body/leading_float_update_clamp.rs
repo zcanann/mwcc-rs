@@ -75,15 +75,15 @@ fn update_clamp_member<'a>(
     adjustment: &str,
     bound: &str,
 ) -> Option<(Member<'a>, BinaryOperator, BinaryOperator, bool)> {
-    let Statement::Store {
-        target,
-        value:
-            Expression::Binary {
-                operator: update,
-                left: update_member,
-                right: update_amount,
-            },
-    } = update_statement
+    let Statement::Store { target, value } = update_statement
+    else {
+        return None;
+    };
+    let Expression::Binary {
+        operator: update,
+        left: update_member,
+        right: update_amount,
+    } = peel_indexed_update_provenance(value)
     else {
         return None;
     };
