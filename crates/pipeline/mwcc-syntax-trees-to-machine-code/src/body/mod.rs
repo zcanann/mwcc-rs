@@ -163,6 +163,7 @@ mod guarded_float_table_index;
 mod guarded_global_callback;
 mod guarded_global_rmw;
 mod guarded_member_decrement_if_else;
+mod guarded_member_decrement_arm_pointer_schedule;
 mod if_else;
 mod indirect_call;
 mod inlined_guarded_aggregate_update;
