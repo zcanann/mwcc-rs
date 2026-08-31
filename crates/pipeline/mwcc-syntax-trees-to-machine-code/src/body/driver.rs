@@ -2811,6 +2811,12 @@ impl Generator {
         if self.try_nested_pointer_search_loop(function)? {
             return Ok(());
         }
+        // The DummyLen call-heavy counted loop is one measured scheduling
+        // region. Claim it before the general structured frame owner, which
+        // cannot lower the nested tick-call shift as an ordinary expression.
+        if self.try_call_live_counter_loop(function)? {
+            return Ok(());
+        }
         if self.try_callee_saved_structured_frame_body(function)? {
             return Ok(());
         }
@@ -3757,9 +3763,6 @@ impl Generator {
                 return Ok(());
             }
             if self.try_callee_saved_call_loop(function)? {
-                return Ok(());
-            }
-            if self.try_call_live_counter_loop(function)? {
                 return Ok(());
             }
             // (guard-less call handlers continue below)
