@@ -66,6 +66,7 @@ fn member_store<'a>(
 }
 
 fn member_sum(expression: &Expression, destination: &str, left: &str, right: &str, offset: i16) -> bool {
+    let expression = peel_indexed_update_provenance(expression);
     let Expression::Binary {
         operator: BinaryOperator::Add,
         left: lhs,
