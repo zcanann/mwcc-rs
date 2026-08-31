@@ -1048,6 +1048,13 @@ impl Generator {
                             Some(Type::Float | Type::Double)
                         ))
             }
+            Expression::Call { name, .. } => matches!(
+                self.call_return_types.get(name),
+                Some(Type::Float | Type::Double)
+            ),
+            Expression::VirtualCall { return_type, .. } => {
+                matches!(return_type, Type::Float | Type::Double)
+            }
             Expression::Member { member_type, .. } => {
                 matches!(member_type, Type::Float | Type::Double)
             }
