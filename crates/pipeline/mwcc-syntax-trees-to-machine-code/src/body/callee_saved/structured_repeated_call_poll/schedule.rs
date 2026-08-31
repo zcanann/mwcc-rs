@@ -4,6 +4,12 @@ use crate::Generator;
 
 use super::recognize::MINIMUM_POLL_PAIRS;
 
+#[derive(Clone, Copy)]
+enum EntryZeroTest {
+    Separate,
+    RecordedCopy,
+}
+
 impl Generator {
     /// Apply the final instruction-selection and frame schedule only after the
     /// source transaction and the complete emitted skeleton both agree.
@@ -20,58 +26,85 @@ impl Generator {
             return;
         }
         let instructions = &self.output.instructions;
-        let Some(epilogue) = instructions.len().checked_sub(6) else {
+        let (frame_size, link_offset, saved_31_offset, saved_30_offset) =
+            match instructions.get(..6) {
+                Some(
+                    [Instruction::StoreWordWithUpdate {
+                        s: 1,
+                        a: 1,
+                        offset: frame_offset,
+                    }, Instruction::MoveFromLinkRegister { d: 0 }, Instruction::StoreWord {
+                        s: 0,
+                        a: 1,
+                        offset: link_offset,
+                    }, Instruction::StoreWord {
+                        s: 31,
+                        a: 1,
+                        offset: saved_31_offset,
+                    }, Instruction::Or { a: 31, s: 4, b: 4 }, Instruction::StoreWord {
+                        s: 30,
+                        a: 1,
+                        offset: saved_30_offset,
+                    }],
+                ) if *frame_offset < 0 => (
+                    -*frame_offset,
+                    *link_offset,
+                    *saved_31_offset,
+                    *saved_30_offset,
+                ),
+                _ => return,
+            };
+        let entry_zero_test = if matches!(
+            instructions.get(6..10),
+            Some([
+                Instruction::Or { a: 30, s: 3, b: 3 },
+                Instruction::CompareLogicalWordImmediate {
+                    a: 30,
+                    immediate: 0
+                },
+                Instruction::BranchConditionalForward { .. },
+                Instruction::LoadWord { d: 3, a: 30, .. }
+            ])
+        ) {
+            EntryZeroTest::Separate
+        } else if matches!(
+            instructions.get(6..9),
+            Some([
+                Instruction::OrRecord { a: 30, s: 3, b: 3 },
+                Instruction::BranchConditionalForward { .. },
+                Instruction::LoadWord { d: 3, a: 30, .. }
+            ])
+        ) {
+            EntryZeroTest::RecordedCopy
+        } else {
             return;
         };
-        if !matches!(
-            instructions.first(),
-            Some(Instruction::StoreWordWithUpdate { s: 1, a: 1, .. })
-        ) || !matches!(
-            instructions.get(1),
-            Some(Instruction::MoveFromLinkRegister { d: 0 })
-        ) || !matches!(
-            instructions.get(2),
-            Some(Instruction::StoreWord { s: 0, a: 1, .. })
-        ) || !matches!(
-            instructions.get(3),
-            Some(Instruction::StoreWord { s: 31, a: 1, .. })
-        ) || !matches!(
-            instructions.get(4),
-            Some(Instruction::Or { a: 31, s: 4, b: 4 })
-        ) || !matches!(
-            instructions.get(5),
-            Some(Instruction::StoreWord { s: 30, a: 1, .. })
-        ) || !matches!(
-            instructions.get(6),
-            Some(Instruction::Or { a: 30, s: 3, b: 3 })
-        ) || !matches!(
-            instructions.get(7),
-            Some(Instruction::CompareLogicalWordImmediate {
-                a: 30,
-                immediate: 0
-            })
-        ) || !matches!(
-            instructions.get(9),
-            Some(Instruction::LoadWord { d: 3, a: 30, .. })
-        ) || !matches!(
-            instructions.get(epilogue),
-            Some(Instruction::LoadWord { d: 31, a: 1, .. })
-        ) || !matches!(
-            instructions.get(epilogue + 1),
-            Some(Instruction::LoadWord { d: 0, a: 1, .. })
-        ) || !matches!(
-            instructions.get(epilogue + 2),
-            Some(Instruction::LoadWord { d: 30, a: 1, .. })
-        ) || !matches!(
-            instructions.get(epilogue + 3),
-            Some(Instruction::MoveToLinkRegister { s: 0 })
-        ) || !matches!(
-            instructions.get(epilogue + 4),
-            Some(Instruction::AddImmediate { d: 1, a: 1, .. })
-        ) || !matches!(
-            instructions.get(epilogue + 5),
-            Some(Instruction::BranchToLinkRegister)
-        ) {
+        let epilogue = instructions.len().checked_sub(6).filter(|&epilogue| {
+            matches!(
+                instructions.get(epilogue..),
+                Some([
+                    Instruction::LoadWord { d: 31, a: 1, .. },
+                    Instruction::LoadWord { d: 0, a: 1, .. },
+                    Instruction::LoadWord { d: 30, a: 1, .. },
+                    Instruction::MoveToLinkRegister { s: 0 },
+                    Instruction::AddImmediate { d: 1, a: 1, .. },
+                    Instruction::BranchToLinkRegister
+                ])
+            )
+        });
+        if epilogue.is_none()
+            && !matches!(
+                instructions.get(instructions.len().saturating_sub(3)..),
+                Some([
+                    Instruction::BranchAndLink { .. },
+                    Instruction::CompareLogicalWordImmediate {
+                        a: 3,
+                        immediate: 0
+                    },
+                    Instruction::BranchConditionalForward { target, .. }
+                ]) if *target == instructions.len() - 3
+            )
+        {
             return;
         }
         let poll_comparisons = (1..instructions.len().saturating_sub(1))
@@ -85,22 +118,52 @@ impl Generator {
             return;
         }
 
-        let entry_compare = self.output.instructions.remove(7);
-        debug_assert!(matches!(
-            entry_compare,
-            Instruction::CompareLogicalWordImmediate {
-                a: 30,
-                immediate: 0
+        match entry_zero_test {
+            EntryZeroTest::Separate => {
+                crate::remove_instruction_retargeting_to_next(self, 7);
             }
-        ));
-        self.output
-            .instructions
-            .insert(2, Instruction::CompareWordImmediate { a: 3, immediate: 0 });
+            EntryZeroTest::RecordedCopy => {
+                self.output.instructions[6] = Instruction::Or { a: 30, s: 3, b: 3 };
+            }
+        }
+        crate::insert_instruction_retargeting(
+            self,
+            2,
+            Instruction::CompareWordImmediate { a: 3, immediate: 0 },
+        );
         let Instruction::LoadWord { a, .. } = &mut self.output.instructions[9] else {
             unreachable!("the repeated call-poll prefix was validated above")
         };
         *a = 3;
-        self.output.instructions.swap(epilogue, epilogue + 1);
+        if epilogue.is_some() {
+            let epilogue = self.output.instructions.len() - 6;
+            self.output.instructions.swap(epilogue, epilogue + 1);
+        } else {
+            self.output.instructions.extend([
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: link_offset,
+                },
+                Instruction::LoadWord {
+                    d: 31,
+                    a: 1,
+                    offset: saved_31_offset,
+                },
+                Instruction::LoadWord {
+                    d: 30,
+                    a: 1,
+                    offset: saved_30_offset,
+                },
+                Instruction::MoveToLinkRegister { s: 0 },
+                Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: frame_size,
+                },
+                Instruction::BranchToLinkRegister,
+            ]);
+        }
         make_zero_comparisons_signed(&mut self.output.instructions);
     }
 

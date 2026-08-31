@@ -23,7 +23,10 @@ pub(crate) fn plan(
     behavior: Behavior,
     inline_bodies: &InlineBodySet,
 ) -> Option<DataSectionAnchorPlan> {
-    if behavior.frame_convention != FrameConvention::LinkageFirst {
+    let repeated_call_poll_strings = behavior.frame_convention == FrameConvention::Predecrement
+        && super::structured_repeated_call_poll::is_repeated_call_poll_transaction(function)
+        && super::linkage_first_data_anchor_strings::owns_long_string_data_anchor(function);
+    if behavior.frame_convention != FrameConvention::LinkageFirst && !repeated_call_poll_strings {
         return None;
     }
     // Section-base selection happens before body lowering, while automatic
