@@ -79,6 +79,8 @@ impl Generator {
             condition,
             nested_else_condition.or(branch_entry_followup),
         );
+        let else_float_followup =
+            plain_float_equality_else_followup(condition, else_body);
         let branch_entry_global = branch_entry_cache
             .as_ref()
             .and_then(|plan| plan.global.clone());
@@ -92,7 +94,14 @@ impl Generator {
         } else if branch_entry_cache.is_none() && nested_else_condition.is_some() {
             self.prefer_pending_condition_global_values(5);
         }
-        let previous_float_cache = self.begin_composed_condition_float_cache(condition);
+        let previous_float_cache = if let Some(followup) = else_float_followup {
+            self.begin_composed_condition_float_cache_with_value_followup(
+                condition,
+                followup,
+            )
+        } else {
+            self.begin_composed_condition_float_cache(condition)
+        };
         let previous_member_cache = self.begin_condition_member_cache_with_edge_reuse(
             condition,
             branch_entry_cache.is_some() || guarded_member_handoff.is_some(),
@@ -254,6 +263,9 @@ impl Generator {
         let else_wide_mask_cache = self.wide_pair_mask_false_edge_cache();
         self.wide_pair_mask_cache = Default::default();
         let then_float_cache = self.condition_float_literal_edge_cache();
+        let else_float_cache = else_float_followup
+            .map(|followup| self.condition_float_plain_false_edge_cache(followup))
+            .unwrap_or_default();
         let else_global_cache =
             nested_else_condition.map(|_| self.condition_global_values.clone());
         self.restore_condition_global_cache(previous_cache);
@@ -363,6 +375,8 @@ impl Generator {
         );
         let else_arm_previous_global_cache = else_global_cache
             .map(|cache| std::mem::replace(&mut self.condition_global_values, cache));
+        let else_arm_previous_float_cache =
+            std::mem::replace(&mut self.condition_float_cache, else_float_cache);
         let else_result = (|| {
             let reused_member = member_else_reuse.is_some_and(|(plan, source)| {
                 self.emit_member_else_reuse(plan, source)
@@ -394,6 +408,7 @@ impl Generator {
         if let Some(previous) = else_arm_previous_global_cache {
             self.restore_condition_global_cache(previous);
         }
+        self.restore_condition_float_cache(else_arm_previous_float_cache);
         self.restore_wide_pair_mask_cache(else_arm_previous_wide_mask_cache);
         if let Err(diagnostic) = else_result {
             self.restore_wide_pair_mask_cache(previous_wide_mask_cache);
@@ -450,6 +465,42 @@ impl Generator {
             b: first_register,
         });
         Ok(true)
+    }
+}
+
+fn plain_float_equality_else_followup<'a>(
+    condition: &Expression,
+    else_body: &'a [Statement],
+) -> Option<&'a Expression> {
+    let [statement] = else_body else {
+        return None;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::Equal | BinaryOperator::NotEqual,
+        left,
+        right,
+    } = condition
+    else {
+        return None;
+    };
+    let memory_literal_pair =
+        (crate::condition_float_cache::is_direct_float_memory_load(left)
+            && matches!(
+                right.as_ref(),
+                Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
+            ))
+            || (crate::condition_float_cache::is_direct_float_memory_load(right)
+                && matches!(
+                    left.as_ref(),
+                    Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
+                ));
+    if !memory_literal_pair || crate::condition_float_cache::expression_has_value_barrier(condition)
+    {
+        return None;
+    }
+    match statement {
+        Statement::Store { value, .. } | Statement::Assign { value, .. } => Some(value),
+        _ => None,
     }
 }
 

@@ -1529,7 +1529,9 @@ impl Generator {
                 return Err(Diagnostic::error("a float == comparison with a float argument in f1 needs the FP register allocator (roadmap)"));
             }
             if right_literal && left_load {
-                if self.condition_repeats_float_value(left) {
+                if self.condition_repeats_float_value(left)
+                    || self.condition_float_value_is_retained_by_guarded_followup(left)
+                {
                     self.load_float_literal_into(FLOAT_SCRATCH, right, double)?;
                     let value = self.place_condition_float_load(left, FLOAT_FIRST)?;
                     (value, FLOAT_SCRATCH)
@@ -1539,7 +1541,9 @@ impl Generator {
                     (value, FLOAT_FIRST)
                 }
             } else if left_literal && right_load {
-                if self.condition_repeats_float_value(right) {
+                if self.condition_repeats_float_value(right)
+                    || self.condition_float_value_is_retained_by_guarded_followup(right)
+                {
                     self.load_float_literal_into(FLOAT_SCRATCH, left, double)?;
                     let value = self.place_condition_float_load(right, FLOAT_FIRST)?;
                     (FLOAT_SCRATCH, value)

@@ -2012,7 +2012,21 @@ impl Generator {
                             | Expression::Dereference { .. }
                             | Expression::Index { .. })
                 );
+            let guarded_edge_memory = match value {
+                Expression::Binary { left, right, .. }
+                    if matches!(left.as_ref(), Expression::FloatLiteral(_)) =>
+                {
+                    self.has_condition_float_guarded_edge_register(right)
+                }
+                Expression::Binary { left, right, .. }
+                    if matches!(right.as_ref(), Expression::FloatLiteral(_)) =>
+                {
+                    self.has_condition_float_guarded_edge_register(left)
+                }
+                _ => false,
+            };
             let destination = if !o0_literal_minus_memory
+                && !guarded_edge_memory
                 && matches!(
                 value,
                 Expression::Binary {

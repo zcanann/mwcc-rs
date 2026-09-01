@@ -830,15 +830,30 @@ impl Generator {
         }
         if self.is_float_located(right) {
             if let Expression::FloatLiteral(value) = left {
+                let retained = self.condition_float_guarded_edge_register(right);
                 if destination == FLOAT_SCRATCH {
+                    if let Some(register) = retained.filter(|register| *register != destination) {
+                        self.load_float_literal(destination, *value, double);
+                        return Operands::ordered(destination, register);
+                    }
                     let literal = self.fresh_virtual_float();
                     self.load_float_literal(literal, *value, double);
-                    self.emit_located_operand(right, destination)?;
-                    return Operands::ordered(literal, destination);
+                    let right = if let Some(register) = retained {
+                        register
+                    } else {
+                        self.emit_located_operand(right, destination)?;
+                        destination
+                    };
+                    return Operands::ordered(literal, right);
                 }
                 self.load_float_literal(destination, *value, double);
-                self.emit_located_operand(right, FLOAT_SCRATCH)?;
-                return Operands::ordered(destination, FLOAT_SCRATCH);
+                let right = if let Some(register) = retained {
+                    register
+                } else {
+                    self.emit_located_operand(right, FLOAT_SCRATCH)?;
+                    FLOAT_SCRATCH
+                };
+                return Operands::ordered(destination, right);
             }
             // A transformed value (notably `-member - other_member`) is a
             // computed FP operand, not a register leaf.  Materialize it in the

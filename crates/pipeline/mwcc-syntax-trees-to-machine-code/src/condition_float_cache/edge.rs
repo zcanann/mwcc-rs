@@ -63,6 +63,58 @@ impl Generator {
             ..ConditionFloatCache::default()
         }
     }
+
+    /// Build the cache for the false arm of a plain comparison. Both operands
+    /// of a non-short-circuit comparison dominate either selected edge, unlike
+    /// `&&` and `||`, whose false edge can be reached before a later term.
+    pub(crate) fn condition_float_plain_false_edge_cache(
+        &self,
+        followup: &Expression,
+    ) -> ConditionFloatCache {
+        let intra_condition = self
+            .condition_float_cache
+            .condition
+            .as_ref()
+            .filter(|condition| {
+                matches!(
+                    condition,
+                    Expression::Binary {
+                        operator: BinaryOperator::Equal
+                            | BinaryOperator::NotEqual
+                            | BinaryOperator::Less
+                            | BinaryOperator::LessEqual
+                            | BinaryOperator::Greater
+                            | BinaryOperator::GreaterEqual,
+                        ..
+                    }
+                )
+            })
+            .map(|condition| {
+                self.condition_float_cache
+                    .edge_observed
+                    .iter()
+                    .filter(|value| {
+                        evaluation_guarantees_load(condition, &value.expression)
+                            && pure_prefix_contains(
+                                followup,
+                                &value.expression,
+                                &mut false,
+                            )
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        ConditionFloatCache {
+            active: self.condition_float_cache.active,
+            guarded_edge: true,
+            recording_allowed: self.condition_float_cache.recording_allowed,
+            intra_condition,
+            zero_register: self.condition_float_cache.zero_register,
+            literals: self.condition_float_cache.literals.clone(),
+            ..ConditionFloatCache::default()
+        }
+    }
 }
 
 /// Whether every path that selects a condition's true edge evaluates `target`.

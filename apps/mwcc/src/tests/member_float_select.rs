@@ -165,3 +165,52 @@ fn reuses_a_nested_pointer_base_across_float_binary_operands() {
     ];
     assert!(object.windows(expected.len()).any(|bytes| bytes == expected));
 }
+
+#[test]
+fn reuses_a_compared_float_member_in_the_reciprocal_else_arm() {
+    let source = br#"
+        struct Rate {
+            float value;
+        };
+
+        void normalize(struct Rate* rate) {
+            if (rate->value == 0.0f) {
+                rate->value = 1.0f;
+            } else {
+                rate->value = 1.0f / rate->value;
+            }
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    flags.optimization = mwcc_versions::Optimization::O4;
+    let object = compile(
+        source,
+        "float-reciprocal-else-edge.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_6,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the reciprocal else arm should reuse its compared member");
+
+    let expected = [
+        0xc0, 0x00, 0x00, 0x00, // lfs f0,zero
+        0xc0, 0x23, 0x00, 0x00, // lfs f1,0(r3)
+        0xfc, 0x00, 0x08, 0x00, // fcmpu f0,f1
+        0x40, 0x82, 0x00, 0x10, // bne else
+        0xc0, 0x00, 0x00, 0x00, // lfs f0,one
+        0xd0, 0x03, 0x00, 0x00, // stfs f0,0(r3)
+        0x48, 0x00, 0x00, 0x10, // b join
+        0xc0, 0x00, 0x00, 0x00, // else: lfs f0,one
+        0xec, 0x00, 0x08, 0x24, // fdivs f0,f0,f1
+        0xd0, 0x03, 0x00, 0x00, // stfs f0,0(r3)
+        0x4e, 0x80, 0x00, 0x20, // blr
+    ];
+    assert!(object.windows(expected.len()).any(|bytes| bytes == expected));
+}

@@ -202,6 +202,24 @@ impl Generator {
             .then_some(value.register)
     }
 
+    /// Whether an edge-carried value can provide one operand before the store
+    /// scheduler chooses the arithmetic result home. The consuming lookup still
+    /// happens later during expression placement.
+    pub(crate) fn has_condition_float_guarded_edge_register(
+        &self,
+        operand: &Expression,
+    ) -> bool {
+        self.condition_float_cache.guarded_edge
+            && self
+                .condition_float_cache
+                .intra_condition
+                .iter()
+                .find(|value| {
+                    same_retained_float_expression(&value.expression, operand)
+                })
+                .is_some_and(|value| self.condition_float_value_is_live(value))
+    }
+
     pub(crate) fn record_condition_float_value(&mut self, operand: &Expression, register: u8) {
         if !self.condition_float_cache.active
             || !self.condition_float_cache.recording_allowed
