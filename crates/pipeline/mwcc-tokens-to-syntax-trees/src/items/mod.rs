@@ -760,6 +760,11 @@ impl Parser {
             let explicit_data_specialization =
                 explicit_specialization && self.item_is_explicit_data_specialization();
             let start = self.position;
+            // Preserve concrete-template alias identity even when the ordinary
+            // typedef parser succeeds. Inline member recovery later runs on an
+            // isolated, namespace-free parser and still needs to map `TUtilf`
+            // back to `TUtil<float>`.
+            self.capture_template_alias();
             let function_template_declaration_bump =
                 self.function_template_declaration_label_bump();
             self.skipped_inline_functions += function_template_declaration_bump;

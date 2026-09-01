@@ -2646,6 +2646,17 @@ impl Parser {
             }
             index += 1;
         }
+        let template_parameters = self.tokens[start..index]
+            .windows(2)
+            .filter_map(|pair| match pair {
+                [Token::Identifier(kind), Token::Identifier(name)]
+                    if matches!(kind.as_str(), "typename" | "class") =>
+                {
+                    Some(name.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let is_class = matches!(self.tokens.get(index), Some(Token::KeywordStruct))
             || matches!(self.tokens.get(index), Some(Token::Identifier(word)) if word == "class");
         if !is_class {
@@ -2722,6 +2733,18 @@ impl Parser {
                                 && self.tokens.get(parameter_open + 1)
                                     == Some(&Token::KeywordVoid));
                         let arity = if parameter_empty { 0 } else { commas + 1 };
+                        if let Some(signature) = self.template_static_method_signature(
+                            class_body_start,
+                            index,
+                            parameter_open,
+                            cursor - 1,
+                            &template_parameters,
+                        ) {
+                            self.inline_template_static_methods
+                                .entry((class_name.clone(), member_name.clone()))
+                                .or_default()
+                                .push(signature);
+                        }
                         while matches!(self.tokens.get(cursor), Some(Token::Identifier(_))) {
                             cursor += 1;
                         }
@@ -2851,6 +2874,92 @@ impl Parser {
             }
             index += 1;
         }
+    }
+
+    fn template_static_method_signature(
+        &self,
+        class_body_start: usize,
+        member_index: usize,
+        parameter_open: usize,
+        parameter_close: usize,
+        template_parameters: &[String],
+    ) -> Option<crate::parser::TemplateStaticMethod> {
+        let mut declaration_start = member_index;
+        while declaration_start > class_body_start
+            && !matches!(
+                self.tokens.get(declaration_start - 1),
+                Some(Token::Semicolon | Token::BraceOpen | Token::BraceClose | Token::Colon)
+            )
+        {
+            declaration_start -= 1;
+        }
+        let prefix = self.tokens.get(declaration_start..member_index)?;
+        if !prefix
+            .iter()
+            .any(|token| matches!(token, Token::Identifier(word) if word == "static"))
+        {
+            return None;
+        }
+        let return_type = prefix
+            .iter()
+            .rev()
+            .find_map(|token| self.template_scalar_type(token, template_parameters))?;
+
+        let body = self.tokens.get(parameter_open + 1..parameter_close)?;
+        let parameters = if body.is_empty() || body == [Token::KeywordVoid] {
+            Vec::new()
+        } else {
+            let mut parameters = Vec::new();
+            let mut start = 0usize;
+            let mut depth = 0i32;
+            for index in 0..=body.len() {
+                let boundary = index == body.len()
+                    || (body.get(index) == Some(&Token::Comma) && depth == 0);
+                if boundary {
+                    let parameter = body[start..index]
+                        .iter()
+                        .find_map(|token| self.template_scalar_type(token, template_parameters))?;
+                    parameters.push(parameter);
+                    start = index + 1;
+                    continue;
+                }
+                match body[index] {
+                    Token::ParenOpen | Token::BracketOpen | Token::Less => depth += 1,
+                    Token::ParenClose | Token::BracketClose | Token::Greater => depth -= 1,
+                    _ => {}
+                }
+            }
+            parameters
+        };
+        Some(crate::parser::TemplateStaticMethod {
+            return_type,
+            parameters,
+        })
+    }
+
+    fn template_scalar_type(
+        &self,
+        token: &Token,
+        template_parameters: &[String],
+    ) -> Option<crate::parser::TemplateScalarType> {
+        let concrete = match token {
+            Token::KeywordInt => Some(Type::Int),
+            Token::KeywordChar => Some(Type::Char),
+            Token::KeywordShort => Some(Type::Short),
+            Token::KeywordUnsigned => Some(Type::UnsignedInt),
+            Token::KeywordFloat => Some(Type::Float),
+            Token::Identifier(name) => self.typedefs.get(name).copied(),
+            _ => None,
+        };
+        concrete
+            .map(crate::parser::TemplateScalarType::Concrete)
+            .or_else(|| match token {
+                Token::Identifier(name) => template_parameters
+                    .iter()
+                    .position(|parameter| parameter == name)
+                    .map(crate::parser::TemplateScalarType::Parameter),
+                _ => None,
+            })
     }
 
     /// Charge the primary-template member body's analysis labels the first time
@@ -3122,12 +3231,16 @@ impl Parser {
         let Some(argument) = self.template_argument_type(argument_token) else {
             return false;
         };
+        let Some(argument_identity) = crate::cxx::encode_template_argument_type(argument) else {
+            return false;
+        };
         let Some(layout) = self.instantiate_struct_template_layout(template_name, Some(argument))
         else {
             return false;
         };
+        let concrete = format!("{template_name}<{argument_identity}>");
         self.structs.insert(alias.clone(), layout);
-        self.register_struct_typedef_alias(alias.clone(), alias.clone());
+        self.register_struct_typedef_alias(alias.clone(), concrete);
         true
     }
 
@@ -3173,7 +3286,25 @@ impl Parser {
             index += 1;
         }
         if let (Some(primary), Some(alias)) = (primary, alias) {
-            self.template_aliases.insert(alias, primary);
+            let qualified_alias = self.qualify_cxx_class_name(&alias);
+            let qualified_primary = self.qualify_cxx_class_name(&primary);
+            self.template_aliases
+                .insert(alias.clone(), primary.clone());
+            self.template_aliases
+                .insert(qualified_alias.clone(), qualified_primary);
+            if let Some(
+                [Token::Identifier(typedef), Token::Identifier(_), Token::Less, argument, Token::Greater, Token::Identifier(candidate_alias), Token::Semicolon],
+            ) = self.tokens.get(start..start + 7)
+            {
+                if typedef == "typedef" && candidate_alias == &alias {
+                    if let Some(argument) = self.template_argument_type(argument) {
+                        self.template_alias_scalar_arguments
+                            .insert(alias, argument);
+                        self.template_alias_scalar_arguments
+                            .insert(qualified_alias, argument);
+                    }
+                }
+            }
         }
     }
 

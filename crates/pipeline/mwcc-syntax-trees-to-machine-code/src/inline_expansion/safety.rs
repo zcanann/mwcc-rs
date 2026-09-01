@@ -11,6 +11,41 @@ pub(super) fn composable_function(function: &Function) -> bool {
             .all(|parameter| !variable_is_modified_or_escaped(function, &parameter.name))
 }
 
+/// A reference-forwarding leaf can safely expose a parameter's source lvalue
+/// to the one call it wraps. The frontend represents `const T& value` as a
+/// pointer-shaped ABI parameter while source `&value` remains an
+/// `AddressOf(Variable)` expression. That looks like an escaping parameter to
+/// the general composer, but direct substitution is exact when the address is
+/// the parameter's only use and the body has no other control flow.
+pub(super) fn reference_forwarding_call_callee(function: &Function) -> bool {
+    let [Statement::Expression(call @ Expression::Call { arguments, .. })] =
+        function.statements.as_slice()
+    else {
+        return false;
+    };
+    if !composable_function_with_assignable_parameters(function, false) {
+        return false;
+    }
+    let addressed = function
+        .parameters
+        .iter()
+        .filter(|parameter| variable_is_modified_or_escaped(function, &parameter.name))
+        .collect::<Vec<_>>();
+    !addressed.is_empty()
+        && addressed.iter().all(|parameter| {
+            expression_use_count(call, &parameter.name) == 1
+                && parameter_forwarded_by_address(arguments, &parameter.name)
+        })
+}
+
+pub(super) fn parameter_forwarded_by_address(arguments: &[Expression], parameter: &str) -> bool {
+    arguments.iter().any(|argument| {
+        matches!(argument,
+            Expression::AddressOf { operand }
+                if matches!(operand.as_ref(), Expression::Variable(name) if name == parameter))
+    })
+}
+
 fn composable_function_with_assignable_parameters(
     function: &Function,
     parameters_are_assignable: bool,
@@ -842,7 +877,10 @@ pub(super) fn stable_argument(expression: &Expression, stable_variables: &HashSe
     }
 }
 
-fn stable_lvalue_address(expression: &Expression, stable_variables: &HashSet<String>) -> bool {
+pub(super) fn stable_lvalue_address(
+    expression: &Expression,
+    stable_variables: &HashSet<String>,
+) -> bool {
     match expression {
         Expression::Variable(_) => true,
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
@@ -878,6 +916,14 @@ pub(super) fn stable_arguments(
         })
         .collect();
     if unstable.is_empty() {
+        return true;
+    }
+    if reference_forwarding_call_callee(function)
+        && unstable.iter().all(|index| {
+            stable_lvalue_address(&arguments[*index], stable_variables)
+                && !crate::analysis::expression_has_side_effect(&arguments[*index])
+        })
+    {
         return true;
     }
     // A verified one-store member setter consumes both parameters exactly
@@ -940,6 +986,14 @@ pub(super) fn materializable_arguments(
     stable_variables: &HashSet<String>,
     allow_changing_scalars: bool,
 ) -> bool {
+    let forwarded_reference_arguments = reference_forwarding_call_callee(function)
+        .then(|| match function.statements.as_slice() {
+            [Statement::Expression(Expression::Call { arguments, .. })] => {
+                Some(arguments.as_slice())
+            }
+            _ => None,
+        })
+        .flatten();
     function.parameters.len() == arguments.len()
         && function
             .parameters
@@ -947,6 +1001,9 @@ pub(super) fn materializable_arguments(
             .zip(arguments)
             .all(|(parameter, argument)| {
                 stable_argument(argument, stable_variables)
+                    || (forwarded_reference_arguments.is_some_and(|forwarded| {
+                        parameter_forwarded_by_address(forwarded, &parameter.name)
+                    }) && stable_lvalue_address(argument, stable_variables))
                     // A scalar local read is side-effect-free at the call site.
                     // Copying it into a hygienic inline parameter preserves the
                     // ordinary once-only argument evaluation even when that
@@ -962,6 +1019,25 @@ pub(super) fn materializable_arguments(
                     // allowing the expanded body to use the value later.
                     || (matches!(argument, Expression::Call { .. })
                         && !matches!(parameter.parameter_type, Type::Void | Type::Struct { .. }))
+                    // Arithmetic expressions are evaluated once into the
+                    // ordinary scalar argument lane. Capturing the complete
+                    // expression—not only a bare nested call—preserves a
+                    // source argument such as `magnitude() / length` before
+                    // the retained body consumes it.
+                    || (forwarded_reference_arguments.is_some()
+                        && matches!(
+                            parameter.parameter_type,
+                            Type::Int
+                                | Type::UnsignedInt
+                                | Type::Char
+                                | Type::UnsignedChar
+                                | Type::Short
+                                | Type::UnsignedShort
+                                | Type::Float
+                                | Type::Double
+                                | Type::LongLong
+                                | Type::UnsignedLongLong
+                        ))
                     || matches!(
                         argument,
                         Expression::Member {

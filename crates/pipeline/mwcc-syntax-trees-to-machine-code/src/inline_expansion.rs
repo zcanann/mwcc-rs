@@ -28,7 +28,9 @@ use returns::rewrite_inline_returns;
 use safety::{
     automatic_composable_function, bounded_switch_transaction_callee, composable_function,
     materializable_arguments, multi_call_transaction_callee, parameter_requires_materialization,
-    repeatable_guarded_call_callee, repeatable_scalar_member_setter_callee,
+    parameter_forwarded_by_address, reference_forwarding_call_callee,
+    repeatable_guarded_call_callee,
+    repeatable_scalar_member_setter_callee,
     repeatable_terminal_wrapper_callee, stable_argument, stable_arguments, stable_local_values,
     terminal_scalar_arguments,
 };
@@ -263,10 +265,25 @@ impl InlineBodySet {
                     .then(|| (function.name.clone(), block.items.clone()))
             })
             .collect();
+        // Parameterized embedded-assembly bodies cannot be textually composed:
+        // their symbolic C operands need the original function's register
+        // binding. The frontend/object pipeline deliberately represents these
+        // helpers as callable undefined symbols. Keep them out of both the
+        // mandatory-inline set and the semantic C++ body maps so expansion
+        // preserves the call instead of dropping the separately stored asm.
+        let callable_asm_fallbacks: HashSet<&str> = skipped
+            .iter()
+            .filter(|function| {
+                !function.inline_asm_blocks.is_empty()
+                    && !asm_fragments.contains_key(&function.name)
+            })
+            .map(|function| function.name.as_str())
+            .collect();
         let required: HashSet<String> = skipped
             .iter()
             .filter(|function| !asm_fragments.contains_key(&function.name))
             .filter(|function| !callable_fallbacks.contains(function.name.as_str()))
+            .filter(|function| !callable_asm_fallbacks.contains(function.name.as_str()))
             .map(|function| function.name.clone())
             .collect();
         let mut call_counts = HashMap::<String, usize>::new();
@@ -290,12 +307,13 @@ impl InlineBodySet {
         for function in skipped {
             if asm_fragments.contains_key(&function.name)
                 || callable_fallbacks.contains(function.name.as_str())
+                || callable_asm_fallbacks.contains(function.name.as_str())
             {
                 continue;
             }
             let materialized = materialize_embedded_asm_statements(function);
             let function = materialized.as_ref().unwrap_or(function);
-            if composable_function(function) {
+            if composable_function(function) || reference_forwarding_call_callee(function) {
                 bodies.insert(function.name.clone(), function.clone());
             }
         }
@@ -386,8 +404,11 @@ impl InlineBodySet {
             .iter()
             .filter(|function| !asm_fragments.contains_key(&function.name))
             .filter(|function| !callable_fallbacks.contains(function.name.as_str()))
+            .filter(|function| !callable_asm_fallbacks.contains(function.name.as_str()))
             .filter_map(|function| {
-                value_body::summarize(function).map(|body| (function.name.clone(), body))
+                value_body::summarize(function)
+                    .or_else(|| value_body::summarize_automatic_void_forward(function))
+                    .map(|body| (function.name.clone(), body))
             })
             .collect();
         for function in definitions
@@ -517,6 +538,11 @@ impl InlineBodySet {
     ) -> Vec<Vec<String>> {
         let bodies: HashMap<&str, &Function> = skipped
             .iter()
+            // Embedded asm calls are terminal at this layer. Zero-argument
+            // fragments lower directly at the call site, while parameterized
+            // blocks retain their callable symbol until operand binding is
+            // implemented; neither consumes the semantic inline-depth budget.
+            .filter(|function| function.inline_asm_blocks.is_empty())
             .map(|function| (function.name.as_str(), function))
             .collect();
         let mut emitted: HashSet<String> = definitions
@@ -1411,17 +1437,40 @@ impl InlineBodySet {
         let mut nested_stable_variables = stable_variables.clone();
         let materialize =
             !terminal_direct && !stable_arguments(callee, arguments, stable_variables);
+        let forwarded_reference_arguments = reference_forwarding_call_callee(callee)
+            .then(|| match callee.statements.as_slice() {
+                [Statement::Expression(Expression::Call { arguments, .. })] => {
+                    Some(arguments.as_slice())
+                }
+                _ => None,
+            })
+            .flatten();
         let mut replacements = HashMap::new();
         let mut substituted = Vec::new();
         for (parameter, argument) in callee.parameters.iter().zip(arguments) {
+            let forwarded_reference_lvalue =
+                forwarded_reference_arguments.is_some_and(|forwarded| {
+                    parameter_forwarded_by_address(forwarded, &parameter.name)
+                        && safety::stable_lvalue_address(argument, stable_variables)
+                });
             let parameter_is_mutable =
                 parameter_requires_materialization(callee, &parameter.name);
-            if (!parameter_is_mutable || terminal_direct)
+            if (!parameter_is_mutable || terminal_direct || forwarded_reference_lvalue)
                 && (!materialize
                     || stable_argument(argument, stable_variables)
-                    || known_function_designator(argument))
+                    || known_function_designator(argument)
+                    || forwarded_reference_lvalue)
             {
-                replacements.insert(parameter.name.clone(), argument.clone());
+                let replacement = forwarded_reference_arguments
+                    .filter(|forwarded| {
+                        parameter_forwarded_by_address(forwarded, &parameter.name)
+                    })
+                    .and_then(|_| match argument {
+                        Expression::AddressOf { operand } => Some(operand.as_ref().clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| argument.clone());
+                replacements.insert(parameter.name.clone(), replacement);
                 continue;
             }
             let unique_name = loop {
@@ -2433,7 +2482,7 @@ mod tests {
                 source_line: 1,
             })],
         }];
-        let bodies = InlineBodySet::analyze(&[helper]);
+        let bodies = InlineBodySet::analyze(std::slice::from_ref(&helper));
         assert!(bodies.asm_fragment("configure").is_some());
 
         let caller = function(
@@ -2447,6 +2496,59 @@ mod tests {
         assert!(!bodies.calls_required(&caller));
         assert!(!bodies.calls_any(&caller));
         assert!(bodies.expand_calls(&caller).is_none());
+    }
+
+    #[test]
+    fn does_not_summarize_a_value_returning_embedded_asm_helper() {
+        let mut helper = function("square_magnitude", Vec::new(), Vec::new());
+        helper.return_type = Type::Float;
+        helper.locals = vec![LocalDeclaration {
+            declared_type: Type::Float,
+            name: "result".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        }];
+        helper.return_expression = Some(Expression::Variable("result".into()));
+        helper.inline_asm_blocks = vec![InlineAsmBlock {
+            statement_index: 0,
+            items: vec![AsmItem::Instruction(AsmInstruction {
+                mnemonic: "ps_sum0".into(),
+                operands: vec![AsmOperand::Fpr(1), AsmOperand::Fpr(2)],
+                source_line: 1,
+            })],
+        }];
+
+        let bodies = InlineBodySet::analyze(std::slice::from_ref(&helper));
+        assert!(!bodies.bodies.contains_key("square_magnitude"));
+        assert!(!bodies.values.contains_key("square_magnitude"));
+
+        let caller = function(
+            "caller",
+            Vec::new(),
+            vec![Statement::Expression(Expression::Call {
+                name: "square_magnitude".into(),
+                arguments: Vec::new(),
+            })],
+        );
+        assert!(!bodies.calls_required(&caller));
+        assert_eq!(
+            InlineBodySet::depth_limited_fallbacks(
+                std::slice::from_ref(&caller),
+                std::slice::from_ref(&helper),
+                InlineNestingBudget {
+                    constructor: 0,
+                    ordinary: 0,
+                },
+            ),
+            [Vec::<String>::new()]
+        );
     }
 
     #[test]
@@ -3219,6 +3321,201 @@ mod tests {
             Statement::Store {
                 value: Expression::Variable(name), ..
             } if name == "data"
+        ));
+    }
+
+    #[test]
+    fn expands_a_once_addressed_reference_forwarding_leaf() {
+        let aggregate_pointer = Type::StructPointer { element_size: 12 };
+        let add = function(
+            "add",
+            vec![
+                Parameter {
+                    parameter_type: aggregate_pointer,
+                    name: "this".into(),
+                },
+                Parameter {
+                    parameter_type: aggregate_pointer,
+                    name: "operand".into(),
+                },
+            ],
+            vec![Statement::Expression(Expression::Call {
+                name: "vector_add".into(),
+                arguments: vec![
+                    Expression::Variable("this".into()),
+                    Expression::AddressOf {
+                        operand: Box::new(Expression::Variable("operand".into())),
+                    },
+                    Expression::Variable("this".into()),
+                ],
+            })],
+        );
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: aggregate_pointer,
+                name: "object".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "add".into(),
+                arguments: vec![
+                    Expression::Member {
+                        base: Box::new(Expression::Variable("object".into())),
+                        offset: 8,
+                        member_type: Type::Struct { size: 12, align: 4 },
+                        index_stride: None,
+                    },
+                    Expression::AddressOf {
+                        operand: Box::new(Expression::Member {
+                            base: Box::new(Expression::Variable("object".into())),
+                            offset: 24,
+                            member_type: Type::Struct { size: 12, align: 4 },
+                            index_stride: None,
+                        }),
+                    },
+                ],
+            })],
+        );
+
+        let expanded = InlineBodySet::analyze(&[add])
+            .expand_calls(&caller)
+            .expect("the reference-forwarding leaf should compose");
+        assert!(matches!(
+            expanded.statements.as_slice(),
+            [Statement::Expression(Expression::Call { name, arguments })]
+                if name == "vector_add"
+                    && matches!(&arguments[0], Expression::Member { offset: 8, .. })
+                    && matches!(&arguments[1], Expression::AddressOf { operand }
+                        if matches!(operand.as_ref(), Expression::Member { offset: 24, .. }))
+                    && matches!(&arguments[2], Expression::Member { offset: 8, .. })
+        ));
+    }
+
+    #[test]
+    fn preserves_one_address_when_inlining_a_reference_accessor_under_address_of() {
+        let aggregate_pointer = Type::StructPointer { element_size: 12 };
+        let mut accessor = function(
+            "get",
+            vec![Parameter {
+                parameter_type: aggregate_pointer,
+                name: "this".into(),
+            }],
+            Vec::new(),
+        );
+        accessor.return_type = aggregate_pointer;
+        accessor.return_expression = Some(Expression::Member {
+            base: Box::new(Expression::Variable("this".into())),
+            offset: 16,
+            member_type: Type::Struct { size: 12, align: 4 },
+            index_stride: None,
+        });
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: aggregate_pointer,
+                name: "object".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![Expression::AddressOf {
+                    operand: Box::new(Expression::Call {
+                        name: "get".into(),
+                        arguments: vec![Expression::Variable("object".into())],
+                    }),
+                }],
+            })],
+        );
+
+        let expanded = InlineBodySet::analyze(&[accessor])
+            .expand_calls(&caller)
+            .expect("the reference accessor should compose");
+        assert!(matches!(
+            expanded.statements.as_slice(),
+            [Statement::Expression(Expression::Call { arguments, .. })]
+                if matches!(&arguments[0], Expression::AddressOf { operand }
+                    if matches!(operand.as_ref(), Expression::Member { offset: 16, .. }))
+        ));
+    }
+
+    #[test]
+    fn materializes_a_scalar_call_beside_a_forwarded_reference_lvalue() {
+        let aggregate_pointer = Type::StructPointer { element_size: 12 };
+        let scale = function(
+            "scale",
+            vec![
+                Parameter {
+                    parameter_type: aggregate_pointer,
+                    name: "this".into(),
+                },
+                Parameter {
+                    parameter_type: Type::Float,
+                    name: "scalar".into(),
+                },
+                Parameter {
+                    parameter_type: aggregate_pointer,
+                    name: "operand".into(),
+                },
+            ],
+            vec![Statement::Expression(Expression::Call {
+                name: "vector_scale".into(),
+                arguments: vec![
+                    Expression::AddressOf {
+                        operand: Box::new(Expression::Variable("operand".into())),
+                    },
+                    Expression::Variable("this".into()),
+                    Expression::Variable("scalar".into()),
+                ],
+            })],
+        );
+        let caller = function(
+            "caller",
+            vec![
+                Parameter {
+                    parameter_type: aggregate_pointer,
+                    name: "target".into(),
+                },
+                Parameter {
+                    parameter_type: aggregate_pointer,
+                    name: "value".into(),
+                },
+            ],
+            vec![Statement::Expression(Expression::Call {
+                name: "scale".into(),
+                arguments: vec![
+                    Expression::Variable("target".into()),
+                    Expression::Binary {
+                        operator: BinaryOperator::Divide,
+                        left: Box::new(Expression::Call {
+                            name: "magnitude".into(),
+                            arguments: Vec::new(),
+                        }),
+                        right: Box::new(Expression::FloatLiteral(2.0)),
+                    },
+                    Expression::Variable("value".into()),
+                ],
+            })],
+        );
+
+        let expanded = InlineBodySet::analyze(&[scale])
+            .expand_calls(&caller)
+            .expect("the scalar call should materialize beside the reference lvalue");
+        assert!(matches!(
+            expanded.statements.as_slice(),
+            [
+                Statement::Assign {
+                    name: scalar,
+                    value: Expression::Binary {
+                        operator: BinaryOperator::Divide,
+                        left,
+                        ..
+                    },
+                },
+                Statement::Expression(Expression::Call { arguments, .. }),
+            ] if scalar.starts_with("__mwcc_inline_scale_")
+                && matches!(left.as_ref(), Expression::Call { name, .. } if name == "magnitude")
+                && matches!(&arguments[0], Expression::AddressOf { operand }
+                    if matches!(operand.as_ref(), Expression::Variable(name) if name == "value"))
+                && matches!(&arguments[2], Expression::Variable(name) if name == scalar)
         ));
     }
 
@@ -4881,6 +5178,10 @@ mod tests {
                 row_bytes: None,
             },
         ];
+
+        assert!(InlineBodySet::analyze(std::slice::from_ref(&helper))
+            .values
+            .contains_key("helper"));
 
         let expanded = InlineBodySet::analyze_with_definitions(
             &[helper, caller.clone()],

@@ -223,6 +223,18 @@ pub(crate) struct StructTemplate {
     pub(crate) default_constructor_zero_fields: Vec<String>,
 }
 
+#[derive(Clone)]
+pub(crate) enum TemplateScalarType {
+    Parameter(usize),
+    Concrete(Type),
+}
+
+#[derive(Clone)]
+pub(crate) struct TemplateStaticMethod {
+    pub(crate) return_type: TemplateScalarType,
+    pub(crate) parameters: Vec<TemplateScalarType>,
+}
+
 #[derive(Clone, PartialEq)]
 pub(crate) struct TemplateInstantiationKey {
     pub(crate) name: String,
@@ -325,6 +337,11 @@ pub(crate) struct Parser {
     /// out-of-class concrete specialization of one of these remains inline and
     /// emits no code unless used; a merely declared member's specialization does.
     pub(crate) inline_template_members: std::collections::HashSet<(String, String)>,
+    /// Arithmetic static member signatures recovered from primary-template
+    /// bodies. Concrete typedefs substitute their scalar template argument at
+    /// a call site without pretending the primary template emitted code.
+    pub(crate) inline_template_static_methods:
+        HashMap<(String, String), Vec<TemplateStaticMethod>>,
     /// Native anonymous-label cost of each inline primary-template member body,
     /// keyed by `(primary template, ABI member name)`.
     pub(crate) inline_template_member_control_flow_labels: HashMap<(String, String), usize>,
@@ -491,6 +508,9 @@ pub(crate) struct Parser {
     /// separately from layout aliases because nested/multi-argument templates
     /// may be opaque for layout while still carrying inline-member semantics.
     pub(crate) template_aliases: HashMap<String, String>,
+    /// Scalar argument of a simple concrete template typedef, keyed by both
+    /// its source and namespace-qualified aliases.
+    pub(crate) template_alias_scalar_arguments: HashMap<String, Type>,
     /// In-scope variables that are struct pointers, mapped to their struct tag,
     /// so `variable->field` resolves to the right layout.
     pub(crate) variable_structs: HashMap<String, String>,

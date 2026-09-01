@@ -315,6 +315,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         struct_templates: HashMap::new(),
         template_instantiation_stack: std::cell::RefCell::new(Vec::new()),
         inline_template_members: std::collections::HashSet::new(),
+        inline_template_static_methods: HashMap::new(),
         inline_template_member_control_flow_labels: std::collections::HashMap::new(),
         instantiated_inline_template_members: std::collections::HashSet::new(),
         inline_template_accessors: std::collections::HashMap::new(),
@@ -357,6 +358,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         cxx_template_virtual_methods: HashMap::new(),
         cxx_template_virtual_definitions: HashMap::new(),
         template_aliases: HashMap::new(),
+        template_alias_scalar_arguments: HashMap::new(),
         variable_structs: HashMap::new(),
         cxx_reference_variables: std::collections::HashSet::new(),
         cxx_scalar_reference_pointees: HashMap::new(),
@@ -6686,6 +6688,71 @@ blr\n\
             [mwcc_syntax_trees::Statement::Expression(
                 mwcc_syntax_trees::Expression::Call { .. }
             )]
+        ));
+    }
+
+    #[test]
+    fn retains_a_specialized_template_inline_calling_a_sibling_member() {
+        let source = r#"
+            namespace JGeometry {
+                template <typename T> struct TVec3 { T x, y, z; };
+                template <> struct TVec3<float> {
+                    float x, y, z;
+                    float squared() const { return x * x + y * y + z * z; }
+                    float copyLength(const JGeometry::TVec3<float>& other) {
+                        return other.squared();
+                    }
+                };
+                typedef TVec3<float> TVec3f;
+            }
+            float affect(JGeometry::TVec3f* output, const JGeometry::TVec3f& input) {
+                return output->copyLength(input);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit
+            .skipped_inline_definitions
+            .iter()
+            .any(|function| function.name.contains("copyLength")));
+    }
+
+    #[test]
+    fn retains_an_inline_call_to_a_static_template_alias_member() {
+        let source = r#"
+            namespace JGeometry {
+                template <typename T> struct TUtil {
+                    static float epsilon() { return 0.001f; }
+                };
+                typedef TUtil<float> TUtilf;
+                struct Vec {
+                    float threshold() { return TUtilf::epsilon(); }
+                };
+            }
+            float affect(JGeometry::Vec* value) { return value->threshold(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit
+            .skipped_inline_definitions
+            .iter()
+            .any(|function| function.name.contains("threshold")));
+        assert!(unit.skipped_inline_signatures.iter().any(
+            |(name, return_type, parameters)| name == "epsilon__Q29JGeometry8TUtil<f>Fv"
+                && *return_type == mwcc_syntax_trees::Type::Float
+                && parameters.is_empty()
         ));
     }
 

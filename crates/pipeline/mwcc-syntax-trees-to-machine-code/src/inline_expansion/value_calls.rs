@@ -694,9 +694,20 @@ pub(super) fn expand_expression(
         Expression::Dereference { pointer } => Expression::Dereference {
             pointer: Box::new(recurse(pointer, active, changed, value_body_substitutions)),
         },
-        Expression::AddressOf { operand } => Expression::AddressOf {
-            operand: Box::new(recurse(operand, active, changed, value_body_substitutions)),
-        },
+        Expression::AddressOf { operand } => {
+            let operand = recurse(operand, active, changed, value_body_substitutions);
+            // A C++ reference-returning inline is summarized as the explicit
+            // address of its source lvalue. When the caller wrote `&get()`,
+            // composition would otherwise manufacture `&&member`; retain the
+            // single pointer-valued address that the non-inlined call returns.
+            if let Expression::AddressOf { .. } = operand {
+                operand
+            } else {
+                Expression::AddressOf {
+                    operand: Box::new(operand),
+                }
+            }
+        }
         Expression::Index { base, index } => Expression::Index {
             base: Box::new(recurse(base, active, changed, value_body_substitutions)),
             index: Box::new(recurse(index, active, changed, value_body_substitutions)),

@@ -1663,6 +1663,44 @@ impl Parser {
         }
     }
 
+    /// Enumerate the declaration owners denoted by a source class spelling.
+    /// A concrete template typedef can pass through both an alias and an
+    /// encoded specialization before reaching methods registered on the
+    /// primary template (`TUtilf` -> `TUtil<f>` -> `TUtil`). Keep all proven
+    /// identities so overload selection can deduplicate identical declarations
+    /// without falling back to a terminal-name guess.
+    fn cxx_member_owner_candidates(&self, class: &str) -> Vec<String> {
+        let mut owners = Vec::new();
+        let push = |owners: &mut Vec<String>, owner: String| {
+            if !owners.contains(&owner) {
+                owners.push(owner);
+            }
+        };
+        push(&mut owners, class.to_string());
+        push(&mut owners, self.qualify_cxx_class_name(class));
+        if let Some(resolved) = self.resolve_scoped_cxx_class_name(class) {
+            push(&mut owners, resolved);
+        }
+
+        let mut index = 0;
+        while index < owners.len() {
+            let owner = owners[index].clone();
+            if let Some(target) = self.struct_typedefs.get(&owner) {
+                push(&mut owners, target.clone());
+                push(&mut owners, self.qualify_cxx_class_name(target));
+            }
+            if let Some(target) = self.template_aliases.get(&owner) {
+                push(&mut owners, target.clone());
+                push(&mut owners, self.qualify_cxx_class_name(target));
+            }
+            if let Some(primary) = owner.split('<').next().filter(|_| owner.contains('<')) {
+                push(&mut owners, primary.to_string());
+            }
+            index += 1;
+        }
+        owners
+    }
+
     /// Register an aggregate typedef under the source alias and, for a simple
     /// concrete template such as `TVec3<float>`, its qualified namespace alias.
     /// Keeping complex template aliases on the established source-only path
@@ -1901,6 +1939,7 @@ impl Parser {
         // Discover static data declarations first so `return sCurrentHeap;`
         // resolves even when the declaration follows the accessor body.
         self.capture_cxx_static_data_members(body_start, &class);
+        self.predeclare_nonvirtual_cxx_methods(body_start, &class);
         let parameter_fields = parameter_member_fields(&self.tokens[body_start..]);
         let mut prototypes = Vec::new();
         let mut brace_depth = 1i32;
@@ -2226,6 +2265,56 @@ impl Parser {
         prototypes
     }
 
+    /// Register non-virtual member signatures before recovering any in-class
+    /// body. C++ class scope is complete at every body regardless of textual
+    /// order (`setLength` may call a later `squared` declaration). Virtuals
+    /// remain on the source-order pass because slot allocation is observable.
+    fn predeclare_nonvirtual_cxx_methods(&mut self, body_start: usize, class: &str) {
+        let mut index = body_start;
+        let mut brace_depth = 1i32;
+        while index < self.tokens.len() && brace_depth > 0 {
+            let begins_member = brace_depth == 1
+                && (index == body_start
+                    || matches!(
+                        self.tokens.get(index.wrapping_sub(1)),
+                        Some(Token::Semicolon | Token::BraceClose)
+                    )
+                    || (matches!(self.tokens.get(index.wrapping_sub(1)), Some(Token::Colon))
+                        && matches!(self.tokens.get(index.wrapping_sub(2)), Some(Token::Identifier(access)) if matches!(access.as_str(), "public" | "private" | "protected"))));
+            if begins_member {
+                let declaration = self.tokens[index..]
+                    .iter()
+                    .take_while(|token| {
+                        !matches!(token, Token::Semicolon | Token::BraceOpen | Token::EndOfFile)
+                    })
+                    .collect::<Vec<_>>();
+                let is_virtual = declaration.iter().any(
+                    |token| matches!(token, Token::Identifier(word) if word == "virtual"),
+                );
+                let member_name = declaration.windows(2).find_map(|tokens| match tokens {
+                    [Token::Identifier(name), Token::ParenOpen] => Some(name.as_str()),
+                    _ => None,
+                });
+                let overrides_virtual = member_name.is_some_and(|member| {
+                    self.cxx_dispatch_tables
+                        .get(class)
+                        .and_then(|dispatch| dispatch.methods.get(member))
+                        .is_some_and(|methods| !methods.is_empty())
+                });
+                if !is_virtual && !overrides_virtual {
+                    let _ = self.capture_cxx_method(index, class);
+                }
+            }
+            match self.tokens.get(index) {
+                Some(Token::BraceOpen) => brace_depth += 1,
+                Some(Token::BraceClose) => brace_depth -= 1,
+                Some(Token::EndOfFile) | None => break,
+                _ => {}
+            }
+            index += 1;
+        }
+    }
+
     /// Reuse the ordinary class analysis for a nested definition, but merge
     /// only syntax facts. Layout and callable recovery remain owned by the
     /// containing parser, while the frontend's dropped-inline timeline still
@@ -2475,6 +2564,19 @@ impl Parser {
             .instantiated_template_control_flow_labels += new_template_control_flow;
         self.instantiated_inline_template_members
             .extend(probe.instantiated_inline_template_members.iter().cloned());
+        for signature in probe
+            .skipped_inline_signatures
+            .iter()
+            .skip(self.skipped_inline_signatures.len())
+        {
+            if !self
+                .skipped_inline_signatures
+                .iter()
+                .any(|(name, _, _)| name == &signature.0)
+            {
+                self.skipped_inline_signatures.push(signature.clone());
+            }
+        }
         // Every caller creates `probe` by cloning `self` immediately before
         // isolated parsing, and this pool is append-only. Inspect only the
         // generated suffix: rescanning the inherited prefix for every inline
@@ -2922,20 +3024,26 @@ impl Parser {
                 self.skipped_inline_names.insert(mangled.clone());
             }
             let prototype_parameters = if is_static {
-                std::sync::Arc::make_mut(&mut self.cxx_static_methods)
+                let methods = std::sync::Arc::make_mut(&mut self.cxx_static_methods)
                     .entry((class.to_string(), member))
-                    .or_default()
-                    .push(method);
+                    .or_default();
+                if !methods.iter().any(|existing| existing.mangled == mangled) {
+                    methods.push(method);
+                }
                 parameters
             } else {
-                std::sync::Arc::make_mut(&mut self.cxx_instance_methods)
+                let methods = std::sync::Arc::make_mut(&mut self.cxx_instance_methods)
                     .entry((class.to_string(), member.clone()))
-                    .or_default()
-                    .push(method.clone());
-                std::sync::Arc::make_mut(&mut self.cxx_explicit_instance_methods)
+                    .or_default();
+                if !methods.iter().any(|existing| existing.mangled == mangled) {
+                    methods.push(method.clone());
+                }
+                let explicit = std::sync::Arc::make_mut(&mut self.cxx_explicit_instance_methods)
                     .entry((class.to_string(), member))
-                    .or_default()
-                    .push(method);
+                    .or_default();
+                if !explicit.iter().any(|existing| existing.mangled == mangled) {
+                    explicit.push(method);
+                }
                 let mut prototype_parameters = vec![Type::StructPointer {
                     element_size: self.structs.get(class).map_or(0, |layout| layout.size),
                 }];
@@ -3148,28 +3256,143 @@ impl Parser {
         member: &str,
         argument_count: usize,
     ) -> Compilation<String> {
-        let source_class = class;
-        let class = self.qualify_cxx_class_name(source_class);
-        let candidates: Vec<&RecoveredCxxMethod> = self
-            .cxx_static_methods
-            .get(&(class.clone(), member.to_string()))
-            .or_else(|| {
+        let owners = self.cxx_member_owner_candidates(class);
+        let mut candidates: Vec<&RecoveredCxxMethod> = owners
+            .iter()
+            .filter_map(|owner| {
                 self.cxx_static_methods
-                    .get(&(source_class.to_string(), member.to_string()))
+                    .get(&(owner.clone(), member.to_string()))
             })
-            .into_iter()
             .flatten()
             .filter(|method| {
                 method.fixed_parameter_count == argument_count
                     || (method.variadic && argument_count >= method.fixed_parameter_count)
             })
             .collect();
+        candidates.sort_by(|left, right| left.mangled.cmp(&right.mangled));
+        candidates.dedup_by(|left, right| left.mangled == right.mangled);
         if candidates.len() != 1 {
             return Err(Diagnostic::error(format!(
                 "static C++ member call '{class}::{member}' is ambiguous or unavailable (roadmap)"
             )));
         }
         Ok(candidates[0].mangled.clone())
+    }
+
+    /// Resolve a static call instantiated from a simple scalar class-template
+    /// typedef when no ordinary concrete declaration was emitted. Primary
+    /// template recovery supplies the exact scalar signature; the alias
+    /// supplies its concrete argument and therefore the ABI owner spelling.
+    pub(crate) fn resolve_static_member_expression_call(
+        &mut self,
+        class: &str,
+        member: &str,
+        arguments: &[Expression],
+    ) -> Compilation<String> {
+        if let Ok(name) = self.resolve_static_member_call(class, member, arguments.len()) {
+            return Ok(name);
+        }
+
+        let terminal = class.rsplit("::").next().unwrap_or(class);
+        let mut aliases = self
+            .template_aliases
+            .iter()
+            .filter(|(alias, _)| {
+                alias.as_str() == class || alias.rsplit("::").next() == Some(terminal)
+            })
+            .collect::<Vec<_>>();
+        aliases.sort_by_key(|(alias, _)| !alias.contains("::"));
+        let Some((alias, primary)) = aliases.first().copied() else {
+            return self.resolve_static_member_call(class, member, arguments.len());
+        };
+        if aliases.iter().any(|(other_alias, other_primary)| {
+            other_alias.rsplit("::").next() != alias.rsplit("::").next()
+                || (other_primary.rsplit("::").next() != primary.rsplit("::").next())
+        }) {
+            return self.resolve_static_member_call(class, member, arguments.len());
+        }
+        let concrete_argument = self
+            .template_alias_scalar_arguments
+            .get(alias)
+            .or_else(|| self.template_alias_scalar_arguments.get(class))
+            .copied()
+            .ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "static C++ template call '{class}::{member}' has no concrete scalar argument"
+                ))
+            })?;
+        let primary_terminal = primary.rsplit("::").next().unwrap_or(primary);
+        let summaries = self
+            .inline_template_static_methods
+            .get(&(primary.clone(), member.to_string()))
+            .or_else(|| {
+                self.inline_template_static_methods
+                    .get(&(primary_terminal.to_string(), member.to_string()))
+            })
+            .into_iter()
+            .flatten()
+            .filter(|summary| summary.parameters.len() == arguments.len())
+            .filter(|summary| {
+                summary
+                    .parameters
+                    .iter()
+                    .zip(arguments)
+                    .all(|(parameter, argument)| {
+                        let expected = match parameter {
+                            crate::parser::TemplateScalarType::Parameter(0) => concrete_argument,
+                            crate::parser::TemplateScalarType::Concrete(value) => *value,
+                            crate::parser::TemplateScalarType::Parameter(_) => return false,
+                        };
+                        self.cxx_overload_argument_type(argument)
+                            .is_none_or(|actual| actual == expected)
+                    })
+            })
+            .collect::<Vec<_>>();
+        let [summary] = summaries.as_slice() else {
+            return Err(Diagnostic::error(format!(
+                "static C++ template call '{class}::{member}' is ambiguous or unavailable (roadmap)"
+            )));
+        };
+        let instantiate = |value: &crate::parser::TemplateScalarType| match value {
+            crate::parser::TemplateScalarType::Parameter(0) => Some(concrete_argument),
+            crate::parser::TemplateScalarType::Concrete(value) => Some(*value),
+            crate::parser::TemplateScalarType::Parameter(_) => None,
+        };
+        let return_type = instantiate(&summary.return_type).ok_or_else(|| {
+            Diagnostic::error("a multi-parameter static template return needs substitution")
+        })?;
+        let parameter_types = summary
+            .parameters
+            .iter()
+            .map(instantiate)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                Diagnostic::error("multi-parameter static template arguments need substitution")
+            })?;
+        let encoded_argument = encode_template_argument_type(concrete_argument).ok_or_else(|| {
+            Diagnostic::error("a static template argument needs ABI encoding")
+        })?;
+        let concrete_owner = format!("{primary}<{encoded_argument}>");
+        let cxx_parameters = parameter_types
+            .iter()
+            .copied()
+            .map(CxxParameterType::plain)
+            .collect::<Vec<_>>();
+        let name = self.mangle_typed_concrete_template_member_in_current_namespace(
+            &concrete_owner,
+            member,
+            &cxx_parameters,
+            false,
+        )?;
+        if !self
+            .skipped_inline_signatures
+            .iter()
+            .any(|(existing, _, _)| existing == &name)
+        {
+            self.skipped_inline_signatures
+                .push((name.clone(), return_type, parameter_types));
+        }
+        Ok(name)
     }
 
     /// Resolve `Base::member(args)` inside a member body. An explicit class
@@ -3287,13 +3510,17 @@ impl Parser {
         let resolved = self
             .resolve_scoped_cxx_class_name(class)
             .unwrap_or_else(|| class.to_owned());
-        let direct_methods = self
-            .cxx_instance_methods
-            .get(&(resolved.clone(), member.to_string()))
-            .or_else(|| {
+        let owners = self.cxx_member_owner_candidates(class);
+        let mut direct_methods = owners
+            .iter()
+            .filter_map(|owner| {
                 self.cxx_instance_methods
-                    .get(&(class.to_string(), member.to_string()))
-            });
+                    .get(&(owner.clone(), member.to_string()))
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        direct_methods.sort_by(|left, right| left.mangled.cmp(&right.mangled));
+        direct_methods.dedup_by(|left, right| left.mangled == right.mangled);
         // A pointer field can retain only the terminal name of an incomplete
         // class while declaration capture has already qualified its methods.
         // Reuse that evidence only when the terminal owner/member pair is
@@ -3313,15 +3540,18 @@ impl Parser {
                 candidate_member == member && owner.rsplit("::").next() == Some(terminal)
             })
             .collect::<Vec<_>>();
-        let methods = direct_methods.or_else(|| {
-            let [owner] = qualified_method_owners.as_slice() else {
-                return None;
-            };
-            self.cxx_instance_methods.get(*owner)
-        });
-        let candidates: Vec<&RecoveredCxxMethod> = methods
+        if direct_methods.is_empty() {
+            if let [owner] = qualified_method_owners.as_slice() {
+                direct_methods.extend(
+                    self.cxx_instance_methods
+                        .get(*owner)
+                        .into_iter()
+                        .flatten(),
+                );
+            }
+        }
+        let candidates: Vec<&RecoveredCxxMethod> = direct_methods
             .into_iter()
-            .flatten()
             .filter(|method| {
                 method.fixed_parameter_count == argument_count
                     || (method.variadic && argument_count >= method.fixed_parameter_count)

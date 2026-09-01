@@ -975,10 +975,10 @@ impl Parser {
                                 arguments.insert(0, Expression::Variable("this".to_owned()));
                                 name
                             } else {
-                                let name = self.resolve_static_member_call(
+                                let name = self.resolve_static_member_expression_call(
                                     &scope,
                                     &member,
-                                    arguments.len(),
+                                    &arguments,
                                 )?;
                                 self.record_inline_template_member_instantiation(&scope, &member);
                                 if let Some(parameters) =

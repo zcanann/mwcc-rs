@@ -152,7 +152,12 @@ fn statements_store_global_name(statements: &[Statement], name: &str) -> bool {
 }
 
 pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
-    if function.asm_body.is_some() {
+    // Embedded assembly is semantic body content, even though it is stored
+    // separately from the ordinary statement list.  Summarizing only the C++
+    // portion would turn an assembly-produced result local into an
+    // uninitialized caller local. Parameterized blocks stay as callable
+    // fallbacks until their symbolic operands can be bound during expansion.
+    if function.asm_body.is_some() || !function.inline_asm_blocks.is_empty() {
         return None;
     }
     if function.return_type == Type::Void {
@@ -243,9 +248,16 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
 /// the tail out of the early-return edge while allowing value-position inline
 /// composition at an assignment or comparison call site.
 fn summarize_guarded_effect_tail(function: &Function) -> Option<Expression> {
-    if !function.locals.is_empty()
+    if function.locals.len() > 8
         || !function.guards.is_empty()
         || function.asm_body.is_some()
+        || statement_count(&function.statements) > 12
+        || function.locals.iter().any(|local| {
+            local.is_static
+                || local.is_volatile
+                || local.array_length.is_some()
+                || matches!(local.declared_type, Type::Void | Type::Struct { .. })
+        })
     {
         return None;
     }
@@ -260,9 +272,6 @@ fn summarize_guarded_effect_tail(function: &Function) -> Option<Expression> {
     else {
         return None;
     };
-    let [Statement::Return(Some(early))] = then_body.as_slice() else {
-        return None;
-    };
     if !else_body.is_empty() || tail.is_empty() {
         return None;
     }
@@ -274,15 +283,24 @@ fn summarize_guarded_effect_tail(function: &Function) -> Option<Expression> {
         function.return_type,
         function.return_expression.clone()?,
     ));
-    Some(Expression::Conditional {
+    let selection = Expression::Conditional {
         condition: Box::new(condition.clone()),
-        when_true: Box::new(normalize_reference_result(
-            function.return_type,
-            early.clone(),
-        )),
+        when_true: Box::new(summarize_return_arm(then_body, function.return_type)?),
         when_false: Box::new(sequence(fallback)),
         origin: ConditionalOrigin::IfReturns,
-    })
+    };
+    let mut expressions = function
+        .locals
+        .iter()
+        .filter_map(|local| {
+            local.initializer.as_ref().map(|initializer| Expression::Assign {
+                target: Box::new(Expression::Variable(local.name.clone())),
+                value: Box::new(initializer.clone()),
+            })
+        })
+        .collect::<Vec<_>>();
+    expressions.push(selection);
+    Some(sequence(expressions))
 }
 
 /// Preserve a retained inline's ordered `if (condition) return value;` chain.
@@ -1419,11 +1437,16 @@ pub(super) fn summarize_automatic_void_forward(function: &Function) -> Option<Va
     if function.return_type != Type::Void
         || !function.locals.is_empty()
         || function.return_expression.is_some()
-        || !matches!(function.statements.as_slice(), [Statement::Expression(_)])
+        || !matches!(
+            function.statements.as_slice(),
+            [Statement::Expression(Expression::Call { .. })]
+        )
     {
         return None;
     }
-    let [Statement::Expression(expression)] = function.statements.as_slice() else {
+    let [Statement::Expression(expression @ Expression::Call { .. })] =
+        function.statements.as_slice()
+    else {
         unreachable!("single expression was checked")
     };
     Some(ValueInlineBody {
@@ -2267,6 +2290,81 @@ mod tests {
                 && matches!(when_false.as_ref(), Expression::Comma { left, right }
                     if matches!(left.as_ref(), Expression::Assign { .. })
                         && matches!(right.as_ref(), Expression::IntegerLiteral(0)))
+        ));
+    }
+
+    #[test]
+    fn summarizes_scalar_setup_before_a_guarded_effect_tail() {
+        let mut function = empty_function("normalize", Type::Float);
+        function.locals = vec![
+            LocalDeclaration {
+                declared_type: Type::Float,
+                name: "square".into(),
+                initializer: Some(Expression::Call {
+                    name: "squared".into(),
+                    arguments: Vec::new(),
+                }),
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                attribute_alignment: None,
+                row_bytes: None,
+            },
+            LocalDeclaration {
+                declared_type: Type::Float,
+                name: "inverse".into(),
+                initializer: None,
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                attribute_alignment: None,
+                row_bytes: None,
+            },
+        ];
+        function.statements = vec![
+            Statement::If {
+                condition: Expression::Variable("too_small".into()),
+                then_body: vec![
+                    Statement::Expression(Expression::Call {
+                        name: "zero".into(),
+                        arguments: Vec::new(),
+                    }),
+                    Statement::Return(Some(Expression::FloatLiteral(0.0))),
+                ],
+                else_body: Vec::new(),
+            },
+            Statement::Assign {
+                name: "inverse".into(),
+                value: Expression::Call {
+                    name: "inverse_square_root".into(),
+                    arguments: vec![Expression::Variable("square".into())],
+                },
+            },
+            Statement::Expression(Expression::Call {
+                name: "scale".into(),
+                arguments: vec![Expression::Variable("inverse".into())],
+            }),
+        ];
+        function.return_expression = Some(Expression::Variable("square".into()));
+
+        let summary = summarize(&function).expect("guarded scalar setup should summarize");
+        assert!(matches!(
+            summary.expression,
+            Expression::Comma { left, right }
+                if matches!(left.as_ref(), Expression::Assign { .. })
+                    && matches!(right.as_ref(), Expression::Conditional {
+                        when_true,
+                        when_false,
+                        origin: ConditionalOrigin::IfReturns,
+                        ..
+                    } if matches!(when_true.as_ref(), Expression::Comma { .. })
+                        && matches!(when_false.as_ref(), Expression::Comma { .. }))
         ));
     }
 
