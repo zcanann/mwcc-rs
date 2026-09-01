@@ -225,6 +225,8 @@ pub enum Instruction {
     PairedSingleSubtract { d: u8, a: u8, b: u8 },
     /// `ps_mul frD, frA, frC` — multiply both paired-single lanes.
     PairedSingleMultiply { d: u8, a: u8, c: u8 },
+    /// `ps_muls0 frD, frA, frC` — multiply both lanes by lane zero of `frC`.
+    PairedSingleMultiplyScalar0 { d: u8, a: u8, c: u8 },
     /// `ps_madd frD, frA, frC, frB` — multiply-add both paired-single lanes.
     PairedSingleMultiplyAdd { d: u8, a: u8, c: u8, b: u8 },
     /// `ps_sum0 frD, frA, frC, frB` — sum lane zero and copy lane one from `frB`.
@@ -421,6 +423,7 @@ impl Instruction {
                 | PairedSingleAdd { .. }
                 | PairedSingleSubtract { .. }
                 | PairedSingleMultiply { .. }
+                | PairedSingleMultiplyScalar0 { .. }
                 | PairedSingleMultiplyAdd { .. }
                 | PairedSingleSum0 { .. }
                 | PairedSingleSum1 { .. }
@@ -465,6 +468,7 @@ impl Instruction {
                 | PairedSingleAdd { .. }
                 | PairedSingleSubtract { .. }
                 | PairedSingleMultiply { .. }
+                | PairedSingleMultiplyScalar0 { .. }
                 | PairedSingleMultiplyAdd { .. }
                 | PairedSingleSum0 { .. }
                 | PairedSingleSum1 { .. }
@@ -519,6 +523,7 @@ impl Instruction {
             | PairedSingleAdd { d, .. }
             | PairedSingleSubtract { d, .. }
             | PairedSingleMultiply { d, .. }
+            | PairedSingleMultiplyScalar0 { d, .. }
             | PairedSingleMultiplyAdd { d, .. }
             | PairedSingleSum0 { d, .. }
             | PairedSingleSum1 { d, .. }

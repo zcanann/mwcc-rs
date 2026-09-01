@@ -130,6 +130,11 @@ pub struct InlineBodySet {
     /// feeding their empty semantic-statement list through AST composition,
     /// which would erase the call and its assembly body.
     asm_fragments: HashMap<String, Vec<AsmItem>>,
+    /// Retained register-inline-assembly helpers whose arguments and symbolic
+    /// floating temporaries can be bound at the call site. Unlike a textual
+    /// fragment, these keep the source signature so call emission can first
+    /// marshal the actual arguments into their EABI registers.
+    parameterized_asm_fragments: HashMap<String, Function>,
     /// Whole-file IPA may erase a base vptr immediately overwritten by the
     /// derived constructor. Ordinary automatic inlining preserves each
     /// construction-phase installation because MWCC does.
@@ -265,6 +270,11 @@ impl InlineBodySet {
                     .then(|| (function.name.clone(), block.items.clone()))
             })
             .collect();
+        let parameterized_asm_fragments: HashMap<_, _> = skipped
+            .iter()
+            .filter(|function| parameterized_asm_fragment(function))
+            .map(|function| (function.name.clone(), function.clone()))
+            .collect();
         // Parameterized embedded-assembly bodies cannot be textually composed:
         // their symbolic C operands need the original function's register
         // binding. The frontend/object pipeline deliberately represents these
@@ -276,12 +286,14 @@ impl InlineBodySet {
             .filter(|function| {
                 !function.inline_asm_blocks.is_empty()
                     && !asm_fragments.contains_key(&function.name)
+                    && !parameterized_asm_fragments.contains_key(&function.name)
             })
             .map(|function| function.name.as_str())
             .collect();
         let required: HashSet<String> = skipped
             .iter()
             .filter(|function| !asm_fragments.contains_key(&function.name))
+            .filter(|function| !parameterized_asm_fragments.contains_key(&function.name))
             .filter(|function| !callable_fallbacks.contains(function.name.as_str()))
             .filter(|function| !callable_asm_fallbacks.contains(function.name.as_str()))
             .map(|function| function.name.clone())
@@ -306,6 +318,7 @@ impl InlineBodySet {
         let mut bodies = HashMap::new();
         for function in skipped {
             if asm_fragments.contains_key(&function.name)
+                || parameterized_asm_fragments.contains_key(&function.name)
                 || callable_fallbacks.contains(function.name.as_str())
                 || callable_asm_fallbacks.contains(function.name.as_str())
             {
@@ -403,6 +416,7 @@ impl InlineBodySet {
         let mut values: HashMap<_, _> = skipped
             .iter()
             .filter(|function| !asm_fragments.contains_key(&function.name))
+            .filter(|function| !parameterized_asm_fragments.contains_key(&function.name))
             .filter(|function| !callable_fallbacks.contains(function.name.as_str()))
             .filter(|function| !callable_asm_fallbacks.contains(function.name.as_str()))
             .filter_map(|function| {
@@ -522,6 +536,7 @@ impl InlineBodySet {
             guarded_transaction_values,
             required,
             asm_fragments,
+            parameterized_asm_fragments,
             elide_overwritten_vptr_stores: false,
             nesting_budget: InlineNestingBudget::default(),
         }
@@ -581,6 +596,12 @@ impl InlineBodySet {
     /// assembled directly at its call site.
     pub(crate) fn asm_fragment(&self, name: &str) -> Option<&[AsmItem]> {
         self.asm_fragments.get(name).map(Vec::as_slice)
+    }
+
+    /// A retained register-inline-assembly helper that is safe to bind into a
+    /// caller after ordinary EABI argument marshaling.
+    pub(crate) fn parameterized_asm_fragment(&self, name: &str) -> Option<&Function> {
+        self.parameterized_asm_fragments.get(name)
     }
 
     /// The retained source body for an ordinary automatic-inline candidate.
@@ -2186,6 +2207,75 @@ fn materialize_embedded_asm_statements(function: &Function) -> Option<Function> 
     })
 }
 
+/// Whether an embedded-assembly helper has the register-only shape that can be
+/// instantiated by call emission. The parser has already resolved every
+/// `register` pointer used as a memory base to its incoming EABI GPR. What
+/// remains symbolic is limited to floating parameters and floating locals,
+/// which the caller can bind without inventing stack storage or C semantics.
+fn parameterized_asm_fragment(function: &Function) -> bool {
+    if function.asm_body.is_some()
+        || !function.statements.is_empty()
+        || !function.guards.is_empty()
+    {
+        return false;
+    }
+    let [block] = function.inline_asm_blocks.as_slice() else {
+        return false;
+    };
+    if block.statement_index != 0
+        || function.parameters.is_empty()
+        || function.locals.iter().any(|local| {
+            local.declared_type != Type::Float
+                || local.initializer.is_some()
+                || local.is_static
+                || local.array_length.is_some()
+        })
+        || function.parameters.iter().any(|parameter| {
+            !matches!(
+                parameter.parameter_type,
+                Type::Float
+                    | Type::Double
+                    | Type::Pointer(_)
+                    | Type::StructPointer { .. }
+            )
+        })
+    {
+        return false;
+    }
+    match (&function.return_type, &function.return_expression) {
+        (Type::Void, None) => {}
+        (Type::Float, Some(Expression::Variable(name)))
+            if function.locals.iter().any(|local| &local.name == name) => {}
+        _ => return false,
+    }
+
+    let symbolic_floats: HashSet<&str> = function
+        .parameters
+        .iter()
+        .filter(|parameter| matches!(parameter.parameter_type, Type::Float | Type::Double))
+        .map(|parameter| parameter.name.as_str())
+        .chain(function.locals.iter().map(|local| local.name.as_str()))
+        .collect();
+    let labels: HashSet<&str> = block
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            AsmItem::Label(name) => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    block.items.iter().all(|item| match item {
+        AsmItem::Instruction(instruction) => instruction.operands.iter().all(|operand| match operand {
+            mwcc_syntax_trees::AsmOperand::Label(name) => {
+                symbolic_floats.contains(name.as_str()) || labels.contains(name.as_str())
+            }
+            _ => true,
+        }),
+        AsmItem::Entry(_) => false,
+        AsmItem::Label(_) => true,
+    })
+}
+
 /// Parameter substitution can turn a callee guard into a compile-time branch
 /// (`base::~base(this, 0)` makes its deleting guard `0 > 0`). Eliminate that
 /// dead path before structured lowering sees an expression with no register.
@@ -2500,7 +2590,14 @@ mod tests {
 
     #[test]
     fn does_not_summarize_a_value_returning_embedded_asm_helper() {
-        let mut helper = function("square_magnitude", Vec::new(), Vec::new());
+        let mut helper = function(
+            "square_magnitude",
+            vec![Parameter {
+                parameter_type: Type::StructPointer { element_size: 12 },
+                name: "source".into(),
+            }],
+            Vec::new(),
+        );
         helper.return_type = Type::Float;
         helper.locals = vec![LocalDeclaration {
             declared_type: Type::Float,
@@ -2520,7 +2617,12 @@ mod tests {
             statement_index: 0,
             items: vec![AsmItem::Instruction(AsmInstruction {
                 mnemonic: "ps_sum0".into(),
-                operands: vec![AsmOperand::Fpr(1), AsmOperand::Fpr(2)],
+                operands: vec![
+                    AsmOperand::Label("result".into()),
+                    AsmOperand::Fpr(2),
+                    AsmOperand::Fpr(3),
+                    AsmOperand::Fpr(4),
+                ],
                 source_line: 1,
             })],
         }];
@@ -2528,13 +2630,16 @@ mod tests {
         let bodies = InlineBodySet::analyze(std::slice::from_ref(&helper));
         assert!(!bodies.bodies.contains_key("square_magnitude"));
         assert!(!bodies.values.contains_key("square_magnitude"));
+        assert!(bodies
+            .parameterized_asm_fragment("square_magnitude")
+            .is_some());
 
         let caller = function(
             "caller",
             Vec::new(),
             vec![Statement::Expression(Expression::Call {
                 name: "square_magnitude".into(),
-                arguments: Vec::new(),
+                arguments: vec![Expression::Variable("source".into())],
             })],
         );
         assert!(!bodies.calls_required(&caller));

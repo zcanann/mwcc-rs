@@ -130,6 +130,7 @@ impl Instruction {
             Instruction::PairedSingleAdd { d, a, b } => a_form(4, d, a, b, 0, 21),
             Instruction::PairedSingleSubtract { d, a, b } => a_form(4, d, a, b, 0, 20),
             Instruction::PairedSingleMultiply { d, a, c } => a_form(4, d, a, 0, c, 25),
+            Instruction::PairedSingleMultiplyScalar0 { d, a, c } => a_form(4, d, a, 0, c, 12),
             Instruction::PairedSingleMultiplyAdd { d, a, c, b } => a_form(4, d, a, b, c, 29),
             Instruction::PairedSingleSum0 { d, a, c, b } => a_form(4, d, a, b, c, 10),
             Instruction::PairedSingleSum1 { d, a, c, b } => a_form(4, d, a, b, c, 11),

@@ -338,6 +338,10 @@ pub(super) fn assemble_line(
             let [d, a, c] = fprs(mnemonic, operands)?;
             Instruction::PairedSingleMultiply { d, a, c }
         }
+        "ps_muls0" => {
+            let [d, a, c] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleMultiplyScalar0 { d, a, c }
+        }
         "ps_madd" => {
             let [d, a, c, b] = fprs(mnemonic, operands)?;
             Instruction::PairedSingleMultiplyAdd { d, a, c, b }
@@ -1278,6 +1282,12 @@ mod tests {
                 vec![AsmOperand::Fpr(7), AsmOperand::Fpr(8), AsmOperand::Fpr(9)],
                 Instruction::PairedSingleMultiply { d: 7, a: 8, c: 9 },
                 0x10e8_0272,
+            ),
+            (
+                "ps_muls0",
+                vec![AsmOperand::Fpr(7), AsmOperand::Fpr(8), AsmOperand::Fpr(9)],
+                Instruction::PairedSingleMultiplyScalar0 { d: 7, a: 8, c: 9 },
+                0x10e8_0258,
             ),
             (
                 "ps_madd",

@@ -8,7 +8,170 @@ use super::call_argument_types::{
 };
 #[allow(unused_imports)]
 use super::*;
+use mwcc_syntax_trees::{AsmItem, AsmOperand, Function};
 use mwcc_versions::{FrameConvention, VirtualCallDispatchSchedule};
+
+/// Bind the symbolic floating operands of a retained register-inline-assembly
+/// helper to caller-side FPRs. General register parameters were resolved by
+/// the parser to their incoming EABI GPRs, so ordinary argument marshaling is
+/// sufficient for pointer operands.
+fn bind_parameterized_asm_fragment(
+    function: &Function,
+    destination: Option<u8>,
+    float_result: bool,
+) -> Option<(Vec<AsmItem>, Option<u8>)> {
+    let [block] = function.inline_asm_blocks.as_slice() else {
+        return None;
+    };
+    let returns_float = function.return_type == Type::Float;
+    if returns_float != float_result || (!returns_float && destination.is_some()) {
+        return None;
+    }
+
+    let mut bindings = std::collections::HashMap::<&str, u8>::new();
+    let mut next_float_argument = Eabi::FIRST_FLOAT_ARGUMENT;
+    for parameter in &function.parameters {
+        if matches!(parameter.parameter_type, Type::Float | Type::Double) {
+            if next_float_argument > 8 {
+                return None;
+            }
+            bindings.insert(parameter.name.as_str(), next_float_argument);
+            next_float_argument += 1;
+        }
+    }
+
+    let return_name = match function.return_expression.as_ref() {
+        Some(Expression::Variable(name)) => Some(name.as_str()),
+        None => None,
+        _ => return None,
+    };
+    let parameter_registers: std::collections::HashSet<u8> =
+        bindings.values().copied().collect();
+    let direct_result = destination.filter(|register| !parameter_registers.contains(register));
+    let mut volatile_fprs = (0..=13).filter(|register| {
+        !parameter_registers.contains(register) && Some(*register) != direct_result
+    });
+    for local in &function.locals {
+        let register = if Some(local.name.as_str()) == return_name {
+            direct_result.or_else(|| volatile_fprs.next())?
+        } else {
+            volatile_fprs.next()?
+        };
+        bindings.insert(local.name.as_str(), register);
+    }
+    let result_register = return_name.and_then(|name| bindings.get(name).copied());
+
+    let mut items = block.items.clone();
+    for item in &mut items {
+        let AsmItem::Instruction(instruction) = item else {
+            continue;
+        };
+        for operand in &mut instruction.operands {
+            let AsmOperand::Label(name) = operand else {
+                continue;
+            };
+            if let Some(register) = bindings.get(name.as_str()) {
+                *operand = AsmOperand::Fpr(*register);
+            }
+        }
+    }
+    Some((items, result_register))
+}
+
+#[cfg(test)]
+mod parameterized_asm_tests {
+    use super::*;
+    use mwcc_syntax_trees::{AsmInstruction, InlineAsmBlock, LocalDeclaration, Parameter};
+
+    fn float_local(name: &str) -> LocalDeclaration {
+        LocalDeclaration {
+            declared_type: Type::Float,
+            name: name.into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        }
+    }
+
+    #[test]
+    fn binds_float_parameters_locals_and_result_at_the_call_site() {
+        let helper = Function {
+            return_type: Type::Float,
+            name: "paired_scale".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![
+                Parameter {
+                    parameter_type: Type::StructPointer { element_size: 12 },
+                    name: "src".into(),
+                },
+                Parameter {
+                    parameter_type: Type::Float,
+                    name: "scalar".into(),
+                },
+            ],
+            locals: vec![float_local("input"), float_local("result")],
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: Some(Expression::Variable("result".into())),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: vec![InlineAsmBlock {
+                statement_index: 0,
+                items: vec![
+                    AsmItem::Instruction(AsmInstruction {
+                        mnemonic: "psq_l".into(),
+                        operands: vec![
+                            AsmOperand::Label("input".into()),
+                            AsmOperand::Memory {
+                                displacement: 0,
+                                base: 3,
+                            },
+                            AsmOperand::Immediate(0),
+                            AsmOperand::Immediate(0),
+                        ],
+                        source_line: 1,
+                    }),
+                    AsmItem::Instruction(AsmInstruction {
+                        mnemonic: "ps_muls0".into(),
+                        operands: vec![
+                            AsmOperand::Label("result".into()),
+                            AsmOperand::Label("input".into()),
+                            AsmOperand::Label("scalar".into()),
+                        ],
+                        source_line: 2,
+                    }),
+                ],
+            }],
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        let (items, result) = bind_parameterized_asm_fragment(&helper, Some(5), true)
+            .expect("the register-only helper should bind");
+        assert_eq!(result, Some(5));
+        assert!(matches!(
+            items.as_slice(),
+            [
+                AsmItem::Instruction(AsmInstruction { operands: load, .. }),
+                AsmItem::Instruction(AsmInstruction { operands: multiply, .. }),
+            ] if matches!(load.as_slice(), [AsmOperand::Fpr(0), ..])
+                && multiply == &vec![
+                    AsmOperand::Fpr(5),
+                    AsmOperand::Fpr(0),
+                    AsmOperand::Fpr(1),
+                ]
+        ));
+    }
+}
 
 impl Generator {
     /// Preserve an indirect callee across argument marshaling in r12. The copy
@@ -393,6 +556,25 @@ impl Generator {
             // canonical retained definition while this call emits one instance.
             let fragment = fragment.to_vec();
             return crate::asm::append_embedded_asm(&mut self.output, &fragment);
+        }
+        if let Some(function) = self.inline_bodies.parameterized_asm_fragment(name).cloned() {
+            if arguments.len() == function.parameters.len() {
+                if let Some((fragment, result_register)) =
+                    bind_parameterized_asm_fragment(&function, destination, float_result)
+                {
+                    self.emit_arguments(arguments, name)?;
+                    crate::asm::append_embedded_asm(&mut self.output, &fragment)?;
+                    if let (Some(destination), Some(result)) = (destination, result_register) {
+                        if destination != result {
+                            self.output.instructions.push(Instruction::FloatMove {
+                                d: destination,
+                                b: result,
+                            });
+                        }
+                    }
+                    return Ok(());
+                }
+            }
         }
         // An indirect call through a function-pointer variable (a parameter/local held in
         // a register): copy it to r12 before the arguments (which would overwrite its

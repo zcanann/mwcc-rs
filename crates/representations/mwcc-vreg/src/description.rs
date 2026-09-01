@@ -188,7 +188,8 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, F, b);
         }
         FloatMultiplySingle { d, a, c } | FloatMultiplyDouble { d, a, c }
-        | PairedSingleMultiply { d, a, c } => {
+        | PairedSingleMultiply { d, a, c }
+        | PairedSingleMultiplyScalar0 { d, a, c } => {
             visit(D, F, d);
             visit(U, F, a);
             visit(U, F, c);
