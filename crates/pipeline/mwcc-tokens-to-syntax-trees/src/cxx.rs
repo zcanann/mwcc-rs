@@ -119,6 +119,30 @@ fn is_cxx_arithmetic_type(value_type: Type) -> bool {
     )
 }
 
+/// Compare the aggregate identities retained for exact overload resolution.
+///
+/// Explicit specializations can spell their injected class name as the
+/// primary (`Vec`) even though an expression of that type carries the concrete
+/// identity (`Vec<f>`). Treat that pair as the same aggregate, including the
+/// existing terminal-name fallback for partially qualified declarations, but
+/// never collapse two different concrete specializations.
+fn cxx_aggregate_identity_matches(expected: &str, actual: &str) -> bool {
+    if expected == actual || expected.rsplit("::").next() == actual.rsplit("::").next() {
+        return true;
+    }
+
+    let expected_is_concrete = expected.contains('<');
+    let actual_is_concrete = actual.contains('<');
+    if expected_is_concrete == actual_is_concrete {
+        return false;
+    }
+
+    let expected_primary = expected.split('<').next().unwrap_or(expected);
+    let actual_primary = actual.split('<').next().unwrap_or(actual);
+    expected_primary == actual_primary
+        || expected_primary.rsplit("::").next() == actual_primary.rsplit("::").next()
+}
+
 /// The C++-only information that a plain C struct layout cannot retain.
 /// Declaration order controls constructor initialization order, while base
 /// names distinguish a base initializer from an identically shaped member.
@@ -1367,8 +1391,7 @@ impl Parser {
             });
             match (parameter.qualified_name.as_deref(), actual_aggregate) {
                 (Some(expected), Some(actual)) => {
-                    return expected == actual
-                        || expected.rsplit("::").next() == actual.rsplit("::").next();
+                    return cxx_aggregate_identity_matches(expected, actual);
                 }
                 // A known aggregate identity cannot exactly match a scalar
                 // parameter, and a named aggregate parameter cannot exactly
@@ -1640,6 +1663,18 @@ impl Parser {
         }
     }
 
+    /// Register an aggregate typedef under the source alias and, for a simple
+    /// concrete template such as `TVec3<float>`, its qualified namespace alias.
+    /// Keeping complex template aliases on the established source-only path
+    /// avoids changing lookup behavior for dependent and nested spellings.
+    pub(crate) fn register_struct_typedef_alias(&mut self, alias: String, tag: String) {
+        if self.cplusplus && encoded_template_argument_is_single_type(&tag) {
+            let qualified = self.qualify_cxx_class_name(&alias);
+            self.struct_typedefs.insert(qualified, tag.clone());
+        }
+        self.struct_typedefs.insert(alias, tag);
+    }
+
     /// Resolve a class name from the innermost active namespace outward. Large
     /// game headers reuse names such as `Obj` in many sibling namespaces;
     /// whichever declaration appeared first must not decide every later
@@ -1734,6 +1769,10 @@ impl Parser {
                 .is_some_and(|local| self.structs.contains_key(local));
         self.resolve_scoped_cxx_class_name(&qualified).is_some()
             || self.enum_types.contains_key(&qualified)
+            || self
+                .struct_typedefs
+                .get(&qualified)
+                .is_some_and(|tag| encoded_template_argument_is_single_type(tag))
             || self
                 .struct_typedefs
                 .values()
@@ -2930,6 +2969,54 @@ impl Parser {
         None
     }
 
+    /// A concrete out-of-class member-template specialization is also a
+    /// declaration. Record that fact so it can supply the callable signature
+    /// that its dependent in-class declaration could not express in the
+    /// lowered type system.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn register_cxx_instance_method_definition(
+        &mut self,
+        class: &str,
+        member: &str,
+        mangled: &str,
+        parameters: &[Type],
+        cxx_parameters: &[CxxParameterType],
+        variadic: bool,
+        is_const_member: bool,
+        is_inline: bool,
+        return_struct_tag: Option<&str>,
+    ) {
+        let method = RecoveredCxxMethod {
+            mangled: mangled.to_owned(),
+            fixed_parameter_count: parameters.len(),
+            variadic,
+            parameters: parameters.to_vec(),
+            cxx_parameters: cxx_parameters.to_vec(),
+            is_const_member,
+        };
+        for registry in [
+            &mut self.cxx_instance_methods,
+            &mut self.cxx_explicit_instance_methods,
+        ] {
+            let methods = std::sync::Arc::make_mut(registry)
+                .entry((class.to_owned(), member.to_owned()))
+                .or_default();
+            if !methods
+                .iter()
+                .any(|existing| existing.mangled == method.mangled)
+            {
+                methods.push(method.clone());
+            }
+        }
+        if is_inline {
+            self.skipped_inline_names.insert(mangled.to_owned());
+        }
+        if let Some(tag) = return_struct_tag {
+            self.function_return_structs
+                .insert(mangled.to_owned(), tag.to_owned());
+        }
+    }
+
     /// Retain the common vtable-owned inline leaf (`virtual bool f() const {
     /// return false; }`) as a weak out-of-line function. The vtable relocation,
     /// checked when the translation unit closes, decides whether the candidate
@@ -3212,7 +3299,13 @@ impl Parser {
         // Reuse that evidence only when the terminal owner/member pair is
         // globally unique; sibling namespaces with the same class spelling
         // must continue to defer.
+        // Concrete template identities use the ABI spelling `Owner<T>` while
+        // declarations recovered from an explicit specialization are stored
+        // under the primary owner `Owner`. Apply the same globally-unique
+        // terminal fallback used for incomplete classes to that primary name;
+        // sibling namespaces remain ambiguous and therefore still defer.
         let terminal = class.rsplit("::").next().unwrap_or(class);
+        let terminal = terminal.split('<').next().unwrap_or(terminal);
         let qualified_method_owners = self
             .cxx_instance_methods
             .keys()
@@ -3482,6 +3575,30 @@ impl Parser {
         let scopes = self.member_owner_scopes(class);
         let scopes = scopes.iter().map(String::as_str).collect::<Vec<_>>();
         mangle_qualified_member_function_cv_typed(&scopes, function, explicit_parameters, true)
+    }
+
+    /// Mangle the canonical owner of a concrete template typedef without
+    /// resolving it back through the source alias. Explicit member-template
+    /// specializations are parsed while their namespace is active, so append
+    /// that lexical namespace directly to the ABI owner `Class<T>`.
+    pub(crate) fn mangle_typed_concrete_template_member_in_current_namespace(
+        &self,
+        class: &str,
+        function: &str,
+        explicit_parameters: &[CxxParameterType],
+        is_const_member: bool,
+    ) -> Compilation<String> {
+        let scopes = self
+            .named_namespace_scopes()
+            .into_iter()
+            .chain(class.split("::"))
+            .collect::<Vec<_>>();
+        mangle_qualified_member_function_cv_typed(
+            &scopes,
+            function,
+            explicit_parameters,
+            is_const_member,
+        )
     }
 
     /// Resolve a class owner once before adding the active namespace. Layout
@@ -4873,7 +4990,28 @@ impl Parser {
             }
             let field_name = self.parse_identifier()?;
             if *self.peek() == Token::ParenOpen {
-                let signature = self.parse_class_parameter_types()?;
+                let parameter_open = self.position;
+                let signature = match self.parse_class_parameter_types() {
+                    Ok(signature) => signature,
+                    Err(error) => {
+                        let opaque_indirection = self.tokens[parameter_open..]
+                            .iter()
+                            .take_while(|token| **token != Token::ParenClose)
+                            .any(|token| matches!(token, Token::Star | Token::Ampersand));
+                        if !opaque_indirection {
+                            return Err(error);
+                        }
+                        // Callable declaration recovery is independent from
+                        // physical layout. A method with an opaque pointer or
+                        // reference parameter occupies no object storage, so
+                        // its tail can be skipped without losing later fields.
+                        // By-value failures remain conservative because they
+                        // can hide dependent class semantics.
+                        self.position = declaration_start;
+                        self.skip_class_member()?;
+                        continue;
+                    }
+                };
                 let mut tail = self.position;
                 let mut is_const_member = false;
                 while matches!(self.tokens.get(tail), Some(Token::Identifier(word))
@@ -6329,6 +6467,12 @@ impl Parser {
         }
         Ok(statements)
     }
+}
+
+pub(crate) fn encoded_template_argument_is_single_type(tag: &str) -> bool {
+    tag.rsplit_once('<')
+        .and_then(|(_, arguments)| arguments.strip_suffix('>'))
+        .is_some_and(|arguments| arguments.len() == 1)
 }
 
 fn adjusted_this(offset: u32) -> Expression {

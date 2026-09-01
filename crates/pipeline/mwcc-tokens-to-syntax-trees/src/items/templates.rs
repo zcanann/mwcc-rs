@@ -425,11 +425,12 @@ impl Parser {
     /// concerned; primary templates retain their non-empty parameter list and
     /// continue through the existing recovery path.
     pub(crate) fn consume_explicit_specialization_prefix(&mut self) -> bool {
-        let explicit_specialization = matches!(
+        let mut explicit_specialization = false;
+        while matches!(
             self.tokens.get(self.position..self.position + 3),
             Some([Token::Identifier(template), Token::Less, Token::Greater]) if template == "template"
-        );
-        if explicit_specialization {
+        ) {
+            explicit_specialization = true;
             self.position += 3;
         }
         explicit_specialization
@@ -3126,7 +3127,7 @@ impl Parser {
             return false;
         };
         self.structs.insert(alias.clone(), layout);
-        self.struct_typedefs.insert(alias.clone(), alias.clone());
+        self.register_struct_typedef_alias(alias.clone(), alias.clone());
         true
     }
 

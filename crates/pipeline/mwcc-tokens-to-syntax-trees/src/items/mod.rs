@@ -2246,7 +2246,7 @@ impl Parser {
                         if is_pointer {
                             self.struct_pointer_typedefs.insert(alias, tag.clone());
                         } else {
-                            self.struct_typedefs.insert(alias, tag.clone());
+                            self.register_struct_typedef_alias(alias, tag.clone());
                         }
                         if !self.eat_keyword(Token::Comma) {
                             break;
@@ -2289,7 +2289,7 @@ impl Parser {
                         if is_pointer {
                             self.struct_pointer_typedefs.insert(alias, tag.clone());
                         } else {
-                            self.struct_typedefs.insert(alias, tag.clone());
+                            self.register_struct_typedef_alias(alias, tag.clone());
                         }
                         if !self.eat_keyword(Token::Comma) {
                             break;
@@ -2337,7 +2337,7 @@ impl Parser {
                         }
                         self.expect(Token::Semicolon)?;
                         if let Some(tag) = struct_tag {
-                            self.struct_typedefs.insert(alias.clone(), tag);
+                            self.register_struct_typedef_alias(alias.clone(), tag);
                         }
                         if let Some(tag) = pointer_tag {
                             self.struct_pointer_typedefs.insert(alias.clone(), tag);
@@ -2424,7 +2424,7 @@ impl Parser {
                         .insert(name.clone(), source_fundamental);
                 }
                 if let Some(tag) = aliased_struct_tag {
-                    self.struct_typedefs.insert(name.clone(), tag);
+                    self.register_struct_typedef_alias(name.clone(), tag);
                 }
                 if let Some(identity) = aliased_enum_tag {
                     self.enum_typedefs.insert(name.clone(), identity.clone());
@@ -3508,7 +3508,19 @@ impl Parser {
                 } else {
                     name.clone()
                 };
-                name = if member_is_const {
+                let concrete_mangling_scope = member_declaration_scope
+                    .as_deref()
+                    .and_then(|class| self.struct_typedefs.get(class))
+                    .filter(|class| crate::cxx::encoded_template_argument_is_single_type(class))
+                    .cloned();
+                name = if let Some(class) = concrete_mangling_scope.as_deref() {
+                    self.mangle_typed_concrete_template_member_in_current_namespace(
+                        class,
+                        &source_name,
+                        &cxx_parameters,
+                        member_is_const,
+                    )?
+                } else if member_is_const {
                     self.mangle_typed_const_member_in_current_namespace(
                         scope,
                         &source_name,
@@ -3529,6 +3541,30 @@ impl Parser {
                                 methods.iter().any(|method| method.mangled == name)
                             })
                     });
+                let concrete_template_owner = member_declaration_scope
+                    .as_deref()
+                    .and_then(|class| self.struct_typedefs.get(class))
+                    .filter(|class| class.contains('<'))
+                    .cloned();
+                if !member_definition_is_static
+                    && constructor_scope.is_none()
+                    && destructor_scope.is_none()
+                    && !self.recover_skipped_inline_definition
+                {
+                    if let Some(class) = concrete_template_owner {
+                        self.register_cxx_instance_method_definition(
+                            &class,
+                            &source_name,
+                            &name,
+                            &declared_parameter_types,
+                            &cxx_parameters,
+                            is_variadic,
+                            member_is_const,
+                            is_inline,
+                            return_struct_tag.as_deref(),
+                        );
+                    }
+                }
                 if !member_definition_is_static {
                     parameters.insert(
                         0,

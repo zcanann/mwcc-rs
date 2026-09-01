@@ -1062,6 +1062,38 @@ mod tests {
     }
 
     #[test]
+    fn parses_a_reinterpret_cast_to_an_injected_nested_type() {
+        let source = r#"
+            struct Block {
+                struct Data { int value; };
+                const Data* data;
+                void set(const unsigned char* raw);
+            };
+            void Block::set(const unsigned char* raw) {
+                data = reinterpret_cast<const Data*>(raw);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Store {
+                value: mwcc_syntax_trees::Expression::Cast {
+                    target_type: mwcc_syntax_trees::Type::StructPointer { element_size: 4 },
+                    ..
+                },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
     fn parses_cpp_fundamental_function_casts_as_ordinary_conversions() {
         let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(
@@ -6596,6 +6628,196 @@ blr\n\
     }
 
     #[test]
+    fn parses_a_namespace_qualified_template_typedef_value_local() {
+        let source = r#"
+            namespace JGeometry {
+                template <typename T> struct TVec3 { T x, y, z; };
+                typedef TVec3<float> TVec3f;
+            }
+            void scale(void) {
+                JGeometry::TVec3f vec;
+                vec.x = 1.0f;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].locals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 12, align: 4 }
+        ));
+    }
+
+    #[test]
+    fn resolves_an_inline_member_on_a_specialized_template_typedef() {
+        let source = r#"
+            namespace JGeometry {
+                template <typename T> struct TVec3 { T x, y, z; };
+                template <> struct TVec3<float> {
+                    float x, y, z;
+                    void scale(float scalar) {
+                        x = x * scalar;
+                        y = y * scalar;
+                        z = z * scalar;
+                    }
+                };
+                typedef TVec3<float> TVec3f;
+            }
+            void affect(void) {
+                JGeometry::TVec3f vec;
+                vec.scale(2.0f);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { .. }
+            )]
+        ));
+    }
+
+    #[test]
+    fn resolves_an_inherited_aggregate_member_in_an_out_of_class_definition() {
+        let source = r#"
+            namespace JGeometry {
+                template <typename T> struct TVec3 { T x, y, z; };
+                template <> struct TVec3<float> {
+                    float x, y, z;
+                    void scale(float scalar) { x = x * scalar; }
+                };
+                typedef TVec3<float> TVec3f;
+            }
+            struct FieldBase {
+                virtual ~FieldBase() {}
+                virtual void prepare() {}
+                virtual void calc() = 0;
+                virtual void ignored(UnknownWorkData*, UnknownBlock*, UnknownParticle*);
+                JGeometry::TVec3f value;
+            };
+            struct Gravity : FieldBase {
+                virtual ~Gravity() {}
+                virtual void ignored2(UnknownWorkData*);
+                virtual void prepare();
+                virtual void calc();
+            };
+            void Gravity::prepare() { value.scale(2.0f); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let prepare = unit
+            .functions
+            .iter()
+            .find(|function| function.name == "prepare__7GravityFv")
+            .expect("out-of-class prepare definition");
+        assert!(matches!(
+            prepare.statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { .. }
+            )]
+        ));
+    }
+
+    #[test]
+    fn selects_a_specialized_template_reference_overload_from_a_member_return() {
+        let source = r#"
+            namespace JGeometry {
+                template <typename T> struct TVec3 { T x, y, z; };
+                template <> struct TVec3<float> {
+                    float x, y, z;
+                    float normalize(float scalar);
+                    float normalize(const TVec3& other);
+                };
+                typedef TVec3<float> TVec3f;
+            }
+            struct Block {
+                JGeometry::TVec3f value;
+                const JGeometry::TVec3f& getDir() const { return value; }
+            };
+            void affect(Block* block) {
+                JGeometry::TVec3f vec;
+                vec.normalize(block->getDir());
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, .. }
+            )] if name.contains("TVec3")
+        ));
+    }
+
+    #[test]
+    fn resolves_an_explicit_member_template_specialization() {
+        let source = r#"
+            namespace JGeometry {
+                template <typename T> struct TVec3 { T x, y, z; };
+                template <> struct TVec3<float> {
+                    float x, y, z;
+                    template <typename TY>
+                    void set(TY x, TY y, TY z) {}
+                };
+                typedef TVec3<float> TVec3f;
+                template <> template <>
+                inline void TVec3f::set(float x, float y, float z) {}
+            }
+            void affect(void) {
+                JGeometry::TVec3f vec;
+                vec.set(1.0f, 2.0f, 3.0f);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let affect = unit
+            .functions
+            .iter()
+            .find(|function| function.name == "affect__Fv")
+            .expect("caller definition");
+        let [
+            mwcc_syntax_trees::Statement::Expression(mwcc_syntax_trees::Expression::Call {
+                name,
+                ..
+            }),
+        ] = affect.statements.as_slice()
+        else {
+            panic!("expected one member-template specialization call");
+        };
+        assert_eq!(name, "set__Q29JGeometry8TVec3<f>Ffff");
+    }
+
+    #[test]
     fn emits_used_inline_virtual_aggregate_return_after_its_first_caller() {
         let source = r#"
             struct Vec { float x; float y; float z; };
@@ -8495,7 +8717,39 @@ blr\n\
         )
         .unwrap_err();
         assert!(error.message.contains(
-            "placement new for class 'Item' with 2 placement arguments needs allocator and null-guard lowering"
+            "placement new for class 'Item' has no recovered allocator overload for 2 placement arguments"
+        ));
+    }
+
+    #[test]
+    fn lowers_heap_aligned_default_placement_new_without_parentheses() {
+        let source = r#"
+            struct JKRHeap {};
+            struct Base { virtual void run(); };
+            struct Item : Base { virtual void run(); int value; };
+            Item* create(JKRHeap* heap) { return new (heap, 0) Item; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::ConstructedNew {
+                allocation,
+                constructor,
+                arguments,
+                ..
+            }) if constructor == "__ct__4ItemFv"
+                && arguments.is_empty()
+                && matches!(allocation.as_ref(), mwcc_syntax_trees::Expression::Call {
+                    name,
+                    arguments,
+                } if name == "__nw__FUlP7JKRHeapi" && arguments.len() == 3)
         ));
     }
 

@@ -108,22 +108,17 @@ impl Parser {
                 "initialized scalar C++ placement new needs a class constructor (roadmap)",
             )
         })?;
-        self.expect(Token::ParenOpen)?;
         let mut arguments = Vec::new();
-        if *self.peek() != Token::ParenClose {
-            loop {
-                arguments.push(self.expression()?);
-                if !self.eat_keyword(Token::Comma) {
-                    break;
+        if self.eat_keyword(Token::ParenOpen) {
+            if *self.peek() != Token::ParenClose {
+                loop {
+                    arguments.push(self.expression()?);
+                    if !self.eat_keyword(Token::Comma) {
+                        break;
+                    }
                 }
             }
-        }
-        self.expect(Token::ParenClose)?;
-        if placement_arguments.len() != 1 {
-            return Err(Diagnostic::error(format!(
-                "constructed scalar C++ placement new for class '{class_name}' with {} placement arguments needs allocator and null-guard lowering (roadmap)",
-                placement_arguments.len()
-            )));
+            self.expect(Token::ParenClose)?;
         }
         let constructor = if arguments.is_empty() {
             self.ensure_implicit_default_constructor(&class_name)?
@@ -141,9 +136,32 @@ impl Parser {
                 "internal: a placement-constructed C++ class has no layout",
             ));
         };
-        let allocation = placement_arguments
-            .pop()
-            .expect("single placement argument was checked");
+        let allocation = match placement_arguments.as_slice() {
+            [destination] => destination.clone(),
+            [heap, alignment]
+                if matches!(
+                    self.cxx_expression_type(alignment),
+                    Some(Type::Int | Type::UnsignedInt)
+                ) && self
+                    .cxx_expression_struct_tag(heap)
+                    .is_some_and(|class| self.cxx_class_is_or_derives_from(class, "JKRHeap")) =>
+            {
+                Expression::Call {
+                    name: "__nw__FUlP7JKRHeapi".to_owned(),
+                    arguments: vec![
+                        Expression::IntegerLiteral(i64::from(allocation_size)),
+                        heap.clone(),
+                        alignment.clone(),
+                    ],
+                }
+            }
+            _ => {
+                return Err(Diagnostic::error(format!(
+                    "constructed scalar C++ placement new for class '{class_name}' has no recovered allocator overload for {} placement arguments (roadmap)",
+                    placement_arguments.len()
+                )));
+            }
+        };
         self.expression_struct_tag = Some(class_name);
         Ok(Expression::ConstructedNew {
             allocation: Box::new(allocation),

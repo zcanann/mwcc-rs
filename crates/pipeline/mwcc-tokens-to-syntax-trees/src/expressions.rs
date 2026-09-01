@@ -739,10 +739,11 @@ impl Parser {
             return Ok(increment_assignment(operand, operator));
         }
 
-        // C++'s `int(value)` fundamental conversion and named `static_cast<T>(value)`
-        // have the same representation as a C-style cast once the destination type is
-        // known. Normalize all three spellings here instead of leaking source syntax
-        // into semantic lowering and code generation.
+        // C++'s `int(value)` fundamental conversion and non-runtime named casts
+        // have the same representation as a C-style cast once the destination
+        // type is known. Normalize those spellings here instead of leaking
+        // source syntax into semantic lowering and code generation. A
+        // `dynamic_cast` is intentionally excluded because it can require RTTI.
         let mut explicit_cast_struct_tag = None;
         let starts_scalar_typedef_conversion = matches!(
             (self.peek(), self.peek_at(1)),
@@ -752,6 +753,9 @@ impl Parser {
                     Type::Void | Type::Struct { .. }
                 ))
         );
+        let starts_named_cxx_cast = self.cplusplus
+            && matches!(self.peek(), Token::Identifier(name)
+                if matches!(name.as_str(), "static_cast" | "reinterpret_cast" | "const_cast"));
         let explicit_cast_expression =
             if self.cplusplus
                 && (token_starts_cxx_fundamental_conversion(self.peek())
@@ -771,9 +775,7 @@ impl Parser {
                     target_type,
                     operand: Box::new(operand),
                 })
-            } else if self.cplusplus
-                && matches!(self.peek(), Token::Identifier(name) if name == "static_cast")
-            {
+            } else if starts_named_cxx_cast {
                 self.advance();
                 self.expect(Token::Less)?;
                 let target_type = self.parse_type()?;
