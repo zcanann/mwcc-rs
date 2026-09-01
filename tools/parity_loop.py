@@ -114,6 +114,29 @@ def result_arguments(paths: List[Path]) -> List[str]:
     return output
 
 
+def configure_cached_host_tools(state: Path) -> None:
+    """Expose ignored parity-tool downloads to the snapshotted harness.
+
+    Explicit REFCTX_* paths always win. By convention a frontier state at
+    ``.../reference-parity/frontier`` shares host tools from its sibling
+    ``.../reference-parity/tools`` directory, keeping decomp checkouts clean.
+    """
+
+    tool_root = state.parent / "tools"
+    candidates = {
+        "REFCTX_WIBO": tool_root / "wibo",
+        "REFCTX_SJISWRAP": tool_root / "sjiswrap.exe",
+        "REFCTX_OBJDUMP": tool_root / "binutils/powerpc-eabi-objdump",
+    }
+    for variable, candidate in candidates.items():
+        if (
+            variable not in os.environ
+            and candidate.is_file()
+            and os.access(candidate, os.X_OK)
+        ):
+            os.environ[variable] = str(candidate.resolve())
+
+
 def most_comparable_other_tool(
     paths: List[Path], current: str, comparison_ids: set[str]
 ) -> Optional[str]:
@@ -303,6 +326,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     snapshots = state / "snapshots"
     compiler_images = state / "compiler-images"
     state.mkdir(parents=True, exist_ok=True)
+    configure_cached_host_tools(state)
     try:
         state_lock = acquire_state_lock(state)
     except (OSError, RuntimeError) as error:

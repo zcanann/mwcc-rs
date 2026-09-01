@@ -32,9 +32,9 @@ shift $(( $# < 3 ? $# : 3 ))
 extra=("$@")
 
 FFCC="${FFCC:-/Users/zcanann/Documents/projects/FFCC-Decomp}"
-wibo="$FFCC/build/tools/wibo"
-sjis="$FFCC/build/tools/sjiswrap.exe"
-objdump="$FFCC/build/binutils/powerpc-eabi-objdump"
+wibo="${REFCTX_WIBO:-$FFCC/build/tools/wibo}"
+sjis="${REFCTX_SJISWRAP:-$FFCC/build/tools/sjiswrap.exe}"
+objdump="${REFCTX_OBJDUMP:-$FFCC/build/binutils/powerpc-eabi-objdump}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 ours="${MWCC_BIN:-$here/target/release/mwcc}"
 code_metrics="$here/tools/object_code_metrics.py"
@@ -48,6 +48,20 @@ fi
 run_code_metrics() {
   python3 "$code_metrics" "$@" ${code_metric_args[@]+"${code_metric_args[@]}"}
 }
+
+# Report absent host tools as dependencies before the direct oracle probe. A
+# missing wrapper previously made every command substitution fail with
+# `oracle_direct=REJECTED`, then disappeared behind the synthetic preprocessor's
+# redirected stderr and surfaced only as an empty HARNESS result.
+for tool_spec in "wibo:$wibo" "sjiswrap:$sjis" "objdump:$objdump"; do
+  tool_name="${tool_spec%%:*}"
+  tool_path="${tool_spec#*:}"
+  if [[ ! -x "$tool_path" ]]; then
+    echo "PARITY_META oracle_direct=TOOL_MISSING"
+    echo "MISSING_DEPENDENCY  $src — $tool_name executable $tool_path"
+    exit 0
+  fi
+done
 
 project="$(cd "$project" && pwd)"
 # Resolve the real compiler independently from the tools checkout. Some builds
