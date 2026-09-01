@@ -3,6 +3,111 @@
 use crate::{Generator, remove_instruction_retargeting_to_next};
 use mwcc_machine_code::Instruction;
 
+/// Fold a label-resolved false-edge skip over an unconditional branch.
+///
+/// Structured statement gotos are folded while their numeric destinations are
+/// already known. Expression-valued conditionals can instead retain symbolic
+/// labels until whole-body emission finishes, leaving the same two-edge
+/// diamond for this late pass:
+///
+/// ```text
+/// beq cold
+/// b join
+/// cold: ...
+/// join: ...
+/// ```
+///
+/// MWCC inverts the conditional and branches directly to `join`. Restrict the
+/// late form to a call-bearing cold arm followed by a linkage epilogue; switch
+/// dispatch can retain the same local branch shape intentionally. Also require
+/// that the unconditional edge has no other incoming branch, because removing
+/// a shared source label would change its control-flow identity.
+pub(crate) fn collapse_resolved_cold_epilogue_diamonds(generator: &mut Generator) {
+    let mut conditional = 0;
+    while conditional + 1 < generator.output.instructions.len() {
+        let Some((options, condition_bit, landing)) =
+            resolved_conditional_branch_diamond(&generator.output.instructions, conditional)
+        else {
+            conditional += 1;
+            continue;
+        };
+        let branch = conditional + 1;
+        let has_incoming =
+            generator
+                .output
+                .instructions
+                .iter()
+                .enumerate()
+                .any(|(index, instruction)| {
+                    index != conditional
+                        && matches!(
+                            instruction,
+                            Instruction::BranchConditionalForward { target, .. }
+                                | Instruction::Branch { target }
+                                if *target == branch
+                        )
+                });
+        if has_incoming {
+            conditional += 1;
+            continue;
+        }
+
+        generator.output.instructions[conditional] = Instruction::BranchConditionalForward {
+            options: options ^ 8,
+            condition_bit,
+            target: landing,
+        };
+        remove_instruction_retargeting_to_next(generator, branch);
+        conditional += 1;
+    }
+}
+
+fn resolved_conditional_branch_diamond(
+    instructions: &[Instruction],
+    conditional: usize,
+) -> Option<(u8, u8, usize)> {
+    let [
+        Instruction::BranchConditionalForward {
+            options,
+            condition_bit,
+            target: skip,
+        },
+        Instruction::Branch { target: landing },
+        ..,
+    ] = instructions.get(conditional..)?
+    else {
+        return None;
+    };
+    let cold = conditional + 2..*landing;
+    (*skip == conditional + 2
+        && *landing > conditional + 2
+        && instructions
+            .get(cold)?
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
+        && is_linkage_epilogue_start(instructions, *landing))
+    .then_some((*options, *condition_bit, *landing))
+}
+
+fn is_linkage_epilogue_start(instructions: &[Instruction], start: usize) -> bool {
+    let Some(suffix) = instructions.get(start..) else {
+        return false;
+    };
+    matches!(suffix.last(), Some(Instruction::BranchToLinkRegister))
+        && suffix
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::MoveToLinkRegister { .. }))
+        && suffix[..suffix.len() - 1].iter().all(|instruction| {
+            !matches!(
+                instruction,
+                Instruction::Branch { .. }
+                    | Instruction::BranchConditionalForward { .. }
+                    | Instruction::BranchAndLink { .. }
+                    | Instruction::BranchToLinkRegister
+            )
+        })
+}
+
 /// Retarget a forward conditional through an unconditional branch at its
 /// destination. The forwarding branch remains because the conditional's
 /// fallthrough path may still need it; only the path that would branch to that
@@ -223,10 +328,45 @@ pub(crate) fn three_branch_entry_chain_member(
 #[cfg(test)]
 mod tests {
     use super::{
-        fallthrough_branch, forwarding_branch_block, thread_conditional_branch_targets,
-        three_branch_entry_chain_member, tight_polling_call_loop,
+        fallthrough_branch, forwarding_branch_block, resolved_conditional_branch_diamond,
+        thread_conditional_branch_targets, three_branch_entry_chain_member,
+        tight_polling_call_loop,
     };
     use mwcc_machine_code::Instruction;
+
+    #[test]
+    fn recognizes_a_resolved_conditional_branch_diamond() {
+        let instructions = [
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 2,
+            },
+            Instruction::Branch { target: 4 },
+            Instruction::load_immediate(3, 1),
+            Instruction::BranchAndLink {
+                target: "cold".into(),
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+
+        assert_eq!(
+            resolved_conditional_branch_diamond(&instructions, 0),
+            Some((4, 2, 4))
+        );
+        assert_eq!(resolved_conditional_branch_diamond(&instructions, 1), None);
+    }
 
     #[test]
     fn recognizes_an_unreachable_forwarding_branch_block() {

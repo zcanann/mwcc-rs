@@ -3253,6 +3253,7 @@ mod tests {
 
     #[path = "forwarding_branch_cleanup.rs"]
     mod forwarding_branch_cleanup;
+    mod resolved_cold_epilogue;
 
     #[path = "global_byte_format_arguments.rs"]
     mod global_byte_format_arguments;

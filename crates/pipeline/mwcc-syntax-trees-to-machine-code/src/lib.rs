@@ -845,6 +845,7 @@ fn lower_function_body(
         ));
     }
     if generator.behavior.schedule_latency_slots {
+        branch_cleanup::collapse_resolved_cold_epilogue_diamonds(&mut generator);
         generator.structured_cfg_cleanup_owner |=
             body::owns_unreferenced_forwarding_branch_cleanup(&generator.output.instructions);
         if generator.structured_cfg_cleanup_owner
