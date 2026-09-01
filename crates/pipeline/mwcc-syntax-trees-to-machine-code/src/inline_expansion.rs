@@ -79,6 +79,40 @@ fn is_constructor(name: &str) -> bool {
     name.starts_with("__ct__")
 }
 
+/// A repeated whole-object effect selected by MWCC's automatic inliner: copy
+/// one aggregate source image, conditionally scale it, then dispatch the image
+/// to one of several aggregate destinations. This is larger than the ordinary
+/// small-body gate but remains safe for semantic statement composition.
+fn repeatable_aggregate_switch_effect_callee(function: &Function) -> bool {
+    function.return_type == Type::Void
+        && function.return_expression.is_none()
+        && function.guards.is_empty()
+        && function.asm_body.is_none()
+        && function.inline_asm_blocks.is_empty()
+        && function.parameters.len() >= 2
+        && function.parameters.iter().all(|parameter| {
+            matches!(
+                parameter.parameter_type,
+                Type::Pointer(_) | Type::StructPointer { .. }
+            )
+        })
+        && matches!(
+            function.locals.as_slice(),
+            [mwcc_syntax_trees::LocalDeclaration {
+                declared_type: Type::Struct { .. },
+                initializer: Some(_),
+                array_length: None,
+                is_static: false,
+                is_volatile: false,
+                ..
+            }]
+        )
+        && matches!(
+            function.statements.as_slice(),
+            [Statement::If { .. }, Statement::Switch { arms, .. }] if arms.len() >= 2
+        )
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct InlineBodySet {
     /// Read-only ordinary definitions available to semantic transaction
@@ -380,7 +414,8 @@ impl InlineBodySet {
         let repeatable_guarded_call_bodies = definitions
             .iter()
             .filter(|function| {
-                repeatable_guarded_call_callee(function)
+                (repeatable_guarded_call_callee(function)
+                    || repeatable_aggregate_switch_effect_callee(function))
                     && call_counts.get(&function.name).copied().unwrap_or(0) > 1
                     && source_visible_call_counts
                         .get(&function.name)
@@ -2799,6 +2834,91 @@ mod tests {
                         )
                 )
         ));
+    }
+
+    #[test]
+    fn repeats_an_aggregate_effect_with_a_switch_at_each_call_site() {
+        let pointer = Type::StructPointer { element_size: 32 };
+        let parameters = vec![
+            Parameter {
+                parameter_type: pointer,
+                name: "owner".into(),
+            },
+            Parameter {
+                parameter_type: pointer,
+                name: "target".into(),
+            },
+        ];
+        let mut affect = function("affect", parameters.clone(), Vec::new());
+        affect.locals = vec![LocalDeclaration {
+            declared_type: Type::Struct { size: 12, align: 4 },
+            name: "image".into(),
+            initializer: Some(Expression::Member {
+                base: Box::new(Expression::Variable("owner".into())),
+                offset: 4,
+                member_type: Type::Struct { size: 12, align: 4 },
+                index_stride: None,
+            }),
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        }];
+        affect.statements = vec![
+            Statement::If {
+                condition: Expression::Variable("owner".into()),
+                then_body: Vec::new(),
+                else_body: Vec::new(),
+            },
+            Statement::Switch {
+                scrutinee: Expression::IntegerLiteral(0),
+                arms: vec![
+                    SwitchArm {
+                        value: 0,
+                        body: ArmBody::Statements(Vec::new()),
+                        falls_through: false,
+                    },
+                    SwitchArm {
+                        value: 1,
+                        body: ArmBody::Statements(Vec::new()),
+                        falls_through: false,
+                    },
+                ],
+                default: None,
+            },
+        ];
+        let caller = function(
+            "caller",
+            parameters.clone(),
+            vec![Statement::Expression(Expression::Call {
+                name: "affect".into(),
+                arguments: vec![
+                    Expression::Variable("owner".into()),
+                    Expression::Variable("target".into()),
+                ],
+            })],
+        );
+        let second = Function {
+            name: "second".into(),
+            ..caller.clone()
+        };
+
+        let bodies = InlineBodySet::analyze_with_definitions(
+            &[affect, caller.clone(), second],
+            &[],
+        );
+        let expanded = bodies
+            .expand_repeatable_guarded_calls(&caller)
+            .expect("the aggregate switch effect should repeat");
+        assert!(!bodies.calls_any(&expanded.function));
+        assert!(expanded.function.locals.iter().any(|local| {
+            local.name.contains("affect")
+                && matches!(local.declared_type, Type::Struct { size: 12, .. })
+        }));
     }
 
     #[test]

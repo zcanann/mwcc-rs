@@ -3148,6 +3148,9 @@ mod tests {
     #[path = "float_fused_triplet.rs"]
     mod float_fused_triplet;
 
+    #[path = "jgeometry_float_utilities.rs"]
+    mod jgeometry_float_utilities;
+
     #[path = "adjacent_linear_interpolation.rs"]
     mod adjacent_linear_interpolation;
 

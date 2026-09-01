@@ -78,6 +78,9 @@ fn bind_parameterized_asm_fragment(
     Some((items, result_register))
 }
 
+const JGEOMETRY_EPSILON: &str = "epsilon__Q29JGeometry8TUtil<f>Fv";
+const JGEOMETRY_INV_SQRT: &str = "inv_sqrt__Q29JGeometry8TUtil<f>Ff";
+
 #[cfg(test)]
 mod parameterized_asm_tests {
     use super::*;
@@ -174,6 +177,117 @@ mod parameterized_asm_tests {
 }
 
 impl Generator {
+    /// Lower the two `TUtil<float>` template bodies used throughout JSystem.
+    /// The frontend sees their instantiated calls but does not materialize the
+    /// class-template member definitions as retained `Function`s. Keep this
+    /// named lane exact to those manglings and reproduce the source bodies:
+    /// `32 * __float_epsilon` and one reciprocal-square-root refinement.
+    fn try_emit_jgeometry_float_utility(
+        &mut self,
+        name: &str,
+        arguments: &[Expression],
+        destination: Option<u8>,
+        float_result: bool,
+    ) -> Compilation<bool> {
+        let Some(destination) = destination.filter(|_| float_result) else {
+            return Ok(false);
+        };
+        if name == JGEOMETRY_EPSILON && arguments.is_empty() {
+            let result = Eabi::float_result().number;
+            self.load_float_constant(result, 32.0);
+            self.emit_global_load_absolute("__float_epsilon", Type::Float, FLOAT_SCRATCH)?;
+            self.output
+                .instructions
+                .push(Instruction::FloatMultiplySingle {
+                    d: result,
+                    a: result,
+                    c: FLOAT_SCRATCH,
+                });
+            if destination != result {
+                self.output.instructions.push(Instruction::FloatMove {
+                    d: destination,
+                    b: result,
+                });
+            }
+            return Ok(true);
+        }
+        if name != JGEOMETRY_INV_SQRT || arguments.len() != 1 {
+            return Ok(false);
+        }
+
+        self.emit_arguments(arguments, name)?;
+        let input = Eabi::float_result().number;
+        self.output.has_float_branch = true;
+        self.load_float_constant(FLOAT_SCRATCH, 0.0);
+        self.output
+            .instructions
+            .push(Instruction::FloatCompareOrdered {
+                a: input,
+                b: FLOAT_SCRATCH,
+            });
+        let nonpositive = self.fresh_label();
+        let join = self.fresh_label();
+        self.emit_branch_conditional_to(4, 1, nonpositive);
+
+        let guess = 4;
+        self.output
+            .instructions
+            .push(Instruction::FloatReciprocalSqrtEstimate {
+                d: guess,
+                b: input,
+            });
+        self.load_float_constant(2, 0.5);
+        self.load_float_constant(FLOAT_SCRATCH, 3.0);
+        self.output
+            .instructions
+            .push(Instruction::RoundToSingle { d: guess, b: guess });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle {
+                d: 3,
+                a: guess,
+                c: guess,
+            });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle {
+                d: 2,
+                a: 2,
+                c: guess,
+            });
+        self.output
+            .instructions
+            .push(Instruction::FloatNegativeMultiplySubtractSingle {
+                d: FLOAT_SCRATCH,
+                a: input,
+                c: 3,
+                b: FLOAT_SCRATCH,
+            });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle {
+                d: FLOAT_SCRATCH,
+                a: 2,
+                c: FLOAT_SCRATCH,
+            });
+        if destination != FLOAT_SCRATCH {
+            self.output.instructions.push(Instruction::FloatMove {
+                d: destination,
+                b: FLOAT_SCRATCH,
+            });
+        }
+        self.emit_branch_to(join);
+        self.bind_label(nonpositive);
+        if destination != input {
+            self.output.instructions.push(Instruction::FloatMove {
+                d: destination,
+                b: input,
+            });
+        }
+        self.bind_label(join);
+        Ok(true)
+    }
+
     /// Preserve an indirect callee across argument marshaling in r12. The copy
     /// instruction follows the generation's ordinary register-copy encoding.
     pub(crate) fn stage_indirect_callee(&mut self, register: u8) {
@@ -546,6 +660,14 @@ impl Generator {
         destination: Option<u8>,
         float_result: bool,
     ) -> Compilation<()> {
+        if self.try_emit_jgeometry_float_utility(
+            name,
+            arguments,
+            destination,
+            float_result,
+        )? {
+            return Ok(());
+        }
         if let Some(fragment) = self.inline_bodies.asm_fragment(name) {
             if !arguments.is_empty() || destination.is_some() || float_result {
                 return Err(Diagnostic::error(
