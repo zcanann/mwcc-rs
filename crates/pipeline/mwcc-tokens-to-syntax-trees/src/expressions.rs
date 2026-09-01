@@ -1205,16 +1205,11 @@ impl Parser {
                     let resolved = self.resolve_block_rename(name.clone());
                     if self.variable_types.contains_key(&resolved) || resolved != name {
                         self.named_object_value(resolved)
-                    } else if let Some(member) = self
-                        .current_member_scope
-                        .as_deref()
-                        .and_then(|scope| self.structs.get(scope))
-                        .and_then(|layout| layout.fields.get(&name))
-                    {
+                    } else if let Some(member) = self.resolve_implicit_data_member(&name) {
                         // An unqualified data member is rooted at `this`, but its
                         // own aggregate identity—not a stale tag from an earlier
                         // expression—must seed a following `.field`/`->field`.
-                        self.expression_struct_tag = member.struct_tag.clone();
+                        self.expression_struct_tag = member.struct_tag;
                         Expression::Member {
                             base: Box::new(Expression::Variable("this".to_string())),
                             offset: member.offset,

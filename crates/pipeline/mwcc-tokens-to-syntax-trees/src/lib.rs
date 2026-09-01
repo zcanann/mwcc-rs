@@ -6724,6 +6724,47 @@ blr\n\
     }
 
     #[test]
+    fn binds_unqualified_fields_in_a_specialized_template_inline() {
+        let source = r#"
+            namespace JGeometry {
+                template <typename T> struct TVec3 { T x, y, z; };
+                template <> struct TVec3<float> {
+                    float x, y, z;
+                    void zero() { x = y = z = 0; }
+                };
+                typedef TVec3<float> TVec3f;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let zero = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name.contains("zero"))
+            .expect("zero inline body");
+        assert!(matches!(
+            zero.statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Store {
+                target: mwcc_syntax_trees::Expression::Member { offset: 0, .. },
+                value: mwcc_syntax_trees::Expression::Assign { target: y, value },
+            }] if matches!(y.as_ref(), mwcc_syntax_trees::Expression::Member { offset: 4, .. })
+                && matches!(value.as_ref(), mwcc_syntax_trees::Expression::Assign {
+                    target,
+                    value,
+                } if matches!(target.as_ref(), mwcc_syntax_trees::Expression::Member {
+                    offset: 8,
+                    ..
+                }) && matches!(value.as_ref(), mwcc_syntax_trees::Expression::IntegerLiteral(0)))
+        ), "{zero:#?}");
+    }
+
+    #[test]
     fn retains_an_inline_call_to_a_static_template_alias_member() {
         let source = r#"
             namespace JGeometry {

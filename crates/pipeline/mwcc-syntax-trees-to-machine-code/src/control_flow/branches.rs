@@ -2276,6 +2276,8 @@ impl Generator {
                         | BinaryOperator::Add
                         | BinaryOperator::Subtract
                         | BinaryOperator::Multiply
+                        | BinaryOperator::Divide
+                        | BinaryOperator::Modulo
                         | BinaryOperator::ShiftLeft
                         | BinaryOperator::ShiftRight,
                     ..

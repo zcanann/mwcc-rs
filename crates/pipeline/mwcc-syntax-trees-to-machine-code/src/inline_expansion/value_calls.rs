@@ -1,6 +1,6 @@
 //! Recursive substitution of expression-valued retained inline calls.
 
-use super::safety::{stable_argument, stable_local_values};
+use super::safety::{stable_argument, stable_local_values, stable_lvalue_address};
 use super::substitution::substitute_expression;
 use super::value_body::ValueInlineBody;
 use mwcc_syntax_trees::{
@@ -534,6 +534,19 @@ pub(super) fn expand_expression(
                         &argument,
                         Expression::Variable(name) if function_symbols.contains(name)
                     );
+                let aggregate_reference_lvalue = matches!(
+                    parameter.parameter_type,
+                    Type::StructPointer { .. }
+                ) && match &argument {
+                    Expression::Variable(name) => allocator.locals.iter().any(|local| {
+                        local.name == *name && matches!(local.declared_type, Type::Struct { .. })
+                    }),
+                    Expression::Member { member_type, .. } => {
+                        matches!(member_type, Type::Struct { .. })
+                            && stable_lvalue_address(&argument, stable_variables)
+                    }
+                    _ => false,
+                };
                 // A bare variable is safe to substitute without proving caller
                 // stability only when the inline body reads it once. Repeating
                 // the expression can reread a volatile global (and can observe a
@@ -550,10 +563,18 @@ pub(super) fn expand_expression(
                     || pure_single_use
                     || guarded_transaction_single_use
                     || known_function_designator
+                    || aggregate_reference_lvalue
                     || read_only_variable
                     || stable_argument(&argument, stable_variables)
                 {
-                    replacements.insert(parameter.name.clone(), argument);
+                    let replacement = if aggregate_reference_lvalue {
+                        Expression::AddressOf {
+                            operand: Box::new(argument),
+                        }
+                    } else {
+                        argument
+                    };
+                    replacements.insert(parameter.name.clone(), replacement);
                     continue;
                 }
                 let unique_name = fresh_name(name, &parameter.name, allocator);
@@ -924,6 +945,85 @@ mod tests {
             super::super::safety::expression_use_count(&expanded, &locals[0].name),
             3
         );
+    }
+
+    #[test]
+    fn aliases_an_aggregate_lvalue_for_a_repeated_reference_parameter() {
+        let mut source = empty_function("set_length", Type::Float);
+        source.parameters.push(mwcc_syntax_trees::Parameter {
+            parameter_type: Type::StructPointer { element_size: 12 },
+            name: "other".into(),
+        });
+        let body = ValueInlineBody {
+            source,
+            expression: Expression::Call {
+                name: "consume".into(),
+                arguments: vec![
+                    Expression::Variable("other".into()),
+                    Expression::AddressOf {
+                        operand: Box::new(Expression::Variable("other".into())),
+                    },
+                ],
+            },
+            automatic_transaction: false,
+        };
+        let bodies = HashMap::from([("set_length".into(), body)]);
+        let call = Expression::Call {
+            name: "set_length".into(),
+            arguments: vec![Expression::Variable("vector".into())],
+        };
+        let mut locals = vec![LocalDeclaration {
+            declared_type: Type::Struct { size: 12, align: 4 },
+            name: "vector".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        }];
+        let mut occupied_names = HashSet::from(["vector".into()]);
+        let mut next_local_id = 0;
+        let mut allocator = LocalAllocator {
+            locals: &mut locals,
+            occupied_names: &mut occupied_names,
+            next_local_id: &mut next_local_id,
+        };
+        let mut active = HashSet::new();
+        let mut changed = false;
+        let mut substitutions = 0;
+
+        let expanded = expand_expression(
+            &call,
+            &bodies,
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut active,
+            &mut changed,
+            &mut substitutions,
+            &mut allocator,
+        );
+
+        assert!(changed);
+        assert_eq!(substitutions, 1);
+        assert_eq!(locals.len(), 1, "reference binding must not copy the aggregate");
+        assert_eq!(
+            super::super::safety::expression_use_count(&expanded, "vector"),
+            2
+        );
+        assert!(matches!(
+            expanded,
+            Expression::Call { arguments, .. }
+                if arguments.iter().all(|argument| matches!(
+                    argument,
+                    Expression::AddressOf { operand }
+                        if matches!(operand.as_ref(), Expression::Variable(name)
+                            if name == "vector")
+                ))
+        ));
     }
 
     #[test]

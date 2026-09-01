@@ -5,6 +5,23 @@ use super::implicit_narrow_store::legacy_narrow_store_binary_alu;
 use super::*;
 
 impl Generator {
+    /// Apply the scalar conversion owned by a floating assignment before
+    /// evaluating its RHS. Integer constants otherwise reach the floating
+    /// evaluator without the target type needed to choose `lfs` versus `lfd`.
+    fn evaluate_float_assignment_value(
+        &mut self,
+        value: &Expression,
+        destination: u8,
+        target: Pointee,
+    ) -> Compilation<()> {
+        if let Some((value, double)) = float_assignment_literal(value, target) {
+            self.load_float_literal(destination, value, double);
+            Ok(())
+        } else {
+            self.evaluate_float(value, destination)
+        }
+    }
+
     /// Emit a floating assignment expression while preserving its value in
     /// `destination`. The address is formed first and kept live while the RHS
     /// is evaluated, matching the ordinary member-store schedule without
@@ -22,7 +39,12 @@ impl Generator {
                 .filter(|location| location.class == ValueClass::Float)
             {
                 let register = location.register;
-                self.evaluate_float(value, destination)?;
+                let target = if location.width == 64 {
+                    Pointee::Double
+                } else {
+                    Pointee::Float
+                };
+                self.evaluate_float_assignment_value(value, destination, target)?;
                 if matches!(value, Expression::Call { .. })
                     && self
                         .transient_condition_float_call_results
@@ -51,7 +73,7 @@ impl Generator {
                         "floating assignment has a non-floating global target",
                     ));
                 }
-                self.evaluate_float(value, destination)?;
+                self.evaluate_float_assignment_value(value, destination, pointee)?;
                 self.emit_global_store(name, pointee, destination)?;
                 return Ok(());
             }
@@ -72,7 +94,7 @@ impl Generator {
                 ));
             }
             if let Some((frame_pointee, frame_offset)) = self.frame_subobject_slot(target) {
-                self.evaluate_float(value, destination)?;
+                self.evaluate_float_assignment_value(value, destination, frame_pointee)?;
                 self.output.instructions.push(displacement_store(
                     frame_pointee,
                     destination,
@@ -85,7 +107,7 @@ impl Generator {
             let address =
                 self.with_reserved_inputs(value, |generator| generator.member_base_register(base))?;
             let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
-            self.evaluate_float(value, destination)?;
+            self.evaluate_float_assignment_value(value, destination, pointee)?;
             if restore {
                 self.reserved.remove(&address);
             }
@@ -99,6 +121,25 @@ impl Generator {
                 displacement,
             )?);
             return Ok(());
+        }
+        // A constant element of a flattened automatic matrix has a stable
+        // r1-relative home. Evaluate the RHS into the caller's requested FPR,
+        // store from that same register, and leave it live for an enclosing
+        // chained assignment (`m[0][3] = m[1][3] = m[2][3] = 0.0f`).
+        if let Expression::Index { base, index } = target {
+            if let Some((element, offset)) = self.frame_matrix_element(base, index)? {
+                if !matches!(element, Pointee::Float | Pointee::Double) {
+                    return Err(Diagnostic::error(
+                        "floating matrix assignment has a non-floating target",
+                    ));
+                }
+                self.evaluate_float_assignment_value(value, destination, element)?;
+                self.output
+                    .instructions
+                    .push(displacement_store(element, destination, 1, offset)?);
+                self.written_slots.insert(offset);
+                return Ok(());
+            }
         }
         Err(Diagnostic::error(
             "floating assignment expression target is not supported yet (roadmap)",
@@ -2352,6 +2393,20 @@ impl Generator {
     }
 }
 
+/// The literal conversion performed by a floating assignment. The assignment
+/// expression then yields this converted value, so an outer chained assignment
+/// can reuse the same floating register.
+fn float_assignment_literal(value: &Expression, target: Pointee) -> Option<(f64, bool)> {
+    let Expression::IntegerLiteral(value) = value else {
+        return None;
+    };
+    match target {
+        Pointee::Float => Some((*value as f64, false)),
+        Pointee::Double => Some((*value as f64, true)),
+        _ => None,
+    }
+}
+
 fn collect_logical_and_terms<'a>(expression: &'a Expression, into: &mut Vec<&'a Expression>) {
     if let Expression::Binary {
         operator: BinaryOperator::LogicalAnd,
@@ -2508,6 +2563,20 @@ mod tests {
             &Expression::IntegerLiteral(256),
             Type::UnsignedChar,
         ));
+    }
+
+    #[test]
+    fn integer_literals_take_the_precision_of_a_floating_assignment_target() {
+        let zero = Expression::IntegerLiteral(0);
+        assert_eq!(
+            float_assignment_literal(&zero, Pointee::Float),
+            Some((0.0, false))
+        );
+        assert_eq!(
+            float_assignment_literal(&zero, Pointee::Double),
+            Some((0.0, true))
+        );
+        assert_eq!(float_assignment_literal(&zero, Pointee::Int), None);
     }
 
     #[test]

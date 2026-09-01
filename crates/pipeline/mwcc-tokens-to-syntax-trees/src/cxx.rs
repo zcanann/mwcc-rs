@@ -1669,7 +1669,7 @@ impl Parser {
     /// primary template (`TUtilf` -> `TUtil<f>` -> `TUtil`). Keep all proven
     /// identities so overload selection can deduplicate identical declarations
     /// without falling back to a terminal-name guess.
-    fn cxx_member_owner_candidates(&self, class: &str) -> Vec<String> {
+    pub(crate) fn cxx_member_owner_candidates(&self, class: &str) -> Vec<String> {
         let mut owners = Vec::new();
         let push = |owners: &mut Vec<String>, owner: String| {
             if !owners.contains(&owner) {
@@ -1696,9 +1696,40 @@ impl Parser {
             if let Some(primary) = owner.split('<').next().filter(|_| owner.contains('<')) {
                 push(&mut owners, primary.to_string());
             }
+            let aliases = self
+                .template_aliases
+                .iter()
+                .filter(|(_, target)| target.as_str() == owner)
+                .map(|(alias, _)| alias.clone())
+                .collect::<Vec<_>>();
+            for alias in aliases {
+                push(&mut owners, alias);
+            }
             index += 1;
         }
         owners
+    }
+
+    /// Resolve an unqualified field inside a recovered member body through the
+    /// same alias/specialization owners used for member-function lookup. An
+    /// explicit specialization can be parsed as `TVec3<f>` while its concrete
+    /// layout remains registered on `TVec3`; both denote the same `this` fields.
+    pub(crate) fn resolve_implicit_data_member(
+        &self,
+        name: &str,
+    ) -> Option<crate::parser::StructField> {
+        let scope = self
+            .current_member_scope
+            .as_deref()
+            .or(self.current_cxx_member_class.as_deref())?;
+        self.cxx_member_owner_candidates(scope)
+            .into_iter()
+            .find_map(|owner| {
+                self.structs
+                    .get(&owner)
+                    .and_then(|layout| layout.fields.get(name))
+                    .cloned()
+            })
     }
 
     /// Register an aggregate typedef under the source alias and, for a simple
@@ -4293,6 +4324,22 @@ impl Parser {
             return Err(Diagnostic::error("expected a C++ class definition"));
         }
         let name = self.parse_identifier()?;
+        if self.eat_keyword(Token::Less) {
+            let mut depth = 1i32;
+            while depth > 0 {
+                match self.peek() {
+                    Token::Less => depth += 1,
+                    Token::Greater => depth -= 1,
+                    Token::EndOfFile => {
+                        return Err(Diagnostic::error(
+                            "unterminated C++ class specialization argument list",
+                        ));
+                    }
+                    _ => {}
+                }
+                self.advance();
+            }
+        }
         let qualified_name = enclosing_class.map_or_else(
             || self.qualify_cxx_class_name(&name),
             |outer| format!("{outer}::{name}"),
