@@ -6692,6 +6692,53 @@ blr\n\
     }
 
     #[test]
+    fn recovers_a_three_component_copy_setter_from_an_aggregate_member() {
+        let source = r#"
+            namespace JGeometry {
+                template <typename T> struct TVec3 { T x, y, z; };
+                template <> struct TVec3<float> {
+                    float x, y, z;
+                    template <typename U> void set(const TVec3<U>& source) {
+                        x = source.x;
+                        y = source.y;
+                        z = source.z;
+                    }
+                };
+                typedef TVec3<float> TVec3f;
+            }
+            struct Data { JGeometry::TVec3f source; };
+            struct Block {
+                Data* data;
+                inline void copy(JGeometry::TVec3f* output) const {
+                    output->set(data->source);
+                }
+            };
+            void use(Block* block, JGeometry::TVec3f* output) {
+                block->copy(output);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let copy = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name.contains("copy__5Block"))
+            .expect("copy inline body");
+        assert!(matches!(
+            copy.statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Comma { .. }
+            )]
+        ));
+    }
+
+    #[test]
     fn retains_a_specialized_template_inline_calling_a_sibling_member() {
         let source = r#"
             namespace JGeometry {

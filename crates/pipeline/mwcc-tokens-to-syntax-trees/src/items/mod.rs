@@ -1516,6 +1516,7 @@ impl Parser {
     /// clone. The recovered [`Function`] is analysis-only: the main parser still
     /// performs its existing ordinal accounting and skips past the definition.
     fn try_recover_skipped_inline_definition(&mut self) -> usize {
+        let attempted_name = self.skipped_function_name();
         let mut probe = self.clone();
         probe.recover_skipped_inline_definition = true;
         let temporary_count_before = probe.cxx_temporary_construction_targets.len();
@@ -1593,7 +1594,7 @@ impl Parser {
             }
         } else if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
             eprintln!(
-                "failed to retain skipped inline definition: {parsed:?}; globals: {}, functions: {}",
+                "failed to retain skipped inline definition {attempted_name:?}: {parsed:?}; globals: {}, functions: {}",
                 globals.len(),
                 functions.len()
             );

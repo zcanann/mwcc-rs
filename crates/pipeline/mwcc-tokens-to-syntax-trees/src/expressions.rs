@@ -2151,10 +2151,7 @@ impl Parser {
         if member != "set" || arguments.len() != 1 {
             return None;
         }
-        let source_tag = match &arguments[0] {
-            Expression::Variable(name) => self.variable_structs.get(name)?,
-            _ => return None,
-        };
+        let source_tag = self.cxx_expression_struct_tag(&arguments[0])?;
         let resolved = self
             .resolve_scoped_cxx_class_name(class)
             .unwrap_or_else(|| class.to_owned());

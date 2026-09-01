@@ -332,7 +332,13 @@ fn flow(
                 }
             }
             Statement::Store { target, value } => {
-                read_after |= expression_reads_name_across_call(target, name, prior_call)
+                // The lvalue address is formed before its RHS and consumed by
+                // the final store. A call in the RHS therefore makes every
+                // value used to form that address call-spanning, even though
+                // the source tree contains only the one target occurrence.
+                read_after |= (expression_reads_name(target, name)
+                    && expression_has_call(value))
+                    || expression_reads_name_across_call(target, name, prior_call)
                     || expression_reads_name_across_call(
                         value,
                         name,
@@ -964,6 +970,24 @@ mod tests {
         ];
         assert!(read_after_possible_call(&statements, "pointer", false).read_after_call);
         assert!(!read_after_possible_call(&statements, "condition", false).read_after_call);
+    }
+
+    #[test]
+    fn a_store_base_survives_a_call_in_its_value() {
+        let statements = vec![Statement::Store {
+            target: Expression::Member {
+                base: Box::new(Expression::Variable("this".into())),
+                offset: 4,
+                member_type: mwcc_syntax_trees::Type::StructPointer { element_size: 4 },
+                index_stride: None,
+            },
+            value: Expression::Call {
+                name: "allocate".into(),
+                arguments: vec![],
+            },
+        }];
+
+        assert!(read_after_possible_call(&statements, "this", false).read_after_call);
     }
 
     #[test]

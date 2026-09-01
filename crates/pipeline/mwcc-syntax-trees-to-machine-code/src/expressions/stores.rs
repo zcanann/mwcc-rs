@@ -104,8 +104,23 @@ impl Generator {
                 self.written_slots.insert(frame_offset);
                 return Ok(());
             }
-            let address =
+            let mut address =
                 self.with_reserved_inputs(value, |generator| generator.member_base_register(base))?;
+            // Forming a member lvalue can yield an incoming volatile physical
+            // register (most often `this` in r3). A call-bearing RHS clobbers
+            // that register before the final store, so promote the address to
+            // an allocator-owned live range just as the plain dereference path
+            // does below. Pinned nonvolatile and virtual bases are already safe.
+            if expression_has_call(value)
+                && !mwcc_vreg::Reg::is_virtual_field(address)
+                && address < 14
+            {
+                let retained = self.fresh_virtual_general();
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(retained, address));
+                address = retained;
+            }
             let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
             self.evaluate_float_assignment_value(value, destination, pointee)?;
             if restore {
@@ -2193,8 +2208,28 @@ impl Generator {
                 }
             }
         }
-        // A call result lands in the general return register (r3); store from there
-        // directly rather than moving it to the scratch first (mwcc emits no `mr r0,r3`).
+        // A constructed pointer and an ordinary call result both land in the
+        // general return register (r3). Store from there directly rather than
+        // moving either value through the scratch first. In particular, an
+        // inlined constructor retains its allocation in the requested result
+        // home, so `member = new T` ends in `stw r3,member` without `mr r0,r3`.
+        if let Expression::ConstructedNew {
+            allocation,
+            allocation_size,
+            constructor,
+            arguments,
+        } = value
+        {
+            let result = Eabi::general_result().number;
+            self.emit_constructed_new(
+                allocation,
+                *allocation_size,
+                constructor,
+                arguments,
+                result,
+            )?;
+            return Ok(result);
+        }
         if let Expression::Call { name, arguments } = value {
             let result = Eabi::general_result().number;
             self.emit_call(name, arguments, Some(result), false)?;
