@@ -386,8 +386,17 @@ impl Generator {
             return Ok(false);
         }
 
-        self.emit_arguments(arguments, name)?;
-        let input = Eabi::float_result().number;
+        // A structured caller gives the scalar result a virtual home. Evaluate
+        // the operand there as well so the inlined Newton step can update that
+        // value in place; MWCC does not marshal an inlined helper through f1.
+        let direct_result = mwcc_vreg::Reg::is_virtual_field(destination);
+        let input = if direct_result {
+            self.evaluate(&arguments[0], Type::Float, destination)?;
+            destination
+        } else {
+            self.emit_arguments(arguments, name)?;
+            Eabi::float_result().number
+        };
         self.output.has_float_branch = true;
         self.load_float_constant(FLOAT_SCRATCH, 0.0);
         self.output
@@ -437,11 +446,15 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::FloatMultiplySingle {
-                d: FLOAT_SCRATCH,
+                d: if direct_result {
+                    destination
+                } else {
+                    FLOAT_SCRATCH
+                },
                 a: 2,
                 c: FLOAT_SCRATCH,
             });
-        if destination != FLOAT_SCRATCH {
+        if !direct_result && destination != FLOAT_SCRATCH {
             self.output.instructions.push(Instruction::FloatMove {
                 d: destination,
                 b: FLOAT_SCRATCH,
