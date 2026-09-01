@@ -1,3 +1,4 @@
+use super::elf_object::function_bytes;
 use crate::{compile, SourceLanguage};
 
 #[test]
@@ -289,5 +290,5 @@ fn matches_gc_1_1_addressable_parameter_call_scheduling() {
         0x7c, 0x08, 0x03, 0xa6, // mtlr r0
         0x4e, 0x80, 0x00, 0x20, // blr
     ];
-    assert!(object.windows(expected.len()).any(|bytes| bytes == expected));
+    assert_eq!(function_bytes(&object, "bridge"), expected);
 }

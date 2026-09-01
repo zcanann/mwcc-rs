@@ -253,13 +253,24 @@ impl Generator {
                 else_body: Vec::new(),
             }));
         let address_taken = crate::frame::collect_address_taken(&normalized);
-        let needs_frame = normalized
-            .locals
+        // `collect_address_taken` is already restricted to parameters and
+        // automatic locals. Either kind is a real frame object once its
+        // address escapes; checking locals alone routed addressable parameters
+        // through the register-only structured compiler first.
+        let needs_frame = !address_taken.is_empty();
+        let has_addressable_parameter = normalized
+            .parameters
             .iter()
-            .any(|local| address_taken.contains(local.name.as_str()));
+            .any(|parameter| address_taken.contains(parameter.name.as_str()));
         if needs_frame && self.try_callee_saved_structured_frame_body(&normalized)? {
-            self.legacy_callee_saved_frame_layout =
-                LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable;
+            self.legacy_callee_saved_frame_layout = if has_addressable_parameter {
+                // The parameter's source-owned stack object is already the
+                // retained entry value. Appending the optimizer entry table
+                // would charge that storage a second time.
+                LegacyCalleeSavedFrameLayout::PreserveLogicalSize
+            } else {
+                LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable
+            };
             return Ok(true);
         }
         if self.try_callee_saved_structured_body(&normalized)? {

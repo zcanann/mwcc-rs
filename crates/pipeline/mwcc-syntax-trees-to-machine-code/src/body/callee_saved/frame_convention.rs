@@ -905,6 +905,13 @@ impl Generator {
                 self.normalize_restored_stack_saved_gpr_epilogue(&physical_saved, new_size);
             }
         }
+        // A guarded addressable-parameter frame is source-owned rather than an
+        // allocator-retained entry table. GC/1.1 finishes that concrete frame
+        // object by releasing r1 before publishing the restored LR, even though
+        // its ordinary saved-GPR epilogue style writes LR earlier.
+        if preserve_logical_size && addressable_parameter_frame {
+            self.normalize_link_register_after_stack_restore(new_size);
+        }
         self.frame_size = new_size;
     }
 
