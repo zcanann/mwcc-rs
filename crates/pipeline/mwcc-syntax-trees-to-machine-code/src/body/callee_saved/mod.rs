@@ -202,6 +202,12 @@ mod structured_shared_switch_scalar_schedule;
 mod structured_guarded_mutating_inline_linkage;
 mod structured_guarded_mutating_inline_schedule;
 mod structured_expression_visit;
+pub(in crate::body) use structured_expression_visit::{
+    rewrite_statement as rewrite_structured_statement,
+    statements_assign_name as structured_statements_assign_name,
+    visit_expression as visit_structured_expression,
+    visit_statement as visit_structured_statement,
+};
 mod structured_reference_call_span;
 mod structured_guard_cache_schedule;
 mod structured_deferred_local_layout;

@@ -254,6 +254,43 @@ pub(super) fn automatic_straight_line_scalar_value_function(function: &Function)
 pub(super) fn automatic_statement_value_function(function: &Function) -> bool {
     automatic_queue_draining_value_function(function)
         || automatic_guarded_accumulator_value_function(function)
+        || automatic_conditional_local_value_function(function)
+}
+
+/// A source-visible scalar helper may keep its result in one initialized local
+/// and select later values through a nested `if`/`else if` tree. Keeping this
+/// as statements preserves the local's single captured image and avoids
+/// duplicating parameter/member reads while converting the tree to a value
+/// expression.
+fn automatic_conditional_local_value_function(function: &Function) -> bool {
+    let [result] = function.locals.as_slice() else {
+        return false;
+    };
+    if matches!(function.return_type, Type::Void | Type::Struct { .. })
+        || !matches!(
+            function.return_expression.as_ref(),
+            Some(Expression::Variable(name)) if name == &result.name
+        )
+        || result.initializer.is_none()
+        || result.is_static
+        || result.is_volatile
+        || !automatic_local_has_composable_storage(result)
+        || matches!(result.declared_type, Type::Void | Type::Struct { .. })
+        || !function.guards.is_empty()
+        || function.asm_body.is_some()
+        || !function.inline_asm_blocks.is_empty()
+        || statement_weight(&function.statements) > 16
+        || !matches!(function.statements.as_slice(), [Statement::If { .. }])
+        || function
+            .parameters
+            .iter()
+            .any(|parameter| variable_is_modified_or_escaped(function, &parameter.name))
+    {
+        return false;
+    }
+    let local_names = HashSet::from([result.name.as_str()]);
+    statement_value_statements_are_composable(&function.statements, &local_names)
+        && multi_call_transaction_callee(function)
 }
 
 fn automatic_queue_draining_value_function(function: &Function) -> bool {

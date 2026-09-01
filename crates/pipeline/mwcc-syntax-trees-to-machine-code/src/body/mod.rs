@@ -70,6 +70,7 @@ mod damage_vector_schedule;
 mod dual_status_switch_schedule;
 mod retained_item_ratio_schedule;
 mod callee_saved;
+mod conditional_member_cache;
 pub(crate) use callee_saved::owns_unreferenced_forwarding_branch_cleanup;
 pub(crate) use callee_saved::branches_enter_float_restores;
 pub(crate) use callee_saved::restores_fprs_before_gpr_helper_setup;

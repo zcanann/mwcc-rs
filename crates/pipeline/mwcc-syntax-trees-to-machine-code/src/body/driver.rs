@@ -1179,6 +1179,9 @@ impl Generator {
                 }
             }
         }
+        if let Some(cached) = super::conditional_member_cache::materialize(function) {
+            return self.evaluate_body(&cached);
+        }
         // A selectively expanded helper inside a list walk has an exact
         // four-home call schedule. Claim the expanded tree before any broader
         // loop owner can discard that helper-specific liveness shape.

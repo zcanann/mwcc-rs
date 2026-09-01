@@ -147,6 +147,10 @@ pub struct InlineBodySet {
     /// Bounded scalar transactions whose loops and final local result require
     /// statement-level rather than expression-summary composition.
     statement_value_bodies: HashMap<String, Function>,
+    /// Statement-valued helpers with only a suffix of source-order-visible
+    /// call sites. Earlier callers retain the out-of-line call; later callers
+    /// may compose the same body, including through another inserted helper.
+    source_visible_statement_value_bodies: HashMap<String, Function>,
     /// Larger guarded transactions available only to terminal scratch wrappers.
     terminal_wrapper_bodies: HashMap<String, Function>,
     values: HashMap<String, ValueInlineBody>,
@@ -424,17 +428,29 @@ impl InlineBodySet {
             })
             .map(|function| (function.name.clone(), function.clone()))
             .collect();
-        let statement_value_bodies: HashMap<String, Function> = definitions
+        let statement_value_candidates: HashMap<String, Function> = definitions
             .iter()
-            .filter(|function| {
-                safety::automatic_statement_value_function(function)
-                    && source_visible_call_counts
-                        .get(&function.name)
-                        .copied()
-                        .unwrap_or(0)
-                        == call_counts.get(&function.name).copied().unwrap_or(0)
-            })
+            .filter(|function| safety::automatic_statement_value_function(function))
             .map(|function| (function.name.clone(), function.clone()))
+            .collect();
+        let statement_value_bodies: HashMap<String, Function> = statement_value_candidates
+            .iter()
+            .filter(|(name, _)| {
+                source_visible_call_counts
+                    .get(*name)
+                    .copied()
+                    .unwrap_or(0)
+                    == call_counts.get(*name).copied().unwrap_or(0)
+            })
+            .map(|(name, function)| (name.clone(), function.clone()))
+            .collect();
+        let source_visible_statement_value_bodies: HashMap<String, Function> =
+            statement_value_candidates
+            .into_iter()
+            .filter(|(name, _)| {
+                let visible = source_visible_call_counts.get(name).copied().unwrap_or(0);
+                visible > 0 && visible < call_counts.get(name).copied().unwrap_or(0)
+            })
             .collect();
         let terminal_wrapper_bodies = definitions
             .iter()
@@ -565,6 +581,7 @@ impl InlineBodySet {
                 .collect(),
             repeatable_guarded_call_bodies,
             statement_value_bodies,
+            source_visible_statement_value_bodies,
             terminal_wrapper_bodies,
             values,
             repeatable_global_transaction_values,
@@ -1158,6 +1175,47 @@ impl InlineBodySet {
         Some(result)
     }
 
+    fn with_source_visible_statement_value_bodies(&self, function: &Function) -> Self {
+        let Some(caller_position) = self.definition_positions.get(&function.name).copied() else {
+            return self.clone();
+        };
+        let mut scoped = self.clone();
+        scoped.statement_value_bodies.extend(
+            self.source_visible_statement_value_bodies
+                .iter()
+                .filter(|(name, _)| {
+                    self.definition_positions
+                        .get(*name)
+                        .is_some_and(|position| *position < caller_position)
+                })
+                .map(|(name, body)| (name.clone(), body.clone())),
+        );
+        scoped
+    }
+
+    /// Compose a statement-valued helper only in callers following its source
+    /// definition. The earlier call is deliberately preserved in the emitted
+    /// definition, matching MWCC's asymmetric single-pass visibility.
+    fn expand_visible_statement_value_transactions(
+        &self,
+        function: &Function,
+    ) -> Option<ExpandedCalls> {
+        let caller_position = *self.definition_positions.get(&function.name)?;
+        let mut calls = HashMap::new();
+        collect_function_calls(function, &mut calls);
+        if !calls.keys().any(|name| {
+            self.source_visible_statement_value_bodies
+                .contains_key(name)
+                && self
+                    .definition_positions
+                    .get(name)
+                    .is_some_and(|position| *position < caller_position)
+        }) {
+            return None;
+        }
+        self.expand_calls_with_facts_policy(function, false)
+    }
+
     /// Select the context-sensitive repeated-body lane used by body lowering.
     ///
     /// Frame and section-anchor planning call this same owner before emission,
@@ -1167,18 +1225,20 @@ impl InlineBodySet {
         function: &Function,
         repeatable_scalar_member_setters: bool,
     ) -> Option<ExpandedCalls> {
+        let scoped = self.with_source_visible_statement_value_bodies(function);
         repeatable_scalar_member_setters
-            .then(|| self.expand_repeatable_scalar_member_setter_calls(function))
+            .then(|| scoped.expand_repeatable_scalar_member_setter_calls(function))
             .flatten()
-            .or_else(|| self.expand_visible_global_scalar_transactions(function))
-            .or_else(|| self.expand_mixed_bounded_transactions(function))
-            .or_else(|| self.expand_bounded_guarded_value_transactions(function))
-            .or_else(|| self.expand_repeatable_guarded_calls(function))
-            .or_else(|| self.expand_repeatable_bounded_caller_calls(function))
+            .or_else(|| scoped.expand_visible_statement_value_transactions(function))
+            .or_else(|| scoped.expand_visible_global_scalar_transactions(function))
+            .or_else(|| scoped.expand_mixed_bounded_transactions(function))
+            .or_else(|| scoped.expand_bounded_guarded_value_transactions(function))
+            .or_else(|| scoped.expand_repeatable_guarded_calls(function))
+            .or_else(|| scoped.expand_repeatable_bounded_caller_calls(function))
             .or_else(|| {
-                self.expand_repeatable_loop_calls(function, repeatable_scalar_member_setters)
+                scoped.expand_repeatable_loop_calls(function, repeatable_scalar_member_setters)
             })
-            .or_else(|| self.expand_repeatable_terminal_wrapper_call(function))
+            .or_else(|| scoped.expand_repeatable_terminal_wrapper_call(function))
     }
 
     /// Effective expanded source for read-only planning passes.
@@ -1697,6 +1757,140 @@ impl InlineBodySet {
         Some(output)
     }
 
+    /// Hoist one statement-valued call used as an ordinary call argument into
+    /// a private scalar result, compose its control flow, then resume the outer
+    /// call. Other arguments must be effect-free so this preserves the source
+    /// evaluation order exactly.
+    #[allow(clippy::too_many_arguments)]
+    fn expand_nested_statement_value_argument(
+        &self,
+        statement: &Statement,
+        stable_variables: &HashSet<String>,
+        active: &mut HashSet<String>,
+        changed: &mut bool,
+        locals: &mut Vec<mwcc_syntax_trees::LocalDeclaration>,
+        occupied_names: &mut HashSet<String>,
+        next_local_id: &mut usize,
+        statement_body_substitutions: &mut usize,
+        statement_frame_residue_substitutions: &mut usize,
+        statement_mutating_body_substitutions: &mut usize,
+        allow_changing_scalar_arguments: bool,
+    ) -> Option<Vec<Statement>> {
+        let Statement::Expression(Expression::Call {
+            name: outer_name,
+            arguments,
+        }) = statement
+        else {
+            return None;
+        };
+        let nested = arguments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, argument)| match argument {
+                Expression::Call { name, arguments }
+                    if self.statement_value_bodies.contains_key(name) =>
+                {
+                    Some((index, name, arguments))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let [(argument_index, callee_name, callee_arguments)] = nested.as_slice() else {
+            return None;
+        };
+        if arguments.iter().enumerate().any(|(index, argument)| {
+            index != *argument_index && crate::analysis::expression_has_side_effect(argument)
+        }) {
+            return None;
+        }
+        let callee = self.statement_value_bodies.get(*callee_name)?;
+        let locals_checkpoint = locals.len();
+        let occupied_checkpoint = occupied_names.clone();
+        let next_id_checkpoint = *next_local_id;
+        let changed_checkpoint = *changed;
+        let statement_checkpoint = *statement_body_substitutions;
+        let frame_checkpoint = *statement_frame_residue_substitutions;
+        let mutating_checkpoint = *statement_mutating_body_substitutions;
+        let result_name = loop {
+            let candidate = format!(
+                "__mwcc_inline_{}_{}_result",
+                callee_name, *next_local_id
+            );
+            *next_local_id += 1;
+            if occupied_names.insert(candidate.clone()) {
+                break candidate;
+            }
+        };
+        locals.push(mwcc_syntax_trees::LocalDeclaration {
+            declared_type: callee.return_type,
+            name: result_name.clone(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        });
+        let assignment = Statement::Assign {
+            name: result_name.clone(),
+            value: Expression::Call {
+                name: (*callee_name).clone(),
+                arguments: (*callee_arguments).clone(),
+            },
+        };
+        let Some(mut output) = self.expand_statement_call(
+            &assignment,
+            0,
+            1,
+            stable_variables,
+            active,
+            changed,
+            locals,
+            occupied_names,
+            next_local_id,
+            statement_body_substitutions,
+            statement_frame_residue_substitutions,
+            statement_mutating_body_substitutions,
+            false,
+            allow_changing_scalar_arguments,
+        ) else {
+            locals.truncate(locals_checkpoint);
+            *occupied_names = occupied_checkpoint;
+            *next_local_id = next_id_checkpoint;
+            *changed = changed_checkpoint;
+            *statement_body_substitutions = statement_checkpoint;
+            *statement_frame_residue_substitutions = frame_checkpoint;
+            *statement_mutating_body_substitutions = mutating_checkpoint;
+            return None;
+        };
+        let mut outer_arguments = arguments.clone();
+        outer_arguments[*argument_index] = Expression::Variable(result_name.clone());
+        let resumed = Statement::Expression(Expression::Call {
+            name: outer_name.clone(),
+            arguments: outer_arguments,
+        });
+        let mut resumed_stable = stable_variables.clone();
+        resumed_stable.insert(result_name);
+        output.extend(self.expand_statements(
+            &[resumed],
+            &resumed_stable,
+            active,
+            changed,
+            locals,
+            occupied_names,
+            next_local_id,
+            statement_body_substitutions,
+            statement_frame_residue_substitutions,
+            statement_mutating_body_substitutions,
+            false,
+            allow_changing_scalar_arguments,
+        ));
+        Some(output)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn expand_pretest_loop_condition_call(
         &self,
@@ -1841,6 +2035,22 @@ impl InlineBodySet {
     ) -> Vec<Statement> {
         let mut output = Vec::new();
         for (statement_index, statement) in statements.iter().enumerate() {
+            if let Some(expanded) = self.expand_nested_statement_value_argument(
+                statement,
+                stable_variables,
+                active,
+                changed,
+                locals,
+                occupied_names,
+                next_local_id,
+                statement_body_substitutions,
+                statement_frame_residue_substitutions,
+                statement_mutating_body_substitutions,
+                allow_changing_scalar_arguments,
+            ) {
+                output.extend(expanded);
+                continue;
+            }
             if let Some(expanded) = self.expand_pretest_loop_condition_call(
                 statement,
                 stable_variables,
@@ -2919,6 +3129,79 @@ mod tests {
             local.name.contains("affect")
                 && matches!(local.declared_type, Type::Struct { size: 12, .. })
         }));
+    }
+
+    #[test]
+    fn composes_a_conditional_local_value_only_after_its_definition() {
+        fn fade_call() -> Expression {
+            Expression::Call {
+                name: "fade".into(),
+                arguments: vec![Expression::FloatLiteral(0.5)],
+            }
+        }
+        let mut fade = function(
+            "fade",
+            vec![Parameter {
+                parameter_type: Type::Float,
+                name: "time".into(),
+            }],
+            vec![Statement::If {
+                condition: Expression::Call {
+                    name: "enabled".into(),
+                    arguments: Vec::new(),
+                },
+                then_body: vec![Statement::Assign {
+                    name: "result".into(),
+                    value: Expression::Call {
+                        name: "fade_out".into(),
+                        arguments: vec![Expression::Variable("time".into())],
+                    },
+                }],
+                else_body: vec![Statement::Assign {
+                    name: "result".into(),
+                    value: Expression::Call {
+                        name: "fade_in".into(),
+                        arguments: vec![Expression::Variable("time".into())],
+                    },
+                }],
+            }],
+        );
+        fade.return_type = Type::Float;
+        fade.locals = vec![local(
+            "result",
+            Type::Float,
+            Expression::FloatLiteral(1.0),
+        )];
+        fade.return_expression = Some(Expression::Variable("result".into()));
+
+        let mut earlier = function("earlier", Vec::new(), Vec::new());
+        earlier.locals = vec![local("result", Type::Float, fade_call())];
+        let later = function(
+            "later",
+            Vec::new(),
+            vec![Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![fade_call()],
+            })],
+        );
+        let bodies = InlineBodySet::analyze_with_definitions(
+            &[earlier.clone(), fade, later.clone()],
+            &[],
+        );
+
+        assert!(bodies.expand_selective_calls(&earlier, false).is_none());
+        let expanded = bodies
+            .expand_selective_calls(&later, false)
+            .expect("the later nested value call should compose");
+        let mut calls = HashMap::new();
+        collect_function_calls(&expanded.function, &mut calls);
+        assert!(!calls.contains_key("fade"));
+        assert!(calls.contains_key("consume"));
+        assert!(expanded
+            .function
+            .locals
+            .iter()
+            .any(|local| local.name.contains("fade") && local.name.ends_with("result")));
     }
 
     #[test]

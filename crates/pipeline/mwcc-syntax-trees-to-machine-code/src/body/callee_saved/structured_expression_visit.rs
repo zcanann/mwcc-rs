@@ -7,7 +7,10 @@
 
 use mwcc_syntax_trees::{ArmBody, Expression, Statement};
 
-pub(super) fn visit_statement(statement: &Statement, visit: &mut impl FnMut(&Expression)) {
+pub(in crate::body) fn visit_statement(
+    statement: &Statement,
+    visit: &mut impl FnMut(&Expression),
+) {
     match statement {
         Statement::Store { target, value } => {
             visit_expression(target, visit);
@@ -66,7 +69,10 @@ pub(super) fn visit_statement(statement: &Statement, visit: &mut impl FnMut(&Exp
     }
 }
 
-pub(super) fn visit_expression(expression: &Expression, visit: &mut impl FnMut(&Expression)) {
+pub(in crate::body) fn visit_expression(
+    expression: &Expression,
+    visit: &mut impl FnMut(&Expression),
+) {
     visit(expression);
     match expression {
         Expression::AggregateLiteral(elements) => {
@@ -224,7 +230,7 @@ pub(super) fn statement_assigns_name(statement: &Statement, name: &str) -> bool 
     }
 }
 
-pub(super) fn statements_assign_name(statements: &[Statement], name: &str) -> bool {
+pub(in crate::body) fn statements_assign_name(statements: &[Statement], name: &str) -> bool {
     statements
         .iter()
         .any(|statement| statement_assigns_name(statement, name))
@@ -240,7 +246,7 @@ fn arm_body_assigns_name(body: &ArmBody, name: &str) -> bool {
 /// Clone a statement tree while allowing a planner to replace complete
 /// expression nodes. Replacements are pre-order and terminal: once the
 /// callback returns a node, its children are not rewritten a second time.
-pub(super) fn rewrite_statement(
+pub(in crate::body) fn rewrite_statement(
     statement: &Statement,
     rewrite: &mut impl FnMut(&Expression) -> Option<Expression>,
 ) -> Statement {
