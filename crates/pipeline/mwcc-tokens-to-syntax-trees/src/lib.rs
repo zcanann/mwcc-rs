@@ -6845,6 +6845,35 @@ blr\n\
     }
 
     #[test]
+    fn retains_virtual_slots_using_elaborated_forward_declarations() {
+        let source = r#"
+            typedef void (*Callback)(struct Work*, struct Particle*);
+            struct Field {
+                virtual ~Field() {}
+                virtual void prepare(Work*);
+                virtual void calc(Work*, Particle*) = 0;
+            };
+            void Field::prepare(Work*) {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let field = unit
+            .cxx_abi_classes
+            .iter()
+            .find(|class| class.source_name == "Field")
+            .expect("Field ABI metadata");
+
+        assert_eq!(field.vtable_components[0].virtual_slots, 3);
+        assert!(unit.globals.iter().any(|global| global.name == "__vt__5Field"));
+    }
+
+    #[test]
     fn selects_a_specialized_template_reference_overload_from_a_member_return() {
         let source = r#"
             namespace JGeometry {

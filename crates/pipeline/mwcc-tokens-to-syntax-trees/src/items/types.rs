@@ -451,6 +451,16 @@ impl Parser {
             } else {
                 self.parse_identifier()?
             };
+            // In C++, an elaborated type specifier is also a declaration:
+            // `void (*callback)(struct Work*)` makes the bare name `Work`
+            // available to later declarations even when its layout remains
+            // incomplete. Retain that opaque identity so subsequent virtual
+            // method signatures are not discarded as unknown types.
+            if self.cplusplus {
+                self.struct_typedefs
+                    .entry(tag.clone())
+                    .or_insert_with(|| tag.clone());
+            }
             self.consume_trailing_qualifiers();
             if !matches!(self.peek(), Token::Star | Token::Ampersand) {
                 // A struct *value*: a known layout becomes a sized struct value
