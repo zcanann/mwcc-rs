@@ -78,6 +78,33 @@ fn bind_parameterized_asm_fragment(
     Some((items, result_register))
 }
 
+fn rebind_asm_memory_bases(
+    items: &mut [AsmItem],
+    bindings: &std::collections::HashMap<u8, (u8, i16)>,
+) -> bool {
+    let mut rebound = std::collections::HashSet::new();
+    for item in items {
+        let AsmItem::Instruction(instruction) = item else {
+            continue;
+        };
+        for operand in &mut instruction.operands {
+            let AsmOperand::Memory { displacement, base } = operand else {
+                continue;
+            };
+            let Some((actual_base, adjustment)) = bindings.get(base).copied() else {
+                continue;
+            };
+            let Some(combined) = displacement.checked_add(adjustment) else {
+                return false;
+            };
+            rebound.insert(*base);
+            *base = actual_base;
+            *displacement = combined;
+        }
+    }
+    rebound.len() == bindings.len()
+}
+
 const JGEOMETRY_EPSILON: &str = "epsilon__Q29JGeometry8TUtil<f>Fv";
 const JGEOMETRY_INV_SQRT: &str = "inv_sqrt__Q29JGeometry8TUtil<f>Ff";
 
@@ -174,9 +201,158 @@ mod parameterized_asm_tests {
                 ]
         ));
     }
+
+    #[test]
+    fn folds_pointer_argument_addresses_into_asm_memory_operands() {
+        let mut items = vec![AsmItem::Instruction(AsmInstruction {
+            mnemonic: "psq_l".into(),
+            operands: vec![
+                AsmOperand::Fpr(0),
+                AsmOperand::Memory {
+                    displacement: 8,
+                    base: 3,
+                },
+                AsmOperand::Immediate(0),
+                AsmOperand::Immediate(0),
+            ],
+            source_line: 1,
+        })];
+        assert!(rebind_asm_memory_bases(
+            &mut items,
+            &std::collections::HashMap::from([(3, (29, 16))]),
+        ));
+        assert!(matches!(
+            &items[0],
+            AsmItem::Instruction(AsmInstruction { operands, .. })
+                if matches!(operands.as_slice(), [_, AsmOperand::Memory { displacement: 24, base: 29 }, ..])
+        ));
+    }
 }
 
 impl Generator {
+    /// Whether a source-level named call is emitted entirely in the caller and
+    /// therefore does not clobber the ABI volatile register set. Structured
+    /// liveness uses this distinction when retained inline-assembly helpers
+    /// survive semantic AST composition as `Call` nodes.
+    pub(crate) fn is_nonclobbering_inline_call(
+        &self,
+        name: &str,
+        arguments: &[Expression],
+    ) -> bool {
+        let directly_bound_asm = self
+            .inline_bodies
+            .parameterized_asm_fragment(name)
+            .filter(|function| function.parameters.len() == arguments.len())
+            .and_then(|function| function.inline_asm_blocks.first().map(|block| (function, block)))
+            .is_some_and(|(function, block)| {
+                let mut fragment = block.items.clone();
+                self.try_bind_parameterized_asm_addresses(function, arguments, &mut fragment)
+            });
+        (name == JGEOMETRY_EPSILON && arguments.is_empty())
+            || (name == JGEOMETRY_INV_SQRT && arguments.len() == 1)
+            || (self.inline_bodies.asm_fragment(name).is_some() && arguments.is_empty())
+            || directly_bound_asm
+    }
+
+    fn inline_asm_address_base(&self, expression: &Expression) -> Option<u8> {
+        match expression {
+            Expression::Variable(name) => self.lookup_general(name),
+            Expression::Cast { operand, .. } => self.inline_asm_address_base(operand),
+            _ => None,
+        }
+    }
+
+    fn inline_asm_address(&self, expression: &Expression) -> Option<(u8, i16)> {
+        match expression {
+            Expression::Cast { operand, .. } => self.inline_asm_address(operand),
+            Expression::Variable(name) => self.lookup_general(name).map(|base| (base, 0)),
+            Expression::AddressOf { operand } => match operand.as_ref() {
+                Expression::Variable(name) => self
+                    .frame_slots
+                    .get(name)
+                    .map(|slot| (1, slot.offset)),
+                Expression::Member {
+                    base,
+                    offset,
+                    index_stride: None,
+                    ..
+                } => Some((
+                    self.inline_asm_address_base(base)?,
+                    i16::try_from(*offset).ok()?,
+                )),
+                _ => None,
+            },
+            Expression::Member {
+                base,
+                offset,
+                member_type: Type::Struct { .. },
+                index_stride: None,
+            }
+            | Expression::MemberAddress {
+                base,
+                offset,
+                index_stride: None,
+                ..
+            } => Some((
+                self.inline_asm_address_base(base)?,
+                i16::try_from(*offset).ok()?,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Bind effect-free pointer arguments directly into retained assembly
+    /// memory operands. This is MWCC's address-folding path for JMath vector
+    /// helpers: `&object->field` becomes `field_offset(object_register)` rather
+    /// than an EABI `addi r3,...` temporary that inflates caller pressure.
+    fn try_bind_parameterized_asm_addresses(
+        &self,
+        function: &Function,
+        arguments: &[Expression],
+        fragment: &mut [AsmItem],
+    ) -> bool {
+        let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
+        let mut bindings = std::collections::HashMap::new();
+        for (parameter, argument) in function.parameters.iter().zip(arguments) {
+            match parameter.parameter_type {
+                Type::Pointer(_) | Type::StructPointer { .. } => {
+                    let Some(address) = self.inline_asm_address(argument) else {
+                        return false;
+                    };
+                    bindings.insert(next_general, address);
+                    next_general += 1;
+                }
+                Type::Float | Type::Double => {}
+                _ => return false,
+            }
+        }
+        !bindings.is_empty() && rebind_asm_memory_bases(fragment, &bindings)
+    }
+
+    fn emit_parameterized_asm_float_arguments(
+        &mut self,
+        function: &Function,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<()> {
+        let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
+        for (index, (parameter, argument)) in
+            function.parameters.iter().zip(arguments).enumerate()
+        {
+            if matches!(parameter.parameter_type, Type::Float | Type::Double) {
+                self.evaluate(argument, parameter.parameter_type, next_float)
+                    .map_err(|mut diagnostic| {
+                        diagnostic.message.push_str(&format!(
+                            " (while evaluating floating argument {index} to '{name}')"
+                        ));
+                        diagnostic
+                    })?;
+                next_float += 1;
+            }
+        }
+        Ok(())
+    }
+
     /// Lower the two `TUtil<float>` template bodies used throughout JSystem.
     /// The frontend sees their instantiated calls but does not materialize the
     /// class-template member definitions as retained `Function`s. Keep this
@@ -684,7 +860,20 @@ impl Generator {
                 if let Some((fragment, result_register)) =
                     bind_parameterized_asm_fragment(&function, destination, float_result)
                 {
-                    self.emit_arguments(arguments, name)?;
+                    let mut fragment = fragment;
+                    if self.try_bind_parameterized_asm_addresses(
+                        &function,
+                        arguments,
+                        &mut fragment,
+                    ) {
+                        self.emit_parameterized_asm_float_arguments(
+                            &function,
+                            arguments,
+                            name,
+                        )?;
+                    } else {
+                        self.emit_arguments(arguments, name)?;
+                    }
                     crate::asm::append_embedded_asm(&mut self.output, &fragment)?;
                     if let (Some(destination), Some(result)) = (destination, result_register) {
                         if destination != result {

@@ -167,6 +167,73 @@ use super::*;
 use mwcc_syntax_trees::ArmBody;
 
 impl Generator {
+    /// Project caller-resident helper invocations to their argument reads for
+    /// cross-call liveness. Their original `Call` nodes remain in the emission
+    /// tree so the call emitter can instantiate the retained assembly body.
+    fn project_nonclobbering_inline_calls(&self, function: &Function) -> Option<Function> {
+        let mut changed = false;
+        let mut rewrite = |expression: &Expression| {
+            let Expression::Call { name, arguments } = expression else {
+                return None;
+            };
+            if !self.is_nonclobbering_inline_call(name, arguments) {
+                return None;
+            }
+            changed = true;
+            Some(arguments.iter().rev().fold(
+                Expression::IntegerLiteral(0),
+                |right, argument| Expression::Comma {
+                    left: Box::new(argument.clone()),
+                    right: Box::new(right),
+                },
+            ))
+        };
+        let locals = function
+            .locals
+            .iter()
+            .map(|local| LocalDeclaration {
+                initializer: local.initializer.as_ref().map(|initializer| {
+                    super::structured_expression_visit::rewrite_expression(
+                        initializer,
+                        &mut rewrite,
+                    )
+                }),
+                ..local.clone()
+            })
+            .collect();
+        let statements = function
+            .statements
+            .iter()
+            .map(|statement| {
+                super::structured_expression_visit::rewrite_statement(statement, &mut rewrite)
+            })
+            .collect();
+        let guards = function
+            .guards
+            .iter()
+            .map(|guard| mwcc_syntax_trees::GuardedReturn {
+                condition: super::structured_expression_visit::rewrite_expression(
+                    &guard.condition,
+                    &mut rewrite,
+                ),
+                value: super::structured_expression_visit::rewrite_expression(
+                    &guard.value,
+                    &mut rewrite,
+                ),
+            })
+            .collect();
+        let return_expression = function.return_expression.as_ref().map(|expression| {
+            super::structured_expression_visit::rewrite_expression(expression, &mut rewrite)
+        });
+        changed.then(|| Function {
+            locals,
+            statements,
+            guards,
+            return_expression,
+            ..function.clone()
+        })
+    }
+
     /// Admit residual frameless leaf loops to the general structured CFG path
     /// when a source local genuinely carries a value across iterations. Exact
     /// semantic loop owners run before this fallback in the body driver.
@@ -790,16 +857,21 @@ impl Generator {
                     .map(|parameter| parameter.name.as_str()),
             )
             .collect();
+        let nonclobbering_call_projection = self.project_nonclobbering_inline_calls(function);
+        let liveness_function = nonclobbering_call_projection.as_ref().unwrap_or(function);
         let retained_sqrtf_is_only_call = self.retained_sqrtf_is_only_call(function);
         let mut survivors: std::collections::HashSet<&str> = candidates
             .into_iter()
             .filter(|name| {
                 !retained_sqrtf_is_only_call
-                    && (read_after_possible_call_in_function(function, name)
+                    && (read_after_possible_call_in_function(liveness_function, name)
                         || self.inline_source_call_survivors.contains(*name)
                         || (self.one_word_aggregate_locals.contains(*name)
-                            && body_uses_local(&function.statements, name)
-                            && function.statements.iter().any(statement_has_call)))
+                            && body_uses_local(&liveness_function.statements, name)
+                            && liveness_function
+                                .statements
+                                .iter()
+                                .any(statement_has_call)))
             })
             .collect();
         survivors.retain(|name| {
