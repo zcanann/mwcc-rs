@@ -759,6 +759,11 @@ impl Generator {
             } else {
                 destination
             };
+            if let Some(operands) =
+                self.try_place_shared_nested_member_float_operands(left, right, anchor)?
+            {
+                return Ok(operands);
+            }
             self.emit_located_operand(left, anchor)?;
             self.emit_located_operand(right, FLOAT_SCRATCH)?;
             return Operands::ordered(anchor, FLOAT_SCRATCH);
@@ -861,6 +866,81 @@ impl Generator {
             return Operands::ordered(left_register, FLOAT_SCRATCH);
         }
         unreachable!("caller checked one side is a float load")
+    }
+
+    /// Load two float members reached through the same pointer-valued member
+    /// after chasing that nested pointer once. Optimized mwcc keeps the shared
+    /// base live for `owner->data->a OP owner->data->b`; independently lowering
+    /// the two located operands would reload `owner->data` for the second lane.
+    fn try_place_shared_nested_member_float_operands(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        left_register: u8,
+    ) -> Compilation<Option<Operands>> {
+        if self.behavior.optimization == mwcc_versions::Optimization::O0 {
+            return Ok(None);
+        }
+        let (
+            Expression::Member {
+                base: left_base,
+                offset: left_offset,
+                member_type: left_type @ (Type::Float | Type::Double),
+                index_stride: None,
+            },
+            Expression::Member {
+                base: right_base,
+                offset: right_offset,
+                member_type: right_type @ (Type::Float | Type::Double),
+                index_stride: None,
+            },
+        ) = (left, right)
+        else {
+            return Ok(None);
+        };
+        if !matches!(
+            left_base.as_ref(),
+            Expression::Member {
+                member_type: Type::Pointer(_) | Type::StructPointer { .. },
+                index_stride: None,
+                ..
+            }
+        )
+            || !structurally_equal(left_base, right_base)
+            || expression_has_side_effect(left_base)
+        {
+            return Ok(None);
+        }
+        let (Ok(left_offset), Ok(right_offset)) =
+            (i16::try_from(*left_offset), i16::try_from(*right_offset))
+        else {
+            return Ok(None);
+        };
+        let (Some(left_pointee), Some(right_pointee)) = (
+            crate::expressions::pointee_of_type(*left_type),
+            crate::expressions::pointee_of_type(*right_type),
+        ) else {
+            return Ok(None);
+        };
+
+        let base = self.member_base_register(left_base)?;
+        self.output
+            .instructions
+            .push(crate::expressions::displacement_load(
+                left_pointee,
+                left_register,
+                base,
+                left_offset,
+            )?);
+        self.output
+            .instructions
+            .push(crate::expressions::displacement_load(
+                right_pointee,
+                FLOAT_SCRATCH,
+                base,
+                right_offset,
+            )?);
+        Ok(Some(Operands::ordered(left_register, FLOAT_SCRATCH)?))
     }
 
     pub(crate) fn is_float_call_value(&self, expression: &Expression) -> bool {

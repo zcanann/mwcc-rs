@@ -119,3 +119,49 @@ fn schedules_an_ipa_forwarded_float_member_initializer() {
     ];
     assert!(object.windows(expected.len()).any(|bytes| bytes == expected));
 }
+
+#[test]
+fn reuses_a_nested_pointer_base_across_float_binary_operands() {
+    let source = br#"
+        typedef struct Data {
+            float low;
+            float high;
+        } Data;
+
+        typedef struct Block {
+            Data* data;
+            float span;
+        } Block;
+
+        void calculate(Block* block) {
+            block->span = block->data->high - block->data->low;
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    flags.optimization = mwcc_versions::Optimization::O4;
+    let object = compile(
+        source,
+        "shared-nested-float-base.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_6,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("two nested float members should reuse their pointer-valued base");
+
+    let expected = [
+        0x80, 0x83, 0x00, 0x00, // lwz r4,0(r3)
+        0xc0, 0x24, 0x00, 0x04, // lfs f1,4(r4)
+        0xc0, 0x04, 0x00, 0x00, // lfs f0,0(r4)
+        0xec, 0x01, 0x00, 0x28, // fsubs f0,f1,f0
+        0xd0, 0x03, 0x00, 0x04, // stfs f0,4(r3)
+        0x4e, 0x80, 0x00, 0x20, // blr
+    ];
+    assert!(object.windows(expected.len()).any(|bytes| bytes == expected));
+}
