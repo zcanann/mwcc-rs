@@ -13,6 +13,9 @@ impl Generator {
         &mut self,
         expression: &Expression,
     ) -> Compilation<()> {
+        if self.try_emit_scalarized_vec3_copy(expression)? {
+            return Ok(());
+        }
         match expression {
             Expression::Comma { left, right } => {
                 self.emit_discarded_comma_sequence(left)?;
