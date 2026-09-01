@@ -239,19 +239,14 @@ impl Generator {
         name: &str,
         arguments: &[Expression],
     ) -> bool {
-        let directly_bound_asm = self
+        let parameterized_asm = self
             .inline_bodies
             .parameterized_asm_fragment(name)
-            .filter(|function| function.parameters.len() == arguments.len())
-            .and_then(|function| function.inline_asm_blocks.first().map(|block| (function, block)))
-            .is_some_and(|(function, block)| {
-                let mut fragment = block.items.clone();
-                self.try_bind_parameterized_asm_addresses(function, arguments, &mut fragment)
-            });
+            .is_some_and(|function| function.parameters.len() == arguments.len());
         (name == JGEOMETRY_EPSILON && arguments.is_empty())
             || (name == JGEOMETRY_INV_SQRT && arguments.len() == 1)
             || (self.inline_bodies.asm_fragment(name).is_some() && arguments.is_empty())
-            || directly_bound_asm
+            || parameterized_asm
     }
 
     fn inline_asm_address_base(&self, expression: &Expression) -> Option<u8> {
