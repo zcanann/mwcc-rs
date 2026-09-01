@@ -718,6 +718,7 @@ fn lower_function_body(
         transient_condition_float_call_results: Default::default(),
         structured_guarded_bitfield_value: None,
         frame_slots: HashMap::new(),
+        paired_single_frame_copy_names: HashSet::new(),
         structured_compact_narrow_scalar_frame: false,
         structured_guarded_scalar_output_frame: false,
         structured_shared_switch_scalar_frame: false,

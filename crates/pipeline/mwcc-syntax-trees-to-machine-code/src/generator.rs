@@ -670,6 +670,9 @@ pub(crate) struct Generator {
     /// Address-taken variables and their stack-frame slots. A name here is
     /// frame-resident: `&v` and type-punned accesses read/write its slot.
     pub(crate) frame_slots: HashMap<String, FrameSlot>,
+    /// Vec3 frame locals consumed by retained paired-single helpers. Their
+    /// aggregate initialization uses paired loads/stores instead of a GPR copy.
+    pub(crate) paired_single_frame_copy_names: HashSet<String>,
     /// Source-proven build-163 frame that overlaps one narrow scratch slot
     /// with the logical local table and owns its final linkage schedule.
     pub(crate) structured_compact_narrow_scalar_frame: bool,

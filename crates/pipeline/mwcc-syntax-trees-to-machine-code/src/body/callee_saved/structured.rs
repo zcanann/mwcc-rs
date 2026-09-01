@@ -167,6 +167,41 @@ use super::*;
 use mwcc_syntax_trees::ArmBody;
 
 impl Generator {
+    fn record_paired_single_frame_copy_names(&mut self, function: &Function) {
+        let aggregate_locals: std::collections::HashSet<&str> = function
+            .locals
+            .iter()
+            .filter(|local| matches!(local.declared_type, Type::Struct { size: 12, .. }))
+            .map(|local| local.name.as_str())
+            .collect();
+        let mut names = std::collections::HashSet::new();
+        let mut visit = |expression: &Expression| {
+            let Expression::Call { name, arguments } = expression else {
+                return;
+            };
+            if self
+                .inline_bodies
+                .parameterized_asm_fragment(name)
+                .is_none()
+            {
+                return;
+            }
+            names.extend(arguments.iter().filter_map(|argument| {
+                let Expression::AddressOf { operand } = argument else {
+                    return None;
+                };
+                let Expression::Variable(name) = operand.as_ref() else {
+                    return None;
+                };
+                aggregate_locals.contains(name.as_str()).then(|| name.clone())
+            }));
+        };
+        for statement in &function.statements {
+            super::structured_expression_visit::visit_statement(statement, &mut visit);
+        }
+        self.paired_single_frame_copy_names.extend(names);
+    }
+
     /// Project caller-resident helper invocations to their argument reads for
     /// cross-call liveness. Their original `Call` nodes remain in the emission
     /// tree so the call emitter can instantiate the retained assembly body.
@@ -399,6 +434,7 @@ impl Generator {
         with_frame_array: bool,
         suppressed_constant_lane: bool,
     ) -> Compilation<bool> {
+        self.record_paired_single_frame_copy_names(function);
         let terminal_branch_result =
             super::structured_terminal_branch_result::fold(function);
         let function = terminal_branch_result.as_ref().unwrap_or(function);

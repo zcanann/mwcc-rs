@@ -60,6 +60,53 @@ fn emit_pipelined_vec3_copy(
     Ok(())
 }
 
+fn emit_paired_vec3_copy(
+    instructions: &mut Vec<Instruction>,
+    xy: u8,
+    z: u8,
+    source_register: u8,
+    source_offset: i16,
+    target_offset: i16,
+) -> Compilation<()> {
+    let source_z = source_offset
+        .checked_add(8)
+        .ok_or_else(|| Diagnostic::error("a Vec3 frame-copy source is out of range"))?;
+    let target_z = target_offset
+        .checked_add(8)
+        .ok_or_else(|| Diagnostic::error("a Vec3 frame-copy destination is out of range"))?;
+    instructions.extend([
+        Instruction::PairedSingleQuantizedLoad {
+            d: xy,
+            a: source_register,
+            offset: source_offset,
+            w: 0,
+            i: 0,
+        },
+        Instruction::PairedSingleQuantizedLoad {
+            d: z,
+            a: source_register,
+            offset: source_z,
+            w: 1,
+            i: 0,
+        },
+        Instruction::PairedSingleQuantizedStore {
+            s: xy,
+            a: 1,
+            offset: target_offset,
+            w: 0,
+            i: 0,
+        },
+        Instruction::PairedSingleQuantizedStore {
+            s: z,
+            a: 1,
+            offset: target_z,
+            w: 1,
+            i: 0,
+        },
+    ]);
+    Ok(())
+}
+
 impl FrameAggregateSource<'_> {
     fn size(&self) -> u32 {
         match self {
@@ -355,6 +402,31 @@ impl Generator {
         } else {
             false
         };
+        if source_size == 12
+            && !source_is_frame
+            && source_register != GENERAL_SCRATCH
+            && matches!(target, Expression::Variable(target_name)
+                if self.paired_single_frame_copy_names.contains(target_name))
+        {
+            let xy = self.fresh_virtual_float_preferring(2);
+            let z = self.fresh_virtual_float_preferring(1);
+            emit_paired_vec3_copy(
+                &mut self.output.instructions,
+                xy,
+                z,
+                source_register,
+                source_offset,
+                target_offset,
+            )?;
+            for displacement in [0, 4, 8] {
+                self.written_slots.insert(
+                    target_offset.checked_add(displacement).ok_or_else(|| {
+                        Diagnostic::error("a Vec3 frame-copy destination is out of range")
+                    })?,
+                );
+            }
+            return Ok(true);
+        }
         if source_size == 12 && !source_is_frame && source_register != GENERAL_SCRATCH {
             let first_word = self.fresh_virtual_general_preferring(6);
             emit_pipelined_vec3_copy(
@@ -588,6 +660,23 @@ mod tests {
                 Instruction::StoreWord { s: 0, a: 1, offset: 24 },
                 Instruction::LoadWord { d: 0, a: 3, offset: 8 },
                 Instruction::StoreWord { s: 0, a: 1, offset: 28 },
+            ]
+        ));
+    }
+
+    #[test]
+    fn copies_a_paired_single_vec3_in_two_lanes() {
+        let mut instructions = Vec::new();
+
+        emit_paired_vec3_copy(&mut instructions, 2, 1, 3, 4, 8).unwrap();
+
+        assert!(matches!(
+            instructions.as_slice(),
+            [
+                Instruction::PairedSingleQuantizedLoad { d: 2, a: 3, offset: 4, w: 0, i: 0 },
+                Instruction::PairedSingleQuantizedLoad { d: 1, a: 3, offset: 12, w: 1, i: 0 },
+                Instruction::PairedSingleQuantizedStore { s: 2, a: 1, offset: 8, w: 0, i: 0 },
+                Instruction::PairedSingleQuantizedStore { s: 1, a: 1, offset: 16, w: 1, i: 0 },
             ]
         ));
     }
