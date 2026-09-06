@@ -205,6 +205,7 @@ pub(super) fn lower(
             &source_functions,
             machine_functions,
             &layout,
+            build.profile.asm_implicit_return_has_zero_line(),
         ));
     } else if matches!(
         shape,

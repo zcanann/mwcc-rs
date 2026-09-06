@@ -1716,6 +1716,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         -32768
     }
 
+    /// Build 53 gives an assembler-inserted return a line-zero record;
+    /// build 163 and the later 2.4.x assemblers leave that word unmarked.
+    fn asm_implicit_return_has_zero_line(&self) -> bool {
+        false
+    }
+
     fn asm_branch_optimization_style(&self) -> AsmBranchOptimizationStyle {
         AsmBranchOptimizationStyle::ChaseAndCollapseReturns
     }
@@ -2229,6 +2235,10 @@ impl CodegenProfile for Wii43Build145 {
 #[derive(Debug)]
 pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
+    fn asm_implicit_return_has_zero_line(&self) -> bool {
+        true
+    }
+
     fn asm_negative_quantized_displacement_overwrites_fields(&self) -> bool {
         true
     }

@@ -66,7 +66,9 @@ pub(super) fn parameter_registers(
 }
 
 fn function_shape(function: &Function) -> bool {
-    if function.return_type != Type::Void
+    if function.asm_body.is_some()
+        || !function.inline_asm_blocks.is_empty()
+        || function.return_type != Type::Void
         || !function.locals.is_empty()
         || !function.guards.is_empty()
         || function.return_expression.is_some()

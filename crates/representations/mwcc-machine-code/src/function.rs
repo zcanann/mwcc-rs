@@ -324,6 +324,9 @@ pub struct MachineFunction {
     /// section (only compiler-generated functions are cataloged), so the writer
     /// excludes it from the mwcats records and relocations.
     pub is_asm: bool,
+    /// A terminal `blr` synthesized by asm finalization has no written source
+    /// instruction. Debug lowering applies the generation's line-record policy.
+    pub asm_has_implicit_return: bool,
     /// Inline-`asm` `entry <name>` points: additional GLOBAL symbols at `.text`
     /// offsets within this function (the runtime's `_savefpr_14` … register save/
     /// restore entry points). Each pairs the symbol name with its instruction index.
@@ -401,6 +404,7 @@ impl MachineFunction {
             implicit_external_callees: Vec::new(),
             early_implicit_external_callees: Vec::new(),
             is_asm: false,
+            asm_has_implicit_return: false,
             entry_points: Vec::new(),
             force_active: false,
         }

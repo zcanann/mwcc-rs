@@ -350,6 +350,7 @@ pub(crate) fn assemble_asm_function(
     output.is_weak = function.is_weak;
     output.section = function.section.clone();
     output.is_asm = true;
+    output.asm_has_implicit_return = append_terminal_return;
     output.entry_points = entry_points;
     output.force_active = function.force_active;
     output.relocations = relocations;

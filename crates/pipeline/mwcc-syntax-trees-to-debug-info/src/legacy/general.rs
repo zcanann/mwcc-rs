@@ -22,6 +22,7 @@ pub(super) fn line_records(
     functions: &[(&Function, FunctionSource)],
     machine_functions: &[MachineFunction],
     layout: &FunctionLayout,
+    implicit_return_has_zero_line: bool,
 ) -> Vec<LineRecord> {
     let mut records = Vec::with_capacity(functions.len() * 2);
     for (index, ((function, source), machine)) in
@@ -31,7 +32,12 @@ pub(super) fn line_records(
         if let Some(asm_records) = function
             .asm_body
             .as_deref()
-            .and_then(|items| exact_asm_line_records(items, start, layout.sizes[index]))
+            .and_then(|items| {
+                exact_asm_line_records(
+                    items, start, layout.sizes[index], machine.asm_has_implicit_return,
+                    implicit_return_has_zero_line,
+                )
+            })
         {
             records.extend(asm_records);
             continue;
@@ -206,13 +212,15 @@ fn direct_global_store_parameter(
 }
 
 /// Naked assembly has an authoritative one-source-line/one-word mapping. Only
-/// use it when it covers the finalized function exactly: a synthesized return
-/// or a later peephole can otherwise leave an instruction without provenance,
-/// in which case the conservative function-boundary schedule remains safer.
+/// use it when it covers the finalized function exactly, allowing the explicit
+/// source-less terminal return reported by asm lowering. Generated frames or
+/// unaccounted-for words still use the conservative function-boundary schedule.
 fn exact_asm_line_records(
     items: &[AsmItem],
     start: u32,
     byte_size: u32,
+    has_implicit_return: bool,
+    implicit_return_has_zero_line: bool,
 ) -> Option<Vec<LineRecord>> {
     let mut address = start;
     let mut records = Vec::new();
@@ -220,10 +228,16 @@ fn exact_asm_line_records(
         let AsmItem::Instruction(instruction) = item else {
             continue;
         };
-        if matches!(instruction.mnemonic.as_str(), "nofralloc" | "frfree") {
+        if matches!(instruction.mnemonic.as_str(), "nofralloc" | "fralloc" | "frfree") {
             continue;
         }
         records.push(record(instruction.source_line, address));
+        address += 4;
+    }
+    if has_implicit_return {
+        if implicit_return_has_zero_line {
+            records.push(record(0, address));
+        }
         address += 4;
     }
     (address == start + byte_size).then_some(records)
@@ -435,7 +449,7 @@ mod tests {
         ];
 
         assert_eq!(
-            exact_asm_line_records(&items, 0x24, 8),
+            exact_asm_line_records(&items, 0x24, 8, false, false),
             Some(vec![record(11, 0x24), record(13, 0x28)])
         );
     }
@@ -443,7 +457,33 @@ mod tests {
     #[test]
     fn rejects_a_partial_map_when_codegen_added_an_unmapped_word() {
         let items = vec![instruction("mr", 11), instruction("blr", 13)];
-        assert_eq!(exact_asm_line_records(&items, 0x24, 12), None);
+        assert_eq!(exact_asm_line_records(&items, 0x24, 12, false, false), None);
+    }
+
+    #[test]
+    fn implicit_asm_returns_do_not_discard_written_source_rows() {
+        let items = vec![instruction("li", 11), instruction("blr", 13)];
+        // Build 163 appends a return even after a written blr. Only the two
+        // written words have rows; the implicit third word remains unmarked.
+        assert_eq!(
+            exact_asm_line_records(&items, 0x24, 12, true, false),
+            Some(vec![record(11, 0x24), record(13, 0x28)])
+        );
+        // One recorded implicit return cannot explain extra frame words.
+        assert_eq!(exact_asm_line_records(&items, 0x24, 16, true, false), None);
+    }
+
+    #[test]
+    fn build_53_marks_only_the_synthesized_return_as_line_zero() {
+        let items = vec![instruction("li", 11), instruction("blr", 13)];
+        assert_eq!(
+            exact_asm_line_records(&items, 0x24, 12, true, true),
+            Some(vec![record(11, 0x24), record(13, 0x28), record(0, 0x2c)])
+        );
+        assert_eq!(
+            exact_asm_line_records(&items, 0x24, 8, false, true),
+            Some(vec![record(11, 0x24), record(13, 0x28)])
+        );
     }
 
     #[test]

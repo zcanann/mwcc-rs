@@ -4,15 +4,57 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, legacy aggregate leaf frames (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, assembly line provenance (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `af32970857558c0da7ea181b727f37e9122a1ed82f13d6cb51ce35824167549b:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `03ca4e6a17178bcf627c5bf6c54b9290b6cd93ab5c49d68976b9f720422559e1:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
-current after compiler or harness changes. Canary pass counts and work-queue
-counts are deliberately absent: neither is a corpus parity estimate.
+current after compiler or harness changes. Canary and work-queue counts are
+labeled diagnostics; neither is a corpus parity estimate.
+
+## Focused assembly line-provenance follow-up, 2026-09-06
+
+The assembler now reports whether it appended a terminal `blr`. Legacy debug
+lowering keeps the written instruction rows while leaving that implicit word
+unmarked, except in GC/1.3 where the measured profile requires a line-zero row.
+Void assembly bodies also bypass the ordinary empty-C-function line planner.
+Generated frames still require their own source map; an unexplained instruction
+count never receives a guessed instruction-level mapping.
+
+Animal Crossing GAFE01_00's configured matrix `.line` section improved from
+268 bytes to the exact **768-byte** reference section. Its 308 executable bytes
+also remain exact. `.debug` still omits formal parameters and array types, so
+the translation unit remains `DIFF` and earns no whole-object parity credit.
+
+A final eight-row check combined both Animal Crossing matrix configurations
+with six sampled `OSSync.c` configurations:
+
+| Outcome | Configurations |
+| --- | ---: |
+| Authoritative whole-object exact, all nonempty | 4 / 8 |
+| Different object | 3 / 8 |
+| Compiler deferral | 1 / 8 |
+| Measurement unknown | 0 / 8 |
+
+The four exact rows are Pikmin GPIJ01_01, Pikmin 2 GPVE01_D17, Mario Party 4
+GMPE01_00, and Metroid Prime GM8E01_01 `OSSync.c`. These are current exact
+observations, not claimed gains over a prior fingerprint. The Twilight Princess
+Revolution row differs, and the ShieldD Dolphin row defers on its debug
+vector-installer plan.
+
+The debug crate's 69 unit tests pass. Canaries 1536/1537 match whole objects in
+20/22 build comparisons across eleven compiler identities. Their two GC/2.7
+objects retain matching `.text`, `.line`, and `.debug` bytes but differ in debug
+fragment symbols, relocation targets/kinds, and `.comment`; those comparisons
+remain failures. No oracle invocation was rejected.
+
+Local evidence and selection:
+`target/reference-parity/03ca4e6a17178bcf-5e4ca1ddc460f4d8.jsonl` and
+`target/asm-debug-selection.json`.
 
 ## Focused legacy leaf-frame follow-up, 2026-09-06
+
+Compiler milestone `7dc50475`, compiler hash prefix `af32970857558c0d`.
 
 The next iteration selected the 14 matrix configurations previously stopped by
 `inlined leaf has an unexpected linkage frame`: four Wind Waker, one Melee,
