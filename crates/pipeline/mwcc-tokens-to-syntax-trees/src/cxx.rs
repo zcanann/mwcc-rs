@@ -4702,6 +4702,7 @@ impl Parser {
                             "base class '{base_name}' must be defined before '{name}'"
                         ))
                     })?;
+                layout.has_volatile_fields |= base.has_volatile_fields;
                 if base_class.is_none() {
                     if let Some(virtual_slots) = template_virtual_slots {
                         let virtual_definitions = self.instantiate_template_virtual_definitions(
@@ -5171,6 +5172,7 @@ impl Parser {
                 }
                 Err(error) => return Err(error),
             };
+            let field_is_volatile = self.last_type_was_volatile;
             let field_function_type = field_is_function_pointer_typedef
                 .then(|| self.last_cxx_function_type.take())
                 .flatten();
@@ -5399,6 +5401,7 @@ impl Parser {
                     });
                 continue;
             }
+            layout.has_volatile_fields |= field_is_volatile;
             let element_size = type_size(field_type);
             let mut field_name = field_name;
             loop {
@@ -5520,6 +5523,7 @@ impl Parser {
                         "virtual base class '{virtual_base}' must be defined before '{name}'"
                     ))
                 })?;
+            layout.has_volatile_fields |= base.has_volatile_fields;
             let base_align = u32::from(base.align).max(1);
             offset = offset.div_ceil(base_align) * base_align;
             let base_offset = offset;

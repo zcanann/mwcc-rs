@@ -554,6 +554,8 @@ pub struct Behavior {
     /// below, but source-local allocation is itself observable at `-O0` and needs
     /// the actual stage boundary rather than inferring it from an unrelated knob.
     pub optimization: Optimization,
+    /// Promote non-escaping floating aggregate fields at the measured O4 stage.
+    pub promote_private_float_aggregates: bool,
     /// Whether an over-aligned automatic forces a dynamically realigned stack
     /// frame. The 2.3.3 compilers accept GNU `aligned` syntax on locals but
     /// ignore it; 2.4.2 and later preserve it with a variable-size prologue.
@@ -976,6 +978,8 @@ impl Behavior {
     pub fn resolve(config: &CompilerConfig) -> Self {
         Behavior {
             optimization: config.flags.optimization,
+            promote_private_float_aggregates: config.flags.optimization == Optimization::O4
+                && config.build.profile.promote_private_float_aggregates(),
             dynamic_local_alignment: config.build.version >= (2, 4, 2),
             whole_file_optimization: config.flags.whole_file_optimization_enabled(),
             optimization_goal: config.flags.optimization_goal,

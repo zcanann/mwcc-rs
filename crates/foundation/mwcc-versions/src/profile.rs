@@ -891,6 +891,12 @@ pub enum CxxTrivialDestructorStyle {
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
 pub trait CodegenProfile: core::fmt::Debug {
+    /// The 2.x optimizer promotes private floating aggregate fields. The
+    /// measured 4.x line retains the stores and forwards rounded field values.
+    fn promote_private_float_aggregates(&self) -> bool {
+        true
+    }
+
     /// Alignment recorded in `.comment` for aggregate objects larger than the
     /// small-data limit. This metadata convention is independent of their
     /// actual storage alignment.
@@ -1791,6 +1797,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn promote_private_float_aggregates(&self) -> bool {
+        false
+    }
+
     fn cleared_low_bit_power_select_style(&self) -> ClearedLowBitPowerSelectStyle {
         ClearedLowBitPowerSelectStyle::ExtractedBit
     }
@@ -2005,6 +2015,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn promote_private_float_aggregates(&self) -> bool {
+        false
+    }
+
     fn cleared_low_bit_power_select_style(&self) -> ClearedLowBitPowerSelectStyle {
         ClearedLowBitPowerSelectStyle::ExtractedBit
     }

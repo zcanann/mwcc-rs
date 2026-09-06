@@ -2854,6 +2854,36 @@ impl Generator {
         if self.try_chunked_callback_read(function)? {
             return Ok(());
         }
+        // Split private floating fields before committing an aggregate to a
+        // stack frame. Keep the original lowering if the scalar body exceeds
+        // the structured allocator's supported shapes.
+        if self.behavior.promote_private_float_aggregates && !function_makes_call(function) {
+            if let Some(mut scalarized) = super::aggregate_field_locals::scalarize(function) {
+                while let Some(next) = super::aggregate_field_locals::scalarize(&scalarized) {
+                    scalarized = next;
+                }
+                let mut trial = self.clone();
+                trial.promoted_float_locals.extend(
+                    scalarized
+                        .locals
+                        .iter()
+                        .filter(|local| {
+                            !function
+                                .locals
+                                .iter()
+                                .any(|original| original.name == local.name)
+                        })
+                        .map(|local| local.name.clone()),
+                );
+                if matches!(
+                    trial.try_callee_saved_structured_body(&scalarized),
+                    Ok(true)
+                ) {
+                    *self = trial;
+                    return Ok(());
+                }
+            }
+        }
         if self.try_callee_saved_structured_frame_body(function)? {
             return Ok(());
         }

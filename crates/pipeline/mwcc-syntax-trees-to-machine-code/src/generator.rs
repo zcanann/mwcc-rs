@@ -566,6 +566,8 @@ pub(crate) struct Generator {
     /// after the last window home is consumed because operand scheduling still
     /// follows the materialized-polynomial convention.
     pub(crate) materialized_float_assignment_active: bool,
+    /// Private aggregate fields promoted to scalar homes in a call-free body.
+    pub(crate) promoted_float_locals: std::collections::HashSet<String>,
     /// A call-free O0 source-home chain whose final physical schedule retains
     /// narrow parameter extension and distinct intermediate scratch lanes.
     pub(crate) structured_unoptimized_leaf_source_homes: bool,

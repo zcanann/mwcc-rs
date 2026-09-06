@@ -565,6 +565,7 @@ pub(crate) fn scalarize_in_place_aggregate_local(function: &Function) -> Option<
 
     for local in &function.locals {
         if local.is_static
+            || local.is_volatile
             || local.initializer.is_some()
             || local.array_length.is_some()
             || !matches!(local.declared_type, Type::Struct { .. })

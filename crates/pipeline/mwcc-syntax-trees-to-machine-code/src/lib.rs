@@ -794,6 +794,7 @@ fn lower_function_body(
         descending_allocation_top: None,
         materialized_float_window: None,
         materialized_float_assignment_active: false,
+        promoted_float_locals: std::collections::HashSet::new(),
         structured_unoptimized_leaf_source_homes: false,
         structured_branch_float_work_home: None,
         structured_constant_address_home: None,
@@ -1068,6 +1069,7 @@ fn lower_function_body(
             || retained_sqrtf_frame,
         generator.behavior.saved_float_epilogue_style,
     )?;
+    generator.finalize_promoted_aggregate_leaf_frame()?;
     generator.schedule_allocated_float_helper_epilogue();
     generator.schedule_unoptimized_inline_float_restore_order();
     generator.finalize_unoptimized_leaf_source_homes();

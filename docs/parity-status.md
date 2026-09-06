@@ -4,13 +4,63 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, parameter row-array types and declaration order (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, private floating aggregate promotion (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `376bec060fe1bc5db17b9e9111873a5846e9d2299075e8cae060f78d8a7607f1:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `cf9e005ecd9e452f8d88e05b198aebf909a746e7488768655a2790c266ce349c:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Focused private floating aggregate follow-up, 2026-09-06
+
+Call-free functions can now promote private floating aggregate fields into scalar
+locals, using the structured allocator. The transformation preserves statement
+order and declines address exposure, volatile objects, overlapping non-float
+views, assembly, and unsupported uses. Allocation finishes before an unused
+provisional frame is removed. Version policy enables this at `-O4` for the
+measured 2.x compiler line; GC/3.0a3 and Wii/1.0 retain their existing lowering,
+since their reference outputs preserve aggregate stores in the new copy probe.
+
+The parser carries volatile-member provenance through C and C++ layouts,
+including nested aggregates, templates, and inheritance. Locals containing
+volatile members stay memory-resident, including in the older in-place
+aggregate scalarization pass.
+
+New canaries 1544/1545 cover an aliased source snapshot and a parameter-to-field
+copy. Across GC/1.1, 1.1p1, 1.2.5, 1.2.5n, 1.3, 1.3.2, 1.3.2r, 2.6, 2.7,
+3.0a3, and Wii/1.0, whole-object matches improve from **0/22 to 9/22** against
+the pre-promotion compiler artifact. All 22 are oracle-runnable, with no
+exclusions or rejections. The nine matches are 1545 on all but the last two
+builds. The snapshot still differs in instruction scheduling/register choices;
+both later-build cases also remain nonexact.
+
+All **44 configured `mtxvec.c` outcomes remain unchanged** from `ce5ddfcb`:
+13 nonempty and six empty whole-object matches, 15 differences, seven deferrals,
+and three harness failures. Wind Waker D44J01's `C_MTXMultVec` shrinks from
+204 to 172 bytes against the 148-byte reference after its temporary stack
+stores/reloads and unused frame disappear. Repeated source loads and scheduling
+still differ. All eight functions remain emitted, with the same four assembly
+functions exact (444/1676 reference function bytes). This is a lowering
+improvement, not an additional exact project object or a full-project parity
+claim.
+
+A focused shared denominator of 40 canary/build comparisons across GC/1.2.5n,
+GC/1.3.2, GC/2.6, and GC/3.0a3 improves from 15 to 18 exact; only the three
+1545 cases change status. It covers aggregate, vector-struct, local-float,
+materialized-return, and paired-single matrix probes. Existing failures include
+four unsupported local-float cases and four source-encoding failures. Four
+aggregate/frame integration tests pass, checking aliased read/store order,
+volatile memory accesses, address exposure, and existing leaf frame behavior.
+The parser suite passes 399/401; the same two baseline failures listed in the
+preceding checkpoint remain.
+
+Local evidence: `target/reference-parity/cf9e005ecd9e452f-5e4ca1ddc460f4d8.jsonl`,
+`target/aggregate-scalar-{baseline,final}.log`,
+`target/aggregate-{baseline-regressions,regressions,nearby,nearby-baseline}.log`,
+`target/aggregate-matrix-detail.log`, `target/aggregate-parser-tests.log`, and
+`target/aggregate-scalar-tests.log`. The baseline executables are the frozen
+pre-promotion row-array candidate in `target/row-array-candidate-bin/`.
 
 ## Focused matrix row-array follow-up, 2026-09-06
 

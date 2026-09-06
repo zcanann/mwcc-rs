@@ -2071,10 +2071,38 @@ void invoke(void) {\n\
             for row in rows {
                 assert_eq!(row.length, 3);
                 assert_eq!(row.element_type, mwcc_syntax_trees::Type::UnsignedInt);
-                assert_eq!(row.source_fundamental,
-                    Some(mwcc_syntax_trees::SourceFundamentalType::UnsignedLong));
+                assert_eq!(
+                    row.source_fundamental,
+                    Some(mwcc_syntax_trees::SourceFundamentalType::UnsignedLong)
+                );
             }
         }
+    }
+
+    #[test]
+    fn aggregate_locals_retain_nested_and_template_member_volatility() {
+        let source = "struct Inner { volatile float x; }; struct Outer { Inner inner; float y; };
+            template <typename T> struct Box { volatile T x; T y; };
+            struct Derived : Inner { float z; };
+            void f() { Inner a; Outer b; Box<float> c; Derived d; }";
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions[0].locals.len(), 4);
+        assert!(
+            unit.functions[0].locals.iter().all(|local| local.is_volatile),
+            "{:?}",
+            unit.functions[0]
+                .locals
+                .iter()
+                .map(|local| (&local.name, local.is_volatile))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

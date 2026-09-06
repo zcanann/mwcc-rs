@@ -4032,6 +4032,14 @@ impl Generator {
                     .as_ref()
                     .and_then(|plan| plan.preference(&local.name))
                     .unwrap_or(preferred);
+                // Promoted private fields in a leaf need persistent values,
+                // but no call-preserved homes. Let ordinary liveness select
+                // volatile FPRs instead of preferring the saved-register bank.
+                let preferred = if self.promoted_float_locals.contains(&local.name) {
+                    (group % 14) as u8
+                } else {
+                    preferred
+                };
                 self.fresh_virtual_float_preferring(preferred)
             })
             .collect();

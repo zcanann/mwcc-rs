@@ -70,6 +70,8 @@ pub(crate) struct StructLayout {
     /// union initializer targets.
     pub(crate) field_order: Vec<String>,
     pub(crate) is_union: bool,
+    /// A volatile member keeps an automatic aggregate in addressable storage.
+    pub(crate) has_volatile_fields: bool,
     /// Data members whose stored word is a callable function pointer. This is
     /// declaration identity rather than layout, but keeping it beside the
     /// resolved fields lets postfix parsing distinguish `s->callback()` from a
@@ -198,6 +200,7 @@ pub(crate) enum TemplateFieldType {
 
 #[derive(Clone)]
 pub(crate) struct TemplateField {
+    pub(crate) is_volatile: bool,
     pub(crate) name: String,
     pub(crate) field_type: TemplateFieldType,
     pub(crate) alignment: u32,

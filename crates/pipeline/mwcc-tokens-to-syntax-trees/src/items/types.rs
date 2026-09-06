@@ -77,6 +77,26 @@ fn merged_attribute_alignment(before: Option<u16>, after: Option<u16>) -> u32 {
 }
 
 impl Parser {
+    pub(super) fn aggregate_has_volatile_fields(&self, tag: &str) -> bool {
+        fn visit(parser: &Parser, tag: &str, seen: &mut std::collections::HashSet<String>) -> bool {
+            if !seen.insert(tag.to_owned()) {
+                return false;
+            }
+            let Some(layout) = parser.structs.get(tag) else {
+                return false;
+            };
+            layout.has_volatile_fields
+                || layout.fields.values().any(|field| {
+                    matches!(field.member_type, Type::Struct { .. })
+                        && field
+                            .struct_tag
+                            .as_deref()
+                            .is_some_and(|tag| visit(parser, tag, seen))
+                })
+        }
+        visit(self, tag, &mut std::collections::HashSet::new())
+    }
+
     /// Parse a standalone function-scope named struct definition and register
     /// both of the identities needed by the rest of the pipeline:
     ///
@@ -1096,6 +1116,7 @@ impl Parser {
             }
             let field_is_function_pointer_typedef = matches!(self.peek(), Token::Identifier(word) if self.function_pointer_typedefs.contains_key(word));
             let mut field_type = self.parse_type()?;
+            layout.has_volatile_fields |= self.last_type_was_volatile;
             let field_function_type = field_is_function_pointer_typedef
                 .then(|| self.last_cxx_function_type.take())
                 .flatten();
@@ -1433,6 +1454,7 @@ impl Parser {
                 *offset = align_layout_offset(*offset, inner_align)?;
                 let mut names = Vec::new();
                 for (field_name, field) in inner.fields_in_declaration_order() {
+                    layout.has_volatile_fields |= inner.has_volatile_fields;
                     layout.insert_field(
                         field_name.clone(),
                         StructField {
@@ -1596,6 +1618,7 @@ impl Parser {
                 *offset = align_layout_offset(*offset, inner_align)?;
                 let mut names = Vec::new();
                 for (field_name, field) in inner.fields_in_declaration_order() {
+                    layout.has_volatile_fields |= inner.has_volatile_fields;
                     layout.insert_field(
                         field_name.clone(),
                         StructField {
@@ -1695,6 +1718,7 @@ impl Parser {
                     }
                     (0, None) => {
                         for (field_name, field) in inner.fields_in_declaration_order() {
+                            layout.has_volatile_fields |= inner.has_volatile_fields;
                             layout.insert_field(field_name.clone(), field.clone());
                         }
                         max_size = max_size.max(inner_size);
@@ -1753,6 +1777,7 @@ impl Parser {
                     );
                 } else {
                     for (field_name, field) in inner.fields_in_declaration_order() {
+                        layout.has_volatile_fields |= inner.has_volatile_fields;
                         layout.insert_field(
                             field_name.clone(),
                             StructField {
@@ -1780,6 +1805,7 @@ impl Parser {
                 continue;
             }
             let mut field_type = self.parse_type()?;
+            layout.has_volatile_fields |= self.last_type_was_volatile;
             let source_fundamental = self.last_source_fundamental;
             while self.eat_keyword(Token::Star) {
                 field_type = Type::Pointer(Pointee::Pointer);

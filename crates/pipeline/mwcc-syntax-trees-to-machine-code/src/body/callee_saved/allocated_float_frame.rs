@@ -5,6 +5,60 @@ use super::*;
 use super::allocated_float_frame_linkage_first::materialize_linkage_first_frame;
 
 impl Generator {
+    /// Scalar replacement can remove the last addressable object. Wait until
+    /// allocation has materialized any real save slots before dropping its
+    /// provisional linkage and an otherwise unused stack allocation.
+    pub(crate) fn finalize_promoted_aggregate_leaf_frame(&mut self) -> Compilation<()> {
+        if self.promoted_float_locals.is_empty()
+            || self.output.instructions.iter().any(instruction_links)
+        {
+            return Ok(());
+        }
+        self.strip_artificial_leaf_linkage()?;
+        let instructions = &self.output.instructions;
+        let len = instructions.len();
+        if len < 3
+            || !matches!(
+                instructions.first(),
+                Some(Instruction::StoreWordWithUpdate { s: 1, a: 1, .. })
+            )
+            || !matches!(
+                &instructions[len - 2..],
+                [
+                    Instruction::AddImmediate { d: 1, a: 1, .. },
+                    Instruction::BranchToLinkRegister,
+                ]
+            )
+        {
+            return Ok(());
+        }
+        let (
+            Instruction::StoreWordWithUpdate { offset, .. },
+            Instruction::AddImmediate { immediate, .. },
+        ) = (&instructions[0], &instructions[len - 2])
+        else {
+            unreachable!()
+        };
+        if offset.checked_neg() != Some(*immediate) {
+            return Ok(());
+        }
+        let mut observes_stack = false;
+        for instruction in &instructions[1..len - 2] {
+            mwcc_vreg::for_each_register(&mut instruction.clone(), |_, class, register| {
+                observes_stack |= class == mwcc_vreg::Class::General && *register == 1;
+            });
+        }
+        if observes_stack || !self.frame_slots.is_empty() {
+            return Ok(());
+        }
+        crate::remove_instruction_retargeting_to_next(self, len - 2);
+        crate::remove_instruction_retargeting_to_next(self, 0);
+        self.frame_size = 0;
+        self.non_leaf = false;
+        self.callee_saved_float = 0;
+        Ok(())
+    }
+
     /// Remove linkage state left behind when automatic inlining turns a
     /// structured non-leaf plan into a leaf. Keep the base frame itself: frame
     /// locals and allocator-selected callee-saved values still occupy it.

@@ -46,3 +46,92 @@ fn frame_resident_aggregate_leaf_drops_linkage_but_preserves_its_stack() {
         assert!(words.iter().any(|word| word & 0xfc1f0000 == 0xc0010000)); // lfs from r1
     }
 }
+
+#[test]
+fn private_float_fields_keep_aliased_reads_before_stores_without_a_frame() {
+    let mut config = mwcc_versions::CompilerConfig::new(mwcc_versions::GC_1_2_5N);
+    config.flags.cpp_exceptions = false;
+    let object = compile(
+        include_bytes!("../../../../canaries/1544_float_aggregate_snapshot.c"),
+        "aggregate_snapshot.c",
+        config,
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .unwrap();
+    let words = executable_words(&object);
+    assert!(!words.iter().any(|word| word & 0xffff0000 == 0x94210000));
+    let loads = words
+        .iter()
+        .enumerate()
+        .filter(|(_, word)| **word & 0xfc1f0000 == 0xc0040000)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let stores = words
+        .iter()
+        .enumerate()
+        .filter(|(_, word)| **word & 0xfc1f0000 == 0xd0030000)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(loads.len(), 2);
+    assert_eq!(stores.len(), 2);
+    assert!(
+        loads.iter().all(|load| *load < stores[0]),
+        "source and destination may alias"
+    );
+}
+
+#[test]
+fn volatile_float_member_preserves_aggregate_stack_accesses() {
+    let source = br#"struct Pair { volatile float x; float y; };
+        void preserve(float* output, float a, float b) {
+            struct Pair temporary;
+            temporary.x = a * b;
+            temporary.y = a + b;
+            output[0] = temporary.x;
+            output[1] = temporary.y;
+        }"#;
+    let mut config = mwcc_versions::CompilerConfig::new(mwcc_versions::GC_1_2_5N);
+    config.flags.cpp_exceptions = false;
+    let object = compile(
+        source,
+        "volatile_member.c",
+        config,
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .unwrap();
+    let words = executable_words(&object);
+    assert!(words.iter().any(|word| word & 0xffff0000 == 0x94210000));
+    assert!(words.iter().any(|word| word & 0xfc1f0000 == 0xd0010000));
+    assert!(words.iter().any(|word| word & 0xfc1f0000 == 0xc0010000));
+}
+
+#[test]
+fn address_exposed_float_aggregate_keeps_its_frame() {
+    let source = br#"struct Pair { float x, y; };
+        extern void observe(struct Pair*);
+        void preserve(float* output, float a, float b) {
+            struct Pair temporary;
+            temporary.x = a; temporary.y = b;
+            observe(&temporary);
+            output[0] = temporary.y;
+        }"#;
+    let mut config = mwcc_versions::CompilerConfig::new(mwcc_versions::GC_1_2_5N);
+    config.flags.cpp_exceptions = false;
+    let object = compile(
+        source,
+        "exposed_aggregate.c",
+        config,
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .unwrap();
+    let words = executable_words(&object);
+    assert!(words.iter().any(|word| word & 0xffff0000 == 0x94210000));
+    assert!(words.iter().any(|word| word & 0xfc1f0000 == 0xd0010000));
+    assert!(words.iter().any(|word| word & 0xfc1f0000 == 0xc0010000));
+}

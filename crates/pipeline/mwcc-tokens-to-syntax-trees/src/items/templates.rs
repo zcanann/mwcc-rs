@@ -1332,6 +1332,7 @@ impl Parser {
         }
         let mut offset = if template.owns_vptr { 4 } else { 0 };
         let mut max_alignment = if template.owns_vptr { 4 } else { 1 };
+        let mut has_volatile_fields = template.fields.iter().any(|field| field.is_volatile);
         let mut fields = HashMap::new();
         let mut field_order = Vec::new();
         let mut function_pointer_fields = std::collections::HashSet::new();
@@ -1339,6 +1340,7 @@ impl Parser {
         if let Some(base_pattern) = &template.base {
             let base = self.resolve_template_pattern(base_pattern, arguments)?;
             let base_layout = base.layout?;
+            has_volatile_fields |= base_layout.has_volatile_fields;
             max_alignment = max_alignment.max(u32::from(base_layout.align));
             for (name, field) in base_layout.fields_in_declaration_order() {
                 field_order.push(name.clone());
@@ -1462,6 +1464,7 @@ impl Parser {
             field_order,
             fields,
             is_union: false,
+            has_volatile_fields,
             function_pointer_fields,
             function_pointer_types,
             size,
@@ -2454,6 +2457,9 @@ impl Parser {
                 unreachable!()
             };
             let field = TemplateField {
+                is_volatile: self.tokens[start..cursor]
+                    .iter()
+                    .any(|token| matches!(token, Token::Identifier(word) if word == "volatile")),
                 name: name.clone(),
                 field_type: TemplateFieldType::Concrete(Type::Pointer(Pointee::Int)),
                 alignment: 1,
@@ -2506,6 +2512,9 @@ impl Parser {
                 return None;
             };
             fields.push(TemplateField {
+                is_volatile: self.tokens[start..cursor]
+                    .iter()
+                    .any(|token| matches!(token, Token::Identifier(word) if word == "volatile")),
                 name: name.clone(),
                 field_type: field_type.clone(),
                 alignment: 1,

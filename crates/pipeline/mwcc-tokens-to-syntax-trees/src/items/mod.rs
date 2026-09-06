@@ -5028,12 +5028,14 @@ impl Parser {
             let source_fundamental = self.last_source_fundamental.take();
             self.last_type_was_const |= declaration_const;
             self.last_type_was_volatile |= declaration_volatile;
-            let is_volatile = self.last_type_was_volatile;
+            let is_volatile = self.last_type_was_volatile
+                || (matches!(declared_type, Type::Struct { .. })
+                    && self
+                        .last_struct_tag
+                        .as_deref()
+                        .is_some_and(|tag| self.aggregate_has_volatile_fields(tag)));
             let pointee_const = self.last_type_was_const
-                && matches!(
-                    declared_type,
-                    Type::Pointer(_) | Type::StructPointer { .. }
-                );
+                && matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. });
             if is_extern
                 && matches!(self.peek(), Token::Identifier(_))
                 && *self.peek_at(1) == Token::ParenOpen
