@@ -1797,6 +1797,14 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn skipped_plain_inline_label_base(&self) -> u8 {
+        3
+    }
+
+    fn retain_unused_c_inline_asm_symbols(&self) -> bool {
+        false
+    }
+
     fn promote_private_float_aggregates(&self) -> bool {
         false
     }
@@ -2015,6 +2023,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn retain_unused_c_inline_asm_symbols(&self) -> bool {
+        false
+    }
+
     fn promote_private_float_aggregates(&self) -> bool {
         false
     }

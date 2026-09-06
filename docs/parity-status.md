@@ -4,13 +4,62 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, ordering intrinsics and SDK vector installers (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, modern inline symbols and fragmented debug containers (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `73d08107196277f9c543fe9a33766873bc3032ca42052e6688a10b4b0f7f9b63:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `ff846ebecd784cc1159ce011ce274a9006ea21625ad502d9afd7812b56905e4f:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Modern inline symbols and debug containers, 2026-09-06
+
+GC/3.0a3 and Wii/1.0 drop unused C inline-assembly helper symbols. Their
+version profiles now select that retention policy while preserving references
+to helpers that survive lowering. GC/3.0a3 also charges the same base analysis
+cost for discarded plain-inline definitions as static-inline definitions.
+Both ordinary and assembly-containing bodies expose the three-ordinal cost;
+parameter and local costs remain separate existing policies.
+
+The fragmented debug timeline now distinguishes ordinary C entry scopes from
+assembly bodies. Ordinary functions create their line header after body
+analysis; assembly bodies omit one entry-scope ordinal. Local function DIE
+fragments are published with the completed unit, in debug-record order. An
+explicit object-layout variant places the function catalog ahead of debug
+sections when the first body has no anonymous payload; a pool-bearing first
+body retains the earlier debug-section placement.
+
+A paired regression selection of **67 authored filenames containing `inline`
+or a `-sym on` directive**, run on GC/3.0a3 and Wii/1.0, improves from
+**9/58 to 17/58 whole-object exact** against baseline `6d3bd276`, with no lost
+matches. The 134 candidate/build slots include 76 build exclusions, zero
+reference rejections, and zero timeouts. Gains are canaries 1314's C static
+inline helper, 1536, 1537, and 1556 on both modern compilers. This selection
+was measured before adding the separate IPA canary 1559.
+
+Canary 1314's declared coverage now includes GC/1.3.2r, GC/3.0a3, and Wii/1.0;
+it matches **11/11** measured builds. New canary 1556 covers static and plain
+unused assembly helpers with debug enabled and matches **6/11**, up from
+4/11 at baseline. New canaries 1557/1558 preserve dropped plain-inline
+numbering and mixed assembly/C debug lines; both remain **0/11 exact** despite
+matching modern debug ordinals. Their remaining line-table differences are
+retained as coverage, not hidden by source formatting changes.
+
+Canary 1559 reproduces the SDK's `-ipa file` vector-installer debug numbering
+with exception metadata and the function catalog disabled. It is runnable on
+GC/3.0a3 and Wii/1.0 and remains **0/2 exact**; both have matching text. The
+nine older measured builds reject `-ipa` (verified as an unknown option), so
+the canary explicitly declares those two applicable builds. Across all four
+new canaries, **6/35 oracle-runnable objects match**, with nine declared build
+exclusions across 44 build/canary slots.
+
+All **54 configured OSSync outcomes remain 44 BYTE, seven DIFF, three HARNESS**,
+with **50/51 measured executable sections and relocations exact**, no empty
+objects, and no lost exact objects. RZDP01's remaining anonymous-numbering gap
+includes the independently reproduced IPA line-header timing difference; full
+header analysis still differs and remains open. Object (30), version-profile
+(40), and debug-info (70) unit tests all pass, including a new assembly/C
+ordinal-transition test. No corpus-wide parity claim is made.
 
 ## Ordering intrinsics and SDK vector installers, 2026-09-06
 

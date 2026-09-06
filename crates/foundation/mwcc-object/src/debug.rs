@@ -36,6 +36,9 @@ pub enum DebugLayout {
     /// Ordinary data precedes debug content while relocations remain grouped
     /// and `.comment` stays last (measured GC/3.0a3 and Wii/1.0 Runtime objects).
     AfterDataGrouped,
+    /// A payload-free first function creates debug sections after its function
+    /// catalog. Catalog relocations likewise precede grouped debug relocations.
+    AfterFunctionCatalogGrouped,
 }
 
 impl DebugLayout {

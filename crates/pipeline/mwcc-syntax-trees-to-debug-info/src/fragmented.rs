@@ -89,7 +89,11 @@ pub(super) fn lower_functions_without_file_data(
     } else {
         DebugSymbolPlacement::Early
     };
-    sections.layout = DebugLayout::AfterDataGrouped;
+    sections.layout = if machine_functions[0].owns_anonymous_payload() {
+        DebugLayout::AfterDataGrouped
+    } else {
+        DebugLayout::AfterFunctionCatalogGrouped
+    };
     sections.post_framed_function_anonymous_bump_override = Some(post_framed_bump);
     sections.symbols = vec![
         symbol(
@@ -175,7 +179,7 @@ pub(super) fn lower_functions_without_file_data(
             fragment_flags,
             DebugSymbolPlacement::Early,
         ));
-        sections.symbols.push(symbol(
+        let debug_symbol = symbol(
             debug.name.clone(),
             DebugSection::Debug,
             debug.offset,
@@ -183,8 +187,20 @@ pub(super) fn lower_functions_without_file_data(
             1,
             binding,
             fragment_flags,
-            DebugSymbolPlacement::Early,
-        ));
+            if function.is_static { closing_placement } else { DebugSymbolPlacement::Early },
+        );
+        if function.is_static {
+            // Local DIE fragments are published with the completed debug unit,
+            // in record order between the compile unit and its terminators.
+            let position = sections.symbols.iter().position(|symbol| {
+                symbol.section == DebugSection::Debug
+                    && symbol.placement == closing_placement
+                    && symbol.offset > debug.offset
+            }).unwrap_or(sections.symbols.len());
+            sections.symbols.insert(position, debug_symbol);
+        } else {
+            sections.symbols.push(debug_symbol);
+        }
     }
 
     for relocation in &mut sections.line_relocations {

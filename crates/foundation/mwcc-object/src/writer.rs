@@ -1752,6 +1752,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // inline-`asm` functions are excluded. An object whose only functions are asm has
     // no `.mwcats.text`/`.rela.mwcats.text` at all (its code still lives in `.text`).
     let has_mwcats = input.emit_mwcats && functions.iter().any(|function| !function.is_asm);
+    // Fragmented containers finish the function catalog before creating the
+    // debug sections, including its place among the grouped relocations.
+    let catalog_before_debug = debug.is_some_and(|debug| {
+        debug.layout == crate::DebugLayout::AfterFunctionCatalogGrouped
+    });
     // A jump table and large writable globals share `.data`; the lowering guarantees
     // they do not co-occur, so one `.data` entry covers both.
     let has_data = has_jump_table || has_file_data;
@@ -1846,6 +1851,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_sbss2 {
         order.push(".sbss2");
     }
+    if has_mwcats && catalog_before_debug {
+        order.push(&mwcats_section);
+    }
     if debug.is_some_and(|debug| {
         !debug.layout.before_data() && !debug.layout.between_full_and_small_data()
     }) {
@@ -1858,7 +1866,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             order.push(".rela.debug");
         }
     }
-    if has_mwcats {
+    if has_mwcats && !catalog_before_debug {
         order.push(&mwcats_section);
     }
     if has_text_relocations {
@@ -1940,6 +1948,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_sdata2_relocs {
         order.push(".rela.sdata2");
     }
+    if has_mwcats && catalog_before_debug {
+        order.push(&rela_mwcats_section);
+    }
     if debug.is_some_and(|debug| {
         !debug.layout.before_data()
             && !debug.layout.between_full_and_small_data()
@@ -1948,7 +1959,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         order.push(".rela.line");
         order.push(".rela.debug");
     }
-    if has_mwcats {
+    if has_mwcats && !catalog_before_debug {
         order.push(&rela_mwcats_section);
     }
     if debug.is_some_and(|debug| debug.layout.comment_before_symbols()) {
@@ -4969,6 +4980,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             sbss2_size,
         );
     }
+    if has_mwcats && catalog_before_debug {
+        push(
+            &mwcats_section,
+            SHT_MWCATS,
+            0,
+            index_of(text_section),
+            0,
+            4,
+            1,
+            std::mem::take(&mut mwcats),
+            0,
+        );
+    }
     if debug.is_some_and(|debug| {
         !debug.layout.before_data() && !debug.layout.between_full_and_small_data()
     }) {
@@ -5012,7 +5036,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             );
         }
     }
-    if has_mwcats {
+    if has_mwcats && !catalog_before_debug {
         push(
             &mwcats_section,
             SHT_MWCATS,
@@ -5198,6 +5222,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             0,
         );
     }
+    if has_mwcats && catalog_before_debug {
+        push(
+            &rela_mwcats_section,
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(&mwcats_section),
+            4,
+            12,
+            std::mem::take(&mut rela_mwcats),
+            0,
+        );
+    }
     if debug.is_some_and(|debug| {
         !debug.layout.before_data()
             && !debug.layout.between_full_and_small_data()
@@ -5226,7 +5263,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             0,
         );
     }
-    if has_mwcats {
+    if has_mwcats && !catalog_before_debug {
         push(
             &rela_mwcats_section,
             SHT_RELA,

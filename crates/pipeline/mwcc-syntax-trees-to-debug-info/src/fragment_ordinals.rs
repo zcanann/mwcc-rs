@@ -23,13 +23,7 @@ pub(super) fn fragment_ordinals(
     let first_owns_payload = first.owns_anonymous_payload();
     let mut state = OrdinalState::new(first_function_counter);
     let first_number = state.number_before_unwind(first)?;
-    let first_ordinal = if first_owns_payload {
-        first_number
-    } else {
-        first_number
-            .checked_sub(1)
-            .ok_or_else(invalid_fragment_ordinal)?
-    };
+    let first_ordinal = first_number;
 
     let mut close_ordinal = None;
     for (index, machine) in machine_functions.iter().enumerate() {
@@ -38,9 +32,9 @@ pub(super) fn fragment_ordinals(
         } else {
             state.number_before_unwind(machine)?
         };
-        // A payload-free unit creates the early line header in the ordinal
-        // immediately preceding the first function block. Once the first
-        // function owns a pool object, the header instead follows that payload.
+        // The line header follows the first body's analysis and any payload.
+        // Assembly bodies omit the ordinary C function's entry-scope ordinal;
+        // number_before_unwind accounts for that before either consumer runs.
         // If unwind objects follow too, the header consumes the ordinal between
         // the payload and the extab pair (measured on GC 4.1).
         if index == 0 && first_owns_payload && machine.frame.is_some() {
@@ -203,6 +197,10 @@ impl OrdinalState {
             )?,
         )
         .and_then(|number| checked_add(number, machine.fragmented_debug_anonymous_bump))
+        .and_then(|number| {
+            number.checked_sub(u32::from(machine.is_asm))
+                .ok_or_else(invalid_fragment_ordinal)
+        })
     }
 }
 
@@ -244,13 +242,24 @@ mod tests {
     }
 
     #[test]
-    fn pool_free_leaf_keeps_the_header_before_the_function_block() {
+    fn ordinary_leaf_places_header_after_body_analysis() {
         let mut function = MachineFunction::new("leaf");
         function.anonymous_label_bump = 2;
 
         assert_eq!(
             fragment_ordinals(&[function], GC_3_0A3, 5, 3).unwrap(),
-            (6, 8)
+            (7, 8)
+        );
+    }
+
+    #[test]
+    fn assembly_body_omits_the_c_entry_scope_ordinal() {
+        let mut assembly = MachineFunction::new("vector");
+        assembly.is_asm = true;
+        let leaf = MachineFunction::new("follower");
+        assert_eq!(
+            fragment_ordinals(&[assembly, leaf], GC_3_0A3, 5, 3).unwrap(),
+            (4, 9)
         );
     }
 
