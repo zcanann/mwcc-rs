@@ -71,7 +71,15 @@ impl Generator {
         if hoisted.is_empty()
             || !rest
                 .iter()
-                .all(|statement| matches!(statement, Statement::Assign { .. }))
+                .all(|statement| matches!(statement, Statement::Assign { value, .. }
+                    if !crate::analysis::expression_has_side_effect(value)))
+            // An Assign node may hide calls, including `error |= !call()`.
+            // Neither those calls nor a call in the guard can move across
+            // the early return just because their assigned names differ.
+            || hoisted.iter().any(|guard| {
+                crate::analysis::expression_has_side_effect(&guard.condition)
+                    || crate::analysis::expression_has_side_effect(&guard.value)
+            })
         {
             return None;
         }

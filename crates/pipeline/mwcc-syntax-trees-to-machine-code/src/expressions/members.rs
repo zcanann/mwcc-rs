@@ -3241,9 +3241,11 @@ impl Generator {
     /// the base materialized in the INDEX register (there is no load destination): a `mulli` scale
     /// takes the index reg as the base (`mulli r0; lis idx; addi idx; …`); a `slwi` scale puts the
     /// base-high in a scratch (avoiding the value and index) then the base in the index register.
-    /// A constant-index store also accepts an integer constant value: mwcc
-    /// materializes the fixed base first and the value in r0 second. A variable
-    /// index still requires a register value that does not alias the index.
+    /// A constant-index integer store also accepts computed values. Evaluate
+    /// those before materializing the address, since evaluating a value may
+    /// use any free register or call another function. Constant values retain
+    /// their version-specific address/value order. A variable index still
+    /// requires a register value that does not alias the index.
     pub(crate) fn emit_fixed_address_array_subscript_store(
         &mut self,
         element: Pointee,
@@ -3267,10 +3269,7 @@ impl Generator {
                 .map_err(|_| {
                     Diagnostic::error("fixed-address array subscript offset out of range (roadmap)")
                 })?;
-            if variable_source.is_none()
-                && (constant_value(value).is_none()
-                    || matches!(element, Pointee::Float | Pointee::Double))
-            {
+            if matches!(element, Pointee::Float | Pointee::Double) {
                 return Ok(false);
             }
             let (base, source) = if let Some(source) = variable_source {
@@ -3279,8 +3278,9 @@ impl Generator {
                     .instructions
                     .push(Instruction::load_immediate_shifted(base, high_adjusted));
                 (base, source)
-            } else if self.behavior.fixed_address_constant_store_style
-                == mwcc_versions::FixedAddressConstantStoreStyle::ValueFirst
+            } else if constant_value(value).is_none()
+                || self.behavior.fixed_address_constant_store_style
+                    == mwcc_versions::FixedAddressConstantStoreStyle::ValueFirst
             {
                 let source = self.place_store_value(value, element)?;
                 let base = self.free_general_excluding(source)?;

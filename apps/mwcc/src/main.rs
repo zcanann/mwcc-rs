@@ -2971,6 +2971,9 @@ mod tests {
     #[path = "local_post_step.rs"]
     mod local_post_step;
 
+    #[path = "initialized_call_accumulator.rs"]
+    mod initialized_call_accumulator;
+
     #[path = "narrow_to_wide_store.rs"]
     mod narrow_to_wide_store;
 

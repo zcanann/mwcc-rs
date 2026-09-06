@@ -968,7 +968,11 @@ impl Generator {
                 local.array_length.is_none()
                     && survivors.contains(local.name.as_str())
                     && !eliminated_unobserved_locals.contains(local.name.as_str())
-                    && !call_accumulators.contains(local.name.as_str())
+                    // Statement-defined accumulators create their own value
+                    // lanes. A declaration initializer still needs an entry
+                    // home so the first |= can read it across preceding calls.
+                    && (!call_accumulators.contains(local.name.as_str())
+                        || local.initializer.is_some())
                     && (self.one_word_aggregate_locals.contains(&local.name)
                         || unoptimized_frame_call_homes
                             .as_ref()
@@ -1045,7 +1049,8 @@ impl Generator {
                     local.array_length.is_none()
                         && survivors.contains(local.name.as_str())
                         && !eliminated_unobserved_locals.contains(local.name.as_str())
-                        && !call_accumulators.contains(local.name.as_str())
+                        && (!call_accumulators.contains(local.name.as_str())
+                            || local.initializer.is_some())
                         && (self.one_word_aggregate_locals.contains(&local.name)
                             || unoptimized_frame_call_homes
                                 .as_ref()

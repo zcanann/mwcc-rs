@@ -4,13 +4,60 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, EXI register primitives and signed status returns (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, computed EXI stores and initialized call accumulators (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `6e4cfea73ea6fefb60bf0e40c4cf3623eedadcfdfd34087eda0ee249939001ae:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `4e46d31403e93da04739a8e93d497514db7621362a467cad660eab204e18a941:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Computed EXI stores and initialized call accumulators, 2026-09-06
+
+Against baseline `a498a9ad`, Melee's configured `odenotstub.c` partial object
+now contains **18/21 comparable functions, up from 13/21**, with three missing
+and no candidate-only functions. Exactness remains **7/21 functions and
+164/3320 reference function bytes**, including relocations. `DBGEXIImm` and
+four more transport helpers now lower. The complete source still **DEFERs**,
+now at `MWCallback`'s guarded global function pointer. This is compilation
+coverage progress, not an increase in full-source or partial-function matches.
+
+Constant-index fixed-address integer stores now accept computed values through
+the existing value emitter. Their address register is allocated after value
+evaluation, so calls and temporary registers cannot clobber a live bank base.
+Existing variable and constant schedules retain their version policies.
+Structured call accumulators with declaration initializers retain an entry
+home, including nonzero initial values and values used after a guarded call.
+
+Execution probes also exposed an unsafe leading-guard transformation: an
+assignment containing `!call()` could move before an early return on newer
+builds. The transformation now checks assignment values and guard expressions
+for side effects, preserving the observable call order. An integration test
+checks the reference entry sequence that saves the initial accumulator and
+calls the guard before updating it.
+
+New canaries 1574--1576 cover computed control words, arithmetic and loaded
+values, volatile bank reads, initialized boolean call chains, and call results
+stored at word, halfword, and byte widths. All **33 pairs across 11 builds**
+are oracle-runnable: candidate compilation improves **0/33 to 33/33**, while
+whole-object exactness improves **0/33 to 11/33**. The call-result store canary
+matches every build; arithmetic/register reuse and accumulator schedules remain
+nonexact. A focused Unicorn execution experiment passes **2,673 paired cases**
+(each executed in both reference and candidate), checking return values,
+observable hardware reads/writes, call order and arguments, narrowing, stack
+restoration, and saved registers while clobbering caller-saved registers at
+external calls. These are probe results, not whole-project execution coverage.
+
+The broader fixed-register/indexed-update/accumulator selection has **33
+canaries on five builds, 165 slots, 46 declared exclusions, and 119 runnable
+pairs**: **81/119 to 86/119 whole-object exact**, with no lost matches and
+candidate rejections reduced from 15 to zero. A separate 15-canary guard slice
+on four builds retains **21/31 exact**, with 29 exclusions among 60 slots and
+four existing candidate rejections. Neither slice has reference rejections or
+timeouts. The 40-configuration real-project stub family retains **35 BYTE,
+zero DIFF, one DEFER, four MISSING_DEPENDENCY**, and 33/34 measured code matches.
+Compiler/oracle builds pass, as do the focused test filters: 34 fixed-register,
+163 guard, two accumulator backend tests, and the new integration test.
 
 ## EXI register primitives and signed status returns, 2026-09-06
 
