@@ -4101,7 +4101,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                             index_of(function_section(symbol_index)) as u16,
                         );
                         comment_values.push((
-                            input.object_format.code_alignment,
+                            4, // Entry labels describe instruction boundaries, not function alignment.
                             if symbol_function.force_active {
                                 FORCE_ACTIVE_FLAG
                             } else {
@@ -4244,7 +4244,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     index_of(function_section(index)) as u16,
                 );
                 comment_values.push((
-                    input.object_format.code_alignment,
+                    4, // Entry labels describe instruction boundaries, not function alignment.
                     if function.force_active {
                         FORCE_ACTIVE_FLAG
                     } else {

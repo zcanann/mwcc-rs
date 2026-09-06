@@ -779,6 +779,8 @@ pub struct Behavior {
     pub global_array_decay_store_style: GlobalArrayDecayStoreStyle,
     /// Register placement for a function address stored to a pointer global.
     pub function_address_store_style: FunctionAddressStoreStyle,
+    /// Share the final argument's address scratch in unoptimized range copies.
+    pub unoptimized_range_copy_shared_scratch: bool,
     /// Addressing distinction between compound and explicit indexed RMW syntax.
     pub indexed_rmw_assignment_style: IndexedRmwAssignmentStyle,
     /// Treatment of an immediate read following a store to the same global.
@@ -1283,6 +1285,7 @@ impl Behavior {
             },
             global_array_decay_store_style: config.build.profile.global_array_decay_store_style(),
             function_address_store_style: config.build.profile.function_address_store_style(),
+            unoptimized_range_copy_shared_scratch: config.build.profile.unoptimized_range_copy_shared_scratch(),
             indexed_rmw_assignment_style: config.build.profile.indexed_rmw_assignment_style(),
             stored_global_read_style: config.build.profile.stored_global_read_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),

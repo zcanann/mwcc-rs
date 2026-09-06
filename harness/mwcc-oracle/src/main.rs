@@ -62,7 +62,7 @@ const COMPILE_FLAG_GROUPS: &[&[&str]] = &[
 ];
 
 fn option_family(option: &str) -> &str {
-    if option.starts_with("-O") { "-O" } else { option }
+    if option.starts_with("-O") || option == "-opt" { "-O" } else { option }
 }
 
 /// Baseline flags not superseded by a canary directive.
@@ -358,6 +358,14 @@ mod tests {
             split_directive_arguments(r#"-pragma "cats off" -Cpp_exceptions off"#),
             ["-pragma", "cats off", "-Cpp_exceptions", "off"]
         );
+    }
+
+    #[test]
+    fn long_optimization_option_replaces_the_default_optimization() {
+        let extra = ["-opt".to_string(), "off".to_string()];
+        let baseline = baseline_flags(&extra);
+        assert!(!baseline.iter().any(|flag| flag.starts_with("-O")));
+        assert!(baseline.windows(2).any(|pair| pair == ["-proc", "gekko"]));
     }
 
     #[test]

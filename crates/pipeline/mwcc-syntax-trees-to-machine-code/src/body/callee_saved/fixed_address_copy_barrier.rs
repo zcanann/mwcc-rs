@@ -183,13 +183,20 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !self.behavior.schedule_latency_slots {
+        if !self.frame_slots.is_empty() {
             return Ok(false);
         }
         let Some(shape) = recognize(function) else {
             return Ok(false);
         };
-        if self.behavior.frame_convention != FrameConvention::LinkageFirst
+        let unscheduled = !self.behavior.schedule_latency_slots;
+        if unscheduled {
+            if self.behavior.frame_convention != FrameConvention::Predecrement
+                || !matches!(shape.destination, Destination::Call { .. })
+            {
+                return Ok(false);
+            }
+        } else if self.behavior.frame_convention != FrameConvention::LinkageFirst
             && matches!(shape.destination, Destination::Call { .. })
         {
             return Ok(false);
@@ -206,8 +213,12 @@ impl Generator {
             self.output.symbol_order.insert(0, name.to_owned());
         }
 
-        let destination_argument = match (self.behavior.frame_convention, shape.destination) {
-            (FrameConvention::LinkageFirst, Destination::Constant(address)) => {
+        let destination_argument = match (
+            unscheduled,
+            self.behavior.frame_convention,
+            shape.destination,
+        ) {
+            (false, FrameConvention::LinkageFirst, Destination::Constant(address)) => {
                 self.copy_barrier_linkage_frame();
                 let (high, low) = split_address(address);
                 self.output
@@ -228,7 +239,7 @@ impl Generator {
                 ]);
                 Instruction::move_register(3, 31)
             }
-            (FrameConvention::LinkageFirst, Destination::Call { name, argument }) => {
+            (false, FrameConvention::LinkageFirst, Destination::Call { name, argument }) => {
                 self.copy_barrier_linkage_frame();
                 self.output
                     .instructions
@@ -247,7 +258,7 @@ impl Generator {
                 ]);
                 Instruction::move_register(3, 31)
             }
-            (_, Destination::Constant(address)) => {
+            (false, _, Destination::Constant(address)) => {
                 let (high, low) = split_address(address);
                 self.output.instructions.extend([
                     Instruction::StoreWordWithUpdate {
@@ -282,6 +293,61 @@ impl Generator {
                     Instruction::SubtractFrom { d: 5, a: 4, b: 5 },
                 ]);
                 argument
+            }
+            (true, FrameConvention::Predecrement, Destination::Call { name, argument }) => {
+                self.output.instructions.extend([
+                    Instruction::StoreWordWithUpdate {
+                        s: 1,
+                        a: 1,
+                        offset: -16,
+                    },
+                    Instruction::MoveFromLinkRegister { d: 0 },
+                    Instruction::StoreWord {
+                        s: 0,
+                        a: 1,
+                        offset: 20,
+                    },
+                    Instruction::StoreWord {
+                        s: 31,
+                        a: 1,
+                        offset: 12,
+                    },
+                    Instruction::load_immediate(3, argument),
+                ]);
+                self.copy_barrier_call(name);
+                self.output.instructions.extend([
+                    Instruction::move_register(31, 3),
+                    Instruction::move_register(3, 31),
+                ]);
+                // The final argument's lane remains scratch until the range
+                // subtraction. The two reads of the start symbol stay distinct
+                // with optimization disabled.
+                let first_source_high = if self.behavior.unoptimized_range_copy_shared_scratch {
+                    5
+                } else {
+                    4
+                };
+                self.copy_barrier_symbol_high(shape.start, first_source_high);
+                self.copy_barrier_symbol_low(shape.start, 4, first_source_high);
+                self.copy_barrier_symbol_high(shape.start, 5);
+                self.copy_barrier_symbol_low(shape.start, 6, 5);
+                self.copy_barrier_symbol_high(shape.end, 5);
+                self.copy_barrier_symbol_low(shape.end, 0, 5);
+                self.output
+                    .instructions
+                    .push(Instruction::SubtractFrom { d: 5, a: 6, b: 0 });
+                self.locations.insert(
+                    function.locals[0].name.clone(),
+                    Location {
+                        class: ValueClass::General,
+                        register: 31,
+                        signed: false,
+                        width: 32,
+                        pointee: pointee_of_type(function.locals[0].declared_type),
+                        stride: None,
+                    },
+                );
+                Instruction::move_register(3, 31)
             }
             _ => unreachable!("unmeasured destination convention was rejected"),
         };

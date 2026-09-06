@@ -1386,6 +1386,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         GlobalArrayDecayStoreStyle::ScratchValue
     }
 
+    /// Reuse the range argument's scratch register for the first source
+    /// address in an unoptimized vector-copy transaction (Wii 4.3).
+    fn unoptimized_range_copy_shared_scratch(&self) -> bool {
+        false
+    }
+
     fn function_address_store_style(&self) -> FunctionAddressStoreStyle {
         FunctionAddressStoreStyle::ScratchValue
     }
@@ -2023,6 +2029,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn unoptimized_range_copy_shared_scratch(&self) -> bool {
+        true
+    }
+
     fn retain_unused_c_inline_asm_symbols(&self) -> bool {
         false
     }

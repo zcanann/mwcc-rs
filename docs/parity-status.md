@@ -4,13 +4,60 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, C declaration provenance and IPA debug scopes (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, Wii entry alignment and unoptimized vector copies (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `3a355c6dce0dabb0c114453efe41eb3af25ab5d26e7cc5d1e2daceebe76054a0:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `48abaf680d679f1b9ad669892967f664252225bd032cc6c5188b5801c19a4f16:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Wii entry alignment and unoptimized vector copies, 2026-09-06
+
+Both remaining Wii OSSync objects now match byte for byte: Twilight Princess
+**Shield and ShieldD**. Against baseline `688a7369`, all 54 inventory
+configurations ending in `/OSSync.c` improve from **49 BYTE, two DIFF, three
+HARNESS** to **51 BYTE, zero DIFF/DEFER, three HARNESS**. All **51/51 measurable
+objects and executable sections with relocations are exact**, with no empty
+objects and no lost matches. The three remaining GC/3.0a3 GZ2E01/GZ2J01/GZ2P01
+configurations are rejected by the reference compiler on an undefined `u32`
+type; they remain in the configured denominator.
+
+Assembly `entry` labels now record four-byte instruction alignment independently
+of the containing function's alignment. The optimized Wii object differed only
+in these two metadata records. Both local- and global-function entry-symbol
+emission paths use that instruction-boundary rule.
+
+The existing vector-copy owner now models unoptimized initializer-call bodies
+under the predecrement frame convention. The symbol-range calculation preserves
+both reads of the start address and reuses the range argument's register as
+scratch. A version-profile policy selects Wii's additional reuse for the first
+source address; the GC builds form that address directly in its argument
+register. The destination's actual register home feeds ordinary debug-variable
+provenance, and line records retain the initializer-result move on the local's
+source line.
+
+New canary 1564 isolates assembly entry-label metadata and improves from
+**9/11 to 10/11 exact**. New canary 1565 reproduces the unoptimized mapped
+vector and improves from **0/11 to 6/11 exact**: GC/1.3, GC/1.3.2,
+GC/1.3.2r, GC/2.6, GC/3.0a3, and Wii/1.0. All 22 build/canary pairs are
+oracle-runnable, with no exclusions or reference rejections. GC/2.7 retains
+debug-container differences; the four older builds retain code differences.
+
+The oracle now recognizes `-opt` as part of the `-O` option family. Previously,
+its default `-O4,p` followed an explicit `-opt off`, so the reference ran at the
+wrong optimization level. Both sides of the reported baseline/candidate
+comparison use the corrected harness, with the baseline compiler binary
+preserved. A unit test verifies default optimization removal for that alias.
+
+The broader paired debug/inline selection contains **74 authored canaries on
+two modern compilers**: **24/72 to 28/72 whole-object exact**, with no lost
+matches. Its 148 slots include 76 declared exclusions, zero reference
+rejections, and zero timeouts. Besides the new canaries, the existing SDK
+command-line-options canary 1560 becomes exact on Wii. Compiler/oracle builds
+pass, as do **148 targeted unit tests**: 30 object, 40 version-profile,
+72 debug-info, three copy-owner, and three oracle tests. This source-family
+milestone does not establish whole-project or corpus-wide compiler parity.
 
 ## C declaration provenance and IPA debug scopes, 2026-09-06
 

@@ -32,13 +32,32 @@ pub(super) fn matches(unit: &TranslationUnit, machine_functions: &[MachineFuncti
         && installer_shape(installer)
 }
 
-/// The later scheduled form retains only the destination's high half. The
-/// optimized-away pointer initializer owns no line entry in this form.
+/// Later frame conventions either retain only the fixed address's high half,
+/// or retain the full initializer-call result in an unoptimized body.
 pub(super) fn matches_predecrement(
     unit: &TranslationUnit,
     machine_functions: &[MachineFunction],
 ) -> bool {
-    matches(unit, machine_functions) && predecrement_destination(&machine_functions[1])
+    matches(unit, machine_functions)
+        && (predecrement_destination(&machine_functions[1])
+            || predecrement_mapped_destination(&machine_functions[1]))
+}
+
+fn predecrement_mapped_destination(machine: &MachineFunction) -> bool {
+    machine.pre_scheduled
+        && matches!(
+            machine.instructions.first(),
+            Some(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16
+            })
+        )
+        && matches!(
+            machine.instructions.get(5),
+            Some(Instruction::BranchAndLink { .. })
+        )
+        && machine.instructions.get(6) == Some(&Instruction::move_register(31, 3))
 }
 
 fn predecrement_destination(machine: &MachineFunction) -> bool {
@@ -184,7 +203,11 @@ pub(super) fn line_records(
         if initialize >= copy_call || first_address >= initialize {
             return Err(invalid_plan());
         }
-        records.push(record(*copy_line, start + (initialize + 1) * 4));
+        let retained_result_move = u32::from(predecrement_mapped_destination(installer_machine));
+        records.push(record(
+            *copy_line,
+            start + (initialize + 1 + retained_result_move) * 4,
+        ));
     }
     records.extend([
         record(*flush_line, start + (copy_call + 1) * 4),
