@@ -4,13 +4,70 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, general word masks and expanded EXI mailbox callers (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, accumulator lifetimes and empty-poll entries (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `ec93d67ec2606fddf8100ab8a6c69d032c878a42fedaeebd2e6de84bdad93b12:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `b4d8bbd135ab9037261e8fcf38d23e1503a5f11682174dbb22cadc2c2b871b3d:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Accumulator lifetimes and empty-poll entries, 2026-09-06
+
+Against baseline `bdd1199b`, structured lowering folds the first
+`error |= !operation()` into an assignment when a zero declaration initializer
+reaches it unchanged. The straight-line prefix may contain unrelated calls and
+stores, but earlier reads, writes, address escapes, initializer aliases, labels,
+control flow, volatile/static storage, and embedded assembly prevent the fold.
+The operation's arguments must not refer to the accumulator. This removes an
+unnecessary entry value, OR, and cross-call lifetime without moving the call.
+The new fold is disabled at O0. If the resulting value survives a later call,
+frame planning still reserves a saved home for it.
+
+This exposed a separate frame-reconciliation defect: equal planned and required
+save counts could hide different physical registers. A logical home could
+color into caller-saved r4 while a result used r30 across a call, leaving r30
+unsaved. Reconciliation now checks physical-register coverage before retaining
+the existing saves, and uses the existing canonical save reconstruction when
+the sets differ. Runtime checks verify saved-register preservation after the
+new lifetime transformation.
+
+Empty structured loops with no step now reach their first condition by
+fallthrough. This removes a branch to the next instruction in composed polls
+while retaining every condition evaluation. Empty for-loops with a step keep
+their entry test ahead of that step; the existing assembly-sensitive for-loop
+entry policy also remains in effect.
+
+New canaries 1596--1597 cover call accumulators and composed waits for both a
+clear and a set bit. Across **1593, 1594, 1596, and 1597 on 11 builds**, all
+**44 pairs compile**, with no exclusions or reference rejections; whole-object
+exactness improves **0/44 to 9/44**. The polling object matches on every measured
+build except GC/1.1 and GC/1.1p1. Accumulator and mailbox objects remain nonexact.
+The actual Melee caller sizes improve from **216/160/216 to 200/140/200 bytes**
+for read-mailbox/write-mailbox/read-status; reference sizes are 172/140/172.
+The write length now agrees, but its schedule and register allocation do not.
+Melee retains **10/21 exact functions and 372/3320 exact reference bytes**.
+
+**101,184 paired Unicorn execution cases** pass: 7,392 for the new accumulator
+canary, 1,320 for the new polls, 33,264 for the prior mailbox/mask slice, 55,176
+for earlier EXI composition, and 4,032 for the three actual Melee callers.
+Checks cover call arguments/order, varied transfer and operation statuses,
+volatile read/write counts and values, zero/one/four waiting iterations, stack
+restoration, and saved registers under four randomized clobber patterns. The
+Melee checks simulate `DBGEXIImm` at the call boundary and do not validate its
+implementation. Earlier EXI objects retain **53/88 exact**, with all 88 compiling.
+
+The expanded 182-canary regression selection retains identical verdicts on five
+builds: **910 slots, 242 exclusions, 668 runnable pairs, 376 exact objects, and
+183 existing candidate rejections**, with no reference rejections or timeouts.
+The 40-configuration reference slice is unchanged: **35 whole-object exact,
+one DIFF, four missing dependencies**; **33/34 measured code comparisons exact**,
+with two empty and four unmeasured. Six accumulator tests, nine structured-loop
+tests, and 117 backend inline tests pass; the inline selection continues to
+exclude the independently confirmed preexisting embedded-asm composition
+failure. Evidence is retained in `target/exi-accumulator-*.log`,
+`target/check_exi_accumulator*.py`, and the prior mailbox/EXI execution harnesses.
+These targeted diagnostics do not establish corpus-wide parity.
 
 ## General word masks and expanded EXI mailbox callers, 2026-09-06
 

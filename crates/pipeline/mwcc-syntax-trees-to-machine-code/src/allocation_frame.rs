@@ -60,7 +60,15 @@ impl Generator {
             });
             matches!((save, definition), (Some(save), Some(definition)) if save >= definition)
         });
-        if required.len() <= declared.len() && !declared_has_late_virtual_save {
+        let declared_covers_required = required.iter().all(|required| {
+            declared.iter().any(|home| match Reg::from_field(*home, Class::General) {
+                Reg::Physical(register) => register == *required,
+                Reg::Virtual(register) => allocation.physical(register) == Some(*required),
+            })
+        });
+        // Equal slot counts do not prove coverage: a logical home may color
+        // into r4 while a different temporary needs r30 across a call.
+        if declared_covers_required && !declared_has_late_virtual_save {
             return Ok(());
         }
         if self.frame_size == 0 || declared.is_empty() {

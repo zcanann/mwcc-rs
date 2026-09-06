@@ -186,6 +186,69 @@ pub(super) fn in_place_call_combined_return_name(function: &Function) -> Option<
     }).then_some(returned.as_str())
 }
 
+/// Replace the first `error |= !call()` with `error = !call()` when the
+/// declaration's zero reaches it unchanged. The straight-line prefix cannot
+/// contain an entry label, so later control flow cannot revisit the folded
+/// update. Reads include address-taking; an escaped local is never assumed zero.
+pub(super) fn fold_entry_zero_call_accumulators(function: &Function) -> Option<Function> {
+    fn mentions(value: &Expression, name: &str) -> bool {
+        let mut found = false;
+        super::structured_expression_visit::visit_expression(value, &mut |part| {
+            found |= matches!(part, Expression::Variable(read) if read == name);
+        });
+        found
+    }
+    if !function.inline_asm_blocks.is_empty() {
+        return None;
+    }
+    let mut rewritten = function.clone();
+    let mut changed = false;
+    for local in &mut rewritten.locals {
+        if local.is_volatile
+            || local.is_static
+            || local.array_length.is_some()
+            || !matches!(local.declared_type, Type::Int | Type::UnsignedInt)
+            || !matches!(local.initializer, Some(Expression::IntegerLiteral(0)))
+            || function.locals.iter().any(|other| {
+                other
+                    .initializer
+                    .as_ref()
+                    .is_some_and(|value| mentions(value, &local.name))
+            })
+        {
+            continue;
+        }
+        for statement in &mut rewritten.statements {
+            match statement {
+                Statement::Assign { name, value } if name == &local.name => {
+                    if let Expression::Binary {
+                        operator: BinaryOperator::BitOr,
+                        left,
+                        right,
+                    } = value
+                    {
+                        if matches!(left.as_ref(), Expression::Variable(read) if read == name)
+                            && is_negated_call(right)
+                            && !mentions(right, name)
+                        {
+                            *value = right.as_ref().clone();
+                            local.initializer = None;
+                            changed = true;
+                        }
+                    }
+                    break;
+                }
+                Statement::Assign { value, .. } | Statement::Expression(value)
+                    if !mentions(value, &local.name) => {}
+                Statement::Store { target, value }
+                    if !mentions(target, &local.name) && !mentions(value, &local.name) => {}
+                _ => break,
+            }
+        }
+    }
+    changed.then_some(rewritten)
+}
+
 pub(super) fn fold_zero_initialized_call_accumulator(function: &Function) -> Option<Function> {
     let statements = &function.statements;
     for index in 0..statements.len().saturating_sub(1) {
@@ -629,5 +692,139 @@ mod value_lane_tests {
         assert!(reuses_accumulator_value_lane(true, true));
         assert!(!reuses_accumulator_value_lane(true, false));
         assert!(!reuses_accumulator_value_lane(false, true));
+    }
+}
+
+#[cfg(test)]
+mod entry_zero_tests {
+    use super::*;
+
+    fn variable() -> Expression {
+        Expression::Variable("error".into())
+    }
+    fn call(arguments: Vec<Expression>) -> Expression {
+        Expression::Call {
+            name: "operation".into(),
+            arguments,
+        }
+    }
+    fn sample(prefix: Vec<Statement>) -> Function {
+        let mut statements = prefix;
+        statements.push(Statement::Assign {
+            name: "error".into(),
+            value: Expression::Binary {
+                operator: BinaryOperator::BitOr,
+                left: Box::new(variable()),
+                right: Box::new(Expression::Unary {
+                    operator: UnaryOperator::LogicalNot,
+                    operand: Box::new(call(Vec::new())),
+                }),
+            },
+        });
+        Function {
+            return_type: Type::Int,
+            name: "transaction".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![LocalDeclaration {
+                declared_type: Type::Int,
+                name: "error".into(),
+                initializer: Some(Expression::IntegerLiteral(0)),
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                attribute_alignment: None,
+                row_bytes: None,
+            }],
+            statements,
+            guards: Vec::new(),
+            return_expression: Some(variable()),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
+
+    #[test]
+    fn folds_across_an_unrelated_call_without_removing_its_effects() {
+        let prefix = Statement::Expression(call(vec![Expression::IntegerLiteral(7)]));
+        let function = sample(vec![prefix.clone()]);
+        let folded = fold_entry_zero_call_accumulators(&function).unwrap();
+        assert!(folded.locals[0].initializer.is_none());
+        assert_eq!(folded.statements.len(), 2);
+        assert_eq!(format!("{:?}", folded.statements[0]), format!("{prefix:?}"));
+        assert!(
+            matches!(&folded.statements[1], Statement::Assign { value, .. } if is_negated_call(value))
+        );
+    }
+
+    #[test]
+    fn retains_initialization_when_the_prefix_reads_modifies_or_exposes_it() {
+        for prefix in [
+            Statement::Expression(call(vec![variable()])),
+            Statement::Expression(call(vec![Expression::AddressOf {
+                operand: Box::new(variable()),
+            }])),
+            Statement::Expression(Expression::Assign {
+                target: Box::new(variable()),
+                value: Box::new(Expression::IntegerLiteral(2)),
+            }),
+            Statement::Expression(Expression::AggregateLiteral(vec![variable()])),
+            Statement::Label("again".into()),
+            Statement::If {
+                condition: Expression::IntegerLiteral(1),
+                then_body: Vec::new(),
+                else_body: Vec::new(),
+            },
+        ] {
+            assert!(fold_entry_zero_call_accumulators(&sample(vec![prefix])).is_none());
+        }
+    }
+
+    #[test]
+    fn rejects_volatile_static_nonzero_and_initializer_aliases() {
+        let mut volatile = sample(Vec::new());
+        volatile.locals[0].is_volatile = true;
+        let mut persistent = sample(Vec::new());
+        persistent.locals[0].is_static = true;
+        let mut nonzero = sample(Vec::new());
+        nonzero.locals[0].initializer = Some(Expression::IntegerLiteral(2));
+        let mut alias = sample(Vec::new());
+        let mut other = alias.locals[0].clone();
+        other.name = "alias".into();
+        other.initializer = Some(Expression::AddressOf {
+            operand: Box::new(variable()),
+        });
+        alias.locals.push(other);
+        for function in [volatile, persistent, nonzero, alias] {
+            assert!(fold_entry_zero_call_accumulators(&function).is_none());
+        }
+    }
+
+    #[test]
+    fn retains_zero_when_the_first_operation_takes_its_address() {
+        let mut function = sample(Vec::new());
+        let Statement::Assign {
+            value: Expression::Binary { right, .. },
+            ..
+        } = &mut function.statements[0]
+        else {
+            unreachable!()
+        };
+        *right = Box::new(Expression::Unary {
+            operator: UnaryOperator::LogicalNot,
+            operand: Box::new(call(vec![Expression::AddressOf {
+                operand: Box::new(variable()),
+            }])),
+        });
+        assert!(fold_entry_zero_call_accumulators(&function).is_none());
     }
 }

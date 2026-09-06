@@ -267,7 +267,12 @@ impl<'a> LoopLowering<'a> {
             // An always-true pre-test loop enters its body directly. Retaining the
             // generic jump-to-condition creates an otherwise dead entry trampoline
             // before polling loops such as `while (1) { if (done) break; }`.
-        } else if needs_entry_test && !first_iteration_is_proven(initializer, condition) {
+        } else if needs_entry_test && !first_iteration_is_proven(initializer, condition)
+            && !(body.is_empty() && step.is_none())
+        {
+            // With no body or step, fallthrough already reaches the condition.
+            // Retaining the entry edge emits a branch to the next instruction
+            // in composed busy waits. The first volatile test still executes.
             output.push(Statement::Goto(condition_label.clone()));
         }
         output.push(Statement::Label(body_label.clone()));
@@ -446,6 +451,32 @@ mod tests {
             }),
             body,
         }
+    }
+
+    #[test]
+    fn an_empty_for_body_still_checks_before_its_step() {
+        let source = function(vec![Statement::Loop {
+            kind: LoopKind::For,
+            initializer: None,
+            condition: Some(Expression::Variable("busy".into())),
+            step: Some(Expression::Call { name: "advance".into(), arguments: Vec::new() }),
+            body: Vec::new(),
+        }]);
+        let lowered = lower_structured_loops(&source, &Default::default(), false).unwrap();
+        assert!(matches!(lowered.statements.first(), Some(Statement::Goto(_))));
+    }
+
+    #[test]
+    fn an_empty_wait_reaches_its_first_test_by_fallthrough() {
+        let source = function(vec![Statement::Loop {
+            kind: LoopKind::While, initializer: None, step: None,
+            condition: Some(Expression::Variable("busy".into())), body: Vec::new(),
+        }]);
+        let lowered = lower_structured_loops(&source, &Default::default(), false).unwrap();
+        let first_test = lowered.statements.iter().position(|s| matches!(s, Statement::If { .. })).unwrap();
+        assert!(lowered.statements[..first_test].iter().all(|s| matches!(s, Statement::Label(_))));
+        assert!(matches!(&lowered.statements[first_test], Statement::If { then_body, .. }
+            if matches!(then_body.as_slice(), [Statement::Goto(_)])));
     }
 
     #[test]

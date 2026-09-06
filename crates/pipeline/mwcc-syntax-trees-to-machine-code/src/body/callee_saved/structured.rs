@@ -434,6 +434,16 @@ impl Generator {
         with_frame_array: bool,
         suppressed_constant_lane: bool,
     ) -> Compilation<bool> {
+        let folded_entry_accumulators = (self.behavior.optimization != mwcc_versions::Optimization::O0)
+            .then(|| super::structured_call_accumulator::fold_entry_zero_call_accumulators(function))
+            .flatten();
+        let folded_entry_names: std::collections::HashSet<&str> = folded_entry_accumulators
+            .iter()
+            .flat_map(|rewritten| rewritten.locals.iter().zip(&function.locals))
+            .filter(|(after, before)| after.initializer.is_none() && before.initializer.is_some())
+            .map(|(after, _)| after.name.as_str())
+            .collect();
+        let function = folded_entry_accumulators.as_ref().unwrap_or(function);
         self.record_paired_single_frame_copy_names(function);
         let terminal_branch_result =
             super::structured_terminal_branch_result::fold(function);
@@ -971,8 +981,11 @@ impl Generator {
                     // Statement-defined accumulators create their own value
                     // lanes. A declaration initializer still needs an entry
                     // home so the first |= can read it across preceding calls.
+                    // A folded entry accumulator still reserves a home when
+                    // its later result survives another call.
                     && (!call_accumulators.contains(local.name.as_str())
-                        || local.initializer.is_some())
+                        || local.initializer.is_some()
+                        || folded_entry_names.contains(local.name.as_str()))
                     && (self.one_word_aggregate_locals.contains(&local.name)
                         || unoptimized_frame_call_homes
                             .as_ref()
@@ -1050,7 +1063,8 @@ impl Generator {
                         && survivors.contains(local.name.as_str())
                         && !eliminated_unobserved_locals.contains(local.name.as_str())
                         && (!call_accumulators.contains(local.name.as_str())
-                            || local.initializer.is_some())
+                            || local.initializer.is_some()
+                            || folded_entry_names.contains(local.name.as_str()))
                         && (self.one_word_aggregate_locals.contains(&local.name)
                             || unoptimized_frame_call_homes
                                 .as_ref()
