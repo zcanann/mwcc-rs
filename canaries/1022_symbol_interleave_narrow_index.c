@@ -1,5 +1,5 @@
 /* mwcc's symbol table interleaves DEFINED data with function symbols by
- * source position: map_before, pick, map_after — the function symbol sits
+ * source position: map_before, pick, map_after -- the function symbol sits
  * between the two data symbols (static functions' LOCAL symbols precede the
  * data run and do not shift the slots). A whole-body block { { ... } } is
  * transparent. A narrow UNSIGNED parameter used as a byte-array index

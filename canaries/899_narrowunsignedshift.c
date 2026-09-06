@@ -1,8 +1,8 @@
 // A NARROW (8/16-bit) UNSIGNED load (deref/element/member) shifted right: `(unsigned char/short)*p
 // >> n`. The narrow value promotes to a SIGNED int before the shift, so mwcc emits the ARITHMETIC
-// `srawi` (`lbz/lhz r0; srawi r3,r0,n`) — not the logical `srwi` ours picked from the operand's own
+// `srawi` (`lbz/lhz r0; srawi r3,r0,n`) -- not the logical `srwi` ours picked from the operand's own
 // unsigned type. The loaded value is non-negative so the result is identical, but the instruction
-// differs (a byte diff, pre-existing — found by a broad post-regression DIFFERS hunt). emit_shift_right
+// differs (a byte diff, pre-existing -- found by a broad post-regression DIFFERS hunt). emit_shift_right
 // (arithmetic.rs) now ORs in is_narrow_unsigned_load (a new helper). Unchanged: a signed deref is
 // already srawi; a WIDE unsigned (`unsigned int`) stays srwi (no promotion to signed); a narrow
 // unsigned LEAF still uses the fused rlwinm. After this, a broad signed/unsigned narrow-deref scan

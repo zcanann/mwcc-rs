@@ -1,5 +1,5 @@
 // A cast to a narrow integer type (`(unsigned char)`, `(char)`, `(unsigned short)`) emits its
-// own narrowing — clrlwi for the unsigned mask, extsb/extsh for the signed extend. So when its
+// own narrowing -- clrlwi for the unsigned mask, extsb/extsh for the signed extend. So when its
 // operand is a narrow LEAF (a char/short param or local), that operand is read RAW: the leaf's
 // promotion extsb would be immediately overridden by the cast's widen, so mwcc omits it.
 // `(unsigned char)a` is a bare `clrlwi r3,r3,24`, and `(char)char_a` is one `extsb`, not the

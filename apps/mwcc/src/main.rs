@@ -3136,6 +3136,7 @@ mod tests {
     #[path = "narrow_call_result_argument.rs"]
     mod narrow_call_result_argument;
     mod narrow_integer_to_float_argument;
+    mod narrow_constant_call_argument;
     mod nested_global_index_member;
     mod comparison_to_float_argument;
 

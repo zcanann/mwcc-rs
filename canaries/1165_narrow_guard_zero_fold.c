@@ -1,6 +1,6 @@
 // Narrow-guard tests against ZERO fold the width test into the RECORD form and drop the compare:
 // `clrlwi r0,t,24; ...; cmplwi r0,0` becomes `clrlwi. r0,t,24; ...` with cr0 set by the mask
-// itself — slot-for-slot identical otherwise (the staged li constants keep their positions, the
+// itself -- slot-for-slot identical otherwise (the staged li constants keep their positions, the
 // branch options are unchanged). Measured uniformly across every narrow-guard family (fire 674);
 // before the fold these six shapes were live DIFFs the canary corpus never covered (every prior
 // measurement used a nonzero compare constant).

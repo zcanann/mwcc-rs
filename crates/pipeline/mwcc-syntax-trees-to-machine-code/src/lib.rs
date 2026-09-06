@@ -1187,7 +1187,7 @@ fn lower_function_body(
     generator.schedule_linkage_first_global_member_forward();
     generator.schedule_direct_callback_wait_entry(function);
     generator.schedule_sequenced_callback_wait();
-    generator.schedule_callback_publication_call();
+    generator.schedule_callback_publication_call(function);
     generator.schedule_retained_eager_entry_argument();
     generator.schedule_retained_split_member_guard();
     generator.schedule_linkage_first_inline_zero();

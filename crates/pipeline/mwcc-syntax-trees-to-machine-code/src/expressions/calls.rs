@@ -1059,7 +1059,27 @@ impl Generator {
         name: &str,
     ) -> Compilation<()> {
         let previous_global_index_base = self.transient_global_index_base.take();
-        let result = self.emit_argument_transaction(arguments, name);
+        // Convert narrow constants before selecting a schedule. Otherwise a
+        // fast argument packet can bypass the prototype conversion, and the
+        // ordinary general evaluator also materializes the original word.
+        let mut converted = std::borrow::Cow::Borrowed(arguments);
+        for (index, argument) in arguments.iter().enumerate() {
+            let Some(parameter_type @ (Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort)) =
+                super::call_argument_types::source_parameter_type(
+                    self.call_parameter_types.get(name).map(Vec::as_slice),
+                    matches!(self.call_return_types.get(name), Some(Type::Struct { .. })),
+                    arguments.len(),
+                    index,
+                )
+            else { continue; };
+            let Some(value) = constant_value(argument) else { continue; };
+            let narrowed = crate::analysis::convert_integer_constant(value, parameter_type)
+                .expect("a narrow integer parameter has an integer conversion");
+            if narrowed != value {
+                converted.to_mut()[index] = Expression::IntegerLiteral(narrowed);
+            }
+        }
+        let result = self.emit_argument_transaction(&converted, name);
         self.transient_global_index_base = previous_global_index_base;
         result
     }

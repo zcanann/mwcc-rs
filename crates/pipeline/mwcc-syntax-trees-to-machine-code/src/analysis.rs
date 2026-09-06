@@ -1405,18 +1405,7 @@ pub(crate) fn constant_value(expression: &Expression) -> Option<i64> {
             operand,
         } => {
             let value = constant_value(operand)?;
-            match target_type {
-                Type::Int => Some(value as i32 as i64),
-                Type::UnsignedInt => Some(value as u32 as i64),
-                Type::Short => Some(value as i16 as i64),
-                Type::UnsignedShort => Some(value as u16 as i64),
-                Type::Char => Some(value as i8 as i64),
-                Type::UnsignedChar => Some(value as u8 as i64),
-                // C's null pointer constant remains the all-zero bit pattern
-                // after conversion to any object/function pointer type.
-                Type::Pointer(_) | Type::StructPointer { .. } if value == 0 => Some(0),
-                _ => None,
-            }
+            convert_integer_constant(value, *target_type)
         }
         Expression::Binary {
             operator,
@@ -1447,6 +1436,22 @@ pub(crate) fn constant_value(expression: &Expression) -> Option<i64> {
             };
             Some(folded as i32 as i64)
         }
+        _ => None,
+    }
+}
+
+/// MWCC's integer conversion, shared by explicit casts and implicit prototype
+/// conversions. Signed narrowing retains the low bits and sign-extends them.
+pub(crate) fn convert_integer_constant(value: i64, target: Type) -> Option<i64> {
+    match target {
+        Type::Int => Some(value as i32 as i64),
+        Type::UnsignedInt => Some(value as u32 as i64),
+        Type::Short => Some(value as i16 as i64),
+        Type::UnsignedShort => Some(value as u16 as i64),
+        Type::Char => Some(value as i8 as i64),
+        Type::UnsignedChar => Some(value as u8 as i64),
+        // Null pointers preserve the all-zero bit pattern.
+        Type::Pointer(_) | Type::StructPointer { .. } if value == 0 => Some(0),
         _ => None,
     }
 }

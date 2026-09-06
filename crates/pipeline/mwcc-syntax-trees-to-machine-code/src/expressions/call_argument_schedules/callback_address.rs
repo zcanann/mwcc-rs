@@ -5,8 +5,13 @@
 //! final argument register before the borrowed register is overwritten.
 
 use super::*;
+use mwcc_versions::FrameConvention;
 
 enum CallbackTail<'a> {
+    Constant {
+        first: i16,
+        callback: &'a str,
+    },
     GlobalMember {
         first: &'a Expression,
         middle: i16,
@@ -22,6 +27,12 @@ enum CallbackTail<'a> {
 
 fn callback_tail(arguments: &[Expression]) -> Option<CallbackTail<'_>> {
     match arguments {
+        [Expression::IntegerLiteral(first), Expression::Variable(callback)] => {
+            Some(CallbackTail::Constant {
+                first: i16::try_from(*first).ok()?,
+                callback,
+            })
+        }
         [first @ Expression::Member { .. }, Expression::IntegerLiteral(middle), Expression::Variable(callback)] => {
             Some(CallbackTail::GlobalMember {
                 first,
@@ -47,7 +58,7 @@ fn callback_tail(arguments: &[Expression]) -> Option<CallbackTail<'_>> {
 
 impl Generator {
     /// Marshal a terminal callback address through a borrowed earlier argument
-    /// register. The two supported prefixes share one rule: the borrowed
+    /// register. The supported prefixes share one rule: the borrowed
     /// register has no live final argument until after the callback low half.
     pub(crate) fn try_emit_split_callback_tail_arguments(
         &mut self,
@@ -71,6 +82,36 @@ impl Generator {
         }
 
         match shape {
+            CallbackTail::Constant { first, callback } => {
+                // Linkage-first builds complete the address through r3 before
+                // publishing the integer argument. Predecrement builds keep
+                // the address in r4 and use the integer as its latency filler.
+                if self.behavior.frame_convention != FrameConvention::LinkageFirst
+                    || !self.is_direct_function_symbol(callback)
+                    || !self.call_parameter_types.get(name).is_none_or(|types| {
+                        matches!(
+                            types.as_slice(),
+                            [
+                                Type::Int
+                                    | Type::UnsignedInt
+                                    | Type::Short
+                                    | Type::Char
+                                    | Type::UnsignedChar,
+                                Type::Pointer(_)
+                            ]
+                        ) || (first >= 0
+                            && matches!(types.as_slice(), [Type::UnsignedShort, Type::Pointer(_)]))
+                    })
+                {
+                    return Ok(false);
+                }
+                self.emit_split_callback_address(
+                    callback,
+                    Eabi::FIRST_GENERAL_ARGUMENT,
+                    Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                );
+                self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT, i64::from(first));
+            }
             CallbackTail::GlobalMember {
                 first,
                 middle,

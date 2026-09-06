@@ -1,9 +1,9 @@
-// A narrow `const` file-scope global reads as its value EXTENDED to int per its signedness — mwcc
+// A narrow `const` file-scope global reads as its value EXTENDED to int per its signedness -- mwcc
 // folds the read to that extended value (`const char c=200`->`li r3,-56`; `const unsigned char
 // uc=200`->`li r3,200`; `const short s=40000`->`li r3,-25536`; `const unsigned short=40000`->lis+addi)
 // while STILL emitting the raw byte/halfword storage (.sdata2: 1 byte for char, 2 for short). The
-// parser folds the read via truncate_to_integer(value, declared_type) — the C integer cast on a
-// constant — generalizing the const-int fold (911) to char/short with correct sign/zero extension.
+// parser folds the read via truncate_to_integer(value, declared_type) -- the C integer cast on a
+// constant -- generalizing the const-int fold (911) to char/short with correct sign/zero extension.
 const char           C  = 65;
 const char           CN = 200;     // signed char -> reads -56
 const unsigned char  UC = 200;     // -> 200

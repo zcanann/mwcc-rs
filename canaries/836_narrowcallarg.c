@@ -1,7 +1,7 @@
 // A narrow (char/short) argument passed to a parameter that is NOT wider keeps the value as
-// is — no int promotion. `void g(char); g(char_a)` is just `bl g`, not `extsb r3,r3; bl g`,
+// is -- no int promotion. `void g(char); g(char_a)` is just `bl g`, not `extsb r3,r3; bl g`,
 // because the char parameter reads only the low byte. (Only a WIDER parameter, e.g.
-// `void g(int)`, widens the argument — and that case is still ordering-blocked on the
+// `void g(int)`, widens the argument -- and that case is still ordering-blocked on the
 // prologue scheduler, so it is not asserted here.)
 void take_char(char);
 void take_short(short);

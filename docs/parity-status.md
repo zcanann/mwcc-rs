@@ -4,13 +4,68 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, complete EXI source compilation and typed callbacks (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, callback registration schedules and narrow argument constants (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `ca7e351209e681a9cb9607635666df5af35e2669b2438c2c4d25bc13be77e888:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `972949b7743b3cb572a2e669b7d95399513c8c42643f6742377983eee4abb5c1:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Callback registration schedules and narrow argument constants, 2026-09-06
+
+Against baseline `70eac5d5`, Melee's configured GC/1.2.5 `odenotstub.c` gains an
+exact `DBInitInterrupts`, including its relocations. The complete object now
+has **10/21 exact functions, up from 9/21**, and **372/3320 exact reference
+function bytes, up from 288/3320**. All 21 functions remain comparable, with
+none missing or candidate-only. The full-source verdict remains **DIFF**;
+eleven functions still differ.
+
+The existing callback argument scheduler now borrows the unfinished first
+integer argument's register for a second-argument function address on legacy
+linkage-first builds. Publication scheduling overlaps an independent handler
+address with the preceding callback store, preserving the distinct entry and
+post-call orders, compact legacy exit, and versioned symbol discovery rules.
+Middle-generation builds retain data-first symbol grouping. The scheduler
+validates both address relocation pairs and keeps the transformation within a
+linear machine body, including control flow introduced by retained inlines.
+
+Conversion probes exposed an existing ABI error: integer constants passed to
+narrow parameters bypassed their declared conversion (`signed char` received
+255 instead of -1, and `unsigned char` received -1 instead of 255). The common
+argument entry now converts out-of-range constants before selecting a schedule,
+using the same integer conversion helper as explicit casts. Unchanged values
+retain their original expression and scheduling path. A new integration test
+checks the reference's converted argument constants on three compiler builds.
+
+New canaries 1582--1584 provide **33 oracle-runnable pairs across 11 builds**,
+with no exclusions, reference rejections, or candidate rejections. Whole-object
+matches improve **5/33 to 20/33**: callback publication/registration matches all
+11 builds, and constant callback arguments match nine. The two modern terminal
+wrappers still differ in sibling-call selection; the broader conversion canary
+still has scheduling differences. **1,760 paired Unicorn execution cases**
+(reference and candidate) pass, checking the published address and its order
+relative to calls, signed/unsigned byte and halfword conversions, large words,
+forwarded and loaded arguments, stack restoration, and saved registers under
+eight randomized caller-clobber patterns.
+
+Fourteen older narrow-argument/store canaries now use ASCII punctuation in
+comments so both compilers can consume the same regression sources. With those
+identical cleaned sources, the 60-canary callback/argument/narrowing slice on
+five builds has **300 slots, 87 declared exclusions, three existing reference
+rejections, and 210 runnable pairs**. Exact objects improve **135/210 to
+141/210**, with no lost matches. Eight existing candidate rejections remain;
+there are no encoding failures or timeouts. Comment cleanup is not counted as
+a compiler parity gain.
+
+The 40-configuration real-project stub family retains **35 BYTE, one DIFF,
+zero DEFER, and four MISSING_DEPENDENCY**, with **33/34 measured code exact**,
+two empty objects, and four unmeasured rows. Compiler/oracle builds, 45 callback
+backend tests, 30 argument integration tests, and the explicit integer-cast
+test pass. The backend argument filter passes 124 tests; its one other test is
+the previously confirmed existing embedded-assembly composition failure
+recorded below, and the repeat run explicitly skips that test. These targeted
+checks do not establish whole-project parity.
 
 ## Complete EXI source compilation and typed callbacks, 2026-09-06
 
