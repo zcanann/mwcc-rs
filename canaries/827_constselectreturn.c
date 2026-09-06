@@ -3,7 +3,7 @@
 // result and conditional-returns ONLY when the leaf is unrelated and not in the result
 // register (`li r3,C; bnelr; mr r3,x`, x in r4). When the leaf already lives in the result
 // register (a in r3), that form would `li r3,C` over the leaf and then self-move-coalesce
-// the `mr r3,r3` away — a SILENT MISCOMPILE (the c==0 path returns C instead of the leaf).
+// the `mr r3,r3` away -- a SILENT MISCOMPILE (the c==0 path returns C instead of the leaf).
 // So mwcc stages the constant in r0, conditionally moves the leaf over it, then `mr r3,r0`:
 //
 //     cmpwi r4,0 ; li r0,5 ; bne L ; mr r0,r3 ; L: mr r3,r0 ; blr        (if(c) return 5; return a)

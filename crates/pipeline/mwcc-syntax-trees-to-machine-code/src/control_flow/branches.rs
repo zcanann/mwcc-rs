@@ -661,6 +661,26 @@ impl Generator {
             }
         }
 
+        // A computed condition can select a constant against zero without a
+        // register-resident value arm. If the mask owners above decline, keep
+        // the source diamond instead of passing constants to the leaf-phi path.
+        // This includes the byte-global mailbox bit in the EXI write protocol.
+        if (is_zero_literal(when_true) || is_zero_literal(when_false))
+            && constant_value(when_true).is_some()
+            && constant_value(when_false).is_some()
+        {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            let false_arm = self.fresh_label();
+            let join = self.fresh_label();
+            self.emit_branch_conditional_to(options, condition_bit, false_arm);
+            self.place_select_value(when_true, destination)?;
+            self.emit_branch_to(join);
+            self.bind_label(false_arm);
+            self.place_select_value(when_false, destination)?;
+            self.bind_label(join);
+            return Ok(());
+        }
+
         if self.try_emit_absolute_value_select(
             condition,
             when_true,

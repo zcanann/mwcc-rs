@@ -1,6 +1,6 @@
 /* A conditional return whose false arm is outside the branchless-select
- * vocabulary (a table load) emits mwcc's early-return BRANCH — `cmpwi; bne;
- * li; blr; <fall-through>; blr` — the ctype tolower shape, both as a ternary
+ * vocabulary (a table load) emits mwcc's early-return BRANCH -- `cmpwi; bne;
+ * li; blr; <fall-through>; blr` -- the ctype tolower shape, both as a ternary
  * and as an if-guard; (int) casts of array elements are no-op wrappers
  * (unsigned zero-extends in the load, signed extends inside the Index path). */
 typedef unsigned char u8;

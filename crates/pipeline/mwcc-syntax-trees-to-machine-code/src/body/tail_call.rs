@@ -141,8 +141,7 @@ impl Generator {
             self.stage_indirect_callee(pointer_register);
             self.emit_arguments(arguments, name)?;
         } else if self.globals.contains_key(name) {
-            self.emit_arguments(arguments, name)?;
-            self.emit_global_load_value(name, 12)?;
+            self.emit_global_indirect_call_arguments(name, arguments)?;
         } else {
             return Ok(false);
         }

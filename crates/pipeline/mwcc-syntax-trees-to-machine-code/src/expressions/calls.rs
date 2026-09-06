@@ -802,7 +802,7 @@ impl Generator {
             });
         }
         if variadic {
-            self.emit_variadic_condition(arguments);
+            self.emit_variadic_condition("<virtual>", arguments);
         }
         self.emit_indirect_branch_and_link(12);
         if let Some(destination) = destination {
@@ -919,8 +919,7 @@ impl Generator {
         // the arguments, load the pointer, then `mtctr r12; bctrl`. (The saved-LR store
         // stays in the prologue here, since no `mr r12` setup precedes it.)
         if self.globals.contains_key(name) {
-            self.emit_arguments(arguments, name)?;
-            self.emit_global_load_value(name, 12)?;
+            self.emit_global_indirect_call_arguments(name, arguments)?;
             self.emit_indirect_branch_and_link(12);
             if let Some(destination) = destination {
                 self.emit_call_result_copy(destination, float_result);
@@ -943,7 +942,7 @@ impl Generator {
         }
         self.emit_arguments(arguments, name)?;
         if self.variadic_callees.contains(name) {
-            self.emit_variadic_condition(arguments);
+            self.emit_variadic_condition(name, arguments);
         }
         self.const_address_bases.clear();
         self.record_relocation(RelocationKind::Rel24, name);
@@ -966,7 +965,7 @@ impl Generator {
     ) -> Compilation<()> {
         self.emit_arguments(arguments, name)?;
         if self.variadic_callees.contains(name) {
-            self.emit_variadic_condition(arguments);
+            self.emit_variadic_condition(name, arguments);
         }
         self.const_address_bases.clear();
         self.record_relocation(RelocationKind::Rel24, name);
@@ -976,16 +975,79 @@ impl Generator {
         Ok(())
     }
 
-    fn emit_variadic_condition(&mut self, arguments: &[Expression]) {
-        let instruction = if arguments
-            .iter()
-            .any(|argument| self.is_float_value(argument))
+    fn emit_variadic_condition(&mut self, name: &str, arguments: &[Expression]) {
+        let instruction = if arguments.iter().enumerate().any(|(index, argument)| {
+            match super::call_argument_types::source_parameter_type(
+                self.call_parameter_types.get(name).map(Vec::as_slice),
+                matches!(self.call_return_types.get(name), Some(Type::Struct { .. })),
+                arguments.len(),
+                index,
+            ) {
+                Some(Type::Float | Type::Double) => true,
+                Some(_) => false,
+                None => self.is_float_value(argument),
+            }
+        })
         {
             Instruction::ConditionRegisterSet { d: 6 }
         } else {
             Instruction::ConditionRegisterClear { d: 6 }
         };
         self.output.instructions.push(instruction);
+    }
+
+    /// Prepare a global indirect callee and its arguments for either a linked
+    /// call or a sibling transfer. Floating literals have independent FPR
+    /// destinations, so MWCC loads the callee first to overlap the two loads.
+    pub(crate) fn emit_global_indirect_call_arguments(
+        &mut self,
+        name: &str,
+        arguments: &[Expression],
+    ) -> Compilation<()> {
+        let float_literals = !arguments.is_empty()
+            && self.call_parameter_types.get(name).is_some_and(|types| {
+                types.len() == arguments.len()
+                    && types.iter().all(|ty| matches!(ty, Type::Float | Type::Double))
+            })
+            && arguments.iter().all(|argument| {
+                matches!(argument, Expression::FloatLiteral(_)) || constant_value(argument).is_some()
+            });
+        let callee_first = float_literals
+            && (self.behavior.frame_convention == FrameConvention::LinkageFirst
+                || self.behavior.terminal_indirect_tail_call);
+        if callee_first {
+            self.emit_global_load_value(name, 12)?;
+            let inserted = self.reserved.insert(12);
+            let result = self.emit_arguments(arguments, name);
+            if inserted {
+                self.reserved.remove(&12);
+            }
+            result?;
+        } else {
+            let argument_start = self.output.instructions.len();
+            self.emit_arguments(arguments, name)?;
+            // Framed 2.4.x calls fill the LR-save latency with the first
+            // independent pool load. Limit this to the plain entry and a
+            // single SDA load; address setup and larger argument packets keep
+            // their ordinary scheduling path.
+            if float_literals && self.behavior.schedule_latency_slots
+                && arguments.len() == 1 && argument_start == 3
+                && matches!(self.output.instructions.as_slice(), [
+                    Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 },
+                    Instruction::MoveFromLinkRegister { d: 0 },
+                    Instruction::StoreWord { s: 0, a: 1, offset: 20 },
+                    Instruction::LoadFloatSingle { d: 1, a: 0, .. }
+                        | Instruction::LoadFloatDouble { d: 1, a: 0, .. },
+                ])
+            {
+                crate::move_instruction_before_retargeting(self, argument_start, 2);
+            }
+            self.emit_global_load_value(name, 12)?;
+        }
+        if self.variadic_callees.contains(name) {
+            self.emit_variadic_condition(name, arguments);
+        }
+        Ok(())
     }
 
     /// Place call arguments in the EABI argument registers (r3.. / f1..). Each is
@@ -1711,7 +1773,12 @@ impl Generator {
                 ),
                 arguments.len(),
                 index,
-            );
+            ).or_else(|| {
+                // Floating values beyond a variadic prototype's fixed prefix
+                // undergo C's default argument promotion to double.
+                (self.variadic_callees.contains(name) && self.is_float_value(argument))
+                    .then_some(Type::Double)
+            });
             let placement = classify_call_argument(
                 parameter_type,
                 self.is_float_value(argument),

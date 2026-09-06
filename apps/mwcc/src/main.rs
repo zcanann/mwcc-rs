@@ -809,6 +809,12 @@ fn compile(
         unit.prototypes
             .iter()
             .map(|(name, _, parameter_types)| (name.clone(), parameter_types.clone()))
+            // Function-pointer objects carry callable signatures too. Their
+            // storage is one word, but argument register classes and narrowing
+            // still follow the pointed-to declaration.
+            .chain(unit.global_function_types.iter().map(|(name, signature)| {
+                (name.clone(), signature.parameters.iter().map(|parameter| parameter.declared_type).collect())
+            }))
             .chain(unit.functions.iter().map(|function| {
                 (
                     function.name.clone(),
@@ -833,6 +839,9 @@ fn compile(
                 |(name, _, parameter_types)| (name.clone(), parameter_types.clone()),
             ))
             .collect();
+    unit.variadic_definitions.extend(unit.global_function_types.iter()
+        .filter(|(_, signature)| signature.variadic)
+        .map(|(name, _)| name.clone()));
     // An IMPLICITLY-materialized inline (ww uart) was unknown at its call
     // sites: mwcc compiled those calls under the K&R implicit-int rule and
     // classified the callee as an implicit external (the UND ghost). Drop the

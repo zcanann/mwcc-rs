@@ -416,9 +416,9 @@ pub struct TranslationUnit {
     /// pointer. Kept separately so ordinary codegen does not carry debug-only
     /// declaration names through every expression.
     pub global_aggregate_tags: std::collections::HashMap<String, String>,
-    /// Source signatures for file-scope function-pointer objects. Executable
-    /// lowering only needs their one-word storage type; legacy DWARF emits a
-    /// callable type DIE before the object that references it.
+    /// Source signatures for file-scope function-pointer objects. Call lowering
+    /// uses their parameter types and variadic convention; legacy DWARF emits
+    /// a callable type DIE before the object that references it.
     pub global_function_types: std::collections::HashMap<String, crate::SourceFunctionType>,
     /// Source aggregate identity for function parameters, keyed by emitted
     /// function name and parameter name. Executable lowering only needs the

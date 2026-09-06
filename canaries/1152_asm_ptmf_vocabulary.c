@@ -1,15 +1,15 @@
-// The ptmf (pointer-to-member-function) asm vocabulary — animal_crossing Runtime ptmf.c, flipped
+// The ptmf (pointer-to-member-function) asm vocabulary -- animal_crossing Runtime ptmf.c, flipped
 // whole-file BYTE by this:
 // - `Tag.field(rN)` Dot-form operands: a struct-TAG-qualified field offset as a displacement
 //   (`lwz r5, PTMF.this_delta(r3)` -> `lwz r5, 0(r3)`), including a field that is a NAMED WORD-SIZED
 //   UNION member (`union { void* f_addr; long ve_offset; } f_data;` lays out as a 4-byte field at its
-//   aligned offset — previously "a named union member is not supported yet").
+//   aligned offset -- previously "a named union member is not supported yet").
 // - `bnelr- crN`: a prediction hint on a branch-to-link is DROPPED by mwcc (measured: `bnelr-` =
 //   plain 4c 82 00 20), and the crN field selects BI (cr6 -> 26, cr7 -> 30).
 // - `lwzx rD,rA,rB` (indexed load, the vtable dispatch) and `bctr` (count-register tail dispatch,
-//   which also TERMINATES the function — no implicit trailing blr).
+//   which also TERMINATES the function -- no implicit trailing blr).
 // - A VARIADIC asm signature `(...)` (no named parameters).
-// (fire 641 — the third real-file flip)
+// (fire 641 -- the third real-file flip)
 typedef struct PTMF {
     long this_delta;
     long v_offset;

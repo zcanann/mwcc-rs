@@ -1,5 +1,5 @@
-// The computed-arm branch select also applies in a STORE context — `*p = (cond) ? const : <e>`
-// and `*p = (cond) ? <e1> : <e2>` — where the value is staged in r0 and the store writes r0
+// The computed-arm branch select also applies in a STORE context -- `*p = (cond) ? const : <e>`
+// and `*p = (cond) ? <e1> : <e2>` -- where the value is staged in r0 and the store writes r0
 // directly (no `mr`). So `*p = (a<0) ? -1 : a+100` is
 // `cmpwi r4,0; li r0,-1; blt skip; addi r0,r4,100; skip: stw r0,0(r3)`. The handlers now fire
 // when the destination is r0 (a store/value-into-r0 context) as well as in tail position; a

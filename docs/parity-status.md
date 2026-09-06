@@ -4,13 +4,73 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, computed EXI stores and initialized call accumulators (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, complete EXI source compilation and typed callbacks (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `4e46d31403e93da04739a8e93d497514db7621362a467cad660eab204e18a941:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `ca7e351209e681a9cb9607635666df5af35e2669b2438c2c4d25bc13be77e888:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete EXI source compilation and typed callbacks, 2026-09-06
+
+Melee's complete `extern/dolphin/src/dolphin/odenotstub/odenotstub.c` now compiles
+with its configured GC/1.2.5 project flags. Against baseline `9fae6f72`, the
+configured verdict changes from **DEFER to DIFF** and the comparison advances
+from 18 comparable functions in a partial object to **all 21 functions in the
+complete object**, with none missing or candidate-only. `MWCallback` and
+`DBGHandler` now match code and relocations, improving **7/21 to 9/21 exact
+functions** and **164/3320 to 288/3320 exact reference function bytes**. This
+does not establish matching output or execution correctness for the complete
+transport: its other twelve functions remain nonexact.
+
+Scalar global callback lowering now owns the null test, optional constant
+prefix store, and forwarded arguments as one region. It loads the callback
+once and retains the versioned linkage-register/CTR call convention, prefix
+store order, symbol creation order, and return sequence. Modern profiles use
+an unlinked sibling call. The previous zero-argument matcher and its tests
+move into the same focused module; indexed callback-table lowering remains
+separate. Admission excludes volatile callback pointers, intervening effects,
+variadic signatures, and argument conversions this owner cannot preserve.
+
+The final `DBWrite` rejection was a computed condition selecting a constant
+against zero. When existing mask owners decline, this expression now retains
+its source branch diamond instead of requiring constants to have register
+homes. File-scope function-pointer parameter and variadic metadata also reach
+the existing call marshaler, so integer literals passed to floating parameters
+use FPRs and the correct pool width. Linked and sibling global calls share
+argument preparation; floating constant loads retain the measured frame-era
+ordering. Variadic floating arguments receive double promotion, and the EABI
+CR marker reflects the declared argument classes as well as the variadic tail.
+
+New canaries 1577--1581 have **55 oracle-runnable pairs across 11 builds**, with
+no exclusions or reference rejections. Candidate compilation improves
+**22/55 to 55/55**, and whole-object matches improve **0/55 to 33/55**. The two
+guarded callback canaries and the floating-parameter callback canary match all
+11 builds. Loaded-condition selects and variadic callback schedules remain
+nonexact. **6,259 paired Unicorn execution cases** pass, checking null and
+nonnull callbacks, prefix memory transactions, signed arguments, all 256 byte
+conditions, floating values (including double `1.1`), variadic CR markers,
+call order, stack restoration, and saved registers under caller clobbers.
+
+Eighteen older canaries had unencodable punctuation in comments; those comments
+now use ASCII. Baseline and candidate use identical cleaned sources. The
+40-canary callback/select regression slice on five builds has **200 slots,
+27 exclusions, and 173 runnable pairs**: **104/173 to 119/173 exact**, with no
+lost matches and candidate rejections reduced from 24 to nine. The separate
+ten-canary variadic slice has **50 slots, 30 exclusions, and 20 runnable pairs**,
+retaining **11/20 exact** with no candidate rejections. Neither slice has
+reference rejections, encoding failures, or timeouts.
+
+The real-project 40-configuration stub family retains **35 BYTE** and now has
+**one DIFF, zero DEFER, four MISSING_DEPENDENCY**; its executable projection
+remains 33/34 measured exact, with two empty objects and four unmeasured rows.
+Compiler/oracle builds, 45 callback backend tests, 28 select backend tests, and
+29 argument integration tests pass. A broader `call` unit-test filter reports
+959 passes and one existing failure,
+`inline_expansion::tests::composes_zero_argument_embedded_asm_at_a_nested_call_site`;
+the same isolated failure is reproduced in a detached `9fae6f72` checkout.
+Full-project parity remains open.
 
 ## Computed EXI stores and initialized call accumulators, 2026-09-06
 

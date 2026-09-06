@@ -1,14 +1,14 @@
-/* Pure-assign diamonds — `if (c) v = X; else v = Y; return v;` with no side
- * effects — take mwcc's SELECT layouts.
+/* Pure-assign diamonds -- `if (c) v = X; else v = Y; return v;` with no side
+ * effects -- take mwcc's SELECT layouts.
  *
  * A CONSTANT arm is SPECULATED into the phi register in the compare latency
  * slot (both constant: the else), the branch skipping the other arm; with no
  * constant a COPY else COALESCES (phi = the copy's source, no else code);
  * otherwise the else speculates. The phi is r3 itself when the conditional arm
- * does not read r3 — merge elided, branch folded to b<c>lr — else r0; a
+ * does not read r3 -- merge elided, branch folded to b<c>lr -- else r0; a
  * coalesced phi is wherever the else source lives. */
 
-/* coalesce: else copy — phi=r4, then-arm computes into it from r3. */
+/* coalesce: else copy -- phi=r4, then-arm computes into it from r3. */
 int sel(int a, int b)
 {
 	if (a < b) {
@@ -30,7 +30,7 @@ int sel2(int a, int b)
 	return b;
 }
 
-/* speculate: both computed — else into r0, then conditionally overwrites. */
+/* speculate: both computed -- else into r0, then conditionally overwrites. */
 int p1(int a, int b)
 {
 	if (a < b) {
@@ -41,7 +41,7 @@ int p1(int a, int b)
 	return b;
 }
 
-/* coalesce: both copies — phi = else source (r5), then-arm mr into it. */
+/* coalesce: both copies -- phi = else source (r5), then-arm mr into it. */
 int p2(int a, int b, int c, int d)
 {
 	if (a == 0) {
