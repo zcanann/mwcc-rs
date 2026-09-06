@@ -4,13 +4,66 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, ordered status guards and constant-channel EXI selects (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, general word masks and expanded EXI mailbox callers (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `64acd546c7655a5c977b4e769fc3f3f3c0d203037798c54c4464978ccebadafb:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `ec93d67ec2606fddf8100ab8a6c69d032c878a42fedaeebd2e6de84bdad93b12:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## General word masks and expanded EXI mailbox callers, 2026-09-06
+
+Against baseline `403da4ec`, the shared integer expression selector now handles
+noncontiguous positive word masks. A mask occupying one halfword selects
+`andi.` or the newly represented `andis.`; a mask spanning both halves is
+materialized for a register AND. The high-half instruction participates in the
+normal GPR use/definition traversal. Constant materialization uses wrapping
+carry adjustment so values such as `0x7FFF8005` do not overflow the host's
+signed arithmetic. Existing rotate-mask and negative-immediate choices remain
+in place; the new full-word materialized path admits word register operands.
+
+The terminal store/return precheck now recognizes fixed-address banks from
+their own addressing table. Previously it classified them as ordinary pointer
+stores and rejected expanded mailbox callers before structured lowering. With
+that corrected and the mask expression supported, Melee's `DBGReadMailbox`,
+`DBGWriteMailbox`, and `DBGReadStatus` compose select, poll, and deselect through
+the shared structured backend. Only their two/one/two `DBGEXIImm` calls remain,
+matching the reference's call structure. The instruction schedules and frame
+layouts remain nonexact: candidate sizes are 216/160/216 bytes versus baseline
+196/156/196 bytes. The complete source still compiles all 21 functions and
+retains **10/21 exact functions, 372/3320 exact reference function bytes**.
+
+New canaries 1593--1595 cover write/read transactions and six mask forms,
+including volatile input and high-half carry boundaries. Across **33 runnable
+pairs on 11 builds**, exact objects improve **0/33 to 11/33** and candidate
+compilation improves **22/33 to 33/33**. There are no exclusions or reference
+rejections. All builds match the mask object; both transaction objects remain
+nonexact. **33,264 paired Unicorn cases** verify the new slice with varied
+inputs, transfer statuses, zero/one/four busy iterations, and four randomized
+register/clobber patterns. The transfer hook changes the bank between accesses
+to verify the final volatile reload, checks payload bytes and arguments, and
+writes read results through the supplied pointer. Stack and saved-register
+restoration are checked. The three actual Melee caller functions also pass
+**4,032 paired cases** against reference objects with `DBGEXIImm` simulated at
+the call boundary; this does not validate the transfer implementation itself.
+
+Earlier EXI canaries 1585--1592 retain **53/88 exact objects**, all 88 compile,
+and all **55,176 paired execution cases** pass. The 99-canary mask, fixed-bank,
+inline, and status regression selection retains identical verdicts on five
+builds: **495 slots, 152 exclusions, 343 runnable pairs, 253 exact objects,
+and 48 existing candidate rejections**, with no reference rejections or
+timeouts. The 40-configuration real-project selection is unchanged: **35
+whole-object exact, one DIFF, four missing dependencies**; code is exact on
+**33/34 measured configurations**, with two empty and four unmeasured.
+
+Validation: three store-hazard tests, the existing negative-mask test, 117
+backend inline tests, nine machine-code tests, and 97 register-allocation and
+schedule tests pass (eight preexisting ignored tests). The inline selection
+continues to exclude the independently confirmed preexisting embedded-asm
+composition failure. Evidence is retained under `target/exi-mailbox-*.log`,
+`target/check_exi_mailbox*.py`, and the existing EXI guard harnesses. These are
+focused diagnostic slices, not an estimate of corpus-wide parity.
 
 ## Ordered status guards and constant-channel EXI selects, 2026-09-06
 

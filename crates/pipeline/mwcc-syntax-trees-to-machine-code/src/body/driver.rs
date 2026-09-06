@@ -2731,6 +2731,7 @@ impl Generator {
                 return_expression,
                 &self.globals,
                 &self.global_array_sizes,
+                &self.fixed_address_arrays,
             ) {
                 return Err(Diagnostic::error("a store scheduled around the return-value computation needs the store scheduler (roadmap)"));
             }

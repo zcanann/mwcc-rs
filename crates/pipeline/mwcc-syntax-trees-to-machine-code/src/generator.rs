@@ -1643,7 +1643,7 @@ impl Generator {
                 .push(Instruction::load_immediate(destination, value as i16));
         } else {
             let low = (value as u32 & 0xffff) as i16;
-            let high_adjusted = ((value - low as i32) >> 16) as i16;
+            let high_adjusted = (value.wrapping_sub(low as i32) >> 16) as i16;
             // The `addi` that folds in the low half reads `destination` as a base, but
             // `addi rA=r0` denotes the literal 0, not r0 — so materializing into r0
             // (the scratch) needs the `lis` in a separate register: `lis t,hi; addi

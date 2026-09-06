@@ -36,6 +36,8 @@ pub enum Instruction {
     NegateRecord { d: u8, a: u8 },
     /// `andi. rA, rS, UIMM` — AND immediate, ALWAYS record (no plain andi).
     AndImmediateRecord { a: u8, s: u8, immediate: u16 },
+    /// `andis.` — mask the high half and record the result in CR0.
+    AndImmediateShiftedRecord { a: u8, s: u8, immediate: u16 },
     /// `nor rA, rS, rB` — spells `not rA, rS` when `s == b`.
     Nor { a: u8, s: u8, b: u8 },
     /// `xor. rA, rS, rB` — XOR, record form (sets CR0).

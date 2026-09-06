@@ -1,24 +1,13 @@
-//! Non-contiguous signed-immediate masks materialized through the scratch.
+//! Non-contiguous word masks selected as immediate or register operations.
 
 #[allow(unused_imports)]
 use super::*;
 
 impl Generator {
-    /// Emit `leaf & C` when `C` is a signed 16-bit mask that cannot be represented
-    /// by one `rlwinm`.
-    ///
-    /// PowerPC has no non-recording `andi`, and a negative mask such as
-    /// `~0x28` must retain its high bits after integer promotion. MWCC therefore
-    /// materializes it in r0 and uses a register AND:
-    ///
-    /// ```text
-    /// li  r0,-41
-    /// and result,leaf,r0
-    /// ```
-    ///
-    /// Keep this separate from the immediate-form selector: this is a
-    /// two-instruction register operation whose scratch lifetime is visible to
-    /// allocation and scheduling.
+    /// Select masks that do not fit one `rlwinm`. A single occupied halfword
+    /// uses `andi.` or `andis.`. Other word masks use a constant in r0 and a
+    /// register AND, including negative signed immediates such as `~0x28`.
+    /// Keeping this selection together makes the scratch lifetime explicit.
     pub(crate) fn try_emit_materialized_bitand_constant(
         &mut self,
         operator: BinaryOperator,
@@ -26,17 +15,36 @@ impl Generator {
         constant: i64,
         destination: u8,
     ) -> Compilation<bool> {
-        if operator != BinaryOperator::BitAnd
-            || i16::try_from(constant).is_err()
-            || constant >= 0
-            || rlwinm_mask(constant).is_some()
-        {
+        if operator != BinaryOperator::BitAnd || rlwinm_mask(constant).is_some() {
             return Ok(false);
         }
-        let Ok((source, _, _)) = self.leaf_info(variable) else {
+        if let Ok(mask) = u32::try_from(constant) {
+            if mask <= u16::MAX as u32 || mask & 0xffff == 0 {
+                let Some(source) = self.place_operand(variable, destination, false)? else {
+                    return Ok(false);
+                };
+                self.output.instructions.push(if mask <= u16::MAX as u32 {
+                    Instruction::AndImmediateRecord {
+                        a: destination,
+                        s: source,
+                        immediate: mask as u16,
+                    }
+                } else {
+                    Instruction::AndImmediateShiftedRecord {
+                        a: destination,
+                        s: source,
+                        immediate: (mask >> 16) as u16,
+                    }
+                });
+                return Ok(true);
+            }
+        } else if i16::try_from(constant).is_err() {
+            return Ok(false);
+        }
+        let Ok((source, width, _)) = self.leaf_info(variable) else {
             return Ok(false);
         };
-        if source == GENERAL_SCRATCH {
+        if source == GENERAL_SCRATCH || (constant >= 0 && width != 32) {
             return Ok(false);
         }
 

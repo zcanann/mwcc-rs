@@ -13,6 +13,7 @@ pub(super) fn has_terminal_store_return_hazard(
     return_expression: &Expression,
     globals: &std::collections::HashMap<String, Type>,
     global_array_sizes: &std::collections::HashMap<String, u32>,
+    fixed_address_arrays: &std::collections::HashMap<String, (u32, Type)>,
 ) -> bool {
     let terminal_stores: Vec<_> = statements
         .iter()
@@ -28,13 +29,12 @@ pub(super) fn has_terminal_store_return_hazard(
         Expression::Index { base, .. } | Expression::Member { base, .. } => {
             matches!(base.as_ref(), Expression::Variable(name)
                 if !globals.contains_key(name.as_str())
-                    && !global_array_sizes.contains_key(name.as_str()))
+                    && !global_array_sizes.contains_key(name.as_str())
+                    && !fixed_address_arrays.contains_key(name.as_str()))
         }
         _ => false,
     };
-    let value_needs_materialization = |value: &Expression| {
-        !matches!(value, Expression::Variable(name) if !globals.contains_key(name.as_str()))
-    };
+    let value_needs_materialization = |value: &Expression| !matches!(value, Expression::Variable(name) if !globals.contains_key(name.as_str()));
 
     let has_pointer_store = terminal_stores.iter().any(|statement| {
         matches!(statement, Statement::Store { target, .. } if target_is_pointer(target))
@@ -67,10 +67,7 @@ pub(super) fn has_terminal_store_return_hazard(
                     return false;
                 }
                 if is_zero_literal(right) {
-                    matches!(
-                        operator,
-                        BinaryOperator::Greater | BinaryOperator::NotEqual
-                    )
+                    matches!(operator, BinaryOperator::Greater | BinaryOperator::NotEqual)
                 } else {
                     matches!(right.as_ref(), Expression::Variable(_))
                         || constant_value(right).is_some()
@@ -132,11 +129,43 @@ mod tests {
     }
 
     #[test]
+    fn a_fixed_bank_index_is_not_an_ordinary_pointer_store() {
+        let stores = [Statement::Store {
+            target: Expression::Index {
+                base: Box::new(Expression::Variable("bank".into())),
+                index: Box::new(Expression::IntegerLiteral(10)),
+            },
+            value: Expression::IntegerLiteral(3),
+        }];
+        let fixed = HashMap::from([(
+            "bank".into(),
+            (0xcc006800, mwcc_syntax_trees::Type::UnsignedInt),
+        )]);
+        assert!(!has_terminal_store_return_hazard(
+            &stores,
+            &[],
+            &arithmetic_return(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &fixed,
+        ));
+        assert!(has_terminal_store_return_hazard(
+            &stores,
+            &[],
+            &arithmetic_return(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        ));
+    }
+
+    #[test]
     fn materialized_terminal_pointer_store_has_a_return_schedule_hazard() {
         assert!(has_terminal_store_return_hazard(
             &[pointer_store(Expression::IntegerLiteral(3))],
             &[],
             &arithmetic_return(),
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
         ));
@@ -156,6 +185,7 @@ mod tests {
             &statements,
             &[],
             &arithmetic_return(),
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
         ));
