@@ -33,7 +33,11 @@ extra=("$@")
 
 FFCC="${FFCC:-/Users/zcanann/Documents/projects/FFCC-Decomp}"
 wibo="${REFCTX_WIBO:-$FFCC/build/tools/wibo}"
-sjis="${REFCTX_SJISWRAP:-$FFCC/build/tools/sjiswrap.exe}"
+# An explicitly empty wrapper runs MWCC directly (useful for ASCII inputs on
+# hosts where sjiswrap's embedded PE loader cannot load the compiler).
+sjis="${REFCTX_SJISWRAP-$FFCC/build/tools/sjiswrap.exe}"
+sjis_args=()
+[[ -z "$sjis" ]] || sjis_args=("$sjis")
 objdump="${REFCTX_OBJDUMP:-$FFCC/build/binutils/powerpc-eabi-objdump}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 ours="${MWCC_BIN:-$here/target/release/mwcc}"
@@ -53,7 +57,9 @@ run_code_metrics() {
 # missing wrapper previously made every command substitution fail with
 # `oracle_direct=REJECTED`, then disappeared behind the synthetic preprocessor's
 # redirected stderr and surfaced only as an empty HARNESS result.
-for tool_spec in "wibo:$wibo" "sjiswrap:$sjis" "objdump:$objdump"; do
+required_tools=("wibo:$wibo" "objdump:$objdump")
+[[ -z "$sjis" ]] || required_tools+=("sjiswrap:$sjis")
+for tool_spec in "${required_tools[@]}"; do
   tool_name="${tool_spec%%:*}"
   tool_path="${tool_spec#*:}"
   if [[ ! -x "$tool_path" ]]; then
@@ -173,7 +179,7 @@ measure_configured_source() {
       if [[ "${REFCTX_CODE_PROJECTION:-0}" == 1 ]]; then
         reference_partial=0
         if (
-          cd "$project" && "$wibo" "$sjis" "$compiler" \
+          cd "$project" && "$wibo" ${sjis_args[@]+"${sjis_args[@]}"} "$compiler" \
             ${configured_extra[@]+"${configured_extra[@]}"} \
             ${all_flags[@]+"${all_flags[@]}"} -sym off -c "$src" \
             -o "$dir/ref.partial.o"
@@ -240,7 +246,7 @@ emit_oracle_meta() {
   echo "PARITY_META oracle_direct=$oracle_direct"
 }
 if direct_reference_output="$(
-  cd "$project" && "$wibo" "$sjis" "$compiler" \
+  cd "$project" && "$wibo" ${sjis_args[@]+"${sjis_args[@]}"} "$compiler" \
     ${all_flags[@]+"${all_flags[@]}"} -c "$src" -o "$dir/ref.o" 2>&1
 )"; then
   oracle_direct="RUNNABLE"
@@ -259,7 +265,7 @@ if direct_reference_output="$(
   python3 "$pragma_bridge" mark "$project/$src" "$direct_source_dir/$source_name"
   direct_preprocess_ok=0
   if direct_preprocess_output="$(
-    cd "$project" && "$wibo" "$sjis" "$compiler" \
+    cd "$project" && "$wibo" ${sjis_args[@]+"${sjis_args[@]}"} "$compiler" \
       ${all_flags[@]+"${all_flags[@]}"} -pragma "line_prepdump on" \
       -E "$direct_source_dir/$source_name" -o "$dir/ours/$source_name.marked" 2>&1
   )"; then
@@ -272,7 +278,7 @@ if direct_reference_output="$(
   elif grep -Eq '(^|[[:space:]])or([[:space:]]|$)' <<<"$direct_preprocess_output" \
       && grep -q 'expression syntax error' <<<"$direct_preprocess_output" \
       && direct_preprocess_output="$(
-        cd "$project" && "$wibo" "$sjis" "$compiler" \
+        cd "$project" && "$wibo" ${sjis_args[@]+"${sjis_args[@]}"} "$compiler" \
           ${all_flags[@]+"${all_flags[@]}"} "-Dor=||" \
           -pragma "line_prepdump on" -E "$direct_source_dir/$source_name" \
           -o "$dir/ours/$source_name.marked" 2>&1
@@ -396,7 +402,7 @@ if [[ "$oracle_direct" != "RUNNABLE" && ${#missing_precompiled_headers[@]} -gt 0
     pch_output_dir="$pch_root/$(dirname "$missing_pch")"
     mkdir -p "$pch_output_dir"
     if ! (
-      cd "$project" && "$wibo" "$sjis" "$compiler" \
+      cd "$project" && "$wibo" ${sjis_args[@]+"${sjis_args[@]}"} "$compiler" \
         ${all_flags[@]+"${all_flags[@]}"} -lang=c++ -c "$pch_source_path" \
         -o "$pch_output_dir" -precompile "$(basename "$missing_pch")"
     ) >"$dir/pch.log" 2>&1; then
@@ -406,7 +412,7 @@ if [[ "$oracle_direct" != "RUNNABLE" && ${#missing_precompiled_headers[@]} -gt 0
   done
   if [[ $pch_ready -eq 1 ]]; then
     if direct_reference_output="$(
-      cd "$project" && "$wibo" "$sjis" "$compiler" -i "$pch_root" \
+      cd "$project" && "$wibo" ${sjis_args[@]+"${sjis_args[@]}"} "$compiler" -i "$pch_root" \
         ${all_flags[@]+"${all_flags[@]}"} -c "$src" -o "$dir/ref.o" 2>&1
     )"; then
       oracle_direct="RUNNABLE"
@@ -470,7 +476,7 @@ python3 "$pragma_bridge" mark "$dir/$ctx_name" "$dir/$preprocess_name"
 # decompctx_runner populates generated `.mch` include arms from their textual
 # `.pch` sources, so the real preprocessor can retain its normal `__MWERKS__`
 # branch selection while operating on a clean checkout.
-( cd "$dir" && "$wibo" "$sjis" "$compiler" \
+( cd "$dir" && "$wibo" ${sjis_args[@]+"${sjis_args[@]}"} "$compiler" \
     ${compiler_flags[@]+"${compiler_flags[@]}"} -pragma "line_prepdump on" \
     -E "$preprocess_name" -o ctx.marked.i ) 2>/dev/null
 python3 "$pragma_bridge" restore "$dir/ctx.marked.i" "$dir/ctx.i"
@@ -488,7 +494,7 @@ fi
 # 3a. Compile the fallback compiler-core reference from the same synthetic
 # bridge that will be handed to mwcc-rs.
 if ! reference_output="$(
-  cd "$dir" && "$wibo" "$sjis" "$compiler" \
+  cd "$dir" && "$wibo" ${sjis_args[@]+"${sjis_args[@]}"} "$compiler" \
     ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$ctx_name" -o ref.o 2>&1
 )"; then
   if [[ ${#missing_dependencies[@]} -gt 0 ]]; then
@@ -587,7 +593,7 @@ if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$d
       fi
     else
       if (
-        cd "$dir" && "$wibo" "$sjis" "$compiler" \
+        cd "$dir" && "$wibo" ${sjis_args[@]+"${sjis_args[@]}"} "$compiler" \
           ${compiler_flags[@]+"${compiler_flags[@]}"} -sym off -c "$ctx_name" \
           -o reference.projected.o
       ) >"$dir/reference.projected.log" 2>&1; then

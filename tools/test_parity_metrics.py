@@ -175,6 +175,7 @@ def refctx_fixture(
     )
     wibo.chmod(0o755)
     (tools / "sjiswrap.exe").write_text("", encoding="utf-8")
+    (tools / "sjiswrap.exe").chmod(0o755)
 
     fake_compiler = root / "fake-compiler"
     fake_compiler.write_text(
@@ -224,7 +225,7 @@ def refctx_fixture(
     return project, ffcc, fake_compiler
 
 
-def run_refctx_fixture(project: Path, ffcc: Path, compiler: Path):
+def run_refctx_fixture(project: Path, ffcc: Path, compiler: Path, *, overrides=None):
     environment = os.environ.copy()
     environment.update(
         {
@@ -233,6 +234,7 @@ def run_refctx_fixture(project: Path, ffcc: Path, compiler: Path):
             "REFCTX_EMPTY_BASE": "1",
         }
     )
+    environment.update(overrides or {})
     return subprocess.run(
         [
             "bash",
@@ -362,6 +364,26 @@ class IdentityTests(unittest.TestCase):
                 },
             )
             self.assertIn("BYTE   src/test.c", completed.stdout)
+
+    def test_refctx_can_explicitly_omit_the_encoding_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project, ffcc, compiler = refctx_fixture(Path(directory))
+            (ffcc / "build/tools/sjiswrap.exe").unlink()
+            completed = run_refctx_fixture(
+                project, ffcc, compiler, overrides={"REFCTX_SJISWRAP": ""}
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(parity_metadata(completed.stdout)["oracle_direct"], "RUNNABLE")
+            self.assertIn("BYTE   src/test.c", completed.stdout)
+
+    def test_refctx_requires_the_default_encoding_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project, ffcc, compiler = refctx_fixture(Path(directory))
+            (ffcc / "build/tools/sjiswrap.exe").unlink()
+            completed = run_refctx_fixture(project, ffcc, compiler)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("MISSING_DEPENDENCY", completed.stdout)
+            self.assertIn("sjiswrap executable", completed.stdout)
 
     def test_configured_only_refctx_skips_the_diagnostic_bridge(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -37,6 +37,21 @@ tools/vdiff.sh canaries/112_rdchar.c 1.3 1.3.2   # diff what two real builds emi
 
 The oracle needs a decomp checkout for the real toolchain — `wibo`, the compiler set, and `powerpc-eabi-objdump`. Point it at one with `FFCC=/path/to/decomp`. Nothing about the *design* is decomp-specific; that's just where the reference binaries live.
 
+The canary oracle and reference-project harness accept `REFCTX_WIBO`,
+`REFCTX_SJISWRAP`, and `REFCTX_OBJDUMP` overrides for host tools installed outside
+that checkout. Set `REFCTX_SJISWRAP=''` explicitly to run the compiler directly
+on ASCII inputs when the wrapper's embedded PE loader is incompatible with the
+host runner. Unset it to retain the default Shift-JIS wrapper. For example,
+with tools downloaded into the ignored parity tool directory:
+
+```sh
+export REFCTX_WIBO="$PWD/target/reference-parity/tools/wibo"
+export REFCTX_OBJDUMP="$PWD/target/reference-parity/tools/binutils/powerpc-eabi-objdump"
+export REFCTX_SJISWRAP=''
+MWCC_ORACLE_COMPILER=../Metrowerks/misc/compilers_latest/GC/2.6/mwcceppc.exe \
+  MWCC_ORACLE_FILTER=02_add target/debug/mwcc-oracle 2.6
+```
+
 There is a standing rule: **fail honestly**. When a construct is not yet supported, the relevant phase returns a diagnostic. It never emits plausible-but-wrong bytes — a silently-wrong compiler is worse than one that stops.
 
 ### Measuring reference-project parity

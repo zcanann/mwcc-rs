@@ -98,12 +98,19 @@ fn main() -> std::process::ExitCode {
             .unwrap_or_else(|_| "/Users/zcanann/Documents/projects/FFCC-Decomp".to_string()),
     );
 
-    let wibo = decomp.join("build/tools/wibo");
-    let sjis = decomp.join("build/tools/sjiswrap.exe");
+    let wibo = std::env::var_os("REFCTX_WIBO")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| decomp.join("build/tools/wibo"));
+    // Share the reference-project harness's host-tool overrides, including an
+    // explicitly empty wrapper for direct execution on ASCII inputs.
+    let sjis = std::env::var_os("REFCTX_SJISWRAP")
+        .unwrap_or_else(|| decomp.join("build/tools/sjiswrap.exe").into_os_string());
     let real_compiler = std::env::var_os("MWCC_ORACLE_COMPILER")
         .map(PathBuf::from)
         .unwrap_or_else(|| decomp.join(format!("build/compilers/{build}/mwcceppc.exe")));
-    let objdump = decomp.join("build/binutils/powerpc-eabi-objdump");
+    let objdump = std::env::var_os("REFCTX_OBJDUMP")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| decomp.join("build/binutils/powerpc-eabi-objdump"));
     let our_compiler = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(|parent| parent.join("mwcc")))
@@ -171,8 +178,10 @@ fn main() -> std::process::ExitCode {
         // Oracle: wibo sjiswrap mwcceppc [extra] FLAGS -c source -o reference.o
         let baseline_flags = baseline_flags(&extra_flags);
         let mut oracle = Command::new(&wibo);
+        if !sjis.is_empty() {
+            oracle.arg(&sjis);
+        }
         oracle
-            .arg(&sjis)
             .arg(&real_compiler)
             .args(&extra_flags)
             .args(&baseline_flags)
