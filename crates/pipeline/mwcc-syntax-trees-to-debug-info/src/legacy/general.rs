@@ -22,7 +22,7 @@ pub(super) fn line_records(
     functions: &[(&Function, FunctionSource)],
     machine_functions: &[MachineFunction],
     layout: &FunctionLayout,
-    implicit_return_has_zero_line: bool,
+    build: mwcc_versions::CompilerBuild,
 ) -> Vec<LineRecord> {
     let mut records = Vec::with_capacity(functions.len() * 2);
     for (index, ((function, source), machine)) in
@@ -35,12 +35,33 @@ pub(super) fn line_records(
             .and_then(|items| {
                 exact_asm_line_records(
                     items, start, layout.sizes[index], machine.asm_has_implicit_return,
-                    implicit_return_has_zero_line,
+                    build.profile.asm_implicit_return_has_zero_line(),
                 )
             })
         {
             records.extend(asm_records);
             continue;
+        }
+        // A literal scalar return has the same source seam as the dedicated
+        // integer-constant family, including narrow integer result types.
+        if function.locals.is_empty()
+            && function.statements.is_empty()
+            && function.guards.is_empty()
+            && function.inline_asm_blocks.is_empty()
+            && matches!(function.return_expression, Some(Expression::IntegerLiteral(_)))
+            && machine.instructions.len() == 2
+            && matches!(machine.instructions.last(), Some(Instruction::BranchToLinkRegister))
+        {
+            if let Some(line) = source.terminal_return_line {
+                records.push(record(
+                    if build.version == (2, 3, 3) { source.body_start_line } else { line },
+                    start,
+                ));
+                if build.debug_format == mwcc_versions::DebugFormat::Fragmented4 {
+                    records.push(record(source.body_end_line, start + layout.sizes[index] - 4));
+                }
+                continue;
+            }
         }
         if let Some(dense_records) = super::dense_counted_loop_lines::records(
             function,

@@ -206,12 +206,12 @@ pub(super) fn lower(
             &source_functions,
             machine_functions,
             &layout,
-            build.profile.asm_implicit_return_has_zero_line(),
+            build,
         ));
     } else if matches!(
         shape,
         MeasuredShape::ConstantFunctions | MeasuredShape::FragmentedFunctionsWithAggregateData
-    ) && build.version.0 >= 4
+    ) && build.debug_format == mwcc_versions::DebugFormat::Fragmented4
     {
         for (machine_index, (_, source)) in source_functions.iter().enumerate() {
             let terminal_return_line = source.terminal_return_line.ok_or_else(|| {
@@ -318,7 +318,7 @@ pub(super) fn lower(
 
     if shape == MeasuredShape::DataOnly {
         let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
-        records.extend(if build.version.0 >= 4 {
+        records.extend(if build.debug_format.is_fragmented() {
             data::fragmented_records(unit, first_global_id)?.records
         } else {
             data::records(unit, &globals, first_global_id, false)?.records
@@ -734,10 +734,10 @@ fn emitted_globals<'a>(
 }
 
 /// Legacy compilers place a functionless unit's DWARF sections between full and
-/// small data. Fragmented 4.x generations keep the monolithic data-only payload
+/// small data. Fragmented generations keep the monolithic data-only payload
 /// but move it after all data, independently of the DIE encoding itself.
 fn data_only_layout(build: CompilerBuild) -> DebugLayout {
-    if build.version.0 >= 4 {
+    if build.debug_format.is_fragmented() {
         DebugLayout::AfterDataGrouped
     } else {
         DebugLayout::BetweenFullAndSmallDataGrouped
@@ -802,7 +802,7 @@ fn classify_shape(
     build: CompilerBuild,
 ) -> Compilation<MeasuredShape> {
     let source_function_refs = unit.functions.iter().collect::<Vec<_>>();
-    if build.version.0 >= 4
+    if build.debug_format.is_fragmented()
         && unit.functions.len() == machine_functions.len()
         && classes::matches(unit, &source_function_refs)
     {
@@ -839,7 +839,7 @@ fn classify_shape(
         return Ok(MeasuredShape::ConstantFunctionsWithInlineStatics);
     }
 
-    let fragmented_functions_with_aggregate_data = build.version.0 >= 4
+    let fragmented_functions_with_aggregate_data = build.debug_format.is_fragmented()
         && !globals.is_empty()
         && globals
             .iter()
@@ -851,7 +851,7 @@ fn classify_shape(
         return Ok(MeasuredShape::FragmentedFunctionsWithAggregateData);
     }
 
-    let fragmented_simple_void_functions_with_aggregate_data = build.version.0 >= 4
+    let fragmented_simple_void_functions_with_aggregate_data = build.debug_format.is_fragmented()
         && !globals.is_empty()
         && globals
             .iter()

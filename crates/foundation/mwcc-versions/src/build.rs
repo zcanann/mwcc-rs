@@ -9,6 +9,23 @@ use crate::profile::{
     GC233_BUILD163, GC233_BUILD163_NINTENDO,
 };
 
+/// ELF identities and creation timeline of DWARF-1 records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugFormat {
+    /// Section-relative records without named fragments, through GC/2.6.
+    Grouped,
+    /// GC/2.7 introduces fragments while retaining the 2.4.7 analysis timeline.
+    Fragmented247,
+    /// The 4.x frontend charges source scopes and publishes fragments earlier.
+    Fragmented4,
+}
+
+impl DebugFormat {
+    pub fn is_fragmented(self) -> bool {
+        self != Self::Grouped
+    }
+}
+
 /// A specific mwcceppc build we aim to reproduce byte-for-byte.
 #[derive(Debug, Clone, Copy)]
 pub struct CompilerBuild {
@@ -18,6 +35,9 @@ pub struct CompilerBuild {
     pub product: &'static str,
     /// Internal compiler version, e.g. (2, 4, 2).
     pub version: (u8, u8, u8),
+    /// Identity and creation policy for DWARF records and line components.
+    /// This object-format transition predates the 4.x compiler generation.
+    pub debug_format: DebugFormat,
     /// Internal build number, e.g. 81.
     pub build: u16,
     /// Marker byte used by this compiler's Metrowerks `.comment` record.
@@ -71,6 +91,7 @@ pub const GC_1_2_5: CompilerBuild = CompilerBuild {
     version: (2, 3, 3),
     build: 163,
     comment_marker: 0x08,
+    debug_format: DebugFormat::Grouped,
     comment_version: (2, 3, 0),
     emb_sda21_offset: 2,
     code_alignment: 4,
@@ -89,6 +110,7 @@ pub const GC_1_2_5N: CompilerBuild = CompilerBuild {
     version: (2, 3, 3),
     build: 163,
     comment_marker: 0x08,
+    debug_format: DebugFormat::Grouped,
     comment_version: (2, 3, 0),
     emb_sda21_offset: 2,
     code_alignment: 4,
@@ -108,6 +130,7 @@ pub const GC_1_3: CompilerBuild = CompilerBuild {
     version: (2, 4, 2),
     build: 53,
     comment_marker: 0x0a,
+    debug_format: DebugFormat::Grouped,
     comment_version: (2, 4, 2),
     emb_sda21_offset: 0,
     code_alignment: 4,
@@ -126,6 +149,7 @@ pub const GC_1_3_2: CompilerBuild = CompilerBuild {
     version: (2, 4, 2),
     build: 81,
     comment_marker: 0x0a,
+    debug_format: DebugFormat::Grouped,
     comment_version: (2, 4, 2),
     emb_sda21_offset: 0,
     code_alignment: 4,
@@ -146,6 +170,7 @@ pub const GC_1_3_2R: CompilerBuild = CompilerBuild {
     version: (2, 4, 2),
     build: 81,
     comment_marker: 0x0a,
+    debug_format: DebugFormat::Grouped,
     comment_version: (2, 4, 2),
     emb_sda21_offset: 0,
     code_alignment: 4,
@@ -164,6 +189,7 @@ pub const GC_2_0: CompilerBuild = CompilerBuild {
     version: (2, 4, 7),
     build: 92,
     comment_marker: 0x0a,
+    debug_format: DebugFormat::Grouped,
     comment_version: (2, 4, 7),
     emb_sda21_offset: 0,
     code_alignment: 4,
@@ -183,6 +209,7 @@ pub const GC_2_0P1: CompilerBuild = CompilerBuild {
     version: (2, 4, 7),
     build: 92,
     comment_marker: 0x0a,
+    debug_format: DebugFormat::Grouped,
     comment_version: (2, 4, 7),
     emb_sda21_offset: 0,
     code_alignment: 4,
@@ -201,6 +228,7 @@ pub const GC_2_5: CompilerBuild = CompilerBuild {
     version: (2, 4, 7),
     build: 105,
     comment_marker: 0x0a,
+    debug_format: DebugFormat::Grouped,
     comment_version: (2, 4, 7),
     emb_sda21_offset: 0,
     code_alignment: 4,
@@ -219,6 +247,7 @@ pub const GC_2_6: CompilerBuild = CompilerBuild {
     version: (2, 4, 7),
     build: 107,
     comment_marker: 0x0a,
+    debug_format: DebugFormat::Grouped,
     comment_version: (2, 4, 7),
     emb_sda21_offset: 0,
     code_alignment: 4,
@@ -237,6 +266,7 @@ pub const GC_2_7: CompilerBuild = CompilerBuild {
     version: (2, 4, 7),
     build: 108,
     comment_marker: 0x0b,
+    debug_format: DebugFormat::Fragmented247,
     comment_version: (2, 4, 7),
     emb_sda21_offset: 0,
     code_alignment: 4,
@@ -259,6 +289,7 @@ pub const GC_3_0A3: CompilerBuild = CompilerBuild {
     version: (4, 1, 0),
     build: 51213,
     comment_marker: 0x0e,
+    debug_format: DebugFormat::Fragmented4,
     comment_version: (4, 0, 0),
     emb_sda21_offset: 0,
     code_alignment: 4,
@@ -288,6 +319,7 @@ pub const WII_1_0: CompilerBuild = CompilerBuild {
     version: (4, 3, 0),
     build: 145,
     comment_marker: 0x0f,
+    debug_format: DebugFormat::Fragmented4,
     comment_version: (4, 0, 0),
     emb_sda21_offset: 0,
     code_alignment: 16,

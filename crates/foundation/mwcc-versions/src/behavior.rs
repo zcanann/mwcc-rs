@@ -1353,10 +1353,9 @@ impl Behavior {
                 .profile
                 .data_section_anchor_comment_flags(),
             materialize_section_prototypes: config.build.profile.materialize_section_prototypes(),
-            retain_unused_c_inline_asm_symbols: config
-                .build
-                .profile
-                .retain_unused_c_inline_asm_symbols(),
+            // Unreferenced asm helpers survive to supply code-address tables.
+            retain_unused_c_inline_asm_symbols: config.flags.emit_mwcats
+                && config.build.profile.retain_unused_c_inline_asm_symbols(),
             retain_unused_cxx_inline_asm_symbols: config
                 .build
                 .profile

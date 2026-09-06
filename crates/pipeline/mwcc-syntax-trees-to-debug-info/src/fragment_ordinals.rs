@@ -1,6 +1,6 @@
 //! Anonymous-symbol timeline for fragmented DWARF containers.
 //!
-//! GC 4.1 creates the line header in the same translation-unit ordinal stream
+//! Fragmented generations create the line header in the same ordinal stream
 //! as function strings, read-only images, pool constants, jump tables, and
 //! unwind records. Keep that stateful walk out of the DWARF byte partitioner:
 //! this module mirrors the object writer's function-owned payload rules and
@@ -37,7 +37,7 @@ pub(super) fn fragment_ordinals_with_source(
         .first()
         .expect("a fragmented function debug unit is nonempty");
     let first_owns_payload = first.owns_anonymous_payload();
-    let mut state = OrdinalState::new(first_function_counter);
+    let mut state = OrdinalState::new(first_function_counter, build);
     let first_number = checked_add(state.number_before_unwind(first)?, source.local_cost(0))?;
     let first_ordinal = u32::try_from(i64::from(first_number) + source.header_adjustment)
         .map_err(|_| invalid_fragment_ordinal())?;
@@ -120,13 +120,19 @@ pub(super) fn fragmented_post_framed_bump(build: CompilerBuild) -> u8 {
 
 struct OrdinalState {
     counter: u32,
+    asm_scope_discount: u32,
     numbered_constants: HashSet<(u64, u8)>,
 }
 
 impl OrdinalState {
-    fn new(counter: u32) -> Self {
+    fn new(counter: u32, build: CompilerBuild) -> Self {
         Self {
             counter,
+            asm_scope_discount: if build.debug_format == mwcc_versions::DebugFormat::Fragmented247 {
+                4
+            } else {
+                1
+            },
             numbered_constants: HashSet::new(),
         }
     }
@@ -215,7 +221,7 @@ impl OrdinalState {
         )
         .and_then(|number| checked_add(number, machine.fragmented_debug_anonymous_bump))
         .and_then(|number| {
-            number.checked_sub(u32::from(machine.is_asm))
+            number.checked_sub(u32::from(machine.is_asm) * self.asm_scope_discount)
                 .ok_or_else(invalid_fragment_ordinal)
         })
     }
@@ -277,6 +283,24 @@ mod tests {
         assert_eq!(
             fragment_ordinals(&[assembly, leaf], GC_3_0A3, 5, 3).unwrap(),
             (4, 9)
+        );
+    }
+
+    #[test]
+    fn gc247_assembly_bodies_do_not_advance_the_ordinary_scope_timeline() {
+        let mut first = MachineFunction::new("first");
+        first.is_asm = true;
+        let mut second = MachineFunction::new("second");
+        second.is_asm = true;
+        let leaf = MachineFunction::new("follower");
+        let build = mwcc_versions::GC_2_7;
+        assert_eq!(
+            fragment_ordinals(&[first.clone(), second.clone()], build, 5, 4).unwrap(),
+            (1, 2)
+        );
+        assert_eq!(
+            fragment_ordinals(&[first, second, leaf], build, 5, 4).unwrap(),
+            (1, 6)
         );
     }
 

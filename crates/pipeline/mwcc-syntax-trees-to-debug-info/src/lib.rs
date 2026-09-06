@@ -57,7 +57,7 @@ pub fn lower_debug_info(
     // one another.
     let source_unit = source_view::normalize(unit);
     let unit = &source_unit;
-    let fragmented_generation = build.version.0 >= 4;
+    let fragmented_generation = build.debug_format.is_fragmented();
     if fragmented_generation && legacy::matches_fragmented_class_unit(unit, machine_functions) {
         let grouped = legacy::lower(
             unit,
@@ -81,7 +81,7 @@ pub fn lower_debug_info(
     // Functionless data units retain the same monolithic DWARF-1 DIE stream in
     // the later generations. Their container layout moved after ordinary data,
     // which the legacy data lowering already models independently. Fragmented
-    // `.dwarf.*` symbols first appear in the 4.x generation. GC/1.3.2 build 81
+    // `.dwarf.*` symbols first appear in GC/2.7 build 108. GC/1.3.2 build 81
     // instead keeps the monolithic grouped stream used by the legacy lowering.
     let monolithic_data_unit = unit.functions.is_empty() && machine_functions.is_empty();
     if fragmented_generation && monolithic_data_unit {

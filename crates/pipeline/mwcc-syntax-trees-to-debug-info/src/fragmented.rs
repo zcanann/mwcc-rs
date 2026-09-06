@@ -1,5 +1,5 @@
-//! Fragment symbols and relocation identities used by the 4.x DWARF-1 object
-//! format.
+//! Fragment symbols and relocation identities used by GC/2.7 and later
+//! DWARF-1 object formats.
 //!
 //! The DWARF record bytes remain ordinary CodeWarrior DWARF 1. What changed in
 //! this generation is their ELF identity: line-table components and DIE records
@@ -86,12 +86,20 @@ pub(super) fn lower_functions_without_file_data(
     }
 
     let closing_placement = DebugSymbolPlacement::AfterFunctionLocals(unit.functions.len() - 1);
-    let line_header_placement = if machine_functions[0].owns_anonymous_payload() {
+    let line_header_placement = if build.debug_format == mwcc_versions::DebugFormat::Fragmented247
+        && unit.functions[0].is_static
+    {
+        DebugSymbolPlacement::AfterLocalFunction(0)
+    } else if build.debug_format == mwcc_versions::DebugFormat::Fragmented247
+        || machine_functions[0].owns_anonymous_payload()
+    {
         DebugSymbolPlacement::BeforeFunctionUnwind(0)
     } else {
         DebugSymbolPlacement::Early
     };
-    sections.layout = if machine_functions[0].owns_anonymous_payload() {
+    sections.layout = if build.debug_format == mwcc_versions::DebugFormat::Fragmented247
+        || machine_functions[0].owns_anonymous_payload()
+    {
         DebugLayout::AfterDataGrouped
     } else {
         DebugLayout::AfterFunctionCatalogGrouped

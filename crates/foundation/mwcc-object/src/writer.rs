@@ -2095,6 +2095,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         function_symbols[index] = function_symbol;
                         local_function_symbols.insert(functions[index].name, function_symbol);
                     }
+                    for preceding in debug.symbols.iter().filter(|symbol| {
+                        symbol.binding == DebugSymbolBinding::Local
+                            && symbol.placement == DebugSymbolPlacement::AfterLocalFunction(index)
+                    }) {
+                        emit_debug_symbol!(preceding);
+                    }
                 }
             }
             emit_debug_symbol!(symbol);

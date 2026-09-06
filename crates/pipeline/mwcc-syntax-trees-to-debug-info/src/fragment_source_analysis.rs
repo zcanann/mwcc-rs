@@ -66,7 +66,11 @@ impl SourceAnalysis {
                                 .dropped_inline_const_local_declaration_label_weight(),
                         )
                     } else {
-                        1
+                        u32::from(
+                            build
+                                .profile
+                                .dropped_inline_local_declaration_label_weight(),
+                        )
                     }
                 })
                 .sum::<u32>();
@@ -77,11 +81,13 @@ impl SourceAnalysis {
                     // three frontend scope labels before its emitted code.
                     plan.header_adjustment += i64::from(3 + local_cost);
                 } else {
-                    plan.header_adjustment -= function
-                        .parameters
-                        .iter()
-                        .filter(|parameter| !parameter.name.is_empty())
-                        .count() as i64;
+                    plan.header_adjustment -=
+                        i64::from(build.profile.dropped_inline_parameter_label_weight())
+                            * function
+                                .parameters
+                                .iter()
+                                .filter(|parameter| !parameter.name.is_empty())
+                                .count() as i64;
                 }
             }
         }
@@ -146,5 +152,16 @@ mod tests {
                 .local_costs,
             [1]
         );
+    }
+
+    #[test]
+    fn gc247_charges_const_locals_but_not_mutable_locals_or_parameter_names() {
+        let (unit, machines) = source(
+            "int first(void) {int x=2;return x;} int second(int y) {const int z=3;return z;}",
+        );
+        let plan =
+            SourceAnalysis::for_c_unit(&unit, &machines, mwcc_versions::GC_2_7, false).unwrap();
+        assert_eq!(plan.local_costs, [0, 1]);
+        assert_eq!(plan.header_adjustment, 0);
     }
 }

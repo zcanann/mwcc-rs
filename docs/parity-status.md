@@ -4,13 +4,63 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, Wii entry alignment and unoptimized vector copies (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, GC/2.7 fragmented debug and SDK stub metadata (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `48abaf680d679f1b9ad669892967f664252225bd032cc6c5188b5801c19a4f16:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `878efdd86e97cae3b6c61782802b700d90ec91b6685f8282a0aec3fd1f6527dd:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GC/2.7 fragmented debug and SDK stub metadata, 2026-09-06
+
+Twilight Princess **GZ2E01, GZ2J01, and GZ2P01** `src/odenotstub/odenotstub.c`
+now match byte for byte on GC/2.7. Against baseline `6eb6dfb1`, the complete
+40-configuration source family improves from **25 BYTE, ten DIFF, one DEFER,
+four MISSING_DEPENDENCY** to **28 BYTE, seven DIFF, one DEFER, four
+MISSING_DEPENDENCY**, with no lost matches. Executable bytes and relocations
+remain **33/34 measured exact**, with two empty objects and four unmeasured
+configurations. These counts include every configured row, including failures.
+
+GC/2.7's internal version is still 2.4.7, but build 108 already uses named
+`.line.*` and `.dwarf.*` fragments. `CompilerBuild::debug_format` now selects
+monolithic, fragmented 2.4.7, or fragmented 4.x policy independently of optimizer
+version. Shared fragment construction retains GC/2.7's earlier section order,
+local-function/header publication order, and four-ordinal assembly scope
+discount. Two consecutive assembly bodies consume no ordinary function scopes;
+a following C body resumes the ordinary timeline. Debug source analysis reuses
+the frontend's measured declaration weights: GC/2.7 charges const locals but
+neither mutable locals nor parameter names.
+
+The SDK stub also exposed two independent metadata rules. `cats off` suppresses
+unreferenced C inline-assembly symbols, whose retention otherwise supports code
+address tables; referenced symbols still retain their ordinary bindings. A
+literal narrow-integer return uses the same line seam as an ordinary integer
+constant return. The general mixed-function debug plan now models that seam,
+including the distinct 2.3.3, 2.4.x, and 4.x line conventions.
+
+New canaries 1566--1568 isolate mixed assembly/C scope numbering, automatic
+local declaration costs, and the SDK's disabled-catalog inline helpers plus
+narrow return. Their **33/33 pairs run across 11 builds**, improving from
+**0/33 to 14/33 whole-object exact** with no exclusions or reference rejections.
+Canaries 1566 and 1568 each become exact on GC/1.3, GC/1.3.2, GC/1.3.2r,
+GC/2.6, GC/2.7, GC/3.0a3, and Wii/1.0. Canary 1567 retains debug differences.
+
+The paired debug/inline regression selection contains **77 authored canaries on
+four compilers** (GC/2.6, GC/2.7, GC/3.0a3, Wii/1.0): **67/161 to 89/161
+whole-object exact**, with no lost matches. All 308 slots are accounted for:
+147 declared exclusions, no reference rejections, and no timeouts. The existing
+74-canary subset gains 14 matches, including 11 on GC/2.7. All **54 OSSync**
+configurations were rechecked: **51 BYTE and three reference-side HARNESS
+failures**, preserving **51/51 measurable whole objects and code projections**.
+Compiler/oracle builds and **144 targeted unit tests** pass (30 object,
+40 version-profile, 74 debug-info).
+
+An exploratory selection of the 35 smallest available GC/2.7 debug sources in
+Twilight Princess GZ2E01 improved from one to two exact objects; its remaining
+three DIFF, 14 DEFER, and 16 HARNESS rows expose substantial outstanding work.
+That diagnostic is not a project-parity estimate, and neither the stub family
+nor the canary checks establish whole-project or corpus-wide parity.
 
 ## Wii entry alignment and unoptimized vector copies, 2026-09-06
 
