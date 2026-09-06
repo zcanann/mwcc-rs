@@ -676,6 +676,9 @@ fn comment_record(format: CommentFormat, symbol_records: &[(u32, u32)]) -> Vec<u
     record[13] = format.version.1;
     record[14] = format.version.2;
     record[16] = u8::from(format.pooling_enabled);
+    if format.version.0 >= 4 {
+        record[22] = u8::from(format.unsigned_char);
+    }
     record.extend_from_slice(&[0, 0, 0, 0]);
     for &(alignment, flags) in symbol_records {
         record.extend_from_slice(&alignment.to_be_bytes());

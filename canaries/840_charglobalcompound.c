@@ -1,9 +1,9 @@
 // A truncation-safe op on a signed-char (or short) GLOBAL whose result stores back to a
-// NARROW target re-truncates through the store (`stb`/`sth`), so mwcc reads the global RAW —
+// NARROW target re-truncates through the store (`stb`/`sth`), so mwcc reads the global RAW -
 // `char gc; gc += 1;` is `lbz r3; addi r0,r3,1; stb r0`, NOT `lbz; extsb; addi; stb`. The
 // byte store drops the high bits the extsb would have sign-extended, so it is redundant.
 // emit_global_load now skips the extsb under narrow_truncation_context, and place_store_value
-// sets that flag for a `var op const` narrow store (Add/Sub/Or/Xor/Mul/And — div/mod and
+// sets that flag for a `var op const` narrow store (Add/Sub/Or/Xor/Mul/And - div/mod and
 // shift-right keep the extsb since the sign matters; shift-left was already exact). The same
 // flag makes a narrow RETURN of a global byte-exact (`char f(){ return gc + 1; }`).
 char  gc;

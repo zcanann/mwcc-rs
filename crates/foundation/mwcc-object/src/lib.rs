@@ -28,6 +28,9 @@ pub struct CommentFormat {
     /// Byte 16 of the Metrowerks header records the `-pool` mode: one when
     /// compiler pooling is enabled, zero for `-pool off`.
     pub pooling_enabled: bool,
+    /// Resolved plain-character mode. The 4.x comment format records unsigned
+    /// mode at byte 22; earlier formats leave that byte zero.
+    pub unsigned_char: bool,
 }
 
 /// Build-specific conventions affecting relocatable-object encoding.

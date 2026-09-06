@@ -2837,6 +2837,7 @@ fn compile(
             marker: config.build.comment_marker,
             version: config.build.comment_version,
             pooling_enabled: config.flags.pooling_enabled,
+            unsigned_char: !config.char_is_signed(),
         },
         emb_sda21_offset: config.build.emb_sda21_offset,
         code_alignment,

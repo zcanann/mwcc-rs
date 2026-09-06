@@ -1,6 +1,6 @@
 // A local of the SAME width as its initializer is a pure copy and value-tracks/inlines
-// byte-exact (int from int, char from a same-width char load). A NARROWING narrow local —
-// a char/short initialized from a WIDER value (`char c = a;` for an int `a`) — is a
+// byte-exact (int from int, char from a same-width char load). A NARROWING narrow local -
+// a char/short initialized from a WIDER value (`char c = a;` for an int `a`) - is a
 // truncation; inlining it raw drops the `(char)` truncation AND the int sign-extension, which
 // was a MISCOMPILE: `char c=a; gi=c;` stored the full int (not (int)(char)a), and `char f(int
 // a){ char c=a; return c; }` returned the raw int where mwcc emits `extsb r3,r3`. Those defer

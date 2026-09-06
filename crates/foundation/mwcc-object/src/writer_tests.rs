@@ -193,6 +193,7 @@ fn deferred_body_can_complete_reference_discovery_before_its_symbol() {
                 marker: 8,
                 version: (2, 0, 1),
                 pooling_enabled: true,
+                unsigned_char: false,
             },
             emb_sda21_offset: 0,
             code_alignment: 4,
@@ -263,6 +264,7 @@ fn compiler_register_helpers_precede_function_first_body_symbols() {
                 marker: 11,
                 version: (3, 0, 0),
                 pooling_enabled: true,
+                unsigned_char: false,
             },
             emb_sda21_offset: 0,
             code_alignment: 4,
@@ -717,6 +719,7 @@ fn data_relocations_follow_interleaved_creation_order() {
                 marker: 8,
                 version: (2, 3, 3),
                 pooling_enabled: true,
+                unsigned_char: false,
             },
             emb_sda21_offset: 0,
             code_alignment: 4,
@@ -871,6 +874,7 @@ fn analysis_constant_placement_is_independent_of_counter_advancement() {
                 marker: 8,
                 version: (2, 4, 7),
                 pooling_enabled: true,
+                unsigned_char: false,
             },
             emb_sda21_offset: 0,
             code_alignment: 4,
@@ -976,6 +980,7 @@ fn function_pool_prefix_padding_precedes_alignment_of_its_first_fresh_slot() {
                 marker: 8,
                 version: (2, 4, 7),
                 pooling_enabled: true,
+                unsigned_char: false,
             },
             emb_sda21_offset: 0,
             code_alignment: 4,
@@ -1096,6 +1101,7 @@ fn comment_header_records_pooling_mode() {
             marker: 0x08,
             version: (2, 3, 0),
             pooling_enabled: true,
+            unsigned_char: false,
         },
         &[],
     );
@@ -1104,6 +1110,7 @@ fn comment_header_records_pooling_mode() {
             marker: 0x08,
             version: (2, 3, 0),
             pooling_enabled: false,
+            unsigned_char: false,
         },
         &[],
     );
@@ -1111,6 +1118,30 @@ fn comment_header_records_pooling_mode() {
     assert_eq!(&enabled[12..16], &[2, 3, 0, 1]);
     assert_eq!(enabled[16], 1);
     assert_eq!(disabled[16], 0);
+}
+
+#[test]
+fn only_modern_comment_headers_record_unsigned_character_mode() {
+    for (marker, version, unsigned_byte) in [
+        (0x08, (2, 3, 0), 0),
+        (0x0a, (2, 4, 2), 0),
+        (0x0b, (2, 4, 7), 0),
+        (0x0e, (4, 0, 0), 1),
+        (0x0f, (4, 0, 0), 1),
+    ] {
+        let format = CommentFormat {
+            marker,
+            version,
+            pooling_enabled: true,
+            unsigned_char: false,
+        };
+        let signed = comment_record(format, &[]);
+        let unsigned = comment_record(CommentFormat { unsigned_char: true, ..format }, &[]);
+        assert_eq!(signed[22], 0);
+        assert_eq!(unsigned[22], unsigned_byte);
+        assert_eq!(&signed[..22], &unsigned[..22]);
+        assert_eq!(&signed[23..], &unsigned[23..]);
+    }
 }
 
 #[test]
@@ -1330,6 +1361,7 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
                 marker: 8,
                 version: (2, 4, 7),
                 pooling_enabled: true,
+                unsigned_char: false,
             },
             emb_sda21_offset: 0,
             code_alignment: 4,
@@ -1459,6 +1491,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
                 marker: 8,
                 version: (2, 3, 0),
                 pooling_enabled: true,
+                unsigned_char: false,
             },
             emb_sda21_offset: 0,
             code_alignment: 4,
@@ -1549,6 +1582,7 @@ fn code_data_anchor_precedes_pools_when_full_data_is_declared_upfront() {
                 marker: 8,
                 version: (1, 2, 5),
                 pooling_enabled: true,
+                unsigned_char: false,
             },
             emb_sda21_offset: 0,
             code_alignment: 4,
@@ -1621,6 +1655,7 @@ fn code_data_anchor_follows_earlier_static_functions_before_an_owned_string() {
                 marker: 8,
                 version: (1, 2, 5),
                 pooling_enabled: true,
+                unsigned_char: false,
             },
             emb_sda21_offset: 0,
             code_alignment: 4,
@@ -1757,6 +1792,7 @@ fn const_pointer_arrays_emit_reverse_rodata_relocations() {
                 marker: 8,
                 version: (2, 3, 0),
                 pooling_enabled: true,
+                unsigned_char: false,
             },
             emb_sda21_offset: 0,
             code_alignment: 4,

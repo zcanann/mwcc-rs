@@ -1,4 +1,4 @@
-// Signed char load `== c` (nonzero constant) — e.g. `*p == '\n'`, the character-match check.
+// Signed char load `== c` (nonzero constant) - e.g. `*p == '\n'`, the character-match check.
 // mwcc: `lbz r0; extsb r0,r0; subfic r0,r0,c; cntlzw r0,r0; srwi r3,r0,5` (value in scratch). The
 // a==c leading-zeros case (comparisons.rs) errored on a deref (general_register_of_leaf); now a
 // signed byte loads into the scratch with an in-place `extsb r0,r0` before the subfic. The

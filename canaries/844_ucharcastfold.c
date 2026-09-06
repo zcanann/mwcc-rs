@@ -1,5 +1,5 @@
 // `(unsigned char)` of a char LOAD folds to a bare byte load. The `lbz`/`lbzx` already
-// zero-extends the byte to 0..255 — exactly the unsigned-char value — so mwcc drops BOTH the
+// zero-extends the byte to 0..255 - exactly the unsigned-char value - so mwcc drops BOTH the
 // signed-char promotion extsb and the cast's own `& 0xff` clrlwi, leaving just the load. ours
 // had emitted the redundant extsb and/or clrlwi (the global differed; the dereference and
 // member deferred). The fold applies to a signed-char global, dereference, member, or array

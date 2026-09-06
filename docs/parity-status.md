@@ -4,13 +4,51 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, GC/2.7 fragmented debug and SDK stub metadata (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, character-mode object metadata (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `878efdd86e97cae3b6c61782802b700d90ec91b6685f8282a0aec3fd1f6527dd:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `3723dba241339cd90e9fbc6d920ad8fb9a712401ad51b3b856af0abe8d001d63:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Character-mode object metadata, 2026-09-06
+
+All seven remaining nonexact modern SDK stub objects now match byte for byte.
+Against baseline `d0f68372`, the complete 40-configuration `odenotstub.c` family
+improves from **28 BYTE, seven DIFF, one DEFER, four MISSING_DEPENDENCY** to
+**35 BYTE, zero DIFF, one DEFER, four MISSING_DEPENDENCY**, with no lost matches.
+The gains are Twilight Princess GC/3.0a3p1 RZDE01_00, RZDE01_02, RZDJ01,
+RZDP01, DZDE01, plus Wii/1.0 Shield and ShieldD. Executable code and relocations
+are unchanged: **33/34 measured exact**, two empty objects, four unmeasured
+configurations. Melee's remaining configured-source failure reaches unsupported
+value tracking in `DBGEXISelect`; it remains in the denominator.
+
+Each newly matching object differed only at byte 22 of the Metrowerks `.comment`
+header. The 4.x object format records resolved unsigned plain-character mode
+there, even in functions that never use a character type. Older formats keep
+that byte zero regardless of `-char`. The driver now passes the resolved mode
+to the existing comment-format descriptor, and the object writer applies the
+format-generation rule. Signed/default mode and older format bytes are
+preserved. Direct probes cover default, signed, and unsigned modes across nine
+reference builds, including the patched GC/3.0a3p1 executable.
+
+New canary 1569 isolates this metadata with an integer-only function and
+`-char unsigned`: **9/11 to 11/11 whole-object exact**. Existing canary 1132
+checks unsigned character loads, promotions, and compound stores and also
+improves from **9/11 to 11/11**. All **22/22 pairs** are oracle-runnable with
+no exclusions or reference rejections.
+
+Nine older character canaries contained em dashes in comments that prevented
+our compiler from accepting them through the harness's Shift-JIS path. Those
+comments now use ASCII punctuation, preserving code and line counts. Both
+baseline and candidate measurements use the corrected sources. The broader
+character selection has **22 authored canaries on three builds** (GC/2.7,
+GC/3.0a3, Wii/1.0): **19/36 to 23/36 whole-object exact**, with no lost matches,
+30 declared exclusions, and no encoding failures, reference rejections, or
+timeouts. Compiler/oracle builds and **31 object-writer tests** pass, including
+the cross-format character-mode test. These targeted measurements do not
+establish whole-project or corpus-wide parity.
 
 ## GC/2.7 fragmented debug and SDK stub metadata, 2026-09-06
 

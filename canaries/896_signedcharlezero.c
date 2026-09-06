@@ -1,4 +1,4 @@
-// Signed char load `<= 0` — the last of the six zero sign-relations (893 <0, 894 >0/>=0/!=0, 895
+// Signed char load `<= 0` - the last of the six zero sign-relations (893 <0, 894 >0/>=0/!=0, 895
 // ==0). mwcc keeps the value in the scratch, sign-extends in place, and places the `1` in the
 // destination between the load and the extend: `lbz r0; li r3,1; extsb r0,r0; cntlzw r0,r0;
 // rlwnm r3,r3,r0,31,31`. comparisons.rs <=0 case adds a signed-byte branch for that exact order;
