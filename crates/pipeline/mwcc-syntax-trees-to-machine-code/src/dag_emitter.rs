@@ -813,10 +813,28 @@ impl Generator {
                     a: operand(0)?,
                     immediate: *immediate,
                 },
-                Template::Add => Instruction::Add {
-                    d: destination.expect("value node"),
-                    a: operand(0)?,
-                    b: operand(1)?,
+                Template::Add => {
+                    let mut a = operand(0)?;
+                    let mut b = operand(1)?;
+                    // The legacy load/arithmetic join canonicalizes the two
+                    // commutative register slots after coloring. Keep DAG
+                    // operand identity intact for scheduling and allocation.
+                    let loaded_join = match (
+                        builder.value_of(builder.nodes[node].reads[0]),
+                        builder.value_of(builder.nodes[node].reads[1]),
+                    ) {
+                        (ValueSource::Node(left), ValueSource::Node(right)) => {
+                            matches!(builder.templates[left], Template::LoadWord)
+                                != matches!(builder.templates[right], Template::LoadWord)
+                        }
+                        _ => false,
+                    };
+                    if self.behavior.integer_dag_style == IntegerDagStyle::PortAwareSerialR0
+                        && loaded_join && a > b
+                    {
+                        std::mem::swap(&mut a, &mut b);
+                    }
+                    Instruction::Add { d: destination.expect("value node"), a, b }
                 },
                 Template::Subtract => Instruction::SubtractFrom {
                     d: destination.expect("value node"),

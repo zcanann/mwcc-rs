@@ -519,13 +519,16 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 // unblocked candidate is ready, the top blocked load issues
                 // anyway (measured: horner3/4 hoist every coefficient load
                 // that has a fresh register — one per empty cycle).
-                let load_blocked = |candidate: usize, issued_at: &Vec<Option<u32>>| -> bool {
+                let load_blocked = |candidate: usize, issued_at: &Vec<Option<u32>>, picked: &[usize]| -> bool {
                     nodes[candidate].kind == OpKind::Load
                         && !(0..count).any(|consumer| {
                             deps[consumer].contains(&candidate)
                                 && deps[consumer].iter().all(|&dependency| {
                                     dependency == candidate
                                         || issued_at[dependency].is_some()
+                                        // Port-aware issue treats a producer selected
+                                        // in this window as issued for load eligibility.
+                                        || (model.port_aware && picked.contains(&dependency))
                                         // A pending fellow LOAD does not block
                                         // (loads awaiting loads is fine).
                                         || nodes[dependency].kind == OpKind::Load
@@ -573,7 +576,7 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                         false
                     };
                     let lift_pending = ready.iter().any(|&other| {
-                        other != candidate && !picked.contains(&other) && load_blocked(other, issued_at)
+                        other != candidate && !picked.contains(&other) && load_blocked(other, issued_at, picked)
                     });
                     if !lift_pending {
                         return false;
@@ -588,7 +591,7 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                     // fresh-arith deference below keeps self-caused lifts.
                     if nodes[candidate].local_home {
                         let independent_lift = ready.iter().any(|&other| {
-                            if other == candidate || picked.contains(&other) || !load_blocked(other, issued_at) {
+                            if other == candidate || picked.contains(&other) || !load_blocked(other, issued_at, picked) {
                                 return false;
                             }
                             (0..count).any(|consumer| {
@@ -648,11 +651,11 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                         if arith_defers(candidate, &issued_at, &picked) {
                             continue;
                         }
-                        if load_blocked(candidate, &issued_at) {
+                        if load_blocked(candidate, &issued_at, &picked) {
                             let other_unblocked = ready.iter().any(|&other| {
                                 other != candidate
                                     && !picked.contains(&other)
-                                    && !load_blocked(other, &issued_at)
+                                    && !load_blocked(other, &issued_at, &picked)
                                     && !arith_defers(other, &issued_at, &picked)
                             });
                             if !picked.is_empty() || other_unblocked {
@@ -726,16 +729,28 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
         }
         // Build 163's bundler holds a lone operation for one cycle when a
         // different execution port will become available immediately.
-        if model.port_aware && ready.len() == 1 {
+        if model.port_aware && model.issue_width > 1 && ready.len() == 1 {
             let sole = ready[0];
             let pair_next = (0..count).any(|candidate| {
-                candidate != sole
-                    && issued_at[candidate].is_none()
-                    && execution_port(candidate) != execution_port(sole)
-                    && deps[candidate].iter().all(|&dependency| {
-                        issued_at[dependency]
-                            .is_some_and(|at| at + edge_gate(dependency, candidate) <= time + 1)
-                    })
+                if candidate == sole
+                    || issued_at[candidate].is_some()
+                    || execution_port(candidate) == execution_port(sole)
+                {
+                    return false;
+                }
+                let available_at = deps[candidate].iter().try_fold(0, |latest, &dependency| {
+                    let issued = issued_at[dependency]?;
+                    let delay = if model.gate_on_complete {
+                        edge_gate(dependency, candidate)
+                    } else {
+                        1
+                    };
+                    Some(latest.max(issued + delay))
+                });
+                // Only wait for a newly available partner. An already-ready
+                // operation that the picker declined cannot justify waiting
+                // again on every subsequent cycle.
+                available_at == Some(time + 1)
             });
             if pair_next {
                 ready.clear();

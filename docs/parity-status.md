@@ -4,13 +4,62 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, shared floating snapshot loads (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, legacy issue-window progress and snapshot schedule captures (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `36e0f3172bededa06c66b409ece2d90ff3579637ef9ae7a51e1b1a67f8f046b7:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `d77092ee87d8d5ea4ed42a201c0d31248c37770e3d4bec92890f0b93c9b145fb:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Focused scheduler progress and graph captures, 2026-09-06
+
+The port-aware scheduler no longer waits indefinitely for an already-ready
+operation that its own picker has declined. Waiting for a partner now requires
+that partner to become available on the next cycle, and single-issue candidate
+models do not wait for pairs. A producer selected in the current issue window
+also releases an otherwise blocked independent load for that window. Legacy
+integer load/arithmetic joins retain canonical commutative register slots after
+allocation without changing DAG operand identities.
+
+Canary 1551 reproduces the compiler hang through ordinary source: two global
+stores, one fed by a multiply-plus-load and the other by a multiply. At baseline
+`dc529ff5`, direct compilation exceeds a three-second timeout on GC/1.1,
+GC/1.1p1, GC/1.2.5, and GC/1.2.5n; the other seven measured builds emit. The
+candidate emits on all eleven and matches whole objects on **GC/1.1,
+GC/1.2.5, and GC/1.2.5n**. GC/1.1p1's reference reverses the two stores relative
+to those builds and remains nonexact. Modern schedules also remain different.
+Canary 1552 retains reversed-source and XOR/load controls; it remains nonexact.
+
+Canaries 1549/1550 vary floating reduction row count and layout. Both are
+oracle-runnable on all eleven builds, with no exact objects. Across all four new
+canaries, **3/44 whole objects are exact**, with no reference rejections or build
+exclusions. The baseline timeouts are tracked separately, not counted as a
+completed baseline oracle comparison.
+
+A focused shared legacy DAG/store/float regression denominator remains **3/46
+exact**, with no outcome changes. All **97 register/scheduler unit tests pass**;
+eight existing tests are ignored. Three new tests exercise single-issue
+progress, the already-ready load stall, and the measured integer issue order.
+All 44 configured matrix outcomes remain **19 BYTE, 15 DIFF, seven DEFER,
+three HARNESS**, including the same six empty exact objects.
+
+The new `tools/float_snapshot_graph.py` diagnostic separates operation identity
+from FPR coloring and instruction order. It rejects unsupported instructions,
+preserves arithmetic operand order, gives each read its own identity, and
+records memory dependencies across stores. Four Python tests cover those
+boundaries. The committed capture under `harness/float_snapshot_schedules/`
+records Wind Waker D44J01's GC/1.2.5n scalar matrix graphs and object hashes.
+They contain the same operations as the candidate, with only **3/36** and
+**4/30** at the reference positions. A 720-case latency/issue-model experiment
+does not reproduce either full order; it is diagnostic evidence, not a validated
+new floating scheduler. Matrix byte-parity and full-project parity remain open.
+
+Local evidence: `target/reference-parity/d77092ee87d8d5ea-5e4ca1ddc460f4d8.jsonl`,
+`target/bundler-baseline-compile.json`, `target/bundler-join-final.log`,
+`target/snapshot-reductions-{baseline,final}.log`,
+`target/bundler-regressions-{baseline,final}.log`,
+`target/bundler-final-unit-tests.log`, and `target/snapshot-schedule-fit.log`.
 
 ## Focused floating snapshot load reuse, 2026-09-06
 

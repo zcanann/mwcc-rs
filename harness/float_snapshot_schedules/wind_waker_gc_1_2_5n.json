@@ -1,0 +1,2257 @@
+{
+  "diagnostic": "floating snapshot graph; not object parity",
+  "objects": {
+    "reference": {
+      "file": "ref.direct.o",
+      "sha256": "63cc21805a7c5970631705ae2638e1ae8e68ba30fd626231c06f9bc202e913cf"
+    },
+    "candidate": {
+      "file": "our.configured.o",
+      "sha256": "2d12aebd5b86ac2a011cb9fcbdabcaf0c06615f272fd7bc25dec7b59d9c31a8a"
+    }
+  },
+  "functions": [
+    {
+      "function": "C_MTXMultVec",
+      "graph_equal": true,
+      "operations": 36,
+      "same_positions": 3,
+      "reference_order": [
+        5,
+        4,
+        16,
+        8,
+        6,
+        7,
+        17,
+        18,
+        9,
+        19,
+        26,
+        28,
+        2,
+        1,
+        14,
+        10,
+        3,
+        24,
+        27,
+        29,
+        15,
+        20,
+        0,
+        11,
+        25,
+        30,
+        21,
+        13,
+        12,
+        23,
+        31,
+        22,
+        33,
+        32,
+        34,
+        35
+      ],
+      "reference": [
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            10
+          ],
+          "memory": {
+            "base": 4,
+            "offset": 0,
+            "epoch": 0
+          },
+          "assembly": "lfs f10,0(r4)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 0,
+            "epoch": 0
+          },
+          "assembly": "lfs f0,0(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 16,
+            "epoch": 0
+          },
+          "assembly": "lfs f2,16(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            9
+          ],
+          "memory": {
+            "base": 4,
+            "offset": 4,
+            "epoch": 0
+          },
+          "assembly": "lfs f9,4(r4)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            1,
+            0
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1,
+            0,
+            10
+          ],
+          "memory": null,
+          "assembly": "fmuls f1,f0,f10"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 4,
+            "epoch": 0
+          },
+          "assembly": "lfs f0,4(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            2,
+            0
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            7,
+            2,
+            10
+          ],
+          "memory": null,
+          "assembly": "fmuls f7,f2,f10"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 20,
+            "epoch": 0
+          },
+          "assembly": "lfs f2,20(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            5,
+            3
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            0,
+            9
+          ],
+          "memory": null,
+          "assembly": "fmuls f0,f0,f9"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            7,
+            3
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            6,
+            2,
+            9
+          ],
+          "memory": null,
+          "assembly": "fmuls f6,f2,f9"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 32,
+            "epoch": 0
+          },
+          "assembly": "lfs f4,32(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            3
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 36,
+            "epoch": 0
+          },
+          "assembly": "lfs f3,36(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            11
+          ],
+          "memory": {
+            "base": 4,
+            "offset": 8,
+            "epoch": 0
+          },
+          "assembly": "lfs f11,8(r4)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 8,
+            "epoch": 0
+          },
+          "assembly": "lfs f2,8(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            8
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 24,
+            "epoch": 0
+          },
+          "assembly": "lfs f8,24(r3)"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            4,
+            8
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            1,
+            0
+          ],
+          "memory": null,
+          "assembly": "fadds f0,f1,f0"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            13,
+            12
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1,
+            2,
+            11
+          ],
+          "memory": null,
+          "assembly": "fmuls f1,f2,f11"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            5
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 40,
+            "epoch": 0
+          },
+          "assembly": "lfs f5,40(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            10,
+            0
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4,
+            4,
+            10
+          ],
+          "memory": null,
+          "assembly": "fmuls f4,f4,f10"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            11,
+            3
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            3,
+            3,
+            9
+          ],
+          "memory": null,
+          "assembly": "fmuls f3,f3,f9"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            14,
+            12
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            8,
+            8,
+            11
+          ],
+          "memory": null,
+          "assembly": "fmuls f8,f8,f11"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            6,
+            9
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            6,
+            7,
+            6
+          ],
+          "memory": null,
+          "assembly": "fadds f6,f7,f6"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 12,
+            "epoch": 0
+          },
+          "assembly": "lfs f2,12(r3)"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            16,
+            15
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            1,
+            0
+          ],
+          "memory": null,
+          "assembly": "fadds f0,f1,f0"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            17,
+            12
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            5,
+            5,
+            11
+          ],
+          "memory": null,
+          "assembly": "fmuls f5,f5,f11"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            18,
+            19
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1,
+            4,
+            3
+          ],
+          "memory": null,
+          "assembly": "fadds f1,f4,f3"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            20,
+            21
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            3,
+            8,
+            6
+          ],
+          "memory": null,
+          "assembly": "fadds f3,f8,f6"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 28,
+            "epoch": 0
+          },
+          "assembly": "lfs f4,28(r3)"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            22,
+            23
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            2,
+            0
+          ],
+          "memory": null,
+          "assembly": "fadds f0,f2,f0"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 44,
+            "epoch": 0
+          },
+          "assembly": "lfs f2,44(r3)"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            24,
+            25
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1,
+            5,
+            1
+          ],
+          "memory": null,
+          "assembly": "fadds f1,f5,f1"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            27,
+            26
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            3,
+            4,
+            3
+          ],
+          "memory": null,
+          "assembly": "fadds f3,f4,f3"
+        },
+        {
+          "opcode": "stfs",
+          "reads": [
+            28
+          ],
+          "parameters": [],
+          "extra_deps": [
+            0,
+            1,
+            2,
+            3,
+            5,
+            7,
+            10,
+            11,
+            12,
+            13,
+            14,
+            17,
+            22,
+            27,
+            29
+          ],
+          "registers": [
+            0
+          ],
+          "memory": {
+            "base": 5,
+            "offset": 0,
+            "epoch": 0
+          },
+          "assembly": "stfs f0,0(r5)"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            29,
+            30
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            2,
+            1
+          ],
+          "memory": null,
+          "assembly": "fadds f0,f2,f1"
+        },
+        {
+          "opcode": "stfs",
+          "reads": [
+            31
+          ],
+          "parameters": [],
+          "extra_deps": [
+            32
+          ],
+          "registers": [
+            3
+          ],
+          "memory": {
+            "base": 5,
+            "offset": 4,
+            "epoch": 1
+          },
+          "assembly": "stfs f3,4(r5)"
+        },
+        {
+          "opcode": "stfs",
+          "reads": [
+            33
+          ],
+          "parameters": [],
+          "extra_deps": [
+            34
+          ],
+          "registers": [
+            0
+          ],
+          "memory": {
+            "base": 5,
+            "offset": 8,
+            "epoch": 2
+          },
+          "assembly": "stfs f0,8(r5)"
+        }
+      ],
+      "candidate": [
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 12,
+            "epoch": 0
+          },
+          "assembly": "lfs f1,12(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 8,
+            "epoch": 0
+          },
+          "assembly": "lfs f2,8(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            3
+          ],
+          "memory": {
+            "base": 4,
+            "offset": 8,
+            "epoch": 0
+          },
+          "assembly": "lfs f3,8(r4)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            1,
+            2
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            2,
+            3
+          ],
+          "memory": null,
+          "assembly": "fmuls f0,f2,f3"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 0,
+            "epoch": 0
+          },
+          "assembly": "lfs f2,0(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4
+          ],
+          "memory": {
+            "base": 4,
+            "offset": 0,
+            "epoch": 0
+          },
+          "assembly": "lfs f4,0(r4)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            4,
+            5
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2,
+            2,
+            4
+          ],
+          "memory": null,
+          "assembly": "fmuls f2,f2,f4"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            5
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 4,
+            "epoch": 0
+          },
+          "assembly": "lfs f5,4(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            6
+          ],
+          "memory": {
+            "base": 4,
+            "offset": 4,
+            "epoch": 0
+          },
+          "assembly": "lfs f6,4(r4)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            7,
+            8
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            5,
+            5,
+            6
+          ],
+          "memory": null,
+          "assembly": "fmuls f5,f5,f6"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            6,
+            9
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2,
+            2,
+            5
+          ],
+          "memory": null,
+          "assembly": "fadds f2,f2,f5"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            3,
+            10
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            0,
+            2
+          ],
+          "memory": null,
+          "assembly": "fadds f0,f0,f2"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            0,
+            11
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            1,
+            0
+          ],
+          "memory": null,
+          "assembly": "fadds f0,f1,f0"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 28,
+            "epoch": 0
+          },
+          "assembly": "lfs f1,28(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 24,
+            "epoch": 0
+          },
+          "assembly": "lfs f2,24(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            14,
+            2
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2,
+            2,
+            3
+          ],
+          "memory": null,
+          "assembly": "fmuls f2,f2,f3"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            5
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 16,
+            "epoch": 0
+          },
+          "assembly": "lfs f5,16(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            16,
+            5
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            5,
+            5,
+            4
+          ],
+          "memory": null,
+          "assembly": "fmuls f5,f5,f4"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            7
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 20,
+            "epoch": 0
+          },
+          "assembly": "lfs f7,20(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            18,
+            8
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            7,
+            7,
+            6
+          ],
+          "memory": null,
+          "assembly": "fmuls f7,f7,f6"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            17,
+            19
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            5,
+            5,
+            7
+          ],
+          "memory": null,
+          "assembly": "fadds f5,f5,f7"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            15,
+            20
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2,
+            2,
+            5
+          ],
+          "memory": null,
+          "assembly": "fadds f2,f2,f5"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            13,
+            21
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1,
+            1,
+            2
+          ],
+          "memory": null,
+          "assembly": "fadds f1,f1,f2"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 44,
+            "epoch": 0
+          },
+          "assembly": "lfs f2,44(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            5
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 40,
+            "epoch": 0
+          },
+          "assembly": "lfs f5,40(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            24,
+            2
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            3,
+            5,
+            3
+          ],
+          "memory": null,
+          "assembly": "fmuls f3,f5,f3"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            5
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 32,
+            "epoch": 0
+          },
+          "assembly": "lfs f5,32(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            26,
+            5
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4,
+            5,
+            4
+          ],
+          "memory": null,
+          "assembly": "fmuls f4,f5,f4"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            5
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 36,
+            "epoch": 0
+          },
+          "assembly": "lfs f5,36(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            28,
+            8
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            5,
+            5,
+            6
+          ],
+          "memory": null,
+          "assembly": "fmuls f5,f5,f6"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            27,
+            29
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4,
+            4,
+            5
+          ],
+          "memory": null,
+          "assembly": "fadds f4,f4,f5"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            25,
+            30
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            3,
+            3,
+            4
+          ],
+          "memory": null,
+          "assembly": "fadds f3,f3,f4"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            23,
+            31
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2,
+            2,
+            3
+          ],
+          "memory": null,
+          "assembly": "fadds f2,f2,f3"
+        },
+        {
+          "opcode": "stfs",
+          "reads": [
+            12
+          ],
+          "parameters": [],
+          "extra_deps": [
+            0,
+            1,
+            2,
+            4,
+            5,
+            7,
+            8,
+            13,
+            14,
+            16,
+            18,
+            23,
+            24,
+            26,
+            28
+          ],
+          "registers": [
+            0
+          ],
+          "memory": {
+            "base": 5,
+            "offset": 0,
+            "epoch": 0
+          },
+          "assembly": "stfs f0,0(r5)"
+        },
+        {
+          "opcode": "stfs",
+          "reads": [
+            22
+          ],
+          "parameters": [],
+          "extra_deps": [
+            33
+          ],
+          "registers": [
+            1
+          ],
+          "memory": {
+            "base": 5,
+            "offset": 4,
+            "epoch": 1
+          },
+          "assembly": "stfs f1,4(r5)"
+        },
+        {
+          "opcode": "stfs",
+          "reads": [
+            32
+          ],
+          "parameters": [],
+          "extra_deps": [
+            34
+          ],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 5,
+            "offset": 8,
+            "epoch": 2
+          },
+          "assembly": "stfs f2,8(r5)"
+        }
+      ]
+    },
+    {
+      "function": "C_MTXMultVecSR",
+      "graph_equal": true,
+      "operations": 30,
+      "same_positions": 4,
+      "reference_order": [
+        4,
+        3,
+        13,
+        7,
+        5,
+        6,
+        14,
+        15,
+        8,
+        16,
+        21,
+        23,
+        1,
+        0,
+        11,
+        9,
+        2,
+        19,
+        22,
+        24,
+        10,
+        12,
+        17,
+        20,
+        27,
+        25,
+        18,
+        26,
+        28,
+        29
+      ],
+      "reference": [
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            10
+          ],
+          "memory": {
+            "base": 4,
+            "offset": 0,
+            "epoch": 0
+          },
+          "assembly": "lfs f10,0(r4)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 0,
+            "epoch": 0
+          },
+          "assembly": "lfs f0,0(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 16,
+            "epoch": 0
+          },
+          "assembly": "lfs f2,16(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            9
+          ],
+          "memory": {
+            "base": 4,
+            "offset": 4,
+            "epoch": 0
+          },
+          "assembly": "lfs f9,4(r4)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            1,
+            0
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1,
+            0,
+            10
+          ],
+          "memory": null,
+          "assembly": "fmuls f1,f0,f10"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 4,
+            "epoch": 0
+          },
+          "assembly": "lfs f0,4(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            2,
+            0
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            7,
+            2,
+            10
+          ],
+          "memory": null,
+          "assembly": "fmuls f7,f2,f10"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 20,
+            "epoch": 0
+          },
+          "assembly": "lfs f2,20(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            5,
+            3
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            0,
+            9
+          ],
+          "memory": null,
+          "assembly": "fmuls f0,f0,f9"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            7,
+            3
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            6,
+            2,
+            9
+          ],
+          "memory": null,
+          "assembly": "fmuls f6,f2,f9"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 32,
+            "epoch": 0
+          },
+          "assembly": "lfs f4,32(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            3
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 36,
+            "epoch": 0
+          },
+          "assembly": "lfs f3,36(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            11
+          ],
+          "memory": {
+            "base": 4,
+            "offset": 8,
+            "epoch": 0
+          },
+          "assembly": "lfs f11,8(r4)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 8,
+            "epoch": 0
+          },
+          "assembly": "lfs f2,8(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            8
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 24,
+            "epoch": 0
+          },
+          "assembly": "lfs f8,24(r3)"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            4,
+            8
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            1,
+            0
+          ],
+          "memory": null,
+          "assembly": "fadds f0,f1,f0"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            13,
+            12
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1,
+            2,
+            11
+          ],
+          "memory": null,
+          "assembly": "fmuls f1,f2,f11"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            5
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 40,
+            "epoch": 0
+          },
+          "assembly": "lfs f5,40(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            10,
+            0
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4,
+            4,
+            10
+          ],
+          "memory": null,
+          "assembly": "fmuls f4,f4,f10"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            11,
+            3
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2,
+            3,
+            9
+          ],
+          "memory": null,
+          "assembly": "fmuls f2,f3,f9"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            16,
+            15
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            1,
+            0
+          ],
+          "memory": null,
+          "assembly": "fadds f0,f1,f0"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            14,
+            12
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            8,
+            8,
+            11
+          ],
+          "memory": null,
+          "assembly": "fmuls f8,f8,f11"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            6,
+            9
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            3,
+            7,
+            6
+          ],
+          "memory": null,
+          "assembly": "fadds f3,f7,f6"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            17,
+            12
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1,
+            5,
+            11
+          ],
+          "memory": null,
+          "assembly": "fmuls f1,f5,f11"
+        },
+        {
+          "opcode": "stfs",
+          "reads": [
+            20
+          ],
+          "parameters": [],
+          "extra_deps": [
+            0,
+            1,
+            2,
+            3,
+            5,
+            7,
+            10,
+            11,
+            12,
+            13,
+            14,
+            17
+          ],
+          "registers": [
+            0
+          ],
+          "memory": {
+            "base": 5,
+            "offset": 0,
+            "epoch": 0
+          },
+          "assembly": "stfs f0,0(r5)"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            18,
+            19
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            4,
+            2
+          ],
+          "memory": null,
+          "assembly": "fadds f0,f4,f2"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            21,
+            22
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2,
+            8,
+            3
+          ],
+          "memory": null,
+          "assembly": "fadds f2,f8,f3"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            23,
+            25
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            1,
+            0
+          ],
+          "memory": null,
+          "assembly": "fadds f0,f1,f0"
+        },
+        {
+          "opcode": "stfs",
+          "reads": [
+            26
+          ],
+          "parameters": [],
+          "extra_deps": [
+            24
+          ],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 5,
+            "offset": 4,
+            "epoch": 1
+          },
+          "assembly": "stfs f2,4(r5)"
+        },
+        {
+          "opcode": "stfs",
+          "reads": [
+            27
+          ],
+          "parameters": [],
+          "extra_deps": [
+            28
+          ],
+          "registers": [
+            0
+          ],
+          "memory": {
+            "base": 5,
+            "offset": 8,
+            "epoch": 2
+          },
+          "assembly": "stfs f0,8(r5)"
+        }
+      ],
+      "candidate": [
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 8,
+            "epoch": 0
+          },
+          "assembly": "lfs f1,8(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 4,
+            "offset": 8,
+            "epoch": 0
+          },
+          "assembly": "lfs f2,8(r4)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            0,
+            1
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            1,
+            2
+          ],
+          "memory": null,
+          "assembly": "fmuls f0,f1,f2"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 0,
+            "epoch": 0
+          },
+          "assembly": "lfs f1,0(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            3
+          ],
+          "memory": {
+            "base": 4,
+            "offset": 0,
+            "epoch": 0
+          },
+          "assembly": "lfs f3,0(r4)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            3,
+            4
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1,
+            1,
+            3
+          ],
+          "memory": null,
+          "assembly": "fmuls f1,f1,f3"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 4,
+            "epoch": 0
+          },
+          "assembly": "lfs f4,4(r3)"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            5
+          ],
+          "memory": {
+            "base": 4,
+            "offset": 4,
+            "epoch": 0
+          },
+          "assembly": "lfs f5,4(r4)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            6,
+            7
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4,
+            4,
+            5
+          ],
+          "memory": null,
+          "assembly": "fmuls f4,f4,f5"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            5,
+            8
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1,
+            1,
+            4
+          ],
+          "memory": null,
+          "assembly": "fadds f1,f1,f4"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            2,
+            9
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            0,
+            0,
+            1
+          ],
+          "memory": null,
+          "assembly": "fadds f0,f0,f1"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 24,
+            "epoch": 0
+          },
+          "assembly": "lfs f1,24(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            11,
+            1
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1,
+            1,
+            2
+          ],
+          "memory": null,
+          "assembly": "fmuls f1,f1,f2"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 16,
+            "epoch": 0
+          },
+          "assembly": "lfs f4,16(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            13,
+            4
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4,
+            4,
+            3
+          ],
+          "memory": null,
+          "assembly": "fmuls f4,f4,f3"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            6
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 20,
+            "epoch": 0
+          },
+          "assembly": "lfs f6,20(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            15,
+            7
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            6,
+            6,
+            5
+          ],
+          "memory": null,
+          "assembly": "fmuls f6,f6,f5"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            14,
+            16
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4,
+            4,
+            6
+          ],
+          "memory": null,
+          "assembly": "fadds f4,f4,f6"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            12,
+            17
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            1,
+            1,
+            4
+          ],
+          "memory": null,
+          "assembly": "fadds f1,f1,f4"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 40,
+            "epoch": 0
+          },
+          "assembly": "lfs f4,40(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            19,
+            1
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2,
+            4,
+            2
+          ],
+          "memory": null,
+          "assembly": "fmuls f2,f4,f2"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 32,
+            "epoch": 0
+          },
+          "assembly": "lfs f4,32(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            21,
+            4
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            3,
+            4,
+            3
+          ],
+          "memory": null,
+          "assembly": "fmuls f3,f4,f3"
+        },
+        {
+          "opcode": "lfs",
+          "reads": [],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4
+          ],
+          "memory": {
+            "base": 3,
+            "offset": 36,
+            "epoch": 0
+          },
+          "assembly": "lfs f4,36(r3)"
+        },
+        {
+          "opcode": "fmuls",
+          "reads": [
+            23,
+            7
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            4,
+            4,
+            5
+          ],
+          "memory": null,
+          "assembly": "fmuls f4,f4,f5"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            22,
+            24
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            3,
+            3,
+            4
+          ],
+          "memory": null,
+          "assembly": "fadds f3,f3,f4"
+        },
+        {
+          "opcode": "fadds",
+          "reads": [
+            20,
+            25
+          ],
+          "parameters": [],
+          "extra_deps": [],
+          "registers": [
+            2,
+            2,
+            3
+          ],
+          "memory": null,
+          "assembly": "fadds f2,f2,f3"
+        },
+        {
+          "opcode": "stfs",
+          "reads": [
+            10
+          ],
+          "parameters": [],
+          "extra_deps": [
+            0,
+            1,
+            3,
+            4,
+            6,
+            7,
+            11,
+            13,
+            15,
+            19,
+            21,
+            23
+          ],
+          "registers": [
+            0
+          ],
+          "memory": {
+            "base": 5,
+            "offset": 0,
+            "epoch": 0
+          },
+          "assembly": "stfs f0,0(r5)"
+        },
+        {
+          "opcode": "stfs",
+          "reads": [
+            18
+          ],
+          "parameters": [],
+          "extra_deps": [
+            27
+          ],
+          "registers": [
+            1
+          ],
+          "memory": {
+            "base": 5,
+            "offset": 4,
+            "epoch": 1
+          },
+          "assembly": "stfs f1,4(r5)"
+        },
+        {
+          "opcode": "stfs",
+          "reads": [
+            26
+          ],
+          "parameters": [],
+          "extra_deps": [
+            28
+          ],
+          "registers": [
+            2
+          ],
+          "memory": {
+            "base": 5,
+            "offset": 8,
+            "epoch": 2
+          },
+          "assembly": "stfs f2,8(r5)"
+        }
+      ]
+    }
+  ],
+  "provenance": {
+    "project": "wind_waker",
+    "variant": "D44J01",
+    "source": "src/dolphin/mtx/mtxvec.c",
+    "compiler": "GC/1.2.5n",
+    "candidate_commit": "dc529ff5",
+    "reference_input": "configured ref.direct.o"
+  }
+}

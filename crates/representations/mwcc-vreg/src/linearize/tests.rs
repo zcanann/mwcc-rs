@@ -2544,3 +2544,41 @@
         assert_eq!(legacy_registers[0], Some(2));
         assert_eq!(legacy_registers[3], Some(3));
     }
+
+#[test]
+fn port_aware_single_issue_does_not_wait_for_an_impossible_pair() {
+    let nodes = [
+        DagNode::new("load", 2).kind(OpKind::Load).writes(&[0]),
+        DagNode::new("alu", 1).kind(OpKind::Alu).writes(&[1]),
+    ];
+    let mut order = linearize_with(&nodes, Model { issue_width: 1, ..LEGACY_PORT_AWARE });
+    order.sort_unstable();
+    assert_eq!(order, [0, 1]);
+}
+
+#[test]
+fn port_aware_bundler_does_not_wait_on_an_already_ready_blocked_load() {
+    let nodes = [
+        DagNode::new("product", 3).kind(OpKind::Alu).hazard(HAZARD_FPU).writes(&[0]),
+        DagNode::new("load", 2).kind(OpKind::Load).writes(&[1]),
+        DagNode::new("sum", 3).kind(OpKind::Alu).hazard(HAZARD_FPU).reads(&[0, 1]).writes(&[2]),
+        DagNode::new("store", 1).kind(OpKind::Store).reads(&[2]),
+    ];
+    // The load waits until its consumer's other operand has issued. Holding
+    // that operand for the already-ready load used to prevent either issuing.
+    assert_eq!(linearize_with(&nodes, LEGACY_PORT_AWARE), [0, 1, 2, 3]);
+}
+
+#[test]
+fn legacy_load_join_pairs_with_its_selected_arithmetic_producer() {
+    let nodes = [
+        DagNode::new("first product", 3).gate(2).hazard(HAZARD_MUL).reads(&[0]).writes(&[2]),
+        DagNode::new("load", 2).reads(&[1]).writes(&[3]),
+        DagNode::new("join", 1).reads(&[2, 3]).writes(&[4]),
+        DagNode::new("output", 1).kind(OpKind::Store).reads(&[4]),
+        DagNode::new("second product", 3).gate(2).hazard(HAZARD_MUL).reads(&[0]).writes(&[5]),
+        DagNode::new("other", 1).kind(OpKind::Store).reads(&[5]),
+    ];
+    // Canary 1551, GC/1.2.5n: mulli, lwz, mulli, add, stw, stw.
+    assert_eq!(linearize_with(&nodes, LEGACY_PORT_AWARE), [0, 1, 4, 2, 5, 3]);
+}
