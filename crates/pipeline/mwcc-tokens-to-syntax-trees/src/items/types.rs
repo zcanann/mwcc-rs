@@ -237,6 +237,7 @@ impl Parser {
         // The array-typedef marker is only ever set by the LAST parse_type call, so a
         // consumer that `.take()`s right after its own call can never read a stale one.
         self.last_array_typedef = None;
+        self.last_array_typedef_row = None;
         // Leading qualifiers: `const`/`register` are transparent to codegen (`const`
         // is noted for the global path, which defers a read-only global); `volatile`
         // changes access semantics (memory accesses can't be elided), so defer it.
@@ -634,6 +635,7 @@ impl Parser {
         // A trailing `*` (`Mtx*`) is a pointer to the whole array — not modeled; defer.
         if let Token::Identifier(name) = self.peek() {
             if let Some(&(element, total, inner)) = self.array_typedefs.get(name) {
+                self.last_array_typedef_row = self.array_typedef_rows.get(name).cloned();
                 self.advance();
                 if *self.peek() == Token::Star {
                     return Err(Diagnostic::error(
@@ -644,6 +646,7 @@ impl Parser {
                 return Ok(Type::Pointer(pointee_of(element)?));
             }
             if let Some(&(element, length)) = self.row_pointer_typedefs.get(name) {
+                self.last_array_typedef_row = self.array_typedef_rows.get(name).cloned();
                 self.advance();
                 if *self.peek() == Token::Star {
                     return Err(Diagnostic::error(

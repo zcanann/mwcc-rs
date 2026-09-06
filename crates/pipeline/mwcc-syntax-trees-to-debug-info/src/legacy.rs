@@ -8,6 +8,7 @@ mod enumerations;
 mod fatal_messaging;
 mod functions;
 mod general;
+mod general_records;
 mod guarded_global_callbacks;
 mod module_lifecycle;
 mod profile_pointer_tables;
@@ -547,77 +548,23 @@ pub(super) fn lower(
             .iter()
             .map(|(function, _)| *function)
             .collect::<Vec<_>>();
-        let mut aggregate_keys = Vec::new();
-        let mut type_requests = Vec::new();
-        for function in &source_function_refs {
-            if let Some(tag) = unit.function_return_aggregate_tags.get(&function.name) {
-                if !aggregate_keys.contains(tag) {
-                    aggregate_keys.push(tag.clone());
-                    type_requests.push(data::GeneralTypeRequest::Aggregate(tag.clone()));
-                }
-            }
-            for parameter in &function.parameters {
-                if let Some(tag) = unit
-                    .function_parameter_aggregate_tags
-                    .get(&(function.name.clone(), parameter.name.clone()))
-                {
-                    if !aggregate_keys.contains(tag) {
-                        aggregate_keys.push(tag.clone());
-                        type_requests.push(data::GeneralTypeRequest::Aggregate(tag.clone()));
-                    }
-                }
-            }
-            for (local_index, local) in function.locals.iter().enumerate() {
-                if let Some(length) = local.array_length {
-                    if !matches!(
-                        local.declared_type,
-                        Type::Pointer(_) | Type::Struct { .. } | Type::StructPointer { .. }
-                    ) {
-                        type_requests.push(data::GeneralTypeRequest::ScalarLocalArray {
-                            function: function.name.clone(),
-                            local_index,
-                            element_type: local.declared_type,
-                            source_fundamental: unit
-                                .function_local_fundamentals
-                                .get(&(function.name.clone(), local.name.clone()))
-                                .copied(),
-                            length,
-                        });
-                    }
-                }
-                if let Some(tag) = unit
-                    .function_local_aggregate_tags
-                    .get(&(function.name.clone(), local.name.clone()))
-                {
-                    if !aggregate_keys.contains(tag) {
-                        aggregate_keys.push(tag.clone());
-                        type_requests.push(data::GeneralTypeRequest::Aggregate(tag.clone()));
-                    }
-                }
-            }
-        }
-        let data = data::general_records(unit, &globals, first_global_id, &type_requests)?;
-        let variables = general::variables(
+        let data = data::general_records_directly_followed(
             unit,
-            &source_functions,
-            machine_functions,
-            &data.global_ids,
-        );
-        let function_plan =
-            functions::selected_plan_with_variables(&source_function_refs, data.next_id, &variables)?;
-        records.extend(data.records);
-        records.extend(function_plan.records_with_local_array_ids(
+            &globals,
+            first_global_id,
+            &[],
+            &std::collections::HashMap::new(),
+        )?;
+        let variables =
+            general::variables(unit, &source_functions, machine_functions, &data.global_ids);
+        records.extend(general_records::records(
             unit,
+            data,
+            &source_function_refs,
+            &variables,
             &layout,
-            &data.aggregate_ids,
-            &data.local_array_ids,
-            None,
         )?);
-        return finish(
-            line,
-            records,
-            DebugLayout::BetweenFullAndSmallDataGrouped,
-        );
+        return finish(line, records, DebugLayout::BetweenFullAndSmallDataGrouped);
     }
 
     for (index, global) in globals.iter().enumerate() {

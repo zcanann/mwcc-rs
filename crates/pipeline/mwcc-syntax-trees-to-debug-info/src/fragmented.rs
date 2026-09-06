@@ -1167,65 +1167,65 @@ fn debug_fragment_boundaries(
     bytes: &[u8],
     compile_unit_size: u32,
     first_type_ordinal: u32,
-) -> Compilation<(
-    Vec<FragmentBoundary>,
-    Vec<FragmentBoundary>,
-    u32,
-    u32,
-    u32,
-)> {
+) -> Compilation<(Vec<FragmentBoundary>, Vec<FragmentBoundary>, u32, u32, u32)> {
     let mut cursor = compile_unit_size;
     let mut type_fragments = Vec::new();
     let mut ordinal = first_type_ordinal;
-    loop {
-        let size = read_u32(bytes, cursor)?;
-        if size == 4 {
-            break;
-        }
-        let tag = read_u16(bytes, cursor + 4)?;
-        if tag == Tag::GlobalSubroutine as u16 || tag == Tag::LocalSubroutine as u16 {
-            break;
-        }
-        if !matches!(
-            tag,
-            value if value == Tag::ArrayType as u16
-                || value == Tag::ClassType as u16
-                || value == Tag::EnumerationType as u16
-                || value == Tag::ModifiedType as u16
-                || value == Tag::StructureType as u16
-                || value == Tag::UnionType as u16
-        ) {
-            return Err(Diagnostic::error(format!(
-                "debug-info: unsupported GC 4.1 top-level DWARF tag 0x{tag:04x}",
-            )));
-        }
-        let offset = cursor;
-        cursor = advance_record(bytes, cursor)?;
-        if tag == Tag::ClassType as u16
-            || tag == Tag::StructureType as u16
-            || tag == Tag::UnionType as u16
-        {
-            while read_u32(bytes, cursor)? != 4 {
-                if read_u16(bytes, cursor + 4)? != Tag::Member as u16 {
-                    return Err(Diagnostic::error(
-                        "debug-info: invalid GC 4.1 aggregate child record",
-                    ));
-                }
-                cursor = advance_record(bytes, cursor)?;
+    let mut fragments = Vec::with_capacity(unit.functions.len());
+    for function in &unit.functions {
+        loop {
+            let size = read_u32(bytes, cursor)?;
+            if size == 4 {
+                break;
             }
-            cursor += 4;
+            let tag = read_u16(bytes, cursor + 4)?;
+            if tag == Tag::GlobalSubroutine as u16 || tag == Tag::LocalSubroutine as u16 {
+                break;
+            }
+            if !matches!(
+                tag,
+                value if value == Tag::ArrayType as u16
+                    || value == Tag::ClassType as u16
+                    || value == Tag::EnumerationType as u16
+                    || value == Tag::ModifiedType as u16
+                    || value == Tag::StructureType as u16
+                    || value == Tag::UnionType as u16
+            ) {
+                return Err(Diagnostic::error(format!(
+                    "debug-info: unsupported GC 4.1 top-level DWARF tag 0x{tag:04x}",
+                )));
+            }
+            let offset = cursor;
+            cursor = advance_record(bytes, cursor)?;
+            if tag == Tag::ClassType as u16
+                || tag == Tag::StructureType as u16
+                || tag == Tag::UnionType as u16
+            {
+                while read_u32(bytes, cursor)? != 4 {
+                    if read_u16(bytes, cursor + 4)? != Tag::Member as u16 {
+                        return Err(Diagnostic::error(
+                            "debug-info: invalid GC 4.1 aggregate child record",
+                        ));
+                    }
+                    cursor = advance_record(bytes, cursor)?;
+                }
+                cursor += 4;
+            }
+            type_fragments.push(FragmentBoundary {
+                name: format!(".dwarf.{tag:04x}..{ordinal}"),
+                offset,
+                size: cursor - offset,
+            });
+            ordinal = ordinal
+                .checked_add(1)
+                .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 type ordinal"))?;
         }
-        type_fragments.push(FragmentBoundary {
-            name: format!(".dwarf.{tag:04x}..{ordinal}"),
-            offset,
-            size: cursor - offset,
-        });
-        ordinal = ordinal
-            .checked_add(1)
-            .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 type ordinal"))?;
+
+        let (fragment, end) = function_fragment_boundary(function, bytes, cursor)?;
+        fragments.push(fragment);
+        cursor = end;
     }
 
-    let (fragments, cursor) = function_fragment_boundaries(unit, bytes, cursor)?;
     let first_null_offset = cursor;
     if read_u32(bytes, first_null_offset)? != 4 {
         return Err(Diagnostic::error(
@@ -1266,42 +1266,56 @@ fn function_fragment_boundaries(
     let mut cursor = compile_unit_size;
     let mut fragments = Vec::with_capacity(unit.functions.len());
     for function in &unit.functions {
-        let offset = cursor;
+        let (fragment, end) = function_fragment_boundary(function, bytes, cursor)?;
+        fragments.push(fragment);
+        cursor = end;
+    }
+    Ok((fragments, cursor))
+}
+
+/// One function fragment, independent of types emitted before the next one.
+fn function_fragment_boundary(
+    function: &mwcc_syntax_trees::Function,
+    bytes: &[u8],
+    mut cursor: u32,
+) -> Compilation<(FragmentBoundary, u32)> {
+    let offset = cursor;
+    let tag = read_u16(bytes, cursor + 4)?;
+    if tag != Tag::GlobalSubroutine as u16 && tag != Tag::LocalSubroutine as u16 {
+        return Err(Diagnostic::error(format!(
+            "debug-info: expected a GC 4.1 function fragment, found tag 0x{tag:04x}",
+        )));
+    }
+    cursor = advance_record(bytes, cursor)?;
+    let mut owns_children = false;
+    loop {
+        let size = read_u32(bytes, cursor)?;
+        if size == 4 {
+            break;
+        }
         let tag = read_u16(bytes, cursor + 4)?;
-        if tag != Tag::GlobalSubroutine as u16 && tag != Tag::LocalSubroutine as u16 {
-            return Err(Diagnostic::error(format!(
-                "debug-info: expected a GC 4.1 function fragment, found tag 0x{tag:04x}",
-            )));
+        if tag != Tag::FormalParameter as u16 && tag != Tag::LocalVariable as u16 {
+            break;
         }
         cursor = advance_record(bytes, cursor)?;
-        let mut owns_children = false;
-        loop {
-            let size = read_u32(bytes, cursor)?;
-            if size == 4 {
-                break;
-            }
-            let tag = read_u16(bytes, cursor + 4)?;
-            if tag != Tag::FormalParameter as u16 && tag != Tag::LocalVariable as u16 {
-                break;
-            }
-            cursor = advance_record(bytes, cursor)?;
-            owns_children = true;
+        owns_children = true;
+    }
+    if owns_children {
+        if read_u32(bytes, cursor)? != 4 {
+            return Err(Diagnostic::error(
+                "debug-info: invalid GC 4.1 function-child terminator",
+            ));
         }
-        if owns_children {
-            if read_u32(bytes, cursor)? != 4 {
-                return Err(Diagnostic::error(
-                    "debug-info: invalid GC 4.1 function-child terminator",
-                ));
-            }
-            cursor += 4;
-        }
-        fragments.push(FragmentBoundary {
+        cursor += 4;
+    }
+    Ok((
+        FragmentBoundary {
             name: format!(".dwarf.0006.{}", function.name),
             offset,
             size: cursor - offset,
-        });
-    }
-    Ok((fragments, cursor))
+        },
+        cursor,
+    ))
 }
 
 fn advance_record(bytes: &[u8], offset: u32) -> Compilation<u32> {

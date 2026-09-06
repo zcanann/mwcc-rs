@@ -22,8 +22,8 @@ mod types;
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{
-    ConditionalOrigin, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration,
-    LocalDataRelocation, LocalDataRelocationTarget, LoopKind, Parameter, Pointee, PointerElement,
+    ConditionalOrigin, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDataRelocation,
+    LocalDataRelocationTarget, LocalDeclaration, LoopKind, Parameter, Pointee, PointerElement,
     SourceFundamentalType, Statement, SwitchArm, TranslationUnit, Type,
 };
 use mwcc_tokens::Token;
@@ -1369,18 +1369,15 @@ impl Parser {
             function_return_enumeration_tags: std::mem::take(&mut self.function_return_enums),
             function_return_fundamentals: std::mem::take(&mut self.function_return_fundamentals),
             function_source_names: std::mem::take(&mut self.function_source_names),
+            function_parameter_row_arrays: std::mem::take(&mut self.function_parameter_row_arrays),
             function_parameter_fundamentals: std::mem::take(
                 &mut self.function_parameter_fundamentals,
             ),
             function_parameter_pointee_const: std::mem::take(
                 &mut self.function_parameter_pointee_const,
             ),
-            function_local_fundamentals: std::mem::take(
-                &mut self.function_local_fundamentals,
-            ),
-            function_local_pointee_const: std::mem::take(
-                &mut self.function_local_pointee_const,
-            ),
+            function_local_fundamentals: std::mem::take(&mut self.function_local_fundamentals),
+            function_local_pointee_const: std::mem::take(&mut self.function_local_pointee_const),
             prototypes,
             static_function_prototype_positions: std::mem::take(
                 &mut self.static_function_prototype_positions,
@@ -2356,6 +2353,9 @@ impl Parser {
                             );
                         }
                         if let Some(entry) = array_entry {
+                            if let Some(row) = self.array_typedef_rows.get(&existing).cloned() {
+                                self.array_typedef_rows.insert(alias.clone(), row);
+                            }
                             self.array_typedefs.insert(alias.clone(), entry);
                         }
                         if let Some(function_type) = function_pointer {
@@ -2391,6 +2391,15 @@ impl Parser {
                         let length = self.parse_integer_constant()? as u16;
                         self.expect(Token::BracketClose)?;
                         self.expect(Token::Semicolon)?;
+                        self.array_typedef_rows.insert(
+                            alias.clone(),
+                            mwcc_syntax_trees::SourceRowArray {
+                                identity: self.position,
+                                element_type: aliased,
+                                source_fundamental: aliased_source_fundamental,
+                                length,
+                            },
+                        );
                         self.row_pointer_typedefs.insert(alias, (aliased, length));
                         return Ok(());
                     }
@@ -2410,10 +2419,12 @@ impl Parser {
                     let mut total: u16 = 1;
                     let mut inner: u16 = 1;
                     let mut first = true;
+                    let mut dimensions = 0;
                     while *self.peek() == Token::BracketOpen {
                         self.advance();
                         let count = self.parse_integer_constant()? as u16;
                         self.expect(Token::BracketClose)?;
+                        dimensions += 1;
                         total = total.saturating_mul(count);
                         if !first {
                             inner = inner.saturating_mul(count);
@@ -2421,6 +2432,17 @@ impl Parser {
                         first = false;
                     }
                     self.expect(Token::Semicolon)?;
+                    if dimensions == 2 {
+                        self.array_typedef_rows.insert(
+                            name.clone(),
+                            mwcc_syntax_trees::SourceRowArray {
+                                identity: self.position,
+                                element_type: aliased,
+                                source_fundamental: aliased_source_fundamental,
+                                length: inner,
+                            },
+                        );
+                    }
                     self.array_typedefs.insert(name, (aliased, total, inner));
                     return Ok(());
                 }
@@ -3230,6 +3252,7 @@ impl Parser {
             self.expect(Token::ParenOpen)?;
 
             let mut parameters = Vec::new();
+            let mut parameter_row_arrays = Vec::new();
             let mut cxx_parameters = Vec::new();
             let mut cxx_reference_parameters = std::collections::HashSet::new();
             let mut cxx_scalar_reference_parameters = std::collections::HashMap::new();
@@ -3284,6 +3307,7 @@ impl Parser {
                     // keep `(element, inner)` to record the row stride under the
                     // parameter's name below so `m[i][j]` desugars with it.
                     let array_typedef_marker = self.last_array_typedef.take();
+                    let array_typedef_row = self.last_array_typedef_row.take();
                     // Extra declarator stars — `wchar_t ** end` is a pointer to
                     // pointer; each further `*` deepens to a plain pointer.
                     while *self.peek() == Token::Star {
@@ -3355,11 +3379,21 @@ impl Parser {
                         };
                         // C adjusts an array parameter to a pointer. A trailing
                         // dimension remains observable as its row stride.
-                        let (parameter_type, array_parameter_extents) = self.parse_array_parameter_suffix(
-                            &name,
-                            parameter_type,
-                            array_typedef_marker,
-                        )?;
+                        let (parameter_type, array_parameter_extents) = self
+                            .parse_array_parameter_suffix(
+                                &name,
+                                parameter_type,
+                                array_typedef_marker,
+                            )?;
+                        if let Some(row) = Self::parameter_row_array(
+                            parameter_start,
+                            cxx_source_type,
+                            cxx_source_fundamental,
+                            array_typedef_row,
+                            &array_parameter_extents,
+                        )? {
+                            parameter_row_arrays.push((name.clone(), row));
+                        }
                         if parameter_is_register && !name.is_empty() {
                             asm_register_parameters.insert(name.clone());
                         }
@@ -3653,6 +3687,12 @@ impl Parser {
             if name != source_function_name {
                 self.function_source_names
                     .insert(name.clone(), source_function_name);
+            }
+            for (parameter, row) in parameter_row_arrays {
+                if !parameter.is_empty() {
+                    self.function_parameter_row_arrays
+                        .insert((name.clone(), parameter), row);
+                }
             }
             for (parameter, fundamental) in source_parameter_fundamentals {
                 if !parameter.is_empty() {

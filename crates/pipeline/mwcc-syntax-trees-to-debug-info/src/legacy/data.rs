@@ -33,11 +33,13 @@ pub(super) struct DataRecords {
     /// final function identity and source-local index so shadowed names remain
     /// unambiguous.
     pub local_array_ids: HashMap<(String, usize), DebugEntryId>,
+    pub parameter_row_array_ids: HashMap<usize, DebugEntryId>,
 }
 
 #[derive(Clone, Debug)]
 pub(super) enum GeneralTypeRequest {
     Aggregate(String),
+    ParameterRowArray(mwcc_syntax_trees::SourceRowArray),
     ScalarLocalArray {
         function: String,
         local_index: usize,
@@ -396,6 +398,7 @@ pub(super) fn fragmented_records(
         global_ids,
         aggregate_ids,
         local_array_ids: HashMap::new(),
+        parameter_row_array_ids: HashMap::new(),
     })
 }
 
@@ -490,6 +493,7 @@ pub(super) fn records<'a>(
         },
         &[],
         false,
+        &HashMap::new(),
     )
 }
 
@@ -511,6 +515,7 @@ pub(super) fn general_records<'a>(
         Continuation::FunctionsAfterDataEnd,
         type_requests,
         true,
+        &HashMap::new(),
     )
 }
 
@@ -529,6 +534,7 @@ pub(super) fn records_directly_followed_by_functions<'a>(
         Continuation::FunctionsDirectly,
         &[],
         false,
+        &HashMap::new(),
     )
 }
 
@@ -554,6 +560,28 @@ pub(super) fn records_with_local_aggregates_directly_followed_by_functions<'a>(
         Continuation::FunctionsDirectly,
         &type_requests,
         false,
+        &HashMap::new(),
+    )
+}
+
+/// Incremental general-unit type emission. Previously emitted aggregate IDs
+/// are shared across function boundaries; the following ordinal belongs to
+/// the next type or function, independent of its eventual byte offset.
+pub(super) fn general_records_directly_followed<'a>(
+    unit: &'a TranslationUnit,
+    globals: &[&'a GlobalDeclaration],
+    first_id: DebugEntryId,
+    type_requests: &[GeneralTypeRequest],
+    known_aggregates: &HashMap<String, DebugEntryId>,
+) -> Compilation<DataRecords> {
+    records_with_continuation(
+        unit,
+        globals,
+        first_id,
+        Continuation::FunctionsDirectly,
+        type_requests,
+        true,
+        known_aggregates,
     )
 }
 
@@ -564,10 +592,11 @@ fn records_with_continuation<'a>(
     continuation: Continuation,
     trailing_type_requests: &[GeneralTypeRequest],
     allow_opaque_callable_signatures: bool,
+    known_aggregates: &HashMap<String, DebugEntryId>,
 ) -> Compilation<DataRecords> {
     let mut next_id = first_id.0;
     let mut plans = Vec::with_capacity(globals.len());
-    let mut aggregate_ids = HashMap::new();
+    let mut aggregate_ids = known_aggregates.clone();
     for global in globals {
         let (start_id, global_id, kind) = if let Some(function_type) =
             unit.global_function_types.get(&global.name)
@@ -664,27 +693,33 @@ fn records_with_continuation<'a>(
 
     let mut trailing_types = Vec::new();
     let mut local_array_ids = HashMap::new();
+    let mut parameter_row_array_ids = HashMap::new();
     for request in trailing_type_requests {
         match request {
             GeneralTypeRequest::Aggregate(key) => {
                 let mut aggregates = Vec::new();
-                plan_aggregate(
-                    unit,
-                    key,
-                    &mut next_id,
-                    &mut aggregate_ids,
-                    &mut aggregates,
-                )?;
-                trailing_types.extend(
-                    aggregates
-                        .into_iter()
-                        .map(TrailingTypePlan::Aggregate),
-                );
+                plan_aggregate(unit, key, &mut next_id, &mut aggregate_ids, &mut aggregates)?;
+                trailing_types.extend(aggregates.into_iter().map(TrailingTypePlan::Aggregate));
                 if !aggregate_ids.contains_key(key) {
                     return Err(Diagnostic::error(format!(
                         "debug-info: local aggregate identity '{key}' was not retained"
                     )));
                 }
+            }
+            GeneralTypeRequest::ParameterRowArray(row) => {
+                if row.length == 0 {
+                    return Err(Diagnostic::error(
+                        "debug-info: a parameter row array has zero extent",
+                    ));
+                }
+                let id = allocate(&mut next_id);
+                parameter_row_array_ids.insert(row.identity, id);
+                trailing_types.push(TrailingTypePlan::ScalarLocalArray {
+                    id,
+                    element_type: row.element_type,
+                    source_fundamental: row.source_fundamental,
+                    length: row.length,
+                });
             }
             GeneralTypeRequest::ScalarLocalArray {
                 function,
@@ -862,6 +897,7 @@ fn records_with_continuation<'a>(
         global_ids,
         aggregate_ids,
         local_array_ids,
+        parameter_row_array_ids,
     })
 }
 

@@ -226,6 +226,25 @@ impl SelectedFunctionPlan<'_> {
         local_array_ids: &HashMap<(String, usize), DebugEntryId>,
         following: Option<DebugEntryId>,
     ) -> Compilation<Vec<DebugRecord>> {
+        self.records_with_array_ids(
+            unit,
+            layout,
+            aggregate_ids,
+            local_array_ids,
+            &HashMap::new(),
+            following,
+        )
+    }
+
+    pub(super) fn records_with_array_ids(
+        &self,
+        unit: &TranslationUnit,
+        layout: &FunctionLayout,
+        aggregate_ids: &HashMap<String, DebugEntryId>,
+        local_array_ids: &HashMap<(String, usize), DebugEntryId>,
+        parameter_row_array_ids: &HashMap<usize, DebugEntryId>,
+        following: Option<DebugEntryId>,
+    ) -> Compilation<Vec<DebugRecord>> {
         let mut records = Vec::new();
         for (index, plan) in self.functions.iter().enumerate() {
             let sibling = self
@@ -345,33 +364,61 @@ impl SelectedFunctionPlan<'_> {
                     .function_parameter_fundamentals
                     .get(&(plan.function.name.clone(), parameter.name.clone()))
                     .copied();
-                let type_attribute = match parameter.parameter_type {
-                    Type::StructPointer { .. }
-                        if unit
-                            .function_parameter_pointee_const
-                            .contains(&(plan.function.name.clone(), parameter.name.clone())) =>
+                let row = unit
+                    .function_parameter_row_arrays
+                    .get(&(plan.function.name.clone(), parameter.name.clone()));
+                let type_attribute = if let Some(row) = row {
+                    let id = parameter_row_array_ids
+                        .get(&row.identity)
+                        .copied()
+                        .ok_or_else(|| {
+                            Diagnostic::error(
+                                "debug-info: a parameter row array needs an emitted type DIE",
+                            )
+                        })?;
+                    let modifiers: &[u8] = if unit
+                        .function_parameter_pointee_const
+                        .contains(&(plan.function.name.clone(), parameter.name.clone()))
                     {
-                        aggregate_id
-                            .map(|id| data::modified_user_defined_type_with_modifiers(id, &[1, 3]))
-                            .ok_or_else(|| {
-                                Diagnostic::error(
-                                    "debug-info: a const struct pointer needs an aggregate DIE",
-                                )
-                            })
+                        &[1, 3]
+                    } else {
+                        &[1]
+                    };
+                    Ok(data::modified_user_defined_type_with_modifiers(
+                        id, modifiers,
+                    ))
+                } else {
+                    match parameter.parameter_type {
+                        Type::StructPointer { .. }
+                            if unit.function_parameter_pointee_const.contains(&(
+                                plan.function.name.clone(),
+                                parameter.name.clone(),
+                            )) =>
+                        {
+                            aggregate_id
+                                .map(|id| {
+                                    data::modified_user_defined_type_with_modifiers(id, &[1, 3])
+                                })
+                                .ok_or_else(|| {
+                                    Diagnostic::error(
+                                        "debug-info: a const struct pointer needs an aggregate DIE",
+                                    )
+                                })
+                        }
+                        Type::Pointer(pointee)
+                            if unit.function_parameter_pointee_const.contains(&(
+                                plan.function.name.clone(),
+                                parameter.name.clone(),
+                            )) =>
+                        {
+                            data::const_pointer_type_attribute(pointee, source_fundamental)
+                        }
+                        _ => data::member_type_attribute(
+                            parameter.parameter_type,
+                            aggregate_id,
+                            source_fundamental,
+                        ),
                     }
-                    Type::Pointer(pointee)
-                        if unit.function_parameter_pointee_const.contains(&(
-                            plan.function.name.clone(),
-                            parameter.name.clone(),
-                        )) =>
-                    {
-                        data::const_pointer_type_attribute(pointee, source_fundamental)
-                    }
-                    _ => data::member_type_attribute(
-                        parameter.parameter_type,
-                        aggregate_id,
-                        source_fundamental,
-                    ),
                 };
                 records.push(DebugRecord::Entry(DebugEntry {
                     id: plan.parameter_ids[selected_index],

@@ -20,7 +20,7 @@ pub use function::{
     CxxAbiVtableComponent, CxxInlineOrdinalFacts, DiscardedInlineAggregateImage, Function,
     FunctionSource, GlobalDeclaration, GuardedReturn, InlineAsmBlock, InlineExpansionFacts,
     LocalDataRelocation, LocalDataRelocationTarget, LocalDeclaration, LoopKind, Parameter,
-    PointerElement, Statement, SwitchArm, TranslationUnit,
+    PointerElement, SourceRowArray, Statement, SwitchArm, TranslationUnit,
 };
 pub use operators::{BinaryOperator, UnaryOperator};
 pub use types::{Pointee, Type};

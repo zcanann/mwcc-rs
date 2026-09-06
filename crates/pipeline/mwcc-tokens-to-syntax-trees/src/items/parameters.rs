@@ -14,6 +14,29 @@ use crate::parser::Parser;
 use super::pointee_of;
 
 impl Parser {
+    pub(super) fn parameter_row_array(
+        identity: usize,
+        element_type: Type,
+        source_fundamental: Option<mwcc_syntax_trees::SourceFundamentalType>,
+        typedef_row: Option<mwcc_syntax_trees::SourceRowArray>,
+        extents: &[Option<u64>],
+    ) -> Compilation<Option<mwcc_syntax_trees::SourceRowArray>> {
+        if let Some(row) = typedef_row {
+            return Ok(Some(row));
+        }
+        let [_, Some(columns)] = extents else {
+            return Ok(None);
+        };
+        let length = u16::try_from(*columns)
+            .map_err(|_| Diagnostic::error("an array parameter row extent is out of range"))?;
+        Ok(Some(mwcc_syntax_trees::SourceRowArray {
+            identity,
+            element_type,
+            source_fundamental,
+            length,
+        }))
+    }
+
     pub(super) fn parse_array_parameter_suffix(
         &mut self,
         name: &str,

@@ -174,11 +174,14 @@ impl Parser {
                 self.expect(Token::Dot)?;
                 break;
             }
+            let parameter_start = self.position;
             let mut parameter_type = self.parse_type()?;
+            let source_type = parameter_type;
             let fundamental = self.last_source_fundamental.take();
             let pointee_const = self.last_type_was_const;
             let tag = self.last_struct_tag.take();
             let array_typedef = self.last_array_typedef.take();
+            let array_typedef_row = self.last_array_typedef_row.take();
             if parameter_type == Type::Void
                 && *self.peek() == Token::ParenClose
                 && parameters.is_empty()
@@ -191,10 +194,21 @@ impl Parser {
             } else {
                 String::new()
             };
-            (parameter_type, _) =
+            let (adjusted_type, extents) =
                 self.parse_array_parameter_suffix(&name, parameter_type, array_typedef)?;
+            parameter_type = adjusted_type;
+            let row = Self::parameter_row_array(
+                parameter_start,
+                source_type,
+                fundamental,
+                array_typedef_row,
+                &extents,
+            )?;
             if !name.is_empty() {
                 let key = (function_name.to_owned(), name.clone());
+                if let Some(row) = row {
+                    self.function_parameter_row_arrays.insert(key.clone(), row);
+                }
                 if let Some(tag) = tag {
                     self.function_parameter_structs.insert(key.clone(), tag);
                 }

@@ -4,13 +4,74 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, typed assembly parameters (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, parameter row-array types and declaration order (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `aa60ff6ab2af415ef23e39812969ad2eba9cb9d6bee697f8b76c3d7c09f80be1:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `376bec060fe1bc5db17b9e9111873a5846e9d2299075e8cae060f78d8a7607f1:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Focused matrix row-array follow-up, 2026-09-06
+
+Three configured matrix translation units improved from `DIFF` at baseline
+`b871a334` to authoritative whole-object `BYTE`:
+
+- Animal Crossing GAFE01_00 and GAFU01_00, GC/1.2.5.
+- Ocarina of Time GC port `mq-j`, GC/1.2.5n.
+
+Animal Crossing GAFE01_00 now matches its 308-byte `.text`, 768-byte `.line`,
+and 868-byte `.debug`, including symbols and relocations. These are complete
+object matches, not executable-section projections.
+
+The parser retains the declaration identity, scalar identity, and row extent
+behind decayed C/C++ and assembly array parameters. Independently declared array
+typedefs remain distinct even with equal dimensions; aliases reuse the original
+identity. General legacy debug lowering emits each type immediately before its
+first consuming function while sharing previously emitted aggregate records.
+The later fragment boundary walker also accepts types between functions.
+
+A fresh comparison of all 44 configured `mtxvec.c` rows against the previous
+commit gives:
+
+| Outcome | Baseline | Current |
+| --- | ---: | ---: |
+| Whole-object exact, nonempty | 10 | 13 |
+| Whole-object exact, empty | 6 | 6 |
+| Different object | 18 | 15 |
+| Compiler deferral | 7 | 7 |
+| Harness failure | 3 | 3 |
+
+Only the three rows above changed status. The six empty matches are two Mario
+Kart Double Dash and four Metroid Prime configurations. The three harness
+failures are Twilight Princess GZ2E01/GZ2J01/GZ2P01 Revolution matrix rows; they
+remain unmeasured. The previous eight-row assembly-debug selection improves
+from 4 to 6 exact, with one difference and one deferral. No full project has
+been proven exact.
+
+Canaries 1541/1543 cover declaration reuse, separate identical typedefs,
+explicit array parameters, unsigned-long rows, and row-pointer typedefs. They
+match **16/22** whole objects across the eleven compiler identities used in the
+preceding checkpoint; later GC/2.7, GC/3.0a3, and Wii/1.0 debug objects still
+differ. Canary 1542 exercises ordinary C row parameters: its instructions match
+on all eleven builds, but debug locations/line records or fragment layout still
+differ. Across all three new canaries the result is **16/33 exact**, with no
+oracle rejections or exclusions. These failures remain in the corpus.
+
+A shared debug-canary regression denominator across nine compiler identities
+retains **26/46 exact**, with no outcome changes. All 69 debug unit tests pass.
+The parser suite passes 398/400, including the new C/C++ declaration-identity
+test; both failures reproduce at baseline (397/399):
+`recovers_friend_bearing_layouts_and_expression_template_arguments` and
+`retains_brace_initialized_aggregate_image_from_discarded_inline`.
+
+Final clean-build evidence:
+`target/reference-parity/376bec060fe1bc5d-5e4ca1ddc460f4d8.jsonl`.
+Baseline matrix evidence:
+`target/reference-parity/828b2f54d8cd2072-5e4ca1ddc460f4d8.jsonl`.
+Additional local reports: `target/row-array-clean-oracle.log`,
+`target/row-array-final-tests.log`, `target/row-array-baseline-parser-tests.log`,
+and `target/row-array-{regressions,baseline}.log`.
 
 ## Focused typed assembly-parameter follow-up, 2026-09-06
 

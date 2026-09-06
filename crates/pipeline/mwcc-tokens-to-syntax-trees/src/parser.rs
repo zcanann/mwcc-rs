@@ -878,6 +878,11 @@ pub(crate) struct Parser {
     /// stride a decayed parameter subscripts by. The `Type` model has no array
     /// variant of its own, so struct members of this type lay out from the total.
     pub(crate) array_typedefs: HashMap<String, (Type, u16, u16)>,
+    /// Source declaration identity and row shape, shared by typedef aliases.
+    pub(crate) array_typedef_rows: HashMap<String, mwcc_syntax_trees::SourceRowArray>,
+    pub(crate) last_array_typedef_row: Option<mwcc_syntax_trees::SourceRowArray>,
+    pub(crate) function_parameter_row_arrays:
+        HashMap<(String, String), mwcc_syntax_trees::SourceRowArray>,
     /// `typedef`-declared pointer-to-array aliases (`typedef float (*MtxPtr)[4];`)
     /// mapped to their element type and pointed-to-array length — a value of this
     /// type is a ROW pointer (`p[i][j]` strides by the array length).

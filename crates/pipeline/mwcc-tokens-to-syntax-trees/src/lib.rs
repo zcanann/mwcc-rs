@@ -404,6 +404,9 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         struct_typedefs: asserted_aggregate_aliases,
         struct_pointer_typedefs: HashMap::new(),
         array_typedefs: HashMap::new(),
+        array_typedef_rows: HashMap::new(),
+        last_array_typedef_row: None,
+        function_parameter_row_arrays: HashMap::new(),
         row_pointer_typedefs: HashMap::new(),
         last_array_typedef: None,
         decayed_row_pointers: HashMap::new(),
@@ -2042,6 +2045,36 @@ void invoke(void) {\n\
                 .get(&(emitted.clone(), "bytes".into())),
             Some(&mwcc_syntax_trees::SourceFundamentalType::Void)
         );
+    }
+
+    #[test]
+    fn retains_row_array_declaration_identity_in_c_and_cxx_signatures() {
+        let source = "typedef unsigned long Matrix[2][3];
+            typedef Matrix Alias;
+            typedef unsigned long Separate[2][3];
+            void first(Matrix m) {}
+            void reused(Alias m) {}
+            void separate(Separate m) {}
+            void written(unsigned long m[2][3]) {}";
+        for cplusplus in [false, true] {
+            let unit = parse_translation_unit(
+                mwcc_source_to_tokens::tokenize(source).unwrap(),
+                cplusplus, true, 1, 3,
+            ).unwrap();
+            let rows = unit.functions.iter().map(|function| {
+                &unit.function_parameter_row_arrays[&(function.name.clone(), "m".into())]
+            }).collect::<Vec<_>>();
+            assert_eq!(rows.len(), 4);
+            assert_eq!(rows[0].identity, rows[1].identity);
+            assert_ne!(rows[0].identity, rows[2].identity);
+            assert_ne!(rows[0].identity, rows[3].identity);
+            for row in rows {
+                assert_eq!(row.length, 3);
+                assert_eq!(row.element_type, mwcc_syntax_trees::Type::UnsignedInt);
+                assert_eq!(row.source_fundamental,
+                    Some(mwcc_syntax_trees::SourceFundamentalType::UnsignedLong));
+            }
+        }
     }
 
     #[test]

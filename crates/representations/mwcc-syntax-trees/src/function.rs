@@ -11,6 +11,17 @@ pub struct Parameter {
     pub name: String,
 }
 
+/// The row type retained when a multidimensional array parameter decays.
+/// Identity follows the original declaration: a typedef alias reuses it, while
+/// a separately declared array with equal dimensions remains distinct.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceRowArray {
+    pub identity: usize,
+    pub element_type: Type,
+    pub source_fundamental: Option<SourceFundamentalType>,
+    pub length: u16,
+}
+
 /// A local variable declaration: `type name [= expression];`. The initializer is
 /// `None` for an uninitialized local (`int x;`), whose value comes from a later
 /// assignment. For a dynamically initialized function-local static class
@@ -439,11 +450,12 @@ pub struct TranslationUnit {
     /// `unsigned int`. Keyed by emitted function name and parameter name.
     pub function_parameter_fundamentals:
         std::collections::HashMap<(String, String), SourceFundamentalType>,
+    /// Row-array source types behind decayed formal-parameter pointers.
+    pub function_parameter_row_arrays: std::collections::HashMap<(String, String), SourceRowArray>,
     /// Pointer parameters whose source declarator qualifies the pointee rather
     /// than the pointer object (`const T*` / `T const*`). Storage lowering does
     /// not distinguish that qualifier, while legacy DWARF does.
-    pub function_parameter_pointee_const:
-        std::collections::HashSet<(String, String)>,
+    pub function_parameter_pointee_const: std::collections::HashSet<(String, String)>,
     /// Source scalar identity for function locals whose executable storage
     /// collapses typedef distinctions such as `s32` versus plain `int`.
     pub function_local_fundamentals:
