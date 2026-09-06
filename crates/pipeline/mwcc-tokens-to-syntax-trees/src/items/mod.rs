@@ -1373,6 +1373,9 @@ impl Parser {
             function_parameter_fundamentals: std::mem::take(
                 &mut self.function_parameter_fundamentals,
             ),
+            function_nonvolatile_pointer_parameters: std::mem::take(
+                &mut self.function_nonvolatile_pointer_parameters,
+            ),
             function_parameter_pointee_const: std::mem::take(
                 &mut self.function_parameter_pointee_const,
             ),
@@ -3253,6 +3256,7 @@ impl Parser {
 
             let mut parameters = Vec::new();
             let mut parameter_row_arrays = Vec::new();
+            let mut nonvolatile_pointer_parameters = Vec::new();
             let mut cxx_parameters = Vec::new();
             let mut cxx_reference_parameters = std::collections::HashSet::new();
             let mut cxx_scalar_reference_parameters = std::collections::HashMap::new();
@@ -3293,6 +3297,10 @@ impl Parser {
                     let parameter_is_register = self.tokens[parameter_start..self.position]
                         .iter()
                         .any(|token| matches!(token, Token::Identifier(word) if word == "register"));
+                    let pointee_is_volatile = self.last_type_was_volatile
+                        || self.last_struct_tag.as_deref().is_some_and(|tag| {
+                            self.aggregate_has_volatile_fields(tag)
+                        });
                     let cxx_source_type = parameter_type;
                     let cxx_is_wchar = self.last_type_was_wchar;
                     let cxx_source_is_aggregate_value = self.last_type_was_aggregate_reference;
@@ -3393,6 +3401,11 @@ impl Parser {
                             &array_parameter_extents,
                         )? {
                             parameter_row_arrays.push((name.clone(), row));
+                        }
+                        if matches!(parameter_type, Type::Pointer(_) | Type::StructPointer { .. })
+                            && !name.is_empty()
+                        {
+                            nonvolatile_pointer_parameters.push((name.clone(), !pointee_is_volatile));
                         }
                         if parameter_is_register && !name.is_empty() {
                             asm_register_parameters.insert(name.clone());
@@ -3687,6 +3700,13 @@ impl Parser {
             if name != source_function_name {
                 self.function_source_names
                     .insert(name.clone(), source_function_name);
+            }
+            for (parameter, ordinary) in nonvolatile_pointer_parameters {
+                let key = (name.clone(), parameter);
+                self.function_nonvolatile_pointer_parameters.remove(&key);
+                if ordinary {
+                    self.function_nonvolatile_pointer_parameters.insert(key);
+                }
             }
             for (parameter, row) in parameter_row_arrays {
                 if !parameter.is_empty() {

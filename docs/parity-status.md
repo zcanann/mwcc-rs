@@ -4,13 +4,59 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, private floating aggregate promotion (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, shared floating snapshot loads (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `cf9e005ecd9e452f8d88e05b198aebf909a746e7488768655a2790c266ce349c:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `36e0f3172bededa06c66b409ece2d90ff3579637ef9ae7a51e1b1a67f8f046b7:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Focused floating snapshot load reuse, 2026-09-06
+
+Promoted straight-line floating snapshots now reuse repeated single-precision
+loads from source-proven ordinary pointer parameters. The parser retains that
+memory fact separately from storage types; missing facts disable reuse. C/C++
+volatile qualifiers, volatile typedefs, and aggregates containing volatile
+members do not acquire ordinary-memory permission. Casts and unsupported source
+or instruction shapes leave the previous lowering intact.
+
+The pass assigns distinct virtual identities to definitions before sharing
+loads. It preserves instruction order, clears every available load at each
+store because parameters may alias, and uses the existing allocator and
+instruction-index remapping. It inherits the preceding milestone's measured
+version/optimization policy through aggregate-promotion provenance.
+
+In Wind Waker D44J01, `C_MTXMultVec` improves from 172 to **148 bytes**, and
+`C_MTXMultVecSR` from 148 to **124 bytes**. Both now equal the reference function
+sizes after six redundant source loads are removed from each. Instruction
+scheduling and register choices remain different, so neither is counted exact.
+All eight functions still emit; the same four assembly functions remain exact
+(444/1676 reference function bytes). Loop bodies retain their previous lowering.
+
+All 44 configured matrix outcomes remain unchanged from `a6450b24`: **19 BYTE,
+15 DIFF, seven DEFER, three HARNESS**. Thirteen of the exact objects are nonempty;
+six are empty. No additional whole-object or full-project parity is claimed.
+
+Canaries 1546–1548 cover ordinary shared inputs, volatile inputs, and an
+intervening aliased output store. Across the same eleven compiler identities as
+the preceding checkpoint, they improve from **0/33 to 9/33 whole-object exact**,
+with every case oracle-runnable and no exclusions/rejections. All nine matches
+are 1546 on GC/1.1 through GC/2.7; GC/3.0a3 and Wii/1.0 remain nonexact.
+The volatile and intervening-store cases remain nonexact and stay in the corpus.
+
+A focused shared denominator of **52 comparisons** across GC/1.2.5n, GC/1.3.2,
+GC/2.6, and GC/3.0a3 improves from 18 to 21 exact. Only the three 1546 cases
+change outcome. All six aggregate/frame integration tests pass, including
+explicit volatile casts and reload placement after an aliased store. The parser
+suite passes 400/402 with the same two established baseline failures.
+
+Local evidence: `target/reference-parity/36e0f3172bededa0-5e4ca1ddc460f4d8.jsonl`,
+`target/snapshot-load-{baseline,final}.log`,
+`target/snapshot-regressions-{baseline,final}.log`,
+`target/snapshot-matrix-detail.log`, `target/snapshot-integration-tests.log`, and
+`target/snapshot-parser-tests.log`. Baseline executables were frozen from
+`a6450b24` in `target/aggregate-promotion-baseline-bin/` before implementation.
 
 ## Focused private floating aggregate follow-up, 2026-09-06
 

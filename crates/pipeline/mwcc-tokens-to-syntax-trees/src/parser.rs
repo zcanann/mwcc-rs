@@ -540,6 +540,7 @@ pub(crate) struct Parser {
     pub(crate) function_source_names: HashMap<String, String>,
     pub(crate) function_parameter_fundamentals:
         HashMap<(String, String), SourceFundamentalType>,
+    pub(crate) function_nonvolatile_pointer_parameters: HashSet<(String, String)>,
     pub(crate) function_parameter_pointee_const: HashSet<(String, String)>,
     pub(crate) function_local_fundamentals:
         HashMap<(String, String), SourceFundamentalType>,

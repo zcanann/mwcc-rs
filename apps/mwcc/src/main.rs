@@ -998,7 +998,7 @@ fn compile(
         {
             function_config.flags.cpp_exceptions = *enabled;
         }
-        match mwcc_syntax_trees_to_machine_code::lower_function(
+        match mwcc_syntax_trees_to_machine_code::lower_function_with_memory_facts(
             function,
             &unit.globals,
             &unit.aggregate_definitions,
@@ -1019,6 +1019,7 @@ fn compile(
                 .unwrap_or_default(),
             &source_inline_string_symbols,
             &unit.function_return_fundamentals,
+            &unit.function_nonvolatile_pointer_parameters,
             function_config,
         ) {
             Ok(machine_function) => {

@@ -135,3 +135,43 @@ fn address_exposed_float_aggregate_keeps_its_frame() {
     assert!(words.iter().any(|word| word & 0xfc1f0000 == 0xd0010000));
     assert!(words.iter().any(|word| word & 0xfc1f0000 == 0xc0010000));
 }
+
+#[test]
+fn floating_snapshot_shares_only_ordinary_reads_and_invalidates_at_stores() {
+    let cases: &[(&[u8], usize)] = &[
+        (include_bytes!("../../../../canaries/1546_float_aggregate_shared_loads.c"), 1),
+        (include_bytes!("../../../../canaries/1547_float_aggregate_volatile_loads.c"), 2),
+        (include_bytes!("../../../../canaries/1548_float_aggregate_alias_store.c"), 2),
+    ];
+    for &(source, expected_loads) in cases {
+        let mut config = mwcc_versions::CompilerConfig::new(mwcc_versions::GC_1_2_5N);
+        config.flags.cpp_exceptions = false;
+        let object = compile(source, "snapshot.c", config, Some(SourceLanguage::C), None, false).unwrap();
+        let words = executable_words(&object);
+        let loads = words.iter().enumerate()
+            .filter(|(_, word)| **word & 0xfc1f0000 == 0xc0040000)
+            .map(|(index, _)| index).collect::<Vec<_>>();
+        assert_eq!(loads.len(), expected_loads);
+        if source == cases[2].0 {
+            let first_store = words.iter().position(|word| word & 0xfc1f0000 == 0xd0030000).unwrap();
+            assert!(loads[0] < first_store && loads[1] > first_store, "aliasing store must end reuse");
+        }
+    }
+}
+
+#[test]
+fn explicit_volatile_pointer_cast_prevents_snapshot_read_reuse() {
+    let source = br#"struct Pair { float x, y; };
+        void preserve(float* output, float* source, float a, float b) {
+            struct Pair temporary;
+            temporary.x = *(volatile float*)source * a;
+            temporary.y = *(volatile float*)source * b;
+            output[0] = temporary.x;
+            output[1] = temporary.y;
+        }"#;
+    let mut config = mwcc_versions::CompilerConfig::new(mwcc_versions::GC_1_2_5N);
+    config.flags.cpp_exceptions = false;
+    let object = compile(source, "volatile_cast.c", config, Some(SourceLanguage::C), None, false).unwrap();
+    let words = executable_words(&object);
+    assert_eq!(words.iter().filter(|word| **word & 0xfc1f0000 == 0xc0040000).count(), 2);
+}

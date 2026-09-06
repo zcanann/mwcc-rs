@@ -138,6 +138,52 @@ pub fn lower_function(
     call_return_fundamentals: &HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
+    lower_function_with_memory_facts(
+        function,
+        globals,
+        aggregate_definitions,
+        function_return_aggregate_tags,
+        call_return_types,
+        call_parameter_types,
+        skipped_inline_names,
+        weak_materialized_names,
+        prototyped_names,
+        variadic_definitions,
+        fixed_address_arrays,
+        fixed_address_objects,
+        inline_bodies,
+        inline_summaries,
+        inline_expansion_facts,
+        source_inline_string_symbols,
+        call_return_fundamentals,
+        &HashSet::new(),
+        config,
+    )
+}
+
+/// Lower with source-proven parameter memory facts. Missing facts disable reuse.
+#[allow(clippy::too_many_arguments)]
+pub fn lower_function_with_memory_facts(
+    function: &Function,
+    globals: &[GlobalDeclaration],
+    aggregate_definitions: &HashMap<String, mwcc_syntax_trees::AggregateDefinition>,
+    function_return_aggregate_tags: &HashMap<String, String>,
+    call_return_types: &HashMap<String, mwcc_syntax_trees::Type>,
+    call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>,
+    skipped_inline_names: &std::collections::HashSet<String>,
+    weak_materialized_names: &std::collections::HashSet<String>,
+    prototyped_names: &std::collections::HashSet<String>,
+    variadic_definitions: &std::collections::HashSet<String>,
+    fixed_address_arrays: &HashMap<String, (i64, mwcc_syntax_trees::Type)>,
+    fixed_address_objects: &HashMap<String, i64>,
+    inline_bodies: &InlineBodySet,
+    inline_summaries: &InlineSummaries,
+    inline_expansion_facts: mwcc_syntax_trees::InlineExpansionFacts,
+    source_inline_string_symbols: &HashMap<Vec<u8>, String>,
+    call_return_fundamentals: &HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
+    nonvolatile_pointer_parameters: &HashSet<(String, String)>,
+    config: CompilerConfig,
+) -> Compilation<MachineFunction> {
     let mut output = lower_function_body(
         function,
         globals,
@@ -156,6 +202,7 @@ pub fn lower_function(
         inline_expansion_facts,
         source_inline_string_symbols,
         call_return_fundamentals,
+        nonvolatile_pointer_parameters,
         config,
     )?;
     automatic_rodata::retain_unused_array_images(
@@ -217,6 +264,7 @@ fn lower_function_body(
     inline_expansion_facts: mwcc_syntax_trees::InlineExpansionFacts,
     source_inline_string_symbols: &HashMap<Vec<u8>, String>,
     call_return_fundamentals: &HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
+    nonvolatile_pointer_parameters: &HashSet<(String, String)>,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
     if let Some(output) = body::lower_register_inline_asm_wrapper(
@@ -795,6 +843,11 @@ fn lower_function_body(
         materialized_float_window: None,
         materialized_float_assignment_active: false,
         promoted_float_locals: std::collections::HashSet::new(),
+        nonvolatile_pointer_parameters: nonvolatile_pointer_parameters
+            .iter()
+            .filter(|(owner, _)| owner == &function.name)
+            .map(|(_, parameter)| parameter.clone())
+            .collect(),
         structured_unoptimized_leaf_source_homes: false,
         structured_branch_float_work_home: None,
         structured_constant_address_home: None,
@@ -975,6 +1028,7 @@ fn lower_function_body(
         // at the declaration before closing the owner's function-symbol block.
         generator.output.static_locals_lead = true;
     }
+    generator.reuse_float_snapshot_loads(function);
     // Schedule on the virtual-register stream, then allocate. Ordering matters:
     // scheduling first means physical-register reuse cannot create false
     // dependencies that block a hoist, and allocation then colors the scheduled

@@ -456,6 +456,9 @@ pub struct TranslationUnit {
     /// than the pointer object (`const T*` / `T const*`). Storage lowering does
     /// not distinguish that qualifier, while legacy DWARF does.
     pub function_parameter_pointee_const: std::collections::HashSet<(String, String)>,
+    /// Pointer parameters whose pointee layout was examined and has no volatile
+    /// storage. Absence is unknown, not permission to share memory reads.
+    pub function_nonvolatile_pointer_parameters: std::collections::HashSet<(String, String)>,
     /// Source scalar identity for function locals whose executable storage
     /// collapses typedef distinctions such as `s32` versus plain `int`.
     pub function_local_fundamentals:

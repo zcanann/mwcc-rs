@@ -368,6 +368,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         function_source_names: HashMap::new(),
         function_parameter_fundamentals: HashMap::new(),
         function_parameter_pointee_const: HashSet::new(),
+        function_nonvolatile_pointer_parameters: HashSet::new(),
         function_local_fundamentals: HashMap::new(),
         function_local_pointee_const: HashSet::new(),
         current_debug_function_name: None,
@@ -2074,6 +2075,28 @@ void invoke(void) {\n\
                 assert_eq!(
                     row.source_fundamental,
                     Some(mwcc_syntax_trees::SourceFundamentalType::UnsignedLong)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pointer_memory_facts_preserve_volatile_pointees() {
+        let source = "typedef volatile float VF; typedef float Row[4];
+            struct V { volatile float x; }; struct P { float x; };
+            void f(float* ordinary, const float* constant, volatile float* qualified,
+                VF* alias, struct V* member, struct P* plain, Row row) {}";
+        for cplusplus in [false, true] {
+            let unit = parse_translation_unit(
+                mwcc_source_to_tokens::tokenize(source).unwrap(), cplusplus, true, 1, 3,
+            ).unwrap();
+            let function = &unit.functions[0];
+            for parameter in &function.parameters {
+                assert_eq!(
+                    unit.function_nonvolatile_pointer_parameters.contains(
+                        &(function.name.clone(), parameter.name.clone())),
+                    matches!(parameter.name.as_str(), "ordinary" | "constant" | "plain" | "row"),
+                    "C++={cplusplus} parameter={}", parameter.name,
                 );
             }
         }
