@@ -4,13 +4,70 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, accumulator lifetimes and empty-poll entries (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, legacy fixed-bank transfer transactions (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `b4d8bbd135ab9037261e8fcf38d23e1503a5f11682174dbb22cadc2c2b871b3d:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `68d34616ec7e4831196522c71bc26cc647a03a7d192497ff4fa43acf842554d7:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Legacy fixed-bank transfer transactions, 2026-09-06
+
+Against baseline `7b70d0b9`, Melee's `DBGReadMailbox`, `DBGWriteMailbox`, and
+`DBGReadStatus` now match reference function bytes and relocation targets.
+The complete source improves from **10/21 to 13/21 exact functions** and
+**372/3320 to 856/3320 exact reference function bytes**, with all 21 compiling.
+Eight functions remain nonexact, including the underlying immediate-transfer
+routine and the higher-level read/write callers.
+
+A shared transaction recognizer describes the expanded select, payload
+transfer, poll, optional read transfer and second poll, reset, and accumulated
+status return. It derives the bank address, register offsets, field masks,
+command/payload bits, and transfer symbol from the tree. A separate legacy
+schedule retains the bank page and selected-slot address across calls; a
+second poll retains its updated slot address as well. It preserves the
+reference's distinct write/read frames and uses the existing linkage and
+structured-frame policies for the patched and Nintendo distributions. The
+schedule applies at O4 to the existing legacy profile family. Other profiles
+continue through their existing shared lowering.
+
+Admission verifies the full effect sequence, word storage, pointer arguments,
+transfer prototype and return width, repeated poll condition, matching reset
+mask, and status accumulator. Additional/volatile/static/aligned local storage,
+changed transfer sizes or modes, pointer truncation, and intervening effects
+are outside this schedule. Constants must be literal-derived expressions;
+algebraic identities such as a difference of two register-bank reads do not
+justify dropping those reads. No project function names or register-bank
+addresses are built into recognition.
+
+New canary 1598 changes the bank to a signed-low-half address, changes both
+register indices, preserve/insert masks, poll bit, payload mask, and read/write
+command bits. Canaries **1593, 1594, and 1598 match whole objects on all four
+legacy builds**: GC/1.1, GC/1.1p1, GC/1.2.5, and GC/1.2.5n. Across all 11 measured
+builds, exact objects improve **0/33 to 12/33**; all 33 pairs compile, with no
+exclusions or reference rejections. The remaining 21 objects are nonexact.
+
+**68,976 paired Unicorn cases** pass: 31,680 for the changed-bank variants,
+33,264 for the existing mailbox/mask slice, and 4,032 for the three actual
+Melee callers. Checks cover payload bytes and pointer outputs, zero/nonzero
+transfer statuses, volatile access order/count, bank changes made by the
+simulated device between calls, zero/one/four busy iterations, and stack and
+saved-register restoration under four randomized clobber patterns. The Melee
+checks simulate `DBGEXIImm` at the call boundary; they do not validate its body.
+
+The 182-canary regression selection retains identical verdicts on five builds:
+**910 slots, 242 exclusions, 668 runnable pairs, 376 exact objects, and 183
+existing candidate rejections**, with no reference rejections or timeouts.
+The 40-configuration reference selection retains **35 whole-object exact,
+one DIFF, and four missing dependencies**. Code remains exact on **33/34
+measured configurations**, with two empty and four unmeasured; Melee's function
+coverage improves inside the remaining DIFF. Six transaction admission tests
+and 117 backend inline tests pass, with the same independently confirmed
+preexisting embedded-asm composition failure excluded from the inline selection.
+Evidence is retained under `target/exi-address-*.log`,
+`target/check_exi_address*.py`, and the prior mailbox execution harnesses.
+These are focused diagnostic results, not a corpus-wide parity estimate.
 
 ## Accumulator lifetimes and empty-poll entries, 2026-09-06
 

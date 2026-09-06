@@ -1523,6 +1523,9 @@ impl Generator {
         }
         // A leaf `fixed_regs[k] |= C` / `&= C`: one shared materialized base,
         // load/update/store through r0. This is the single-node fixed-RMW schedule.
+        if self.try_fixed_bank_transaction(function)? {
+            return Ok(());
+        }
         if self.try_fixed_address_immediate_rmw(function)? {
             return Ok(());
         }
