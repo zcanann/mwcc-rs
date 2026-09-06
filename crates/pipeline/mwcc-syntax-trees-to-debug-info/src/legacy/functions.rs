@@ -346,6 +346,19 @@ impl SelectedFunctionPlan<'_> {
                     .get(&(plan.function.name.clone(), parameter.name.clone()))
                     .copied();
                 let type_attribute = match parameter.parameter_type {
+                    Type::StructPointer { .. }
+                        if unit
+                            .function_parameter_pointee_const
+                            .contains(&(plan.function.name.clone(), parameter.name.clone())) =>
+                    {
+                        aggregate_id
+                            .map(|id| data::modified_user_defined_type_with_modifiers(id, &[1, 3]))
+                            .ok_or_else(|| {
+                                Diagnostic::error(
+                                    "debug-info: a const struct pointer needs an aggregate DIE",
+                                )
+                            })
+                    }
                     Type::Pointer(pointee)
                         if unit.function_parameter_pointee_const.contains(&(
                             plan.function.name.clone(),

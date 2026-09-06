@@ -4,13 +4,54 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, assembly line provenance (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, typed assembly parameters (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `03ca4e6a17178bcf627c5bf6c54b9290b6cd93ab5c49d68976b9f720422559e1:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `aa60ff6ab2af415ef23e39812969ad2eba9cb9d6bee697f8b76c3d7c09f80be1:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Focused typed assembly-parameter follow-up, 2026-09-06
+
+Assembly signatures now use the ordinary type parser, retaining scalar typedef
+identity, aggregate tags, and pointee qualifiers. They share the existing named
+GPR binding path with embedded assembly. The assembler records incoming parameter
+homes for debug lowering; const aggregate pointers carry both pointer and const
+modifiers. Floating values remain on the separate FPR cursor, while pointers to
+float consume GPRs. Legacy FPR location encoding, multiword/stack debug homes,
+and decayed-array source types remain unfinished.
+
+Animal Crossing GAFE01_00 now emits all ten formal-parameter records. Its
+`.debug` grows from 428 to 792 bytes against the 868-byte reference; two matrix
+row-array DIEs and their references/order still differ. The exact 308-byte
+`.text` and 768-byte `.line` sections are preserved. This remains a whole-object
+`DIFF`, with no additional reference-project parity credit.
+
+Canaries 1538/1539 (typed scalar and const aggregate debug arguments) match
+**16/22** whole objects across GC/1.1, 1.1p1, 1.2.5, 1.2.5n, 1.3, 1.3.2,
+1.3.2r, 2.6, 2.7, 3.0a3, and Wii/1.0. The six failures are the two canaries on
+GC/2.7, GC/3.0a3, and Wii/1.0: instructions match, debug object layout and
+relocations do not. Canary 1540 (mixed double and float-pointer arguments)
+matches **11/11** whole objects with debug disabled. All 33 comparisons were
+oracle-runnable; none were excluded. At baseline `a3fdfac7`, GC/1.2.5 fails
+both debug probes and rejects 1540's named pointer operand.
+
+An assembly regression slice across GC/1.2.5, GC/1.3.2, and GC/2.6 preserves
+all **60/71** previously exact/runnable comparisons. Eleven baseline failures
+remain: nine source-encoding failures (three canaries on each build) and two
+section/symbol mismatches in canary 1311. The debug crate's 69 tests and four
+assembly integration tests pass.
+
+The same eight-row reference selection as the preceding checkpoint remains
+**4 BYTE / 3 DIFF / 1 DEFER / 0 unknown**, all nonempty. Wind Waker D44J01's
+matrix spot check still emits all eight functions, with its four assembly
+functions exact (444/1676 reference function bytes); C scheduling differences
+remain. No full project has been proven exact.
+
+Local evidence: `target/reference-parity/aa60ff6ab2af415e-5e4ca1ddc460f4d8.jsonl`,
+`target/asm-debug-selection.json`, and the `target/asm-parameters-*.log` and
+`target/asm-float-pointers-oracle.log` focused reports.
 
 ## Focused assembly line-provenance follow-up, 2026-09-06
 

@@ -1343,12 +1343,21 @@ fn modified_user_defined_type(id: DebugEntryId) -> Attribute {
 }
 
 fn modified_user_defined_type_with_modifier(id: DebugEntryId, modifier: u8) -> Attribute {
+    modified_user_defined_type_with_modifiers(id, &[modifier])
+}
+
+pub(super) fn modified_user_defined_type_with_modifiers(
+    id: DebugEntryId,
+    modifiers: &[u8],
+) -> Attribute {
+    let mut bytes = modifiers.to_vec();
+    bytes.extend_from_slice(&[0; 4]);
     attribute(
         AttributeName::ModifiedUserDefinedType,
         AttributeValue::RelocatableBlock2(Block {
-            bytes: vec![modifier, 0, 0, 0, 0],
+            bytes,
             relocations: vec![BlockRelocation {
-                offset: 1,
+                offset: modifiers.len() as u32,
                 address: Address::debug_entry(id),
             }],
         }),

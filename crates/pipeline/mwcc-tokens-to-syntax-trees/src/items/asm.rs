@@ -47,9 +47,7 @@ impl Parser {
 
     /// Parse a Metrowerks inline-`asm` function. Storage qualifiers are already consumed;
     /// `asm_after_return_type` selects between `asm void f()` and `void asm f()`.
-    /// The remainder of the C signature is scanned
-    /// loosely — asm codegen names fixed registers, so only the function NAME and
-    /// a `void` return matter; parameter types are consumed and discarded. Returns
+    /// Parameter declarations retain the ordinary source type metadata.
     /// Returns the parsed name alongside `None` for a bodyless prototype
     /// (`asm void f(void);`).  The caller still needs that name to retain
     /// declaration attributes and symbol-table ordering.
@@ -107,101 +105,31 @@ impl Parser {
                 }
             }
         }
-        // Consume the parameter list, capturing REGISTER PARAMETER names so the body's
-        // operands can name them (`mr r3,val`; `stw r5,env->pc`). Integer/pointer
-        // parameters take the positional argument registers r3, r4, …; the LAST
-        // identifier of each comma-separated parameter that is not a qualifier is its
-        // name, and an identifier naming a declared struct is the parameter's tag (for
-        // member-operand offsets). A float/double parameter would take an FPR — not
-        // needed by any measured asm function, so it defers.
-        self.expect(Token::ParenOpen)?;
-        let mut parameters: Vec<(String, u8, Option<String>)> = Vec::new();
-        let mut parameter_name: Option<String> = None;
-        let mut parameter_tag: Option<String> = None;
-        let mut parameter_is_float = false;
-        let mut parameter_is_pointer = false;
-        let mut source_parameters = Vec::new();
-        let mut source_parameter_tags = Vec::new();
-        let mut depth = 1;
-        loop {
-            let token = self.advance();
-            let end_of_parameter = matches!(token, Token::Comma) && depth == 1;
-            match token {
-                Token::ParenOpen => depth += 1,
-                Token::ParenClose => {
-                    depth -= 1;
-                    if depth == 0 {
-                        if let Some(name) = parameter_name.take() {
-                            if !parameter_is_float {
-                                source_parameters.push(Parameter {
-                                    parameter_type: self.asm_parameter_type(
-                                        parameter_tag.as_deref(),
-                                        parameter_is_pointer,
-                                    ),
-                                    name: name.clone(),
-                                });
-                                source_parameter_tags.push(parameter_tag.clone());
-                                parameters.push((
-                                    name,
-                                    3 + parameters.len() as u8,
-                                    parameter_tag.take(),
-                                ));
-                            }
-                        }
-                        break;
-                    }
-                }
-                // A float/double parameter lives in an FPR (f1, …) and — per the EABI —
-                // consumes NO integer argument register, so it is skipped: the body
-                // addresses it as `fp1` directly (measured: __cvt_fp2unsigned's
-                // `register double d` is only ever fp1), never by name.
-                Token::KeywordFloat => parameter_is_float = true,
-                Token::Identifier(word) if word == "double" => parameter_is_float = true,
-                Token::Star => parameter_is_pointer = true,
-                Token::Identifier(word) if word != "register" && word != "const" => {
-                    if self.structs.contains_key(word.as_str()) {
-                        parameter_tag = Some(word.clone());
-                    }
-                    parameter_name = Some(word.clone());
-                }
-                Token::EndOfFile => {
-                    return Err(Diagnostic::error("unterminated asm parameter list"))
-                }
-                _ => {}
-            }
-            if end_of_parameter {
-                if let Some(name) = parameter_name.take() {
-                    if !parameter_is_float {
-                        source_parameters.push(Parameter {
-                            parameter_type: self
-                                .asm_parameter_type(parameter_tag.as_deref(), parameter_is_pointer),
-                            name: name.clone(),
-                        });
-                        source_parameter_tags.push(parameter_tag.clone());
-                        parameters.push((name, 3 + parameters.len() as u8, parameter_tag.take()));
-                    }
-                }
-                parameter_is_float = false;
-                parameter_is_pointer = false;
-            }
+        // Use the ordinary type parser: typedef identity and qualifiers matter
+        // to debug information even though the body uses fixed registers.
+        let source_parameters = self.parse_asm_parameters(&name)?;
+        let register_parameters = source_parameters
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .collect();
+        self.configure_embedded_asm_parameters(&source_parameters, &register_parameters);
+        for (parameter_name, _, tag) in &mut self.asm_parameters {
+            *tag = self
+                .function_parameter_structs
+                .get(&(name.clone(), parameter_name.clone()))
+                .cloned();
         }
         // A bodyless prototype ends here; there is nothing to define.
         if *self.peek() == Token::Semicolon {
             self.advance();
+            self.asm_parameters.clear();
             return Ok((name, None));
         }
         let body_start_line = self.current_location().line;
         self.expect(Token::BraceOpen)?;
-        self.asm_parameters = parameters;
         let asm_body = self.parse_asm_body();
         self.asm_parameters = Vec::new();
         let asm_body = asm_body?;
-        for (parameter, tag) in source_parameters.iter().zip(&source_parameter_tags) {
-            if let Some(tag) = tag {
-                self.function_parameter_structs
-                    .insert((name.clone(), parameter.name.clone()), tag.clone());
-            }
-        }
         let body_end_line = self.locations[self.position.saturating_sub(1)].line;
         self.function_sources
             .push(Some(mwcc_syntax_trees::FunctionSource {
@@ -236,22 +164,59 @@ impl Parser {
         ))
     }
 
-    fn asm_parameter_type(&self, aggregate_tag: Option<&str>, is_pointer: bool) -> Type {
-        aggregate_tag
-            .and_then(|tag| self.structs.get(tag))
-            .map(|layout| {
-                if is_pointer {
-                    Type::StructPointer {
-                        element_size: layout.size,
-                    }
-                } else {
-                    Type::Struct {
-                        size: layout.size,
-                        align: layout.align,
-                    }
+    fn parse_asm_parameters(&mut self, function_name: &str) -> Compilation<Vec<Parameter>> {
+        self.expect(Token::ParenOpen)?;
+        let mut parameters = Vec::new();
+        while *self.peek() != Token::ParenClose {
+            if *self.peek() == Token::Dot {
+                self.advance();
+                self.expect(Token::Dot)?;
+                self.expect(Token::Dot)?;
+                break;
+            }
+            let mut parameter_type = self.parse_type()?;
+            let fundamental = self.last_source_fundamental.take();
+            let pointee_const = self.last_type_was_const;
+            let tag = self.last_struct_tag.take();
+            let array_typedef = self.last_array_typedef.take();
+            if parameter_type == Type::Void
+                && *self.peek() == Token::ParenClose
+                && parameters.is_empty()
+            {
+                break;
+            }
+            let name = if let Token::Identifier(name) = self.peek().clone() {
+                self.advance();
+                name
+            } else {
+                String::new()
+            };
+            (parameter_type, _) =
+                self.parse_array_parameter_suffix(&name, parameter_type, array_typedef)?;
+            if !name.is_empty() {
+                let key = (function_name.to_owned(), name.clone());
+                if let Some(tag) = tag {
+                    self.function_parameter_structs.insert(key.clone(), tag);
                 }
-            })
-            .unwrap_or(Type::Int)
+                if let Some(fundamental) = fundamental {
+                    self.function_parameter_fundamentals
+                        .insert(key.clone(), fundamental);
+                }
+                if pointee_const {
+                    self.function_parameter_pointee_const.insert(key);
+                }
+            }
+            parameters.push(Parameter {
+                parameter_type,
+                name,
+            });
+            if *self.peek() != Token::Comma {
+                break;
+            }
+            self.advance();
+        }
+        self.expect(Token::ParenClose)?;
+        Ok(parameters)
     }
 
     /// Parse the body items of an asm function up to the closing `}` (already past

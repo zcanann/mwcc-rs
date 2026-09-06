@@ -25,9 +25,10 @@ use frame::{wrap_auto_frame, wrap_fralloc_frame};
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{
-    Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
+    DebugVariable, DebugVariableLocation, Instruction, MachineFunction, Relocation, RelocationKind,
+    RelocationTarget,
 };
-use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function};
+use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function, Type};
 use mwcc_versions::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, Behavior, SymbolTraversalStyle,
 };
@@ -349,6 +350,35 @@ pub(crate) fn assemble_asm_function(
     output.is_static = function.is_static;
     output.is_weak = function.is_weak;
     output.section = function.section.clone();
+    // Assembly bypasses register allocation, so parameter homes come directly
+    // from the incoming ABI registers. Multiword and stack homes are not yet
+    // represented by this debug-location model.
+    let mut next_general = 3u8;
+    let mut next_float = 1u8;
+    for parameter in &function.parameters {
+        let words = match parameter.parameter_type {
+            Type::Float | Type::Double | Type::Void => 0,
+            Type::LongLong | Type::UnsignedLongLong => 2,
+            Type::Struct { size, .. } => u8::try_from(size.div_ceil(4).max(1)).unwrap_or(u8::MAX),
+            _ => 1,
+        };
+        let location = if matches!(parameter.parameter_type, Type::Float | Type::Double) {
+            let location =
+                (next_float <= 8).then_some(DebugVariableLocation::FloatRegister(next_float));
+            next_float = next_float.saturating_add(1);
+            location
+        } else {
+            (words == 1 && next_general <= 10)
+                .then_some(DebugVariableLocation::GeneralRegister(next_general))
+        };
+        if let Some(location) = location.filter(|_| !parameter.name.is_empty()) {
+            output.debug_variables.push(DebugVariable {
+                name: parameter.name.clone(),
+                location,
+            });
+        }
+        next_general = next_general.saturating_add(words);
+    }
     output.is_asm = true;
     output.asm_has_implicit_return = append_terminal_return;
     output.entry_points = entry_points;
