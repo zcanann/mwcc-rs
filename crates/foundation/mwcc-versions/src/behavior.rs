@@ -889,6 +889,8 @@ pub struct Behavior {
     pub inferred_array_uses_full_data_section: bool,
     /// Reproduce the GC/1.3 assembler PSQ displacement/W/I overlap bug.
     pub asm_negative_quantized_displacement_overwrites_fields: bool,
+    /// Lowest accepted source operand for `subi`/`subis` aliases.
+    pub asm_subtract_immediate_minimum: i32,
     /// Post-resolution optimization of branches written in `asm` functions.
     pub asm_branch_optimization_style: AsmBranchOptimizationStyle,
     /// Frame wrapper and implicit-return policy for `asm` functions.
@@ -1500,6 +1502,7 @@ impl Behavior {
                 .build
                 .profile
                 .asm_negative_quantized_displacement_overwrites_fields(),
+            asm_subtract_immediate_minimum: config.build.profile.asm_subtract_immediate_minimum(),
             asm_branch_optimization_style: config.build.profile.asm_branch_optimization_style(),
             asm_function_finalization_style: config.build.profile.asm_function_finalization_style(),
             fixed_address_rmw_style: config.build.profile.fixed_address_rmw_style(),

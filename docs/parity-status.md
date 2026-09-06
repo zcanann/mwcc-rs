@@ -4,15 +4,50 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, paired-single matrix assembly (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, matrix assembly aliases (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `d797c161cc4f5c3ac4bd8509c260bd969e34a17f8f70599b313ed2b97b278869:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `43ca92bf265dabc869cfcec356ded497800798a74da51bd340670cc45368a286:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary pass counts and work-queue
 counts are deliberately absent: neither is a corpus parity estimate.
 
-## Focused matrix assembly checkpoint, 2026-09-06
+## Focused alias follow-up, 2026-09-06
+
+After the paired-single milestone `991ad4e3`, the next iteration selected the
+14 `subi`-blocked rows plus the six Mario Party 4 matches for regression checks.
+All 20 were rerun against the latest fingerprint above:
+
+| Outcome | Configurations |
+| --- | ---: |
+| Authoritative whole-object exact, all nonempty | 10 / 20 |
+| Different object | 3 / 20 |
+| Compiler deferral | 7 / 20 |
+| Measurement unknown | 0 / 20 |
+
+Both Pikmin 2 variants (GC/1.2.5n) and both Sunshine variants (GC/1.2.5) moved
+from compiler deferral to whole-object exact. All six Mario Party 4 variants
+remain exact. Animal Crossing's two configurations now have exact executable
+bytes and relocations but different objects, so neither earns parity credit.
+Twilight Princess ShieldD's Dolphin object also differs; its seven selected
+Revolution objects defer on fragmented/interleaved debug-info emission.
+
+`subi` and `subis` now lower to structured add-immediate instructions with a
+negated field. Profile-controlled validation preserves the measured difference
+at -32768: 2.3.x rejects it; 2.4.x and later wrap it. The ordinary alias canary
+matches whole objects on 14 identities; the wrapping-boundary canary matches
+on the ten applicable later identities and explicitly excludes the four older
+builds. The assembler's 15 focused unit tests pass.
+
+These results concern a failure-selected subset, not an overall parity estimate.
+The local result and selection files are
+`target/reference-parity/43ca92bf265dabc8-5e4ca1ddc460f4d8.jsonl` and
+`target/subi-validation-selection.json`. The command below reruns the complete
+44-row parent matrix when a broader checkpoint is useful.
+
+## Preceding matrix assembly checkpoint, 2026-09-06
+
+Compiler milestone `991ad4e3`, compiler hash prefix `d797c161cc4f5c3a`.
 
 The local inventory now contains **49,436 configured translation units**. A
 failure-driven check selected all 44 configured `mtxvec.c` rows; it is not a

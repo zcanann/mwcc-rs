@@ -18,6 +18,16 @@ pub(super) fn assemble_configured_line(
     instruction_index: usize,
     behavior: &mwcc_versions::Behavior,
 ) -> Compilation<Option<Instruction>> {
+    if matches!(line.mnemonic.as_str(), "subi" | "subis") {
+        if let Some(AsmOperand::Immediate(value)) = line.operands.get(2) {
+            if *value < i64::from(behavior.asm_subtract_immediate_minimum) {
+                return Err(Diagnostic::error(format!(
+                    "inline-asm '{}' immediate {value} is out of range for this compiler build",
+                    line.mnemonic
+                )));
+            }
+        }
+    }
     let mut instruction = assemble_line(line, labels, instruction_index)?;
     if behavior.asm_negative_quantized_displacement_overwrites_fields {
         match instruction.as_mut() {
@@ -425,6 +435,18 @@ pub(super) fn assemble_line(
         "addis" => {
             let (d, a, immediate) = rri_symbolic(mnemonic, operands)?;
             Instruction::AddImmediateShifted { d, a, immediate }
+        }
+        "subi" | "subis" => {
+            let (d, a, immediate) = rri(mnemonic, operands)?;
+            // MWCC negates the encoded 16-bit field, including 0x8000.
+            // Symbolic operands remain deferred: their relocation would also
+            // need negation, unlike an ordinary add-immediate relocation.
+            let immediate = immediate.wrapping_neg();
+            if mnemonic == "subi" {
+                Instruction::AddImmediate { d, a, immediate }
+            } else {
+                Instruction::AddImmediateShifted { d, a, immediate }
+            }
         }
         "subfic" => {
             let (d, a, immediate) = rri(mnemonic, operands)?;
@@ -1323,6 +1345,40 @@ mod tests {
             Instruction::PairedSingleMove { d: 31, b: 0 }.encode(),
             0x13e0_0090
         );
+    }
+
+    #[test]
+    fn legacy_subtract_immediate_rejects_the_negative_boundary() {
+        use mwcc_versions::{Behavior, CompilerConfig, GC_1_2_5, GC_2_6};
+        for mnemonic in ["subi", "subis"] {
+            let mut line = AsmInstruction {
+                mnemonic: mnemonic.into(),
+                operands: vec![AsmOperand::Gpr(3), AsmOperand::Gpr(4), AsmOperand::Immediate(-32768)],
+                source_line: 1,
+            };
+            let legacy = Behavior::resolve(&CompilerConfig::new(GC_1_2_5));
+            let modern = Behavior::resolve(&CompilerConfig::new(GC_2_6));
+            assert!(assemble_configured_line(&line, &HashMap::new(), 0, &legacy).is_err());
+            assert!(assemble_configured_line(&line, &HashMap::new(), 0, &modern).is_ok());
+            line.operands[2] = AsmOperand::Immediate(32768);
+            assert!(assemble_configured_line(&line, &HashMap::new(), 0, &legacy).is_ok());
+        }
+    }
+
+    #[test]
+    fn subtract_immediate_aliases_wrap_the_negated_field() {
+        // GC/2.6 oracle, canaries 1533/1534: both spellings of 0x8000 retain 0x8000.
+        for (mnemonic, d, a, immediate, word) in [
+            ("subi", 6, 6, 1, 0x38c6_ffff),
+            ("subi", 5, 5, 4, 0x38a5_fffc),
+            ("subi", 3, 4, -32768, 0x3864_8000),
+            ("subi", 7, 8, 32768, 0x38e8_8000),
+            ("subis", 9, 10, 4, 0x3d2a_fffc),
+            ("subis", 11, 12, -1, 0x3d6c_0001),
+        ] {
+            let operands = vec![AsmOperand::Gpr(d), AsmOperand::Gpr(a), AsmOperand::Immediate(immediate)];
+            assert_eq!(assemble(mnemonic, operands).unwrap().encode(), word);
+        }
     }
 
     #[test]

@@ -1710,6 +1710,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         false
     }
 
+    /// The 2.3.x assembler rejects -32768 in subtract-immediate aliases;
+    /// 2.4.x accepts it and wraps the negated 16-bit field.
+    fn asm_subtract_immediate_minimum(&self) -> i32 {
+        -32768
+    }
+
     fn asm_branch_optimization_style(&self) -> AsmBranchOptimizationStyle {
         AsmBranchOptimizationStyle::ChaseAndCollapseReturns
     }
@@ -2340,6 +2346,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn asm_subtract_immediate_minimum(&self) -> i32 {
+        -32767
+    }
+
     fn virtual_call_dispatch_schedule(&self) -> VirtualCallDispatchSchedule {
         VirtualCallDispatchSchedule::InterleaveTwoStepArgument
     }
