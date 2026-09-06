@@ -186,9 +186,10 @@ pub(super) fn expose_values(
         words: &std::collections::HashSet<String>,
     ) -> Option<(Expression, Expression)> {
         match value {
-            Expression::Call { name, arguments } if arguments.is_empty() => {
+            Expression::Call { name, arguments } => {
                 let callee = bodies.get(name)?;
                 if !(is_poll(callee) || is_memory_transaction(callee))
+                    || arguments.len() != callee.parameters.len()
                     || captures_names(callee, bound)
                 {
                     return None;
@@ -250,6 +251,28 @@ pub(super) fn expose_values(
     ) -> Vec<Statement> {
         let mut output = Vec::new();
         for statement in source {
+            if let Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } = statement
+            {
+                if let Some((call, condition)) = extract(condition, bodies, bound, words) {
+                    *changed = true;
+                    output.push(Statement::Expression(call));
+                    if let Some(value) = crate::analysis::constant_value(&condition) {
+                        let arm = if value == 0 { else_body } else { then_body };
+                        output.extend(statements(arm, bodies, bound, words, changed));
+                    } else {
+                        output.push(Statement::If {
+                            condition,
+                            then_body: statements(then_body, bodies, bound, words, changed),
+                            else_body: statements(else_body, bodies, bound, words, changed),
+                        });
+                    }
+                    continue;
+                }
+            }
             let value = match statement {
                 Statement::Assign { value, .. } | Statement::Return(Some(value)) => Some(value),
                 _ => None,
@@ -314,6 +337,64 @@ pub(super) fn expose_values(
             expanded.statements.push(Statement::Expression(call));
             expanded.return_expression = Some(value);
             changed = true;
+        }
+    }
+    if changed && expanded.inline_asm_blocks.is_empty() && expanded.asm_body.is_none() {
+        // A status accumulator can become immutable after its no-op update
+        // disappears. Reuse the composer's escape proof before replacing it.
+        let stable = super::safety::stable_local_values(&expanded);
+        let constants: std::collections::HashMap<String, Expression> = expanded
+            .locals
+            .iter()
+            .filter(|local| {
+                local.declared_type == Type::Int
+                    && !local.is_volatile
+                    && !local.is_static
+                    && local.array_length.is_none()
+                    && stable.contains(&local.name)
+            })
+            .filter_map(|local| match &local.initializer {
+                Some(Expression::IntegerLiteral(value)) => Some((
+                    local.name.clone(),
+                    Expression::IntegerLiteral(*value as i32 as i64),
+                )),
+                _ => None,
+            })
+            .collect();
+        if !constants.is_empty() {
+            expanded
+                .locals
+                .retain(|local| !constants.contains_key(&local.name));
+            for local in &mut expanded.locals {
+                if let Some(value) = &local.initializer {
+                    local.initializer = Some(super::substitution::substitute_expression(
+                        value, &constants,
+                    ));
+                }
+            }
+            expanded.statements = expanded
+                .statements
+                .iter()
+                .map(|statement| super::substitution::substitute_statement(statement, &constants))
+                .collect();
+            for guard in &mut expanded.guards {
+                guard.condition =
+                    super::substitution::substitute_expression(&guard.condition, &constants);
+                guard.value = super::substitution::substitute_expression(&guard.value, &constants);
+            }
+            if let Some(value) = &expanded.return_expression {
+                let mut value = super::substitution::substitute_expression(value, &constants);
+                if let Expression::Unary {
+                    operator: U::LogicalNot,
+                    operand,
+                } = &value
+                {
+                    if let Some(constant) = crate::analysis::constant_value(operand) {
+                        value = Expression::IntegerLiteral(i64::from(constant == 0));
+                    }
+                }
+                expanded.return_expression = Some(value);
+            }
         }
     }
     changed.then_some(expanded)

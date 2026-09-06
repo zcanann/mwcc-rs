@@ -189,3 +189,108 @@ fn constant_result_initializers_only_restore_fresh_entry_locals() {
     ));
     assert!(caller.statements.is_empty());
 }
+
+#[test]
+fn constant_result_branch_keeps_argument_effect_once_before_selected_arm() {
+    let mut callee = function("ready");
+    callee.parameters.push(Parameter {
+        name: "value".into(),
+        parameter_type: Type::Int,
+    });
+    callee.statements.push(Statement::Store {
+        target: access(),
+        value: Expression::Variable("value".into()),
+    });
+    let bodies = HashMap::from([("ready".into(), callee)]);
+    let mut caller = function("caller");
+    caller.statements.push(Statement::If {
+        condition: Expression::Call {
+            name: "ready".into(),
+            arguments: vec![Expression::Call {
+                name: "next".into(),
+                arguments: Vec::new(),
+            }],
+        },
+        then_body: vec![Statement::Return(Some(Expression::IntegerLiteral(7)))],
+        else_body: vec![Statement::Return(Some(Expression::IntegerLiteral(9)))],
+    });
+    let expanded = expose_values(&caller, &bodies).unwrap();
+    assert!(matches!(expanded.statements.as_slice(), [
+        Statement::Expression(Expression::Call { name, arguments }),
+        Statement::Return(Some(Expression::IntegerLiteral(7))),
+    ] if name == "ready" && matches!(arguments.as_slice(), [Expression::Call { name, arguments }] if name == "next" && arguments.is_empty())));
+}
+
+#[test]
+fn constant_result_zero_status_still_executes_effect_before_false_arm() {
+    let mut callee = poll();
+    callee.return_expression = Some(Expression::IntegerLiteral(0));
+    let bodies = HashMap::from([("ready".into(), callee)]);
+    let mut caller = function("caller");
+    caller.statements.push(Statement::If {
+        condition: call(),
+        then_body: vec![Statement::Return(Some(Expression::IntegerLiteral(7)))],
+        else_body: vec![Statement::Return(Some(Expression::IntegerLiteral(9)))],
+    });
+    let expanded = expose_values(&caller, &bodies).unwrap();
+    assert!(matches!(expanded.statements.as_slice(), [
+        Statement::Expression(Expression::Call { name, .. }),
+        Statement::Return(Some(Expression::IntegerLiteral(9))),
+    ] if name == "ready"));
+}
+
+#[test]
+fn constant_result_accumulator_cleanup_requires_immutable_unescaped_storage() {
+    let bodies = HashMap::from([("ready".into(), poll())]);
+    for variant in ["stable", "volatile", "escaped", "modified"] {
+        let mut caller = function("caller");
+        caller.locals.push(mwcc_syntax_trees::LocalDeclaration {
+            declared_type: Type::Int,
+            name: "error".into(),
+            initializer: Some(Expression::IntegerLiteral(0)),
+            is_volatile: variant == "volatile",
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        });
+        if variant == "escaped" {
+            caller
+                .statements
+                .push(Statement::Expression(Expression::Call {
+                    name: "use_address".into(),
+                    arguments: vec![Expression::AddressOf {
+                        operand: Box::new(Expression::Variable("error".into())),
+                    }],
+                }));
+        }
+        if variant == "modified" {
+            caller.statements.push(Statement::Assign {
+                name: "error".into(),
+                value: Expression::IntegerLiteral(4),
+            });
+        }
+        caller.statements.push(Statement::If {
+            condition: call(),
+            then_body: Vec::new(),
+            else_body: Vec::new(),
+        });
+        caller.return_expression = Some(Expression::Unary {
+            operator: U::LogicalNot,
+            operand: Box::new(Expression::Variable("error".into())),
+        });
+        let expanded = expose_values(&caller, &bodies).unwrap();
+        if variant == "stable" {
+            assert!(expanded.locals.is_empty());
+            assert!(matches!(
+                expanded.return_expression,
+                Some(Expression::IntegerLiteral(1))
+            ));
+        } else {
+            assert_eq!(expanded.locals.len(), 1, "{variant}");
+        }
+    }
+}

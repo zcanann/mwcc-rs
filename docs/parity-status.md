@@ -4,13 +4,62 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, automatic EXI status-helper inlining (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, combined EXI status transactions (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `5f192b777da7d6e8dbe0e355e39de4e62daa527b4c3e94c0b1b8b2408c207dd7:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `661c31825be5e19c15d8015d031c4144219cefb840a02dcc10da87bd85412d26:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Combined EXI status transactions, 2026-09-06
+
+Against baseline `fc949660`, canary 1585's complete select/deselect transaction
+now matches whole objects on **all 11 measured builds**. Constant-result helper
+calls in statement conditions retain their argument evaluation and memory
+effects at the original condition position, then select the known branch.
+A status accumulator that becomes immutable can be removed using the existing
+escape/modification proof; volatile, static, escaped, and reassigned storage
+is retained. This exposes the straight-line register transaction to its
+existing lowering owner instead of embedding stores inside a condition value.
+
+The parameterized RMW owner can now append a compound clear using the same
+bank slot and mask. It shares the address and, where applicable, mask register,
+while retaining both volatile reads and writes. Legacy combined transactions
+use the discarded-status allocation with the final status placed before the
+first store. Later builds extend their existing status-return schedules.
+Early-generation wide masks with a reset remain outside this owner pending
+measurement of the mask's surviving register home.
+
+New canaries 1589--1590 cover non-one success statuses, true/false branches,
+side-effecting arguments, zero statuses, and an incoming accumulator. Together
+with 1585--1588, this is **66 oracle-runnable pairs**, with no exclusions or
+reference/candidate rejections. Whole-object matches improve **20/66 to 31/66**;
+the two new objects remain nonexact. The new `branch_true` function matches
+all 11 builds; `branch_false` matches seven. The zero-status canary records the
+remaining trailing-guard and register-passthrough lowering gaps. **35,376 paired
+Unicorn execution cases** pass, including one evaluation of `next_channel`,
+the selected branch's effects, volatile access order/count, masked values,
+returned statuses, preserved incoming words, stack restoration, and saved
+registers under four randomized register/clobber patterns.
+
+The 63-canary inline/status/fixed-register regression slice retains identical
+verdicts in **315 slots: 120 exclusions, 195 runnable pairs, 125 exact objects,
+and 30 existing candidate rejections**, with no reference rejections or
+timeouts. The real-project stub family remains **35 BYTE, one DIFF, zero DEFER,
+and four MISSING_DEPENDENCY** across 40 configurations, with **33/34 measured
+code exact**, two empty objects, and four unmeasured rows. Melee's configured
+GC/1.2.5 `odenotstub.c` still compiles all 21 functions and retains **10/21 exact
+functions, 372/3320 exact reference function bytes**, and its previous direct
+call targets. This is a verified transaction building block; broader constant-
+channel EXI callers and their transfer-loop schedules remain incomplete.
+
+Compiler/oracle builds, 31 frontend inline tests, and 115 backend inline tests
+pass. The backend run explicitly skips the previously confirmed existing
+embedded-assembly composition failure. Three new tests check branch placement,
+argument effects, zero-result effects, and accumulator cleanup boundaries.
+Local reproduction artifacts use `target/check_exi_transaction_*.py`,
+`target/exi-transaction-*.log`, and the fingerprinted reference-parity cache.
 
 ## Automatic EXI status-helper inlining, 2026-09-06
 

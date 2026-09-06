@@ -198,6 +198,13 @@ impl Generator {
         let Some(initializer) = temporary.initializer.as_ref() else {
             return Ok(false);
         };
+        let (updates, reset) = match function.statements.as_slice() {
+            [_, _, _] => (function.statements.as_slice(), None),
+            [updates @ .., Statement::Store { target, value }] if updates.len() == 3 => {
+                (updates, Some((target, value)))
+            }
+            _ => return Ok(false),
+        };
         let [Statement::Assign {
             name: masked_name,
             value: masked_value,
@@ -207,7 +214,7 @@ impl Generator {
         }, Statement::Store {
             target,
             value: stored_value,
-        }] = function.statements.as_slice()
+        }] = updates
         else {
             return Ok(false);
         };
@@ -244,6 +251,24 @@ impl Generator {
         else {
             return Ok(false);
         };
+        if let Some((target, value)) = reset {
+            let Expression::Binary {
+                operator: BinaryOperator::BitAnd,
+                left,
+                right,
+            } = peel_update_value(value)
+            else {
+                return Ok(false);
+            };
+            if fixed_slot(target) != Some((bank, index))
+                || !same_operand(target, left)
+                || constant_value(right) != Some(i64::from(mask))
+                || !matches!(peel_casts(value), Expression::IndexedUpdateValue { .. })
+                || function.return_type == Type::Void
+            {
+                return Ok(false);
+            }
+        }
         let Expression::Binary {
             operator: BinaryOperator::BitOr,
             left: inserted_left,
@@ -312,7 +337,29 @@ impl Generator {
         let style = self.behavior.fixed_address_parameterized_rmw_style;
         if return_value.is_none() {
             self.emit_discarded_parameterized_rmw(high, low, index, mask, set_bits, shift)?;
+            self.emit_epilogue_and_return();
             return Ok(true);
+        }
+        if reset.is_some() && style == FixedAddressParameterizedRmwStyle::Legacy233 {
+            self.emit_discarded_parameterized_rmw(high, low, index, mask, set_bits, shift)?;
+            self.output.instructions.insert(
+                self.output.instructions.len() - 2,
+                Instruction::load_immediate(3, return_value.expect("status form")),
+            );
+            let offset = i16::try_from(index * 4).map_err(|_| {
+                Diagnostic::error("fixed-address parameterized RMW is out of range")
+            })?;
+            self.emit_parameterized_rmw_reset(5, offset, mask, None);
+            self.emit_epilogue_and_return();
+            return Ok(true);
+        }
+        // The early wide-mask lane consumes its mask home for the status.
+        // Retaining that mask across a reset needs a separate allocation plan.
+        if reset.is_some()
+            && style == FixedAddressParameterizedRmwStyle::Early24
+            && mask > i16::MAX as u16
+        {
+            return Ok(false);
         }
         let wide_early_mask =
             style == FixedAddressParameterizedRmwStyle::Early24 && mask > i16::MAX as u16;
@@ -428,8 +475,47 @@ impl Generator {
             a: base,
             offset: displacement,
         });
+        if reset.is_some() {
+            let mask_register = (style == FixedAddressParameterizedRmwStyle::Early24).then_some(4);
+            self.emit_parameterized_rmw_reset(base, displacement, mask, mask_register);
+        }
         self.emit_epilogue_and_return();
         Ok(true)
+    }
+
+    fn emit_parameterized_rmw_reset(
+        &mut self,
+        base: u8,
+        offset: i16,
+        mask: u16,
+        mask_register: Option<u8>,
+    ) {
+        // Preserve the second volatile read even though its address and mask
+        // are shared with the preceding update.
+        self.output.instructions.extend([
+            Instruction::LoadWord {
+                d: 0,
+                a: base,
+                offset,
+            },
+            match mask_register {
+                Some(register) => Instruction::And {
+                    a: 0,
+                    s: 0,
+                    b: register,
+                },
+                None => Instruction::AndImmediateRecord {
+                    a: 0,
+                    s: 0,
+                    immediate: mask,
+                },
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: base,
+                offset,
+            },
+        ]);
     }
 
     /// Discarding the status frees r3 after the field shift. Legacy selection
@@ -486,7 +572,6 @@ impl Generator {
                     offset: displacement,
                 },
             ]);
-            self.emit_epilogue_and_return();
             return Ok(());
         }
         let loaded = if legacy {
@@ -561,7 +646,6 @@ impl Generator {
             a: base,
             offset: store_offset,
         });
-        self.emit_epilogue_and_return();
         Ok(())
     }
 
