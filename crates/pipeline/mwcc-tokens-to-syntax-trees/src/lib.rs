@@ -217,11 +217,9 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         .into_iter()
         .map(|located| (located.token, located.location))
         .unzip();
-    let counted_named_parameter_positions = if cplusplus {
-        parameter_names::translation_unit_positions(&tokens)
-    } else {
-        std::collections::HashSet::new()
-    };
+    // Source names must survive a failed semantic declarator parse in either
+    // language (notably pointer-to-array and function-pointer-return prototypes).
+    let counted_named_parameter_positions = parameter_names::translation_unit_positions(&tokens);
     let named_prototype_parameters = (counted_named_parameter_positions.len()
         + removed_template_named_parameters)
         .saturating_sub(reused_template_named_parameters);
@@ -448,6 +446,22 @@ mod tests {
                 },
             })
             .collect()
+    }
+
+    #[test]
+    fn preserves_c_parameter_names_when_semantic_declarator_recovery_stops() {
+        let unit = parse_located_translation_unit(
+            located("typedef float Matrix[3][4]; \
+                void ranges(const Matrix lhs, const Matrix* sources, Matrix* outputs, unsigned count); \
+                void (*exchange(void (*next)(unsigned short)))(unsigned short); \
+                __declspec(section \".init\") asm void flush(void* address, unsigned length); \
+                void unnamed(const Matrix*, void (*)(unsigned short), unsigned); \
+                int emitted(void) {return 1;}"),
+            false, true, 3, 3,
+        ).unwrap();
+        assert_eq!(unit.named_prototype_parameters, 7);
+        assert_eq!(unit.functions.len(), 1);
+        assert_eq!(unit.functions[0].name, "emitted");
     }
 
     #[test]

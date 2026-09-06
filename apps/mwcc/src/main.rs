@@ -2907,6 +2907,7 @@ fn compile(
             is_cxx,
             source,
             config.build,
+            config.flags.ipa_file,
             first_function_anonymous_counter,
             code_alignment,
         )?

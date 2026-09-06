@@ -4,13 +4,63 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, modern inline symbols and fragmented debug containers (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, C declaration provenance and IPA debug scopes (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `ff846ebecd784cc1159ce011ce274a9006ea21625ad502d9afd7812b56905e4f:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `3a355c6dce0dabb0c114453efe41eb3af25ab5d26e7cc5d1e2daceebe76054a0:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## C declaration provenance and IPA debug scopes, 2026-09-06
+
+Five Twilight Princess GC/3.0a3 OSSync configurations now match their configured
+reference objects byte for byte: **RZDP01, RZDE01_00, RZDE01_02, RZDJ01, and
+DZDE01**. Across all 54 OSSync configurations, baseline `04857c6b` changes from
+**44 BYTE, seven DIFF, three HARNESS** to **49 BYTE, two DIFF, three HARNESS**.
+All 44 previous exact objects remain exact. Executable bytes and relocations
+remain **50/51 measured exact**, with no empty objects. The two remaining DIFF
+rows are the Wii Shield and ShieldD variants.
+
+The declaration-name provenance pass now runs for C as well as C++. It keeps
+source-written parameter names even when semantic parsing cannot finish a
+pointer-to-array parameter, a function-pointer-return declarator, or an
+assembly prototype. Prefix comparisons of the SDK headers isolated the final
+14 missing ordinals to those forms; unrelated header prefixes already matched.
+The fix preserves name provenance without inventing callable types.
+
+A separate debug source-analysis plan models ordinary scalar locals and the
+line-header frontier for straight-line C units. Without file IPA it discounts
+later named parameters from the first header; with IPA it includes later body
+scopes and local declarations. Closing scopes retain their emission order.
+The driver passes the IPA setting explicitly to debug lowering. Control flow,
+aggregate images, static locals, and C++ retain their existing ordinal owners.
+Two new unit tests cover the IPA frontier/closing-scope distinction and the
+GC/Wii const-local analysis cost. A parser test covers the recovered declarators
+and unnamed controls.
+
+A paired selection of **72 authored debug/inline canaries on GC/3.0a3 and
+Wii/1.0** improves from **17/68 to 23/68 whole-object exact**, with no lost
+matches. Of 144 build/canary slots, 76 are explicitly build-excluded; there are
+no reference rejections or timeouts. Gains are 1538 and 1541 on both compilers,
+1543 on Wii, and the new 1560 on GC/3.0a3.
+
+Four new canaries cover the SDK's command-line IPA/catalog configuration
+(1560), ordinary source-ordered scopes (1561), IPA scopes (1562), and recovered
+C prototype names with unnamed controls (1563). Across eleven compiler builds,
+they improve from **8/26 to 9/26 oracle-runnable whole objects**, with 18 build
+exclusions across 44 slots. The preexisting source-pragma canary 1559 remains
+nonexact: source-level `#pragma cats off` is still ignored, while the actual
+SDK command-line option used by 1560 is modeled. Remaining canary line and
+symbol differences stay in the corpus.
+
+All **44 matrix configuration outcomes remain unchanged: 19 BYTE, 15 DIFF,
+seven DEFER, three HARNESS**, including six empty exact objects. Compiler and
+oracle builds pass. Debug-info tests pass **72/72**. Parser tests pass **401/403**;
+the two failures are the previously recorded friend/template-layout and
+discarded-inline aggregate-image tests, also present in the saved baseline
+parser log. The new C provenance test passes. These are targeted measurements,
+not a corpus-wide parity estimate.
 
 ## Modern inline symbols and debug containers, 2026-09-06
 

@@ -5,6 +5,7 @@
 //! DWARF byte encoding and ELF container policy remain in their own crates.
 
 mod fragment_ordinals;
+mod fragment_source_analysis;
 mod fragmented;
 mod legacy;
 mod source_view;
@@ -28,6 +29,7 @@ pub fn lower_debug_info(
     is_cxx: bool,
     source: &[u8],
     build: CompilerBuild,
+    ipa_file: bool,
     first_function_anonymous_counter: u32,
     code_alignment: u32,
 ) -> Compilation<Option<DebugSections>> {
@@ -97,6 +99,13 @@ pub fn lower_debug_info(
         }
     } else if fragmented_generation {
         if !has_emitted_data {
+            let source_analysis = if is_cxx {
+                None
+            } else {
+                fragment_source_analysis::SourceAnalysis::for_c_unit(
+                    unit, machine_functions, build, ipa_file,
+                )
+            };
             let grouped = legacy::lower(
                 unit,
                 machine_functions,
@@ -113,6 +122,7 @@ pub fn lower_debug_info(
                 first_function_anonymous_counter,
                 code_alignment,
                 grouped,
+                source_analysis,
             )
             .map(Some);
         }

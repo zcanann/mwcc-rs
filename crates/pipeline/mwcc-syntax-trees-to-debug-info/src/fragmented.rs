@@ -19,7 +19,7 @@ use mwcc_syntax_trees::{TranslationUnit, Type};
 use mwcc_versions::CompilerBuild;
 
 use super::fragment_ordinals::{
-    class_fragment_ordinals, fragment_ordinals, fragmented_post_framed_bump,
+    class_fragment_ordinals, fragment_ordinals, fragment_ordinals_with_source, fragmented_post_framed_bump,
 };
 use super::legacy::data::{fragmented_plan, FragmentedDataItem};
 
@@ -30,13 +30,15 @@ pub(super) fn lower_functions_without_file_data(
     first_function_anonymous_counter: u32,
     code_alignment: u32,
     mut sections: DebugSections,
+    source_analysis: Option<super::fragment_source_analysis::SourceAnalysis>,
 ) -> Compilation<DebugSections> {
     let post_framed_bump = fragmented_post_framed_bump(build);
-    let (first_ordinal, line_end_ordinal) = fragment_ordinals(
+    let (first_ordinal, line_end_ordinal) = fragment_ordinals_with_source(
         machine_functions,
         build,
         first_function_anonymous_counter,
         post_framed_bump,
+        &source_analysis.unwrap_or_default(),
     )?;
     let line_header = format!(".line..{first_ordinal}");
     let line_end_name = format!(".line..{line_end_ordinal}");

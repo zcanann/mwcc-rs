@@ -17,20 +17,37 @@ pub(super) fn fragment_ordinals(
     first_function_counter: u32,
     post_framed_bump: u8,
 ) -> Compilation<(u32, u32)> {
+    fragment_ordinals_with_source(
+        machine_functions,
+        build,
+        first_function_counter,
+        post_framed_bump,
+        &super::fragment_source_analysis::SourceAnalysis::default(),
+    )
+}
+
+pub(super) fn fragment_ordinals_with_source(
+    machine_functions: &[MachineFunction],
+    build: CompilerBuild,
+    first_function_counter: u32,
+    post_framed_bump: u8,
+    source: &super::fragment_source_analysis::SourceAnalysis,
+) -> Compilation<(u32, u32)> {
     let first = machine_functions
         .first()
         .expect("a fragmented function debug unit is nonempty");
     let first_owns_payload = first.owns_anonymous_payload();
     let mut state = OrdinalState::new(first_function_counter);
-    let first_number = state.number_before_unwind(first)?;
-    let first_ordinal = first_number;
+    let first_number = checked_add(state.number_before_unwind(first)?, source.local_cost(0))?;
+    let first_ordinal = u32::try_from(i64::from(first_number) + source.header_adjustment)
+        .map_err(|_| invalid_fragment_ordinal())?;
 
     let mut close_ordinal = None;
     for (index, machine) in machine_functions.iter().enumerate() {
         let mut number = if index == 0 {
             first_number
         } else {
-            state.number_before_unwind(machine)?
+            checked_add(state.number_before_unwind(machine)?, source.local_cost(index))?
         };
         // The line header follows the first body's analysis and any payload.
         // Assembly bodies omit the ordinary C function's entry-scope ordinal;
