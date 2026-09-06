@@ -69,6 +69,8 @@ fn is_barrier(instruction: &Instruction) -> bool {
             | MoveFromLinkRegister { .. }
             | MoveToLinkRegister { .. }
             | MoveToCountRegister { .. }
+            | PairedSingleQuantizedLoadWithUpdate { .. }
+            | PairedSingleQuantizedStoreWithUpdate { .. }
             | VerbatimWord(_)
     )
 }
@@ -91,6 +93,7 @@ fn is_store(instruction: &Instruction) -> bool {
             | StoreHalfwordIndexed { .. }
             | StoreFloatSingleIndexed { .. }
             | StoreFloatDoubleIndexed { .. }
+            | PairedSingleQuantizedStoreWithUpdate { .. }
     )
 }
 
@@ -677,6 +680,9 @@ fn latency_rank(instruction: &Instruction) -> u8 {
         | FloatNegativeMultiplySubtractSingle { .. }
         | PairedSingleMultiply { .. }
         | PairedSingleMultiplyScalar0 { .. }
+        | PairedSingleMultiplyScalar1 { .. }
+        | PairedSingleMultiplyAddScalar0 { .. }
+        | PairedSingleMultiplyAddScalar1 { .. }
         | PairedSingleMultiplyAdd { .. }
         | FloatMultiplyDouble { .. }
         | FloatMultiplyAddDouble { .. }
@@ -899,6 +905,27 @@ pub fn schedule_branch_bounded(instructions: &mut Vec<Instruction>) -> Vec<usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paired_update_memory_operations_keep_arithmetic_on_its_side_of_the_access() {
+        for access in [
+            Instruction::PairedSingleQuantizedLoadWithUpdate {
+                d: 1, a: 3, offset: 8, w: 0, i: 0,
+            },
+            Instruction::PairedSingleQuantizedStoreWithUpdate {
+                s: 1, a: 3, offset: 8, w: 0, i: 0,
+            },
+        ] {
+            let mut stream = vec![
+                Instruction::Add { d: 6, a: 7, b: 8 },
+                access,
+                Instruction::MultiplyLow { d: 9, a: 10, b: 11 },
+            ];
+            let original = stream.clone();
+            schedule(&mut stream);
+            assert_eq!(stream, original);
+        }
+    }
 
     #[test]
     fn saved_float_result_chain_can_precede_the_link_reload() {

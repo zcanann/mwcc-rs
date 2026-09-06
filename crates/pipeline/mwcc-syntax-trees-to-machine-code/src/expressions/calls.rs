@@ -861,7 +861,7 @@ impl Generator {
             // Clone before mutably borrowing the output; InlineBodySet owns the
             // canonical retained definition while this call emits one instance.
             let fragment = fragment.to_vec();
-            return crate::asm::append_embedded_asm(&mut self.output, &fragment);
+            return crate::asm::append_embedded_asm(&mut self.output, &fragment, &self.behavior);
         }
         if let Some(function) = self.inline_bodies.parameterized_asm_fragment(name).cloned() {
             if arguments.len() == function.parameters.len() {
@@ -882,7 +882,7 @@ impl Generator {
                     } else {
                         self.emit_arguments(arguments, name)?;
                     }
-                    crate::asm::append_embedded_asm(&mut self.output, &fragment)?;
+                    crate::asm::append_embedded_asm(&mut self.output, &fragment, &self.behavior)?;
                     if let (Some(destination), Some(result)) = (destination, result_register) {
                         if destination != result {
                             self.output.instructions.push(Instruction::FloatMove {

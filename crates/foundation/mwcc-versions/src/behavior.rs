@@ -127,6 +127,7 @@ pub enum NarrowCallZeroTestStyle {
 /// it (see [`Behavior::active_quirks`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Quirk {
+    NegativeQuantizedDisplacementOverwritesFields,
     /// Plain `char` (no `signed`/`unsigned` qualifier) defaults to *unsigned*
     /// rather than signed. GameCube build 53, and any `-char unsigned`. The
     /// mainline (build 81+) treats plain `char` as signed.
@@ -221,6 +222,7 @@ impl Quirk {
     pub fn kind(self) -> QuirkKind {
         match self {
             // Build 81 deliberately restored signed `char`; 53 is the older design.
+            Quirk::NegativeQuantizedDisplacementOverwritesFields => QuirkKind::BugReproduction,
             Quirk::UnsignedPlainChar => QuirkKind::Intentional,
             // A scheduling change introduced by the 2.0 patch release.
             Quirk::FloatCastStoresValueFirst => QuirkKind::Intentional,
@@ -305,6 +307,9 @@ impl Quirk {
     /// A one-line human explanation, for inspection and the artifact dump.
     pub fn summary(self) -> &'static str {
         match self {
+            Quirk::NegativeQuantizedDisplacementOverwritesFields => {
+                "negative asm PSQ displacements overwrite W/I with 1/7 (GC/1.3)"
+            }
             Quirk::UnsignedPlainChar => {
                 "plain `char` defaults to unsigned (build 53 / -char unsigned)"
             }
@@ -882,6 +887,8 @@ pub struct Behavior {
     pub retained_vtable_const_residue_ordinal: Option<u32>,
     /// Whether initialized `T a[] = ...` objects bypass small-data routing.
     pub inferred_array_uses_full_data_section: bool,
+    /// Reproduce the GC/1.3 assembler PSQ displacement/W/I overlap bug.
+    pub asm_negative_quantized_displacement_overwrites_fields: bool,
     /// Post-resolution optimization of branches written in `asm` functions.
     pub asm_branch_optimization_style: AsmBranchOptimizationStyle,
     /// Frame wrapper and implicit-return policy for `asm` functions.
@@ -1489,6 +1496,10 @@ impl Behavior {
                 .build
                 .profile
                 .inferred_array_uses_full_data_section(),
+            asm_negative_quantized_displacement_overwrites_fields: config
+                .build
+                .profile
+                .asm_negative_quantized_displacement_overwrites_fields(),
             asm_branch_optimization_style: config.build.profile.asm_branch_optimization_style(),
             asm_function_finalization_style: config.build.profile.asm_function_finalization_style(),
             fixed_address_rmw_style: config.build.profile.fixed_address_rmw_style(),
@@ -1816,6 +1827,9 @@ impl Behavior {
         }
         if self.terminal_indirect_tail_call {
             quirks.push(ActiveQuirk::of(Quirk::LaterTerminalIndirectTailCall));
+        }
+        if self.asm_negative_quantized_displacement_overwrites_fields {
+            quirks.push(ActiveQuirk::of(Quirk::NegativeQuantizedDisplacementOverwritesFields));
         }
         quirks
     }
@@ -2212,7 +2226,7 @@ mod tests {
     fn build_53_reports_the_unsigned_char_quirk() {
         let behavior = Behavior::resolve(&CompilerConfig::new(build::GC_1_3));
         let quirks = behavior.active_quirks();
-        assert_eq!(quirks.len(), 4);
+        assert_eq!(quirks.len(), 5);
         assert_eq!(quirks[0].quirk, Quirk::UnsignedPlainChar);
         assert_eq!(quirks[0].kind, QuirkKind::Intentional);
         assert_eq!(quirks[1].quirk, Quirk::EarlyDataSectionRelocationAnchors);
@@ -2226,6 +2240,8 @@ mod tests {
             QueueServiceInliningStyle::KeepServiceCallOutOfLine
         );
         assert_eq!(quirks[3].quirk, Quirk::EarlyOutOfLineQueueService);
+        assert_eq!(quirks[4].quirk, Quirk::NegativeQuantizedDisplacementOverwritesFields);
+        assert_eq!(quirks[4].kind, QuirkKind::BugReproduction);
 
         let mut deferred_config = CompilerConfig::new(build::GC_1_3);
         deferred_config.flags.inline_deferred = true;
@@ -2239,6 +2255,17 @@ mod tests {
             deferred.active_quirks()[1].quirk,
             Quirk::EarlyExpandedTrigDispatcherLabels
         );
+    }
+
+    #[test]
+    fn negative_quantized_displacement_bug_is_specific_to_build_53() {
+        for build in [build::GC_1_1, build::GC_1_1P1, build::GC_1_2_5,
+            build::GC_1_2_5N, build::GC_1_3_2, build::GC_2_6] {
+            assert!(!Behavior::resolve(&CompilerConfig::new(build))
+                .asm_negative_quantized_displacement_overwrites_fields);
+        }
+        assert!(Behavior::resolve(&CompilerConfig::new(build::GC_1_3))
+            .asm_negative_quantized_displacement_overwrites_fields);
     }
 
     #[test]

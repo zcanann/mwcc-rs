@@ -134,6 +134,13 @@ impl Instruction {
             Instruction::PairedSingleMultiplyAdd { d, a, c, b } => a_form(4, d, a, b, c, 29),
             Instruction::PairedSingleSum0 { d, a, c, b } => a_form(4, d, a, b, c, 10),
             Instruction::PairedSingleSum1 { d, a, c, b } => a_form(4, d, a, b, c, 11),
+            Instruction::PairedSingleMerge00 { d, a, b } => (4 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (528 << 1),
+            Instruction::PairedSingleMerge01 { d, a, b } => (4 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (560 << 1),
+            Instruction::PairedSingleMerge10 { d, a, b } => (4 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (592 << 1),
+            Instruction::PairedSingleMerge11 { d, a, b } => (4 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (624 << 1),
+            Instruction::PairedSingleMultiplyScalar1 { d, a, c } => a_form(4, d, a, 0, c, 13),
+            Instruction::PairedSingleMultiplyAddScalar0 { d, a, c, b } => a_form(4, d, a, b, c, 14),
+            Instruction::PairedSingleMultiplyAddScalar1 { d, a, c, b } => a_form(4, d, a, b, c, 15),
             Instruction::PairedSingleMove { d, b } => (4 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (72 << 1),
             // frsqrte: opcode 63, A-form xo 26 (fc 40 08 34 = frsqrte f2,f1)
             Instruction::FloatReciprocalSqrtEstimate { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (26 << 1),
@@ -197,6 +204,12 @@ impl Instruction {
             }
             Instruction::PairedSingleQuantizedStore { s, a, offset, w, i } => {
                 (60 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
+            }
+            Instruction::PairedSingleQuantizedLoadWithUpdate { d, a, offset, w, i } => {
+                (57 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
+            }
+            Instruction::PairedSingleQuantizedStoreWithUpdate { s, a, offset, w, i } => {
+                (61 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
             }
             Instruction::BranchToLinkRegister => 0x4E80_0020,
             Instruction::BranchToLinkRegisterAndLink => 0x4E80_0021,

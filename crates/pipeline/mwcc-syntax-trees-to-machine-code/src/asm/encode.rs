@@ -10,6 +10,32 @@ use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{AsmInstruction, AsmOperand};
 use std::collections::HashMap;
 
+/// Apply measured assembler quirks at the source-assembly boundary, keeping
+/// the shared machine encoder faithful to the structured instruction fields.
+pub(super) fn assemble_configured_line(
+    line: &AsmInstruction,
+    labels: &HashMap<&str, usize>,
+    instruction_index: usize,
+    behavior: &mwcc_versions::Behavior,
+) -> Compilation<Option<Instruction>> {
+    let mut instruction = assemble_line(line, labels, instruction_index)?;
+    if behavior.asm_negative_quantized_displacement_overwrites_fields {
+        match instruction.as_mut() {
+            Some(Instruction::PairedSingleQuantizedLoad { offset, w, i, .. })
+            | Some(Instruction::PairedSingleQuantizedStore { offset, w, i, .. })
+            | Some(Instruction::PairedSingleQuantizedLoadWithUpdate { offset, w, i, .. })
+            | Some(Instruction::PairedSingleQuantizedStoreWithUpdate { offset, w, i, .. })
+                if *offset < 0 =>
+            {
+                *w = 1;
+                *i = 7;
+            }
+            _ => {}
+        }
+    }
+    Ok(instruction)
+}
+
 /// Assemble one asm line into an instruction, or `None` for a directive that
 /// emits nothing (`nofralloc`). Branch mnemonics resolve their target label
 /// through `labels` (label name -> instruction index).
@@ -354,6 +380,34 @@ pub(super) fn assemble_line(
             let [d, a, c, b] = fprs(mnemonic, operands)?;
             Instruction::PairedSingleSum1 { d, a, c, b }
         }
+        "ps_merge00" => {
+            let [d, a, b] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleMerge00 { d, a, b }
+        }
+        "ps_merge01" => {
+            let [d, a, b] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleMerge01 { d, a, b }
+        }
+        "ps_merge10" => {
+            let [d, a, b] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleMerge10 { d, a, b }
+        }
+        "ps_merge11" => {
+            let [d, a, b] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleMerge11 { d, a, b }
+        }
+        "ps_muls1" => {
+            let [d, a, c] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleMultiplyScalar1 { d, a, c }
+        }
+        "ps_madds0" => {
+            let [d, a, c, b] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleMultiplyAddScalar0 { d, a, c, b }
+        }
+        "ps_madds1" => {
+            let [d, a, c, b] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleMultiplyAddScalar1 { d, a, c, b }
+        }
         "ps_mr" => {
             let [d, b] = fprs(mnemonic, operands)?;
             Instruction::PairedSingleMove { d, b }
@@ -451,6 +505,15 @@ pub(super) fn assemble_line(
         "psq_st" => {
             let (s, offset, a, w, i) = quantized_fpr_mem(mnemonic, operands)?;
             Instruction::PairedSingleQuantizedStore { s, a, offset, w, i }
+        }
+
+        "psq_lu" => {
+            let (d, offset, a, w, i) = quantized_fpr_mem(mnemonic, operands)?;
+            Instruction::PairedSingleQuantizedLoadWithUpdate { d, a, offset, w, i }
+        }
+        "psq_stu" => {
+            let (s, offset, a, w, i) = quantized_fpr_mem(mnemonic, operands)?;
+            Instruction::PairedSingleQuantizedStoreWithUpdate { s, a, offset, w, i }
         }
 
         // Compares with an optional explicit condition field. `cmpwi` handles any
@@ -1260,6 +1323,38 @@ mod tests {
             Instruction::PairedSingleMove { d: 31, b: 0 }.encode(),
             0x13e0_0090
         );
+    }
+
+    #[test]
+    fn assembles_oracle_measured_matrix_lane_operations() {
+        // GC/2.6 oracle words from canary 1531; intentionally use distinct
+        // operands to catch swapped B/C fields and high-register truncation.
+        for (mnemonic, registers, word) in [
+            ("ps_merge00", vec![0, 13, 12], 0x100d_6420),
+            ("ps_merge01", vec![2, 11, 10], 0x104b_5460),
+            ("ps_merge10", vec![31, 0, 30], 0x13e0_f4a0),
+            ("ps_merge11", vec![1, 13, 12], 0x102d_64e0),
+            ("ps_muls1", vec![8, 1, 6], 0x1101_019a),
+            ("ps_madds0", vec![12, 2, 7, 8], 0x1182_41dc),
+            ("ps_madds1", vec![8, 1, 6, 8], 0x1101_419e),
+        ] {
+            let operands = registers.into_iter().map(AsmOperand::Fpr).collect();
+            assert_eq!(assemble(mnemonic, operands).unwrap().encode(), word, "{mnemonic}");
+        }
+        for (mnemonic, register, base, displacement, w, i, word) in [
+            ("psq_lu", 7, 4, 8, 1, 0, 0xe4e4_8008),
+            ("psq_lu", 31, 3, -2048, 0, 7, 0xe7e3_7800),
+            ("psq_stu", 12, 5, 4, 0, 0, 0xf585_0004),
+            ("psq_stu", 0, 31, 2047, 1, 7, 0xf41f_f7ff),
+        ] {
+            let operands = vec![
+                AsmOperand::Fpr(register),
+                AsmOperand::Memory { displacement, base },
+                AsmOperand::Immediate(w),
+                AsmOperand::Immediate(i),
+            ];
+            assert_eq!(assemble(mnemonic, operands).unwrap().encode(), word, "{mnemonic}");
+        }
     }
 
     #[test]

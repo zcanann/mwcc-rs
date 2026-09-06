@@ -4,13 +4,56 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-07-24 05:30 UTC at compiler commit `d2609aad`
+Latest targeted checkpoint: 2026-09-06, paired-single matrix assembly (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `4ca51cd13c66eca020e6f691933c6075f99debec63ec5d6ba3a09853753c4bbe:121d3ae4f26965d7109e24043dcb96e73b0ab99435ff0da8079c505e14ff84a1`
+Latest measured compiler + harness fingerprint: `d797c161cc4f5c3ac4bd8509c260bd969e34a17f8f70599b313ed2b97b278869:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary pass counts and work-queue
 counts are deliberately absent: neither is a corpus parity estimate.
+
+## Focused matrix assembly checkpoint, 2026-09-06
+
+The local inventory now contains **49,436 configured translation units**. A
+failure-driven check selected all 44 configured `mtxvec.c` rows; it is not a
+representative corpus estimate and does not replace the historical holdout below.
+
+| Outcome | Configurations |
+| --- | ---: |
+| Authoritative whole-object exact | 12 / 44 |
+| Different object | 1 / 44 |
+| Compiler deferral | 28 / 44 |
+| Harness/measurement unknown | 3 / 44 |
+
+Six exact rows contain code: every Mario Party 4 variant's GC/1.2.5 matrix/vector
+object, each with four functions and 444 executable bytes. The other six exact
+rows are empty objects (two Mario Kart and four Metroid Prime configurations);
+they demonstrate no matrix code-generation coverage. The original Mario Party 4
+GMPE01_00 probe deferred on `ps_merge00` before this change.
+
+The shared assembler now supports all four paired merge forms, scalar-lane
+multiply and multiply-add, and quantized load/store with base update. Register
+visitation models the base's read and definition; update memory operations are
+scheduler barriers. GC/1.3's negative-displacement bug is reproduced through a
+profile setting: negative PSQ offsets force W=1/I=7. Direct oracle measurements
+confirm that GC/1.1, 1.1p1, 1.2.5, 1.2.5n, and 1.3.2 do not have this bug.
+
+Remaining rows expose `subi` assembly aliases, retained inline functions with
+linkage frames, and object metadata differences. The three harness unknowns are
+Twilight Princess GC/3.0a3 configurations whose oracle invocation rejects the
+source; no compiler parity credit is assigned to them.
+
+Reproduce using the host-tool overrides documented in the README (macOS wibo
+1.2.0, gc-wii-binutils 2.42-2, direct ASCII compilation with no sjiswrap):
+
+```sh
+cargo build -p mwcc
+python3 tools/reference_parity.py --compiler target/debug/mwcc \
+  --source 'mtxvec.c$' --timeout 30 --jobs 6 --code-projection
+```
+
+The completion proof and statistical checkpoints below retain their historical
+47,879-configuration denominator. No project matrix has been proven complete.
 
 ## Completion proof
 

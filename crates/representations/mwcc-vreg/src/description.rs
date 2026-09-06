@@ -137,12 +137,14 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, G, b);
         }
         // The update form reads AND rewrites the general base.
-        LoadFloatDoubleWithUpdate { d, a, .. } | LoadFloatSingleWithUpdate { d, a, .. } => {
+        LoadFloatDoubleWithUpdate { d, a, .. } | LoadFloatSingleWithUpdate { d, a, .. }
+        | PairedSingleQuantizedLoadWithUpdate { d, a, .. } => {
             visit(D, F, d);
             visit(U, G, a);
             visit(D, G, a);
         }
-        StoreFloatDoubleWithUpdate { s, a, .. } | StoreFloatSingleWithUpdate { s, a, .. } => {
+        StoreFloatDoubleWithUpdate { s, a, .. } | StoreFloatSingleWithUpdate { s, a, .. }
+        | PairedSingleQuantizedStoreWithUpdate { s, a, .. } => {
             visit(U, F, s);
             visit(U, G, a);
             visit(D, G, a);
@@ -182,14 +184,19 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         // Float arithmetic — all operands float.
         FloatAddSingle { d, a, b } | FloatSubtractSingle { d, a, b } | FloatDivideSingle { d, a, b }
         | FloatAddDouble { d, a, b } | FloatSubtractDouble { d, a, b } | FloatDivideDouble { d, a, b }
-        | PairedSingleAdd { d, a, b } | PairedSingleSubtract { d, a, b } => {
+        | PairedSingleAdd { d, a, b } | PairedSingleSubtract { d, a, b }
+        | PairedSingleMerge00 { d, a, b }
+        | PairedSingleMerge01 { d, a, b }
+        | PairedSingleMerge10 { d, a, b }
+        | PairedSingleMerge11 { d, a, b } => {
             visit(D, F, d);
             visit(U, F, a);
             visit(U, F, b);
         }
         FloatMultiplySingle { d, a, c } | FloatMultiplyDouble { d, a, c }
         | PairedSingleMultiply { d, a, c }
-        | PairedSingleMultiplyScalar0 { d, a, c } => {
+        | PairedSingleMultiplyScalar0 { d, a, c }
+        | PairedSingleMultiplyScalar1 { d, a, c } => {
             visit(D, F, d);
             visit(U, F, a);
             visit(U, F, c);
@@ -201,6 +208,8 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         | FloatMultiplyAddDouble { d, a, c, b } | FloatMultiplySubtractDouble { d, a, c, b }
         | FloatNegativeMultiplySubtractDouble { d, a, c, b }
         | PairedSingleMultiplyAdd { d, a, c, b }
+        | PairedSingleMultiplyAddScalar0 { d, a, c, b }
+        | PairedSingleMultiplyAddScalar1 { d, a, c, b }
         | PairedSingleSum0 { d, a, c, b }
         | PairedSingleSum1 { d, a, c, b } => {
             visit(D, F, d);
@@ -298,6 +307,41 @@ mod tests {
             .filter(|operand| operand.role == RegisterRole::Use)
             .map(|operand| (operand.class, operand.register))
             .collect()
+    }
+
+    #[test]
+    fn paired_update_memory_operations_read_and_define_the_base() {
+        let load = Instruction::PairedSingleQuantizedLoadWithUpdate {
+            d: 7, a: 4, offset: 8, w: 1, i: 0,
+        };
+        assert_eq!(defs(&load), [(Class::Float, 7), (Class::General, 4)]);
+        assert_eq!(uses(&load), [(Class::General, 4)]);
+        let store = Instruction::PairedSingleQuantizedStoreWithUpdate {
+            s: 12, a: 5, offset: 4, w: 0, i: 0,
+        };
+        assert_eq!(defs(&store), [(Class::General, 5)]);
+        assert_eq!(uses(&store), [(Class::Float, 12), (Class::General, 5)]);
+    }
+
+    #[test]
+    fn paired_lane_operations_expose_every_float_operand() {
+        for merge in [
+            Instruction::PairedSingleMerge00 { d: 0, a: 13, b: 12 },
+            Instruction::PairedSingleMerge01 { d: 0, a: 13, b: 12 },
+            Instruction::PairedSingleMerge10 { d: 0, a: 13, b: 12 },
+            Instruction::PairedSingleMerge11 { d: 0, a: 13, b: 12 },
+        ] {
+            assert_eq!(defs(&merge), [(Class::Float, 0)]);
+            assert_eq!(uses(&merge), [(Class::Float, 13), (Class::Float, 12)]);
+            assert_eq!(merge.float_destination(), Some(0));
+        }
+        for multiply_add in [
+            Instruction::PairedSingleMultiplyAddScalar0 { d: 8, a: 1, c: 6, b: 8 },
+            Instruction::PairedSingleMultiplyAddScalar1 { d: 8, a: 1, c: 6, b: 8 },
+        ] {
+            assert_eq!(defs(&multiply_add), [(Class::Float, 8)]);
+            assert_eq!(uses(&multiply_add), [(Class::Float, 1), (Class::Float, 6), (Class::Float, 8)]);
+        }
     }
 
     #[test]

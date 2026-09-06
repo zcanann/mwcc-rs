@@ -20,7 +20,7 @@ mod encode;
 mod frame;
 mod operands;
 
-use encode::assemble_line;
+use encode::assemble_configured_line;
 use frame::{wrap_auto_frame, wrap_fralloc_frame};
 
 use mwcc_core::{Compilation, Diagnostic};
@@ -42,6 +42,7 @@ use std::collections::HashMap;
 pub(crate) fn append_embedded_asm(
     output: &mut MachineFunction,
     body: &[AsmItem],
+    behavior: &Behavior,
 ) -> Compilation<()> {
     let base = output.instructions.len();
     let mut labels: HashMap<&str, usize> = HashMap::new();
@@ -66,7 +67,7 @@ pub(crate) fn append_embedded_asm(
             continue;
         };
         let instruction_index = output.instructions.len();
-        let Some(instruction) = assemble_line(line, &labels, instruction_index)? else {
+        let Some(instruction) = assemble_configured_line(line, &labels, instruction_index, &behavior)? else {
             continue;
         };
         output.instructions.push(instruction);
@@ -151,7 +152,7 @@ pub(crate) fn assemble_inline_block(
             )));
         }
         let instruction_index = instructions.len();
-        let Some(instruction) = assemble_line(line, &labels, instruction_index)? else {
+        let Some(instruction) = assemble_configured_line(line, &labels, instruction_index, &behavior)? else {
             continue;
         };
         instructions.push(instruction);
@@ -264,7 +265,7 @@ pub(crate) fn assemble_asm_function(
                 frfree_position = Some(instructions.len());
             }
             let instruction_index = instructions.len();
-            if let Some(instruction) = assemble_line(line, &labels, instruction_index)? {
+            if let Some(instruction) = assemble_configured_line(line, &labels, instruction_index, &behavior)? {
                 instructions.push(instruction);
                 for operand in &line.operands {
                     let relocation = match operand {

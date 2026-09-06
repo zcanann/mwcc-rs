@@ -1703,6 +1703,13 @@ pub trait CodegenProfile: core::fmt::Debug {
         false
     }
 
+    /// GC/1.3's assembler ORs a signed 16-bit displacement into a PSQ word,
+    /// setting W=1 and I=7 for negative offsets. Earlier build 163 and later
+    /// build 81 mask the displacement to its proper 12-bit field.
+    fn asm_negative_quantized_displacement_overwrites_fields(&self) -> bool {
+        false
+    }
+
     fn asm_branch_optimization_style(&self) -> AsmBranchOptimizationStyle {
         AsmBranchOptimizationStyle::ChaseAndCollapseReturns
     }
@@ -2216,6 +2223,10 @@ impl CodegenProfile for Wii43Build145 {
 #[derive(Debug)]
 pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
+    fn asm_negative_quantized_displacement_overwrites_fields(&self) -> bool {
+        true
+    }
+
     fn retain_unused_cxx_inline_asm_symbols(&self) -> bool {
         true
     }

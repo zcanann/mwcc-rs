@@ -235,6 +235,17 @@ pub enum Instruction {
     PairedSingleSum1 { d: u8, a: u8, c: u8, b: u8 },
     /// `ps_mr frD, frB` — Gekko paired-single register move.
     PairedSingleMove { d: u8, b: u8 },
+    /// Merge selected lanes of two paired-single registers (`ps_merge00` etc.).
+    PairedSingleMerge00 { d: u8, a: u8, b: u8 },
+    PairedSingleMerge01 { d: u8, a: u8, b: u8 },
+    PairedSingleMerge10 { d: u8, a: u8, b: u8 },
+    PairedSingleMerge11 { d: u8, a: u8, b: u8 },
+    /// Multiply both lanes by lane one of `c` (`ps_muls1`).
+    PairedSingleMultiplyScalar1 { d: u8, a: u8, c: u8 },
+    /// Multiply by the selected lane of `c`, then add both lanes of `b`.
+    PairedSingleMultiplyAddScalar0 { d: u8, a: u8, c: u8, b: u8 },
+    PairedSingleMultiplyAddScalar1 { d: u8, a: u8, c: u8, b: u8 },
+
     /// `fneg frD, frB`
     FloatNegate { d: u8, b: u8 },
     /// `fabs frD, frB` — floating absolute value.
@@ -250,6 +261,9 @@ pub enum Instruction {
     PairedSingleQuantizedLoadIndexed { d: u8, a: u8, b: u8, w: u8, i: u8 },
     /// `psq_st frS, offset(rA), W, I` — Gekko paired-single quantized store.
     PairedSingleQuantizedStore { s: u8, a: u8, offset: i16, w: u8, i: u8 },
+    /// Quantized load/store with effective-address writeback to the base GPR.
+    PairedSingleQuantizedLoadWithUpdate { d: u8, a: u8, offset: i16, w: u8, i: u8 },
+    PairedSingleQuantizedStoreWithUpdate { s: u8, a: u8, offset: i16, w: u8, i: u8 },
     /// `stwu rS, offset(rA)` — store word with base update (stack frame push).
     StoreWordWithUpdate { s: u8, a: u8, offset: i16 },
     /// `lwz rD, offset(rA)` — load word.
@@ -424,6 +438,9 @@ impl Instruction {
                 | PairedSingleSubtract { .. }
                 | PairedSingleMultiply { .. }
                 | PairedSingleMultiplyScalar0 { .. }
+                | PairedSingleMultiplyScalar1 { .. }
+                | PairedSingleMultiplyAddScalar0 { .. }
+                | PairedSingleMultiplyAddScalar1 { .. }
                 | PairedSingleMultiplyAdd { .. }
                 | PairedSingleSum0 { .. }
                 | PairedSingleSum1 { .. }
@@ -447,6 +464,8 @@ impl Instruction {
                 | LoadFloatSingleIndexed { .. }
                 | LoadFloatDouble { .. }
                 | PairedSingleQuantizedLoad { .. }
+                | PairedSingleQuantizedLoadWithUpdate { .. }
+                | PairedSingleQuantizedStoreWithUpdate { .. }
                 | PairedSingleQuantizedLoadIndexed { .. }
                 | FloatAddSingle { .. }
                 | FloatSubtractSingle { .. }
@@ -469,10 +488,17 @@ impl Instruction {
                 | PairedSingleSubtract { .. }
                 | PairedSingleMultiply { .. }
                 | PairedSingleMultiplyScalar0 { .. }
+                | PairedSingleMultiplyScalar1 { .. }
+                | PairedSingleMultiplyAddScalar0 { .. }
+                | PairedSingleMultiplyAddScalar1 { .. }
                 | PairedSingleMultiplyAdd { .. }
                 | PairedSingleSum0 { .. }
                 | PairedSingleSum1 { .. }
                 | PairedSingleMove { .. }
+                | PairedSingleMerge00 { .. }
+                | PairedSingleMerge01 { .. }
+                | PairedSingleMerge10 { .. }
+                | PairedSingleMerge11 { .. }
                 | FloatNegate { .. }
                 | FloatAbsolute { .. }
                 | ConvertToIntegerWordZero { .. }
@@ -511,6 +537,7 @@ impl Instruction {
             | LoadFloatSingleIndexed { d, .. }
             | LoadFloatSingleWithUpdate { d, .. }
             | PairedSingleQuantizedLoad { d, .. }
+            | PairedSingleQuantizedLoadWithUpdate { d, .. }
             | PairedSingleQuantizedLoadIndexed { d, .. }
             | FloatAddSingle { d, .. }
             | FloatSubtractSingle { d, .. }
@@ -524,6 +551,9 @@ impl Instruction {
             | PairedSingleSubtract { d, .. }
             | PairedSingleMultiply { d, .. }
             | PairedSingleMultiplyScalar0 { d, .. }
+            | PairedSingleMultiplyScalar1 { d, .. }
+            | PairedSingleMultiplyAddScalar0 { d, .. }
+            | PairedSingleMultiplyAddScalar1 { d, .. }
             | PairedSingleMultiplyAdd { d, .. }
             | PairedSingleSum0 { d, .. }
             | PairedSingleSum1 { d, .. }
@@ -539,6 +569,10 @@ impl Instruction {
             | FloatReciprocalSqrtEstimate { d, .. }
             | FloatMove { d, .. }
             | PairedSingleMove { d, .. }
+            | PairedSingleMerge00 { d, .. }
+            | PairedSingleMerge01 { d, .. }
+            | PairedSingleMerge10 { d, .. }
+            | PairedSingleMerge11 { d, .. }
             | FloatNegate { d, .. }
             | FloatAbsolute { d, .. }
             | ConvertToIntegerWordZero { d, .. }
