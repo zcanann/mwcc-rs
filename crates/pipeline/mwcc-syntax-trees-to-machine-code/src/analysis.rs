@@ -3,7 +3,7 @@
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type, UnaryOperator};
 use std::collections::HashSet;
 
-use crate::intrinsics::{is_integer_intrinsic_call, is_intrinsic_call};
+use crate::intrinsics::{is_integer_intrinsic_call, is_intrinsic_call, is_pure_intrinsic_call};
 
 pub(crate) const PRESCALED_POINTER_TABLE_INDEX_PREFIX: &str =
     "__mwcc_pointer_table_byte_offset_";
@@ -1178,7 +1178,7 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
 /// Used to decide whether a comma operand can be peeled to its right value or must defer.
 pub(crate) fn expression_has_side_effect(expression: &Expression) -> bool {
     match expression {
-        Expression::Call { name, arguments } if is_intrinsic_call(name, arguments.len()) => {
+        Expression::Call { name, arguments } if is_pure_intrinsic_call(name, arguments.len()) => {
             arguments.iter().any(expression_has_side_effect)
         }
         Expression::Call { .. }

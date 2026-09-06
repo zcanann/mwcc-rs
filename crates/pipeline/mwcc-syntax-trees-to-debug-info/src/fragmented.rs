@@ -1310,7 +1310,7 @@ fn function_fragment_boundary(
     }
     Ok((
         FragmentBoundary {
-            name: format!(".dwarf.0006.{}", function.name),
+            name: format!(".dwarf.{tag:04x}.{}", function.name),
             offset,
             size: cursor - offset,
         },

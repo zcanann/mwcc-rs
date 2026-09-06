@@ -844,6 +844,13 @@ impl Generator {
         destination: Option<u8>,
         float_result: bool,
     ) -> Compilation<()> {
+        if let Some(instruction) = crate::intrinsics::ordering_instruction(name, arguments.len()) {
+            if destination.is_some() || float_result {
+                return Err(Diagnostic::error("an ordering intrinsic has no result value"));
+            }
+            self.output.instructions.push(instruction);
+            return Ok(());
+        }
         if self.try_emit_jgeometry_float_utility(
             name,
             arguments,

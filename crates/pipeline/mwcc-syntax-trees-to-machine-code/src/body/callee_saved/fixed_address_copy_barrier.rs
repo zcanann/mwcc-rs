@@ -7,8 +7,14 @@
 
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Destination<'a> {
+    Constant(u32),
+    Call { name: &'a str, argument: i16 },
+}
+
 struct CopyBarrier<'a> {
-    address: u32,
+    destination: Destination<'a>,
     start: &'a str,
     end: &'a str,
     copy: &'a str,
@@ -98,7 +104,20 @@ fn recognize(function: &Function) -> Option<CopyBarrier<'_>> {
     {
         return None;
     }
-    let address = constant_through_casts(destination.initializer.as_ref()?)? as u32;
+    let initializer = destination.initializer.as_ref()?;
+    let destination_value = if let Some(address) = constant_through_casts(initializer) {
+        Destination::Constant(address as u32)
+    } else if let Expression::Call { name, arguments } = peel_casts(initializer) {
+        let [argument] = arguments.as_slice() else {
+            return None;
+        };
+        Destination::Call {
+            name,
+            argument: i16::try_from(constant_through_casts(argument)?).ok()?,
+        }
+    } else {
+        return None;
+    };
 
     let (copy_statement, flush_statement, invalidate_statement) =
         match function.statements.as_slice() {
@@ -149,7 +168,7 @@ fn recognize(function: &Function) -> Option<CopyBarrier<'_>> {
     }
 
     Some(CopyBarrier {
-        address,
+        destination: destination_value,
         start,
         end,
         copy,
@@ -164,28 +183,125 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        if !self.frame_slots.is_empty()
-            || self.behavior.frame_convention != FrameConvention::LinkageFirst
-            || !self.behavior.schedule_latency_slots
-        {
+        if !self.frame_slots.is_empty() || !self.behavior.schedule_latency_slots {
             return Ok(false);
         }
         let Some(shape) = recognize(function) else {
             return Ok(false);
         };
-        let (address_high, address_low) = split_address(shape.address);
-
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst
+            && matches!(shape.destination, Destination::Call { .. })
+        {
+            return Ok(false);
+        }
         self.non_leaf = true;
         self.frame_size = 16;
         self.callee_saved = vec![31];
         self.output.pre_scheduled = true;
-        // These calls are registered in transaction order.  The generic AST
-        // symbol walk groups the two cache operations ahead of the range copy,
-        // which is not the legacy compiler's creation order for this schedule.
         self.output.symbol_order = [shape.copy, shape.flush, shape.invalidate]
             .into_iter()
             .map(str::to_owned)
             .collect();
+        if let Destination::Call { name, .. } = shape.destination {
+            self.output.symbol_order.insert(0, name.to_owned());
+        }
+
+        let destination_argument = match (self.behavior.frame_convention, shape.destination) {
+            (FrameConvention::LinkageFirst, Destination::Constant(address)) => {
+                self.copy_barrier_linkage_frame();
+                let (high, low) = split_address(address);
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(5, high));
+                self.copy_barrier_symbol_high(shape.start, 4);
+                self.copy_barrier_symbol_high(shape.end, 3);
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 31,
+                    a: 5,
+                    immediate: low,
+                });
+                self.copy_barrier_symbol_low(shape.end, 0, 3);
+                self.copy_barrier_symbol_low(shape.start, 4, 4);
+                self.output.instructions.extend([
+                    Instruction::move_register(3, 31),
+                    Instruction::SubtractFrom { d: 5, a: 4, b: 0 },
+                ]);
+                Instruction::move_register(3, 31)
+            }
+            (FrameConvention::LinkageFirst, Destination::Call { name, argument }) => {
+                self.copy_barrier_linkage_frame();
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(3, argument));
+                self.copy_barrier_call(name);
+                self.copy_barrier_symbol_high(shape.start, 4);
+                self.copy_barrier_symbol_high(shape.end, 5);
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(31, 3));
+                self.copy_barrier_symbol_low(shape.start, 4, 4);
+                self.copy_barrier_symbol_low(shape.end, 0, 5);
+                self.output.instructions.extend([
+                    Instruction::move_register(3, 31),
+                    Instruction::SubtractFrom { d: 5, a: 4, b: 0 },
+                ]);
+                Instruction::move_register(3, 31)
+            }
+            (_, Destination::Constant(address)) => {
+                let (high, low) = split_address(address);
+                self.output.instructions.extend([
+                    Instruction::StoreWordWithUpdate {
+                        s: 1,
+                        a: 1,
+                        offset: -16,
+                    },
+                    Instruction::MoveFromLinkRegister { d: 0 },
+                ]);
+                self.copy_barrier_symbol_high(shape.start, 4);
+                self.copy_barrier_symbol_high(shape.end, 5);
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 20,
+                });
+                self.copy_barrier_symbol_low(shape.start, 4, 4);
+                self.copy_barrier_symbol_low(shape.end, 5, 5);
+                let argument = Instruction::AddImmediate {
+                    d: 3,
+                    a: 31,
+                    immediate: low,
+                };
+                self.output.instructions.extend([
+                    Instruction::StoreWord {
+                        s: 31,
+                        a: 1,
+                        offset: 12,
+                    },
+                    Instruction::load_immediate_shifted(31, high),
+                    argument.clone(),
+                    Instruction::SubtractFrom { d: 5, a: 4, b: 5 },
+                ]);
+                argument
+            }
+            _ => unreachable!("unmeasured destination convention was rejected"),
+        };
+        self.copy_barrier_call(shape.copy);
+        self.output.instructions.extend([
+            destination_argument.clone(),
+            Instruction::load_immediate(4, shape.size),
+        ]);
+        self.copy_barrier_call(shape.flush);
+        self.output.instructions.extend([
+            Instruction::Synchronize,
+            destination_argument,
+            Instruction::load_immediate(4, shape.size),
+        ]);
+        self.copy_barrier_call(shape.invalidate);
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    fn copy_barrier_linkage_frame(&mut self) {
         self.output.instructions.extend([
             Instruction::MoveFromLinkRegister { d: 0 },
             Instruction::StoreWord {
@@ -203,62 +319,30 @@ impl Generator {
                 a: 1,
                 offset: 12,
             },
-            Instruction::load_immediate_shifted(5, address_high),
         ]);
-        self.record_relocation(RelocationKind::Addr16Ha, shape.start);
+    }
+
+    fn copy_barrier_symbol_high(&mut self, symbol: &str, register: u8) {
+        self.record_relocation(RelocationKind::Addr16Ha, symbol);
         self.output
             .instructions
-            .push(Instruction::load_immediate_shifted(4, 0));
-        self.record_relocation(RelocationKind::Addr16Ha, shape.end);
-        self.output
-            .instructions
-            .push(Instruction::load_immediate_shifted(3, 0));
+            .push(Instruction::load_immediate_shifted(register, 0));
+    }
+
+    fn copy_barrier_symbol_low(&mut self, symbol: &str, destination: u8, base: u8) {
+        self.record_relocation(RelocationKind::Addr16Lo, symbol);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: 31,
-            a: 5,
-            immediate: address_low,
-        });
-        self.record_relocation(RelocationKind::Addr16Lo, shape.end);
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 0,
-            a: 3,
+            d: destination,
+            a: base,
             immediate: 0,
         });
-        self.record_relocation(RelocationKind::Addr16Lo, shape.start);
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 4,
-            a: 4,
-            immediate: 0,
-        });
-        self.output
-            .instructions
-            .push(Instruction::move_register(3, 31));
-        self.output
-            .instructions
-            .push(Instruction::SubtractFrom { d: 5, a: 4, b: 0 });
-        self.record_relocation(RelocationKind::Rel24, shape.copy);
+    }
+
+    fn copy_barrier_call(&mut self, name: &str) {
+        self.record_relocation(RelocationKind::Rel24, name);
         self.output.instructions.push(Instruction::BranchAndLink {
-            target: shape.copy.to_string(),
+            target: name.to_owned(),
         });
-        self.output.instructions.extend([
-            Instruction::move_register(3, 31),
-            Instruction::load_immediate(4, shape.size),
-        ]);
-        self.record_relocation(RelocationKind::Rel24, shape.flush);
-        self.output.instructions.push(Instruction::BranchAndLink {
-            target: shape.flush.to_string(),
-        });
-        self.output.instructions.push(Instruction::Synchronize);
-        self.output.instructions.extend([
-            Instruction::move_register(3, 31),
-            Instruction::load_immediate(4, shape.size),
-        ]);
-        self.record_relocation(RelocationKind::Rel24, shape.invalidate);
-        self.output.instructions.push(Instruction::BranchAndLink {
-            target: shape.invalidate.to_string(),
-        });
-        self.emit_epilogue_and_return();
-        Ok(true)
     }
 }
 
@@ -348,7 +432,7 @@ mod tests {
     fn recognizes_equivalent_names_and_calls() {
         let function = function();
         let shape = recognize(&function).expect("semantic shape");
-        assert_eq!(shape.address, 0x8000_0c00);
+        assert_eq!(shape.destination, Destination::Constant(0x8000_0c00));
         assert_eq!(shape.start, "vector_begin");
         assert_eq!(shape.end, "vector_end");
         assert_eq!(shape.copy, "copy_range");
@@ -358,16 +442,18 @@ mod tests {
     fn recognizes_positioned_inline_asm_barrier() {
         let mut function = function();
         function.statements.remove(2);
-        function.inline_asm_blocks.push(mwcc_syntax_trees::InlineAsmBlock {
-            statement_index: 2,
-            items: vec![mwcc_syntax_trees::AsmItem::Instruction(
-                mwcc_syntax_trees::AsmInstruction {
-                    mnemonic: "sync".to_string(),
-                    operands: Vec::new(),
-                    source_line: 1,
-                },
-            )],
-        });
+        function
+            .inline_asm_blocks
+            .push(mwcc_syntax_trees::InlineAsmBlock {
+                statement_index: 2,
+                items: vec![mwcc_syntax_trees::AsmItem::Instruction(
+                    mwcc_syntax_trees::AsmInstruction {
+                        mnemonic: "sync".to_string(),
+                        operands: Vec::new(),
+                        source_line: 1,
+                    },
+                )],
+            });
         assert!(recognize(&function).is_some());
     }
 

@@ -177,7 +177,7 @@ pub(super) fn lower(
     } else if matches!(
         shape,
         MeasuredShape::VectorInstaller | MeasuredShape::VectorInstallerWithInlineStatics
-    ) {
+    ) || vector_installers::matches_predecrement(unit, machine_functions) {
         line_records.extend(vector_installers::line_records(
             &source_functions,
             machine_functions,

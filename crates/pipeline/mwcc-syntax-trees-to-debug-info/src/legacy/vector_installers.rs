@@ -32,6 +32,33 @@ pub(super) fn matches(unit: &TranslationUnit, machine_functions: &[MachineFuncti
         && installer_shape(installer)
 }
 
+/// The later scheduled form retains only the destination's high half. The
+/// optimized-away pointer initializer owns no line entry in this form.
+pub(super) fn matches_predecrement(
+    unit: &TranslationUnit,
+    machine_functions: &[MachineFunction],
+) -> bool {
+    matches(unit, machine_functions) && predecrement_destination(&machine_functions[1])
+}
+
+fn predecrement_destination(machine: &MachineFunction) -> bool {
+    machine.pre_scheduled
+        && matches!(
+            machine.instructions.first(),
+            Some(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16
+            })
+        )
+        && machine.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::AddImmediateShifted { d: 31, a: 0, .. }
+            )
+        })
+}
+
 fn installer_shape(function: &Function) -> bool {
     if function.is_static
         || function.return_type != Type::Void
@@ -103,19 +130,10 @@ pub(super) fn line_records(
         [Some(line)] => *line,
         _ => return Err(invalid_plan()),
     };
-    let [_, flush_line, barrier_line, invalidate_line] = source.statement_lines.as_slice() else {
+    let [copy_line, flush_line, barrier_line, invalidate_line] = source.statement_lines.as_slice()
+    else {
         return Err(invalid_plan());
     };
-    let first_address = installer_machine
-        .instructions
-        .iter()
-        .position(|instruction| {
-            matches!(
-                instruction,
-                Instruction::AddImmediateShifted { d: 5, a: 0, .. }
-            )
-        })
-        .ok_or_else(invalid_plan)? as u32;
     let calls = installer_machine
         .instructions
         .iter()
@@ -124,9 +142,31 @@ pub(super) fn line_records(
             matches!(instruction, Instruction::BranchAndLink { .. }).then_some(index as u32)
         })
         .collect::<Vec<_>>();
-    let [copy_call, flush_call, invalidate_call] = calls.as_slice() else {
-        return Err(invalid_plan());
+    let (initializer_call, copy_call, flush_call, invalidate_call) = match calls.as_slice() {
+        [copy, flush, invalidate] => (None, *copy, *flush, *invalidate),
+        [initialize, copy, flush, invalidate] => (Some(*initialize), *copy, *flush, *invalidate),
+        _ => return Err(invalid_plan()),
     };
+    let predecrement = predecrement_destination(installer_machine);
+    let first_address = installer_machine
+        .instructions
+        .iter()
+        .position(|instruction| {
+            if initializer_call.is_some() {
+                matches!(instruction, Instruction::AddImmediate { d: 3, a: 0, .. })
+            } else if predecrement {
+                matches!(
+                    instruction,
+                    Instruction::AddImmediateShifted { d: 4, a: 0, .. }
+                )
+            } else {
+                matches!(
+                    instruction,
+                    Instruction::AddImmediateShifted { d: 5, a: 0, .. }
+                )
+            }
+        })
+        .ok_or_else(invalid_plan)? as u32;
     let barrier = installer_machine
         .instructions
         .iter()
@@ -135,13 +175,24 @@ pub(super) fn line_records(
     let start = layout.offsets[1];
     records.extend([
         record(source.body_start_line, start),
-        record(local_line, start + first_address * 4),
-        record(*flush_line, start + (*copy_call + 1) * 4),
+        record(
+            if predecrement { *copy_line } else { local_line },
+            start + first_address * 4,
+        ),
+    ]);
+    if let Some(initialize) = initializer_call {
+        if initialize >= copy_call || first_address >= initialize {
+            return Err(invalid_plan());
+        }
+        records.push(record(*copy_line, start + (initialize + 1) * 4));
+    }
+    records.extend([
+        record(*flush_line, start + (copy_call + 1) * 4),
         record(*barrier_line, start + barrier * 4),
         record(*invalidate_line, start + (barrier + 1) * 4),
-        record(source.body_end_line, start + (*invalidate_call + 1) * 4),
+        record(source.body_end_line, start + (invalidate_call + 1) * 4),
     ]);
-    if *flush_call <= *copy_call || barrier <= *flush_call || *invalidate_call <= barrier {
+    if flush_call <= copy_call || barrier <= flush_call || invalidate_call <= barrier {
         return Err(invalid_plan());
     }
     Ok(records)

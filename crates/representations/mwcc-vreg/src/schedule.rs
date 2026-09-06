@@ -71,6 +71,9 @@ fn is_barrier(instruction: &Instruction) -> bool {
             | MoveToCountRegister { .. }
             | PairedSingleQuantizedLoadWithUpdate { .. }
             | PairedSingleQuantizedStoreWithUpdate { .. }
+            | InstructionSynchronize
+            | Synchronize
+            | EnforceInOrderIo
             | VerbatimWord(_)
     )
 }

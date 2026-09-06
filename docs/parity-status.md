@@ -4,13 +4,63 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, legacy issue-window progress and snapshot schedule captures (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, ordering intrinsics and SDK vector installers (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `d77092ee87d8d5ea4ed42a201c0d31248c37770e3d4bec92890f0b93c9b145fb:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `73d08107196277f9c543fe9a33766873bc3032ca42052e6688a10b4b0f7f9b63:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Ordering intrinsics and SDK vector installers, 2026-09-06
+
+The shared intrinsic classifier now recognizes zero-argument `__sync`,
+`__isync`, and `__eieio`. They emit target instructions, remain effectful, and
+participate as scheduling barriers without introducing calls or LR saves.
+Canary 1553 matches **11/11 whole objects**, up from **0/11** at `b48e4d2a`,
+across GC/1.1, GC/1.1p1, GC/1.2.5, GC/1.2.5n, GC/1.3, GC/1.3.2,
+GC/1.3.2r, GC/2.6, GC/2.7, GC/3.0a3, and Wii/1.0.
+
+The existing semantic vector-copy owner now handles a destination returned by
+an initializer call under the legacy frame convention. Under the later frame
+convention it retains the fixed address's high half and regenerates the low
+half at each call. Source-line emission follows the actual initializer/copy/
+flush/barrier/invalidate boundaries. Static function debug fragment names now
+use their emitted local-subroutine tag.
+
+A paired run of **all 54 inventory configurations ending in `/OSSync.c`**,
+using the configured reference object as the verdict input, changes:
+
+| Layer | Baseline `b48e4d2a` | Candidate |
+| --- | --- | --- |
+| Whole-object BYTE | 43/54 | **44/54** |
+| DIFF | 7 | 7 |
+| DEFER | 1 | **0** |
+| HARNESS | 3 | 3 |
+| Executable bytes and relocations exact | 43/51 measured | **50/51 measured** |
+
+There are no lost exact objects and no empty objects in this selection.
+Twilight Princess ShieldD's GC/1.2.5n `OSSync.c` is the new whole-object match.
+RZDP01's GC/3.0a3 object has matching code, text relocations, raw `.line`, and
+raw `.debug`; debug symbol retention, placement, and anonymous ordinals still
+prevent whole-object parity. The previous eight-row assembly/debug selection
+improves from **six BYTE, one DIFF, one DEFER** to **seven BYTE, one DIFF**;
+all eight now have exact code and relocations.
+
+Canaries 1554/1555 retain helper-produced and constant destinations with debug
+information and the oracle's default exception metadata enabled. Both are
+runnable on all eleven builds and remain **0/22 whole-object exact**. Their
+text matches on two and four builds respectively; remaining metadata and
+scheduling differences are preserved as coverage. The older
+`fixed_address_copy_barrier` canary stays **0/11 exact**, with no lost matches;
+its GC/3.0a3 and Wii/1.0 text now matches. Across the three newly authored
+canaries, **11/33 whole objects are exact**, with no build exclusions or
+reference rejections.
+
+Validation: compiler/oracle build passes; two intrinsic, three copy-owner,
+69 debug-info, and 97 register/scheduler unit tests pass (eight existing
+register/scheduler tests ignored). Checks remain focused on the affected
+source family rather than claiming a fresh corpus-wide measurement.
 
 ## Focused scheduler progress and graph captures, 2026-09-06
 
