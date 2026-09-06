@@ -3260,30 +3260,13 @@ impl Generator {
         let low = address as i16;
         let size = element.size() as i64;
         if let Some(constant) = constant_value(index) {
-            let materialized_bank_page = self.behavior.fixed_address_poll_address_style
-                == mwcc_versions::FixedAddressPollAddressStyle::MaterializedBankPage;
-            let displacement = i16::try_from(
-                if materialized_bank_page {
-                    0
-                } else {
-                    i64::from(low)
-                } + constant * size,
-            )
-            .map_err(|_| {
-                Diagnostic::error("fixed-address array subscript offset out of range (roadmap)")
-            })?;
-            let materialize_low = |generator: &mut Self, base| {
-                if materialized_bank_page && low != 0 {
-                    generator
-                        .output
-                        .instructions
-                        .push(Instruction::AddImmediate {
-                            d: base,
-                            a: base,
-                            immediate: low,
-                        });
-                }
-            };
+            // A direct store folds the bank's low address into its displacement,
+            // including on 2.3.3. Bank reuse and indexed RMW have separate owners;
+            // their materialized-page rule does not apply to this primitive.
+            let displacement = i16::try_from(i64::from(low) + constant * size)
+                .map_err(|_| {
+                    Diagnostic::error("fixed-address array subscript offset out of range (roadmap)")
+                })?;
             if variable_source.is_none()
                 && (constant_value(value).is_none()
                     || matches!(element, Pointee::Float | Pointee::Double))
@@ -3295,7 +3278,6 @@ impl Generator {
                 self.output
                     .instructions
                     .push(Instruction::load_immediate_shifted(base, high_adjusted));
-                materialize_low(self, base);
                 (base, source)
             } else if self.behavior.fixed_address_constant_store_style
                 == mwcc_versions::FixedAddressConstantStoreStyle::ValueFirst
@@ -3305,7 +3287,6 @@ impl Generator {
                 self.output
                     .instructions
                     .push(Instruction::load_immediate_shifted(base, high_adjusted));
-                materialize_low(self, base);
                 (base, source)
             } else {
                 let source = GENERAL_SCRATCH;
@@ -3313,7 +3294,6 @@ impl Generator {
                 self.output
                     .instructions
                     .push(Instruction::load_immediate_shifted(base, high_adjusted));
-                materialize_low(self, base);
                 let source = self.place_store_value(value, element)?;
                 (base, source)
             };

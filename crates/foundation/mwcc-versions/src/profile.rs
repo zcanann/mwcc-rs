@@ -783,6 +783,9 @@ pub enum FixedAddressPollAddressStyle {
     /// Build 53 keeps the bank high half as the base and folds the bank low
     /// half plus the element offset into the polling load.
     FoldedBankDisplacement,
+    /// The 4.x optimizer folds the displacement and aligns the polling load:
+    /// one instruction on GC, eight bytes on Wii.
+    FoldedAlignedBankDisplacement { alignment: u8 },
     /// Build 163 materializes the bank page and keeps only the element offset
     /// in the polling load.
     MaterializedBankPage,
@@ -1803,6 +1806,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn fixed_address_poll_address_style(&self) -> FixedAddressPollAddressStyle {
+        FixedAddressPollAddressStyle::FoldedAlignedBankDisplacement { alignment: 4 }
+    }
+
     fn skipped_plain_inline_label_base(&self) -> u8 {
         3
     }
@@ -2029,6 +2036,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn fixed_address_poll_address_style(&self) -> FixedAddressPollAddressStyle {
+        FixedAddressPollAddressStyle::FoldedAlignedBankDisplacement { alignment: 8 }
+    }
+
     fn unoptimized_range_copy_shared_scratch(&self) -> bool {
         true
     }

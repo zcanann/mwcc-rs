@@ -4,13 +4,59 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, character-mode object metadata (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, EXI register primitives and signed status returns (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `3723dba241339cd90e9fbc6d920ad8fb9a712401ad51b3b856af0abe8d001d63:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `6e4cfea73ea6fefb60bf0e40c4cf3623eedadcfdfd34087eda0ee249939001ae:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## EXI register primitives and signed status returns, 2026-09-06
+
+Melee's `extern/dolphin/src/dolphin/odenotstub/odenotstub.c` contains a complete
+EXI debugger transport. Against baseline `280ba0d6`, its configured-source
+partial-TU comparison improves from **3/21 to 7/21 exact functions**, including
+relocations, and **16/3320 to 164/3320 exact reference function bytes**. The four
+gains are `DBGEXIInit`, `DBGEXISelect`, `DBGEXIDeselect`, and `DBGEXISync`.
+Comparable functions increase from ten to 13; eight remain missing, with no
+candidate-only functions. The full source still **DEFERs** in `DBGEXIImm`, whose
+computed fixed-register store is not yet supported. Partial objects are not
+counted as whole-object parity.
+
+Existing fixed-register owners now accept signed `BOOL` constant returns as
+well as unsigned status returns. Compound-update provenance is exposed to the
+fixed-slot mask matcher while remaining available for scheduling: 2.3.3 loads
+before completing the store base for explicit assignment and after it for
+compound assignment; build 53 uses a separate mask register for compound form.
+Masks above `0x7fff` require a correctly zero-extended two-instruction constant
+on build 53, including its distinct register reuse in parameterized updates.
+
+A direct constant-slot store now folds the bank low address into the store's
+displacement. The 2.3.3 full-bank-address policy remains with reads and the
+existing bank-reuse/RMW owners. Polling functions can return a constant status
+after the volatile loop; the 4.x profile selects a folded load displacement,
+and Wii additionally aligns that load to eight bytes. These refinements reuse
+the existing instruction generators and explicit version policies.
+
+New canaries 1570--1573 cover signed-status selection, compound versus explicit
+masking, direct/parameter/post-call stores, and polling with and without a
+status result. Both mask canaries also exercise `0x8001`. They improve from
+**7/44 to 44/44 whole-object exact** across 11 builds. Existing canaries
+1263--1265 now include their previously excluded patch/modern builds; the
+combined seven-canary check improves from **25/77 to 77/77 exact**, with all
+pairs oracle-runnable and no exclusions or reference rejections. Baseline and
+candidate use the same expanded sources and build directives.
+
+The broader fixed-register/indexed-update selection contains **27 authored
+canaries on five builds** (GC/1.2.5, GC/1.3, GC/1.3.2, GC/3.0a3, Wii/1.0):
+**46/102 to 80/102 whole-object exact**, with no lost matches. Its 135 slots
+include 33 declared exclusions, no reference rejections, and no timeouts.
+The full 40-configuration `odenotstub.c` family retains **35 BYTE, zero DIFF,
+one DEFER, four MISSING_DEPENDENCY**. Its executable projection remains
+33/34 measured exact, with two empty objects and four unmeasured configurations.
+Compiler/oracle builds and **74 targeted unit tests** pass: 34 fixed-register
+backend tests and 40 version-profile tests. Full-project parity remains open.
 
 ## Character-mode object metadata, 2026-09-06
 

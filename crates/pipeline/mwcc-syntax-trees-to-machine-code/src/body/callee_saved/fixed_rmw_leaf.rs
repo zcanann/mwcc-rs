@@ -1,6 +1,6 @@
 //! Single-node leaf schedules for fixed-address hardware-register updates.
 
-use super::fixed_rmw_recognize::{fixed_slot, peel_casts};
+use super::fixed_rmw_recognize::{fixed_slot, peel_casts, peel_update_value};
 #[allow(unused_imports)]
 use super::*;
 use mwcc_versions::FixedAddressRmwStyle;
@@ -51,7 +51,7 @@ impl Generator {
             operator,
             left,
             right,
-        } = peel_casts(value)
+        } = peel_update_value(value)
         else {
             return Ok(false);
         };

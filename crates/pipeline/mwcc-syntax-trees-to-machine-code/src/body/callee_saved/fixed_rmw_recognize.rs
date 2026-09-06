@@ -10,6 +10,16 @@ pub(super) fn peel_casts(mut expression: &Expression) -> &Expression {
     expression
 }
 
+/// Value view for an update whose constant fixed-register slot is already proven.
+/// Callers retain the original expression when source-update provenance affects scheduling.
+pub(super) fn peel_update_value(expression: &Expression) -> &Expression {
+    let expression = peel_casts(expression);
+    match expression {
+        Expression::IndexedUpdateValue { value } => peel_casts(value),
+        _ => expression,
+    }
+}
+
 pub(super) fn fixed_slot(expression: &Expression) -> Option<(&str, i64)> {
     let Expression::Index { base, index } = expression else {
         return None;

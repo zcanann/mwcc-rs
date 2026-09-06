@@ -1,12 +1,11 @@
 //! Parameterized and constant-return fixed-address word-register schedules.
 
-use super::fixed_rmw_recognize::{fixed_slot, peel_casts};
+use super::fixed_rmw_recognize::{fixed_slot, peel_casts, peel_update_value};
 #[allow(unused_imports)]
 use super::*;
 use mwcc_versions::FixedAddressParameterizedRmwStyle;
 
 impl Generator {
-
     /// A direct word-register mask followed by a constant return. The same
     /// semantic leaf uses three observed schedules across 2.3.3, early 2.4.x,
     /// and later compilers.
@@ -34,7 +33,7 @@ impl Generator {
             operator: BinaryOperator::BitAnd,
             left,
             right,
-        } = peel_casts(value)
+        } = peel_update_value(value)
         else {
             return Ok(false);
         };
@@ -57,6 +56,7 @@ impl Generator {
             return Ok(false);
         };
         let (high, low) = crate::expressions::split_address(base_address);
+        let compound_update = matches!(peel_casts(value), Expression::IndexedUpdateValue { .. });
         let folded = i16::try_from(low as i64 + index * 4)
             .map_err(|_| Diagnostic::error("fixed-address word RMW is out of range"))?;
         let style = self.behavior.fixed_address_parameterized_rmw_style;
@@ -65,59 +65,74 @@ impl Generator {
                 self.output
                     .instructions
                     .push(Instruction::load_immediate_shifted(3, high));
-                self.output.instructions.push(Instruction::AddImmediate {
+                let store_base = Instruction::AddImmediate {
                     d: 4,
                     a: 3,
                     immediate: low,
-                });
-                self.output.instructions.push(Instruction::LoadWord {
+                };
+                let load = Instruction::LoadWord {
                     d: 0,
                     a: 3,
                     offset: folded,
+                };
+                // Explicit assignment loads before completing the store base;
+                // compound syntax completes that base first on 2.3.3.
+                self.output.instructions.extend(if compound_update {
+                    [store_base, load]
+                } else {
+                    [load, store_base]
                 });
                 self.output
                     .instructions
                     .push(Instruction::load_immediate(3, return_value));
-                self.output.instructions.push(Instruction::AndImmediateRecord {
-                    a: 0,
-                    s: 0,
-                    immediate: mask,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::AndImmediateRecord {
+                        a: 0,
+                        s: 0,
+                        immediate: mask,
+                    });
                 let offset = i16::try_from(index * 4)
                     .map_err(|_| Diagnostic::error("fixed-address word RMW is out of range"))?;
-                self.output.instructions.push(Instruction::StoreWord {
-                    s: 0,
-                    a: 4,
-                    offset,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::StoreWord { s: 0, a: 4, offset });
             }
-            FixedAddressParameterizedRmwStyle::Early24 => {
+            FixedAddressParameterizedRmwStyle::Early24 if compound_update => {
                 self.output
                     .instructions
                     .push(Instruction::load_immediate_shifted(5, high));
-                self.output
-                    .instructions
-                    .push(Instruction::load_immediate(0, mask as i16));
+                self.output.instructions.push(if mask <= i16::MAX as u16 {
+                    Instruction::load_immediate(0, mask as i16)
+                } else {
+                    Instruction::load_immediate_shifted(3, 1)
+                });
                 self.output.instructions.push(Instruction::LoadWord {
                     d: 4,
                     a: 5,
                     offset: folded,
                 });
+                if mask > i16::MAX as u16 {
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: 0,
+                        a: 3,
+                        immediate: mask as i16,
+                    });
+                }
                 self.output
                     .instructions
                     .push(Instruction::load_immediate(3, return_value));
-                self.output.instructions.push(Instruction::And {
-                    a: 0,
-                    s: 4,
-                    b: 0,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::And { a: 0, s: 4, b: 0 });
                 self.output.instructions.push(Instruction::StoreWord {
                     s: 0,
                     a: 5,
                     offset: folded,
                 });
             }
-            FixedAddressParameterizedRmwStyle::Mainline24
+            FixedAddressParameterizedRmwStyle::Early24
+            | FixedAddressParameterizedRmwStyle::Mainline24
             | FixedAddressParameterizedRmwStyle::Modern4x => {
                 self.output
                     .instructions
@@ -130,11 +145,13 @@ impl Generator {
                     a: 4,
                     offset: folded,
                 });
-                self.output.instructions.push(Instruction::AndImmediateRecord {
-                    a: 0,
-                    s: 0,
-                    immediate: mask,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::AndImmediateRecord {
+                        a: 0,
+                        s: 0,
+                        immediate: mask,
+                    });
                 self.output.instructions.push(Instruction::StoreWord {
                     s: 0,
                     a: 4,
@@ -157,7 +174,7 @@ impl Generator {
         if !function.guards.is_empty()
             || function.parameters.len() != 1
             || function.locals.len() != 1
-            || function.return_type != Type::UnsignedInt
+            || !matches!(function.return_type, Type::Int | Type::UnsignedInt)
         {
             return Ok(false);
         }
@@ -216,8 +233,7 @@ impl Generator {
         else {
             return Ok(false);
         };
-        if !matches!(masked_left.as_ref(), Expression::Variable(name) if name == &temporary.name)
-        {
+        if !matches!(masked_left.as_ref(), Expression::Variable(name) if name == &temporary.name) {
             return Ok(false);
         }
         let Some(mask) = constant_value(masked_right).and_then(|value| u16::try_from(value).ok())
@@ -267,8 +283,7 @@ impl Generator {
         else {
             return Ok(false);
         };
-        if !matches!(shift_value.as_ref(), Expression::Variable(name) if name == &parameter.name)
-        {
+        if !matches!(shift_value.as_ref(), Expression::Variable(name) if name == &parameter.name) {
             return Ok(false);
         }
         let Some(shift) = constant_value(shift_amount)
@@ -288,8 +303,11 @@ impl Generator {
 
         let (high, low) = crate::expressions::split_address(base_address);
         let style = self.behavior.fixed_address_parameterized_rmw_style;
+        let wide_early_mask =
+            style == FixedAddressParameterizedRmwStyle::Early24 && mask > i16::MAX as u16;
         let (base, loaded) = match style {
             FixedAddressParameterizedRmwStyle::Modern4x => (5, 4),
+            FixedAddressParameterizedRmwStyle::Early24 if wide_early_mask => (4, 5),
             FixedAddressParameterizedRmwStyle::Early24 => (5, 6),
             _ => (4, 5),
         };
@@ -315,11 +333,14 @@ impl Generator {
                 offset: displacement,
             });
         }
-        self.output.instructions.push(Instruction::ShiftLeftImmediate {
-            a: 0,
-            s: 3,
-            shift,
-        });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate { a: 0, s: 3, shift });
+        if wide_early_mask {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(3, 1));
+        }
         if style != FixedAddressParameterizedRmwStyle::Legacy233 {
             self.output.instructions.push(Instruction::LoadWord {
                 d: loaded,
@@ -328,9 +349,15 @@ impl Generator {
             });
         }
         if style == FixedAddressParameterizedRmwStyle::Early24 {
-            self.output
-                .instructions
-                .push(Instruction::load_immediate(4, mask as i16));
+            self.output.instructions.push(if wide_early_mask {
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: 3,
+                    immediate: mask as i16,
+                }
+            } else {
+                Instruction::load_immediate(4, mask as i16)
+            });
         }
         if style != FixedAddressParameterizedRmwStyle::Modern4x {
             self.output.instructions.push(Instruction::OrImmediate {
@@ -340,27 +367,37 @@ impl Generator {
             });
         }
         if style == FixedAddressParameterizedRmwStyle::Legacy233 {
-            self.output.instructions.push(Instruction::AndImmediateRecord {
+            self.output
+                .instructions
+                .push(Instruction::AndImmediateRecord {
+                    a: loaded,
+                    s: loaded,
+                    immediate: mask,
+                });
+        } else if wide_early_mask {
+            self.output.instructions.push(Instruction::And {
                 a: loaded,
                 s: loaded,
-                immediate: mask,
+                b: 3,
             });
         }
         self.output
             .instructions
             .push(Instruction::load_immediate(3, return_value));
-        if style == FixedAddressParameterizedRmwStyle::Early24 {
+        if style == FixedAddressParameterizedRmwStyle::Early24 && !wide_early_mask {
             self.output.instructions.push(Instruction::And {
                 a: loaded,
                 s: loaded,
                 b: 4,
             });
-        } else if style != FixedAddressParameterizedRmwStyle::Legacy233 {
-            self.output.instructions.push(Instruction::AndImmediateRecord {
-                a: loaded,
-                s: loaded,
-                immediate: mask,
-            });
+        } else if style != FixedAddressParameterizedRmwStyle::Legacy233 && !wide_early_mask {
+            self.output
+                .instructions
+                .push(Instruction::AndImmediateRecord {
+                    a: loaded,
+                    s: loaded,
+                    immediate: mask,
+                });
         }
         if style == FixedAddressParameterizedRmwStyle::Modern4x {
             self.output.instructions.push(Instruction::OrImmediate {
@@ -382,5 +419,4 @@ impl Generator {
         self.emit_epilogue_and_return();
         Ok(true)
     }
-
 }

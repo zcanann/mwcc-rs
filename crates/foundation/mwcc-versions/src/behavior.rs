@@ -1783,7 +1783,8 @@ impl Behavior {
             quirks.push(ActiveQuirk::of(Quirk::LegacyFixedAddressRmw));
         }
         match self.fixed_address_poll_address_style {
-            FixedAddressPollAddressStyle::MaterializedElementForNonzeroIndex => {}
+            FixedAddressPollAddressStyle::MaterializedElementForNonzeroIndex
+            | FixedAddressPollAddressStyle::FoldedAlignedBankDisplacement { .. } => {}
             FixedAddressPollAddressStyle::FoldedBankDisplacement => {
                 quirks.push(ActiveQuirk::of(Quirk::EarlyFoldedFixedPollDisplacement))
             }

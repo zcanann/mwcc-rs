@@ -6,8 +6,8 @@
 use super::*;
 
 impl Generator {
-    /// A leaf `void` function whose whole body is an EMPTY-body busy-wait on one
-    /// fixed-address array element — the hardware-register poll (`while (__EXIRegs[13] & 1);`,
+    /// A leaf busy-wait on one fixed-address array element, optionally returning
+    /// a constant status: the hardware-register poll (`while (__EXIRegs[13] & 1);`,
     /// DebuggerDriver/EXI/SI/DSP spin loops). mwcc materializes the ELEMENT address once
     /// (`lis`/`addi` of the folded `base + index*elem`), then loops load → test → branch
     /// back (the volatile reload is the loop):
@@ -23,8 +23,18 @@ impl Generator {
     /// truthy, negated. A non-contiguous mask, non-constant index, or any other condition
     /// shape falls through (the general loop defer). Returns whether this path applied.
     pub(crate) fn try_emit_busy_wait(&mut self, function: &Function) -> Compilation<bool> {
-        if function.return_type != Type::Void
-            || !function.guards.is_empty()
+        let status = match (&function.return_type, &function.return_expression) {
+            (Type::Void, None) => None,
+            (Type::Int | Type::UnsignedInt, Some(value)) => {
+                let Some(value) = constant_value(value).and_then(|value| i16::try_from(value).ok())
+                else {
+                    return Ok(false);
+                };
+                Some(value)
+            }
+            _ => return Ok(false),
+        };
+        if !function.guards.is_empty()
             || !function.locals.is_empty()
             || !self.frame_slots.is_empty()
             || function_makes_call(function)
@@ -123,6 +133,7 @@ impl Generator {
                 element_address
             }
             mwcc_versions::FixedAddressPollAddressStyle::FoldedBankDisplacement
+            | mwcc_versions::FixedAddressPollAddressStyle::FoldedAlignedBankDisplacement { .. }
             | mwcc_versions::FixedAddressPollAddressStyle::MaterializedBankPage => address as u32,
         };
         let base_register = self.lowest_free_general()?;
@@ -140,7 +151,11 @@ impl Generator {
                 immediate: high as i16,
             });
         let load_offset = if *index == 0
-            || address_style == mwcc_versions::FixedAddressPollAddressStyle::FoldedBankDisplacement
+            || matches!(
+                address_style,
+                mwcc_versions::FixedAddressPollAddressStyle::FoldedBankDisplacement
+                    | mwcc_versions::FixedAddressPollAddressStyle::FoldedAlignedBankDisplacement { .. }
+            )
         {
             i16::try_from(low as i64 + *index * i64::from(element_bytes))
                 .map_err(|_| Diagnostic::error("fixed-address poll displacement is out of range"))?
@@ -159,6 +174,18 @@ impl Generator {
             }
         };
 
+        if let mwcc_versions::FixedAddressPollAddressStyle::FoldedAlignedBankDisplacement {
+            alignment,
+        } = address_style
+        {
+            while (self.output.instructions.len() * 4) % usize::from(alignment) != 0 {
+                self.output.instructions.push(Instruction::OrImmediate {
+                    a: 0,
+                    s: 0,
+                    immediate: 0,
+                });
+            }
+        }
         // loop: load; test (sets cr0); branch back while waiting.
         let loop_top = self.output.instructions.len();
         self.output
@@ -190,6 +217,9 @@ impl Generator {
                 condition_bit,
                 target: loop_top,
             });
+        if let Some(status) = status {
+            self.output.instructions.push(Instruction::load_immediate(3, status));
+        }
         self.emit_epilogue_and_return();
         Ok(true)
     }
