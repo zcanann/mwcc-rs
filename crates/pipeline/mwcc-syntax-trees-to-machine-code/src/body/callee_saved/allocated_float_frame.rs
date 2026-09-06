@@ -23,16 +23,25 @@ impl Generator {
         if !has_linkage_state {
             return Ok(());
         }
-        let common_prefix = len >= 7
-            && matches!(
-                self.output.instructions.as_slice(),
-                [
-                    Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
-                    Instruction::MoveFromLinkRegister { d: 0 },
-                    Instruction::StoreWord { s: 0, a: 1, .. },
-                    ..
-                ]
-            );
+        // Both frame conventions can become leaves after body lowering.
+        // Record the LR-only prefix slots in descending order so removing them
+        // leaves the stack allocation (and its frame-local addresses) intact.
+        let linkage_prefix_slots = match self.output.instructions.as_slice() {
+            [
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord { s: 0, a: 1, .. },
+                ..
+            ] => Some([2, 1]),
+            [
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
+                ..
+            ] => Some([1, 0]),
+            _ => None,
+        };
+        let common_prefix = len >= 7 && linkage_prefix_slots.is_some();
         let reload_before_stack_restore = common_prefix
             && matches!(
                 &self.output.instructions[len - 4..],
@@ -90,8 +99,9 @@ impl Generator {
             crate::remove_instruction_retargeting_to_next(self, len - 2);
             crate::remove_instruction_retargeting_to_next(self, len - 3);
         }
-        crate::remove_instruction_retargeting_to_next(self, 2);
-        crate::remove_instruction_retargeting_to_next(self, 1);
+        for index in linkage_prefix_slots.expect("validated linkage prefix") {
+            crate::remove_instruction_retargeting_to_next(self, index);
+        }
         if self.artificial_structured_leaf_frame {
             let len = self.output.instructions.len();
             if len < 3

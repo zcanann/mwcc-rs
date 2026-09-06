@@ -4,19 +4,56 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, matrix assembly aliases (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, legacy aggregate leaf frames (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `43ca92bf265dabc869cfcec356ded497800798a74da51bd340670cc45368a286:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `af32970857558c0da7ea181b727f37e9122a1ed82f13d6cb51ce35824167549b:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary pass counts and work-queue
 counts are deliberately absent: neither is a corpus parity estimate.
 
+## Focused legacy leaf-frame follow-up, 2026-09-06
+
+The next iteration selected the 14 matrix configurations previously stopped by
+`inlined leaf has an unexpected linkage frame`: four Wind Waker, one Melee,
+and nine Twilight Princess Dolphin configurations, all using GC/1.2.5n.
+
+All **14/14 now emit complete objects**, changing `DEFER -> DIFF`. Whole-object
+exactness remains **0/14**, and measurement unknown is **0/14**. This is a
+compilation-coverage gain, not an exact-parity gain. Wind Waker's D44J01 object
+now contains all eight expected functions, including the four C matrix routines
+that were previously omitted from the partial diagnostic projection. Its four
+assembly functions remain exact (444/1,676 reference function bytes); the C
+routines expose aggregate-temporary, allocation, and scheduling differences.
+
+Frame cleanup now recognizes both existing prologue conventions. It removes
+only the LR save/restore pair from a proven leaf, preserving the allocation and
+all live frame-local accesses. The regression compiles a volatile aggregate
+leaf across GC/1.1, 1.1p1, 1.2.5, 1.2.5n, 1.3.2, and 2.6 and checks balanced
+stack storage without LR traffic; a real-call linkage regression also passes.
+Canary 1535 records the remaining instruction-order and register differences
+against the GC/1.2.5n oracle and is not yet whole-object exact.
+
+Local evidence is retained in
+`target/reference-parity/af32970857558c0d-5e4ca1ddc460f4d8.jsonl` and
+`target/leaf-frame-selection.json`. Reproduce the focused set with:
+
+```sh
+python3 tools/reference_parity.py --compiler target/debug/mwcc \
+  --selection target/leaf-frame-selection.json --timeout 30 --jobs 6 --code-projection
+```
+
+The Animal Crossing matrix object was inspected separately: its configured
+executable bytes and relocations match, but `.debug` omits formal parameters
+and array types, and `.line` falls back to function boundaries for implicit
+assembly returns. Those debug differences remain on the frontier.
+
 ## Focused alias follow-up, 2026-09-06
 
 After the paired-single milestone `991ad4e3`, the next iteration selected the
 14 `subi`-blocked rows plus the six Mario Party 4 matches for regression checks.
-All 20 were rerun against the latest fingerprint above:
+All 20 were rerun against compiler hash prefix `43ca92bf265dabc8` and
+harness hash prefix `5e4ca1ddc460f4d8`:
 
 | Outcome | Configurations |
 | --- | ---: |

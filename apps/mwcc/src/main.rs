@@ -2944,6 +2944,9 @@ mod tests {
     #[path = "asm_symbol_creation.rs"]
     mod asm_symbol_creation;
 
+    #[path = "leaf_aggregate_frame.rs"]
+    mod leaf_aggregate_frame;
+
     #[path = "linkage_epilogue.rs"]
     mod linkage_epilogue;
 
