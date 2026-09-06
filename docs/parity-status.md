@@ -4,13 +4,69 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, combined EXI status transactions (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, ordered status guards and constant-channel EXI selects (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `661c31825be5e19c15d8015d031c4144219cefb840a02dcc10da87bd85412d26:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `64acd546c7655a5c977b4e769fc3f3f3c0d203037798c54c4464978ccebadafb:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Ordered status guards and constant-channel EXI selects, 2026-09-06
+
+Against baseline `76059e78`, the zero-status canary 1590 now matches whole
+objects on **all 11 measured builds**. The composer turns trailing guards into
+an ordered statement exit chain when exposing a helper in a guard condition,
+guard value, or final return. Earlier exits stay ahead of later effects, guard
+values execute only on their taken edge, and an unconditional selected return
+removes unreachable following effects. The legacy boolean-call owner now gives
+optional inline composition first refusal and retains its previous linked-call
+schedule as a fallback. The direct word-register clear owner can also preserve
+an incoming word result, including its distinct legacy address schedule.
+
+New canary 1592's constant-channel select, returned status, select/clear pair,
+and select followed by a forwarded call match whole objects on **all 11
+builds**. Constant and parameterized fields share the existing word-field
+recognizer. A focused constant-field scheduler uses the measured legacy versus
+later address/status placement, early-generation reset mask home, and compact
+linked-call or modern sibling-call continuation. Call admission verifies the
+word arguments' ABI homes and excludes indirect, variadic, intrinsic, and
+embedded-assembly targets. Wider early-generation reset/passthrough mask homes
+remain outside these measured schedules.
+
+Canaries 1591--1592 add guard-order and constant-channel coverage. Across
+1585--1592 there are **88 oracle-runnable pairs**, with no exclusions or
+reference/candidate rejections. Exact objects improve **31/88 to 53/88**.
+The guard-order object remains nonexact, while execution checks verify its
+prefix call, early-exit behavior, conditional poll result, and suppression of
+later effects. **55,176 paired Unicorn execution cases** pass across reference
+and candidate, checking volatile access order/count, masked values, status and
+passthrough returns, argument forwarding, zero/one/four waiting iterations,
+stack restoration, and saved registers under four randomized register/clobber
+patterns.
+
+Both focused regression selections retain identical verdicts on five builds.
+The 63-canary inline/status/fixed-register selection has **315 slots, 120
+exclusions, 195 runnable pairs, 125 exact objects, and 30 existing candidate
+rejections**. The 81-canary guard/boolean selection has **405 slots, 110
+exclusions, 295 runnable pairs, 119 exact objects, and 130 existing candidate
+rejections**. Neither has reference rejections or timeouts; the selections
+overlap and are reported separately.
+
+The 40-configuration real-project stub family retains **35 BYTE, one DIFF,
+zero DEFER, and four MISSING_DEPENDENCY**, with **33/34 measured code exact**,
+two empty objects, and four unmeasured rows. Melee's configured GC/1.2.5
+`odenotstub.c` still compiles all 21 functions with **10/21 exact functions and
+372/3320 exact reference function bytes**. The isolated channel-four operation
+is now verified; its larger EXI callers and transfer loops remain nonexact.
+
+Compiler/oracle builds, 31 frontend inline tests, and 117 backend inline tests
+pass. The backend run explicitly skips the previously confirmed existing
+embedded-assembly composition failure. Guard-order tests now check the
+normalized final-return representation; new tests cover guarded result effects
+and unreachable effects after a known taken guard. Local reproduction artifacts
+use `target/check_exi_guard_*.py`, `target/exi-guard-*.log`, and the fingerprinted
+reference-parity cache.
 
 ## Combined EXI status transactions, 2026-09-06
 

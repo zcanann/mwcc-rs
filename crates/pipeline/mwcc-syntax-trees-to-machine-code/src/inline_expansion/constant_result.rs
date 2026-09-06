@@ -326,17 +326,51 @@ pub(super) fn expose_values(
     let mut changed = false;
     let mut expanded = function.clone();
     expanded.statements = statements(&function.statements, bodies, &bound, &words, &mut changed);
-    // Trailing guards execute before the final return. Do not move a poll
-    // ahead of one of those source exits.
-    if function.guards.is_empty() {
-        if let Some((call, value)) = function
-            .return_expression
-            .as_ref()
-            .and_then(|value| extract(value, bodies, &bound, &words))
-        {
+    let exposed_return = function
+        .return_expression
+        .as_ref()
+        .and_then(|value| extract(value, bodies, &bound, &words));
+    let exposes_guard = function.guards.iter().any(|guard| {
+        extract(&guard.condition, bodies, &bound, &words).is_some()
+            || extract(&guard.value, bodies, &bound, &words).is_some()
+    });
+    if !function.guards.is_empty() && (exposes_guard || exposed_return.is_some()) {
+        // Guards are the ordered exit chain after ordinary statements. Keep
+        // every preceding exit in front of any newly exposed helper effect.
+        let guards: Vec<Statement> = function
+            .guards
+            .iter()
+            .map(|guard| Statement::If {
+                condition: guard.condition.clone(),
+                then_body: vec![Statement::Return(Some(guard.value.clone()))],
+                else_body: Vec::new(),
+            })
+            .collect();
+        expanded
+            .statements
+            .extend(statements(&guards, bodies, &bound, &words, &mut changed));
+        expanded.guards.clear();
+        changed = true;
+    }
+    if expanded.guards.is_empty() {
+        if let Some((call, value)) = exposed_return {
             expanded.statements.push(Statement::Expression(call));
             expanded.return_expression = Some(value);
             changed = true;
+        }
+    }
+    if changed {
+        if let Some(index) = expanded
+            .statements
+            .iter()
+            .position(|statement| matches!(statement, Statement::Return(_)))
+        {
+            let Statement::Return(value) = expanded.statements[index].clone() else {
+                unreachable!()
+            };
+            expanded.return_expression = value;
+            expanded.statements.truncate(index);
+            expanded.guards.clear();
         }
     }
     if changed && expanded.inline_asm_blocks.is_empty() && expanded.asm_body.is_none() {

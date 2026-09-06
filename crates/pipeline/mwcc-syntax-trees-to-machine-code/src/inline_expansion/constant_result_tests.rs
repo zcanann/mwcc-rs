@@ -66,7 +66,13 @@ fn constant_result_exposure_preserves_short_circuit_and_early_exits() {
         condition: Expression::Variable("disabled".into()),
         value: Expression::IntegerLiteral(0),
     });
-    assert!(expose_values(&caller, &bodies).is_none());
+    let expanded = expose_values(&caller, &bodies).unwrap();
+    assert!(expanded.guards.is_empty());
+    assert!(matches!(expanded.statements.as_slice(), [
+        Statement::If { condition: Expression::Variable(disabled), then_body, else_body },
+        Statement::Expression(Expression::Call { name, .. }),
+    ] if disabled == "disabled" && name == "ready" && else_body.is_empty()
+        && matches!(then_body.as_slice(), [Statement::Return(Some(Expression::IntegerLiteral(0)))])));
 }
 
 #[test]
@@ -217,8 +223,11 @@ fn constant_result_branch_keeps_argument_effect_once_before_selected_arm() {
     let expanded = expose_values(&caller, &bodies).unwrap();
     assert!(matches!(expanded.statements.as_slice(), [
         Statement::Expression(Expression::Call { name, arguments }),
-        Statement::Return(Some(Expression::IntegerLiteral(7))),
     ] if name == "ready" && matches!(arguments.as_slice(), [Expression::Call { name, arguments }] if name == "next" && arguments.is_empty())));
+    assert!(matches!(
+        expanded.return_expression,
+        Some(Expression::IntegerLiteral(7))
+    ));
 }
 
 #[test]
@@ -235,8 +244,11 @@ fn constant_result_zero_status_still_executes_effect_before_false_arm() {
     let expanded = expose_values(&caller, &bodies).unwrap();
     assert!(matches!(expanded.statements.as_slice(), [
         Statement::Expression(Expression::Call { name, .. }),
-        Statement::Return(Some(Expression::IntegerLiteral(9))),
     ] if name == "ready"));
+    assert!(matches!(
+        expanded.return_expression,
+        Some(Expression::IntegerLiteral(9))
+    ));
 }
 
 #[test]
@@ -293,4 +305,43 @@ fn constant_result_accumulator_cleanup_requires_immutable_unescaped_storage() {
             assert_eq!(expanded.locals.len(), 1, "{variant}");
         }
     }
+}
+
+#[test]
+fn constant_result_guard_value_remains_on_its_taken_edge() {
+    let bodies = HashMap::from([("ready".into(), poll())]);
+    let mut caller = function("caller");
+    caller.guards.push(GuardedReturn {
+        condition: Expression::Variable("enabled".into()),
+        value: call(),
+    });
+    let expanded = expose_values(&caller, &bodies).unwrap();
+    assert!(expanded.guards.is_empty());
+    assert!(
+        matches!(expanded.statements.as_slice(), [Statement::If { then_body, else_body, .. }]
+        if else_body.is_empty() && matches!(then_body.as_slice(), [
+            Statement::Expression(Expression::Call { name, .. }),
+            Statement::Return(Some(Expression::IntegerLiteral(1))),
+        ] if name == "ready"))
+    );
+}
+
+#[test]
+fn constant_result_taken_guard_discards_later_effects() {
+    let bodies = HashMap::from([("ready".into(), poll())]);
+    let mut caller = function("caller");
+    caller.guards.push(GuardedReturn {
+        condition: call(),
+        value: Expression::IntegerLiteral(5),
+    });
+    caller.return_expression = Some(call());
+    let expanded = expose_values(&caller, &bodies).unwrap();
+    assert!(expanded.guards.is_empty());
+    assert!(
+        matches!(expanded.statements.as_slice(), [Statement::Expression(Expression::Call { name, .. })] if name == "ready")
+    );
+    assert!(matches!(
+        expanded.return_expression,
+        Some(Expression::IntegerLiteral(5))
+    ));
 }

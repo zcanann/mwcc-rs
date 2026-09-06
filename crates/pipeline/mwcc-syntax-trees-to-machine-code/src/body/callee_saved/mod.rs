@@ -32,6 +32,7 @@ mod fixed_rmw_inline_tail;
 mod fixed_rmw_leaf;
 mod fixed_rmw_split_word;
 mod fixed_rmw_word;
+mod fixed_rmw_constant;
 mod fixed_rmw_legacy;
 mod fixed_rmw_recognize;
 mod float_list_parser;

@@ -17,7 +17,7 @@ impl Generator {
         if self.try_fixed_address_direct_immediate_rmw(function)? {
             return Ok(true);
         }
-        if self.try_fixed_address_parameterized_rmw(function)? {
+        if self.try_fixed_address_field_rmw(function)? {
             return Ok(true);
         }
         if self.try_fixed_address_split_word_rmw(function)? {

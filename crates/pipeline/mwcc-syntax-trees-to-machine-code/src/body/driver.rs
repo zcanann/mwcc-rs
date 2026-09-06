@@ -1482,7 +1482,7 @@ impl Generator {
         if self.try_guarded_global_address_call(function)? {
             return Ok(());
         }
-        if self.try_call_boolean(function)? {
+        if !calls_inline_candidate && self.try_call_boolean(function)? {
             return Ok(());
         }
         // A callback nested in a large global aggregate, with a by-value aggregate second
@@ -2093,6 +2093,12 @@ impl Generator {
                     "a call to a skipped inline function needs inline expansion (roadmap){suffix}"
                 )));
             }
+        }
+        // Give retained helper effects a chance to compose before selecting
+        // an out-of-line boolean wrapper. Optional expansion may still decline,
+        // in which case the measured linked-call schedule remains available.
+        if calls_inline_candidate && self.try_call_boolean(function)? {
+            return Ok(());
         }
         // A NATIVE caller of a WEAK-MATERIALIZED plain inline defers the same
         // way: mwcc may have re-inlined a trivial body at this call site

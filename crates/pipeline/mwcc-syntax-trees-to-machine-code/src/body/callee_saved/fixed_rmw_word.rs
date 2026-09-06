@@ -13,7 +13,11 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        if !function.parameters.is_empty()
+        let passthrough = matches!(function.parameters.as_slice(), [parameter]
+            if matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt)
+                && matches!(&function.return_expression, Some(Expression::Variable(name)) if name == &parameter.name)
+                && self.locations.get(&parameter.name).is_some_and(|location| location.class == ValueClass::General && location.register == 3));
+        if (!function.parameters.is_empty() && !passthrough)
             || !function.locals.is_empty()
             || !function.guards.is_empty()
             || !matches!(function.return_type, Type::Int | Type::UnsignedInt)
@@ -47,19 +51,51 @@ impl Generator {
         let Some(mask) = mask.and_then(|value| u16::try_from(value).ok()) else {
             return Ok(false);
         };
-        let Some(return_value) = function
-            .return_expression
-            .as_ref()
-            .and_then(constant_value)
-            .and_then(|value| i16::try_from(value).ok())
-        else {
-            return Ok(false);
+        let return_value = if passthrough {
+            None
+        } else {
+            let Some(value) = function
+                .return_expression
+                .as_ref()
+                .and_then(constant_value)
+                .and_then(|value| i16::try_from(value).ok())
+            else {
+                return Ok(false);
+            };
+            Some(value)
         };
         let (high, low) = crate::expressions::split_address(base_address);
         let compound_update = matches!(peel_casts(value), Expression::IndexedUpdateValue { .. });
         let folded = i16::try_from(low as i64 + index * 4)
             .map_err(|_| Diagnostic::error("fixed-address word RMW is out of range"))?;
         let style = self.behavior.fixed_address_parameterized_rmw_style;
+        if passthrough
+            && style == FixedAddressParameterizedRmwStyle::Early24
+            && mask > i16::MAX as u16
+        {
+            return Ok(false);
+        }
+        if passthrough && style == FixedAddressParameterizedRmwStyle::Legacy233 {
+            let offset = i16::try_from(index * 4)
+                .map_err(|_| Diagnostic::error("fixed-address word RMW is out of range"))?;
+            self.output.instructions.extend([
+                Instruction::load_immediate_shifted(4, high),
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: low,
+                },
+                Instruction::LoadWord { d: 0, a: 4, offset },
+                Instruction::AndImmediateRecord {
+                    a: 0,
+                    s: 0,
+                    immediate: mask,
+                },
+                Instruction::StoreWord { s: 0, a: 4, offset },
+            ]);
+            self.emit_epilogue_and_return();
+            return Ok(true);
+        }
         match style {
             FixedAddressParameterizedRmwStyle::Legacy233 => {
                 self.output
@@ -82,9 +118,11 @@ impl Generator {
                 } else {
                     [load, store_base]
                 });
-                self.output
-                    .instructions
-                    .push(Instruction::load_immediate(3, return_value));
+                if let Some(value) = return_value {
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate(3, value));
+                }
                 self.output
                     .instructions
                     .push(Instruction::AndImmediateRecord {
@@ -119,9 +157,11 @@ impl Generator {
                         immediate: mask as i16,
                     });
                 }
-                self.output
-                    .instructions
-                    .push(Instruction::load_immediate(3, return_value));
+                if let Some(value) = return_value {
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate(3, value));
+                }
                 self.output
                     .instructions
                     .push(Instruction::And { a: 0, s: 4, b: 0 });
@@ -137,9 +177,11 @@ impl Generator {
                 self.output
                     .instructions
                     .push(Instruction::load_immediate_shifted(4, high));
-                self.output
-                    .instructions
-                    .push(Instruction::load_immediate(3, return_value));
+                if let Some(value) = return_value {
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate(3, value));
+                }
                 self.output.instructions.push(Instruction::LoadWord {
                     d: 0,
                     a: 4,
@@ -163,16 +205,12 @@ impl Generator {
         Ok(true)
     }
 
-    /// A word register update that preserves masked state, inserts a shifted
-    /// parameter field, writes the same slot, and returns a constant. This is
+    /// A word register update that preserves masked state, inserts a constant
+    /// or shifted parameter field, and writes the same slot. This is
     /// the debugger EXI-select leaf; its schedule changes at both the 2.3.3 →
     /// 2.4.x and 2.4.x → 4.x optimizer boundaries.
-    pub(crate) fn try_fixed_address_parameterized_rmw(
-        &mut self,
-        function: &Function,
-    ) -> Compilation<bool> {
+    pub(crate) fn try_fixed_address_field_rmw(&mut self, function: &Function) -> Compilation<bool> {
         if !function.guards.is_empty()
-            || function.parameters.len() != 1
             || function.locals.len() != 1
             || !matches!(
                 function.return_type,
@@ -181,14 +219,10 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [parameter] = function.parameters.as_slice() else {
-            return Ok(false);
-        };
         let [temporary] = function.locals.as_slice() else {
             return Ok(false);
         };
-        if parameter.parameter_type != Type::UnsignedInt
-            || temporary.declared_type != Type::UnsignedInt
+        if temporary.declared_type != Type::UnsignedInt
             || temporary.array_length.is_some()
             || temporary.is_static
             || temporary.is_volatile
@@ -198,10 +232,15 @@ impl Generator {
         let Some(initializer) = temporary.initializer.as_ref() else {
             return Ok(false);
         };
-        let (updates, reset) = match function.statements.as_slice() {
-            [_, _, _] => (function.statements.as_slice(), None),
+        let (updates, reset, forward) = match function.statements.as_slice() {
+            [_, _, _] => (function.statements.as_slice(), None, None),
             [updates @ .., Statement::Store { target, value }] if updates.len() == 3 => {
-                (updates, Some((target, value)))
+                (updates, Some((target, value)), None)
+            }
+            [updates @ .., Statement::Expression(call @ Expression::Call { .. })]
+                if updates.len() == 3 =>
+            {
+                (updates, None, Some(call))
             }
             _ => return Ok(false),
         };
@@ -286,6 +325,30 @@ impl Generator {
         } else {
             return Ok(false);
         };
+        if let Some(set_bits) =
+            constant_value(inserted_bits).and_then(|value| u16::try_from(value).ok())
+        {
+            return self.try_emit_constant_fixed_word_rmw(
+                function,
+                super::fixed_rmw_constant::ConstantRmw {
+                    address: base_address,
+                    index,
+                    mask,
+                    set_bits,
+                    reset: reset.is_some(),
+                },
+                forward,
+            );
+        }
+        if forward.is_some() {
+            return Ok(false);
+        }
+        let [parameter] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if parameter.parameter_type != Type::UnsignedInt {
+            return Ok(false);
+        }
         let Expression::Binary {
             operator: BinaryOperator::BitOr,
             left: bits_left,
@@ -648,5 +711,4 @@ impl Generator {
         });
         Ok(())
     }
-
 }
