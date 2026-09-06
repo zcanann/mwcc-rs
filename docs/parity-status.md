@@ -4,13 +4,73 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, callback registration schedules and narrow argument constants (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, automatic EXI status-helper inlining (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `972949b7743b3cb572a2e669b7d95399513c8c42643f6742377983eee4abb5c1:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `5f192b777da7d6e8dbe0e355e39de4e62daa527b4c3e94c0b1b8b2408c207dd7:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Automatic EXI status-helper inlining, 2026-09-06
+
+Against baseline `ba745c4f`, the automatic inline composer admits small
+constant-result register-bank updates and empty hardware polling loops.
+A focused summary module describes their effects and known status. Statement
+composition retains argument materialization, fresh local names, source
+visibility, and recursion accounting; straight-line updates can also use the
+existing sequenced value summary. Exposing a known result preserves the call's
+evaluation point, leaves short-circuit expressions and trailing guards in
+place, and rejects capture by caller-bound bank names. Only freshly introduced
+entry locals can regain their declaration initializer.
+
+The existing poll owner now preserves a returned entry word or forwards word
+arguments to a following direct call. It uses the measured compact linkage
+frames on older builds and sibling transfers on modern builds, keeping address
+setup outside the volatile loop and live arguments out of its scratch pool.
+Full-word masks fold to the truthy poll without overflowing the mask check.
+The parameterized fixed-register RMW owner also handles discarded status,
+including the early-generation wide-mask schedule, using its existing version
+policy. A boundary canary exposed a preexisting scope bug, reproduced with the
+baseline binary: fixed-address metadata overrode a same-named pointer parameter.
+Per-function address maps now exclude names bound by parameters and locals.
+
+Canaries 1585--1588 provide **44 oracle-runnable pairs across 11 builds**, with
+no exclusions or reference rejections. Candidate compilation improves
+**33/44 to 44/44** and whole-object matches improve **0/44 to 20/44**. The
+poll/status canary matches all 11 builds; the wide-mask/forwarding canary
+matches nine. The fixed-update canary's first four functions match, while its
+combined select/deselect transaction still retains calls. Guarded, repeated,
+and shadowed-name polling shapes also remain nonexact. **23,496 paired Unicorn
+execution cases** pass against reference and candidate, checking volatile
+access order and count, zero/one/four waiting iterations, masked writes, status
+and passthrough returns, one/two forwarded arguments, short-circuit and guarded
+exits, shadowed pointer storage, stack restoration, and saved registers under
+four randomized register/clobber patterns.
+
+The 63-canary inline/status/fixed-register regression slice on five builds has
+**315 slots, 120 declared exclusions, and 195 runnable pairs**. Both baseline
+and candidate have **125/195 exact objects**, with no changed verdicts, no
+reference rejections or timeouts, and 30 existing candidate rejections. The
+40-configuration real-project stub family remains **35 BYTE, one DIFF, zero
+DEFER, and four MISSING_DEPENDENCY**, with **33/34 measured code exact**, two
+empty objects, and four unmeasured rows.
+
+Melee's configured GC/1.2.5 `odenotstub.c` still compiles completely and retains
+**10/21 exact functions and 372/3320 exact reference function bytes**, with no
+missing or candidate-only functions. `DBGEXIImm` now contains the `DBGEXISync`
+poll instead of calling it; its other loop and scheduling differences remain.
+This milestone establishes helper coverage and execution checks, not additional
+exact Melee functions or complete-project parity.
+
+Compiler/oracle builds, 31 frontend inline tests, and 112 backend inline tests
+pass. The unfiltered backend run still reports the previously confirmed
+embedded-assembly composition failure documented below; the verified run
+explicitly skips that one test. Six new unit tests cover evaluation placement,
+short-circuit/guard boundaries, name capture, scalar status conversion, and
+initializer ownership. Local reproduction artifacts are
+`target/check_exi_inline_{baseline,candidate,regression,semantics}.py`,
+`target/exi-inline-*.log`, and the fingerprinted reference-parity cache.
 
 ## Callback registration schedules and narrow argument constants, 2026-09-06
 

@@ -6,8 +6,8 @@
 use super::*;
 
 impl Generator {
-    /// A leaf busy-wait on one fixed-address array element, optionally returning
-    /// a constant status: the hardware-register poll (`while (__EXIRegs[13] & 1);`,
+    /// A busy-wait on one fixed-address array element, optionally returning
+    /// a constant status or forwarding an entry word to a return/terminal call: the hardware-register poll (`while (__EXIRegs[13] & 1);`,
     /// DebuggerDriver/EXI/SI/DSP spin loops). mwcc materializes the ELEMENT address once
     /// (`lis`/`addi` of the folded `base + index*elem`), then loops load → test → branch
     /// back (the volatile reload is the loop):
@@ -25,6 +25,16 @@ impl Generator {
     pub(crate) fn try_emit_busy_wait(&mut self, function: &Function) -> Compilation<bool> {
         let status = match (&function.return_type, &function.return_expression) {
             (Type::Void, None) => None,
+            (Type::Int | Type::UnsignedInt, Some(Expression::Variable(name)))
+                if function.parameters.iter().any(|parameter| {
+                    parameter.name == *name
+                        && matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt)
+                }) && self.locations.get(name).is_some_and(|location| {
+                    location.class == ValueClass::General && location.register == 3
+                }) =>
+            {
+                None
+            }
             (Type::Int | Type::UnsignedInt, Some(value)) => {
                 let Some(value) = constant_value(value).and_then(|value| i16::try_from(value).ok())
                 else {
@@ -37,17 +47,53 @@ impl Generator {
         if !function.guards.is_empty()
             || !function.locals.is_empty()
             || !self.frame_slots.is_empty()
-            || function_makes_call(function)
+            || self.variadic_definition
         {
             return Ok(false);
         }
-        let [Statement::Loop {
+        // A terminal direct call may forward entry word arguments unchanged:
+        // the poll only consumes r0 and a free address register.
+        let (poll, call) =
+            match function.statements.as_slice() {
+                [poll] => (poll, None),
+                [poll, Statement::Expression(Expression::Call { name, arguments })]
+                    if function.return_type == Type::Void
+                        && function.return_expression.is_none()
+                        && !self.globals.contains_key(name)
+                        && !self.locations.contains_key(name)
+                        && !self.known_locals.contains(name)
+                        && !self.variadic_callees.contains(name)
+                        && matches!(self.call_return_types.get(name), Some(Type::Void | Type::Int | Type::UnsignedInt))
+                        && crate::intrinsics::ordering_instruction(name, arguments.len()).is_none()
+                        && self.inline_bodies.asm_fragment(name).is_none()
+                        && self.inline_bodies.parameterized_asm_fragment(name).is_none()
+                        && self.call_parameter_types.get(name).is_some_and(|types| {
+                            types.len() == arguments.len()
+                                && arguments.len() <= 8
+                                && types.iter().zip(arguments).enumerate().all(
+                                    |(index, (ty, arg))| {
+                                        matches!(ty, Type::Int | Type::UnsignedInt)
+                                            && matches!(arg, Expression::Variable(name)
+                                            if self.locations.get(name).is_some_and(|location| {
+                                                location.class == ValueClass::General
+                                                    && location.width == 32
+                                                    && location.register == index as u8 + 3
+                                            }))
+                                    },
+                                )
+                        }) =>
+                {
+                    (poll, Some((name, arguments)))
+                }
+                _ => return Ok(false),
+            };
+        let Statement::Loop {
             kind,
             initializer: None,
             condition: Some(condition),
             step: None,
             body,
-        }] = function.statements.as_slice()
+        } = poll
         else {
             return Ok(false);
         };
@@ -100,11 +146,13 @@ impl Generator {
                 let low = bits.trailing_zeros();
                 let high = 31 - bits.leading_zeros();
                 let contiguous = (bits >> low).count_ones() == high - low + 1
-                    && bits >> low == (1u64 << (high - low + 1)) as u32 - 1;
+                    && bits >> low == ((1u64 << (high - low + 1)) - 1) as u32;
                 if !contiguous {
                     return Ok(false);
                 }
-                Some((31 - high) as u8..=(31 - low) as u8) // PPC bit numbering: mb..=me
+                // A full word mask is the truthy poll after constant folding.
+                (bits != u32::MAX).then_some((31 - high) as u8..=(31 - low) as u8)
+                // PPC bit numbering: mb..=me
             }
             None => None,
         };
@@ -127,22 +175,36 @@ impl Generator {
         // materializes a nonzero element's full address; build 163 materializes
         // the reusable bank page and keeps only the element offset in the load.
         let address_style = self.behavior.fixed_address_poll_address_style;
-        let element_address = address as u32 + *index as u32 * element_bytes;
+        let element_address =
+            (address as u32).wrapping_add((*index as u32).wrapping_mul(element_bytes));
         let materialized_address = match address_style {
             mwcc_versions::FixedAddressPollAddressStyle::MaterializedElementForNonzeroIndex => {
                 element_address
             }
             mwcc_versions::FixedAddressPollAddressStyle::FoldedBankDisplacement
-            | mwcc_versions::FixedAddressPollAddressStyle::FoldedAlignedBankDisplacement { .. }
+            | mwcc_versions::FixedAddressPollAddressStyle::FoldedAlignedBankDisplacement {
+                ..
+            }
             | mwcc_versions::FixedAddressPollAddressStyle::MaterializedBankPage => address as u32,
         };
-        let base_register = self.lowest_free_general()?;
+        let live_values: Vec<&Expression> = call
+            .iter()
+            .flat_map(|(_, arguments)| arguments.iter())
+            .chain(function.return_expression.iter())
+            .collect();
+        let base_register = self.free_register_avoiding(&live_values)?;
         let high = ((materialized_address.wrapping_add(0x8000)) >> 16) as u16;
         let low = materialized_address as u16 as i16;
         // The loop's internal labels advance mwcc's anonymous-`@N` counter: by 6 for
         // an element-0 poll, by 7 for a non-zero element (the folded full-address
         // temporary adds one) — measured against the no-loop baseline (@9 -> @15/@16).
         self.output.anonymous_label_bump = if *index == 0 { 6 } else { 7 };
+        let tail = call.is_some() && self.behavior.terminal_indirect_tail_call;
+        let framed = call.is_some() && !tail;
+        if framed {
+            self.emit_plain_nonleaf_prologue();
+        }
+        let address_start = self.output.instructions.len();
         self.output
             .instructions
             .push(Instruction::AddImmediateShifted {
@@ -155,8 +217,7 @@ impl Generator {
                 address_style,
                 mwcc_versions::FixedAddressPollAddressStyle::FoldedBankDisplacement
                     | mwcc_versions::FixedAddressPollAddressStyle::FoldedAlignedBankDisplacement { .. }
-            )
-        {
+            ) {
             i16::try_from(low as i64 + *index * i64::from(element_bytes))
                 .map_err(|_| Diagnostic::error("fixed-address poll displacement is out of range"))?
         } else {
@@ -174,6 +235,20 @@ impl Generator {
             }
         };
 
+        if framed {
+            // Fill only the independent LR-save latency slots. The volatile
+            // load stays after stack setup, below the saved live r0 value.
+            self.output.pre_scheduled = true;
+            let high = self.output.instructions.remove(address_start);
+            let linkage_first = self.behavior.frame_convention == FrameConvention::LinkageFirst;
+            self.output
+                .instructions
+                .insert(if linkage_first { 1 } else { 2 }, high);
+            if linkage_first && self.output.instructions.len() > address_start + 1 {
+                let low = self.output.instructions.remove(address_start + 1);
+                self.output.instructions.insert(address_start, low);
+            }
+        }
         if let mwcc_versions::FixedAddressPollAddressStyle::FoldedAlignedBankDisplacement {
             alignment,
         } = address_style
@@ -218,7 +293,36 @@ impl Generator {
                 target: loop_top,
             });
         if let Some(status) = status {
-            self.output.instructions.push(Instruction::load_immediate(3, status));
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(3, status));
+        }
+        if let Some((name, arguments)) = call {
+            if tail {
+                self.emit_direct_sibling_call(name, arguments)?;
+                return Ok(true);
+            }
+            self.emit_call(name, arguments, None, false)?;
+            if self.behavior.frame_convention == FrameConvention::LinkageFirst
+                && self.behavior.plain_linkage_epilogue_style
+                    != PlainLinkageEpilogueStyle::StackRestoreBeforeReload
+            {
+                self.output.instructions.extend([
+                    Instruction::LoadWord {
+                        d: 0,
+                        a: 1,
+                        offset: self.frame_size + 4,
+                    },
+                    Instruction::AddImmediate {
+                        d: 1,
+                        a: 1,
+                        immediate: self.frame_size,
+                    },
+                    Instruction::MoveToLinkRegister { s: 0 },
+                    Instruction::BranchToLinkRegister,
+                ]);
+                return Ok(true);
+            }
         }
         self.emit_epilogue_and_return();
         Ok(true)

@@ -252,7 +252,9 @@ pub(super) fn automatic_straight_line_scalar_value_function(function: &Function)
 /// storage, dominance, parameter-alias, and control-flow safety proofs used by
 /// ordinary statement-body composition.
 pub(super) fn automatic_statement_value_function(function: &Function) -> bool {
-    automatic_queue_draining_value_function(function)
+    super::constant_result::is_memory_transaction(function)
+        || super::constant_result::is_poll(function)
+        || automatic_queue_draining_value_function(function)
         || automatic_guarded_accumulator_value_function(function)
         || automatic_conditional_local_value_function(function)
 }

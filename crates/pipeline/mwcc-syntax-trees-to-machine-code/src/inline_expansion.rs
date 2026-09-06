@@ -8,6 +8,7 @@
 //! alpha-renamed and initialized at the call site rather than caller entry.
 
 mod call_sites;
+mod constant_result;
 mod discarded_result;
 mod frame_residue;
 mod global_scalar_transaction;
@@ -1297,6 +1298,14 @@ impl InlineBodySet {
         function: &Function,
         allow_changing_scalar_arguments: bool,
     ) -> Option<ExpandedCalls> {
+        let exposed = constant_result::expose_values(function, &self.statement_value_bodies);
+        let function = exposed.as_ref().unwrap_or(function);
+        let bound_names: HashSet<String> = function
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .chain(function.locals.iter().map(|local| local.name.clone()))
+            .collect();
         let has_inline_residue = function
             .locals
             .iter()
@@ -1307,6 +1316,11 @@ impl InlineBodySet {
             .values
             .iter()
             .filter(|(name, body)| {
+                if constant_result::is_memory_transaction(&body.source)
+                    && constant_result::captures_names(&body.source, &bound_names)
+                {
+                    return false;
+                }
                 let automatic_transaction = body.automatic_transaction
                     || value_body::summarize_automatic_transaction(&body.source).is_some();
                 !automatic_transaction
@@ -1430,6 +1444,17 @@ impl InlineBodySet {
         } else {
             statements
         };
+        let constant_memory_callees: Vec<String> = self
+            .statement_value_bodies
+            .iter()
+            .filter(|(_, callee)| constant_result::is_memory_transaction(callee))
+            .map(|(name, _)| name.clone())
+            .collect();
+        constant_result::restore_entry_initializers(
+            &mut expanded,
+            &constant_memory_callees,
+            &bound_names,
+        );
         let mut required_scope = self.clone();
         required_scope.values = values;
         let calls_remain = required_scope.calls_required(&expanded);
@@ -1517,6 +1542,8 @@ impl InlineBodySet {
         if active.contains(callee_name)
             || !self.nesting_budget.permits(active, callee_name)
             || callee.parameters.len() != arguments.len()
+            || ((constant_result::is_poll(callee) || constant_result::is_memory_transaction(callee))
+                && constant_result::captures_names(callee, occupied_names))
         {
             return None;
         }

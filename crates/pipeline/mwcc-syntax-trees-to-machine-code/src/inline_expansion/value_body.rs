@@ -860,6 +860,9 @@ fn sequence(expressions: Vec<Expression>) -> Expression {
 /// they are a direct expression body. More involved selection summaries remain
 /// limited to definitions the frontend identified as explicitly/skipped inline.
 pub(super) fn summarize_automatic(function: &Function) -> Option<ValueInlineBody> {
+    if super::constant_result::is_memory_transaction(function) {
+        return summarize(function);
+    }
     if let Some(body) = summarize_automatic_bounded_predicate(function) {
         return Some(body);
     }

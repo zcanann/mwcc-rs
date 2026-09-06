@@ -816,12 +816,22 @@ fn lower_function_body(
         loop_assertion_string_highs: Vec::new(),
         loop_assertion_string_highs_emitted: false,
         call_return_types: call_return_types.clone(),
+        // Fixed-address annotations belong to file-scope declarations. A
+        // parameter or local of the same spelling retains its own storage.
         fixed_address_arrays: fixed_address_arrays
             .iter()
+            .filter(|(name, _)| {
+                !function.parameters.iter().any(|parameter| parameter.name == **name)
+                    && !function.locals.iter().any(|local| local.name == **name)
+            })
             .map(|(name, (address, element))| (name.clone(), (*address as u32, *element)))
             .collect(),
         fixed_address_objects: fixed_address_objects
             .iter()
+            .filter(|(name, _)| {
+                !function.parameters.iter().any(|parameter| parameter.name == **name)
+                    && !function.locals.iter().any(|local| local.name == **name)
+            })
             .map(|(name, address)| (name.clone(), *address as u32))
             .collect(),
         frame_row_bytes: function

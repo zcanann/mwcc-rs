@@ -174,7 +174,10 @@ impl Generator {
         if !function.guards.is_empty()
             || function.parameters.len() != 1
             || function.locals.len() != 1
-            || !matches!(function.return_type, Type::Int | Type::UnsignedInt)
+            || !matches!(
+                function.return_type,
+                Type::Void | Type::Int | Type::UnsignedInt
+            )
         {
             return Ok(false);
         }
@@ -188,6 +191,7 @@ impl Generator {
             || temporary.declared_type != Type::UnsignedInt
             || temporary.array_length.is_some()
             || temporary.is_static
+            || temporary.is_volatile
         {
             return Ok(false);
         }
@@ -292,17 +296,24 @@ impl Generator {
         else {
             return Ok(false);
         };
-        let Some(return_value) = function
-            .return_expression
-            .as_ref()
-            .and_then(constant_value)
-            .and_then(|value| i16::try_from(value).ok())
-        else {
-            return Ok(false);
+        let return_value = match (&function.return_type, &function.return_expression) {
+            (Type::Void, None) => None,
+            (Type::Int | Type::UnsignedInt, Some(value)) => {
+                let Some(value) = constant_value(value).and_then(|value| i16::try_from(value).ok())
+                else {
+                    return Ok(false);
+                };
+                Some(value)
+            }
+            _ => return Ok(false),
         };
 
         let (high, low) = crate::expressions::split_address(base_address);
         let style = self.behavior.fixed_address_parameterized_rmw_style;
+        if return_value.is_none() {
+            self.emit_discarded_parameterized_rmw(high, low, index, mask, set_bits, shift)?;
+            return Ok(true);
+        }
         let wide_early_mask =
             style == FixedAddressParameterizedRmwStyle::Early24 && mask > i16::MAX as u16;
         let (base, loaded) = match style {
@@ -381,9 +392,10 @@ impl Generator {
                 b: 3,
             });
         }
-        self.output
-            .instructions
-            .push(Instruction::load_immediate(3, return_value));
+        self.output.instructions.push(Instruction::load_immediate(
+            3,
+            return_value.expect("status form"),
+        ));
         if style == FixedAddressParameterizedRmwStyle::Early24 && !wide_early_mask {
             self.output.instructions.push(Instruction::And {
                 a: loaded,
@@ -419,4 +431,138 @@ impl Generator {
         self.emit_epilogue_and_return();
         Ok(true)
     }
+
+    /// Discarding the status frees r3 after the field shift. Legacy selection
+    /// retains a separate materialized store base; later builds fold the bank
+    /// displacement and reuse r3 for either the mask or loaded register value.
+    fn emit_discarded_parameterized_rmw(
+        &mut self,
+        high: i16,
+        low: i16,
+        index: i64,
+        mask: u16,
+        set_bits: u16,
+        shift: u8,
+    ) -> Compilation<()> {
+        let style = self.behavior.fixed_address_parameterized_rmw_style;
+        let legacy = style == FixedAddressParameterizedRmwStyle::Legacy233;
+        let early = style == FixedAddressParameterizedRmwStyle::Early24;
+        let modern = style == FixedAddressParameterizedRmwStyle::Modern4x;
+        let displacement = i16::try_from(i64::from(low) + index * 4)
+            .map_err(|_| Diagnostic::error("fixed-address parameterized RMW is out of range"))?;
+        let store_offset = if legacy {
+            i16::try_from(index * 4)
+                .map_err(|_| Diagnostic::error("fixed-address parameterized RMW is out of range"))?
+        } else {
+            displacement
+        };
+        if early && mask > i16::MAX as u16 {
+            // The non-signed-immediate mask has its own live range; selection
+            // prepares it before consuming the incoming field value in r3.
+            self.output.instructions.extend([
+                Instruction::load_immediate_shifted(5, high),
+                Instruction::load_immediate_shifted(4, 1),
+                Instruction::LoadWord {
+                    d: 6,
+                    a: 5,
+                    offset: displacement,
+                },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: mask as i16,
+                },
+                Instruction::ShiftLeftImmediate { a: 0, s: 3, shift },
+                Instruction::And { a: 6, s: 6, b: 4 },
+                Instruction::OrImmediate {
+                    a: 0,
+                    s: 0,
+                    immediate: set_bits,
+                },
+                Instruction::Or { a: 6, s: 6, b: 0 },
+                Instruction::StoreWord {
+                    s: 6,
+                    a: 5,
+                    offset: displacement,
+                },
+            ]);
+            self.emit_epilogue_and_return();
+            return Ok(());
+        }
+        let loaded = if legacy {
+            4
+        } else if early {
+            5
+        } else {
+            3
+        };
+        let base = if legacy { 5 } else { 4 };
+        let shift = Instruction::ShiftLeftImmediate { a: 0, s: 3, shift };
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(4, high));
+        if legacy {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 5,
+                a: 4,
+                immediate: low,
+            });
+        } else {
+            self.output.instructions.push(shift.clone());
+        }
+        self.output.instructions.push(Instruction::LoadWord {
+            d: loaded,
+            a: 4,
+            offset: displacement,
+        });
+        if legacy {
+            self.output.instructions.push(shift);
+        }
+        if early {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(3, mask as i16));
+        }
+        if !legacy && !modern {
+            self.output.instructions.push(Instruction::OrImmediate {
+                a: 0,
+                s: 0,
+                immediate: set_bits,
+            });
+        }
+        self.output.instructions.push(if early {
+            Instruction::And {
+                a: loaded,
+                s: loaded,
+                b: 3,
+            }
+        } else {
+            Instruction::AndImmediateRecord {
+                a: loaded,
+                s: loaded,
+                immediate: mask,
+            }
+        });
+        if legacy || modern {
+            let register = if modern { loaded } else { 0 };
+            self.output.instructions.push(Instruction::OrImmediate {
+                a: register,
+                s: register,
+                immediate: set_bits,
+            });
+        }
+        self.output.instructions.push(Instruction::Or {
+            a: loaded,
+            s: loaded,
+            b: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: loaded,
+            a: base,
+            offset: store_offset,
+        });
+        self.emit_epilogue_and_return();
+        Ok(())
+    }
+
 }
