@@ -34,6 +34,7 @@ mod control_flow;
 mod copy_convention;
 mod copy_sign_frame;
 mod cxx_abi;
+mod static_local_storage;
 mod static_pointer_initialization;
 mod cxx_temporary_arguments;
 mod dag_emitter;
@@ -505,10 +506,7 @@ fn lower_function_body(
         }
         // A struct-typed static (`static __mem_pool protopool;`) carries its
         // own byte size; scalars derive from the type width.
-        let element = match local.declared_type {
-            mwcc_syntax_trees::Type::Struct { size, .. } => size as u32,
-            other => other.width() as u32 / 8,
-        };
+        let element = static_local_storage::element_size(local.declared_type);
         let size = element * local.array_length.map_or(1, u32::from);
         // The byte image: a brace-list array, or a scalar literal folded here.
         let bytes = match (&local.data_bytes, &local.initializer) {
@@ -532,17 +530,12 @@ fn lower_function_body(
             }
             (None, None) => None,
         };
-        let alignment = match local.declared_type {
-            mwcc_syntax_trees::Type::Struct { align, .. } => (align as u32).max(4),
-            // A char static records its natural alignment 1 (measured: mp4
-            // alloc's init$130 comment record).
-            mwcc_syntax_trees::Type::Char | mwcc_syntax_trees::Type::UnsignedChar
-                if local.array_length.is_none() =>
-            {
-                1
-            }
-            _ => element.max(4),
-        };
+        let alignment = static_local_storage::alignment(
+            local.declared_type,
+            local.array_length,
+            local.attribute_alignment,
+            config,
+        );
         let relocations = local
             .data_relocations
             .iter()
@@ -662,7 +655,7 @@ fn lower_function_body(
             .iter()
             .filter_map(|local| {
                 local.array_length.map(|length| {
-                    let element = local.declared_type.width() as u32 / 8;
+                    let element = static_local_storage::element_size(local.declared_type);
                     (local.name.clone(), element * length as u32)
                 })
             })

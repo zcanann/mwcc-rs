@@ -4,13 +4,61 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, constant static-initializer string order (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, static aggregate storage and addressing (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `1e28e34561b4389a07befc9ded50f863ff593efac2fb0729a8072240bcdd62ca:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `1987ab59f15dfe9cf0af66495a3b66784274b8b643da9ec953770ac70179c4c2:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Static aggregate storage and addressing, 2026-09-06
+
+Against frozen baseline `e6cc821f`, a 360-pair C/C++ O0/O4 matrix improves
+**64/360 → 256/360 whole-object exact pairs**, with all candidates compilable
+and no exact losses. The matrix covers nine element types, seven array lengths,
+three scalar record layouts, initialized/const/zero storage, and small/full
+addressing across all 15 builds. All **23,760 symbol-alignment records** now
+match, up from **19,920**. Section, size, offset, and alignment agree for
+**23,628/23,760 records**; the remaining 132 are newer-build C small-BSS
+placement differences.
+
+A separate static-storage helper shares element-size calculation between
+storage construction and address-mode selection. Mainline O0 local aggregates
+keep natural alignment even in small data; newer builds promote nonzero total
+sizes divisible by eight. This applies to scalar records as well as arrays,
+without changing record member layout. Explicit alignment is retained. The
+oldest four builds treat it as an override, allowing reduced alignment; later
+builds treat it as a minimum. A 60-pair explicit-alignment panel improves
+**0/60 → 48/60 exact objects**, with all **960 alignment records** matching
+(up from 116), all candidates compilable, and no exact losses.
+
+The new corpus also exposed a static-record-array addressing defect: array
+size was calculated from the scalar type width when selecting SDA21 versus
+full address relocations. It now uses the same complete record size as storage.
+The optimized and O0 storage canaries 1654–1655 each improve **0/15 → 14/15**.
+Canary 1656 preserves Wind Waker's `DynamicModuleControl::getModuleTypeString`
+body and the documented member offset in a minimal class declaration. All
+15 builds compile it, but its masked-index instruction selection remains
+nonexact. Together the three new cases improve **0/45 → 28/45**. The earlier
+C++ aggregate-string case 1653 retains 12/15, with newer ordinal gaps remaining.
+
+Rechecking the preceding initializer panel improves **362/600 → 378/600 exact
+objects**, preserving every previous match and all compilations. The metadata
+regression panel retains **1,179 exact objects across 2,198 runnable pairs**
+(2,940 selected slots, 742 exclusions), without losses or timeouts. Three new
+storage-policy tests and eight focused driver tests pass.
+
+The real-project selection now includes all four configured Wind Waker
+`DynamicLink.cpp` variants. Both baseline and candidate hit their 30-second
+cap, as do the two existing complete `GeoTree.cpp` configurations. Every
+individual object and code verdict is unchanged in the **132-config panel:
+47 BYTE, 16 DIFF, 59 compiler DEFER, six HARNESS, four missing dependencies**.
+Code remains **46/109 exact measured objects**, five empty and eighteen
+unmeasured; all 51 measured partial translation units remain nonexact. No
+complete-file or project-build gain is claimed from the reductions. Evidence
+is under `target/static-alignment-*`; the preceding matrix result is
+`target/static-order-probes/static-alignment-results.json`.
 
 ## Constant static-initializer string order, 2026-09-06
 
