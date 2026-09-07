@@ -31,6 +31,7 @@ impl Generator {
         &mut self,
         lookup: &GlobalMaskedLoad<'a>,
         bases: &mut HashMap<String, u8>,
+        indices: &mut Vec<(&'a Expression, u8)>,
     ) -> Compilation<PreparedLookup<'a>> {
         let anchor = self
             .data_section_anchor
@@ -47,7 +48,26 @@ impl Generator {
             bases.insert(lookup.name.to_owned(), base);
             base
         };
-        let source = self.general_register_of_leaf(lookup.index.source)?;
+        let source = if lookup.index.loaded {
+            let shared = matches!(lookup.index.source,
+                Expression::Member { base, .. }
+                    if matches!(base.as_ref(), Expression::Variable(name)
+                        if self.nonvolatile_pointer_bindings.contains(name)));
+            if let Some((_, register)) = indices.iter().find(|(expression, _)| {
+                shared && crate::condition_member_cache::same_member(expression, lookup.index.source)
+            }) {
+                *register
+            } else {
+                let register = self.fresh_virtual_general();
+                self.evaluate_general(lookup.index.source, register)?;
+                if shared {
+                    indices.push((lookup.index.source, register));
+                }
+                register
+            }
+        } else {
+            self.general_register_of_leaf(lookup.index.source)?
+        };
         let offset = self.fresh_virtual_general();
         self.emit_masked_scale(&lookup.index, source, offset);
         let address = if anchor.is_some()
@@ -132,7 +152,14 @@ impl Generator {
             if let Expression::IntegerLiteral(value) = term {
                 constant = constant.wrapping_add(*value as u32);
             } else if let Some(lookup) = self.global_masked_load(term) {
-                if self.general_register_of_leaf(lookup.index.source)? == GENERAL_SCRATCH {
+                if !lookup.index.loaded
+                    && self.general_register_of_leaf(lookup.index.source)? == GENERAL_SCRATCH {
+                    return Ok(false);
+                }
+                if lookup.index.loaded && !matches!(lookup.index.source,
+                    Expression::Member { base, .. }
+                        if matches!(base.as_ref(), Expression::Variable(name)
+                            if self.locations.contains_key(name))) {
                     return Ok(false);
                 }
                 lookups.push((term, lookup));
@@ -178,13 +205,14 @@ impl Generator {
                 }
 
                 let mut bases = HashMap::new();
+                let mut indices = Vec::new();
                 let last = &lookups.last().unwrap().1;
-                let prepared = me.prepare_sum_lookup(last, &mut bases)?;
+                let prepared = me.prepare_sum_lookup(last, &mut bases, &mut indices)?;
                 me.load_sum_lookup(prepared, last.pointee, accumulator)?;
                 let mut pending = None;
                 for (_, lookup) in lookups[1..lookups.len() - 1].iter().rev() {
                     let value = me.fresh_virtual_general();
-                    let prepared = me.prepare_sum_lookup(lookup, &mut bases)?;
+                    let prepared = me.prepare_sum_lookup(lookup, &mut bases, &mut indices)?;
                     me.load_sum_lookup(prepared, lookup.pointee, value)?;
                     if let Some(previous) = pending {
                         me.output.instructions.push(Instruction::Add {
@@ -196,7 +224,7 @@ impl Generator {
                     pending = Some(value);
                 }
                 let leading = &lookups[0].1;
-                let prepared = me.prepare_sum_lookup(leading, &mut bases)?;
+                let prepared = me.prepare_sum_lookup(leading, &mut bases, &mut indices)?;
                 if let Some(value) = pending {
                     me.output.instructions.push(Instruction::Add {
                         d: accumulator,

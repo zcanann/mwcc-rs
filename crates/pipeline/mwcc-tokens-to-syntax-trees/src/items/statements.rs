@@ -640,6 +640,10 @@ impl Parser {
             self.last_type_was_const |= declaration_const;
             self.last_type_was_volatile |= declaration_volatile;
             let is_volatile = self.last_type_was_volatile;
+            let nonvolatile_pointee = !self.last_type_was_volatile
+                && !self.last_struct_tag.as_deref().is_some_and(|tag| {
+                    self.aggregate_has_volatile_fields(tag)
+                });
             let pointee_const = self.last_type_was_const
                 && matches!(
                     declared_type,
@@ -740,6 +744,11 @@ impl Parser {
                 } else {
                     name
                 };
+                self.retain_function_local_pointer_memory(
+                    &name,
+                    declared_type,
+                    nonvolatile_pointee && !is_static,
+                );
                 self.retain_function_local_debug_type(
                     &name,
                     source_fundamental,

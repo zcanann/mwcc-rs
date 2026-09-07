@@ -1047,7 +1047,7 @@ fn compile(
             &unit.function_return_fundamentals,
             mwcc_syntax_trees_to_machine_code::SourceFunctionFacts {
                 is_cxx,
-                nonvolatile_pointer_parameters: &unit.function_nonvolatile_pointer_parameters,
+                nonvolatile_pointer_bindings: &unit.function_nonvolatile_pointer_bindings,
                 parameter_fundamentals: &unit.function_parameter_fundamentals,
                 local_fundamentals: &unit.function_local_fundamentals,
             },

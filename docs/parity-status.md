@@ -4,13 +4,96 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, retained inline cursor calls and AX initialization (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete BfBB AX compilation and sync execution (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `66f21625951b2ad6d4e44faa3ce9c89241aa21795f7039659e400007f3877227:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `9fc06ef37a4bd1daac320a8b29d96028abc33949aa03ac13882ba0c82f92f794:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete BfBB AX compilation and sync execution, 2026-09-07
+
+The complete configured BfBB `src/dolphin/src/ax/AXVPB.c` now compiles with
+GC/1.2.5n and the project's exact flags and include paths. Its 804-byte
+`__AXSyncPBs` passes **256 complete-function execution comparisons** against
+the original game's 632-byte function. This is execution evidence with modeled
+external helpers, not instruction/object parity or complete-project parity.
+The candidate service function remains 2,840 bytes; its instruction bytes are
+unchanged from the previously measured isolated service. Reference project
+files were not edited.
+
+The lookup-sum planner now accepts member-derived masked indices. It shares an
+index load within one optimized sum only when source facts positively establish
+an ordinary, nonvolatile pointee. The existing source-fact set now includes
+local pointer declarations and their block shadow names as well as parameters.
+Volatile fields, volatile-qualified pointees, and unknown bindings retain
+separate reads. O0 keeps its three index reads; a call between sums starts a
+new sharing scope. Table loads themselves are never shared by this change.
+The two-load selector retains its existing resident-index restriction.
+
+The final inactive-voice sweep now uses the existing multiply-based global
+array element-address routine for member stores with non-power-of-two strides.
+This handles AX's 244-byte packet elements and chained halfword clears without
+adding a separate scaling implementation.
+
+Complete sync execution caught a section-anchor lifetime bug: a deferred inline
+parameter reused the table-base register after its textually last use inside
+the loop, corrupting table reads on subsequent iterations. Anchor uses now
+extend through the containing loop's end, including nested loops and condition
+uses. Reuse after the loop remains possible. Before the fix, 103/256 sync cases
+had wrong cycle totals despite identical memory updates and callback traces;
+all 256 now match. Two unit regressions cover nested backedges, loop conditions,
+and preservation of safe straight-line reuse.
+
+The full sync comparison executes both candidate and original service callees.
+It varies voice counts 0/1/2/7/16/64, priority lists, cycle limits and unsigned
+wraparound, sync flags, DSP states, update counts, and randomized storage.
+It compares the entire 0x11800-byte AX BSS allocation, all three counters,
+callback-stack head, and helper trace. Cache helpers are modeled as no-ops;
+command-cycle and priority-head helpers use controlled fixture inputs; depop
+and callback-stack helpers apply deterministic memory effects. All helpers
+clobber caller-saved registers. Return, stack restoration, and callee-saved
+registers are checked. The original functions and tables come from the pinned
+GQPE78 DOL/map already recorded below.
+
+Canaries **1727–1738 improve 0/180 → 180/180 compilations** against frozen
+baseline `5ae8188e`, covering all fifteen builds at O0/O4. The member lookup
+samples pass **1,981,440 candidate calls**, including exhaustive 16-bit inputs
+for the basic member reduction on all thirty objects and read-count checks for
+ordinary/volatile pointers and mutations between sums. Their expected cycle
+values are checked against all 65,536 inputs to the original linked mixer block.
+The thirty global-member list-sweep objects pass **1,920 calls**, comparing all
+packet and voice bytes and callback counts, including 64-node walks.
+
+Canaries **1739–1740** preserve a separate frame-growth follow-up discovered by
+an isolated register-index assignment chain. Nineteen of thirty configurations
+compile: all fifteen O0 cases and four older O4 builds. Eighteen execute
+correctly for indices 0/1/31/63. GC/1.1p1 O4 emits a bad epilogue that loses the
+LR reload after expanding the saved-register range; the other eleven O4 builds
+decline because the frame lacks capacity for three saved registers. These are
+known failures, excluded from the successful 180-object execution set above.
+
+Validation:
+
+- Captured paired-memory matrix: **300/300 whole-object exact**.
+- Index panel: **1,096 objects unchanged**, retaining **972 known reference
+  matches**, and **578 identical declines**; no timeouts.
+- Cumulative metadata panel against `db48e092`: **1,494 objects unchanged**,
+  retaining **1,179 known reference matches**, and **704 identical declines**;
+  no timeouts.
+- **16 anchor tests pass**. **408 parser tests pass**, excluding the two
+  previously documented parser failures. The new parser test checks C/C++
+  local-pointer volatility and shadow-name facts.
+
+Artifacts and reproducible local probes are in `target/check_member_lookup*.py`,
+`target/probe_member_lookup_full_ax.py`, `target/check_full_ax_sync_execution.py`,
+`target/member-lookup-canaries/`, and `target/member-lookup-full-ax/`.
+The complete object SHA-256 is
+`1a8fed48a1634517cd66e23f09754e75274d170ca826e61408ff96650605e7e3`.
+Fresh reference-compiler objects remain blocked by the six existing wibo
+processes, still in kernel U state after more than three hours. No new wibo
+processes were launched and no fresh full-project panel improvement is claimed.
 
 ## Retained inline cursor calls and AX initialization, 2026-09-07
 

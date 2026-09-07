@@ -29,7 +29,7 @@ impl Generator {
             return;
         }
         let ordinary_bases = self
-            .nonvolatile_pointer_parameters
+            .nonvolatile_pointer_bindings
             .iter()
             .filter_map(|name| self.lookup_general(name))
             .collect::<Vec<_>>();

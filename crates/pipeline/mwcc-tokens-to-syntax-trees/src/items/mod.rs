@@ -1374,8 +1374,8 @@ impl Parser {
             function_parameter_fundamentals: std::mem::take(
                 &mut self.function_parameter_fundamentals,
             ),
-            function_nonvolatile_pointer_parameters: std::mem::take(
-                &mut self.function_nonvolatile_pointer_parameters,
+            function_nonvolatile_pointer_bindings: std::mem::take(
+                &mut self.function_nonvolatile_pointer_bindings,
             ),
             function_parameter_pointee_const: std::mem::take(
                 &mut self.function_parameter_pointee_const,
@@ -3257,7 +3257,7 @@ impl Parser {
 
             let mut parameters = Vec::new();
             let mut parameter_row_arrays = Vec::new();
-            let mut nonvolatile_pointer_parameters = Vec::new();
+            let mut nonvolatile_pointer_bindings = Vec::new();
             let mut cxx_parameters = Vec::new();
             let mut cxx_reference_parameters = std::collections::HashSet::new();
             let mut cxx_scalar_reference_parameters = std::collections::HashMap::new();
@@ -3406,7 +3406,7 @@ impl Parser {
                         if matches!(parameter_type, Type::Pointer(_) | Type::StructPointer { .. })
                             && !name.is_empty()
                         {
-                            nonvolatile_pointer_parameters.push((name.clone(), !pointee_is_volatile));
+                            nonvolatile_pointer_bindings.push((name.clone(), !pointee_is_volatile));
                         }
                         if parameter_is_register && !name.is_empty() {
                             asm_register_parameters.insert(name.clone());
@@ -3702,11 +3702,11 @@ impl Parser {
                 self.function_source_names
                     .insert(name.clone(), source_function_name);
             }
-            for (parameter, ordinary) in nonvolatile_pointer_parameters {
+            for (parameter, ordinary) in nonvolatile_pointer_bindings {
                 let key = (name.clone(), parameter);
-                self.function_nonvolatile_pointer_parameters.remove(&key);
+                self.function_nonvolatile_pointer_bindings.remove(&key);
                 if ordinary {
-                    self.function_nonvolatile_pointer_parameters.insert(key);
+                    self.function_nonvolatile_pointer_bindings.insert(key);
                 }
             }
             for (parameter, row) in parameter_row_arrays {
@@ -5060,6 +5060,10 @@ impl Parser {
                         .last_struct_tag
                         .as_deref()
                         .is_some_and(|tag| self.aggregate_has_volatile_fields(tag)));
+            let nonvolatile_pointee = !self.last_type_was_volatile
+                && !self.last_struct_tag.as_deref().is_some_and(|tag| {
+                    self.aggregate_has_volatile_fields(tag)
+                });
             let pointee_const = self.last_type_was_const
                 && matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. });
             if is_extern
@@ -5194,6 +5198,11 @@ impl Parser {
                 }
                 let name = self.parse_identifier()?;
                 let mut attribute_alignment = self.skip_attributes()?;
+                self.retain_function_local_pointer_memory(
+                    &name,
+                    declared_type,
+                    nonvolatile_pointee && !is_static,
+                );
                 self.retain_function_local_debug_type(
                     &name,
                     source_fundamental,
@@ -5861,6 +5870,22 @@ impl Parser {
             inline_asm_blocks,
             force_active: self.force_active,
         })
+    }
+
+    pub(crate) fn retain_function_local_pointer_memory(
+        &mut self,
+        name: &str,
+        declared_type: Type,
+        nonvolatile: bool,
+    ) {
+        let Some(function) = self.current_debug_function_name.clone() else {
+            return;
+        };
+        let key = (function, name.to_string());
+        self.function_nonvolatile_pointer_bindings.remove(&key);
+        if nonvolatile && matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. }) {
+            self.function_nonvolatile_pointer_bindings.insert(key);
+        }
     }
 
     pub(crate) fn retain_function_local_debug_type(

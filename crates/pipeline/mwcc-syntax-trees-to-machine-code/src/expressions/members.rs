@@ -1316,7 +1316,25 @@ impl Generator {
             return Ok(());
         }
         if !stride.is_power_of_two() {
-            return Err(Diagnostic::error("a global struct-array member store with a non-power-of-two stride is not supported yet (roadmap)"));
+            // Reuse element-address formation's multiply-based scale. Keep the
+            // address live while a computed value (including an assignment
+            // chain) performs its own loads and stores.
+            let displacement = i16::try_from(offset).map_err(|_| {
+                Diagnostic::error("struct-array member store offset out of range (roadmap)")
+            })?;
+            let address = self.fresh_virtual_general();
+            self.with_reserved_inputs(value, |me| {
+                me.emit_global_array_element_address(name, total_size, index, address)
+            })?;
+            let restore = self.reserved.insert(address);
+            let source = self.place_store_value(value, pointee);
+            if restore {
+                self.reserved.remove(&address);
+            }
+            self.output.instructions.push(displacement_store(
+                pointee, source?, address, displacement,
+            )?);
+            return Ok(());
         }
         if !matches!(value, Expression::Variable(_)) && constant_value(value).is_none() {
             return Err(Diagnostic::error("a global struct-array member store of a computed value is not supported yet (roadmap)"));

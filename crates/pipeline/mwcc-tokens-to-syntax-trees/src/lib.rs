@@ -366,7 +366,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         function_source_names: HashMap::new(),
         function_parameter_fundamentals: HashMap::new(),
         function_parameter_pointee_const: HashSet::new(),
-        function_nonvolatile_pointer_parameters: HashSet::new(),
+        function_nonvolatile_pointer_bindings: HashSet::new(),
         function_local_fundamentals: HashMap::new(),
         function_local_pointee_const: HashSet::new(),
         current_debug_function_name: None,
@@ -2107,12 +2107,42 @@ void invoke(void) {\n\
             let function = &unit.functions[0];
             for parameter in &function.parameters {
                 assert_eq!(
-                    unit.function_nonvolatile_pointer_parameters.contains(
+                    unit.function_nonvolatile_pointer_bindings.contains(
                         &(function.name.clone(), parameter.name.clone())),
                     matches!(parameter.name.as_str(), "ordinary" | "constant" | "plain" | "row"),
                     "C++={cplusplus} parameter={}", parameter.name,
                 );
             }
+        }
+    }
+
+    #[test]
+    fn local_pointer_memory_facts_keep_volatility_and_shadow_names() {
+        let source = "struct Plain { unsigned short value; };
+            struct Volatile { volatile unsigned short value; };
+            void f(struct Plain* input) {
+                struct Plain* plain;
+                volatile struct Plain* qualified;
+                struct Volatile* fields;
+                { struct Volatile* plain; }
+                { struct Plain* nested; volatile struct Plain* nested_qualified; }
+            }";
+        for cplusplus in [false, true] {
+            let unit = parse_translation_unit(
+                mwcc_source_to_tokens::tokenize(source).unwrap(), cplusplus, true, 1, 3,
+            ).unwrap();
+            let function = &unit.functions[0];
+            assert_eq!(function.locals.len(), 6);
+            for local in &function.locals {
+                assert_eq!(
+                    unit.function_nonvolatile_pointer_bindings.contains(
+                        &(function.name.clone(), local.name.clone())),
+                    matches!(local.name.as_str(), "plain" | "nested"),
+                    "C++={cplusplus} local={}", local.name,
+                );
+            }
+            assert!(unit.function_nonvolatile_pointer_bindings.contains(
+                &(function.name.clone(), "input".into())));
         }
     }
 

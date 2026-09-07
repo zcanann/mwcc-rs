@@ -171,6 +171,12 @@ fn collect_last_reference_position(
         match statement {
             Statement::Loop { body, .. } => {
                 collect_last_reference_position(body, symbols, cursor, last_reference)?;
+                // A use anywhere in the loop is live through its backedge.
+                // A textually later local cannot overwrite the anchor before
+                // the next iteration reads the same section again.
+                if last_reference.is_some_and(|last| last >= position) {
+                    *last_reference = Some(*cursor);
+                }
             }
             Statement::If {
                 then_body,
@@ -332,6 +338,64 @@ mod tests {
             data_relocations: Vec::new(),
             section: None,
             attribute_alignment: None,
+        }
+    }
+
+    #[test]
+    fn keeps_anchor_live_through_nested_loop_backedges() {
+        let inner = Statement::Loop {
+            kind: mwcc_syntax_trees::LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: vec![
+                call("consume", vec![Expression::Variable("table".into())]),
+                call("late_temporary", Vec::new()),
+            ],
+        };
+        let statements = vec![
+            Statement::Loop {
+                kind: mwcc_syntax_trees::LoopKind::While,
+                initializer: None,
+                condition: Some(Expression::IntegerLiteral(1)),
+                step: None,
+                body: vec![inner, call("outer_temporary", Vec::new())],
+            },
+            call("after_loop", Vec::new()),
+        ];
+        let mut cursor = 0;
+        let mut last = None;
+        collect_last_reference_position(
+            &statements, &["table".into()].into(), &mut cursor, &mut last,
+        ).unwrap();
+        assert_eq!(cursor, 6);
+        assert_eq!(last, Some(5));
+    }
+
+    #[test]
+    fn extends_loop_condition_uses_but_preserves_straight_line_reuse() {
+        for (condition, expected) in [
+            (Expression::Variable("table".into()), 3),
+            (Expression::IntegerLiteral(1), 1),
+        ] {
+            let statements = vec![
+                call("consume", vec![Expression::Variable("table".into())]),
+                Statement::Loop {
+                    kind: mwcc_syntax_trees::LoopKind::While,
+                    initializer: None,
+                    condition: Some(condition),
+                    step: None,
+                    body: vec![call("late_temporary", Vec::new())],
+                },
+                call("after_loop", Vec::new()),
+            ];
+            let mut cursor = 0;
+            let mut last = None;
+            collect_last_reference_position(
+                &statements, &["table".into()].into(), &mut cursor, &mut last,
+            ).unwrap();
+            assert_eq!(cursor, 4);
+            assert_eq!(last, Some(expected));
         }
     }
 

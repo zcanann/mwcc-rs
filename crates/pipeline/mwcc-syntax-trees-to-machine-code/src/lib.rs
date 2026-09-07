@@ -161,7 +161,7 @@ pub fn lower_function(
         call_return_fundamentals,
         SourceFunctionFacts {
             is_cxx: false,
-            nonvolatile_pointer_parameters: &HashSet::new(),
+            nonvolatile_pointer_bindings: &HashSet::new(),
             parameter_fundamentals: &HashMap::new(),
             local_fundamentals: &HashMap::new(),
         },
@@ -176,7 +176,7 @@ pub fn lower_function(
 pub struct SourceFunctionFacts<'a> {
     /// Source language, independent of C++ name mangling or extern-C linkage.
     pub is_cxx: bool,
-    pub nonvolatile_pointer_parameters: &'a HashSet<(String, String)>,
+    pub nonvolatile_pointer_bindings: &'a HashSet<(String, String)>,
     pub parameter_fundamentals:
         &'a HashMap<(String, String), mwcc_syntax_trees::SourceFundamentalType>,
     pub local_fundamentals:
@@ -882,7 +882,7 @@ fn lower_function_body(
         materialized_float_window: None,
         materialized_float_assignment_active: false,
         promoted_float_locals: std::collections::HashSet::new(),
-        nonvolatile_pointer_parameters: source_facts.nonvolatile_pointer_parameters
+        nonvolatile_pointer_bindings: source_facts.nonvolatile_pointer_bindings
             .iter()
             .filter(|(owner, _)| owner == &function.name)
             .map(|(_, parameter)| parameter.clone())

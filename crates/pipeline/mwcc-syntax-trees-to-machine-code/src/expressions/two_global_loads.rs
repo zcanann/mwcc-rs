@@ -37,10 +37,6 @@ impl Generator {
             return None;
         }
         let index = self.masked_global_lookup_index(index, pointee)?;
-        // Loaded indices add memory dependencies to the two address chains.
-        if index.loaded {
-            return None;
-        }
         Some(GlobalMaskedLoad {
             name,
             total_size,
@@ -66,7 +62,10 @@ impl Generator {
         ) else {
             return Ok(None);
         };
-        if first.name == second.name
+        // The paired-load schedules require resident indices. The sum planner
+        // has a separate preparation phase for memory-derived indices.
+        if first.index.loaded || second.index.loaded
+            || first.name == second.name
             || self
                 .data_section_anchor
                 .as_ref()
