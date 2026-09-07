@@ -4,13 +4,77 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, guarded packet query matching (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, composed packet bank reads (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `6d0f22279be70554e352a12b7ae9590b825e690e1ce32921c5fe438b87db3a83:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `957289bf6e89e5f5c351115714eb6ce6d319a83b2707264063d6abe92609374e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Composed packet bank reads, 2026-09-06
+
+Against frozen baseline `a1359473`, Melee's `CheckMailBox` now matches all
+**336 reference function bytes**. Its transport translation unit improves
+from **19/21 to 20/21 exact functions** and **2376/3320 to 2712/3320 exact
+reference function bytes**. All 21 functions compile. `DBWrite`, at 608
+reference bytes, is the sole remaining nonexact function; the already exact
+`DBQueryData` retains its read-helper calls.
+
+The packet owner now composes source-visible read definitions through the
+existing fixed-bank transaction proof. Both transactions must agree on the
+bank, selected/poll slots, selection/reset masks, and poll predicate before
+sharing saved address registers. Command tags and transfer symbols retain
+independent ownership. ABI checks are shared with standalone transactions.
+The read proof also rejects assembly bodies and local/parameter bindings
+that shadow the fixed bank. No source names or device addresses select the
+implementation.
+
+The legacy schedule uses one 64-byte frame, distinct command slots, and a
+shared packet array. It reuses selection and polling fragments and the
+existing packet bitfield publication emitter. It preserves the reference's
+otherwise unused first-transfer failure normalization while discarding the
+second result, and follows the existing packet version policy for restores.
+Automatic inlining and source visibility gate this composition; the outer
+interrupt query remains a separate measured composition boundary.
+
+New canaries **1614 and 1615 improve from 0/30 to 8/30 executable-code and
+relocation-aware exact pairs**, covering both objects on all four legacy
+builds. All 30 pairs compile, with no exclusions or reference rejections.
+The other 22 pairs remain code-nonexact. The variant changes source typedefs,
+names, bank address, selected/poll slots, masks, command tags, readiness bit,
+published field, and flag value.
+
+**Whole-object exact remains 0/30** for these samples. Their remaining legacy
+difference is symbol order: zero-initialized file statics declared between
+functions appear after the preceding static functions in the reference,
+but the candidate's pending-zero-static phase emits them up front. Symbol
+contents and code agree; this is an outstanding object-writer gap, not a
+whole-object match claim.
+
+**88,992 paired Unicorn cases pass**: 81,216 across the two canaries and all
+15 builds, plus 7,776 using Melee's actual packet-helper/query bodies and
+read callees. Checks cover command words and order, packet identity and
+untouched words, readiness/tag branches, MMIO reads/writes, repeated polling,
+transfer failures and noncanonical true values, bank changes across calls,
+ABI-clobbered registers, token restoration, stack/saved registers, byte-store
+guards, and post-release result reloads. Transfer and interrupt primitives
+are modeled; this does not claim full hardware transport execution.
+
+Twelve fixed-bank tests, five packet/composition tests (three new tests in
+total), and 117 inline-expansion tests pass. The previously documented
+embedded-asm composition failure remains explicitly skipped. The focused
+regression selection retains all verdicts: **1,040 slots, 281 exclusions,
+759 runnable pairs, and 417 exact objects**, with no timeouts. Another
+**270 neighboring pairs retain all verdicts and 133 exact objects**.
+
+The 40 real-project transport configurations retain **35 BYTE, one DIFF,
+and four missing dependencies**; **33/34 measured code-exact**, two empty,
+and four unmeasured. Melee's whole object remains nonexact.
+
+Local evidence: `target/packet-read-*`, `target/check_packet_read*.py`,
+`target/probe_packet_reads.py`, `target/inspect_packet_read_objects.py`, and
+`target/reference-parity/957289bf6e89e5f5-5e4ca1ddc460f4d8.jsonl`.
 
 ## Guarded packet query matching, 2026-09-06
 

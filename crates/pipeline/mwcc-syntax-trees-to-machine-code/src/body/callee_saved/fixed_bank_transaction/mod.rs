@@ -7,6 +7,7 @@ use super::super::*;
 use mwcc_versions::{FixedAddressParameterizedRmwStyle, Optimization};
 
 mod legacy;
+mod packet_reads;
 mod recognize;
 mod stream;
 mod stream_legacy;
@@ -69,31 +70,7 @@ impl Generator {
         let Some(plan) = plan else {
             return Ok(false);
         };
-        let target = plan.transfer;
-        if self.globals.contains_key(target)
-            || self.locations.contains_key(target)
-            || self.known_locals.contains(target)
-            || self.variadic_callees.contains(target)
-            || !matches!(
-                self.call_return_types.get(target),
-                Some(Type::Int | Type::UnsignedInt)
-            )
-            || !self.call_parameter_types.get(target).is_some_and(|types| {
-                matches!(
-                    types.as_slice(),
-                    [
-                        Type::Pointer(_),
-                        Type::Int | Type::UnsignedInt,
-                        Type::Int | Type::UnsignedInt
-                    ]
-                )
-            })
-            || self.inline_bodies.asm_fragment(target).is_some()
-            || self
-                .inline_bodies
-                .parameterized_asm_fragment(target)
-                .is_some()
-            || crate::intrinsics::ordering_instruction(target, 3).is_some()
+        if !self.bank_transfer_abi_is_compatible(plan.transfer)
             || function
                 .parameters
                 .iter()
@@ -128,5 +105,32 @@ impl Generator {
         }
         self.emit_legacy_fixed_bank_transaction(&plan);
         Ok(true)
+    }
+
+    fn bank_transfer_abi_is_compatible(&self, target: &str) -> bool {
+        !self.globals.contains_key(target)
+            && !self.locations.contains_key(target)
+            && !self.known_locals.contains(target)
+            && !self.variadic_callees.contains(target)
+            && matches!(
+                self.call_return_types.get(target),
+                Some(Type::Int | Type::UnsignedInt)
+            )
+            && self.call_parameter_types.get(target).is_some_and(|types| {
+                matches!(
+                    types.as_slice(),
+                    [
+                        Type::Pointer(_),
+                        Type::Int | Type::UnsignedInt,
+                        Type::Int | Type::UnsignedInt
+                    ]
+                )
+            })
+            && self.inline_bodies.asm_fragment(target).is_none()
+            && self
+                .inline_bodies
+                .parameterized_asm_fragment(target)
+                .is_none()
+            && crate::intrinsics::ordering_instruction(target, 3).is_none()
     }
 }

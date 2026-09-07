@@ -239,3 +239,29 @@ fn automatic_composition_renames_storage_and_declines_global_capture() {
         assert!(bodies.expand_calls(&shadowed).is_none(), "capture {name}");
     }
 }
+
+#[test]
+fn semantic_callee_lookup_respects_source_visibility() {
+    let helper_body = fixture();
+    let mut caller = fixture();
+    caller.name = "caller".into();
+    let bodies = crate::inline_expansion::InlineBodySet::analyze_with_definitions(
+        &[helper_body, caller],
+        &[],
+    );
+    assert!(bodies
+        .source_visible_definition("inspect", "caller")
+        .is_some());
+    assert!(bodies
+        .source_visible_definition("caller", "inspect")
+        .is_none());
+    assert!(bodies
+        .source_visible_definition("inspect", "inspect")
+        .is_none());
+    assert!(bodies
+        .source_visible_definition("external", "caller")
+        .is_none());
+    assert!(bodies
+        .source_visible_definition("inspect", "unknown")
+        .is_none());
+}

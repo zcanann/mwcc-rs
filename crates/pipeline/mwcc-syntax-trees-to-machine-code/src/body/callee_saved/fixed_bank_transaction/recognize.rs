@@ -125,6 +125,7 @@ pub(super) fn transaction<'a>(
     banks: &HashMap<String, (u32, Type)>,
 ) -> Option<Transaction<'a>> {
     if !matches!(function.return_type, Type::Int | Type::UnsignedInt)
+        || function.asm_body.is_some()
         || !function.guards.is_empty()
         || function.parameters.len() != 1
         || function.locals.len() != 3
@@ -193,6 +194,16 @@ pub(super) fn transaction<'a>(
         return None;
     }
     let (bank, selected) = slot(target)?;
+    // This name denotes file-scope storage in the callee. A same-named local
+    // or parameter must not be reinterpreted as the fixed-address declaration.
+    if function
+        .parameters
+        .iter()
+        .any(|parameter| parameter.name == bank)
+        || function.locals.iter().any(|local| local.name == bank)
+    {
+        return None;
+    }
     if slot(selected_local.initializer.as_ref()?)? != (bank, selected) {
         return None;
     }

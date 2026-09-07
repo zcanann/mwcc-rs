@@ -478,3 +478,42 @@ fn stream_rejects_mismatched_poll_and_nonconstant_command_masks() {
     );
     assert!(stream::transaction(&f, &banks()).is_none());
 }
+
+#[test]
+fn composed_packet_reads_require_one_consistent_retained_bank() {
+    let first_function = fixture(true);
+    let second_function = fixture(true);
+    let bank_map = banks();
+    let first = recognize::transaction(&first_function, &bank_map).unwrap();
+    let mut second = recognize::transaction(&second_function, &bank_map).unwrap();
+    assert!(packet_reads::shared_read_bank(&first, &second));
+    // Commands and transfer symbols have independent owners; the retained
+    // register-bank state alone must agree across both transactions.
+    second.payload = Payload::Read { high: 0x8000 };
+    second.transfer = "other_exchange";
+    assert!(packet_reads::shared_read_bank(&first, &second));
+    for changed in 0..7 {
+        let mut second = recognize::transaction(&second_function, &bank_map).unwrap();
+        match changed {
+            0 => second.address ^= 0x10000,
+            1 => second.selected += 4,
+            2 => second.poll += 4,
+            3 => second.preserve ^= 1,
+            4 => second.insert ^= 2,
+            5 => second.poll_begin -= 1,
+            _ => second.poll_end += 1,
+        }
+        assert!(
+            !packet_reads::shared_read_bank(&first, &second),
+            "bank component {changed}"
+        );
+    }
+}
+
+#[test]
+fn fixed_bank_read_does_not_capture_a_parameter_binding() {
+    let mut function = fixture(true);
+    function.parameters[0].name = "bank".into();
+    function.statements[6] = transfer(var("bank"), 4, 0);
+    assert!(recognize::transaction(&function, &banks()).is_none());
+}

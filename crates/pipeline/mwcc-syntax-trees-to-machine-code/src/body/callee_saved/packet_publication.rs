@@ -64,6 +64,11 @@ impl Generator {
         if plan.tag & 0xffff != 0 {
             return Ok(false);
         }
+        if query.is_none()
+            && self.try_composed_packet_reads(function, plan, [ready, preserve, tag, field])
+        {
+            return Ok(true);
+        }
         self.non_leaf = true;
         self.output.pre_scheduled = true;
         self.frame_size = if query.is_some() { 24 } else { 16 };
@@ -228,7 +233,7 @@ impl Generator {
             })
     }
 
-    fn emit_packet_fields(
+    pub(super) fn emit_packet_fields(
         &mut self,
         plan: &Publication<'_>,
         slot: i16,
@@ -289,7 +294,7 @@ impl Generator {
         self.packet_store(plan.flag, 0, true);
     }
 
-    fn packet_exit(&mut self, options: u8) -> usize {
+    pub(super) fn packet_exit(&mut self, options: u8) -> usize {
         let index = self.output.instructions.len();
         self.output
             .instructions

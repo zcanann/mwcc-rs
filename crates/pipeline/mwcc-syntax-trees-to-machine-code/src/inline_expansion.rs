@@ -676,6 +676,14 @@ impl InlineBodySet {
         self.definitions.get(name)
     }
 
+    /// Read an ordinary definition only when its body precedes this caller.
+    /// Semantic composition owners still prove the complete callee shape.
+    pub(crate) fn source_visible_definition(&self, name: &str, caller: &str) -> Option<&Function> {
+        let callee_position = self.definition_positions.get(name)?;
+        let caller_position = self.definition_positions.get(caller)?;
+        (callee_position < caller_position).then(|| self.definition_body(name)).flatten()
+    }
+
     pub(crate) fn definition_call_count(&self, name: &str) -> usize {
         self.definition_call_counts.get(name).copied().unwrap_or(0)
     }
