@@ -8,12 +8,16 @@
 pub(crate) enum Intrinsic {
     FloatAbsolute,
     IntegerAbsolute,
+    RotateLeftWordInsert,
     Synchronize,
     InstructionSynchronize,
     EnforceInOrderIo,
 }
 
 pub(crate) fn classify(name: &str, argument_count: usize) -> Option<Intrinsic> {
+    if name == "__rlwimi" && argument_count == 5 {
+        return Some(Intrinsic::RotateLeftWordInsert);
+    }
     if argument_count == 0 {
         return match name {
             "__sync" => Some(Intrinsic::Synchronize),
@@ -39,7 +43,9 @@ pub(crate) fn is_intrinsic_call(name: &str, argument_count: usize) -> bool {
 pub(crate) fn is_pure_intrinsic_call(name: &str, argument_count: usize) -> bool {
     matches!(
         classify(name, argument_count),
-        Some(Intrinsic::FloatAbsolute | Intrinsic::IntegerAbsolute)
+        Some(
+            Intrinsic::FloatAbsolute | Intrinsic::IntegerAbsolute | Intrinsic::RotateLeftWordInsert
+        )
     )
 }
 
@@ -61,7 +67,10 @@ pub(crate) fn is_float_intrinsic_call(name: &str, argument_count: usize) -> bool
 }
 
 pub(crate) fn is_integer_intrinsic_call(name: &str, argument_count: usize) -> bool {
-    classify(name, argument_count) == Some(Intrinsic::IntegerAbsolute)
+    matches!(
+        classify(name, argument_count),
+        Some(Intrinsic::IntegerAbsolute | Intrinsic::RotateLeftWordInsert)
+    )
 }
 
 #[cfg(test)]
@@ -89,5 +98,29 @@ mod tests {
         assert_eq!(classify("abs", 1), None);
         assert_eq!(classify("__abs", 0), None);
         assert_eq!(classify("__abs", 2), None);
+    }
+
+    #[test]
+    fn rotate_insert_retains_effects_of_its_operands() {
+        use mwcc_syntax_trees::Expression;
+        let mut arguments = vec![Expression::IntegerLiteral(0); 5];
+        let pure = Expression::Call {
+            name: "__rlwimi".into(),
+            arguments: arguments.clone(),
+        };
+        assert!(!crate::analysis::expression_has_call(&pure));
+        assert!(!crate::analysis::expression_has_side_effect(&pure));
+        arguments[1] = Expression::Call {
+            name: "fetch".into(),
+            arguments: Vec::new(),
+        };
+        let effectful = Expression::Call {
+            name: "__rlwimi".into(),
+            arguments,
+        };
+        assert!(crate::analysis::expression_has_call(&effectful));
+        assert!(crate::analysis::expression_has_side_effect(&effectful));
+        assert_eq!(classify("__rlwimi", 4), None);
+        assert_eq!(classify("__rlwimi", 6), None);
     }
 }

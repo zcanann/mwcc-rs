@@ -4,13 +4,89 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, incoming stack arguments and GX packet execution (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, GX FIFO stores and rotate-insert execution (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `6b84624b42cb128720a72e61ca1c7f4d3816eeb262e6fad30bf6b6888849136e:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `2d0b61b68619f78a01f3b984823797f5214eb25c8313c5f883eee2d42522e15a:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GX FIFO stores and rotate-insert execution, 2026-09-07
+
+The unmodified source prefix containing BfBB's complete `GXSetTevIndirect`
+now compiles with its configured GC/1.2.5n DolphinLib flags. The frozen
+`771fce48` compiler declined its first constant-address FIFO member store.
+The candidate emits **124 bytes**, compared with **108 bytes** in the original
+GQPE78 DOL. This is full isolated-function execution coverage, not instruction
+parity or complete `GXBump.c` compilation.
+
+Fresh constant-address bases now support nonzero literal and computed store
+values, including floating values. Value computation precedes a fresh base;
+the existing register-leaf and zero-store schedules remain intact. Existing
+base reuse still reserves the base across value computation. Unsupported
+address regions and frame shapes continue to decline.
+
+`__rlwimi` has a shared five-argument intrinsic identity used by call analysis,
+register-pressure analysis, symbol traversal, and both expression and direct
+call emission. It emits the PowerPC rotate-and-mask-insert instruction with
+constant shift/mask operands in 0..31. Separate virtual identities preserve
+the old destination and source when the result aliases an input or inputs are
+nested expressions. Operand effects remain visible to call/effect analysis.
+Nonconstant or out-of-range immediate operands decline; their reference
+compiler diagnostics have not been measured.
+
+Eight new canaries **1763–1770** capture literal, computed, callback-returned,
+float/double FIFO stores; full and wrapping masks, aliased and nested intrinsic
+values; a complete GX FIFO reduction with ninth/tenth stack arguments; and
+remaining call-spanning frame limitations. **90/120 objects compile**, up from
+**0/120** under the frozen baseline, across fifteen builds at O0/O4. The thirty
+objects for 1769–1770 still decline because allocated values need a canonical
+frame owner.
+
+At the final fingerprint, **118,272 candidate executions pass**:
+
+- **31,744** complete GX function calls: thirty reduction objects plus the
+  configured source-prefix object, each checked against 1,024 executions of
+  the original linked function. Checks compare ordered FIFO command/word
+  writes, the full context image, stack restoration, and callee-saved GPRs.
+  The original code hash remains
+  `139a706141f2830879900b9e9cac556eb46cfb88ccc0078feb09898ba422ae61`.
+- **84,480** store and intrinsic calls over sixty objects, checking integer
+  wraparound, wrapping masks, aliases, floating store bits, callback counts,
+  volatile-register clobbering, and ABI preservation.
+- **2,048** calls for newly compiling GC/1.2.5n canary **1274**, checking both
+  state-word update functions, full state memory, FIFO writes, and ABI state.
+  Execution first exposed a scratch register overwriting a later parameter.
+  The straight-line body now shares the structured body's existing reservation
+  helper for physical homes read by later statements, correcting that failure.
+
+The complete configured `GXBump.c` progresses to a loop-lowering decline in
+`GXSetIndTexCoordScale`; its switch contains `do { ... } while (0)` macros.
+The current shared normalizer does not recurse into switch arms. That is the
+next area to investigate. Reference-project files remain unchanged.
+
+Other validation:
+
+- Captured paired-memory matrix: **300/300 whole-object exact**.
+- Index panel: **1,096 prior objects unchanged**, retaining **972 known
+  reference matches**; **577 identical declines**; one newly compiled object
+  (1274) with execution coverage above; no timeouts.
+- Cumulative metadata panel against `db48e092`: **1,494 objects unchanged**,
+  retaining **1,179 known reference matches**, and **704 identical declines**;
+  no timeouts.
+- **3 intrinsic analysis tests and 40 object-writer tests pass**.
+- The complete configured AX object remains byte-identical, SHA-256
+  `1a8fed48a1634517cd66e23f09754e75274d170ca826e61408ff96650605e7e3`,
+  retaining its prior complete sync execution evidence.
+
+Local proof scripts are `target/check_gx_fifo*.py` and
+`target/probe_gx_fifo*.py`; results and object hashes are under
+`target/gx-fifo-{canaries,gx,index,metadata,full-ax}/` and
+`target/memory-operands-probes/gx-fifo-results.json`. The six existing wibo
+processes remain in kernel U state after more than four hours twenty minutes.
+No new reference-compiler processes were launched; no fresh reference-object
+or full-project-panel gain is claimed.
 
 ## Incoming stack arguments and GX packet execution, 2026-09-07
 

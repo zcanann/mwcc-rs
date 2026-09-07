@@ -8,7 +8,7 @@ use super::*;
 use super::structured::value_read_before_redefinition;
 
 impl Generator {
-    pub(super) fn reserve_live_physical_homes(
+    pub(in crate::body) fn reserve_live_physical_homes(
         &mut self,
         function: &Function,
         remaining: &[Statement],
@@ -33,7 +33,7 @@ impl Generator {
             .collect()
     }
 
-    pub(super) fn release_reserved_physical_homes(&mut self, registers: Vec<u8>) {
+    pub(in crate::body) fn release_reserved_physical_homes(&mut self, registers: Vec<u8>) {
         for register in registers {
             self.reserved.remove(&register);
         }

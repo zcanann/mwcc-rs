@@ -1326,6 +1326,13 @@ pub(crate) fn register_need(expression: &Expression) -> u32 {
         Expression::Call { name, arguments }
             if is_integer_intrinsic_call(name, arguments.len()) =>
         {
+            if crate::intrinsics::classify(name, arguments.len())
+                == Some(crate::intrinsics::Intrinsic::RotateLeftWordInsert)
+            {
+                let left = register_need(&arguments[0]);
+                let right = register_need(&arguments[1]);
+                return if left == right { left + 1 } else { left.max(right) };
+            }
             register_need(&arguments[0]).max(2)
         }
         Expression::Binary { left, right, .. } => {

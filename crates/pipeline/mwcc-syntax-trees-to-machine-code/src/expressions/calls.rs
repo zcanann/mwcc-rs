@@ -844,6 +844,16 @@ impl Generator {
         destination: Option<u8>,
         float_result: bool,
     ) -> Compilation<()> {
+        if crate::intrinsics::classify(name, arguments.len())
+            == Some(crate::intrinsics::Intrinsic::RotateLeftWordInsert)
+        {
+            if float_result {
+                return Err(Diagnostic::error("__rlwimi produces an integer result"));
+            }
+            let destination = destination.unwrap_or_else(|| self.fresh_virtual_general());
+            self.try_emit_integer_intrinsic(name, arguments, destination)?;
+            return Ok(());
+        }
         if let Some(instruction) = crate::intrinsics::ordering_instruction(name, arguments.len()) {
             if destination.is_some() || float_result {
                 return Err(Diagnostic::error("an ordering intrinsic has no result value"));

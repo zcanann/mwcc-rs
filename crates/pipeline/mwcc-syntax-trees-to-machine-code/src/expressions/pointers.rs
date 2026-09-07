@@ -364,13 +364,10 @@ impl Generator {
         }
     }
 
-    /// Store `value` to constant `address + offset` (a `*(T *)C = v` or `(*(struct S *)C).f = v`).
-    /// The address base is materialized before the value and kept clear of the value's input
-    /// registers, mirroring the absolute global store. When an earlier access
-    /// already retained the same high-half base, a computed value may be
-    /// evaluated under that base's reservation before the store. Returns
-    /// `false` when the displacement overflows i16 or a computed value would
-    /// require a new base to be materialized after it.
+    /// Store through a fixed address, sharing its high-half base when possible.
+    /// A fresh base follows computed value placement, so it may reuse an input
+    /// register whose value has died. A retained base stays reserved across the
+    /// value computation. Returns false for unsupported address ranges/regions.
     pub(crate) fn emit_const_address_store(
         &mut self,
         pointee: Pointee,
@@ -385,17 +382,8 @@ impl Generator {
         else {
             return Ok(false);
         };
-        // This path lays the base `lis` down BEFORE the value (below), which matches mwcc
-        // ONLY when the value is a register-resident LEAF that needs no pre-computation —
-        // then mwcc also emits just `lis base; store`. For ANY value that first emits
-        // instructions (a constant `li`, a global load, a computed expression, a call, or
-        // an int<->float conversion), mwcc emits the VALUE first and materializes the base
-        // AFTER it, REUSING a GPR the value freed (`add r0,r3,r4; lis r3; stw r0,d(r3)`) —
-        // a look-ahead base allocation this base-first path does not model (keystone-level).
-        // Defer those rather than emit the wrong base register/order (measured DIFFs across
-        // `= a+b`, `= gi`, `= 5`, `= (float)int_x` on the GX write-gather-pipe and plain
-        // const-address stores). A same-class width cast of a register leaf (`(u8)x` ->
-        // `stb`) still stores from that register, so it stays a leaf.
+        // Same-class casts of register leaves need no value instructions;
+        // preserve their existing base-before-store schedule.
         let address_identity_source =
             address_identity_leaf(value).and_then(|name| self.lookup_general(name));
         let is_register_leaf = address_identity_source.is_some()
@@ -446,7 +434,19 @@ impl Generator {
                 )?);
                 return Ok(true);
             } else {
-                return Ok(false);
+                let source = self.place_store_value(value, pointee)?;
+                let mut avoid = vec![GENERAL_SCRATCH];
+                if !matches!(pointee, Pointee::Float | Pointee::Double) {
+                    avoid.push(source);
+                }
+                let Some((base, materialize)) = self.claim_const_address_base_avoiding(high, avoid) else {
+                    return Ok(false);
+                };
+                if materialize {
+                    self.output.instructions.push(Instruction::load_immediate_shifted(base, high));
+                }
+                self.output.instructions.push(displacement_store(pointee, source, base, displacement)?);
+                return Ok(true);
             };
             let restore = self.reserved.insert(base);
             let source = self.place_store_value(value, pointee)?;

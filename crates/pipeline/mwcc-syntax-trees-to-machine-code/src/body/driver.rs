@@ -4449,7 +4449,17 @@ impl Generator {
                     }
                 }
             }
-            self.emit_statement(statement)?;
+            // The straight-line owner shares the structured owner's protection
+            // for named ABI values needed by later statements. A memory-value
+            // computation may otherwise choose their physical input registers
+            // as scratch before their next read is emitted.
+            let live_homes = self.reserve_live_physical_homes(
+                function,
+                &function.statements[index + 1..],
+            );
+            let emitted = self.emit_statement(statement);
+            self.release_reserved_physical_homes(live_homes);
+            emitted?;
         }
         let return_start = self.output.instructions.len();
 
