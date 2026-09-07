@@ -1406,6 +1406,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         SavedFloatParameterCopyOrder::AscendingSavedHome
     }
 
+    /// GC/1.1 patch 1 assigns unoptimized scalar parameter spills to one
+    /// byte address, including overlaps with saved registers and linkage.
+    fn unoptimized_shared_parameter_spills(&self) -> bool {
+        false
+    }
+
     /// Whether structured owners must defer an explicitly early LR write until
     /// every saved GPR and the stack pointer have been restored.
     fn structured_saved_gpr_stack_first(&self) -> bool {
@@ -2673,6 +2679,7 @@ pub struct Gc233Build163 {
     saved_gpr_epilogue_style: SavedGprEpilogueStyle,
     saved_float_epilogue_style: SavedFloatEpilogueStyle,
     structured_saved_gpr_stack_first: bool,
+    unoptimized_shared_parameter_spills: bool,
     dvd_fst_loader_early_epilogue: bool,
 }
 
@@ -2686,6 +2693,7 @@ pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved,
     saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeResult,
     structured_saved_gpr_stack_first: false,
+    unoptimized_shared_parameter_spills: false,
     dvd_fst_loader_early_epilogue: false,
 };
 
@@ -2699,6 +2707,7 @@ pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterAfterStackRestore,
     saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeResult,
     structured_saved_gpr_stack_first: false,
+    unoptimized_shared_parameter_spills: false,
     dvd_fst_loader_early_epilogue: true,
 };
 
@@ -2712,6 +2721,7 @@ pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterAfterStackRestore,
     saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeFinalRestore,
     structured_saved_gpr_stack_first: true,
+    unoptimized_shared_parameter_spills: false,
     dvd_fst_loader_early_epilogue: false,
 };
 
@@ -2725,10 +2735,15 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload,
     saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeResult,
     structured_saved_gpr_stack_first: true,
+    unoptimized_shared_parameter_spills: true,
     dvd_fst_loader_early_epilogue: false,
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn unoptimized_shared_parameter_spills(&self) -> bool {
+        self.unoptimized_shared_parameter_spills
+    }
+
     fn computed_constant_equality_style(&self) -> ComputedConstantEqualityStyle {
         ComputedConstantEqualityStyle::LegacyMaskedAdd
     }

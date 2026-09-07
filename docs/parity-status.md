@@ -4,13 +4,75 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, full GXPixel, implicit conversions, and live array indices (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, GC/1.1p1 O0 shared parameter-spill bug (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `0b6bca8bc1753ffd0578f68d01a58dee1fc5727532a6034376708932496c38eb:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `c33a467bf1d11aa154555ca4b5d479ba7cbb74a069f60fd9749e6e77b6fb218b:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GC/1.1p1 O0 shared parameter-spill bug, 2026-09-07
+
+The fourteen-function parameter-home cohort now produces a **byte-identical
+reference ELF** on GC/1.1p1 O0: **14/14 function bodies and symbolic relocations**
+match. All **14,336 candidate/reference execution comparisons** agree, including
+helper arguments, return values, raw saved GPR/FPR images, SP/LR/PC, the stack
+image, and execution faults. The frozen `9f45cda8` baseline declines this cohort.
+
+This deliberately reproduces an original compiler bug. Unoptimized scalar
+parameter stores share `8(r1)`, in declaration order. An integer parameter can
+overwrite a float before conversion; reversing parameter declarations reverses
+which value survives. A double store can overwrite saved r31 or the caller's
+saved LR. An ordinary integer-call control demonstrates that this is not
+specific to floating conversion. **10,944 reference cases fail the independent
+C/ABI model**, and the candidate reproduces their observed behavior. These
+are reference matches, not semantic-correctness passes.
+
+A build-profile switch resolves into an O0-only `BugReproduction` quirk. Its
+isolated emitter uses the shared conversion normalizer, call machinery, and
+expression visitor. It represents overlapping source images directly instead
+of giving them independently allocated frame slots. The admitted family has
+one scalar call, an optional unsigned result local, and a scalar arithmetic
+return; unrelated bodies fall through using a cloned trial generator. The
+measured three-term sum retains the reference load/add schedule. Synthetic
+names avoid source parameters and locals, with a collision canary.
+
+Canaries **1923/1924** cover direct/local results, parameter ordering, float and
+double inputs, arithmetic, narrow stores, and an integer call. Canaries
+**1925/1926** retain repeated-conversion and parameter-promotion frontiers.
+Across all four files and fifteen builds, compilation advances **0/60 to 1/60**;
+these are focused diagnostics, not a corpus parity percentage. Fresh references
+compile **59/60**. The complete GC/1.2.5n O0 single-call cohort hits wibo's missing
+`FormatMessageA` import; all **14 isolated functions compile** under the same
+reference flags. That runner failure remains separate from candidate declines.
+Other builds' direct conversion-return expressions and repeated conversions
+remain open.
+
+Regression controls retain **300/300** exact memory objects and **1,097** unchanged
+indexed objects, including **972** known exact results and **577** identical
+declines. Cumulative metadata retains **1,494** compiled, **1,487** unchanged,
+**1,179** known exact, and **704** identical declines; seven historical `1469`
+changes predate this milestone. Of **1,530** recent pairs, **1,500** compile,
+**1,499** are byte-identical, and **30** retain their diagnostics. The sole changed
+object is GC/1.1p1 O0 canary 1916: `initialized` and `assigned` gain exact function
+text/relocation matches and pass **2,048** further execution comparisons; its
+six other functions are unchanged. This brings the focused execution total to
+**16,384 matching calls per side**. The seven compiling BfBB GX translation units
+and full AXVPB remain byte-identical. Tests
+pass: **47** version tests and **675** structured compiler tests.
+
+This is a bounded first implementation of the spill bug. Repeated calls,
+promoted parameters, pointer stores, branch/switch conversions, and other saved
+register overlap cases remain reproduction gaps. Full-project builds and the
+remaining seven configured GX units remain open.
+
+Artifacts: `target/shared-spill-canaries/{results,reference-results,
+reference-comparison,execution-results}.json`,
+`target/shared-spill-reference-isolation/results.json`,
+`target/shared-spill-recent/reference-comparison.json`,
+`target/shared-spill-recent-execution/`, and
+`target/shared-spill-{index,metadata,recent,gx-library,full-ax}/`.
 
 ## Full GXPixel, implicit conversions, and live array indices, 2026-09-07
 

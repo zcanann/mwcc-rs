@@ -1241,6 +1241,13 @@ impl Generator {
                 }
             }
         }
+        if self.behavior.unoptimized_shared_parameter_spills {
+            let mut trial = self.clone();
+            if trial.try_shared_parameter_spill_call(function)? {
+                *self = trial;
+                return Ok(());
+            }
+        }
         if let Some(cached) = super::conditional_member_cache::materialize(function) {
             return self.evaluate_body(&cached);
         }
