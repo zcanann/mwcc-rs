@@ -1,6 +1,6 @@
 //! Emission for a recognized fixed-port packet accumulator.
 
-use super::recognize::recognize;
+use super::recognize::{recognize, FieldOperation, Packet};
 #[allow(unused_imports)]
 use super::super::*;
 
@@ -23,6 +23,7 @@ impl Generator {
         let expected_shifts = [0, 2, 4, 7, 9, 13, 16, 19, 20, 24];
         let expected_widths = [2, 2, 3, 2, 4, 3, 3, 1, 1, 8];
         if packet.fields.len() != expected_shifts.len()
+            || packet.fields.iter().any(|field| field.operation != packet.fields[0].operation)
             || packet
                 .fields
                 .iter()
@@ -56,13 +57,31 @@ impl Generator {
                         .map(|location| location.register)
                         != Some(Eabi::FIRST_GENERAL_ARGUMENT + index as u8)
                 })
-            || function.parameters[8].parameter_type != Type::UnsignedChar
+            || function.parameters.iter().enumerate().any(|(index, parameter)| {
+                if matches!(index, 7 | 8) {
+                    parameter.parameter_type != Type::UnsignedChar
+                } else {
+                    !matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt)
+                }
+            })
         {
             return Ok(false);
         }
         let Some(&global_type) = self.globals.get(packet.global) else {
             return Ok(false);
         };
+        if !matches!(global_type, Type::Pointer(_) | Type::StructPointer { .. })
+            || self.volatile_globals.contains(packet.global)
+        {
+            return Ok(false);
+        }
+        if packet.fields[0].operation == FieldOperation::RotateInsert {
+            if !self.fixed_address_objects.values().any(|&address| address == packet.port) {
+                return Ok(false);
+            }
+            self.emit_intrinsic_packet(&packet, global_type)?;
+            return Ok(true);
+        }
         let preserve = |index: usize| {
             rlwinm_mask(packet.fields[index].preserve_mask as i64)
                 .expect("recognized field preserve mask is encodable")
@@ -256,4 +275,53 @@ impl Generator {
         self.emit_epilogue_and_return();
         Ok(true)
     }
+
+    fn emit_intrinsic_packet(&mut self, packet: &Packet<'_>, global_type: Type) -> Compilation<()> {
+        self.output.pre_scheduled = true;
+        self.frame_size = 48;
+        self.callee_saved = vec![31];
+        let incoming_byte = self.frame_size
+            + Eabi::general_stack_offset(Eabi::LAST_GENERAL_ARGUMENT + 1).expect("ninth word") + 3;
+        let incoming_word = self.frame_size
+            + Eabi::general_stack_offset(Eabi::LAST_GENERAL_ARGUMENT + 2).expect("tenth word");
+        let insert = |index: usize, destination, source| {
+            let field = packet.fields[index];
+            let (begin, end) = contiguous_mask((!field.preserve_mask) as i64)
+                .expect("recognized insert mask is contiguous");
+            Instruction::RotateAndMaskInsert {
+                a: destination, s: source, shift: field.shift, begin, end,
+            }
+        };
+        self.output.instructions.extend([
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -self.frame_size },
+            Instruction::load_immediate(0, 0),
+            insert(0, 0, 4),
+            Instruction::StoreWord { s: 31, a: 1, offset: self.frame_size - 4 },
+            Instruction::move_register(11, 0),
+            insert(1, 11, 5),
+            Instruction::LoadWord { d: 12, a: 1, offset: incoming_word },
+            Instruction::LoadByteZero { d: 31, a: 1, offset: incoming_byte },
+            insert(2, 11, 6),
+        ]);
+        self.evaluate(&Expression::Variable(packet.global.into()), global_type, 4)?;
+        self.output.instructions.extend([
+            insert(3, 11, 12),
+            insert(4, 11, 7),
+            insert(5, 11, 8),
+            insert(6, 11, 9),
+            insert(7, 11, 31),
+            Instruction::load_immediate(0, packet.command),
+            Instruction::load_immediate_shifted(5, (packet.port.wrapping_add(0x8000) >> 16) as i16),
+            Instruction::StoreByte { s: 0, a: 5, offset: packet.port as i16 },
+            Instruction::AddImmediate { d: 0, a: 3, immediate: packet.fields[9].source.addend as i16 },
+            insert(8, 11, 10),
+            insert(9, 11, 0),
+            Instruction::StoreWord { s: 11, a: 5, offset: packet.port as i16 },
+            Instruction::load_immediate(0, 0),
+            Instruction::StoreHalfword { s: 0, a: 4, offset: packet.flag_offset },
+        ]);
+        self.emit_epilogue_and_return();
+        Ok(())
+    }
+
 }

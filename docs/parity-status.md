@@ -4,13 +4,85 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, exact GX coordinate scaling and virtual bitwise subtrees (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, exact GX indirect packet setup (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `ad06a15e501e2a5984bcfe8a6c91b537f077197064673cf05d659097ab77a2b5:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `5e3fe70233cf31fddd9c5f66581d0d0c1f67f00055e9cd0a3ace01c27f10a70c:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Exact GX indirect packet setup, 2026-09-07
+
+The configured BfBB **`GXSetTevIndirect` now matches all 108 original linked
+instruction bytes**, improving from 124 bytes under frozen baseline `243a1adc`.
+Its original/candidate linked-code SHA-256 is
+`139a706141f2830879900b9e9cac556eb46cfb88ccc0078feb09898ba422ae61`.
+**Seven of the complete GX object's eight functions now have exact linked
+text**. Only `GXSetIndTexMtx` remains different, at 432 versus 376 bytes.
+Known symbol relocations are resolved at original DOL addresses; this is not
+a fresh relocatable reference-object comparison or complete GX parity.
+
+The complete configured GX object remains compilable, SHA-256
+`4212aaad54ce3157a8ad228cf5adc83297d3ba5d7b0d53e4796962c8154566e5`.
+Text shrinks **1,264 → 1,248 bytes**; the ELF shrinks **2,808 → 2,792 bytes**.
+The other seven function sizes are unchanged.
+
+The existing packet owner now distinguishes C clear-mask/shift/OR updates
+from `__rlwimi` updates using the shared intrinsic decoder. Its intrinsic
+schedule uses a 48-byte frame, preserves r31, loads the ninth byte and tenth
+word through the shared EABI stack offsets, and interleaves field inserts
+with FIFO setup. The source determines the port address, command, and state
+flag offset. The schedule requires the existing linkage-first profile,
+a matching absolute-object port declaration, the measured ten-field layout,
+and the matching word/byte argument types. Recognition accepts zero-initialized
+locals and the shared normalizer's flattened macro bodies. Mixed operations,
+narrowing casts, and volatile state-pointer globals use general emission;
+the C form retains shifted bits outside each cleared field. Thirty prior
+packet objects (1767/1768 across all builds) remain byte-identical.
+
+Local-to-store folding now preserves literal no-op expressions, including
+`(void)0`, so disabled assertions no longer stop otherwise valid folding.
+The existing global-snapshot-write barrier remains enforced and tested.
+
+Eight new canaries **1813–1820** improve **0/120 → 105/120 compiled objects**
+across fifteen builds at O0/O4. They cover the complete indirect reduction,
+initialized/flat forms, a different port and flag offset, a different command,
+C overflow behavior, narrowed sources/results, mixed operations, volatile
+pointers, and explicit pointer-cast ports. The optimized C-mask translation
+unit still declines in `narrow_source` because allocated callee-saved values
+need a canonical frame owner; its O0 counterpart compiles on every build.
+This remaining frame limitation is retained in the corpus.
+
+Validation totals **92,672 passing candidate calls**:
+
+- **84,480** calls in the compiled new corpus, including **30,720** complete
+  indirect reductions compared with original DOL context/FIFO fixtures.
+  Checks cover FIFO address/width/value, context and caller-stack sentinels,
+  all byte argument values with garbage upper ABI bits, and stack/SDA/saved
+  GPR/FPR restoration. Volatile cases enforce one pointer read after both
+  FIFO writes. Other variants use an independent C/intrinsic packet model.
+- **8,192** calls rerun all eight complete configured GX functions against
+  the original DOL, comparing FIFO traces, complete context memory, matrix
+  input preservation, and GPR/FPR/stack restoration.
+
+Only configured GC/1.2.5n supplies original linked-byte evidence; the other
+builds have candidate execution coverage. The captured paired-memory matrix
+retains **300/300 exact objects**. The index panel retains **1,097 unchanged
+objects / 972 known reference matches / 577 identical declines**. The cumulative
+metadata panel against `db48e092` retains **1,494 unchanged objects / 1,179 known
+matches / 704 identical declines**. Neither native panel timed out.
+**1 local-folding, 3 incoming-parameter, 31 frame-convention, 5 loop-normalization,
+and 40 object-writer tests pass**. The complete configured AX object remains
+byte-identical, SHA-256
+`1a8fed48a1634517cd66e23f09754e75274d170ca826e61408ff96650605e7e3`.
+
+Local scripts are `target/check_gx_packet*.py` and `target/probe_gx_packet*.py`;
+results, pinned originals, and object hashes are in
+`target/gx-packet-{canaries,gx,index,metadata,legacy,full-ax}/`.
+The six existing wibo processes remain in kernel U state after more than
+6 hours 18 minutes. No new reference-compiler process was launched and no fresh
+full-project panel was measured.
 
 ## Exact GX coordinate scaling and virtual bitwise subtrees, 2026-09-07
 

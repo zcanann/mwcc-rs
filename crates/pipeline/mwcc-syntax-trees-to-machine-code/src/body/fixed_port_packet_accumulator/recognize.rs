@@ -9,11 +9,18 @@ pub(super) struct FieldSource<'a> {
     pub(super) addend: i64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum FieldOperation {
+    ShiftOr,
+    RotateInsert,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct FieldInsert<'a> {
     pub(super) source: FieldSource<'a>,
     pub(super) preserve_mask: u32,
     pub(super) shift: u8,
+    pub(super) operation: FieldOperation,
 }
 
 pub(super) struct Packet<'a> {
@@ -24,15 +31,19 @@ pub(super) struct Packet<'a> {
     pub(super) flag_offset: i16,
 }
 
-fn strip_casts(mut expression: &Expression) -> &Expression {
-    while let Expression::Cast { operand, .. } = expression {
+fn word_value(mut expression: &Expression) -> &Expression {
+    while let Expression::Cast {
+        target_type: Type::Int | Type::UnsignedInt,
+        operand,
+    } = expression
+    {
         expression = operand;
     }
     expression
 }
 
 fn field_source(expression: &Expression) -> Option<FieldSource<'_>> {
-    let expression = strip_casts(expression);
+    let expression = word_value(expression);
     match expression {
         Expression::Variable(parameter) => Some(FieldSource {
             parameter,
@@ -43,7 +54,7 @@ fn field_source(expression: &Expression) -> Option<FieldSource<'_>> {
             left,
             right,
         } => {
-            let (parameter, addend) = match (strip_casts(left), strip_casts(right)) {
+            let (parameter, addend) = match (word_value(left), word_value(right)) {
                 (Expression::Variable(parameter), constant) => {
                     (parameter.as_str(), constant_value(constant)?)
                 }
@@ -65,6 +76,25 @@ fn field_insert<'a>(statement: &'a Statement, accumulator: &str) -> Option<Field
     if name != accumulator {
         return None;
     }
+    if let Expression::Call { name, arguments } = word_value(value) {
+        if crate::intrinsics::classify(name, arguments.len())
+            != Some(crate::intrinsics::Intrinsic::RotateLeftWordInsert)
+        {
+            return None;
+        }
+        let insert = crate::intrinsics::rotate_insert(arguments)?;
+        if insert.begin > insert.end
+            || !matches!(word_value(insert.initial), Expression::Variable(name) if name == accumulator)
+        {
+            return None;
+        }
+        return Some(FieldInsert {
+            source: field_source(insert.source)?,
+            preserve_mask: !run_mask(insert.begin, insert.end),
+            shift: insert.shift,
+            operation: FieldOperation::RotateInsert,
+        });
+    }
     let Expression::Binary {
         operator: BinaryOperator::BitOr,
         left,
@@ -81,7 +111,7 @@ fn field_insert<'a>(statement: &'a Statement, accumulator: &str) -> Option<Field
     else {
         return None;
     };
-    if !matches!(strip_casts(old_value), Expression::Variable(name) if name == accumulator) {
+    if !matches!(word_value(old_value), Expression::Variable(name) if name == accumulator) {
         return None;
     }
     let preserve_mask = constant_value(preserve)? as u32;
@@ -100,6 +130,7 @@ fn field_insert<'a>(statement: &'a Statement, accumulator: &str) -> Option<Field
         source: field_source(inserted)?,
         preserve_mask,
         shift,
+        operation: FieldOperation::ShiftOr,
     })
 }
 
@@ -149,7 +180,10 @@ pub(super) fn recognize(function: &Function) -> Option<Packet<'_>> {
         return None;
     };
     if accumulator.declared_type != Type::UnsignedInt
-        || accumulator.initializer.is_some()
+        || accumulator
+            .initializer
+            .as_ref()
+            .is_some_and(|value| constant_value(value) != Some(0))
         || accumulator.array_length.is_some()
         || accumulator.is_static
         || accumulator.is_volatile
@@ -157,21 +191,26 @@ pub(super) fn recognize(function: &Function) -> Option<Packet<'_>> {
         return None;
     }
 
-    let statements = if function.statements.first().is_some_and(is_noop) {
-        &function.statements[1..]
-    } else {
-        function.statements.as_slice()
+    // The shared body normalizer has already flattened single-iteration macros.
+    let statements = match function.statements.as_slice() {
+        [noop, rest @ ..] if is_noop(noop) => rest,
+        statements => statements,
     };
-    let [Statement::Assign {
-        name: initialized,
-        value: initial_value,
-    }, field_statements @ .., command_statement, data_statement, flag_statement] = statements
+    let statements = if accumulator.initializer.is_some() {
+        statements
+    } else {
+        let [Statement::Assign { name, value }, rest @ ..] = statements else {
+            return None;
+        };
+        if name != &accumulator.name || constant_value(value) != Some(0) {
+            return None;
+        }
+        rest
+    };
+    let [field_statements @ .., command_statement, data_statement, flag_statement] = statements
     else {
         return None;
     };
-    if initialized != &accumulator.name || constant_value(initial_value) != Some(0) {
-        return None;
-    }
     let fields = field_statements
         .iter()
         .map(|statement| field_insert(statement, &accumulator.name))
@@ -185,7 +224,7 @@ pub(super) fn recognize(function: &Function) -> Option<Packet<'_>> {
         return None;
     };
     if data_port != port
-        || !matches!(strip_casts(data_value), Expression::Variable(name) if name == &accumulator.name)
+        || !matches!(word_value(data_value), Expression::Variable(name) if name == &accumulator.name)
     {
         return None;
     }

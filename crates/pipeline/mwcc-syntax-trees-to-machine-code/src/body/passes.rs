@@ -1591,6 +1591,17 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
                 new_statements.push(statement.clone());
                 continue;
             }
+            // Disabled assertion macros can sit between local definitions and
+            // their stores. Literal no-ops neither consume a tracked value nor
+            // invalidate the snapshot; keep their source position in the result.
+            Statement::Expression(Expression::IntegerLiteral(_)) => {
+                new_statements.push(statement.clone());
+            }
+            Statement::Expression(Expression::Cast { target_type: Type::Void, operand })
+                if matches!(operand.as_ref(), Expression::IntegerLiteral(_)) =>
+            {
+                new_statements.push(statement.clone());
+            }
             Statement::Assign { name, value } => {
                 in_leading_ifs = false;
                 if !tracked_names.contains(name.as_str()) || expression_has_call(value) {
@@ -2512,6 +2523,34 @@ mod tests {
         };
 
         assert!(inline_store_bearing_locals(&function).is_none());
+        let noop = Statement::Expression(Expression::Cast {
+            target_type: Type::Void,
+            operand: Box::new(Expression::IntegerLiteral(0)),
+        });
+        let mut with_noop = function.clone();
+        with_noop.statements.insert(0, noop.clone());
+        assert!(inline_store_bearing_locals(&with_noop).is_none());
+
+        // A register value can still flow through literal macro no-ops to a
+        // store. Keeping the no-op must not turn it into a snapshot barrier.
+        with_noop.statements = vec![
+            noop.clone(),
+            Statement::Assign {
+                name: "old".into(),
+                value: Expression::Variable("replacement".into()),
+            },
+            noop,
+            Statement::Store {
+                target: Expression::Variable("out".into()),
+                value: Expression::Variable("old".into()),
+            },
+        ];
+        let folded = inline_store_bearing_locals(&with_noop).expect("literal no-op is foldable");
+        assert!(folded.locals.is_empty());
+        assert!(matches!(folded.statements.as_slice(), [
+            Statement::Expression(_), Statement::Expression(_),
+            Statement::Store { value: Expression::Variable(name), .. },
+        ] if name == "replacement"));
     }
 
     #[test]
