@@ -238,7 +238,7 @@ impl Parser {
     /// Resolve an expression's byte size without evaluating it. `sizeof` needs
     /// this small type query to follow pointer provenance through members and
     /// array decay, where a variable-only lookup loses the pointee type.
-    fn sizeof_expression_bytes(&self, expression: &Expression) -> Option<u32> {
+    pub(crate) fn sizeof_expression_bytes(&self, expression: &Expression) -> Option<u32> {
         match expression {
             // A local shadows a same-named global. Arrays report their complete
             // storage here; subscripting is handled by pointed_element_bytes.
@@ -264,7 +264,7 @@ impl Parser {
         }
     }
 
-    fn pointed_element_bytes(&self, pointer: &Expression) -> Option<u32> {
+    pub(crate) fn pointed_element_bytes(&self, pointer: &Expression) -> Option<u32> {
         match pointer {
             Expression::Variable(name) if self.variable_array_bytes.contains_key(name) => self
                 .variable_types

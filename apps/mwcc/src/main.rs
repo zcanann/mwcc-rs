@@ -468,7 +468,9 @@ fn name_translation_unit_startup(
     for global in &mut unit.globals {
         if let Some(elements) = &mut global.address_initializer {
             for element in elements {
-                if let mwcc_syntax_trees::PointerElement::Symbol(name) = element {
+                if let mwcc_syntax_trees::PointerElement::Symbol(name)
+                | mwcc_syntax_trees::PointerElement::SymbolWithAddend { symbol: name, .. } = element
+                {
                     if placeholders.contains(&name.as_str()) {
                         *name = resolved.clone();
                     }
@@ -1731,7 +1733,9 @@ fn compile(
             let single_target = global.array_length.is_none()
                 && matches!(
                     elements.as_slice(),
-                    [PointerElement::Symbol(_)] | [PointerElement::Str(_)]
+                    [PointerElement::Symbol(_)]
+                        | [PointerElement::SymbolWithAddend { .. }]
+                        | [PointerElement::Str(_)]
                 );
             // A static pointer initialized to NULL (`static T* p = 0;` — fstload's
             // idTmp/bb2) is an all-zero object: it routes to `.sbss` like any zero
@@ -1796,6 +1800,7 @@ fn compile(
                         continue;
                     }
                     PointerElement::Symbol(name) => (name.clone(), 0),
+                    PointerElement::SymbolWithAddend { symbol, addend } => (symbol.clone(), *addend),
                     PointerElement::Str(string_bytes) => {
                         if config.flags.string_literals_packed {
                             let name = pending_packed_strings
@@ -1892,12 +1897,12 @@ fn compile(
                 // A section override handles its own placement, so const is irrelevant there.
                 is_const: const_is_read_only && global.section.is_none(),
                 force_full_data_section,
-                // A section-attributed static (`.dtors`), a `static const` reference,
-                // or a static function-pointer TABLE binds LOCAL; a plain writable
-                // pointer global stays GLOBAL as before.
+                // Preserve internal linkage for scalar addresses and the
+                // supported private table families.
                 is_static: global.is_static
                     && (global.section.is_some()
                         || global.is_const
+                        || single_target
                         || all_null
                         || static_function_table
                         || static_unit_data_table

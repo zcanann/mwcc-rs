@@ -283,8 +283,13 @@ impl GlobalDeclaration {
 /// One element of a pointer global's initializer.
 #[derive(Debug, Clone)]
 pub enum PointerElement {
-    /// `&name` or a bare function name — an `ADDR32` relocation to that symbol.
+    /// `&name` or array/function decay — an `ADDR32` relocation to that symbol.
     Symbol(String),
+    /// An address within named storage, with a signed byte displacement.
+    SymbolWithAddend {
+        symbol: String,
+        addend: i32,
+    },
     /// A string literal — its bytes (plus a NUL) are pooled as an anonymous
     /// read-only object and the pointer relocates to it.
     Str(Vec<u8>),

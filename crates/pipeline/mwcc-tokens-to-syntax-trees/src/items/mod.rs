@@ -7,6 +7,7 @@
 mod aggregate_assignments;
 mod asm;
 mod bit_fields;
+mod constant_addresses;
 mod cxx_destructors;
 mod cxx_global_initializers;
 pub(crate) mod cxx_template_constructors;
@@ -5258,6 +5259,10 @@ impl Parser {
                                         data_relocations
                                             .push(local_data_relocation(offset, target, 0));
                                     }
+                                    PointerElement::SymbolWithAddend { symbol, addend } => {
+                                        data_relocations
+                                            .push(local_data_relocation(offset, symbol, addend));
+                                    }
                                     PointerElement::Str(bytes) => {
                                         data_relocations.push(LocalDataRelocation {
                                             offset,
@@ -5387,7 +5392,20 @@ impl Parser {
                 let initializer = if direct_static_constructor.is_some() {
                     direct_static_constructor
                 } else if array_length.is_none() && self.eat_keyword(Token::Equals) {
-                    if *self.peek() == Token::BraceOpen {
+                    if is_static
+                        && matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. })
+                    {
+                        let (bytes, relocations) = self.parse_static_local_pointer_initializer()?;
+                        if relocations.is_empty() && bytes.iter().all(|byte| *byte == 0) {
+                            Some(Expression::IntegerLiteral(0))
+                        } else {
+                            data_bytes = Some(bytes);
+                            data_relocations.extend(relocations.into_iter().map(
+                                |(offset, target, addend)| local_data_relocation(offset, target, addend),
+                            ));
+                            None
+                        }
+                    } else if *self.peek() == Token::BraceOpen {
                         // A static struct local is a data object, not a frame
                         // initialization. Serialize its complete layout and retain
                         // any address fields as object relocations.

@@ -43,7 +43,8 @@ pub(crate) fn private_unit_data_table(
         && !global.is_const
         && matches!(global.declared_type, Type::Struct { .. })
         && elements.iter().all(|element| match element {
-            PointerElement::Symbol(name) => globals
+            PointerElement::Symbol(name)
+            | PointerElement::SymbolWithAddend { symbol: name, .. } => globals
                 .iter()
                 .any(|candidate| candidate.name == *name && candidate.is_data_definition()),
             PointerElement::Null | PointerElement::Scalar(_) => true,
@@ -137,7 +138,8 @@ pub(crate) fn unreferenced_section_registration(
         .filter_map(|candidate| candidate.address_initializer.as_deref())
         .flatten()
         .any(|element| {
-            matches!(element, PointerElement::Symbol(name) if name == &global.name)
+            matches!(element, PointerElement::Symbol(name)
+                | PointerElement::SymbolWithAddend { symbol: name, .. } if name == &global.name)
         });
     !referenced_by_code && !referenced_by_data
 }
@@ -275,6 +277,17 @@ mod tests {
             &registration,
             std::slice::from_ref(&registration),
             &[referenced],
+        ));
+
+        let mut address = private_table(vec![PointerElement::SymbolWithAddend {
+            symbol: registration.name.clone(),
+            addend: 4,
+        }]);
+        address.name = "registration_end".into();
+        assert!(!unreferenced_section_registration(
+            &registration,
+            &[registration.clone(), address],
+            &[],
         ));
 
         registration.force_active = true;

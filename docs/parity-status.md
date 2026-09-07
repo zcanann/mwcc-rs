@@ -4,13 +4,65 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, C++ zero-storage declaration order (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, typed pointer-offset initializers (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `a1aaaed17c7a07dbe6b1df75872942186cf59ba8c8bf22dc6d37bffbfe121cc7:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `73acd82ec9b699eecc26dda785eacb8e0103385a844af6e6431e774384767b76:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Typed pointer-offset initializers, 2026-09-06
+
+Against frozen baseline `681ee04f`, four new canaries improve from **0/60
+to 59/60 whole-object exact pairs**, across all fifteen builds. Every
+reference pair is runnable; candidate compilation improves from 0/60 to
+60/60. Canaries 1633/1634/1635 cover typed subscripts, arithmetic and casts,
+and struct-array member addresses, each matching **15/15**. The BFBB-derived
+one-past-end texture-table canary 1636 matches **14/15**; GC/1.3 retains a
+section/symbol mismatch despite exact text.
+
+Pointer initializers now use the ordinary expression parser and a separate
+constant-address evaluator. Existing type-size queries supply element strides;
+cast placement determines subsequent scaling, while an already computed
+address retains its byte displacement. The AST carries a named symbol plus a
+signed byte addend, preserving the old zero-addend representation. This reaches
+global pointer/flat address-table images and static-local relocation images.
+Leading function-scope pointer declarations now use the same serializer as
+nested static declarations. Writable static scalar pointers retain local
+linkage, and offset references participate in registration-object liveness.
+
+The 16-shape C/C++ matrix has **480 reference-runnable pairs**. Candidate
+compilation improves from **0/480 to 450/480**, and complete objects from
+**0/480 to 356/480** (356/450 among candidate-compilable pairs). Complete
+relocation-record sets match **418/450** emitted pairs. Typed char/short/int/
+double indexing, arithmetic, negative offsets, and struct-member shapes each
+match **30/30 whole objects** across languages and builds. The remaining 30
+compiler declines concern static/const pointer-address tables; emitted-object
+differences include static-local conventions and other ordering/layout gaps.
+
+The two texture declarations copied directly from BFBB's `zAssetTypes.cpp`
+produce **15/15 exact data-only objects** with the common probe flags. This is
+an isolated source reduction, not a whole-project result. The complete source
+still reaches the 30-second cap in both baseline and candidate. The combined
+real-project panel retains every object and code verdict across **127
+configurations: 47 BYTE, 16 DIFF, 59 compiler DEFER, one HARNESS, and four
+missing dependencies**. Code remains **46/109 exact measured objects**, five
+empty and 13 unmeasured; the 109 include 51 nonexact partial-TU projections.
+Melee's complete transport object remains exact.
+
+The expanded metadata/pointer/address/initializer regression selection retains
+**1,179/2,198 exact runnable pairs**, across **2,940 slots, 742 exclusions,
+and zero timeouts**, with no lost matches. **404 parser tests pass**, including
+three new typed-offset/static-local/runtime-rejection tests; two previously
+recorded failures remain in friend/expression-template recovery and discarded
+inline aggregate-image accounting. The full run reproduced those two failures;
+the subsequent run excludes them. All **eight initializer-driver tests pass**,
+including offset-reference liveness coverage. Compiler and oracle builds pass.
+
+Local evidence: `target/pointer-offset-*`, `target/probe_pointer_offsets*.py`,
+`target/probe_real_texture_end.py`, `target/check_pointer_offset*.py`, and
+`target/reference-parity/73acd82ec9b699ee-5e4ca1ddc460f4d8.jsonl`.
 
 ## C++ zero-storage declaration order, 2026-09-06
 

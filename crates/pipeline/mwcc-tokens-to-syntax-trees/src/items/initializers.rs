@@ -20,6 +20,7 @@ impl Parser {
         let mut bytes = vec![0; 4];
         let relocations = match self.parse_pointer_init_element()? {
             PointerElement::Symbol(target) => vec![(0, target, 0)],
+            PointerElement::SymbolWithAddend { symbol, addend } => vec![(0, symbol, addend)],
             PointerElement::Null => Vec::new(),
             PointerElement::Scalar(value) => {
                 bytes.copy_from_slice(&(value as u32).to_be_bytes());
@@ -109,111 +110,17 @@ impl Parser {
         Ok(elements)
     }
 
-    /// One element of a pointer global's address initializer: a string literal
-    /// (pooled), `&name` or a bare `name` (a function pointer) is that symbol; `0` is
-    /// a null pointer. `&a[i]`, `&s.f`, casts, and arithmetic defer (they need an
-    /// addend not yet modeled).
+    /// Parse address syntax with the ordinary precedence grammar, then retain
+    /// only its constant symbol, byte addend, string, or scalar result.
     pub(crate) fn parse_pointer_init_element(&mut self) -> Compilation<PointerElement> {
-        // C permits redundant braces around a scalar aggregate element:
-        // `const char *messages[] = { { "one" }, { "two" } };`. Keep that
-        // structural spelling at the scalar boundary so the enclosing list
-        // parser still owns commas between array elements.
         if self.eat_keyword(Token::BraceOpen) {
             let element = self.parse_pointer_init_element()?;
             self.eat_keyword(Token::Comma);
             self.expect(Token::BraceClose)?;
             return Ok(element);
         }
-        // A cast is transparent for an address: `(SomeType *)&x` is just `&x`. Skip
-        // the parenthesised type and parse the operand after it.
-        if *self.peek() == Token::ParenOpen && self.token_starts_type(self.peek_at(1)) {
-            self.advance();
-            let mut depth = 1;
-            while depth > 0 {
-                match self.advance() {
-                    Token::ParenOpen => depth += 1,
-                    Token::ParenClose => depth -= 1,
-                    Token::EndOfFile => {
-                        return Err(Diagnostic::error(
-                            "unterminated cast in a pointer initializer",
-                        ))
-                    }
-                    _ => {}
-                }
-            }
-            return self.parse_pointer_init_element();
-        }
-        // A grouping paren that is not a cast: `((void *)0)` (the common `NULL` macro
-        // expansion) or `(&x)`. Parse the inner element and consume the closing paren.
-        if *self.peek() == Token::ParenOpen {
-            self.advance();
-            let element = self.parse_pointer_init_element()?;
-            self.expect(Token::ParenClose)?;
-            return Ok(element);
-        }
-        if let Token::StringLiteral(bytes) = self.peek() {
-            let bytes = bytes.clone();
-            self.advance();
-            return Ok(PointerElement::Str(bytes));
-        }
-        if *self.peek() == Token::Ampersand {
-            self.advance();
-            let name = self.parse_identifier()?;
-            // `&g[0]` addresses the first element — the same relocation as `&g`
-            // (ansi_files' `FILE* p = &__files[0];`). A nonzero index needs an
-            // addend model on PointerElement; defer until measured.
-            if *self.peek() == Token::BracketOpen
-                && self.peek_at(1) == &Token::IntegerLiteral(0)
-                && self.peek_at(2) == &Token::BracketClose
-            {
-                self.advance();
-                self.advance();
-                self.advance();
-            }
-            if matches!(self.peek(), Token::BracketOpen | Token::Dot | Token::Arrow) {
-                return Err(Diagnostic::error(
-                    "a pointer initializer with an offset is not supported yet (roadmap)",
-                ));
-            }
-            let symbol = self.resolve_cxx_initializer_address(&name).unwrap_or(name);
-            return Ok(PointerElement::Symbol(symbol));
-        }
-        if matches!(self.peek(), Token::IntegerLiteral(0)) {
-            self.advance();
-            return Ok(PointerElement::Null);
-        }
-        // A NON-ZERO integer constant cast to a pointer (`(void *)-1` — the arena
-        // sentinel `__OSArenaLo`): the literal value's bytes, no relocation. An
-        // optional leading `-` negates.
-        {
-            let negative = *self.peek() == Token::Minus;
-            let literal_at = if negative {
-                self.peek_at(1)
-            } else {
-                self.peek()
-            };
-            if let Token::IntegerLiteral(value) = literal_at {
-                let value = *value;
-                if negative {
-                    self.advance();
-                }
-                self.advance();
-                return Ok(PointerElement::Scalar(if negative {
-                    -value
-                } else {
-                    value
-                }));
-            }
-        }
-        if let Token::Identifier(name) = self.peek() {
-            let name = name.clone();
-            self.advance();
-            let symbol = self.resolve_cxx_initializer_address(&name).unwrap_or(name);
-            return Ok(PointerElement::Symbol(symbol));
-        }
-        Err(Diagnostic::error(
-            "a pointer global initializer must be a string, &symbol, a symbol, or 0 (roadmap)",
-        ))
+        let expression = self.expression()?;
+        self.constant_pointer_element(&expression)
     }
 
     pub(crate) fn parse_constant_initializer(
