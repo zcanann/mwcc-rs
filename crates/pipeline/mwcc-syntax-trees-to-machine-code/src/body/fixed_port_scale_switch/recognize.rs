@@ -4,6 +4,12 @@
 use super::super::*;
 use mwcc_syntax_trees::ArmBody;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ScaleUpdate {
+    ShiftOr,
+    RotateInsert,
+}
+
 pub(super) struct ScaleSwitch<'a> {
     pub(super) selector: &'a str,
     pub(super) first_scale: &'a str,
@@ -12,10 +18,15 @@ pub(super) struct ScaleSwitch<'a> {
     pub(super) first_offset: i16,
     pub(super) second_offset: i16,
     pub(super) flag_offset: i16,
+    pub(super) update: ScaleUpdate,
 }
 
-fn stripped(mut expression: &Expression) -> &Expression {
-    while let Expression::Cast { operand, .. } = expression {
+fn word_value(mut expression: &Expression) -> &Expression {
+    while let Expression::Cast {
+        target_type: Type::Int | Type::UnsignedInt,
+        operand,
+    } = expression
+    {
         expression = operand;
     }
     expression
@@ -45,8 +56,13 @@ fn update<'a>(
     statement: &'a Statement,
     preserve: u32,
     shift: i64,
-) -> Option<(&'a str, u32, &'a Expression)> {
-    let [Statement::Store {
+) -> Option<(&'a str, u32, &'a Expression, ScaleUpdate)> {
+    let statement = match one_iteration_body(statement) {
+        Some([only]) => only,
+        Some(_) => return None,
+        None => statement,
+    };
+    let Statement::Store {
         target:
             Expression::Member {
                 base,
@@ -54,17 +70,48 @@ fn update<'a>(
                 member_type: Type::UnsignedInt,
                 index_stride: None,
             },
-        value:
-            Expression::Binary {
-                operator: BinaryOperator::BitOr,
-                left,
-                right,
-            },
-    }] = one_iteration_body(statement)?
+        value,
+    } = statement
     else {
         return None;
     };
     let Expression::Variable(global) = base.as_ref() else {
+        return None;
+    };
+    let is_old_member = |old: &Expression| {
+        matches!(word_value(old), Expression::Member {
+        base, offset: old_offset, member_type: Type::UnsignedInt, index_stride: None,
+    } if old_offset == offset
+        && matches!(base.as_ref(), Expression::Variable(name) if name == global))
+    };
+    if let Expression::Call { name, arguments } = word_value(value) {
+        if crate::intrinsics::classify(name, arguments.len())
+            != Some(crate::intrinsics::Intrinsic::RotateLeftWordInsert)
+        {
+            return None;
+        }
+        let insert = crate::intrinsics::rotate_insert(arguments)?;
+        let mask = !preserve;
+        if !is_old_member(insert.initial)
+            || i64::from(insert.shift) != shift
+            || u32::from(insert.begin) != mask.leading_zeros()
+            || u32::from(insert.end) != 31 - mask.trailing_zeros()
+        {
+            return None;
+        }
+        return Some((
+            global,
+            *offset,
+            word_value(insert.source),
+            ScaleUpdate::RotateInsert,
+        ));
+    }
+    let Expression::Binary {
+        operator: BinaryOperator::BitOr,
+        left,
+        right,
+    } = value
+    else {
         return None;
     };
     let Expression::Binary {
@@ -75,12 +122,7 @@ fn update<'a>(
     else {
         return None;
     };
-    if !matches!(stripped(old), Expression::Member {
-        base, offset: old_offset, member_type: Type::UnsignedInt, index_stride: None
-    } if old_offset == offset
-        && matches!(base.as_ref(), Expression::Variable(name) if name == global))
-        || constant_value(mask).map(|value| value as u32) != Some(preserve)
-    {
+    if !is_old_member(old) || constant_value(mask).map(|value| value as u32) != Some(preserve) {
         return None;
     }
     let Expression::Binary {
@@ -91,24 +133,22 @@ fn update<'a>(
     else {
         return None;
     };
-    (constant_value(found_shift) == Some(shift))
-        .then_some((global, *offset, stripped(inserted)))
+    (constant_value(found_shift) == Some(shift)).then_some((
+        global,
+        *offset,
+        word_value(inserted),
+        ScaleUpdate::ShiftOr,
+    ))
 }
 
-fn fixed_port_write(statement: &Statement, global: &str, offset: u32) -> bool {
-    let Some(body) = one_iteration_body(statement) else {
-        return false;
-    };
-    let [
-        Statement::Store {
-            target: command_target,
-            value: command,
-        },
-        Statement::Store {
-            target: data_target,
-            value: data,
-        },
-    ] = body
+fn fixed_port_write(body: &[Statement], global: &str, offset: u32) -> bool {
+    let [Statement::Store {
+        target: command_target,
+        value: command,
+    }, Statement::Store {
+        target: data_target,
+        value: data,
+    }] = body
     else {
         return false;
     };
@@ -119,13 +159,14 @@ fn fixed_port_write(statement: &Statement, global: &str, offset: u32) -> bool {
             member_type,
             index_stride: None,
         } if *member_type == expected_type
-            && matches!(stripped(base), Expression::IntegerLiteral(value)
-                if *value as u32 == 0xcc00_8000))
+            && matches!(base.as_ref(), Expression::Cast {
+                target_type: Type::StructPointer { .. }, operand,
+            } if constant_value(operand).map(|value| value as u32) == Some(0xcc00_8000)))
     };
     port_target(command_target, Type::UnsignedChar)
         && constant_value(command) == Some(0x61)
         && port_target(data_target, Type::UnsignedInt)
-        && matches!(stripped(data), Expression::Member {
+        && matches!(word_value(data), Expression::Member {
             base,
             offset: found_offset,
             member_type: Type::UnsignedInt,
@@ -139,41 +180,43 @@ fn arm<'a>(
     first_scale: &str,
     second_scale: &str,
     expected_value: i64,
-    offset: u32,
+    offset: Option<u32>,
     first_shift: i64,
     command: i64,
-) -> Option<&'a str> {
+) -> Option<(&'a str, u32, ScaleUpdate)> {
     if arm.value != expected_value || arm.falls_through {
         return None;
     }
     let ArmBody::Statements(body) = &arm.body else {
         return None;
     };
-    let [first, second, stamp, port] = body.as_slice() else {
-        return None;
+    let (first, second, stamp, port) = match body.as_slice() {
+        [first, second, stamp, port] => (first, second, stamp, one_iteration_body(port)?),
+        [first, second, stamp, port @ ..] if port.len() == 2 => (first, second, stamp, port),
+        _ => return None,
     };
     let first_mask = !((0xfu32) << first_shift);
     let second_shift = first_shift + 4;
     let second_mask = !((0xfu32) << second_shift);
-    let (global, found_offset, first_value) =
-        update(first, first_mask, first_shift)?;
-    let (second_global, second_offset, second_value) =
+    let (global, found_offset, first_value, update_kind) = update(first, first_mask, first_shift)?;
+    let (second_global, second_offset, second_value, second_kind) =
         update(second, second_mask, second_shift)?;
-    let (stamp_global, stamp_offset, stamp_value) =
-        update(stamp, 0x00ff_ffff, 24)?;
-    if found_offset != offset
-        || second_offset != offset
-        || stamp_offset != offset
+    let (stamp_global, stamp_offset, stamp_value, stamp_kind) = update(stamp, 0x00ff_ffff, 24)?;
+    if offset.is_some_and(|offset| found_offset != offset)
+        || second_offset != found_offset
+        || stamp_offset != found_offset
+        || update_kind != second_kind
+        || update_kind != stamp_kind
         || second_global != global
         || stamp_global != global
         || !matches!(first_value, Expression::Variable(name) if name == first_scale)
         || !matches!(second_value, Expression::Variable(name) if name == second_scale)
         || constant_value(stamp_value) != Some(command)
-        || !fixed_port_write(port, global, offset)
+        || !fixed_port_write(port, global, found_offset)
     {
         return None;
     }
-    Some(global)
+    Some((global, found_offset, update_kind))
 }
 
 pub(super) fn recognize(function: &Function) -> Option<ScaleSwitch<'_>> {
@@ -194,42 +237,55 @@ pub(super) fn recognize(function: &Function) -> Option<ScaleSwitch<'_>> {
     {
         return None;
     }
-    let [noop, Statement::Switch {
+    let statements = match function.statements.as_slice() {
+        [noop, rest @ ..] if no_op(noop) => rest,
+        statements => statements,
+    };
+    let [Statement::Switch {
         scrutinee: Expression::Variable(scrutinee),
         arms,
         default,
-    }, flag] = function.statements.as_slice()
+    }, flag] = statements
     else {
         return None;
     };
-    if !no_op(noop)
-        || scrutinee != &selector.name
+    if scrutinee != &selector.name
         || arms.len() != 4
         || !matches!(default, Some(ArmBody::Statements(body)) if body.is_empty())
     {
         return None;
     }
-    let global = arm(
+    let (global, first_offset, update) = arm(
         &arms[0],
         &first_scale.name,
         &second_scale.name,
         0,
-        296,
+        None,
         0,
         0x25,
     )?;
-    for (index, offset, shift, command) in
-        [(1usize, 296, 8, 0x25), (2, 300, 0, 0x26), (3, 300, 8, 0x26)]
-    {
+    let (second_global, second_offset, second_update) = arm(
+        &arms[2],
+        &first_scale.name,
+        &second_scale.name,
+        2,
+        None,
+        0,
+        0x26,
+    )?;
+    if second_global != global || second_update != update {
+        return None;
+    }
+    for (index, offset, command) in [(1usize, first_offset, 0x25), (3, second_offset, 0x26)] {
         if arm(
             &arms[index],
             &first_scale.name,
             &second_scale.name,
             index as i64,
-            offset,
-            shift,
+            Some(offset),
+            8,
             command,
-        )? != global
+        )? != (global, offset, update)
         {
             return None;
         }
@@ -257,8 +313,9 @@ pub(super) fn recognize(function: &Function) -> Option<ScaleSwitch<'_>> {
         first_scale: &first_scale.name,
         second_scale: &second_scale.name,
         global,
-        first_offset: 296,
-        second_offset: 300,
+        first_offset: i16::try_from(first_offset).ok()?,
+        second_offset: i16::try_from(second_offset).ok()?,
         flag_offset: i16::try_from(*offset).ok()?,
+        update,
     })
 }

@@ -4,13 +4,88 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, exact GX order update and reusable terminal port flushes (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, exact GX coordinate scaling and virtual bitwise subtrees (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `d0b224b5b5becbf3f582e5177175c6bbee3057909c0cd364e96bee50cce50e4e:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `ad06a15e501e2a5984bcfe8a6c91b537f077197064673cf05d659097ab77a2b5:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Exact GX coordinate scaling and virtual bitwise subtrees, 2026-09-07
+
+The configured BfBB **`GXSetIndTexCoordScale` now matches all 324 original linked
+instruction bytes**, improving from 472 bytes under frozen baseline `169d655e`.
+Its original/candidate linked-code SHA-256 is
+`806457e70dbe416723c7521fe0e89dd62400df5d37cf1fff2e3eb6d87f4f60d7`.
+**Six of the complete GX object's eight functions now have exact linked text**.
+Indirect setup and matrix setup remain different. Known symbol relocations
+are resolved at original DOL addresses; this is not a fresh relocatable
+reference-object comparison, and complete GX parity remains open.
+
+The complete configured GX object remains compilable, SHA-256
+`191dac12b5e2499b7ab48b68ef43e312436d2f8876bd4399d41cd9cbb014ab7f`.
+Text shrinks **1,412 → 1,264 bytes**; the ELF shrinks **3,240 → 2,808 bytes**.
+The other seven function sizes are unchanged.
+
+The existing scale-switch owner now distinguishes C clear-mask/shift/OR updates
+from `__rlwimi` updates. Both share the dispatch and a plan derived from the
+source's state-member offsets. The C form retains shifted source bits outside
+the cleared field and keeps its prior schedule. The intrinsic form inserts
+only the specified mask, retains one state pointer per arm, and interleaves
+the command/address materialization with the field updates. Its schedule
+requires the existing linkage-first profile and a matching absolute-object
+port declaration. Recognition accepts wrapped and flat statements and an
+optional macro no-op, but requires all three updates in all four arms to have
+the same operation kind. Mixed forms use general emission.
+
+Recognition now preserves narrowing casts and excludes volatile state-pointer
+globals. The old C matcher stripped an unsigned-byte source cast and suppressed
+volatile pointer reads. The safe fallback for the narrowed mask expression
+exposed the general emitter's single-scratch limit. Pure `&`, `|`, `^`, and `<<`
+expressions that exceed it now materialize the two subtrees into independent
+virtual GPRs after the specialized schedules have declined. They preserve
+pending input registers and prefer an immediate instruction for a constant
+left shift. This does not complete arbitrary arithmetic or call-bearing trees.
+
+Ten new canaries **1803–1812** improve **98/150 → 150/150 compiled objects**
+across fifteen builds at O0/O4. They cover the complete scale reduction with
+absolute-object syntax, compact and aliased state layouts, wrapped/flat forms,
+legacy C overflow behavior, narrowing casts, mixed C/intrinsic updates,
+volatile pointers, and bitwise subtrees with signed/unsigned narrowing,
+constant/dynamic shifts, stored results, and repeated input variables.
+The eight available baseline `legacy` functions retain identical instruction
+bytes and relocation tuples after the change.
+
+Validation totals **154,112 passing candidate calls**:
+
+- **145,920** calls in the new corpus, including **30,720** complete scale
+  reductions compared with original DOL context/FIFO fixtures. Checks cover
+  full state memory, output-memory sentinels, FIFO width/value, return values,
+  stack/SDA, and saved GPR/FPR restoration. The volatile cases enforce eight
+  state-pointer reads for a selected arm and one for the default path.
+  The baseline executes 75,264 calls with **434 narrowing failures** and
+  **1,024 volatile-read-count failures**; the candidate has none.
+- **8,192** calls rerun all eight complete configured GX functions against the
+  original DOL, comparing FIFO traces, complete context memory, matrix input
+  preservation, and GPR/FPR/stack restoration.
+
+Only the configured GC/1.2.5n original supplies linked-byte evidence; the other
+builds have candidate execution coverage. The captured paired-memory matrix
+retains **300/300 exact objects**. The index panel retains **1,097 unchanged
+objects / 972 known reference matches / 577 identical declines**. The cumulative
+metadata panel against `db48e092` retains **1,494 unchanged objects / 1,179 known
+matches / 704 identical declines**. Neither native panel timed out.
+**4 intrinsic, 5 loop-normalization, and 40 object-writer tests pass**.
+The complete configured AX object remains byte-identical, SHA-256
+`1a8fed48a1634517cd66e23f09754e75274d170ca826e61408ff96650605e7e3`.
+
+Local scripts are `target/check_gx_scale*.py` and `target/probe_gx_scale*.py`;
+results, pinned originals, and object hashes are in
+`target/gx-scale-{canaries,gx,index,metadata,full-ax}/`.
+The six existing wibo processes remain in kernel U state after more than
+5 hours 58 minutes. No new reference-compiler process was launched and no fresh
+full-project panel was measured.
 
 ## Exact GX order update and terminal port flushes, 2026-09-07
 

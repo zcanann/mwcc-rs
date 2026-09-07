@@ -1082,6 +1082,35 @@ impl Generator {
                     return Err(Diagnostic::error("a binary over two compound-load operands needs the allocator (roadmap)"));
                 }
                 if !fits_single_scratch(expression, destination == GENERAL_SCRATCH) {
+                    if matches!(operator, BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor | BinaryOperator::ShiftLeft)
+                        && !expression_has_side_effect(left)
+                        && !expression_has_side_effect(right)
+                    {
+                        // The specialized mask schedules have had first refusal.
+                        // Keep both remaining subtrees in independent virtual
+                        // homes, including narrowing casts on an inserted value.
+                        let first = self.fresh_virtual_general();
+                        self.with_reserved_inputs(right, |me| me.evaluate_general(left, first))?;
+                        if *operator == BinaryOperator::ShiftLeft {
+                            if let Some(shift) = constant_value(right).filter(|shift| (0..=31).contains(shift)) {
+                                self.output.instructions.push(Instruction::ShiftLeftImmediate {
+                                    a: destination, s: first, shift: shift as u8,
+                                });
+                                return Ok(());
+                            }
+                        }
+                        let second = self.fresh_virtual_general();
+                        let restore = self.reserved.insert(first);
+                        let evaluated = self.evaluate_general(right, second);
+                        if restore {
+                            self.reserved.remove(&first);
+                        }
+                        evaluated?;
+                        self.output.instructions.push(general_combine(
+                            *operator, destination, Operands::ordered(first, second)?,
+                        )?);
+                        return Ok(());
+                    }
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }
                 let operands = self.place_general_operands(*operator, left, right)?;

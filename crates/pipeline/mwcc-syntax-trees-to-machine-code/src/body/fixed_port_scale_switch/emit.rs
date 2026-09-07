@@ -1,6 +1,6 @@
 //! Build-163 dispatch and per-arm schedules for scale updates.
 
-use super::recognize::recognize;
+use super::recognize::{recognize, ScaleUpdate};
 #[allow(unused_imports)]
 use super::super::*;
 
@@ -119,6 +119,50 @@ impl Generator {
         Ok(())
     }
 
+    fn emit_scale_arm(
+        &mut self,
+        global: &str,
+        global_type: Type,
+        member_offset: i16,
+        command: u16,
+        high: bool,
+        update: ScaleUpdate,
+    ) -> Compilation<()> {
+        if update == ScaleUpdate::ShiftOr {
+            return if high {
+                self.emit_high_scale_arm(global, global_type, member_offset, command)
+            } else {
+                self.emit_low_scale_arm(global, global_type, member_offset, command)
+            };
+        }
+        // The intrinsic masks each source to its field. The C shift/OR form
+        // above retains source bits outside that mask and has its own schedule.
+        let shift = if high { 8 } else { 0 };
+        self.emit_scale_global(global, global_type, 8)?;
+        self.output.instructions.extend([
+            Instruction::load_immediate(6, command as i16),
+            Instruction::load_immediate(0, 0x61),
+            Instruction::LoadWord { d: 7, a: 8, offset: member_offset },
+            Instruction::RotateAndMaskInsert {
+                a: 7, s: 4, shift, begin: 28 - shift, end: 31 - shift,
+            },
+            Instruction::load_immediate_shifted(3, 0xcc01u16 as i16),
+            Instruction::StoreWord { s: 7, a: 8, offset: member_offset },
+            Instruction::LoadWord { d: 4, a: 8, offset: member_offset },
+            Instruction::RotateAndMaskInsert {
+                a: 4, s: 5, shift: shift + 4, begin: 24 - shift, end: 27 - shift,
+            },
+            Instruction::StoreWord { s: 4, a: 8, offset: member_offset },
+            Instruction::LoadWord { d: 4, a: 8, offset: member_offset },
+            Instruction::RotateAndMaskInsert { a: 4, s: 6, shift: 24, begin: 0, end: 7 },
+            Instruction::StoreWord { s: 4, a: 8, offset: member_offset },
+            Instruction::StoreByte { s: 0, a: 3, offset: -32768 },
+            Instruction::LoadWord { d: 0, a: 8, offset: member_offset },
+            Instruction::StoreWord { s: 0, a: 3, offset: -32768 },
+        ]);
+        Ok(())
+    }
+
     pub(crate) fn try_fixed_port_scale_switch(
         &mut self,
         function: &Function,
@@ -136,6 +180,13 @@ impl Generator {
         let Some(&global_type) = self.globals.get(shape.global) else {
             return Ok(false);
         };
+        if !matches!(global_type, Type::Pointer(_) | Type::StructPointer { .. })
+            || self.volatile_globals.contains(shape.global)
+            || (shape.update == ScaleUpdate::RotateInsert
+                && !self.fixed_address_objects.values().any(|&address| address == 0xcc00_8000))
+        {
+            return Ok(false);
+        }
         self.output.pre_scheduled = true;
         self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 2 });
         let case2_branch = push_conditional(self, 12, 2);
@@ -150,16 +201,16 @@ impl Generator {
         let case3_branch = push_branch(self);
 
         let case0 = self.output.instructions.len();
-        self.emit_low_scale_arm(shape.global, global_type, shape.first_offset, 0x25)?;
+        self.emit_scale_arm(shape.global, global_type, shape.first_offset, 0x25, false, shape.update)?;
         let case0_join = push_branch(self);
         let case1 = self.output.instructions.len();
-        self.emit_high_scale_arm(shape.global, global_type, shape.first_offset, 0x25)?;
+        self.emit_scale_arm(shape.global, global_type, shape.first_offset, 0x25, true, shape.update)?;
         let case1_join = push_branch(self);
         let case2 = self.output.instructions.len();
-        self.emit_low_scale_arm(shape.global, global_type, shape.second_offset, 0x26)?;
+        self.emit_scale_arm(shape.global, global_type, shape.second_offset, 0x26, false, shape.update)?;
         let case2_join = push_branch(self);
         let case3 = self.output.instructions.len();
-        self.emit_high_scale_arm(shape.global, global_type, shape.second_offset, 0x26)?;
+        self.emit_scale_arm(shape.global, global_type, shape.second_offset, 0x26, true, shape.update)?;
         let tail = self.output.instructions.len();
 
         patch(self, case2_branch, case2);
