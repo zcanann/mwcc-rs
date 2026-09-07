@@ -4,13 +4,78 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, biased pointer indices and AX lookup isolation (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, shifted AX lookup composition and linked-DOL references (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `8d7f27b7da7797a7559870ad479c16b126e2f9896776b4ee4600ab077e79a70b:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `581a98df18d8df1ef2c4f97e46b48a1e50bdfffcd24c4c1e8100fbf3c0906908:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Shifted AX lookup composition and linked-DOL references, 2026-09-07
+
+The first two AX mixer-cycle lookups now compile together for all fifteen builds
+at O0/O4. Against frozen baseline `acca5a7f`, new canaries 1697–1700 improve
+**0/60 → 60/60 candidate compilations**. Thirty are the project-derived lookup
+pair, and thirty exercise other shifted inputs. Their fresh compiler-reference
+objects are unavailable, so this checkpoint claims no new whole-object matches.
+The captured memory-operand panel retains **300/300 exact objects**, and the
+masked-index panel retains **1,341/1,470 exact objects** with all 1,470 compiling.
+
+A provenance check found that Strikers' AX source is absent from its active
+build inventory, configured source list, and linked symbols. Canaries 1683 and
+1695–1696 now label it as source-only. BfBB actively configures the equivalent
+expression in `src/dolphin/src/ax/AXVPB.c:697-699` for GC/1.2.5n. Its original
+`orig/GQPE78/sys/main.dol` contains `__AXSyncPBs`, and both cycle tables match the
+source initializers byte-for-byte. This provides original linked-code evidence
+while the separate reference-runner processes remain stalled.
+
+New `tools/extract_dol_reference.py` extracts a named function using the original
+DOL and project's sized symbol map. It writes the bytes and a manifest pinning
+the DOL, symbol map, address range, and extracted-code hashes. Its reference kind
+is explicitly `linked_dol_function`; it does not manufacture a relocatable
+compiler-reference object. Four tests cover address mapping, invalid/cross-section
+ranges, truncated data, overlapping sections, and ambiguous or unsized symbols.
+For example:
+
+```sh
+python3 tools/extract_dol_reference.py \
+  --dol ../Metrowerks/reference_projects/battle_for_bikini_bottom/orig/GQPE78/sys/main.dol \
+  --symbols ../Metrowerks/reference_projects/battle_for_bikini_bottom/config/GQPE78/symbols.txt \
+  --symbol __AXSyncPBs --output target/bfbb-ax-linked/AXSyncPBs.bin
+```
+
+The extracted function is **632 bytes at 0x801BA15C**. Its mixer-cycle block
+`[0x801BA224, 0x801BA260)` fuses each right shift, mask, and word scale into one
+rotate-and-mask. The shared masked-index representation now records that fused
+rotation separately from the element scale. The existing two-global-load
+selector opts into shifted inputs and unsigned narrow inputs when every selected
+bit lies inside the input width. Existing plain and biased-pointer callers keep
+their recognition. No source-symbol-specific emitter was added.
+
+O0 testing exposed an existing legacy-address bug: an integer lookup returning
+through r0 also used r0 as a displacement base, which denotes address zero on
+PowerPC. The legacy global-array emitter now gives that address a separate
+virtual register, including the retained-section-base path.
+
+Unicorn validates the original linked mixer block for all **65,536 u16 inputs**,
+including overflowing cycle accumulators, and records the first two table values
+before the full sum combines them. All **1,966,080 candidate calls across 30 AX
+pair objects** agree with those linked-code observations. The other 30 objects
+add **6,240 calls**, covering signed inputs, shifts 29/31, unsigned byte/halfword
+inputs, mixed element widths, and memory-read counts. All **1,972,320 candidate
+calls pass**. This is an exhaustive input-domain execution comparison for the
+reduced pair, not an instruction or whole-object parity claim for that reduction
+or the full AX function.
+
+Direct frozen/candidate index regressions retain **1,096 compiled objects**,
+including **972 previously reference-exact objects**, and all **578 decline
+diagnostics** (1,674 runnable pairs from 2,115 slots, 441 prior exclusions), with
+no timeouts. The native compiler and oracle build successfully. The complete
+three-lookup sum still reaches the additive-chain allocator guard on GC/1.2.5n;
+full AX-file and full real-project parity remain unmeasured at this fingerprint.
+Evidence is under `target/shifted-lookup-*`, `target/check_shifted_lookup_*`, and
+`target/bfbb-ax-linked`; captured matrices use the `shifted-lookup` label.
 
 ## Biased pointer indices and AX lookup isolation, 2026-09-07
 

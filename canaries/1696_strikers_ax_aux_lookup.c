@@ -1,4 +1,5 @@
 // Reduction of Super Mario Strikers src/Dolphin/ax/AXVPB.c:15-38,420.
+// Source-only Strikers file; absent from its active inventory. Equivalent AX code is active in BfBB.
 // One original table lookup, preserving the u16 mixerCtrl parameter.
 // Candidate execution probe; fresh reference comparison pending.
 // flags: -Cpp_exceptions off -pragma "cats off"

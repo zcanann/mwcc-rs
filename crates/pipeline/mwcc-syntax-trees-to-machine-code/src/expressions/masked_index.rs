@@ -9,8 +9,17 @@ pub(super) struct MaskedIndex<'a> {
     pub(super) bias: Option<i16>,
     pub(super) mask: u32,
     pub(super) shift: u8,
+    /// Fused input rotation: element scale minus an optional right shift.
+    pub(super) rotate: u8,
     pub(super) run: Option<(u8, u8)>,
     pub(super) loaded: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MaskedInputForm {
+    Plain,
+    BiasedPointer,
+    ShiftedGlobal,
 }
 
 impl Generator {
@@ -19,7 +28,7 @@ impl Generator {
         index: &'a Expression,
         pointee: Pointee,
     ) -> Option<MaskedIndex<'a>> {
-        self.select_masked_index(index, pointee, false)
+        self.select_masked_index(index, pointee, MaskedInputForm::Plain)
     }
 
     pub(super) fn masked_index_with_bias<'a>(
@@ -27,14 +36,22 @@ impl Generator {
         index: &'a Expression,
         pointee: Pointee,
     ) -> Option<MaskedIndex<'a>> {
-        self.select_masked_index(index, pointee, true)
+        self.select_masked_index(index, pointee, MaskedInputForm::BiasedPointer)
+    }
+
+    pub(super) fn masked_global_lookup_index<'a>(
+        &self,
+        index: &'a Expression,
+        pointee: Pointee,
+    ) -> Option<MaskedIndex<'a>> {
+        self.select_masked_index(index, pointee, MaskedInputForm::ShiftedGlobal)
     }
 
     fn select_masked_index<'a>(
         &self,
         index: &'a Expression,
         pointee: Pointee,
-        allow_bias: bool,
+        input_form: MaskedInputForm,
     ) -> Option<MaskedIndex<'a>> {
         if !matches!(pointee.size(), 1 | 2 | 4) {
             return None;
@@ -52,7 +69,7 @@ impl Generator {
         } else {
             (right.as_ref(), constant_value(left)? as u32)
         };
-        let (source, bias) = if allow_bias {
+        let (source, bias) = if input_form == MaskedInputForm::BiasedPointer {
             match source {
                 Expression::Binary {
                     operator: BinaryOperator::Add,
@@ -75,9 +92,33 @@ impl Generator {
         } else {
             (source, None)
         };
+        let (source, right_shift) = if input_form == MaskedInputForm::ShiftedGlobal {
+            match source {
+                Expression::Binary {
+                    operator: BinaryOperator::ShiftRight,
+                    left,
+                    right,
+                } => {
+                    let shift = u8::try_from(constant_value(right)?).ok()?;
+                    if shift >= 32 || mask & !(u32::MAX >> shift) != 0 {
+                        return None;
+                    }
+                    (left.as_ref(), shift)
+                }
+                _ => (source, 0),
+            }
+        } else {
+            (source, 0)
+        };
         let loaded = match source {
             Expression::Variable(name)
-                if self.locations.get(name).is_some_and(|v| v.width == 32) =>
+                if self.locations.get(name).is_some_and(|v| {
+                    v.width == 32
+                        || (input_form == MaskedInputForm::ShiftedGlobal
+                            && !v.signed
+                            && matches!(v.width, 8 | 16)
+                            && ((mask as u64) << right_shift) < (1u64 << v.width))
+                }) =>
             {
                 false
             }
@@ -91,6 +132,10 @@ impl Generator {
         };
         let shift = pointee.size().trailing_zeros() as u8;
         let run = mask_to_run(mask << shift);
+        // Shifted discontiguous masks need an additional preparation phase.
+        if right_shift != 0 && run.is_none() {
+            return None;
+        }
         // Discontiguous immediate masks retain AND followed by the scale.
         if run.is_none() && (mask == 0 || mask > u16::MAX as u32) {
             return None;
@@ -106,6 +151,7 @@ impl Generator {
             bias,
             mask,
             shift,
+            rotate: (shift + 32 - right_shift) & 31,
             run,
             loaded,
         })
@@ -146,7 +192,7 @@ impl Generator {
             self.output.instructions.push(Instruction::RotateAndMask {
                 a: destination,
                 s: source,
-                shift: index.shift,
+                shift: index.rotate,
                 begin,
                 end,
             });

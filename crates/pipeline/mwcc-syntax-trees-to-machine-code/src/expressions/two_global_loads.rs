@@ -36,7 +36,7 @@ impl Generator {
         ) {
             return None;
         }
-        let index = self.masked_index(index, pointee)?;
+        let index = self.masked_global_lookup_index(index, pointee)?;
         // Loaded indices add memory dependencies to the two address chains.
         if index.loaded {
             return None;

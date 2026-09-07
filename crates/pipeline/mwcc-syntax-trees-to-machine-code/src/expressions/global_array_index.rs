@@ -677,6 +677,8 @@ impl Generator {
         {
             let address = if matches!(pointee, Pointee::Float | Pointee::Double) {
                 self.free_general_excluding(GENERAL_SCRATCH)?
+            } else if destination == GENERAL_SCRATCH {
+                self.fresh_virtual_general()
             } else {
                 destination
             };
@@ -700,6 +702,9 @@ impl Generator {
         }
         let address = if matches!(pointee, Pointee::Float | Pointee::Double) {
             self.free_general_excluding(GENERAL_SCRATCH)?
+        } else if destination == GENERAL_SCRATCH {
+            // Displacement addressing treats rA=0 as zero, not the value in r0.
+            self.fresh_virtual_general()
         } else {
             destination
         };
