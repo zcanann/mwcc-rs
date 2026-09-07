@@ -4,13 +4,74 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, O0 and small masked-array accesses (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, masked pointer load pairs (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `9a363bb55188150cadf044f7673cba565b3d5125adfcd9ffda999e6081b2a6af:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `4388e3d4ab114975d40a273b9f95d61e5ffc6b426c6e859d2bdac767ce21fa11:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Masked pointer load pairs, 2026-09-07
+
+Against frozen baseline `8bccd8e1`, a 300-pair matrix improves **0/300 →
+150/300 whole-object exact**, and candidate compilation improves **30/300 →
+150/300**. All 300 reference objects were captured successfully before the
+reference runner stalled. The matrix covers ten operand shapes, six integer
+operators in both source orders, all fifteen builds, and O0/O4. The supported
+five shapes pair a masked pointer subscript with a constant-index or member
+load, including unsigned byte, halfword, word, and member-derived indices. All **150/150
+supported pairs** are exact. Global operands and two computed subscripts still
+decline in the other 150 configurations.
+
+`expressions/indexed_load_pair.rs` owns operand placement and issue order;
+mask selection remains shared with ordinary subscripts, and the existing
+arithmetic emitter owns the final operation. O4 starts the index calculation,
+issues the independent load in its first latency slot, then completes the
+indexed load. Reverse subtraction gives the indexed result its own virtual
+register, with separate lifetimes for the loaded and scaled index. O0 retains
+primary-first evaluation and avoids the input registers for the primary result.
+An explicit version-profile property preserves the consumed scaled parameter
+register on the oldest four builds; byte indices and member-derived indices
+follow their measured allocation rules. Selection excludes nonresident bases,
+large displacements, floating types, signed bytes requiring extension, and
+complex member address calculations.
+
+Ten permanent canaries (1664–1673) preserve the supported matrix bodies. Their
+150 compiled objects match the captured references' executable bytes, symbols,
+and comment metadata, allowing for the intentionally changed file-symbol names;
+this is distinct from the unmodified matrix's whole-object comparison. Two
+additional canaries (1674–1675) preserve global-scalar and two-computed-pointer
+failures for subsequent work. The previous masked-index edge panel improves
+**60/180 → 105/180 exact**, with compilation **150/180 → 180/180**, no lost
+matches, and no unknowns. Its original two-table-read failure now matches on
+all 30 build/optimization combinations; reused-member O0 adds 15 more matches.
+
+Unicorn executes **187,200 reference/candidate calls across 150 paired objects**
+with randomized values, all six operations, both operand orders, aliased inputs,
+and 32-bit overflow. Another **450 candidate calls across 30 objects** validate
+discontiguous masks, negative displacements, separate pointer operands, and
+exactly two volatile reads even when both addresses coincide. The edge panel
+adds **1,440 paired execution calls across 180 objects**. All **189,090 calls**
+pass. The 45 version-profile tests also pass, and 30 signed-byte probes confirm
+that unsupported extension still declines. A larger additive chain such as
+`(table[index & 3] + table[0]) + index` still reaches the existing additive-chain
+allocator diagnostic; this change does not establish arbitrary expression-tree
+lowering.
+
+The existing index regression selection uses direct frozen/candidate compiler
+comparisons while the reference runner is unavailable: all **1,096 compiled
+objects are byte-identical**, retaining all **972 previously reference-exact
+objects**. All **578 decline diagnostics** are unchanged. These are the same
+1,674 previously runnable pairs from 2,115 slots, with 441 prior exclusions;
+neither compiler times out. The real-project panel was **not rerun** at this
+fingerprint. Its latest measurement remains the preceding checkpoint's 132
+configurations, including full-file Wind Waker and Mario Kart timeouts; no new
+full-file or project-build parity is claimed here. Fresh reference launches
+hung before compiler execution, so this checkpoint uses the already captured
+matrix objects rather than treating those hangs as compiler failures. Evidence
+is under `target/memory-operands-*`, with edge results labeled `memory-operands`
+in `target/masked-index-edge-probes`.
 
 ## O0 and small masked-array accesses, 2026-09-07
 

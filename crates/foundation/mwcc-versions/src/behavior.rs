@@ -785,6 +785,8 @@ pub struct Behavior {
     pub global_array_index_style: GlobalArrayIndexStyle,
     /// Retain the address high-half register in masked-index loads.
     pub masked_global_index_retains_base: bool,
+    /// Early scaled parameter loads keep the consumed index out of the sibling's lane.
+    pub scaled_load_pair_preserves_index_register: bool,
     /// Register placement for a bare array address stored to a pointer global.
     pub global_array_decay_store_style: GlobalArrayDecayStoreStyle,
     /// Register placement for a function address stored to a pointer global.
@@ -1298,6 +1300,7 @@ impl Behavior {
                 config.build.profile.global_array_index_style()
             },
             masked_global_index_retains_base: config.build.profile.masked_global_index_retains_base(),
+            scaled_load_pair_preserves_index_register: config.build.profile.scaled_load_pair_preserves_index_register(),
             global_array_decay_store_style: config.build.profile.global_array_decay_store_style(),
             function_address_store_style: config.build.profile.function_address_store_style(),
             unoptimized_range_copy_shared_scratch: config.build.profile.unoptimized_range_copy_shared_scratch(),

@@ -1484,6 +1484,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         CommaValuePlacementStyle::RegisterResident
     }
 
+    /// Early scaled parameter loads keep the consumed index register out of
+    /// the independent sibling load's lane. Byte indices need no scale.
+    fn scaled_load_pair_preserves_index_register(&self) -> bool {
+        false
+    }
+
     /// Newer masked-index loads finish the address in its high-half register;
     /// earlier indexed loads reuse the consumed parameter's register instead.
     fn masked_global_index_retains_base(&self) -> bool {
@@ -2611,6 +2617,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn scaled_load_pair_preserves_index_register(&self) -> bool {
+        true
+    }
+
     fn static_pointer_initialization_style(&self) -> StaticPointerInitializationStyle {
         StaticPointerInitializationStyle::GuardedSequential
     }

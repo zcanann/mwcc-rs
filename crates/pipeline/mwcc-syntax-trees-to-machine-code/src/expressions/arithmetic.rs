@@ -354,25 +354,28 @@ impl Generator {
         ) {
             return Ok(false);
         }
-        // Single-instruction loads only: a variable-index subscript scales to
-        // `slwi; lwzx`, and two of those mis-schedule against each other.
-        if !self.is_simple_word_load(left) || !self.is_simple_word_load(right) {
-            return Ok(false);
-        }
-        if load_base_name(left).is_none() || load_base_name(right).is_none() {
-            return Ok(false);
-        }
-        // `subf` computes `b - a`; to get `left - right` the right operand is the
-        // primary (first source) and the left is the secondary (in r0). The
-        // commutative operators keep the left operand as the primary.
-        let (primary, secondary) = match operator {
-            Subtract => (right, left),
-            _ => (left, right),
+        let (p, s) = if let Some(registers) =
+            self.place_indexed_load_pair(operator, left, right)?
+        {
+            registers
+        } else {
+            if !self.is_simple_word_load(left) || !self.is_simple_word_load(right) {
+                return Ok(false);
+            }
+            if load_base_name(left).is_none() || load_base_name(right).is_none() {
+                return Ok(false);
+            }
+            // `subf` computes secondary - primary. Commutative operators keep
+            // the left operand as primary when both loads have equal weight.
+            let (primary, secondary) = match operator {
+                Subtract => (right, left),
+                _ => (left, right),
+            };
+            let primary_register = self.fresh_virtual_general();
+            self.evaluate_general(primary, primary_register)?;
+            self.evaluate_general(secondary, GENERAL_SCRATCH)?;
+            (primary_register, GENERAL_SCRATCH)
         };
-        let primary_register = self.fresh_virtual_general();
-        self.evaluate_general(primary, primary_register)?;
-        self.evaluate_general(secondary, GENERAL_SCRATCH)?;
-        let (p, s) = (primary_register, GENERAL_SCRATCH);
         let combined = match operator {
             Add => Instruction::Add {
                 d: destination,

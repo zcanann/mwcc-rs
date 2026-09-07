@@ -3,16 +3,16 @@
 
 use super::*;
 
-struct MaskedIndex<'a> {
-    source: &'a Expression,
+pub(super) struct MaskedIndex<'a> {
+    pub(super) source: &'a Expression,
     mask: u32,
-    shift: u8,
+    pub(super) shift: u8,
     run: Option<(u8, u8)>,
-    loaded: bool,
+    pub(super) loaded: bool,
 }
 
 impl Generator {
-    fn masked_index<'a>(&self, index: &'a Expression, pointee: Pointee) -> Option<MaskedIndex<'a>> {
+    pub(super) fn masked_index<'a>(&self, index: &'a Expression, pointee: Pointee) -> Option<MaskedIndex<'a>> {
         if !matches!(pointee.size(), 1 | 2 | 4) {
             return None;
         }
@@ -162,7 +162,7 @@ impl Generator {
         Ok(true)
     }
 
-    fn emit_masked_scale(&mut self, index: &MaskedIndex<'_>, source: u8, destination: u8) {
+    pub(super) fn emit_masked_scale(&mut self, index: &MaskedIndex<'_>, source: u8, destination: u8) {
         if let Some((begin, end)) = index.run {
             self.output.instructions.push(Instruction::RotateAndMask {
                 a: destination,
