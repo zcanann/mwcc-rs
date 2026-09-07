@@ -4,13 +4,72 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, string storage and static-local string pointers (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, guarded C++ static pointer getters (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `a44c3fb8074c7d7a472ad9f19624e204eb3480a3a24574c365f5d1fb6575defb:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `5d8e73e1b9d3a32a0168c243a8b216d53ce587fab5e785765d11503553f25725:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Guarded C++ static pointer getters, 2026-09-06
+
+Against frozen baseline `382a3e86`, the Mario Kart Double Dash getter reduction
+1647 improves **0/15 → 12/15 whole-object exact pairs**. All twelve older
+builds now match; the newest three retain constant-data symbol/string-order
+differences. Three new canaries (1648–1650), covering O0, constant addresses,
+byte offsets, explicit null pointers, and C linkage inside C++, improve
+**2/45 → 38/45**. Combined, these four canaries improve **2/60 → 50/60**, with
+all reference pairs runnable and all candidates compilable.
+
+Reference probes establish a frontend compatibility rule: builds through
+GC/2.7 use a first-use guard even for constant C++ scalar pointer initializers,
+including integer casts and explicit null. GC/3.0a3 onward uses constant data.
+A profile enum separates those choices and the older sequential versus
+mainline scheduled instruction order. The codegen boundary now receives
+explicit source-language facts; `extern "C"` functions therefore retain C++
+initialization behavior without relying on mangled names.
+
+A separate lowering owner emits the guarded getter protocol, its zero-storage
+pointer and byte guard, and ordinary string/symbol relocations. O0 retains its
+explicit compare and assignment ordering; optimized builds use the record-form
+guard test and versioned schedules. Symbol-plus-byte-offset initializers retain
+a separate address adjustment. The pool-number walk counts emitted static
+objects, including the synthesized guard, so it agrees with the object writer.
+This entry point requires a getter with one static pointer declaration and no
+other executable work. General control-flow declaration positions, multiple
+locals, far-addressed guard storage, and wider integer construction remain
+outside this owner; it does not hoist arbitrary initialization to function entry.
+
+Rechecking the preceding 960-pair string panel improves **612/960 → 660/960
+whole-object exact pairs**, preserves every previous exact match, and keeps
+all 960 candidate compilations successful.
+
+The ten-shape C/C++ O0/O4 panel has **600 reference-runnable pairs**. Whole
+objects improve **96/600 → 288/600**, while compilation remains **480/600**;
+the two broader multi-local/write-body shapes still decline. An additional
+210-pair edge panel covers explicit null, C linkage, unsigned-char mode,
+read-only and packed literals, small symbol offsets, and a const scalar target.
+It matches **144/210 objects**; all 30 const-scalar-target cases still fail in
+the pre-existing constant-address parser. Packed strings also retain a late
+scheduling mismatch on the four oldest optimized builds.
+
+Unicorn execution checks compare **216 candidate/reference getter pairs**:
+**3,024 total calls** validate initial pointer storage and guard setting, five
+nonzero guard-byte values while preserving an altered pointer, and reinitialization
+after clearing the guard. This validates the emitted first-use protocol in
+addition to byte equality. Three focused lowering tests, two driver static-local
+tests, and all **45 version tests** pass.
+
+The existing metadata panel retains all **1,179 exact objects** across **2,198
+runnable pairs** (2,940 selected slots, 742 build exclusions), with no exact
+losses or timeouts. Every individual object and code verdict remains unchanged
+across the **128-config real-project panel: 47 BYTE, 16 DIFF, 59 compiler DEFER,
+two HARNESS, four missing dependencies**. Code remains **46/109 exact measured
+objects**, five empty and fourteen unmeasured; 51 partial translation units
+remain nonexact. Both complete `GeoTree.cpp` configurations still hit the
+30-second cap, so matching the three reduced getter bodies does not establish
+complete-file or project-build parity. Evidence is under `target/static-string-*`.
 
 ## String storage and static-local string pointers, 2026-09-06
 

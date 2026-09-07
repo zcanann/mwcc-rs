@@ -1045,6 +1045,7 @@ fn compile(
             &source_inline_string_symbols,
             &unit.function_return_fundamentals,
             mwcc_syntax_trees_to_machine_code::SourceFunctionFacts {
+                is_cxx,
                 nonvolatile_pointer_parameters: &unit.function_nonvolatile_pointer_parameters,
                 parameter_fundamentals: &unit.function_parameter_fundamentals,
                 local_fundamentals: &unit.function_local_fundamentals,
@@ -2282,9 +2283,7 @@ fn compile(
             + machine_function.anonymous_label_bump;
         let mut number = counter
             + bump
-            + unit.functions.get(function_index).map_or(0, |source| {
-                source.locals.iter().filter(|local| local.is_static).count() as u32
-            });
+            + machine_function.static_locals.len() as u32;
         let mut next_string_number =
             adjusted_anonymous_number(number, machine_function.string_number_adjust);
         // Strings first, in the function's `@N` block. The NEW ones (a reuse points at an earlier

@@ -34,6 +34,7 @@ mod control_flow;
 mod copy_convention;
 mod copy_sign_frame;
 mod cxx_abi;
+mod static_pointer_initialization;
 mod cxx_temporary_arguments;
 mod dag_emitter;
 mod debug_provenance;
@@ -158,6 +159,7 @@ pub fn lower_function(
         source_inline_string_symbols,
         call_return_fundamentals,
         SourceFunctionFacts {
+            is_cxx: false,
             nonvolatile_pointer_parameters: &HashSet::new(),
             parameter_fundamentals: &HashMap::new(),
             local_fundamentals: &HashMap::new(),
@@ -171,6 +173,8 @@ pub fn lower_function(
 /// call boundary each time. Keys use emitted function names and source locals.
 #[derive(Clone, Copy)]
 pub struct SourceFunctionFacts<'a> {
+    /// Source language, independent of C++ name mangling or extern-C linkage.
+    pub is_cxx: bool,
     pub nonvolatile_pointer_parameters: &'a HashSet<(String, String)>,
     pub parameter_fundamentals:
         &'a HashMap<(String, String), mwcc_syntax_trees::SourceFundamentalType>,
@@ -284,6 +288,11 @@ fn lower_function_body(
     source_facts: SourceFunctionFacts<'_>,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
+    if source_facts.is_cxx {
+        if let Some(output) = static_pointer_initialization::lower_getter(function, globals, config) {
+            return Ok(output);
+        }
+    }
     if let Some(output) = body::lower_register_inline_asm_wrapper(
         function,
         &Behavior::resolve(&config),

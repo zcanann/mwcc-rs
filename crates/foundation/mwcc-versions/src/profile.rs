@@ -960,10 +960,24 @@ pub enum ArrayAlignmentStyle {
     SizeMultipleOfEight,
 }
 
+/// C++ pointer locals changed from first-use initialization to constant data
+/// in the 4.x frontend. Earlier schedulers order the guard stores differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticPointerInitializationStyle {
+    GuardedSequential,
+    GuardedScheduled,
+    ConstantData,
+}
+
+
 /// The version-varying codegen decisions. Every method defaults to the GameCube
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
 pub trait CodegenProfile: core::fmt::Debug {
+    fn static_pointer_initialization_style(&self) -> StaticPointerInitializationStyle {
+        StaticPointerInitializationStyle::GuardedScheduled
+    }
+
     /// Legacy compilers put exported C++ const addresses, and exported C
     /// const address arrays, in writable sections. Internal const addresses
     /// and scalar const addresses in C retain read-only storage.
@@ -1918,6 +1932,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn static_pointer_initialization_style(&self) -> StaticPointerInitializationStyle {
+        StaticPointerInitializationStyle::ConstantData
+    }
+
     fn array_alignment_style(&self) -> ArrayAlignmentStyle {
         ArrayAlignmentStyle::SizeMultipleOfEight
     }
@@ -2160,6 +2178,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn static_pointer_initialization_style(&self) -> StaticPointerInitializationStyle {
+        StaticPointerInitializationStyle::ConstantData
+    }
+
     fn array_alignment_style(&self) -> ArrayAlignmentStyle {
         ArrayAlignmentStyle::SizeMultipleOfEight
     }
@@ -2575,6 +2597,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn static_pointer_initialization_style(&self) -> StaticPointerInitializationStyle {
+        StaticPointerInitializationStyle::GuardedSequential
+    }
+
     fn writable_exported_const_addresses(&self) -> bool {
         true
     }
