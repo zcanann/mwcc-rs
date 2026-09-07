@@ -136,6 +136,58 @@ class LinkedDolTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 relocate(0x80600000, 109, 0x100010, 0, bases)
 
+    def jump_table_fixture(self, fixups=((0, 1, 1, 4),)):
+        data, dol, source, layout = self.fixture(literal=True)
+        data = data.replace(b'.sdata2\0', b'.data\0\0\0')
+        source = source.replace('.sdata2:', '.data:')
+        shoff = struct.unpack_from('>I', data, 32)[0]
+        headers = [list(struct.unpack_from('>10I', data, shoff + i * 40)) for i in range(7)]
+        blobs = [data[h[4]:h[4]+h[5]] for h in headers]
+        name_offset = len(blobs[4])
+        blobs[4] += b'.rela.data\0'
+        blobs[6] = bytes(4)
+        blobs.append(b''.join(struct.pack('>IIi', at, (symbol << 8) | kind, addend)
+                              for at, kind, symbol, addend in fixups))
+        headers.append([name_offset, 4, 0, 0, 0, 0, 2, 6, 4, 12])
+        linked = bytearray(data[:52])
+        for header, blob in zip(headers, blobs):
+            header[4:6] = [len(linked), len(blob)]
+            linked.extend(blob)
+        struct.pack_into('>I', linked, 32, len(linked))
+        struct.pack_into('>H', linked, 48, len(headers))
+        for header in headers:
+            linked.extend(struct.pack('>10I', *header))
+        dol = bytearray(dol)
+        struct.pack_into('>I', dol, 0x110, 0x80004004)
+        layout.update(dol_sha256=hashlib.sha256(dol).hexdigest(),
+                      symbols_sha256=hashlib.sha256(source.encode()).hexdigest(), literals=[],
+                      data_images=[dict(reference_symbol='g', address=0x80004010, hex='80004004')])
+        return bytes(linked), bytes(dol), source, layout
+
+    def test_jump_table_identity_uses_verified_relocated_function_targets(self):
+        self.assertTrue(compare(*self.jump_table_fixture())['functions'][0]['exact'])
+        data, dol, source, layout = self.jump_table_fixture(((0, 1, 1, 0),))
+        result = compare(data, dol, source, layout)['functions'][0]
+        self.assertFalse(result['exact'])
+        self.assertIn('missing', result['unresolved_relocations'][0]['reason'])
+
+    def test_invalid_or_overlapping_jump_table_relocations_cannot_match(self):
+        for fixups in [((0, 4, 1, 4),), ((2, 1, 1, 4),), ((0, 1, 1, 8),),
+                       ((0, 1, 1, -4),), ((0, 1, 1, 2),), ((0, 1, 2, 0),),
+                       ((0, 1, 1, 4), (0, 1, 1, 4))]:
+            with self.subTest(fixups=fixups):
+                result = compare(*self.jump_table_fixture(fixups))['functions'][0]
+                self.assertFalse(result['exact'])
+                self.assertTrue(result['unresolved_relocations'])
+
+    def test_named_small_data_section_selects_its_abi_base(self):
+        data, dol, source, layout = self.fixture()
+        layout['sda_bases']['13'] = layout['sda_bases']['2'] + 16
+        self.assertTrue(compare(data, dol, source, layout)['functions'][0]['exact'])
+        source = source.replace('.sdata2:', '.sdata:')
+        layout['symbols_sha256'] = hashlib.sha256(source.encode()).hexdigest()
+        self.assertFalse(compare(data, dol, source, layout)['functions'][0]['exact'])
+
 
 if __name__ == '__main__':
     unittest.main()

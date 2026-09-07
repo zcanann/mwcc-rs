@@ -4,13 +4,90 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, GC/1.1p1 O0 shared parameter-spill bug (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, full GXPerf and casted computed-pointer accesses (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `c33a467bf1d11aa154555ca4b5d479ba7cbb74a069f60fd9749e6e77b6fb218b:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `a93e33c01a86a4b9c41c32cde138899666fcb7097d70dd873a83dc9dbe55374b:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Full GXPerf and casted computed-pointer accesses, 2026-09-07
+
+The complete, unmodified BfBB `GXPerf.c` compiles with its configured
+GC/1.2.5n flags. **GX compilation advances from 7/14 to 8/14** translation
+units. Both functions pass **4,701 original-DOL comparisons** on the candidate
+and a fresh reference object. `GXClearGPMetric` also matches the linked
+original instruction for instruction.
+
+The SDK's register macros cast a computed pointer again before accessing it.
+Pointer resolution now admits add/subtract expressions beneath an access cast,
+using the existing typed arithmetic evaluator. Constant displacement folding
+keeps arithmetic stride separate from access width: `(short *)((int *)p - 3)`
+accesses twelve bytes before `p`, even though the eventual store is a halfword.
+The previous helper incorrectly treated that displacement as three bytes.
+Global pointers and frame-backed pointers load their current address value;
+automatic arrays use their frame storage and element/row stride. The shared
+load and store paths use the same helper. No GX-specific emitter is added.
+
+Canaries **1927–1930** cover twelve computed-address functions and two frame
+controls at O0/O4 across fifteen builds. The frozen `0a273dff` baseline compiles
+**0/60** complete objects; candidate and fresh references compile **60/60**.
+**11/60 whole objects** and **220/420 function text plus symbolic relocation
+comparisons** match exactly. All **215,040 candidate calls** and corresponding
+reference calls pass their return, complete input-memory, and ABI checks.
+Samples cover positive/negative offsets, different arithmetic/access widths,
+byte-pointer casts, variable indices used again after a load, local arrays, and
+a helper that changes an address-taken pointer before the subsequent access.
+
+The full GXPerf panel checks all 1,456 GX context bytes, ordered hardware-write
+addresses/widths/values (FIFO and command-processor registers), the register
+bank image, GPR14–31, FPR14–31, SP, and LR. Its **3,677 `GXSetGPMetric` cases**
+cover all old/new transitions for each metric selector, all pairs of new legal
+selectors, and 1,024 arbitrary-word selector quadruples exercising default
+paths. **1,024 `GXClearGPMetric` cases** vary the surrounding context. These
+panels total **219,741 passing candidate calls**.
+
+Full GXPerf is **5,336 ELF bytes / 2,192 text bytes**, SHA-256
+`39bb0563857e472af0177aa35854d4fec27be672de538dd5edb1a0a6a4724dc2`.
+The fresh reference is **4,104 ELF bytes / 2,136 text bytes**, SHA-256
+`060c8bddb099bdb1ae1ec08f500efb8fb910cf227607d8d1b5904325c672ed91`.
+`GXSetGPMetric` remains **2,176 versus 2,120 bytes**. The pinned
+`docs/reference-layouts/bfbb-gxperf.json` reports **1/2 candidate** and **2/2
+reference** exact linked functions. Eight candidate jump-table address
+relocations remain unresolved because their images/targets differ from the
+original; this is an explicit instruction-parity gap.
+
+The linked-DOL checker now verifies initialized jump-table images after applying
+word relocations to instructions within pinned function ranges. It rejects
+unverified targets, misalignment, overlapping relocations, and ambiguous images.
+For named small-data objects with both SDA bases configured, the verified
+original section selects r2 or r13. **13 checker tests pass**; the previous
+GXPixel layout retains 0/12 candidate and 12/12 reference exact functions with
+no unresolved relocations.
+
+Regression controls retain **300/300** exact memory objects; **1,097** unchanged
+indexed objects, including **972** known exact results and **577** identical
+declines; and cumulative metadata's **1,494** compiled, **1,487** unchanged,
+**1,179** known exact, and **704** identical declines. Its seven historical
+`1469` changes predate this checkpoint. All **1,501** compiling recent objects
+are unchanged, with **89** identical declines among **1,590** pairs. The prior
+seven GX objects and full AXVPB are byte-identical.
+
+The full compiler library test run has **1,582 passes and one failure**:
+`inline_expansion::tests::composes_zero_argument_embedded_asm_at_a_nested_call_site`.
+A focused replay with the committed baseline source reproduces the same failure;
+it remains an existing frontier. The remaining 1,582 tests pass again after
+restoring this change. Full-project builds, six configured GX units, variable
+indexed instruction schedules, and remaining reference-bug reproduction are open.
+
+Artifacts: `target/computed-pointer-canaries/{results,reference-results,
+reference-comparison,execution-results,frame-execution-results}.json`,
+`target/computed-pointer-perf/{compilation-results,full-execution-results,
+candidate-verified-linked-text,reference-verified-linked-text,
+pixel-linked-regression}.json`, its two DOL fixture files,
+`target/computed-pointer-{index,metadata,recent,gx-library,full-ax}/`, and
+`target/computed-pointer-{tests,tests-final,baseline-inline-test,linked-tests}.log`.
 
 ## GC/1.1p1 O0 shared parameter-spill bug, 2026-09-07
 

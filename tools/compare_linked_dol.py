@@ -44,11 +44,15 @@ def compare(data, dol, symbol_text, layout):
     placements = {name: address for name, (address, _) in ranges.items()}
     for name in layout.get('external_functions', []):
         placements[name] = function_range(symbol_text, name)[0]
+    symbol_sda_registers = {}
     for name, address in layout['data_symbols'].items():
         matches = re.findall(r'^\s*' + re.escape(name) + r'\s*=\s*\.[\w.]+:(0x[0-9a-fA-F]+);', symbol_text, re.MULTILINE)
         if len(matches) != 1 or int(matches[0], 16) != address:
             raise ValueError(f"data symbol placement is not verified: {name}")
         placements[name] = address
+        section = re.findall(r'^\s*' + re.escape(name) + r'\s*=\s*\.(\w+):', symbol_text, re.MULTILINE)[0]
+        if section in ('sdata2', 'sbss2', 'sdata', 'sbss'):
+            symbol_sda_registers[name] = '2' if section.endswith('2') else '13'
     for literal in layout['literals']:
         value = bytes.fromhex(literal['hex'])
         if read_dol_range(dol, literal['address'], len(value)) != value:
@@ -74,6 +78,26 @@ def compare(data, dol, symbol_text, layout):
     if text.offset + text.size > len(data):
         raise ValueError("candidate text extends outside the object")
     fixups = relocations(data, sections, table, '.rela.text') if any(s.name == '.rela.text' for s in sections) else []
+    data_fixups = relocations(data, sections, table, '.rela.data') if any(s.name == '.rela.data' for s in sections) else []
+
+    def object_image(pool, offset, size):
+        value = bytearray(data[pool.offset + offset:pool.offset + offset + size])
+        if pool.name != '.data':
+            return bytes(value)
+        used = set()
+        for where, kind, _, symbol, addend in data_fixups:
+            if where + 4 <= offset or where >= offset + size:
+                continue
+            if kind != 1 or where % 4 or where < offset or where + 4 > offset + size or where in used:
+                raise ValueError("initialized data image has an invalid or overlapping relocation")
+            # A jump table may refer only to an instruction within a verified
+            # function range. Source ordinals and unrelocated zero placeholders
+            # cannot establish a table's identity.
+            if symbol not in ranges or addend < 0 or addend % 4 or addend >= ranges[symbol][1]:
+                raise ValueError("initialized data relocation has no verified function target")
+            struct.pack_into('>I', value, where - offset, ranges[symbol][0] + addend)
+            used.add(where)
+        return bytes(value)
 
     def placement(name):
         if name in placements:
@@ -87,7 +111,7 @@ def compare(data, dol, symbol_text, layout):
         pool = sections[index]
         if offset + size > pool.size or pool.offset + offset + size > len(data):
             raise ValueError("literal symbol extends outside its section")
-        value = data[pool.offset + offset:pool.offset + offset + size]
+        value = object_image(pool, offset, size)
         images = layout['literals']
         if pool.name == '.data':
             images = data_images
@@ -95,7 +119,7 @@ def compare(data, dol, symbol_text, layout):
             # on each side. Equal initialized objects must not be silently aliased.
             candidates = [(at, length) for _, at, length, info, section_index in table
                           if section_index == index and info & 15 == 1 and length == size
-                          and data[pool.offset+at:pool.offset+at+length] == value]
+                          and object_image(pool, at, length) == value]
             if len(candidates) != 1:
                 raise ValueError("initialized data image is ambiguous in the candidate")
         matches = [item['address'] for item in images if bytes.fromhex(item['hex']) == value]
@@ -123,7 +147,11 @@ def compare(data, dol, symbol_text, layout):
                 if kind in (4, 5, 6) and (where-offset) % 4 != 2:
                     raise ValueError("address-half relocation is not on the immediate field")
                 word = struct.unpack_from('>I', blob, at)[0]
-                word = relocate(word, kind, placement(symbol) + addend, address + at, layout['sda_bases'])
+                bases = layout['sda_bases']
+                if kind == 109 and len(bases) > 1 and symbol in symbol_sda_registers:
+                    register = symbol_sda_registers[symbol]
+                    bases = {register: bases[register]} if register in bases else {}
+                word = relocate(word, kind, placement(symbol) + addend, address + at, bases)
                 struct.pack_into('>I', blob, at, word)
             except ValueError as error:
                 unknown.append(dict(offset=where-offset, kind=kind, symbol=symbol, reason=str(error)))

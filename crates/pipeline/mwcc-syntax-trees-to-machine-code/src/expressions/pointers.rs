@@ -137,9 +137,9 @@ impl Generator {
                 }
             }
         }
-        // `*(T *)(bytes + k)`: the addition happens as byte-pointer
-        // arithmetic before the cast, so k is already the final displacement.
-        if let Some((pointee, address, offset)) = self.punned_displacement_address(pointer) {
+        // The arithmetic before an access cast supplies the displacement
+        // stride; the cast supplies only the load width.
+        if let Some((pointee, address, offset)) = self.punned_displacement_address(pointer)? {
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
@@ -920,6 +920,10 @@ impl Generator {
                     | Expression::Index { .. }
                     | Expression::AddressOf { .. }
                     | Expression::MemberAddress { .. }
+                    | Expression::Binary {
+                        operator: BinaryOperator::Add | BinaryOperator::Subtract,
+                        ..
+                    }
                     | Expression::Cast {
                         target_type: Type::Pointer(_) | Type::StructPointer { .. },
                         ..

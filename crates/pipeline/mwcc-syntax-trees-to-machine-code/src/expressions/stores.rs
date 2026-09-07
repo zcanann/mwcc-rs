@@ -1364,7 +1364,7 @@ impl Generator {
             }
         };
         if index.is_none() {
-            if let Some((pointee, address, offset)) = self.punned_displacement_address(base) {
+            if let Some((pointee, address, offset)) = self.punned_displacement_address(base)? {
                 let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
                 let source = self.place_store_value(value, pointee)?;
                 if restore {
