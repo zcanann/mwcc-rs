@@ -4,13 +4,67 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, two distinct global-array loads (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, biased pointer indices and AX lookup isolation (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `926da7e31870bc1a80cddee3c20ec556a3f035c4018a51115d24cc1c26387915:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `8d7f27b7da7797a7559870ad479c16b126e2f9896776b4ee4600ab077e79a70b:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Biased pointer indices and AX lookup isolation, 2026-09-07
+
+Against frozen baseline `5e5241e4`, the captured memory-operand matrix improves
+**270/300 → 300/300 whole-object exact**, with all 300 candidate objects compiling
+and no lost matches. This completes the ten-shape focused matrix, not the full
+corpus or real-project objective. The final **30/30 biased-index pairs** cover
+`table[index & 3] op table[(index + 1) & 3]`, six integer operations in both source
+orders, fifteen builds, and O0/O4. References are the original captured objects.
+
+The shared mask representation now has an optional signed immediate bias, selected
+explicitly by pointer callers. Global address selection retains its existing
+recognition. Ordinary biased pointer loads prepare the input before masking, and
+the paired selector tracks the prepared input separately from the scaled offsets
+and loaded values. The oldest four builds complete a biased primary's offset
+before the plain secondary, then load the primary first. Later builds prepare the
+bias, scale the plain index, scale the biased index, and load the plain operand
+first. A profile property owns that distinction. O0 evaluates each full operand
+independently and also supports two biased operands. Loaded biased indices and
+optimized pairs with two biased indices still need their own issue policies.
+
+Canaries 1691–1692 preserve the captured O4/O0 body. Their **30 compiled objects**
+match its code, symbols, and comment metadata apart from renamed file symbols.
+Canaries 1693–1694 add independent inputs, negative bias, commuted addition,
+signed halfwords, byte loads, discontiguous masks, and volatile accesses. Their
+**30 candidate objects** compile and execute; fresh reference comparisons are
+pending and are not counted as exact. Unicorn validates **38,880 paired
+reference/candidate calls**, including unsigned wraparound at `0xffffffff`, and
+**7,920 candidate-only calls**, checking memory-read counts and pointer/input
+lifetimes. All **46,800 calls pass**.
+
+The masked-index panel retains **1,341/1,470 exact objects** and all candidate
+compilations. Frozen/candidate index regressions preserve **1,096 compiled
+objects**, including **972 previously reference-exact objects**, and **578 decline
+diagnostics** (1,674 runnable pairs from 2,115 slots, 441 prior exclusions), without
+timeouts. All **45 version tests pass**; the native compiler and oracle build.
+
+Isolating the Strikers AX expression in canary 1683 changes the next action:
+its original main lookup and shifted auxiliary lookup already compile separately
+on GC/2.6 with the original u16 input and table initializers. New project-derived
+canaries 1695–1696 preserve those single lookups. Their objects are byte-identical
+to the frozen baseline, and **131,072 exhaustive candidate calls** validate both
+lookups for all 65,536 u16 inputs. This verifies existing standalone semantics,
+not a new matching-output gain. Fresh reference comparisons remain pending.
+The original two-lookup combination still reaches a non-leaf operand diagnostic;
+the full expression still reaches the additive-chain allocator guard. Composition
+of these lookup results is the immediate project-derived gap, rather than basic
+execution of the shifted lookup alone.
+
+The full real-project panel remains unmeasured at this fingerprint because the
+existing reference-runner processes are still stalled. Evidence is under
+`target/biased-index-*` and `target/check_biased_index_*`; matrices use the
+`biased-index` label in `target/memory-operands-probes` and
+`target/masked-index-probes`.
 
 ## Two distinct global-array loads, 2026-09-07
 

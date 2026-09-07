@@ -793,6 +793,8 @@ pub struct Behavior {
     pub scaled_load_pair_preserves_index_register: bool,
     /// Load issue order once both computed pointer offsets are ready.
     pub computed_load_pair_secondary_first: bool,
+    /// A biased primary completes its offset before the plain secondary offset.
+    pub biased_load_pair_primary_offset_first: bool,
     /// Register placement for a bare array address stored to a pointer global.
     pub global_array_decay_store_style: GlobalArrayDecayStoreStyle,
     /// Register placement for a function address stored to a pointer global.
@@ -1310,6 +1312,7 @@ impl Behavior {
             masked_global_index_retains_base: config.build.profile.masked_global_index_retains_base(),
             scaled_load_pair_preserves_index_register: config.build.profile.scaled_load_pair_preserves_index_register(),
             computed_load_pair_secondary_first: config.build.profile.computed_load_pair_secondary_first(),
+            biased_load_pair_primary_offset_first: config.build.profile.biased_load_pair_primary_offset_first(),
             global_array_decay_store_style: config.build.profile.global_array_decay_store_style(),
             function_address_store_style: config.build.profile.function_address_store_style(),
             unoptimized_range_copy_shared_scratch: config.build.profile.unoptimized_range_copy_shared_scratch(),

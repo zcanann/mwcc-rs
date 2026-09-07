@@ -82,7 +82,7 @@ impl Generator {
         if address == GENERAL_SCRATCH {
             return None;
         }
-        let Some(index) = self.masked_index(index, pointee) else {
+        let Some(index) = self.masked_index_with_bias(index, pointee) else {
             return None;
         };
         if index.loaded && !self.is_resident_displacement_load(index.source) {
@@ -129,6 +129,9 @@ impl Generator {
             return Ok(Some((primary, GENERAL_SCRATCH)));
         }
 
+        if first.index.bias.is_some() || second.index.bias.is_some() {
+            return self.place_biased_pointer_load_pair(&first, &second);
+        }
         let first_source = self.general_register_of_leaf(first.index.source)?;
         let second_source = self.general_register_of_leaf(second.index.source)?;
         let first_offset = self.fresh_virtual_general_avoiding(inputs.into_iter().collect());
@@ -147,6 +150,75 @@ impl Generator {
         } else {
             self.output.instructions.extend([first_load, second_load]);
         }
+        Ok(Some((primary, GENERAL_SCRATCH)))
+    }
+
+    fn place_biased_pointer_load_pair(
+        &mut self,
+        first: &ResidentMaskedSubscript<'_>,
+        second: &ResidentMaskedSubscript<'_>,
+    ) -> Compilation<Option<(u8, u8)>> {
+        let (biased, plain, biased_is_primary, immediate) =
+            match (first.index.bias, second.index.bias) {
+                (Some(value), None) => (first, second, true, value),
+                (None, Some(value)) => (second, first, false, value),
+                _ => return Ok(None),
+            };
+        let source = self.general_register_of_leaf(biased.index.source)?;
+        let plain_source = self.general_register_of_leaf(plain.index.source)?;
+        let primary = self.fresh_virtual_general_preferring(3);
+        if biased_is_primary && self.behavior.biased_load_pair_primary_offset_first {
+            let offset = self.fresh_virtual_general_preferring(5);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: GENERAL_SCRATCH,
+                a: source,
+                immediate,
+            });
+            self.emit_masked_scale(&biased.index, GENERAL_SCRATCH, offset);
+            self.emit_masked_scale(&plain.index, plain_source, GENERAL_SCRATCH);
+            self.output.instructions.push(indexed_load(
+                biased.pointee,
+                primary,
+                biased.address,
+                offset,
+            )?);
+            self.output.instructions.push(indexed_load(
+                plain.pointee,
+                GENERAL_SCRATCH,
+                plain.address,
+                GENERAL_SCRATCH,
+            )?);
+            return Ok(Some((primary, GENERAL_SCRATCH)));
+        }
+        let temporary = if biased_is_primary {
+            self.fresh_virtual_general_preferring(5)
+        } else {
+            GENERAL_SCRATCH
+        };
+        let (plain_value, biased_value) = if biased_is_primary {
+            (GENERAL_SCRATCH, primary)
+        } else {
+            (primary, GENERAL_SCRATCH)
+        };
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: temporary,
+            a: source,
+            immediate,
+        });
+        self.emit_masked_scale(&plain.index, plain_source, plain_value);
+        self.emit_masked_scale(&biased.index, temporary, biased_value);
+        self.output.instructions.push(indexed_load(
+            plain.pointee,
+            plain_value,
+            plain.address,
+            plain_value,
+        )?);
+        self.output.instructions.push(indexed_load(
+            biased.pointee,
+            biased_value,
+            biased.address,
+            biased_value,
+        )?);
         Ok(Some((primary, GENERAL_SCRATCH)))
     }
 
@@ -183,6 +255,10 @@ impl Generator {
         else {
             return Ok(None);
         };
+        // Bias preparation beside a displacement load needs a separate issue order.
+        if index.bias.is_some() {
+            return Ok(None);
+        }
         let optimized = self.behavior.optimization != mwcc_versions::Optimization::O0;
         let indexed_is_primary = operator == BinaryOperator::Subtract && indexed_is_right;
         let avoid = if !optimized {

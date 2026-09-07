@@ -5,6 +5,8 @@ use super::*;
 
 pub(super) struct MaskedIndex<'a> {
     pub(super) source: &'a Expression,
+    /// Optional input addition before masking; selected only by bias-aware callers.
+    pub(super) bias: Option<i16>,
     pub(super) mask: u32,
     pub(super) shift: u8,
     pub(super) run: Option<(u8, u8)>,
@@ -16,6 +18,23 @@ impl Generator {
         &self,
         index: &'a Expression,
         pointee: Pointee,
+    ) -> Option<MaskedIndex<'a>> {
+        self.select_masked_index(index, pointee, false)
+    }
+
+    pub(super) fn masked_index_with_bias<'a>(
+        &self,
+        index: &'a Expression,
+        pointee: Pointee,
+    ) -> Option<MaskedIndex<'a>> {
+        self.select_masked_index(index, pointee, true)
+    }
+
+    fn select_masked_index<'a>(
+        &self,
+        index: &'a Expression,
+        pointee: Pointee,
+        allow_bias: bool,
     ) -> Option<MaskedIndex<'a>> {
         if !matches!(pointee.size(), 1 | 2 | 4) {
             return None;
@@ -32,6 +51,29 @@ impl Generator {
             (left.as_ref(), mask as u32)
         } else {
             (right.as_ref(), constant_value(left)? as u32)
+        };
+        let (source, bias) = if allow_bias {
+            match source {
+                Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left,
+                    right,
+                } => {
+                    let (source, value) = if let Some(value) = constant_value(right) {
+                        (left.as_ref(), value)
+                    } else {
+                        (right.as_ref(), constant_value(left)?)
+                    };
+                    // A memory-derived input needs its own load issue policy.
+                    if !matches!(source, Expression::Variable(_)) {
+                        return None;
+                    }
+                    (source, Some(i16::try_from(value).ok()?))
+                }
+                _ => (source, None),
+            }
+        } else {
+            (source, None)
         };
         let loaded = match source {
             Expression::Variable(name)
@@ -61,6 +103,7 @@ impl Generator {
         }
         Some(MaskedIndex {
             source,
+            bias,
             mask,
             shift,
             run,
@@ -134,7 +177,7 @@ impl Generator {
         index: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
-        let Some(index) = self.masked_index(index, pointee) else {
+        let Some(index) = self.masked_index_with_bias(index, pointee) else {
             return Ok(false);
         };
         if address == GENERAL_SCRATCH {
@@ -149,6 +192,16 @@ impl Generator {
             GENERAL_SCRATCH
         } else {
             self.general_register_of_leaf(index.source)?
+        };
+        let source = if let Some(immediate) = index.bias {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: GENERAL_SCRATCH,
+                a: source,
+                immediate,
+            });
+            GENERAL_SCRATCH
+        } else {
+            source
         };
         if self.behavior.optimization == mwcc_versions::Optimization::O0 {
             self.emit_unscaled_index_mask(&index, source, GENERAL_SCRATCH);

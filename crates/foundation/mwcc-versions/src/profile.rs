@@ -1512,6 +1512,10 @@ pub trait CodegenProfile: core::fmt::Debug {
     }
 
     /// Issue the secondary load first after forming both computed offsets.
+    fn biased_load_pair_primary_offset_first(&self) -> bool {
+        false
+    }
+
     fn computed_load_pair_secondary_first(&self) -> bool {
         false
     }
@@ -2688,6 +2692,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn shared_global_load_style(&self) -> SharedGlobalLoadStyle {
         SharedGlobalLoadStyle::ExplicitElementAddress
+    }
+
+    fn biased_load_pair_primary_offset_first(&self) -> bool {
+        true
     }
 
     fn computed_load_pair_secondary_first(&self) -> bool {
