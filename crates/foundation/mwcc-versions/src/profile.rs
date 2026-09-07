@@ -475,6 +475,20 @@ pub enum GlobalArrayIndexStyle {
     ExplicitAddress,
 }
 
+/// Sharing a full global-array base between a masked word load and element zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedGlobalLoadStyle {
+    /// Form an explicit element address; a secondary constant read can update the base.
+    ExplicitElementAddress,
+    /// Fold a primary constant read into the low-half address update.
+    UpdatingBaseLoad,
+    /// Keep independent low-half relocations for the base and constant read.
+    SeparateLowRelocations {
+        /// O0 places an indexed primary in the completed address register.
+        unoptimized_primary_reuses_address: bool,
+    },
+}
+
 /// Register holding a file-scope array address assigned to a pointer global.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlobalArrayDecayStoreStyle {
@@ -1501,6 +1515,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         false
     }
 
+    fn shared_global_load_style(&self) -> SharedGlobalLoadStyle {
+        SharedGlobalLoadStyle::UpdatingBaseLoad
+    }
+
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
         GlobalArrayIndexStyle::Indexed
     }
@@ -1949,6 +1967,12 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn shared_global_load_style(&self) -> SharedGlobalLoadStyle {
+        SharedGlobalLoadStyle::SeparateLowRelocations {
+            unoptimized_primary_reuses_address: false,
+        }
+    }
+
     fn static_pointer_initialization_style(&self) -> StaticPointerInitializationStyle {
         StaticPointerInitializationStyle::ConstantData
     }
@@ -2199,6 +2223,12 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn shared_global_load_style(&self) -> SharedGlobalLoadStyle {
+        SharedGlobalLoadStyle::SeparateLowRelocations {
+            unoptimized_primary_reuses_address: true,
+        }
+    }
+
     fn static_pointer_initialization_style(&self) -> StaticPointerInitializationStyle {
         StaticPointerInitializationStyle::ConstantData
     }
@@ -2622,6 +2652,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn shared_global_load_style(&self) -> SharedGlobalLoadStyle {
+        SharedGlobalLoadStyle::ExplicitElementAddress
+    }
+
     fn computed_load_pair_secondary_first(&self) -> bool {
         true
     }

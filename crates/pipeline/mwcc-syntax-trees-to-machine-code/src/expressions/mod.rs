@@ -61,6 +61,7 @@ mod members;
 mod masked_index;
 mod masked_global_address;
 mod masked_global_load_pair;
+mod shared_global_load_pair;
 mod indexed_load_pair;
 mod narrow_compound;
 mod nested_global_pointer_float_store;

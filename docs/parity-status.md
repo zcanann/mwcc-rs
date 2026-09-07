@@ -4,13 +4,59 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, masked global-array/scalar load pairs (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, shared global-array load pairs (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `2d1f3680bce6e823cd095e535715abb27571024bf9de47dfc0f71bfbdb252fa4:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `7752dd68ba0f6c7204650ce4adc28e3b4138800b34a172130241e9b66b3b498e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Shared global-array load pairs, 2026-09-07
+
+Against frozen baseline `c1355bc6`, the captured memory-operand matrix improves
+**210/300 → 240/300 whole-object exact**, with compilation improving by the same
+amount and no lost matches. All **30/30 shared-array pairs** match: a masked word
+subscript combined with element zero, six integer operations in both source
+orders, fifteen compiler builds, and O0/O4. The remaining 60 configurations
+still decline: two global-array subscripts and a more complex computed pointer
+index. The references are the original captured objects, not fresh compiler runs.
+
+A dedicated version profile describes explicit element addresses on the oldest
+four builds, updating constant loads on the middle eight, and separate low-half
+relocations on the newest three. O0 uses the existing masked-address builder and
+evaluates complete operands separately. Wii's O0 reverse subtraction keeps the
+indexed primary in the completed address register; the address builder now accepts
+that placement without changing ordinary subscript allocation. The earlier
+repeated-global-pointer guard now distinguishes declared arrays from pointer
+variables, allowing array pairs to reach their selector. This path currently
+covers full-size word arrays and register-derived masked indices; member-derived
+indices and owned static-data anchors still need characterization.
+
+Canary 1682 now covers the captured O4 body, and 1684 adds O0. All **30 canary
+objects** match the captured bodies' code, symbols, and comment metadata apart
+from renamed file symbols. Canaries 1685–1686 add volatile reads and mask 85;
+all **30 candidate objects** compile and execute, but their fresh reference
+comparisons are pending and are not counted as exact. Unicorn validates
+**18,720 reference/candidate calls** and **9,360 candidate-only calls**, including
+randomized words, overflow, both operand orders, reads that select the same
+element, high-half relocation carry, and negative low-half displacements. Every
+call performs exactly two memory reads; all **28,080 calls pass**.
+
+The masked-index panel retains **1,341/1,470 exact objects** and all candidate
+compilations, including the Wind Waker getter reduction. The small-array panel
+retains **180/180 exact objects**. Direct frozen/candidate regression comparisons
+preserve **1,096 compiled objects**, including **972 previously reference-exact
+objects**, and all **578 decline diagnostics** (1,674 runnable pairs from 2,115
+slots, 441 prior exclusions), with no timeouts. All **45 version tests pass**.
+The native compiler and oracle build successfully. The full real-project panel
+remains unmeasured at this fingerprint: the existing reference-runner processes
+are still stalled. The Strikers AX reduction in canary 1683 remains the next
+project-derived frontier involving two tables and an additive chain.
+
+Evidence is under `target/shared-global-*` and `target/check_shared_global_*`;
+matrices use the `shared-global` label in `target/memory-operands-probes`,
+`target/masked-index-probes`, and `target/masked-small-probes`.
 
 ## Masked global-array/scalar load pairs, 2026-09-07
 

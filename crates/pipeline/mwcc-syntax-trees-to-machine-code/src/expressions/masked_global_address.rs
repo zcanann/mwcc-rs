@@ -21,6 +21,8 @@ impl MaskedGlobalAddress {
 
 #[derive(Default)]
 pub(super) struct MaskedGlobalAddressUse<'a> {
+    /// Optional high-half and completed-base registers for O0 operand placement.
+    pub(super) unoptimized_base: Option<(u8, u8)>,
     /// A sibling value occupies r0 before this address's final load.
     pub(super) preserve_scratch: bool,
     /// An independent load can fill the first high-half address latency slot.
@@ -57,6 +59,7 @@ impl Generator {
         name: &str,
         small: bool,
         index: &MaskedIndex<'_>,
+        registers: Option<(u8, u8)>,
     ) -> Compilation<MaskedGlobalAddress> {
         // O0 discovers a full array address before creating the function's
         // global symbol. SDA references retain the ordinary body event order.
@@ -92,7 +95,10 @@ impl Generator {
                     shift: index.shift,
                 });
         }
-        let base = self.fresh_virtual_general_preferring(4);
+        let (high, base) = registers.unwrap_or_else(|| {
+            let base = self.fresh_virtual_general_preferring(4);
+            (base, base)
+        });
         if small {
             self.record_relocation(RelocationKind::EmbSda21, name);
             self.output.instructions.push(Instruction::AddImmediate {
@@ -101,11 +107,11 @@ impl Generator {
                 immediate: 0,
             });
         } else {
-            self.emit_address_high(base, name);
+            self.emit_address_high(high, name);
             self.record_relocation(RelocationKind::Addr16Lo, name);
             self.output.instructions.push(Instruction::AddImmediate {
                 d: if explicit { GENERAL_SCRATCH } else { base },
-                a: base,
+                a: high,
                 immediate: 0,
             });
         }
@@ -146,7 +152,12 @@ impl Generator {
             self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
         if self.behavior.optimization == mwcc_versions::Optimization::O0 {
             return self
-                .emit_unoptimized_masked_global_address(name, small, &index)
+                .emit_unoptimized_masked_global_address(
+                    name,
+                    small,
+                    &index,
+                    address_use.unoptimized_base,
+                )
                 .map(Some);
         }
         if small {

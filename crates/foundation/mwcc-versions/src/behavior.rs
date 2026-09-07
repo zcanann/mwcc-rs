@@ -25,7 +25,7 @@ use crate::profile::{
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
     ForwardedTraceStringStyle,
     FrameConvention, FrexpFamilyStyle, FunctionAddressStoreStyle, FunctionOrdinalAccountingStyle,
-    CxxTrivialDestructorStyle, GlobalArrayDecayStoreStyle, GlobalArrayIndexStyle,
+    CxxTrivialDestructorStyle, GlobalArrayDecayStoreStyle, GlobalArrayIndexStyle, SharedGlobalLoadStyle,
     GuardedByteCopyStyle, NullPointerCompareStyle,
     GuardedMemberInitializationStyle,
     IndexedRmwAssignmentStyle, IntCallResultConversionStyle, IntegerComparisonValueStyle,
@@ -783,6 +783,8 @@ pub struct Behavior {
     pub comma_value_placement_style: CommaValuePlacementStyle,
     /// Addressing shape for variable-indexed file-scope arrays.
     pub global_array_index_style: GlobalArrayIndexStyle,
+    /// Share a base between a masked word load and element zero.
+    pub shared_global_load_style: SharedGlobalLoadStyle,
     /// Retain the address high-half register in masked-index loads.
     pub masked_global_index_retains_base: bool,
     /// Early scaled parameter loads keep the consumed index out of the sibling's lane.
@@ -1301,6 +1303,7 @@ impl Behavior {
             } else {
                 config.build.profile.global_array_index_style()
             },
+            shared_global_load_style: config.build.profile.shared_global_load_style(),
             masked_global_index_retains_base: config.build.profile.masked_global_index_retains_base(),
             scaled_load_pair_preserves_index_register: config.build.profile.scaled_load_pair_preserves_index_register(),
             computed_load_pair_secondary_first: config.build.profile.computed_load_pair_secondary_first(),

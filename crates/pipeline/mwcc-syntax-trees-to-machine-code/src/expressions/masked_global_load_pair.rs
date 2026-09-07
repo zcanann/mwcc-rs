@@ -102,6 +102,7 @@ impl Generator {
             self.evaluate_general(second, GENERAL_SCRATCH)?;
         } else {
             let address_use = MaskedGlobalAddressUse {
+                unoptimized_base: None,
                 preserve_scratch: indexed_is_primary,
                 after_high: explicit.then_some((sibling, other)),
             };

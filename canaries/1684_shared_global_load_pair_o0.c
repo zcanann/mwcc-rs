@@ -1,5 +1,5 @@
 // Captured reference: masked and constant subscripts sharing a global-array base.
-// flags: -Cpp_exceptions off -pragma "cats off"
+// flags: -O0 -Cpp_exceptions off -pragma "cats off"
 struct S{unsigned pad[8],index,value;}; extern unsigned global[128],other[128],extra;
 unsigned add0(unsigned index){return (global[index&3])+(global[0]);}
 unsigned sub0(unsigned index){return (global[index&3])-(global[0]);}

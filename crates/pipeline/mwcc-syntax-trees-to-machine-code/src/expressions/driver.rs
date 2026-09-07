@@ -688,7 +688,11 @@ impl Generator {
                         }
                     }
                     if let (Some(left_base), Some(right_base)) = (deref_base(left), deref_base(right)) {
-                        if left_base == right_base && self.globals.contains_key(left_base) {
+                        // A declared array contributes a symbol address, not a
+                        // pointer load; its paired reads have their own selector.
+                        if left_base == right_base && self.globals.contains_key(left_base)
+                            && self.global_array_address_extent(left_base).is_none()
+                        {
                             return Err(Diagnostic::error("a global pointer dereferenced on both sides needs load-once reuse (roadmap)"));
                         }
                     }
