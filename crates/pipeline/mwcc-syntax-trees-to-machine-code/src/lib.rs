@@ -1571,7 +1571,7 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
     // and the consumer-tree preference it should take when free (policy #1).
     for interval in &mut liveness.intervals {
         if let Some(avoid) = generator.register_avoid.get(&interval.vreg) {
-            interval.avoid = avoid.clone();
+            interval.avoid.extend(avoid.iter().copied());
         }
         if generator
             .forced_general_callee_saved

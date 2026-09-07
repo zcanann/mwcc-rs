@@ -17,6 +17,36 @@ use mwcc_machine_code::Instruction;
 
 use crate::register::Class;
 
+/// A computed base that cannot be colored into r0: these encodings either
+/// interpret zero as a literal base or forbid it for an updating address.
+pub(crate) fn nonzero_base(instruction: &Instruction) -> Option<u8> {
+    use Instruction::*;
+    let base = match instruction {
+        AddImmediate { a, .. } | AddImmediateShifted { a, .. }
+        | LoadWord { a, .. } | LoadByteZero { a, .. } | LoadHalfwordZero { a, .. }
+        | LoadHalfwordAlgebraic { a, .. } | LoadWordWithUpdate { a, .. }
+        | LoadByteZeroWithUpdate { a, .. } | LoadHalfZeroWithUpdate { a, .. }
+        | LoadWordIndexed { a, .. } | LoadByteZeroIndexed { a, .. }
+        | LoadHalfwordZeroIndexed { a, .. } | LoadHalfwordAlgebraicIndexed { a, .. }
+        | LoadFloatSingle { a, .. } | LoadFloatDouble { a, .. }
+        | LoadFloatSingleIndexed { a, .. } | LoadFloatDoubleIndexed { a, .. }
+        | LoadFloatSingleWithUpdate { a, .. } | LoadFloatDoubleWithUpdate { a, .. }
+        | StoreWord { a, .. } | StoreByte { a, .. } | StoreHalfword { a, .. }
+        | StoreWordWithUpdate { a, .. } | StoreByteWithUpdate { a, .. }
+        | StoreWordIndexed { a, .. } | StoreByteIndexed { a, .. }
+        | StoreHalfwordIndexed { a, .. } | StoreFloatSingle { a, .. }
+        | StoreFloatDouble { a, .. } | StoreFloatSingleIndexed { a, .. }
+        | StoreFloatDoubleIndexed { a, .. } | StoreFloatSingleWithUpdate { a, .. }
+        | StoreFloatDoubleWithUpdate { a, .. } | StoreMultipleWord { a, .. }
+        | LoadMultipleWord { a, .. } | PairedSingleQuantizedLoad { a, .. }
+        | PairedSingleQuantizedStore { a, .. } | PairedSingleQuantizedLoadIndexed { a, .. }
+        | PairedSingleQuantizedLoadWithUpdate { a, .. }
+        | PairedSingleQuantizedStoreWithUpdate { a, .. } | CacheOp { a, .. } => *a,
+        _ => return None,
+    };
+    (base != 0).then_some(base)
+}
+
 /// Whether an instruction writes a register (`Define`) or reads it (`Use`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegisterRole {

@@ -14,6 +14,35 @@ pub(crate) enum Intrinsic {
     EnforceInOrderIo,
 }
 
+/// Validated operands shared by general intrinsic selection and body schedules.
+pub(crate) struct RotateInsert<'a> {
+    pub(crate) initial: &'a mwcc_syntax_trees::Expression,
+    pub(crate) source: &'a mwcc_syntax_trees::Expression,
+    pub(crate) shift: u8,
+    pub(crate) begin: u8,
+    pub(crate) end: u8,
+}
+
+pub(crate) fn rotate_insert(
+    arguments: &[mwcc_syntax_trees::Expression],
+) -> Option<RotateInsert<'_>> {
+    let [initial, source, shift, begin, end] = arguments else {
+        return None;
+    };
+    let immediate = |expression| {
+        crate::analysis::constant_value(expression)
+            .and_then(|value| u8::try_from(value).ok())
+            .filter(|value| *value < 32)
+    };
+    Some(RotateInsert {
+        initial,
+        source,
+        shift: immediate(shift)?,
+        begin: immediate(begin)?,
+        end: immediate(end)?,
+    })
+}
+
 pub(crate) fn classify(name: &str, argument_count: usize) -> Option<Intrinsic> {
     if name == "__rlwimi" && argument_count == 5 {
         return Some(Intrinsic::RotateLeftWordInsert);
@@ -76,6 +105,29 @@ pub(crate) fn is_integer_intrinsic_call(name: &str, argument_count: usize) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_rotate_immediates_without_restricting_wrapping_masks() {
+        use mwcc_syntax_trees::Expression;
+        let mut arguments = vec![Expression::IntegerLiteral(0); 5];
+        arguments[2] = Expression::IntegerLiteral(31);
+        arguments[3] = Expression::IntegerLiteral(28);
+        arguments[4] = Expression::IntegerLiteral(3);
+        let insert = rotate_insert(&arguments).unwrap();
+        assert_eq!((insert.shift, insert.begin, insert.end), (31, 28, 3));
+        for index in 2..5 {
+            for invalid in [
+                Expression::IntegerLiteral(-1),
+                Expression::IntegerLiteral(32),
+                Expression::Variable("dynamic".into()),
+            ] {
+                let mut invalid_arguments = arguments.clone();
+                invalid_arguments[index] = invalid;
+                assert!(rotate_insert(&invalid_arguments).is_none());
+            }
+        }
+        assert!(rotate_insert(&arguments[..4]).is_none());
+    }
 
     #[test]
     fn ordering_intrinsics_are_effectful_without_calling() {

@@ -4,13 +4,96 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete GXBump compilation and switch execution (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, exact GX stage update and address-base allocation constraints (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `758e8d0414bc8504a09e9f5d7821cab21cd6a11f9cd3d60cc82791b2b28da549:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `264bb8c0241d6f06e68ffb48027c624c94b597582ad7f1e81ac60fcadeaf978b:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Exact GX stage update and address-base constraints, 2026-09-07
+
+The configured BfBB **`GXSetNumIndStages` now matches all 36 original linked
+instruction bytes**, improving from 52 bytes under frozen baseline `2912b25e`.
+The original/candidate linked-code SHA-256 is
+`d4be2a9960dc8bb6cb8562457cce7a9d02c431561989fd43466da4ec22266ea6`.
+Together with `__GXFlushTextureState` and the empty `__GXUpdateBPMask`,
+**three of the complete GX object's eight functions have exact linked text**.
+This comparison resolves known symbol relocations at original DOL addresses;
+it is not a fresh relocatable reference-object comparison.
+
+The complete configured `GXBump.c` object remains compilable. Its SHA-256 is
+`ec3f0fcda452a7119d86167dbd7ff4016649fb653c5aece40d335b83bf9cb336`.
+Text shrinks **1,476 → 1,428 bytes**; the ELF file shrinks **3,376 → 3,296 bytes**.
+`GXSetIndTexOrder` also shrinks **280 → 248 bytes**, with redundant insert-result
+copies removed; its original is still 236 bytes. The other five function sizes
+remain unchanged. Full instruction and whole-object parity remain open.
+
+The existing global-field/dirty-mask scheduler now distinguishes two source
+operations explicitly. A C clear-mask/shift/OR expression inserts the entire
+shifted byte, including bits outside the cleared field. An `__rlwimi` inserts
+only its specified mask. Both retain their own schedules. The intrinsic form
+loads the nonvolatile global pointer once, narrows the byte parameter, updates
+the selected field, then ORs the dirty word. It handles parser-retained compound
+update values and optional macro no-ops, while preserving narrowing casts and
+excluding volatile global pointers from pointer-load reuse. Immediate operands
+are validated by a shared intrinsic decoder used by both general selection
+and body scheduling.
+
+General rotate-insert results prefer r0 when their consumer already wants the
+scratch result. Their separate virtual identities still preserve operand
+aliasing. Execution testing exposed why this preference needed a machine
+constraint: a virtual used to form an address could otherwise color into r0,
+turning its address use into literal zero. The machine description now identifies
+zero-sensitive base fields, liveness forbids r0 for those general virtuals,
+and selection hints are merged with those restrictions instead of overwriting
+them. Indexed offset operands remain eligible for r0; floating-register values
+do not inherit the general-register restriction.
+
+Four new canaries **1781–1784** produce **60/60 objects** across fifteen builds
+at O0/O4, both before and after the change. They cover narrow/full/wrapping
+insert masks, dirty-word aliasing, the distinct C shift/OR behavior, narrowed
+old values/results, volatile pointer loads, and the full stage-count reduction.
+This is a correctness and instruction-parity milestone, not a compile-count
+gain. Only the configured GC/1.2.5n original supplies instruction-byte evidence;
+other builds have candidate execution coverage.
+
+At the final fingerprint, **215,552 candidate execution calls pass**:
+
+- **92,160** calls for the new corpus objects, including every byte input with
+  randomized unused register bits. Baseline executions also pass. Volatile
+  pointer cases retain all four pointer loads per call under both compilers.
+  Full stage-count reductions compare with pinned original-DOL fixtures.
+- **115,200** calls rerun canaries 1771–1780 under the new compiler, retaining
+  the switch, matrix, pointer-continuation, and ABI results. Their thirty
+  baseline matrix objects also pass all 30,720 checks.
+- **8,192** calls rerun all eight functions in the complete configured GX
+  object against the original DOL, comparing FIFO traces, complete context
+  memory, matrix input preservation, and GPR/FPR/stack restoration.
+
+Other validation:
+
+- Captured paired-memory matrix: **300/300 whole-object exact**.
+- Index panel: **1,097 objects unchanged**, retaining **972 known reference
+  matches**, and **577 identical declines**, with no timeouts.
+- Cumulative metadata panel against `db48e092`: **1,494 objects unchanged**,
+  retaining **1,179 known reference matches**, and **704 identical declines**,
+  with no timeouts.
+- **102 vreg tests pass** with eight pre-existing ignored tests; **4 intrinsic
+  tests and 40 object-writer tests pass**. New tests enforce address restrictions
+  despite an r0 preference, retain r0 for indexed offsets, and validate immediate
+  limits without rejecting wrapping masks.
+- The complete configured AX object remains byte-identical, SHA-256
+  `1a8fed48a1634517cd66e23f09754e75274d170ca826e61408ff96650605e7e3`,
+  retaining its prior complete sync execution evidence.
+
+Local scripts are `target/check_gx_insert*.py` and `target/probe_gx_insert*.py`;
+results, pinned originals, and object hashes are in
+`target/gx-insert-{canaries,prior-canaries,gx,index,metadata,full-ax}/`.
+The six existing wibo processes remain in kernel U state after more than five
+hours. No new reference-compiler process was launched and no fresh full-project
+panel was measured.
 
 ## Complete GXBump compilation and switch execution, 2026-09-07
 

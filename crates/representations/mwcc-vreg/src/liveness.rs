@@ -44,6 +44,8 @@ pub struct Liveness {
 /// Within an instruction reads precede the write. A register first seen as a
 /// use is an incoming value, live along the paths leading to that use.
 pub fn analyze(instructions: &[Instruction]) -> Liveness {
+    let nonzero_bases: HashSet<_> = instructions.iter()
+        .filter_map(crate::description::nonzero_base).collect();
     // The currently-open range per register key, as (start, last-touched).
     let mut open: HashMap<(Class, u8), (usize, usize)> = HashMap::new();
     let mut ranges: Vec<((Class, u8), usize, usize)> = Vec::new();
@@ -183,6 +185,9 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
                 .unwrap_or_default();
             let flow_end = slots.last().map(|slot| slot / 2).unwrap_or(end);
             let mut interval = LiveInterval::new(vreg, start, end.max(flow_end));
+            if class == Class::General && nonzero_bases.contains(&value) {
+                interval.avoid.push(0);
+            }
             interval.live_slots = Some(slots);
             liveness.intervals.push(interval);
         } else if pinned_keys.insert((class, value)) {
@@ -306,6 +311,41 @@ mod tests {
     /// A virtual register's field value (id 0 -> VIRTUAL_BASE).
     fn v(id: u32) -> u8 {
         Reg::general(id).to_field()
+    }
+
+    #[test]
+    fn address_constraints_override_a_zero_register_preference() {
+        for use_base in [
+            Instruction::LoadWord { d: 3, a: v(0), offset: 4 },
+            Instruction::LoadWordIndexed { d: 3, a: v(0), b: 4 },
+            Instruction::StoreFloatDouble { s: 1, a: v(0), offset: 8 },
+            Instruction::AddImmediate { d: 3, a: v(0), immediate: 4 },
+        ] {
+            let stream = [Instruction::load_immediate(v(0), 32), use_base];
+            let mut liveness = analyze(&stream);
+            liveness.intervals[0].prefer = Some(0);
+            let allocation = LinearScan.allocate(
+                &liveness.intervals, &liveness.pinned, &liveness.calls,
+                &RegisterConstraints::gekko(),
+            ).unwrap();
+            assert_ne!(allocation.physical(Reg::general(0).virtual_register().unwrap()), Some(0));
+        }
+    }
+
+    #[test]
+    fn indexed_offset_can_still_use_zero() {
+        let stream = [
+            Instruction::load_immediate(v(0), 32),
+            Instruction::LoadWordIndexed { d: 3, a: 4, b: v(0) },
+        ];
+        let mut liveness = analyze(&stream);
+        assert!(liveness.intervals[0].avoid.is_empty());
+        liveness.intervals[0].prefer = Some(0);
+        let allocation = LinearScan.allocate(
+            &liveness.intervals, &liveness.pinned, &liveness.calls,
+            &RegisterConstraints::gekko(),
+        ).unwrap();
+        assert_eq!(allocation.physical(liveness.intervals[0].vreg), Some(0));
     }
 
     #[test]

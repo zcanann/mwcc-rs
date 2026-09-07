@@ -2,7 +2,7 @@
 
 #[allow(unused_imports)]
 use super::super::*;
-use super::recognize::recognize;
+use super::recognize::{recognize, FieldUpdate};
 
 impl Generator {
     pub(crate) fn try_global_bitfield_dirty_update(
@@ -12,18 +12,70 @@ impl Generator {
         let Some(shape) = recognize(function) else {
             return Ok(false);
         };
-        if self.behavior.frame_convention != FrameConvention::LinkageFirst
-            || self
-                .locations
-                .get(shape.parameter)
-                .map(|location| location.register)
-                != Some(3)
+        if self
+            .locations
+            .get(shape.parameter)
+            .map(|location| location.register)
+            != Some(3)
         {
             return Ok(false);
         }
         let Some(&global_type) = self.globals.get(shape.global) else {
             return Ok(false);
         };
+        if let FieldUpdate::RotateInsert { shift, begin, end } = shape.update {
+            if self.volatile_globals.contains(shape.global) {
+                return Ok(false);
+            }
+            self.output.pre_scheduled = true;
+            self.evaluate(&Expression::Variable(shape.global.into()), global_type, 4)?;
+            self.output.instructions.extend([
+                Instruction::RotateAndMask {
+                    a: 0,
+                    s: 3,
+                    shift: 0,
+                    begin: 24,
+                    end: 31,
+                },
+                Instruction::LoadWord {
+                    d: 3,
+                    a: 4,
+                    offset: shape.field_offset,
+                },
+                Instruction::RotateAndMaskInsert {
+                    a: 3,
+                    s: 0,
+                    shift,
+                    begin,
+                    end,
+                },
+                Instruction::StoreWord {
+                    s: 3,
+                    a: 4,
+                    offset: shape.field_offset,
+                },
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 4,
+                    offset: shape.dirty_offset,
+                },
+                Instruction::OrImmediate {
+                    a: 0,
+                    s: 0,
+                    immediate: shape.dirty_mask,
+                },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 4,
+                    offset: shape.dirty_offset,
+                },
+                Instruction::BranchToLinkRegister,
+            ]);
+            return Ok(true);
+        }
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst {
+            return Ok(false);
+        }
         self.output.pre_scheduled = true;
         self.evaluate(&Expression::Variable(shape.global.into()), global_type, 4)?;
         self.output.instructions.extend([
