@@ -156,6 +156,9 @@ impl Generator {
         left: &Expression,
         right: &Expression,
     ) -> Compilation<Option<(u8, u8)>> {
+        if let Some(registers) = self.place_two_global_loads(operator, left, right)? {
+            return Ok(Some(registers));
+        }
         if let Some(registers) = self.place_shared_global_load_pair(operator, left, right)? {
             return Ok(Some(registers));
         }

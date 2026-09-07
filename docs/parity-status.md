@@ -4,13 +4,61 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, shared global-array load pairs (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, two distinct global-array loads (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `7752dd68ba0f6c7204650ce4adc28e3b4138800b34a172130241e9b66b3b498e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `926da7e31870bc1a80cddee3c20ec556a3f035c4018a51115d24cc1c26387915:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Two distinct global-array loads, 2026-09-07
+
+Against frozen baseline `a3b47752`, the captured memory-operand matrix improves
+**240/300 → 270/300 whole-object exact**, with compilation improving by the same
+amount and no lost matches. All **30/30 two-table pairs** now match: six integer
+operations in both source orders, fifteen compiler builds, and O0/O4. The remaining
+30 configurations still decline on the more complex computed pointer index.
+All references come from the original capture before the runner stalled.
+
+The new `two_global_loads` selector exposes both independent address chains to
+one versioned placement policy. GC/1.1 and GC/1.2.5[n] finish an explicit first
+address before starting the second; GC/1.1p1 starts both high halves early. Middle
+builds complete the secondary indexed base first, while GC/3 and Wii retain both
+high-half registers as completed bases. O0 reuses ordinary operand evaluation
+with the second operand's inputs reserved. Mask selection, relocation recording,
+and integer load opcodes remain shared with the existing builders. The selector
+accepts distinct full-size integer arrays and register-derived masked indices;
+member-derived indices, shared bases, and owned static-data anchors retain their
+existing paths.
+
+Canaries 1687–1688 cover the captured O4/O0 bodies. Their **30 compiled objects**
+match the captured code, symbols, and comment metadata apart from renamed file
+symbols. Canaries 1689–1690 add independent parameter indices, signed halfwords,
+mixed byte/halfword widths, discontiguous masks, and volatile reads. All **30
+candidate objects** compile and execute; their fresh reference comparisons remain
+pending and are not counted as exact objects. Unicorn validates **56,160 paired
+reference/candidate calls**, including randomized words, overflow, all operand
+orders, relocated addresses with high-half carry, and overlapping arrays. The
+extra candidate probes add **4,680 calls**, checking two reads per expression
+and preserving the second index across address construction. All **60,840 calls
+pass**.
+
+The masked-index panel preserves **1,341/1,470 exact objects** and all candidate
+compilations, including the Wind Waker getter reduction. Direct frozen/candidate
+index regressions preserve all **1,096 compiled objects**, including **972
+previously reference-exact objects**, and all **578 decline diagnostics** (1,674
+runnable pairs from 2,115 slots, 441 prior exclusions), without timeouts. All **45
+version tests pass**, and the native compiler and oracle build successfully.
+
+The Strikers AX reduction in canary 1683 was retried on GC/2.6 and still reaches
+the additive-chain allocator diagnostic. Its complete expression also needs
+shifted indices and static-table address handling; this checkpoint establishes
+the two-table component, not full AX compilation. The full real-project panel
+remains unmeasured at this fingerprint because the existing reference-runner
+processes are still stalled. Evidence is under `target/two-global-*` and
+`target/check_two_global_*`; captured matrices use the `two-global` label in
+`target/memory-operands-probes` and `target/masked-index-probes`.
 
 ## Shared global-array load pairs, 2026-09-07
 
