@@ -859,6 +859,11 @@ impl Generator {
     /// array is conservatively non-small; the sentinel never enters the finite
     /// extent map and therefore cannot satisfy bounds-based optimizations.
     pub(crate) fn global_array_address_extent(&self, name: &str) -> Option<u32> {
+        // A parameter or automatic object shadows the file-scope array. The
+        // declaration's extent must not turn a local pointer into its symbol.
+        if self.locations.contains_key(name) || self.frame_slots.contains_key(name) {
+            return None;
+        }
         self.is_global_array(name)
             .then(|| self.global_array_sizes.get(name).copied().unwrap_or(u32::MAX))
     }

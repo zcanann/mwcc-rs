@@ -1,8 +1,14 @@
-//! Operand placement for a masked pointer subscript beside a displacement load.
+//! Operand placement for masked pointer subscripts paired with memory loads.
 //! The arithmetic emitter owns the final operator; mask selection stays shared
 //! with ordinary subscripts. This owner only selects lifetimes and issue order.
 
 use super::*;
+
+struct ResidentMaskedSubscript<'a> {
+    pointee: Pointee,
+    address: u8,
+    index: masked_index::MaskedIndex<'a>,
+}
 
 impl Generator {
     /// Restrict the sibling to a single integer load through a resident pointer.
@@ -49,27 +55,18 @@ impl Generator {
         })
     }
 
-    pub(crate) fn place_indexed_load_pair(
-        &mut self,
-        operator: BinaryOperator,
-        left: &Expression,
-        right: &Expression,
-    ) -> Compilation<Option<(u8, u8)>> {
-        let (indexed, sibling, indexed_is_right) = if self.is_resident_displacement_load(right) {
-            (left, right, false)
-        } else if self.is_resident_displacement_load(left) {
-            (right, left, true)
-        } else {
-            return Ok(None);
-        };
-        let Expression::Index { base, index } = indexed else {
-            return Ok(None);
+    fn resident_masked_subscript<'a>(
+        &self,
+        expression: &'a Expression,
+    ) -> Option<ResidentMaskedSubscript<'a>> {
+        let Expression::Index { base, index } = expression else {
+            return None;
         };
         let Some(location) = leaf_name(base)
             .filter(|name| !self.frame_slots.contains_key(*name))
             .and_then(|name| self.locations.get(name))
         else {
-            return Ok(None);
+            return None;
         };
         let Some(
             pointee @ (Pointee::UnsignedChar
@@ -79,18 +76,104 @@ impl Generator {
             | Pointee::UnsignedInt),
         ) = location.pointee
         else {
-            return Ok(None);
+            return None;
         };
         let address = location.register;
         if address == GENERAL_SCRATCH {
-            return Ok(None);
+            return None;
         }
         let Some(index) = self.masked_index(index, pointee) else {
-            return Ok(None);
+            return None;
         };
         if index.loaded && !self.is_resident_displacement_load(index.source) {
+            return None;
+        }
+        Some(ResidentMaskedSubscript {
+            pointee,
+            address,
+            index,
+        })
+    }
+
+    fn place_two_masked_subscripts(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+    ) -> Compilation<Option<(u8, u8)>> {
+        let (first_expression, second_expression) = if operator == BinaryOperator::Subtract {
+            (right, left)
+        } else {
+            (left, right)
+        };
+        let (Some(first), Some(second)) = (
+            self.resident_masked_subscript(first_expression),
+            self.resident_masked_subscript(second_expression),
+        ) else {
+            return Ok(None);
+        };
+        // Member-derived indices add their own memory dependencies. This
+        // schedule owns two register-derived offsets, with no calls or loads
+        // hidden in either offset calculation.
+        if first.index.loaded || second.index.loaded {
             return Ok(None);
         }
+        let mut inputs = self.registers_used_by(left);
+        inputs.extend(self.registers_used_by(right));
+        if self.behavior.optimization == mwcc_versions::Optimization::O0 {
+            let primary = self.fresh_virtual_general_avoiding(inputs.into_iter().collect());
+            self.with_reserved_inputs(second_expression, |me| {
+                me.evaluate_general(first_expression, primary)
+            })?;
+            self.evaluate_general(second_expression, GENERAL_SCRATCH)?;
+            return Ok(Some((primary, GENERAL_SCRATCH)));
+        }
+
+        let first_source = self.general_register_of_leaf(first.index.source)?;
+        let second_source = self.general_register_of_leaf(second.index.source)?;
+        let first_offset = self.fresh_virtual_general_avoiding(inputs.into_iter().collect());
+        let primary = self.fresh_virtual_general();
+        self.emit_masked_scale(&second.index, second_source, GENERAL_SCRATCH);
+        self.emit_masked_scale(&first.index, first_source, first_offset);
+        let first_load = indexed_load(first.pointee, primary, first.address, first_offset)?;
+        let second_load = indexed_load(
+            second.pointee,
+            GENERAL_SCRATCH,
+            second.address,
+            GENERAL_SCRATCH,
+        )?;
+        if self.behavior.computed_load_pair_secondary_first {
+            self.output.instructions.extend([second_load, first_load]);
+        } else {
+            self.output.instructions.extend([first_load, second_load]);
+        }
+        Ok(Some((primary, GENERAL_SCRATCH)))
+    }
+
+    pub(crate) fn place_indexed_load_pair(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+    ) -> Compilation<Option<(u8, u8)>> {
+        if let Some(registers) = self.place_two_masked_subscripts(operator, left, right)? {
+            return Ok(Some(registers));
+        }
+        let (indexed, sibling, indexed_is_right) = if self.is_resident_displacement_load(right) {
+            (left, right, false)
+        } else if self.is_resident_displacement_load(left) {
+            (right, left, true)
+        } else {
+            return Ok(None);
+        };
+        let Some(ResidentMaskedSubscript {
+            pointee,
+            address,
+            index,
+        }) = self.resident_masked_subscript(indexed)
+        else {
+            return Ok(None);
+        };
         let optimized = self.behavior.optimization != mwcc_versions::Optimization::O0;
         let indexed_is_primary = operator == BinaryOperator::Subtract && indexed_is_right;
         let avoid = if !optimized {

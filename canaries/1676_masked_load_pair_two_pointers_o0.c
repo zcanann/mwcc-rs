@@ -1,5 +1,5 @@
 // Two computed pointer subscripts, including a parameter shadowing an array.
-// flags: -Cpp_exceptions off -pragma "cats off"
+// flags: -Cpp_exceptions off -pragma "cats off" -O0
 struct S{unsigned pad[8],index,value;}; extern unsigned global[128],other[128],extra;
 unsigned add0(unsigned index,unsigned* table,unsigned* other){return (table[index&3])+(other[index&1]);}
 unsigned sub0(unsigned index,unsigned* table,unsigned* other){return (table[index&3])-(other[index&1]);}

@@ -4,13 +4,69 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, masked pointer load pairs (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, two computed pointer loads and array shadowing (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `4388e3d4ab114975d40a273b9f95d61e5ffc6b426c6e859d2bdac767ce21fa11:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `a2fac7fe37e388a1a73915a18dc7e77d8187d98b4632666f396bf9d2c5a8fb7f:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Two computed pointer loads and array shadowing, 2026-09-07
+
+Against frozen baseline `e985e342`, the captured 300-pair memory-operand matrix
+improves **150/300 → 180/300 whole-object exact**, with compilation improving
+by the same amount. All **30/30 two-pointer pairs** now match, covering six
+integer operations in both source orders, fifteen builds, and O0/O4. Every
+previous exact match is retained. The remaining 120 configurations still
+decline: three global-operand shapes and a more complex computed index. All
+300 reference objects were captured before the ongoing reference-runner stall;
+there are no missing reference objects in this matrix.
+
+The existing `indexed_load_pair` owner now shares resident-pointer/mask
+recognition between one- and two-subscript paths. At O4 it computes the
+secondary offset through r0, then the primary offset in a separate virtual
+register, before loading either operand. The oldest four builds issue the
+secondary load first; later builds issue the primary first. A dedicated version
+profile property records that distinction. O0 evaluates one complete operand
+at a time and keeps the primary result outside the input registers. This path
+currently requires register-derived indices; two member-derived index loads
+need their own dependency schedule.
+
+O0 comparison exposed an independent binding bug: the pointer parameter
+`other` was treated as the file-scope array of the same name, creating a global
+relocation and reading the wrong storage. Shared global-array address-extent
+lookup now honors resident and frame-local bindings before classifying a name
+as a global array. The captured two-pointer source exercises that shadowing,
+so matching the entire object also verifies removal of the spurious relocation.
+
+Existing canary 1675 now covers the supported O4 body; new canary 1676 preserves
+its O0 counterpart. All **30 canary objects** match the captured reference
+bodies' executable bytes, symbols, and comment metadata apart from their changed
+file-symbol names. Two further canaries (1677–1678) exercise independent indices,
+unsigned bytes, signed halfwords, discontiguous masks, volatile reads, and
+parameters shadowing arrays with different element types. Their **30 candidate
+objects compile and execute correctly**, but fresh reference comparisons remain
+pending; they are not counted as exact objects.
+
+Unicorn validates **37,440 reference/candidate calls across 30 paired objects**
+with randomized values, both operand orders, aliased pointers, and overflow.
+The independent-index/type canaries add **7,200 candidate calls across 30
+objects**, checking results, two memory reads per expression, and absence of
+relocations to the shadowed globals. All **44,640 calls** pass. The 45 version
+profile tests pass. The full prior masked-index matrix retains **1,341/1,470
+exact objects**, including the Wind Waker getter reduction, and all 1,470
+candidate compilations. Neither matrix loses a match.
+
+The direct frozen/candidate index regression comparison again finds all
+**1,096 compiled objects byte-identical**, preserving all **972 previously
+reference-exact objects**, and all **578 decline diagnostics unchanged**.
+These are 1,674 previously runnable pairs from 2,115 slots, with 441 prior
+exclusions and no timeouts. The full real-project panel has not been remeasured
+while fresh reference-runner processes remain stalled; this milestone makes no
+new full-file or project-build parity claim. Evidence is under
+`target/dual-load-*`; matrix artifacts use the `dual` label in
+`target/memory-operands-probes` and `target/masked-index-probes`.
 
 ## Masked pointer load pairs, 2026-09-07
 

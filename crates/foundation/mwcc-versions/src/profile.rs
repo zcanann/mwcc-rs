@@ -1484,6 +1484,11 @@ pub trait CodegenProfile: core::fmt::Debug {
         CommaValuePlacementStyle::RegisterResident
     }
 
+    /// Issue the secondary load first after forming both computed offsets.
+    fn computed_load_pair_secondary_first(&self) -> bool {
+        false
+    }
+
     /// Early scaled parameter loads keep the consumed index register out of
     /// the independent sibling load's lane. Byte indices need no scale.
     fn scaled_load_pair_preserves_index_register(&self) -> bool {
@@ -2617,6 +2622,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn computed_load_pair_secondary_first(&self) -> bool {
+        true
+    }
+
     fn scaled_load_pair_preserves_index_register(&self) -> bool {
         true
     }
