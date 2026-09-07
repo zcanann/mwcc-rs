@@ -2278,3 +2278,91 @@ fn discovered_full_bss_follows_strings_but_precedes_small_data_function_event() 
         assert_eq!(names, expected, "{order:?}");
     }
 }
+
+#[test]
+fn constant_local_initializers_interleave_strings_storage_and_symbols() {
+    for (literal_section, local_section) in [
+        (".sdata", ".sdata"),
+        (".data", ".data"),
+        (".rodata", ".rodata"),
+        (".data", ".sdata"),
+    ] {
+        let mut input = static_frontier_input(0, false);
+        input.object_format.function_symbol_order = FunctionSymbolOrder::ReferencesFirst;
+        input
+            .object_format
+            .initialized_globals_before_deferred_functions = false;
+        input.object_format.data_relocations_use_section_anchors = true;
+        input.functions[1].is_static = false;
+        input.functions[1].string_names = vec!["@5".into(), "@7".into()];
+        input.functions[1].string_count = 2;
+        input.data_objects.clear();
+        for (name, target) in [("p", "@5"), ("q", "@7"), ("r", "@5")] {
+            input.data_objects.push(DataObject {
+                name,
+                section: Some(local_section.into()),
+                initial_bytes: Some(vec![0; 4]),
+                static_local_owner: Some(1),
+                functions_before: 1,
+                relocations: vec![crate::DataRelocation {
+                    offset: 0,
+                    target: target.into(),
+                    addend: 0,
+                }],
+                ..static_frontier_input(0, false).data_objects.remove(0)
+            });
+        }
+        for (name, bytes) in [("@5", b"one\0"), ("@7", b"two\0")] {
+            input.data_objects.push(DataObject {
+                name,
+                section: Some(literal_section.into()),
+                initial_bytes: Some(bytes.to_vec()),
+                functions_before: 1,
+                ..static_frontier_input(0, false).data_objects.remove(0)
+            });
+        }
+        let bytes = write_object(&input);
+        let names = symbol_names(&bytes);
+        let local_names: Vec<_> = ["p$", "q$", "r$"]
+            .into_iter()
+            .map(|prefix| names.iter().find(|name| name.starts_with(prefix)).unwrap())
+            .collect();
+        let relevant: Vec<_> = names
+            .iter()
+            .filter(|name| {
+                ["before", "@5", "@7", "after"].contains(&name.as_str())
+                    || local_names.contains(name)
+            })
+            .map(|name| name.as_str())
+            .collect();
+        assert_eq!(
+            relevant,
+            [
+                "before",
+                "@5",
+                local_names[0],
+                "@7",
+                local_names[1],
+                local_names[2],
+                "after"
+            ],
+            "{literal_section}, {local_section}"
+        );
+        let expected_offsets = if literal_section == local_section {
+            [0, 4, 8, 12, 16]
+        } else {
+            [0, 0, 4, 4, 8]
+        };
+        for (name, offset) in ["@5", local_names[0], "@7", local_names[1], local_names[2]]
+            .into_iter()
+            .zip(expected_offsets)
+        {
+            assert_eq!(symbol_value_and_size(&bytes, name), (offset, 4));
+        }
+        if literal_section == ".data" {
+            let position = |wanted| names.iter().position(|name| name == wanted).unwrap();
+            assert!(position("before") < position("...data.0"));
+            assert_eq!(position("...data.0") + 1, position("@5"));
+        }
+    }
+}

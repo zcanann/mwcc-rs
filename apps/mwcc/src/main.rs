@@ -14,6 +14,7 @@ mod inline_fallbacks;
 mod inline_ordinal_positions;
 mod packed_strings;
 mod reference_analysis;
+mod static_initializer_strings;
 mod string_ordinal_positions;
 
 use mwcc_core::{Compilation, Diagnostic};
@@ -2286,6 +2287,23 @@ fn compile(
             + machine_function.static_locals.len() as u32;
         let mut next_string_number =
             adjusted_anonymous_number(number, machine_function.string_number_adjust);
+        let initializer_strings = if config.flags.string_literals_packed {
+            static_initializer_strings::Plan::default()
+        } else {
+            static_initializer_strings::plan(machine_function, counter, string_pool.keys().cloned())
+        };
+        for local in static_local_globals
+            .iter_mut()
+            .filter(|local| local.static_local_owner == Some(function_index))
+        {
+            local.anonymous_adjust += i64::from(
+                initializer_strings
+                    .local_adjustments
+                    .get(&local.name)
+                    .copied()
+                    .unwrap_or(0),
+            );
+        }
         // Strings first, in the function's `@N` block. The NEW ones (a reuse points at an earlier
         // pool entry) are recorded by name so the writer emits their symbols at the FRONT of this
         // function's `@N` block, interleaved per-function with its constants/unwind entries.
@@ -2351,7 +2369,12 @@ fn compile(
                     if let Some(name) = string_pool.get(bytes) {
                         return name.clone();
                     }
-                    let name = format!("@{next_string_number}");
+                    let ordinal = initializer_strings
+                        .string_numbers
+                        .get(&index)
+                        .copied()
+                        .unwrap_or(next_string_number);
+                    let name = format!("@{ordinal}");
                     next_string_number += 1;
                     number += 1;
                     new_string_names.push(name.clone());

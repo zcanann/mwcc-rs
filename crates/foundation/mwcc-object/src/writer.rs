@@ -17,6 +17,38 @@ use crate::{
 
 use std::collections::HashMap;
 
+/// Literal dependencies created while parsing a constant local initializer.
+/// Packed pools are translation-unit products and keep their later placement.
+fn initializer_strings<'input, 'data>(
+    input: &'input ObjectInput<'data>,
+    object: &DataObject<'data>,
+) -> Vec<&'input DataObject<'data>> {
+    let Some(owner) = object
+        .static_local_owner
+        .and_then(|index| input.functions.get(index))
+    else {
+        return Vec::new();
+    };
+    object
+        .relocations
+        .iter()
+        .filter_map(|relocation| {
+            if relocation.target.starts_with("@stringBase")
+                || !owner
+                    .string_names
+                    .iter()
+                    .any(|name| name.as_str() == relocation.target)
+            {
+                return None;
+            }
+            input
+                .data_objects
+                .iter()
+                .find(|candidate| candidate.name == relocation.target)
+        })
+        .collect()
+}
+
 /// A strong vtable whose first callable slot remains zero (a leading pure
 /// virtual) is registered before code, but CodeWarrior leaves its later,
 /// locally-defined function symbols in definition order. Ordinary dispatch
@@ -1011,11 +1043,17 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         let function = &input.functions[source_position];
-        for object in input.data_objects.iter().filter(|object| {
-            object.static_local_owner == Some(source_position)
-                && section_of(object) == ".rodata"
-        }) {
-            if placed_rodata.insert(object.name) {
+        for object in input
+            .data_objects
+            .iter()
+            .filter(|object| object.static_local_owner == Some(source_position))
+        {
+            for literal in initializer_strings(input, object) {
+                if section_of(literal) == ".rodata" && placed_rodata.insert(literal.name) {
+                    place(literal, ".rodata", &mut rodata_size);
+                }
+            }
+            if section_of(object) == ".rodata" && placed_rodata.insert(object.name) {
                 place(object, ".rodata", &mut rodata_size);
             }
         }
@@ -1114,12 +1152,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         let function_index = source_position;
         let function = &input.functions[function_index];
         // The function's own `.data` STATIC LOCALS lead its block (declared at
-        // the body top, before any string literal use — bfbb's pow_10$1224 at
+        // the body top, with initializer strings at their declaration — bfbb's pow_10$1224 at
         // 0x1a8 ahead of dec2num's pooled string).
-        for object in input.data_objects.iter().filter(|object| {
-            object.static_local_owner == Some(function_index) && section_of(object) == ".data"
-        }) {
-            if placed_data.insert(object.name) {
+        for object in input
+            .data_objects
+            .iter()
+            .filter(|object| object.static_local_owner == Some(function_index))
+        {
+            for literal in initializer_strings(input, object) {
+                if section_of(literal) == ".data" && placed_data.insert(literal.name) {
+                    place(literal, ".data", &mut file_data_size);
+                }
+            }
+            if section_of(object) == ".data" && placed_data.insert(object.name) {
                 place(object, ".data", &mut file_data_size);
             }
         }
@@ -1315,10 +1360,17 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         let function = &input.functions[source_position];
-        for object in input.data_objects.iter().filter(|object| {
-            object.static_local_owner == Some(source_position) && section_of(object) == ".sdata"
-        }) {
-            if placed_sdata.insert(object.name) {
+        for object in input
+            .data_objects
+            .iter()
+            .filter(|object| object.static_local_owner == Some(source_position))
+        {
+            for literal in initializer_strings(input, object) {
+                if section_of(literal) == ".sdata" && placed_sdata.insert(literal.name) {
+                    place(literal, ".sdata", &mut sdata_size);
+                }
+            }
+            if section_of(object) == ".sdata" && placed_sdata.insert(object.name) {
                 place(object, ".sdata", &mut sdata_size);
             }
         }
@@ -2414,7 +2466,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
         if data_marker_pending
             && data_section[object.name] == ".data"
-            && (data_marker_needed_by_data
+            && ((data_marker_needed_by_data
+                && object.static_local_owner.is_none()
+                && !function_string_names.contains(object.name))
                 || (data_marker_needed_by_code
                     && object.functions_before == 0
                     && !function_string_names.contains(object.name)))
@@ -2879,6 +2933,43 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }};
     }
+    macro_rules! emit_function_data_anchor {
+        ($section:expr) => {{
+            if data_marker_pending && $section == ".data" {
+                local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                write_symbol(
+                    &mut symtab,
+                    strtab.add("...data.0"),
+                    0,
+                    0,
+                    0,
+                    0,
+                    index_of(".data") as u16,
+                );
+                comment_values.push((1, input.object_format.data_anchor_comment_flags));
+                data_marker_pending = false;
+            }
+        }};
+    }
+    macro_rules! emit_function_string {
+        ($name:expr) => {{
+            let name: &str = $name;
+            if !local_data_symbols.contains_key(name) {
+                emit_function_data_anchor!(data_section[name]);
+                local_data_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(name),
+                    data_offsets[name],
+                    data_sizes[name],
+                    STB_LOCAL_OBJECT,
+                    0,
+                    index_of(data_section[name]) as u16,
+                );
+                comment_values.push((data_aligns[name], 0));
+            }
+        }};
+    }
     for (index, function) in functions.iter().enumerate() {
         if owned_rtti_local_frontier == Some(index) {
             emit_owned_rtti_locals!();
@@ -2893,6 +2984,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 break;
             }
             if object.static_local_owner == Some(index) {
+                for literal in initializer_strings(input, object) {
+                    emit_function_string!(literal.name);
+                }
+                emit_function_data_anchor!(data_section[object.name]);
                 local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
                 let section = index_of(data_section[object.name]) as u16;
                 let symbol_name = data_symbol_name(object.name);
@@ -2954,35 +3049,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             && function.string_number_after_rodata.is_none()
         {
             for name in &function.string_names {
-                if local_data_symbols.contains_key(name.as_str()) {
-                    continue;
-                }
-                if data_marker_pending && data_section[name.as_str()] == ".data" {
-                    local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
-                    write_symbol(
-                        &mut symtab,
-                        strtab.add("...data.0"),
-                        0,
-                        0,
-                        0,
-                        0,
-                        index_of(".data") as u16,
-                    );
-                    comment_values.push((1, input.object_format.data_anchor_comment_flags));
-                    data_marker_pending = false;
-                }
-                local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
-                let section = index_of(data_section[name.as_str()]) as u16;
-                write_symbol(
-                    &mut symtab,
-                    strtab.add(name),
-                    data_offsets[name.as_str()],
-                    data_sizes[name.as_str()],
-                    STB_LOCAL_OBJECT,
-                    0,
-                    section,
-                );
-                comment_values.push((data_aligns[name.as_str()], 0));
+                emit_function_string!(name.as_str());
             }
             if zero_references_at_function {
                 emit_zero_static_references!(function, ZeroStaticSymbolPhase::AfterStrings);
@@ -3335,6 +3402,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 if object.static_local_owner == Some(index)
                     && !local_data_symbols.contains_key(object.name)
                 {
+                    for literal in initializer_strings(input, object) {
+                        emit_function_string!(literal.name);
+                    }
+                    emit_function_data_anchor!(data_section[object.name]);
                     local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
                     let section = index_of(data_section[object.name]) as u16;
                     let symbol_name = data_symbol_name(object.name);

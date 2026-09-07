@@ -4,13 +4,56 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, guarded C++ static pointer getters (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, constant static-initializer string order (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `5d8e73e1b9d3a32a0168c243a8b216d53ce587fab5e785765d11503553f25725:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `1e28e34561b4389a07befc9ded50f863ff593efac2fb0729a8072240bcdd62ca:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Constant static-initializer string order, 2026-09-06
+
+Against frozen baseline `00651054`, the ten-shape C/C++ O0/O4 initializer
+panel improves **80/600 → 362/600 whole-object exact pairs**. All 600 compile
+on both sides, and no previous exact match is lost. New canaries 1651–1653
+cover multiple declarations, fresh and reused strings, neighboring scalar
+locals, and C++ array/record initializers. They improve **0/45 → 40/45**:
+both C cases match 14/15 builds, while the C++ aggregate case matches 12/15.
+Together with 1644 and 1647–1650, the focused permanent selection improves
+**50/120 → 108/120**; all pairs are reference-runnable and compile.
+
+A separate driver planner assigns fresh literal identities during each local
+initializer and carries their consumed slots into subsequent local identities.
+Reuse of an earlier literal consumes no slot. Packed and explicitly deferred
+pools retain their existing numbering owners. The object writer follows these
+initializer dependencies when placing `.data`, `.sdata`, and `.rodata` and
+when emitting local symbols. This also handles a pointer in one section whose
+literal belongs to another. Writable section anchors are emitted at the
+function-owned data event, preserving earlier local function symbols.
+
+The preceding string panel improves **660/960 → 722/960 exact objects**, with
+all 960 compilable and no exact losses. The existing metadata regression panel
+retains all **1,179 exact objects** across **2,198 runnable pairs** (2,940 slots,
+742 build exclusions). All **40 object-writer tests** and **eight focused driver
+tests** pass. The new writer test checks declaration/reuse order, physical
+section offsets, and the writable anchor's position after an earlier function.
+
+The Mario Kart Double Dash getter reduction 1647 remains **12/15**. Its newer
+GameCube builds still differ in anonymous numbering around class declarations;
+this change does not establish their parity. Wii also retains weak,
+function-qualified static names and different local ordinal consumption.
+The aggregate probes expose newer-build eight-byte alignment gaps. Older C++
+multi-local scalar initialization still needs a broader guarded lowering owner.
+
+Every individual whole-object and code verdict remains unchanged across the
+**128-config real-project panel: 47 BYTE, 16 DIFF, 59 compiler DEFER, two HARNESS,
+four missing dependencies**. Code remains **46/109 exact measured objects**,
+five empty and fourteen unmeasured; all 51 measured partial translation units
+remain nonexact. Both complete `GeoTree.cpp` configurations still hit the
+30-second cap. These focused results are not a corpus or project-build parity
+estimate. Evidence is under `target/static-order-*`; the preceding string
+matrix is `target/string-alignment-probes/static-order-results.json`.
 
 ## Guarded C++ static pointer getters, 2026-09-06
 
