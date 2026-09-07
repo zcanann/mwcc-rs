@@ -1634,19 +1634,10 @@ fn compile(
     // Strings pooled from STRUCT-member relocations collect here per global (the
     // enclosing push borrows `defined_globals`), then append after it.
     let mut pooled_string_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
-    // A static declared AFTER the last function still emits UP FRONT (measured:
-    // bfbb's plain `static void* const __destroy_global_chain_reference` in
-    // .sdata2 with no section attribute); only a declaration strictly BETWEEN
-    // functions interleaves at its source position (strikers' `unused`).
-    let source_function_count = unit.functions.len();
+    // Preserve the declaration frontier through the complete emitted stream,
+    // including the tail. LOCAL symbols still precede the GLOBAL run in ELF;
+    // that grouping does not move a tail declaration ahead of earlier locals.
     for global in &unit.globals {
-        // Only a PLAIN static (no section attribute) normalizes — the measured
-        // case is bfbb's tail `static void* const` reference. Section-attributed
-        // (.ctors/.dtors) and exported globals keep their source position (the
-        // fire-678 interleave, canary 1150).
-        let clamp_tail = global.is_static
-            && global.section.is_none()
-            && global.functions_before >= source_function_count;
         let force_upfront = analysis_upfront_globals.contains(&global.name.as_str());
         let source_position = global.functions_before.min(unit.functions.len());
         let global = &mwcc_syntax_trees::GlobalDeclaration {
@@ -1655,7 +1646,7 @@ fn compile(
             } else {
                 emitted_non_static_function_prefix[source_position]
             },
-            functions_before: if clamp_tail || force_upfront {
+            functions_before: if force_upfront {
                 0
             } else {
                 emitted_function_prefix[source_position]

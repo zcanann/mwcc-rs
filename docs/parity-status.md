@@ -4,13 +4,67 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, complete Melee transport matching (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, file-static declaration frontiers (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `64f5ec4c522c918c3e60e831bbf664193d4dddea50315a52b1e40032c55bcd30:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `9a7dd2803d124bf43028a36fa3784caebd41c7593c5572e80790aced4cae4aac:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## File-static declaration frontiers, 2026-09-06
+
+Against frozen baseline `b2c7d826`, the remaining legacy symbol-order gap in
+packet-read canaries **1614/1615 is closed**: their executable-code matches
+now become **8/30 whole-object exact pairs**, up from 0/30. Both objects match
+all four legacy builds. The other 22 pairs still have code differences.
+
+The writer's existing declaration-order profile now applies consistently to
+zero-filled file statics as well as initialized ones. Such objects enter the
+local symbol stream at their declaration frontier, before the next function's
+strings and locals, regardless of first use. They no longer fall through to
+the separate first-reference path. A shared declaration-event emitter handles
+both inter-function positions and the end of the function stream.
+
+The driver also preserves tail declaration positions instead of moving all
+plain tail statics to the front. ELF's local-before-global symbol grouping
+already explains the apparent early placement when preceding functions are
+global. Moving the declaration itself wrongly crossed earlier static
+functions and anonymous data. Section-attributed objects and explicit captured
+creation events retain their existing owners.
+
+Fifteen declaration-order probes were compiled across all 15 builds; all
+**60/60 legacy symbol sequences match**. They cover leading, interleaved,
+delayed-use, unused, and tail declarations; mixed initialized/zero objects;
+strings before and after declarations; constant pointers; and large `.bss`
+arrays. The probes also establish the outstanding newer-build distinction:
+ordinary uninitialized statics follow first use, with different placement
+relative to function symbols. That reference timeline remains future work.
+
+New canaries **1618/1619 improve from 0/30 to 6/30 whole-object exact pairs**.
+The declaration-frontier sample matches all four legacy builds; the string/tail
+sample matches GC/1.1p1 and GC/1.2.5n. Its GC/1.1 and GC/1.2.5 differences are
+an existing return-load/epilogue schedule gap. All 30 compile, with no exclusions
+or reference rejections. Together with 1614/1615, the targeted set improves
+from **0/60 to 14/60 exact objects**.
+
+All **32 object-writer tests pass**, including a new matrix proving front,
+middle, tail, and collapsed source positions with used/unused objects and
+checking relocation symbol identities after reordering. The focused metadata
+regression selection retains every verdict: **2,250 slots, 500 exclusions,
+1,750 runnable pairs, 899 exact objects**, and no timeouts.
+
+An additional **86 real-project metadata configurations retain every object
+and code verdict**: 11 BYTE, 16 DIFF, and 59 compiler DEFER, with no harness or
+dependency failures. Code projections retain 12/75 exact, three empty, and
+eight unmeasured; 51 measured projections are partial-TU diagnostics. The
+40-configuration transport panel retains **36 BYTE and four missing
+dependencies**, with **34/34 nonempty code projections exact** and two empty.
+Melee's complete transport object remains byte-identical.
+
+Local evidence: `target/zero-static-*`, `target/check_zero_static*.py`,
+`target/probe_zero_static_order.py`, and
+`target/reference-parity/9a7dd2803d124bf4-5e4ca1ddc460f4d8.jsonl`.
 
 ## Complete Melee transport matching, 2026-09-06
 

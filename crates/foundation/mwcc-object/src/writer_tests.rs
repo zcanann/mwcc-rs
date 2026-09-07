@@ -1865,3 +1865,126 @@ fn const_pointer_arrays_emit_reverse_rodata_relocations() {
         ]
     );
 }
+
+fn static_frontier_object(position: usize, referenced: bool) -> Vec<u8> {
+    let mut before = weak_function("before");
+    before.is_static = true;
+    before.is_weak = false;
+    before.weak_inline = false;
+    let mut after = weak_function("after");
+    after.is_static = true;
+    after.is_weak = false;
+    after.weak_inline = false;
+    if referenced {
+        after.text = &[0x80, 0x60, 0, 0, 0x80, 0x80, 0, 0, 0x4e, 0x80, 0, 0x20];
+        after.relocations = ["second", "first"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| crate::TextRelocation {
+                offset: 4 * index as u32,
+                elf_type: 109,
+                target: RelocationTarget::External(name.into()),
+            })
+            .collect();
+    }
+    let objects = ["first", "second"]
+        .into_iter()
+        .map(|name| DataObject {
+            name,
+            size: 4,
+            alignment: 4,
+            comment_alignment: 4,
+            initial_bytes: None,
+            is_const: false,
+            force_full_data_section: false,
+            is_static: true,
+            force_active: false,
+            is_explicit_zero: false,
+            preassigned_anonymous_ordinal: None,
+            preassigned_ordinal_advances_counter: false,
+            preassigned_pool_prefix_credit: 0,
+            relocations: Vec::new(),
+            non_static_functions_before: 0,
+            functions_before: position,
+            is_weak: false,
+            static_local_owner: None,
+            anonymous_adjust: 0,
+            section: None,
+        })
+        .collect();
+    write_object(&ObjectInput {
+        source_name: "frontiers.c",
+        object_format: ObjectFormat {
+            comment: CommentFormat {
+                marker: 8,
+                version: (2, 0, 1),
+                pooling_enabled: true,
+                unsigned_char: false,
+            },
+            emb_sda21_offset: 0,
+            code_alignment: 4,
+            sdata2_writable: true,
+            function_symbol_order: FunctionSymbolOrder::LegacyDeferred,
+            asm_absolute_references_before_function: false,
+            early_static_functions_after_first_pool: false,
+            bss_anchor_after_first_local_object: false,
+            weak_vtable_function_symbol_tail: false,
+            owned_rtti_closure_relocation_order: false,
+            initialized_globals_before_deferred_functions: true,
+            local_data_symbols_in_declaration_order: true,
+            small_zero_statics_in_declaration_order: false,
+            small_zero_data_in_declaration_order: false,
+            rodata_anchor_before_data_symbols: false,
+            rodata_anchor_comment_flags: 0,
+            data_relocations_use_section_anchors: false,
+            data_anchor_comment_flags: 0,
+            initial_anonymous_counter: 5,
+            leading_source_anonymous_bump: 0,
+            post_leaf_function_anonymous_bump: 0,
+            post_framed_function_anonymous_bump: 0,
+        },
+        functions: vec![before, after],
+        data_objects: objects,
+        small_data: true,
+        emit_mwcats: false,
+        inline_asm_symbols: &[],
+        early_static_function_symbols: &[],
+        early_undefined_externals: &[],
+        section_function_declarations: &[],
+        section_externals: &[],
+        local_symbol_order: &[],
+        debug: None,
+    })
+}
+
+#[test]
+fn declaration_order_statics_keep_front_middle_and_tail_events() {
+    for referenced in [false, true] {
+        for (position, expected) in [
+            (0, ["first", "second", "before", "after"]),
+            (1, ["before", "first", "second", "after"]),
+            (2, ["before", "after", "first", "second"]),
+            (7, ["before", "after", "first", "second"]),
+        ] {
+            let bytes = static_frontier_object(position, referenced);
+            if referenced {
+                let header = section_header(&bytes, section_index(&bytes, ".rela.text"));
+                let offset = be_u32(&bytes, header + 16) as usize;
+                let all_names = symbol_names(&bytes);
+                for (index, expected) in ["second", "first"].into_iter().enumerate() {
+                    let info = be_u32(&bytes, offset + index * 12 + 4);
+                    assert_eq!(info & 255, 109);
+                    assert_eq!(all_names[(info >> 8) as usize], expected);
+                }
+            }
+            let names: Vec<_> = symbol_names(&bytes)
+                .into_iter()
+                .filter(|name| ["before", "after", "first", "second"].contains(&name.as_str()))
+                .collect();
+            assert_eq!(
+                names, expected,
+                "position {position}, referenced {referenced}"
+            );
+        }
+    }
+}

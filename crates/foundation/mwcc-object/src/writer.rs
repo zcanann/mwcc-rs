@@ -2186,10 +2186,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // ahead of the functions.)
     let is_zero_section =
         |name: &str| matches!(data_section[name], ".sbss" | ".sbss2" | ".bss");
-    // Initialized statics — plus EXPLICITLY zero-initialized small `.sbss` ones — first, in
-    // FORWARD declaration order (same interleaving mwcc uses for exported globals).
+    // Declaration-order builds create every file static at its source position,
+    // including tentative zero definitions. Other builds create initialized
+    // objects here and defer tentative definitions to their reference timeline.
     let static_forward = |object: &DataObject| {
-        !is_zero_section(object.name)
+        input.object_format.local_data_symbols_in_declaration_order
+            || !is_zero_section(object.name)
             || (matches!(data_section[object.name], ".sbss" | ".sbss2")
                 && object.is_explicit_zero)
     };
@@ -2664,67 +2666,68 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     {
         emit_early_static_function_symbols!();
     }
+    // Declaration events surround function-local symbol blocks. Keeping the
+    // tail as its own event preserves earlier static functions and literals.
+    macro_rules! emit_file_static_declarations {
+        ($position:expr) => {{
+            for object in &input.data_objects {
+                if object.is_static
+                    && static_forward(object)
+                    && !function_string_names.contains(object.name)
+                    && object.static_local_owner.is_none()
+                    && object.section.is_none()
+                    && object.functions_before.min(functions.len()) == $position
+                    && $position > 0
+                    && !local_data_symbols.contains_key(object.name)
+                {
+                    if data_marker_pending && data_section[object.name] == ".data" {
+                        local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                        write_symbol(
+                            &mut symtab,
+                            strtab.add("...data.0"),
+                            0,
+                            0,
+                            0,
+                            0,
+                            index_of(".data") as u16,
+                        );
+                        comment_values.push((1, input.object_format.data_anchor_comment_flags));
+                        data_marker_pending = false;
+                    }
+                    local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                    let section = index_of(data_section[object.name]) as u16;
+                    write_symbol(
+                        &mut symtab,
+                        strtab.add(object.name),
+                        data_offsets[object.name],
+                        data_sizes[object.name],
+                        STB_LOCAL_OBJECT,
+                        0,
+                        section,
+                    );
+                    comment_values.push((data_aligns[object.name], data_comment_flags(object)));
+                    // The `...rodata.0` anchor also follows the FIRST .rodata
+                    // static in the INTERLEAVED source-position run (pikmin
+                    // e_pow's `bp`, declared after scalbn).
+                    if rodata_anchor_needed
+                        && !rodata_anchor_emitted
+                        && data_section[object.name] == ".rodata"
+                    {
+                        local_data_symbols
+                            .insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                        write_symbol(&mut symtab, strtab.add("...rodata.0"), 0, 0, 0, 0, section);
+                        comment_values.push((1, input.object_format.rodata_anchor_comment_flags));
+                        rodata_anchor_emitted = true;
+                    }
+                }
+            }
+        }};
+    }
     for (index, function) in functions.iter().enumerate() {
         if owned_rtti_local_frontier == Some(index) {
             emit_owned_rtti_locals!();
         }
-        // FILE-SCOPE statics declared right before this function (ansi_fp's
-        // `static const char* const unused = "…"` between function bodies)
-        // emit at their source position, in declaration order — the string
-        // object then its pointer.
-        for object in &input.data_objects {
-            if object.is_static
-                && static_forward(object)
-                && !function_string_names.contains(object.name)
-                && object.static_local_owner.is_none()
-                && object.section.is_none()
-                // At its declaring position; a tail declaration (after the
-                // last function) clamps to the final block.
-                && (object.functions_before == index
-                    || (index + 1 == functions.len() && object.functions_before > index))
-                && index > 0
-                && !local_data_symbols.contains_key(object.name)
-            {
-                if data_marker_pending && data_section[object.name] == ".data" {
-                    local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
-                    write_symbol(
-                        &mut symtab,
-                        strtab.add("...data.0"),
-                        0,
-                        0,
-                        0,
-                        0,
-                        index_of(".data") as u16,
-                    );
-                    comment_values.push((1, input.object_format.data_anchor_comment_flags));
-                    data_marker_pending = false;
-                }
-                local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
-                let section = index_of(data_section[object.name]) as u16;
-                write_symbol(
-                    &mut symtab,
-                    strtab.add(object.name),
-                    data_offsets[object.name],
-                    data_sizes[object.name],
-                    STB_LOCAL_OBJECT,
-                    0,
-                    section,
-                );
-                comment_values.push((data_aligns[object.name], data_comment_flags(object)));
-                // The `...rodata.0` anchor also follows the FIRST .rodata
-                // static in the INTERLEAVED source-position run (pikmin
-                // e_pow's `bp`, declared after scalbn).
-                if rodata_anchor_needed
-                    && !rodata_anchor_emitted
-                    && data_section[object.name] == ".rodata"
-                {
-                    local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
-                    write_symbol(&mut symtab, strtab.add("...rodata.0"), 0, 0, 0, 0, section);
-                    comment_values.push((1, input.object_format.rodata_anchor_comment_flags));
-                    rodata_anchor_emitted = true;
-                }
-            }
-        }
+        emit_file_static_declarations!(index);
         // An IMPLICIT function's STATIC LOCALS lead its block (its FUNC symbol
         // trails them — measured: ww uart). An explicitly marked regular
         // function does the same, including before its string symbols. Other
@@ -3229,6 +3232,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
     }
+    emit_file_static_declarations!(functions.len());
     if owned_rtti_local_frontier == Some(functions.len()) {
         emit_owned_rtti_locals!();
     }
