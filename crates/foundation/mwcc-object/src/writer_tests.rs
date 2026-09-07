@@ -1866,7 +1866,7 @@ fn const_pointer_arrays_emit_reverse_rodata_relocations() {
     );
 }
 
-fn static_frontier_object(position: usize, referenced: bool) -> Vec<u8> {
+fn static_frontier_input(position: usize, referenced: bool) -> ObjectInput<'static> {
     let mut before = weak_function("before");
     before.is_static = true;
     before.is_weak = false;
@@ -1912,7 +1912,7 @@ fn static_frontier_object(position: usize, referenced: bool) -> Vec<u8> {
             section: None,
         })
         .collect();
-    write_object(&ObjectInput {
+    ObjectInput {
         source_name: "frontiers.c",
         object_format: ObjectFormat {
             comment: CommentFormat {
@@ -1954,7 +1954,7 @@ fn static_frontier_object(position: usize, referenced: bool) -> Vec<u8> {
         section_externals: &[],
         local_symbol_order: &[],
         debug: None,
-    })
+    }
 }
 
 #[test]
@@ -1966,7 +1966,7 @@ fn declaration_order_statics_keep_front_middle_and_tail_events() {
             (2, ["before", "after", "first", "second"]),
             (7, ["before", "after", "first", "second"]),
         ] {
-            let bytes = static_frontier_object(position, referenced);
+            let bytes = write_object(&static_frontier_input(position, referenced));
             if referenced {
                 let header = section_header(&bytes, section_index(&bytes, ".rela.text"));
                 let offset = be_u32(&bytes, header + 16) as usize;
@@ -1986,5 +1986,101 @@ fn declaration_order_statics_keep_front_middle_and_tail_events() {
                 "position {position}, referenced {referenced}"
             );
         }
+    }
+}
+
+#[test]
+fn tentative_statics_follow_the_discovering_function_and_unused_tail() {
+    for (order, full, expected) in [
+        (
+            FunctionSymbolOrder::ReferencesFirst,
+            false,
+            vec![
+                "before", "second", "first", "after", "end", "unused_b", "unused_a",
+            ],
+        ),
+        (
+            FunctionSymbolOrder::FunctionFirst,
+            false,
+            vec![
+                "before", "after", "second", "first", "end", "unused_b", "unused_a",
+            ],
+        ),
+        (
+            FunctionSymbolOrder::FunctionFirst,
+            true,
+            vec![
+                "before", "first", "after", "second", "end", "unused_b", "unused_a",
+            ],
+        ),
+    ] {
+        let mut input = static_frontier_input(0, true);
+        input.object_format.local_data_symbols_in_declaration_order = false;
+        input.object_format.function_symbol_order = order;
+        if full {
+            input.data_objects[0].size = 64;
+        }
+        let mut end = weak_function("end");
+        end.is_static = true;
+        end.is_weak = false;
+        end.weak_inline = false;
+        input.functions.push(end);
+        for name in ["unused_a", "unused_b"] {
+            let mut object = static_frontier_input(0, false).data_objects.remove(1);
+            object.name = name;
+            input.data_objects.push(object);
+        }
+        let bytes = write_object(&input);
+        let names: Vec<_> = symbol_names(&bytes)
+            .into_iter()
+            .filter(|name| expected.contains(&name.as_str()))
+            .collect();
+        assert_eq!(names, expected, "{order:?}, full={full}");
+        let header = section_header(&bytes, section_index(&bytes, ".rela.text"));
+        let offset = be_u32(&bytes, header + 16) as usize;
+        let names = symbol_names(&bytes);
+        for (index, expected) in ["second", "first"].into_iter().enumerate() {
+            let info = be_u32(&bytes, offset + index * 12 + 4);
+            assert_eq!(names[(info >> 8) as usize], expected);
+        }
+    }
+}
+
+#[test]
+fn discovered_full_bss_follows_strings_but_precedes_small_data_function_event() {
+    for (order, expected) in [
+        (
+            FunctionSymbolOrder::ReferencesFirst,
+            vec!["before", "@5", "second", "first", "after"],
+        ),
+        (
+            FunctionSymbolOrder::FunctionFirst,
+            vec!["before", "@5", "first", "after", "second"],
+        ),
+    ] {
+        let mut input = static_frontier_input(0, true);
+        input.object_format.local_data_symbols_in_declaration_order = false;
+        input.object_format.function_symbol_order = order;
+        input.data_objects[0].size = 64;
+        let mut string = static_frontier_input(0, false).data_objects.remove(1);
+        string.name = "@5";
+        string.initial_bytes = Some(vec![b'x', 0, 0, 0]);
+        input.data_objects.push(string);
+        input.functions[1].string_names = vec!["@5".into()];
+        input.functions[1].string_count = 1;
+        input.functions[1].relocations.insert(
+            0,
+            TextRelocation {
+                offset: 0,
+                elf_type: 6,
+                target: RelocationTarget::External("@5".into()),
+            },
+        );
+        let bytes = write_object(&input);
+        let names: Vec<_> = symbol_names(&bytes)
+            .into_iter()
+            .filter(|name| expected.contains(&name.as_str()))
+            .collect();
+        assert_eq!(names, expected, "{order:?}");
     }
 }

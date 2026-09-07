@@ -4,13 +4,70 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, file-static declaration frontiers (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, zero-static first-use transactions (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `9a7dd2803d124bf43028a36fa3784caebd41c7593c5572e80790aced4cae4aac:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `4bc2052621eecb1a0966362fd2f92d9b379dcdcce87797947a2a74c6f8004d08:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Zero-static first-use transactions, 2026-09-06
+
+Against frozen baseline `a32fb7c1`, six targeted samples improve from
+**21/90 to 48/90 whole-object exact pairs**, with no regressions. The gains
+are eight additional builds each for canaries 1618 and 1619, plus eleven
+for new canary 1620. All 90 pairs compile without exclusions or reference
+rejections. Packet-read canaries 1614/1615 retain their eight legacy matches.
+
+Immediate C compilation now creates an uninitialized file static inside the
+function that first references it, instead of grouping every such symbol at
+the front of the object. Unused definitions finish in reverse declaration
+order after the function stream. Existing declaration-order, deferred/C++,
+and explicitly captured symbol-creation policies retain their owners.
+
+The physical symbol phase follows the existing function-order policy and
+object storage class. Reference-first builds resolve the symbol before the
+function; function-first builds resolve small-data statics after it. Full
+`.bss` definitions still precede that function event. First-use references
+also retain their measured position before or after newly discovered string
+symbols. A named phase separates these decisions from symbol serialization;
+relocation order supplies the discovery stream, including hoisted addresses.
+
+All **225/225 symbol sequences match** for the fifteen declaration/order
+probes across all fifteen builds. Six additional storage/address/string
+probes produce **60/60 matching symbol sequences** where the candidate
+compiles. Their other 30 pairs hit an existing mixed scalar/dereference
+allocator rejection; the reference still supplies ordering evidence for
+those cases. These are symbol-order diagnostics, not whole-object claims.
+
+New canary **1620 matches 15/15 whole objects**, up from 4/15, and separates
+first uses across functions with intervening code and unused definitions.
+New canary **1621 retains 3/15 exact objects**, exercising a string-bearing
+full-BSS read followed by a small-data read; other builds retain code gaps.
+Canaries 1618 and 1619 now match 12/15 and 10/15 objects respectively. The
+newest three builds' remaining 1618 difference is the `.comment` alignment
+of its unused full-BSS array (reference 8, candidate 4); executable code and
+symbol entries agree. That metadata gap remains outstanding.
+
+All **34 object-writer tests pass**, including two new tests for first-use
+ownership, unused-tail order, the full-BSS/small-data split, string phases,
+and relocation symbol identities. The metadata regression set retains every
+verdict: **2,250 slots, 500 exclusions, 1,750 runnable pairs, 899 exact
+objects**, with no timeouts.
+
+The 86 real-project metadata configurations retain every object and code
+verdict: **11 BYTE, 16 DIFF, and 59 compiler DEFER**, with no harness or
+dependency failures. Their code projections remain 12/75 exact, three
+empty, and eight unmeasured, including 51 measured partial-TU diagnostics.
+The transport panel retains **36/40 byte-identical objects**, four missing
+dependencies, 34/34 exact nonempty code projections, and two empty objects.
+Melee's complete transport object remains byte-identical.
+
+Local evidence: `target/zero-reference-*`, `target/check_zero_reference*.py`,
+`target/probe_zero_static_order.py`, `target/probe_zero_reference_edges.py`,
+`target/inspect_zero_reference_canaries.py`, and
+`target/reference-parity/4bc2052621eecb1a-5e4ca1ddc460f4d8.jsonl`.
 
 ## File-static declaration frontiers, 2026-09-06
 

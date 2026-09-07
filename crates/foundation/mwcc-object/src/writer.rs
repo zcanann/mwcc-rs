@@ -65,6 +65,34 @@ fn deferred_large_zero_object_is_upfront(
         && section == ".bss"
 }
 
+/// A first-use event may straddle anonymous strings and the function symbol.
+/// Full BSS definitions are resolved before the function even on builds whose
+/// small-data references are discovered after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZeroStaticSymbolPhase {
+    BeforeStrings,
+    AfterStrings,
+    AfterFunction,
+}
+
+fn zero_static_symbol_phase(
+    order: FunctionSymbolOrder,
+    body_references_precede_symbol: bool,
+    section: &str,
+    follows_string: bool,
+) -> ZeroStaticSymbolPhase {
+    if order == FunctionSymbolOrder::FunctionFirst
+        && !body_references_precede_symbol
+        && section != ".bss"
+    {
+        ZeroStaticSymbolPhase::AfterFunction
+    } else if follows_string {
+        ZeroStaticSymbolPhase::AfterStrings
+    } else {
+        ZeroStaticSymbolPhase::BeforeStrings
+    }
+}
+
 /// Metrowerks' private section type for `.mwcats.text` (readelf renders it as
 /// "LOUSER+0x4a2a82c2").
 const SHT_MWCATS: u32 = 0xCA2A_82C2;
@@ -2201,12 +2229,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             && !static_forward(object)
             && object.static_local_owner.is_none()
     };
-    // Most pending zero statics are created in the early LOCAL-data phase below. When a
-    // function discovers one only after discovering one of its string literals, however,
-    // mwcc preserves that creation order: the function's `@N` strings precede the static.
-    // Keep only those first references for the per-function pass. This is intentionally a
-    // relocation timeline (rather than declaration order), matching the scheduler-hoisted
-    // zero-static behavior documented below.
+    // Record whether the first text reference follows a newly discovered
+    // string. Immediate compilation uses that boundary inside the discovering
+    // function; deferred layouts retain their grouped creation phase below.
+    // Relocation order includes scheduler-hoisted address materialization.
     let pending_zero_names: std::collections::HashSet<&str> = input
         .data_objects
         .iter()
@@ -2486,73 +2512,129 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
     }
-    // Then the remaining zero statics (uninitialized `.sbss`, or any `.bss`):
-    // REFERENCED ones first, in first-reference order across the functions
-    // (their symbol_order, falling back to relocation order — measured:
-    // wind_waker abort_exit interleaves __atexit_funcs by its first use),
-    // then any unreferenced ones in REVERSE declaration order.
-    for function in functions {
-        let relocation_names =
-            function
-                .relocations
-                .iter()
-                .filter_map(|relocation| match &relocation.target {
-                    RelocationTarget::External(name)
-                    | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
-                    _ => None,
-                });
-        // TEXT-RELOCATION order, not symbol_order: mwcc's scheduler hoists a
-        // loop-invariant table base (lis/addi) ABOVE the loop guard, and the
-        // zero-static symbol run follows the FIRST TEXT REFERENCE (measured:
-        // wind_waker abort_exit — __atexit_funcs before __atexit_curr_func,
-        // opposite to the AST order symbol_order carries).
-        for name in relocation_names {
-            if zero_statics_after_function_strings.contains(name) {
-                continue;
+    // Immediate C compilation discovers tentative file statics inside each
+    // function's creation transaction. Deferred/C++ layouts retain their own
+    // grouped declaration phases below.
+    let zero_references_at_function = !input.object_format.small_zero_data_in_declaration_order
+        && matches!(
+            input.object_format.function_symbol_order,
+            FunctionSymbolOrder::ReferencesFirst | FunctionSymbolOrder::FunctionFirst
+        );
+    macro_rules! emit_zero_static {
+        ($object:expr) => {{
+            let object = $object;
+            if emitted_zero_static.insert(object.name) {
+                local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                let section = index_of(data_section[object.name]) as u16;
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(object.name),
+                    data_offsets[object.name],
+                    data_sizes[object.name],
+                    STB_LOCAL_OBJECT,
+                    0,
+                    section,
+                );
+                comment_values.push((data_aligns[object.name], data_comment_flags(object)));
             }
-            if let Some(object) = input
-                .data_objects
-                .iter()
-                .find(|object| object.name == name && is_pending_zero_static(object))
-            {
-                if input.object_format.small_zero_data_in_declaration_order && object.is_static {
+        }};
+    }
+    macro_rules! emit_zero_static_references {
+        ($function:expr, $phase:expr) => {{
+            for relocation in &$function.relocations {
+                let name = match &relocation.target {
+                    RelocationTarget::External(name)
+                    | RelocationTarget::ExternalWithAddend(name, _) => name.as_str(),
+                    _ => continue,
+                };
+                if let Some(object) = input
+                    .data_objects
+                    .iter()
+                    .find(|object| object.name == name && is_pending_zero_static(object))
+                {
+                    let phase = zero_static_symbol_phase(
+                        input.object_format.function_symbol_order,
+                        $function.body_references_precede_symbol,
+                        data_section[object.name],
+                        zero_statics_after_function_strings.contains(name),
+                    );
+                    if phase == $phase {
+                        emit_zero_static!(object);
+                    }
+                }
+            }
+        }};
+    }
+    if !zero_references_at_function {
+        // Then the remaining zero statics (uninitialized `.sbss`, or any `.bss`):
+        // REFERENCED ones first, in first-reference order across the functions
+        // (their symbol_order, falling back to relocation order — measured:
+        // wind_waker abort_exit interleaves __atexit_funcs by its first use),
+        // then any unreferenced ones in REVERSE declaration order.
+        for function in functions {
+            let relocation_names =
+                function
+                    .relocations
+                    .iter()
+                    .filter_map(|relocation| match &relocation.target {
+                        RelocationTarget::External(name)
+                        | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
+                        _ => None,
+                    });
+            // TEXT-RELOCATION order, not symbol_order: mwcc's scheduler hoists a
+            // loop-invariant table base (lis/addi) ABOVE the loop guard, and the
+            // zero-static symbol run follows the FIRST TEXT REFERENCE (measured:
+            // wind_waker abort_exit — __atexit_funcs before __atexit_curr_func,
+            // opposite to the AST order symbol_order carries).
+            for name in relocation_names {
+                if zero_statics_after_function_strings.contains(name) {
                     continue;
                 }
-                if emitted_zero_static.insert(object.name) {
-                    local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
-                    let section = index_of(data_section[object.name]) as u16;
-                    write_symbol(
-                        &mut symtab,
-                        strtab.add(object.name),
-                        data_offsets[object.name],
-                        data_sizes[object.name],
-                        STB_LOCAL_OBJECT,
-                        0,
-                        section,
-                    );
-                    comment_values.push((data_aligns[object.name], data_comment_flags(object)));
+                if let Some(object) = input
+                    .data_objects
+                    .iter()
+                    .find(|object| object.name == name && is_pending_zero_static(object))
+                {
+                    if input.object_format.small_zero_data_in_declaration_order && object.is_static
+                    {
+                        continue;
+                    }
+                    if emitted_zero_static.insert(object.name) {
+                        local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                        let section = index_of(data_section[object.name]) as u16;
+                        write_symbol(
+                            &mut symtab,
+                            strtab.add(object.name),
+                            data_offsets[object.name],
+                            data_sizes[object.name],
+                            STB_LOCAL_OBJECT,
+                            0,
+                            section,
+                        );
+                        comment_values.push((data_aligns[object.name], data_comment_flags(object)));
+                    }
                 }
             }
         }
-    }
-    for object in input.data_objects.iter().rev() {
-        if is_pending_zero_static(object)
-            && !zero_statics_after_function_strings.contains(object.name)
-            && !emitted_zero_static.contains(object.name)
-            && !(input.object_format.small_zero_data_in_declaration_order && object.is_static)
-        {
-            local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
-            let section = index_of(data_section[object.name]) as u16;
-            write_symbol(
-                &mut symtab,
-                strtab.add(object.name),
-                data_offsets[object.name],
-                data_sizes[object.name],
-                STB_LOCAL_OBJECT,
-                0,
-                section,
-            );
-            comment_values.push((data_aligns[object.name], data_comment_flags(object)));
+        for object in input.data_objects.iter().rev() {
+            if is_pending_zero_static(object)
+                && !zero_statics_after_function_strings.contains(object.name)
+                && !emitted_zero_static.contains(object.name)
+                && !(input.object_format.small_zero_data_in_declaration_order && object.is_static)
+            {
+                local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                let section = index_of(data_section[object.name]) as u16;
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(object.name),
+                    data_offsets[object.name],
+                    data_sizes[object.name],
+                    STB_LOCAL_OBJECT,
+                    0,
+                    section,
+                );
+                comment_values.push((data_aligns[object.name], data_comment_flags(object)));
+            }
         }
     }
     // Some aggregate-base schedules address a full-BSS object through the
@@ -2784,6 +2866,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             );
             comment_values.push((input.object_format.code_alignment, 0));
         }
+        if zero_references_at_function {
+            emit_zero_static_references!(function, ZeroStaticSymbolPhase::BeforeStrings);
+        }
         // This function's NEW strings sit at the FRONT of its `@N` block, before its constants and
         // unwind entries. Each `@N` name already has a laid-out data object (`.sdata`/`.data`); emit
         // its LOCAL symbol here and record it so relocations (this function's, and a later function
@@ -2825,37 +2910,41 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 );
                 comment_values.push((data_aligns[name.as_str()], 0));
             }
-            // A zero-filled file static first referenced after one of these strings is
-            // created here as part of the same function-local symbol timeline.
-            for relocation in &function.relocations {
-                let name = match &relocation.target {
-                    RelocationTarget::External(name)
-                    | RelocationTarget::ExternalWithAddend(name, _) => name.as_str(),
-                    _ => continue,
-                };
-                if !zero_statics_after_function_strings.contains(name) {
-                    continue;
-                }
-                let Some(object) = input
-                    .data_objects
-                    .iter()
-                    .find(|object| object.name == name && is_pending_zero_static(object))
-                else {
-                    continue;
-                };
-                if emitted_zero_static.insert(object.name) {
-                    local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
-                    let section = index_of(data_section[object.name]) as u16;
-                    write_symbol(
-                        &mut symtab,
-                        strtab.add(object.name),
-                        data_offsets[object.name],
-                        data_sizes[object.name],
-                        STB_LOCAL_OBJECT,
-                        0,
-                        section,
-                    );
-                    comment_values.push((data_aligns[object.name], data_comment_flags(object)));
+            if zero_references_at_function {
+                emit_zero_static_references!(function, ZeroStaticSymbolPhase::AfterStrings);
+            } else {
+                // A zero-filled file static first referenced after one of these strings is
+                // created here as part of the same function-local symbol timeline.
+                for relocation in &function.relocations {
+                    let name = match &relocation.target {
+                        RelocationTarget::External(name)
+                        | RelocationTarget::ExternalWithAddend(name, _) => name.as_str(),
+                        _ => continue,
+                    };
+                    if !zero_statics_after_function_strings.contains(name) {
+                        continue;
+                    }
+                    let Some(object) = input
+                        .data_objects
+                        .iter()
+                        .find(|object| object.name == name && is_pending_zero_static(object))
+                    else {
+                        continue;
+                    };
+                    if emitted_zero_static.insert(object.name) {
+                        local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                        let section = index_of(data_section[object.name]) as u16;
+                        write_symbol(
+                            &mut symtab,
+                            strtab.add(object.name),
+                            data_offsets[object.name],
+                            data_sizes[object.name],
+                            STB_LOCAL_OBJECT,
+                            0,
+                            section,
+                        );
+                        comment_values.push((data_aligns[object.name], data_comment_flags(object)));
+                    }
                 }
             }
         }
@@ -3231,8 +3320,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 local_function_symbols.insert(function.name, symbol);
             }
         }
+        if zero_references_at_function {
+            emit_zero_static_references!(function, ZeroStaticSymbolPhase::AfterFunction);
+        }
     }
     emit_file_static_declarations!(functions.len());
+    if zero_references_at_function {
+        // Unreferenced tentative definitions are completed in reverse source
+        // order after all function transactions, before the GLOBAL symbol run.
+        for object in input.data_objects.iter().rev().filter(|object| is_pending_zero_static(object)) {
+            emit_zero_static!(object);
+        }
+    }
+
     if owned_rtti_local_frontier == Some(functions.len()) {
         emit_owned_rtti_locals!();
     }
