@@ -10,11 +10,9 @@
 //! a physical home for each virtual, it rewrites the fields in place.
 //!
 //! Together — selection → `analyze` → [`Allocator::allocate`] → `apply` — this is
-//! the register-allocation pass. Its current precision limit: a physical register
-//! reused for unrelated values (the classic `r3` parameter-then-result) is
-//! treated as one occupancy spanning both, so virtuals avoid it more than
-//! strictly necessary. That is conservative (never wrong), and tightened with
-//! proper live-range splitting as the migration needs it.
+//! the register-allocation pass. Each physical occupancy retains the union of
+//! its CFG live slots, allowing reuse between definitions while preserving
+//! lifetimes through loop backedges and branch joins.
 //!
 //! [machine description]: crate::for_each_register
 //! [`Allocator::allocate`]: crate::Allocator::allocate
@@ -40,11 +38,11 @@ pub struct Liveness {
 
 /// Compute liveness from a selected instruction stream.
 ///
-/// Each register gets a separate live range per *definition* — the classic `r3`
-/// that is a parameter, then a temporary, then the result has three. Within an
-/// instruction reads precede the write, so a register both used and defined there
-/// closes its old range at the use and opens a new one at the definition. A
-/// register first seen as a use is a parameter, live from entry (index 0).
+/// Virtual registers keep one home across redefinitions. Physical registers
+/// retain the union of all live slots across their definitions, so unrelated
+/// values can leave reusable gaps without clipping loop or join lifetimes.
+/// Within an instruction reads precede the write. A register first seen as a
+/// use is an incoming value, live along the paths leading to that use.
 pub fn analyze(instructions: &[Instruction]) -> Liveness {
     // The currently-open range per register key, as (start, last-touched).
     let mut open: HashMap<(Class, u8), (usize, usize)> = HashMap::new();
@@ -171,6 +169,7 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
 
     let mut liveness = Liveness::default();
     liveness.calls = calls;
+    let mut pinned_keys = HashSet::new();
     for ((class, value), start, end) in ranges {
         if Reg::is_virtual_field(value) {
             let vreg = VirtualRegister::new((value - VIRTUAL_BASE) as u32, class);
@@ -186,18 +185,21 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
             let mut interval = LiveInterval::new(vreg, start, end.max(flow_end));
             interval.live_slots = Some(slots);
             liveness.intervals.push(interval);
-        } else {
+        } else if pinned_keys.insert((class, value)) {
+            // Physical definitions split values, but their occupancies share
+            // one register. Keep the full union of CFG slots: clipping each
+            // range at its last textual use drops backedge and join liveness.
+            // Disjoint slot sets still allow reuse between unrelated values.
+            let slots = live_slots
+                .get(&(class, value))
+                .cloned()
+                .unwrap_or_default();
             liveness.pinned.push(PinnedOccupancy {
                 register: value,
                 class,
-                start,
-                end,
-                live_slots: Some(slots_for_range(
-                    &live_slots,
-                    (class, value),
-                    start,
-                    end,
-                )),
+                start: slots.first().map_or(start, |slot| slot / 2),
+                end: slots.last().map_or(end, |slot| slot / 2),
+                live_slots: Some(slots),
             });
         }
     }
@@ -205,21 +207,6 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
 }
 
 type RegisterKey = (Class, u8);
-
-fn slots_for_range(
-    slots: &HashMap<RegisterKey, Vec<usize>>,
-    key: RegisterKey,
-    start: usize,
-    end: usize,
-) -> Vec<usize> {
-    slots
-        .get(&key)
-        .into_iter()
-        .flatten()
-        .copied()
-        .filter(|slot| start <= slot / 2 && slot / 2 <= end)
-        .collect()
-}
 
 /// Classic backwards liveness over the selected instruction CFG. Slots split
 /// each instruction into a read side and a write side, preserving the existing
@@ -322,7 +309,89 @@ mod tests {
     }
 
     #[test]
-    fn a_reused_physical_register_gets_one_occupancy_per_definition() {
+    fn physical_loop_input_blocks_a_temporary_after_its_last_textual_use() {
+        let stream = [
+            Instruction::LoadByteZero {
+                d: 0,
+                a: 3,
+                offset: 0,
+            },
+            Instruction::AddImmediate {
+                d: v(0),
+                a: 0,
+                immediate: 24,
+            },
+            Instruction::ShiftLeftWord {
+                a: 0,
+                s: 0,
+                b: v(0),
+            },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 0,
+                target: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 0,
+                immediate: 1,
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+        let liveness = analyze(&stream);
+        let allocation = LinearScan
+            .allocate(
+                &liveness.intervals,
+                &liveness.pinned,
+                &liveness.calls,
+                &RegisterConstraints::gekko(),
+            )
+            .unwrap();
+        assert_ne!(
+            allocation.physical(Reg::general(0).virtual_register().unwrap()),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn physical_backedge_definition_is_live_before_its_textual_definition() {
+        let stream = [
+            Instruction::Branch { target: 4 },
+            Instruction::AddImmediate {
+                d: v(0),
+                a: 0,
+                immediate: 7,
+            },
+            Instruction::Add {
+                d: 0,
+                a: 3,
+                b: v(0),
+            },
+            Instruction::BranchToLinkRegister,
+            Instruction::AddImmediate {
+                d: 3,
+                a: 0,
+                immediate: 12,
+            },
+            Instruction::Branch { target: 1 },
+        ];
+        let liveness = analyze(&stream);
+        let allocation = LinearScan
+            .allocate(
+                &liveness.intervals,
+                &liveness.pinned,
+                &liveness.calls,
+                &RegisterConstraints::gekko(),
+            )
+            .unwrap();
+        assert_ne!(
+            allocation.physical(Reg::general(0).virtual_register().unwrap()),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn a_reused_physical_register_keeps_the_union_of_its_live_slots() {
         let stream = [
             Instruction::AddImmediate { d: 3, a: 4, immediate: 1 }, // r3 = r4 + 1 (def r3)
             Instruction::Or { a: 5, s: 3, b: 3 },                   // r5 = r3 (r3's last use)
@@ -335,8 +404,8 @@ mod tests {
             .filter(|occupancy| occupancy.register == 3)
             .map(|occupancy| (occupancy.start, occupancy.end))
             .collect();
-        // Two distinct lives of r3: the first value [0,1], the redefinition [2,2].
-        assert_eq!(r3, [(0, 1), (2, 2)]);
+        // One physical home covers both definitions without losing CFG slots.
+        assert_eq!(r3, [(0, 2)]);
     }
 
     #[test]
@@ -380,7 +449,14 @@ mod tests {
             .filter(|occupancy| occupancy.class == Class::General && occupancy.register == 3)
             .map(|occupancy| (occupancy.start, occupancy.end))
             .collect();
-        assert_eq!(r3, [(0, 0), (3, 4)]);
+        assert_eq!(r3, [(0, 4)]);
+        let slots = liveness.pinned.iter()
+            .find(|p| p.class == Class::General && p.register == 3)
+            .unwrap().live_slots.as_ref().unwrap();
+        assert!(
+            !slots.contains(&3),
+            "the incoming value is dead at the intervening virtual definition"
+        );
 
         let constraints = RegisterConstraints::gekko();
         let allocation = LinearScan.allocate(&liveness.intervals, &liveness.pinned, &liveness.calls, &constraints).unwrap();

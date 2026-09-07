@@ -4979,7 +4979,25 @@ impl Generator {
         let mut carried_adjacent_assignment_member_cache_end = None;
         let mut adjacent_global_store_base_restore = None;
         let mut scheduled_float_store = None;
+        let physical_liveness =
+            super::structured_physical_liveness::PhysicalHomeLiveness::new(function);
+        let mut reserved_flow_homes = Vec::new();
         for (statement_index, statement) in statements.iter().enumerate() {
+            // Keep an enclosing arm's reservations while recursively emitting
+            // its body. Retire this statement's additions even after `continue`.
+            self.release_reserved_physical_homes(std::mem::take(&mut reserved_flow_homes));
+            if let Some(names) = physical_liveness.after(statement) {
+                reserved_flow_homes = names
+                    .iter()
+                    .filter_map(|name| self.locations.get(*name))
+                    .filter(|location| matches!(location.class, ValueClass::General))
+                    .filter_map(|location| {
+                        (!mwcc_vreg::Reg::is_virtual_field(location.register))
+                            .then_some(location.register)
+                    })
+                    .filter(|register| self.reserved.insert(*register))
+                    .collect();
+            }
             if adjacent_global_store_base_restore.is_none() {
                 if let Some(plan) =
                     super::structured_adjacent_global_store_base::plan(
@@ -6432,6 +6450,7 @@ impl Generator {
         }
         self.reuse_scratch_constant = false;
         self.scratch_constant = None;
+        self.release_reserved_physical_homes(reserved_flow_homes);
         debug_assert!(scheduled_float_store.is_none());
         if let Some((previous, previous_float)) = carried_condition_cache_restore {
             self.restore_condition_global_cache(previous);

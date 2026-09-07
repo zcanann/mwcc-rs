@@ -4,13 +4,71 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, legacy fixed-bank transfer transactions (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, physical register lifetimes in immediate transfers (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `68d34616ec7e4831196522c71bc26cc647a03a7d192497ff4fa43acf842554d7:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `c89a23104712d73a5be7c0fc523349aa276ab83fbfc21ade97d3656f9435bbc2:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Physical register lifetimes in immediate transfers, 2026-09-06
+
+Against baseline `8a795bb2`, Melee's `DBGEXIImm` now executes byte packing and
+unpacking correctly in the measured cases. The baseline reused the incoming
+data-pointer register for a packing shift count, causing an invalid memory
+read on the second byte. Register-bank address materialization also overwrote
+that pointer before the read-mode arm, causing a one-byte read to store into
+the hardware bank instead of the caller's buffer. Both failures are reproduced
+with the frozen baseline and pass against the reference after this change.
+
+The fix addresses two shared mechanisms. Register allocation now retains the
+complete union of each physical register's control-flow live slots; splitting
+those slots at textual last uses had discarded loop-backedge and branch-join
+lifetimes. Gaps between unrelated definitions remain reusable. Structured
+statement selection separately computes named-value liveness over its emitted
+label/if graph and reserves physical general-register homes across nested arms,
+continuations, and loop backedges. This prevents an already selected scratch
+instruction from destroying a value before allocation sees it. Retained
+specialized loops and switches conservatively contribute their reads; owners
+that synthesize separate statement trees retain their existing policies.
+
+New canary **1599** reduces the real transfer routine, including its inlined
+busy wait, byte-pack loop, control-register store, and byte-unpack loop. It
+compiles on all 11 measured builds but remains **0/11 whole-object exact**.
+The real GC/1.2.5 candidate shrinks from 184 to 180 bytes; the reference is 664
+bytes and unrolls both loops. Melee remains **13/21 exact functions** and
+**856/3320 exact reference function bytes**, with all 21 functions compiling.
+This is a correctness milestone; it does not increase byte-exact coverage.
+
+**64,368 paired Unicorn cases** pass: 28,512 transfer-canary cases across all
+11 builds, 2,592 executing Melee's actual `DBGEXIImm` body, and 33,264 for the
+existing mailbox/mask slice. Transfer checks cover read/write modes, three
+register words, zero/one/four busy iterations, and four randomized register and
+buffer seeds. Lengths include zero, negative values, 1–5, and unroll-boundary
+values through 64. The longer lengths compare the reference's actual shift
+behavior even where the C source does not define it. Checks compare device
+access order/count, output bytes, input-byte reads, buffer guards, return values,
+stack restoration, and saved general registers. Ordinary input-byte loads may
+be reordered within a contiguous read packet. Reference save/restore helpers
+execute synthesized ABI load/store stubs; the transfer body itself is executed.
+
+The 182-canary regression selection has identical verdicts on five builds:
+**910 slots, 242 exclusions, 668 runnable pairs, 376 exact objects, and 183
+existing candidate rejections**, with no reference rejections or timeouts.
+A separate 36-canary compatibility selection, covering 1570–1599 and six
+older substring matches, retains **253/396 exact objects** across all 11
+builds; every pair compiles, with no exclusions or reference rejections.
+The 40-configuration reference selection retains **35 whole-object exact,
+one DIFF, and four missing dependencies**; code is exact on **33/34 measured
+configurations**, with two empty and four unmeasured.
+
+Seven source-liveness tests and 99 register-allocation/scheduling tests pass
+(the latter retain eight existing ignored tests). All 117 selected inline tests
+pass, retaining the independently confirmed preexisting embedded-asm composition failure
+as an explicit exclusion. Evidence is retained under `target/exi-imm-*.log`,
+`target/check_exi_imm*.py`, and the existing mailbox execution harness.
+These are focused diagnostic results, not a corpus-wide parity estimate.
 
 ## Legacy fixed-bank transfer transactions, 2026-09-06
 
