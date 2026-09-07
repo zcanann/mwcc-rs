@@ -4,13 +4,63 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, masked array-index selection and scheduling (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, O0 and small masked-array accesses (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `5cc5321f3169ae1f89cab2ac378f4a11bda2d366baf2667657891f453b6c8a5c:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `9a363bb55188150cadf044f7673cba565b3d5125adfcd9ffda999e6081b2a6af:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## O0 and small masked-array accesses, 2026-09-07
+
+Against frozen baseline `b23f645b`, the 1,470-pair masked-index matrix improves
+**657/1,470 → 1,341/1,470 whole-object exact pairs**, preserving every prior
+match and all candidate compilations. The existing O0 global-array canary 1659
+improves **0/15 → 15/15**. Four new cases (1660–1663) cover O0 pointer bases,
+Wind Waker's getter at O0, and small global arrays at O4/O0. They improve
+**0/60 → 57/60**: the three synthetic cases each match 15/15, and the original
+Wind Waker getter body matches 12/15 at O0. The combined 1656–1663 selection
+improves **42/120 → 114/120**, with all references runnable and candidates
+compilable. The newer getter objects retain static-local identity differences.
+
+The selector retains separate mask and scale instructions at O0. Pointer
+bases use indexed loads. Full global arrays use the existing versioned address
+convention: older builds keep the scaled offset while constructing an explicit
+element address, and newer builds retain the separate base and index. Full
+O0 array-address discovery also precedes the function symbol; this uses the
+existing function metadata instead of changing the writer's general ordering.
+SDA references retain their ordinary symbol event order.
+
+Small arrays use SDA21 and indexed loads on every build. Their optimized
+parameter/member schedules differ, while O0 completes the mask and scale before
+the base. A separate 180-pair byte/halfword/word panel improves **0/180 → 180/180
+exact objects**, and compilation improves **120/180 → 180/180**; masked small
+byte-array loads no longer decline. The 180-pair edge panel improves
+**30/180 → 60/180**, retaining 150 compilations. Its broader two-table-read
+expression still declines on the same 30 configurations. A supplementary
+mixed-expression probe confirms exact O0 global-array reads with a reused
+parameter on GC/1.1, GC/2.6, and GC/3.0a3; combining two memory reads remains
+outside the current operand lowering.
+
+Unicorn validates **1,080 paired main-matrix objects with 25,920 calls**, now
+covering both O0 and O4. Small-array execution adds **1,440 calls across 180
+pairs**, and repeated-index/commuted/high-bit/zero-mask edges add **1,200 calls
+across 150 pairs**. All **28,560 calls** pass. Eight focused driver tests pass.
+The index regression panel retains **972 exact objects across 1,674 runnable
+pairs** (2,115 slots, 441 exclusions), and the metadata panel retains **1,179
+across 2,198 runnable pairs** (2,940 slots, 742 exclusions). No exact matches
+are lost and neither regression panel times out.
+
+Every individual object and code verdict remains unchanged in the
+**132-config real-project panel: 47 BYTE, 16 DIFF, 59 compiler DEFER, six
+HARNESS, four missing dependencies**. Code remains **46/109 exact measured
+objects**, five empty and eighteen unmeasured; all 51 measured partial
+translation units remain nonexact. The complete Wind Waker and Mario Kart
+files still hit the 30-second cap, so the reductions do not establish full-file
+or project-build parity. Evidence is under `target/masked-o0-*` and
+`target/masked-small-*`; matrix results use the `masked-o0` label in
+`target/masked-index-probes` and `target/masked-index-edge-probes`.
 
 ## Masked array-index selection and scheduling, 2026-09-07
 
