@@ -438,6 +438,9 @@ impl Generator {
     ) -> Compilation<bool> {
         let runtime_conversions = self.expose_structured_runtime_conversions(function);
         let function = runtime_conversions.as_ref().unwrap_or(function);
+        let global_assignments =
+            super::structured_global_assignments::normalize(function, &self.globals);
+        let function = global_assignments.as_ref().unwrap_or(function);
         let folded_entry_accumulators = (self.behavior.optimization
             != mwcc_versions::Optimization::O0)
             .then(|| {

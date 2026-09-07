@@ -53,10 +53,20 @@ def compare(data, dol, symbol_text, layout):
         section = re.findall(r'^\s*' + re.escape(name) + r'\s*=\s*\.(\w+):', symbol_text, re.MULTILINE)[0]
         if section in ('sdata2', 'sbss2', 'sdata', 'sbss'):
             symbol_sda_registers[name] = '2' if section.endswith('2') else '13'
+    literal_sda_registers = {}
     for literal in layout['literals']:
         value = bytes.fromhex(literal['hex'])
         if read_dol_range(dol, literal['address'], len(value)) != value:
             raise ValueError("literal placement does not contain the expected bytes")
+        if 'reference_symbol' in literal:
+            matches = re.findall(r'^\s*' + re.escape(literal['reference_symbol'])
+                                 + r'\s*=\s*\.(sdata2?):(0x[0-9a-fA-F]+);[^\n]*type:object size:(0x[0-9a-fA-F]+)',
+                                 symbol_text, re.MULTILINE)
+            matches = [entry for entry in matches
+                       if (int(entry[1], 16), int(entry[2], 16)) == (literal['address'], len(value))]
+            if len(matches) != 1:
+                raise ValueError("literal SDA section has no verified original object")
+            literal_sda_registers[literal['address']] = '2' if matches[0][0].endswith('2') else '13'
     data_images = layout.get('data_images', [])
     for item in data_images:
         value = bytes.fromhex(item['hex'])
@@ -96,6 +106,36 @@ def compare(data, dol, symbol_text, layout):
         if original in symbol_sda_registers:
             symbol_sda_registers[alias] = symbol_sda_registers[original]
     text_sections = [s for s in sections if s.name == '.text']
+    # An anonymous section anchor is not an object alias. Its addend must land
+    # within the explicitly named, equally sized object that verifies the base.
+    anchor_ranges = {}
+    for anchor, original in layout.get('bss_anchor_objects', {}).items():
+        if anchor in placements or original not in layout['data_symbols']:
+            raise ValueError("BSS anchor conflicts or has no verified original object")
+        matches = re.findall(r'^\s*' + re.escape(original)
+                             + r'\s*=\s*\.(s?bss2?):(0x[0-9a-fA-F]+);[^\n]*type:object size:(0x[0-9a-fA-F]+)',
+                             symbol_text, re.MULTILINE)
+        anchors = [entry for entry in table if entry[0] == anchor]
+        objects = [entry for entry in table if entry[0] == original and entry[3] & 15 == 1]
+        if len(matches) != 1 or len(anchors) != 1 or len(objects) != 1:
+            raise ValueError("BSS anchor needs unique source, candidate object, and anchor")
+        section, address, size = matches[0]
+        address, size = int(address, 16), int(size, 16)
+        _, offset, candidate_size, _, index = objects[0]
+        _, anchor_offset, anchor_size, anchor_info, anchor_index = anchors[0]
+        bss_address, bss_size = struct.unpack_from('>II', dol, 0xD8)
+        if (size == 0 or not bss_address <= address < address + size <= bss_address + bss_size
+                or index >= len(sections) or sections[index].section_type != 8
+                or sections[index].name != '.' + section or candidate_size != size
+                or offset + size > sections[index].size or anchor_index != index
+                or anchor_size != 0 or anchor_info & 15 not in (0, 3)
+                or not 0 <= anchor_offset <= offset):
+            raise ValueError("BSS anchor storage does not match the pinned object")
+        displacement = offset - anchor_offset
+        placements[anchor] = address - displacement
+        anchor_ranges[anchor] = (displacement, displacement + size)
+        if original in symbol_sda_registers:
+            symbol_sda_registers[anchor] = symbol_sda_registers[original]
     if len(text_sections) != 1:
         raise ValueError("candidate needs one text section")
     text = text_sections[0]
@@ -149,6 +189,8 @@ def compare(data, dol, symbol_text, layout):
         matches = [item['address'] for item in images if bytes.fromhex(item['hex']) == value]
         if len(matches) != 1:
             raise ValueError("literal placement is missing or ambiguous")
+        if matches[0] in literal_sda_registers:
+            symbol_sda_registers[name] = literal_sda_registers[matches[0]]
         return matches[0]
 
     results = []
@@ -168,14 +210,19 @@ def compare(data, dol, symbol_text, layout):
                 continue
             at = (where - offset) & ~3
             try:
+                if symbol in anchor_ranges:
+                    start, end = anchor_ranges[symbol]
+                    if not start <= addend < end:
+                        raise ValueError("BSS anchor addend leaves the verified object")
                 if kind in (4, 5, 6) and (where-offset) % 4 != 2:
                     raise ValueError("address-half relocation is not on the immediate field")
                 word = struct.unpack_from('>I', blob, at)[0]
+                target = placement(symbol) + addend
                 bases = layout['sda_bases']
                 if kind == 109 and len(bases) > 1 and symbol in symbol_sda_registers:
                     register = symbol_sda_registers[symbol]
                     bases = {register: bases[register]} if register in bases else {}
-                word = relocate(word, kind, placement(symbol) + addend, address + at, bases)
+                word = relocate(word, kind, target, address + at, bases)
                 struct.pack_into('>I', blob, at, word)
             except ValueError as error:
                 unknown.append(dict(offset=where-offset, kind=kind, symbol=symbol, reason=str(error)))

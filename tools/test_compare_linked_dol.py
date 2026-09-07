@@ -83,12 +83,70 @@ class LinkedDolTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 compare(data, dol, source, layout)
 
+    def bss_anchor_fixture(self):
+        data, dol, source, layout = self.fixture(literal=True, duplicate=True)
+        data = bytearray(data.replace(b'.sdata2\0', b'.sbss\0\0\0'))
+        shoff = struct.unpack_from('>I', data, 32)[0]
+        struct.pack_into('>I', data, shoff + 6 * 40 + 4, 8)
+        symoff = struct.unpack_from('>I', data, shoff + 2 * 40 + 16)[0]
+        struct.pack_into('>IB', data, symoff + 3 * 16 + 8, 0, 0)
+        relaoff = struct.unpack_from('>I', data, shoff + 5 * 40 + 16)[0]
+        struct.pack_into('>I', data, relaoff + 4, (3 << 8) | 109)
+        dol = bytearray(dol)
+        struct.pack_into('>II', dol, 0xD8, 0x80004010, 4)
+        source = source.replace('.sdata2:', '.sbss:')
+        layout.update(dol_sha256=hashlib.sha256(dol).hexdigest(),
+                      symbols_sha256=hashlib.sha256(source.encode()).hexdigest(),
+                      literals=[], data_symbols={'g': 0x80004010},
+                      bss_anchor_objects={'j': 'g'})
+        return bytes(data), bytes(dol), source, layout
+
+    def test_bss_anchor_limits_relocations_to_the_verified_object(self):
+        data, dol, source, layout = self.bss_anchor_fixture()
+        self.assertTrue(compare(data, dol, source, layout)['functions'][0]['exact'])
+        shoff = struct.unpack_from('>I', data, 32)[0]
+        relaoff = struct.unpack_from('>I', data, shoff + 5 * 40 + 16)[0]
+        for addend in [-1, 4]:
+            bad = bytearray(data)
+            struct.pack_into('>i', bad, relaoff + 8, addend)
+            result = compare(bytes(bad), dol, source, layout)['functions'][0]
+            self.assertFalse(result['exact'])
+            self.assertIn('leaves the verified object', result['unresolved_relocations'][0]['reason'])
+
+    def test_bss_anchor_requires_matching_storage_and_unique_symbols(self):
+        data, dol, source, layout = self.bss_anchor_fixture()
+        shoff = struct.unpack_from('>I', data, 32)[0]
+        symoff = struct.unpack_from('>I', data, shoff + 2 * 40 + 16)[0]
+        for offset, fmt, value in [(shoff + 6 * 40 + 4, '>I', 1),
+                                   (symoff + 2 * 16 + 8, '>I', 8),
+                                   (symoff + 3 * 16 + 4, '>I', 1),
+                                   (symoff + 3 * 16 + 8, '>I', 4),
+                                   (symoff + 3 * 16 + 14, '>H', 1)]:
+            bad = bytearray(data)
+            struct.pack_into(fmt, bad, offset, value)
+            with self.assertRaises(ValueError):
+                compare(bytes(bad), dol, source, layout)
+        for anchors in [{'missing': 'g'}, {'g': 'g'}, {'j': 'unverified'}]:
+            layout['bss_anchor_objects'] = anchors
+            with self.assertRaises(ValueError):
+                compare(data, dol, source, layout)
+
     def test_named_data_and_verified_literal_link_to_original(self):
         for literal in [False, True]:
             with self.subTest(literal=literal):
                 result = compare(*self.fixture(literal=literal))['functions'][0]
                 self.assertTrue(result['exact'])
                 self.assertEqual(result['candidate_linked_sha256'], result['reference_sha256'])
+
+    def test_verified_literal_section_disambiguates_overlapping_sda_ranges(self):
+        data, dol, source, layout = self.fixture(literal=True)
+        layout['sda_bases']['13'] = layout['sda_bases']['2'] - 4
+        self.assertFalse(compare(data, dol, source, layout)['functions'][0]['exact'])
+        layout['literals'][0]['reference_symbol'] = 'g'
+        self.assertTrue(compare(data, dol, source, layout)['functions'][0]['exact'])
+        layout['literals'][0]['reference_symbol'] = 'missing'
+        with self.assertRaises(ValueError):
+            compare(data, dol, source, layout)
 
     def test_unknown_relocation_and_changed_instruction_are_not_exact(self):
         result = compare(*self.fixture(kind=42))['functions'][0]

@@ -82,6 +82,10 @@ impl Generator {
         // (`2 + 3`, `FLAG_A | FLAG_B`, `1 << 3`) or a side-effect-free identity
         // (`x - x`, `x ^ x`) — materializes the value directly, as mwcc folds it.
         // Bare literals fall through to the arm below.
+        if let Some(value) = super::absolute_pointer_constants::value(expression) {
+            self.load_integer_constant(destination, value);
+            return Ok(());
+        }
         if !matches!(expression, Expression::IntegerLiteral(_)) {
             if let Some(value) = constant_value(expression) {
                 self.load_integer_constant(destination, value);

@@ -4,13 +4,96 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, GX shutdown and retained 64-bit frame values (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete GXInit translation unit (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `a9b7f471cb429dfbba84b82202866db04177e631262f1bd6833a3bfc4325521a:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `77c69e7a86e2d51d09447bce3ae5962f010a81efc9523c417850e12cea7a32ff:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete GXInit translation unit, 2026-09-07
+
+BfBB's unchanged, fully configured `GXInit.c` now compiles. The GX survey
+advances from **9/14 to 10/14 complete translation units**. `GXInit` itself
+passes **512 three-way execution comparisons** against a fresh reference
+object and the original game DOL. Its candidate instructions remain non-exact:
+**2,072 bytes versus 1,936**. The fresh reference's linked instructions are
+**exactly equal to the original DOL**, with no unresolved relocations on either
+side using `docs/reference-layouts/bfbb-gxinit.json`.
+
+Three shared lowering changes remove the unit's blockers:
+
+- Structured-body normalization converts assignments to known static/global
+  storage into ordinary memory stores before local liveness and allocation.
+  Local and parameter bindings retain precedence over global names. Existing
+  statement traversal covers nested branches, loops, and switch bodies.
+- A typed absolute-address constant folder preserves the pointee stride through
+  addition/subtraction and pointer casts, including null addresses and wrapping
+  32-bit addresses. Integer casts end pointer scaling. This resolves the SDK's
+  uncached-to-physical address expression without asking for a register leaf
+  for a large literal. Side-effecting expressions remain with normal emission.
+- Computed member-array stores accept pure computed indices and pure intrinsic
+  values. The existing address-retention path keeps the aggregate base alive
+  while computing the index and completes the destination address before
+  evaluating the stored value. Earlier exact schedules retain first refusal.
+
+Canaries **1950–1955** cover static registration, persistent state updated in a
+loop, local/parameter shadows, thirteen constant-address forms, and four
+computed-index stores. Across O0/O4 and fifteen builds, the frozen preceding
+behavior compiles **0/90** complete objects; candidate and fresh references
+compile **90/90**. **23/90 whole objects** and **395/630 function text plus
+symbolic relocation comparisons** are exact. All **322,560 candidate/reference
+execution comparisons** pass, checking returns, complete memory images,
+persistent objects, ordered calls/arguments, saved GPR/FPR images, SP/LR, and
+execution faults. The address cohort accounts for all whole-object matches;
+computed-index schedules remain non-exact.
+
+The real `GXInit` panel varies prior reset registration, bus-clock values,
+HID2, FIFO base/size, and randomized initial context/register images. It compares
+all **1,456 context bytes**, the **128-byte FIFO object**, hardware pointer
+assignments, reset-registration state, ordered FIFO writes, service-call
+arguments, and the ABI. Sixteen services are controlled identically on all
+three machines, including `__GXInitGX`, FIFO/texture/TLUT initialization, reset
+registration, and the PPC accessors. Destination services write deterministic
+images; texture flushing changes the bus-clock memory after the initial read;
+services clobber volatile registers. This tests `GXInit`'s own control flow,
+retained values, calls, and stores, without claiming execution coverage of those
+services' bodies. Combined panels have **323,072 passing comparisons**.
+
+The complete candidate object is **15,536 ELF bytes / 5,180 text bytes**, SHA-256
+`9ec0166a974c56c8a35376ea04a73fa1fe486494fb5d32f687f90836ecf9d7eb`.
+The fresh complete reference is **14,600 ELF bytes / 4,996 text bytes**, SHA-256
+`40890b2d0fac6e42ba13c34ae9efe5809515b77a2e323cf93c1a3f301d8a116e`.
+The linked comparison selects `GXInit`; it does not claim exactness of the
+complete object. The source files and project configuration were not modified.
+
+The linked-DOL checker now verifies anonymous BSS anchors against an explicitly
+named, equally sized object in the matching NOBITS section. Each relocation
+addend must stay within that verified object's extent. It also accepts a pinned
+literal symbol/range to verify the SDA section when the r2/r13 address windows
+overlap. Anonymous label ordinals alone do not establish a placement. **18
+checker tests pass**, including rejection of mismatched storage, missing or
+conflicting anchors, and addends outside the verified object.
+
+Focused regressions preserve all **1,098** previously compiling indexed objects,
+including **972 known exact matches**, among **1,674** pairs. All **1,846**
+previously compiling recent objects are unchanged among **1,935** pairs; the
+remaining **89** still decline. The prior nine GX objects and complete AXVPB
+object remain byte-identical. **1,588 compiler library tests pass**, excluding
+the previously baseline-confirmed
+`inline_expansion::tests::composes_zero_argument_embedded_asm_at_a_nested_call_site`
+failure. Remaining GX frontiers are GXFifo's retained callback helper, GXAttr's
+retained descriptor helper, GXMisc's switch-arm scheduling, and GXTexture's
+fallthrough switch. Full project builds and exact initialization schedules
+remain open.
+
+Artifacts: `target/gx-init-canaries/{results,reference-results,
+reference-comparison,execution-results}.json`,
+`target/gx-init-real/{compilation-results,execution-results,fixtures,
+candidate-verified-linked-text,reference-verified-linked-text}.json`,
+`target/gx-init-{index,recent,library,full-ax}/`, and
+`target/gx-init-{tests-final,linked-tests,execution,real-execution}.log`.
 
 ## GX shutdown and retained 64-bit frame values, 2026-09-07
 

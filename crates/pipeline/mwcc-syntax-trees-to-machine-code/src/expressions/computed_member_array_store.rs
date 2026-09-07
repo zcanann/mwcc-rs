@@ -32,7 +32,9 @@ fn classify<'a>(
     else {
         return None;
     };
-    (matches!(index.as_ref(), Expression::Variable(_))
+    (constant_value(index).is_none()
+        && !crate::analysis::expression_has_side_effect(index)
+        && !crate::analysis::expression_has_side_effect(aggregate)
         && !matches!(element, Pointee::Float | Pointee::Double)
         && (generator.is_float_value(value)
             || (constant_value(value).is_none()
@@ -42,6 +44,7 @@ fn classify<'a>(
                         | Expression::Unary { .. }
                         | Expression::Cast { .. }
                         | Expression::Member { .. }
+                        | Expression::Call { .. }
                 )))
         && !crate::analysis::expression_has_side_effect(value))
     .then_some(ComputedMemberArrayStore {
@@ -63,7 +66,19 @@ impl Generator {
             return Ok(false);
         };
         let base = self.member_base_register(store.aggregate)?;
-        let index = self.general_register_of_leaf(store.index)?;
+        let index = if matches!(store.index, Expression::Variable(_)) {
+            self.general_register_of_leaf(store.index)?
+        } else {
+            let index = self.fresh_virtual_general_avoiding(vec![base, GENERAL_SCRATCH]);
+            let restore = self.reserved.insert(base);
+            let evaluated = self
+                .with_reserved_inputs(store.value, |me| me.evaluate_general(store.index, index));
+            if restore {
+                self.reserved.remove(&base);
+            }
+            evaluated?;
+            index
+        };
         let size = store.element.size();
         if !size.is_power_of_two() {
             return Ok(false);

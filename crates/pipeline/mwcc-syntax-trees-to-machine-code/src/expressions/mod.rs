@@ -79,6 +79,7 @@ mod pointer_alignment;
 mod pointer_member_scaled_offset;
 mod pointer_spans;
 mod pointers;
+mod absolute_pointer_constants;
 mod post_step;
 mod packed_shift_mask;
 mod paired_indexed_float_to_unsigned_arguments;

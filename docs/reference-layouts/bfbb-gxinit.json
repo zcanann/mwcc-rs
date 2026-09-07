@@ -1,0 +1,59 @@
+{
+  "dol_sha256": "865f446cf8efd52230dac506d6334a357b4c738cd6eb6e3a68c827efac51c3e0",
+  "symbols_sha256": "92f658ac1a6f91ec64d851dcfdf92a0907f3c06f5c68a97096052e99b5f3dfa4",
+  "functions": [
+    "GXInit"
+  ],
+  "sda_bases": {
+    "2": 2151500160,
+    "13": 2151491840
+  },
+  "data_symbols": {
+    "__GXData": 2151480440,
+    "__GXVersion": 2151460560,
+    "__piReg": 2151466144,
+    "__cpReg": 2151466148,
+    "__peReg": 2151466152,
+    "__memReg": 2151466156,
+    "FifoObj": 2151143816,
+    "GXResetFuncInfo": 2150320556,
+    "GXTexRegionAddrTable": 2150320364,
+    "resetFuncRegistered$70": 2151466180
+  },
+  "literals": [
+    {
+      "address": 2151480444,
+      "hex": "4b800000",
+      "reference_symbol": "@289"
+    },
+    {
+      "address": 2151480448,
+      "hex": "00000000",
+      "reference_symbol": "@290"
+    }
+  ],
+  "external_functions": [
+    "OSRegisterVersion",
+    "GXSetMisc",
+    "__GXFifoInit",
+    "GXInitFifoBase",
+    "GXSetCPUFifo",
+    "GXSetGPFifo",
+    "OSRegisterResetFunction",
+    "__GXPEInit",
+    "PPCMfhid2",
+    "PPCMtwpar",
+    "PPCMthid2",
+    "__GXFlushTextureState",
+    "GXInitTexCacheRegion",
+    "GXInitTlutRegion",
+    "__GXSetTmemConfig",
+    "__GXInitGX"
+  ],
+  "bss_symbol_aliases": {
+    "resetFuncRegistered$67": "resetFuncRegistered$70"
+  },
+  "bss_anchor_objects": {
+    "...bss.0": "FifoObj"
+  }
+}
