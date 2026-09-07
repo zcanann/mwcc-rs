@@ -82,4 +82,3 @@ int send_packets(u32 param1, u32* data, s32 byte_size) {
 
     return !error;
 }
-
