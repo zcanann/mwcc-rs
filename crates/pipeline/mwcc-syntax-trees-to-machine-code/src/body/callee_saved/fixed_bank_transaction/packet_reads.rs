@@ -18,10 +18,14 @@ impl Generator {
         if !self.behavior.automatic_inlining_enabled {
             return false;
         }
-        let Some(first_body) = self.expanded_packet_read(publication.status, &function.name) else {
+        let Some(first_body) =
+            self.expanded_visible_bank_transaction(publication.status, &function.name)
+        else {
             return false;
         };
-        let Some(second_body) = self.expanded_packet_read(publication.read, &function.name) else {
+        let Some(second_body) =
+            self.expanded_visible_bank_transaction(publication.read, &function.name)
+        else {
             return false;
         };
         let Some(first) = recognize::transaction(&first_body, &self.fixed_address_arrays) else {
@@ -41,7 +45,7 @@ impl Generator {
         else {
             return false;
         };
-        if !shared_read_bank(&first, &second)
+        if !same_bank_configuration(&first, &second)
             || !self.bank_transfer_abi_is_compatible(first.transfer)
             || !self.bank_transfer_abi_is_compatible(second.transfer)
         {
@@ -172,19 +176,6 @@ impl Generator {
         true
     }
 
-    fn expanded_packet_read(&self, name: &str, caller: &str) -> Option<Function> {
-        let definition = self.inline_bodies.source_visible_definition(name, caller)?;
-        if definition.asm_body.is_some()
-            || !definition.inline_asm_blocks.is_empty()
-            || definition.peephole_disabled
-        {
-            return None;
-        }
-        self.inline_bodies
-            .expand_calls(definition)
-            .or_else(|| Some(definition.clone()))
-    }
-
     fn discarded_packet_read_tail(&mut self, plan: &Transaction<'_>, initialize_poll: bool) {
         // The legacy compiler retains normalization of the first transfer's
         // failure even after discarding the helper result. Its second transfer
@@ -296,14 +287,4 @@ impl Generator {
             .instructions
             .push(Instruction::BranchToLinkRegister);
     }
-}
-
-pub(super) fn shared_read_bank(first: &Transaction<'_>, second: &Transaction<'_>) -> bool {
-    first.address == second.address
-        && first.selected == second.selected
-        && first.poll == second.poll
-        && first.preserve == second.preserve
-        && first.insert == second.insert
-        && first.poll_begin == second.poll_begin
-        && first.poll_end == second.poll_end
 }

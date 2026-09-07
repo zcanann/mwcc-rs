@@ -486,12 +486,12 @@ fn composed_packet_reads_require_one_consistent_retained_bank() {
     let bank_map = banks();
     let first = recognize::transaction(&first_function, &bank_map).unwrap();
     let mut second = recognize::transaction(&second_function, &bank_map).unwrap();
-    assert!(packet_reads::shared_read_bank(&first, &second));
+    assert!(same_bank_configuration(&first, &second));
     // Commands and transfer symbols have independent owners; the retained
     // register-bank state alone must agree across both transactions.
     second.payload = Payload::Read { high: 0x8000 };
     second.transfer = "other_exchange";
-    assert!(packet_reads::shared_read_bank(&first, &second));
+    assert!(same_bank_configuration(&first, &second));
     for changed in 0..7 {
         let mut second = recognize::transaction(&second_function, &bank_map).unwrap();
         match changed {
@@ -504,7 +504,7 @@ fn composed_packet_reads_require_one_consistent_retained_bank() {
             _ => second.poll_end += 1,
         }
         assert!(
-            !packet_reads::shared_read_bank(&first, &second),
+            !same_bank_configuration(&first, &second),
             "bank component {changed}"
         );
     }

@@ -1529,6 +1529,9 @@ impl Generator {
         if self.try_fixed_bank_transaction(function)? {
             return Ok(());
         }
+        if self.try_bank_retry_transport(function)? {
+            return Ok(());
+        }
         if self.try_fixed_address_immediate_rmw(function)? {
             return Ok(());
         }

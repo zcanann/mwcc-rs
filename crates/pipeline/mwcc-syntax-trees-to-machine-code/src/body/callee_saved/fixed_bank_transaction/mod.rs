@@ -9,6 +9,7 @@ use mwcc_versions::{FixedAddressParameterizedRmwStyle, Optimization};
 mod legacy;
 mod packet_reads;
 mod recognize;
+mod retry_transport;
 mod stream;
 mod stream_legacy;
 mod stream_mainline;
@@ -107,6 +108,19 @@ impl Generator {
         Ok(true)
     }
 
+    fn expanded_visible_bank_transaction(&self, name: &str, caller: &str) -> Option<Function> {
+        let definition = self.inline_bodies.source_visible_definition(name, caller)?;
+        if definition.asm_body.is_some()
+            || !definition.inline_asm_blocks.is_empty()
+            || definition.peephole_disabled
+        {
+            return None;
+        }
+        self.inline_bodies
+            .expand_calls(definition)
+            .or_else(|| Some(definition.clone()))
+    }
+
     fn bank_transfer_abi_is_compatible(&self, target: &str) -> bool {
         !self.globals.contains_key(target)
             && !self.locations.contains_key(target)
@@ -133,4 +147,14 @@ impl Generator {
                 .is_none()
             && crate::intrinsics::ordering_instruction(target, 3).is_none()
     }
+}
+
+fn same_bank_configuration(first: &Transaction<'_>, second: &Transaction<'_>) -> bool {
+    first.address == second.address
+        && first.selected == second.selected
+        && first.poll == second.poll
+        && first.preserve == second.preserve
+        && first.insert == second.insert
+        && first.poll_begin == second.poll_begin
+        && first.poll_end == second.poll_end
 }

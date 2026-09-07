@@ -4,13 +4,73 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, composed packet bank reads (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, complete Melee transport matching (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `957289bf6e89e5f5c351115714eb6ce6d319a83b2707264063d6abe92609374e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `64f5ec4c522c918c3e60e831bbf664193d4dddea50315a52b1e40032c55bcd30:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete Melee transport matching, 2026-09-06
+
+Against frozen baseline `c37dff14`, Melee's `DBWrite` now matches all **608
+reference function bytes**. The complete `odenotstub.c` object is now
+**byte-identical**, improving from **20/21 to 21/21 exact functions** and
+**2712/3320 to 3320/3320 exact reference function bytes**. This completes
+this configured transport translation unit, not the wider project or corpus.
+
+A separate source proof describes the interrupt-protected three-phase
+status/stream/mailbox protocol. It derives counter selection, stream commands,
+length rounding, mailbox fields, retry conditions, and the return value from
+the tree. Source-visible status and mailbox definitions reuse the existing
+fixed-bank proof and must share their selected/poll bank configuration. Shared
+source expansion and bank checks now live with the common transaction owner.
+ABI, storage, visibility, automatic inlining, optimization, and legacy profile
+checks gate composition; no source names or device addresses select it.
+
+The physical schedule retains the token and bank addresses across calls and
+reuses dead stream argument registers for later phases. The first two status
+phases discard transfer failures while the last retries either failure before
+checking the busy bit. The reference's unused first-transfer normalization
+survives. Distinct inlined command slots share one caller output word, and
+GC/1.1p1 uses the existing patched linkage policy for its smaller frame and
+restore order. Recognition, helper composition, and physical scheduling are
+separate modules.
+
+New canaries **1616 and 1617 improve from 0/30 to 8/30 whole-object exact
+pairs**: both match all four legacy builds. All 30 pairs compile, with no
+exclusions or reference rejections; the other 22 remain nonexact. The variant
+changes typedefs, names, bank address and slots, selection and poll masks,
+status and mailbox commands, counter selection, length rounding, message
+fields, and the return value.
+
+**9,024 paired Unicorn cases pass**: 8,256 across both canaries and all 15
+builds, plus 768 using Melee's actual caller and status/mailbox helper bodies.
+Checks cover ignored and retried transfer failures, noncanonical true values,
+all three busy phases, repeated MMIO polling, counter and size wraparound,
+command storage overwritten by callbacks, counter and bank changes across
+calls, retained stream/mailbox arguments, output identity, byte/buffer guards,
+interrupt-token restoration, and ABI-clobbered registers. Transfer, stream,
+and interrupt primitives are modeled; this does not claim hardware execution.
+
+Sixteen fixed-bank tests (four new source-proof tests) and 117 inline-expansion
+tests pass. The previously documented embedded-asm composition failure remains
+explicitly skipped. The focused regression selection retains every verdict:
+**1,040 slots, 281 exclusions, 759 runnable pairs, and 417 exact objects**, with
+no timeouts. Another **300 neighboring pairs retain every verdict and 133
+exact objects**. All 30 new candidate objects remained byte-identical after
+the final shared-helper relocation within the implementation.
+
+The 40 real-project transport configurations improve from **35 BYTE, one DIFF,
+and four missing dependencies** to **36 BYTE, zero DIFF, and four missing
+dependencies**. All **34/34 measured nonempty code projections** match; two
+configurations are empty and four remain unmeasured. The interleaved static
+symbol-order gap in canaries 1614/1615 remains outstanding.
+
+Local evidence: `target/bank-retry-*`, `target/check_bank_retry*.py`,
+`target/probe_bank_retries.py`, `target/inspect_bank_retry_objects.py`, and
+`target/reference-parity/64f5ec4c522c918c-5e4ca1ddc460f4d8.jsonl`.
 
 ## Composed packet bank reads, 2026-09-06
 
