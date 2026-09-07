@@ -1131,16 +1131,32 @@ impl Generator {
                     )?);
                     return Ok(());
                 }
-                if !fits_single_scratch(expression, destination == GENERAL_SCRATCH) {
-                    if matches!(operator, BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor | BinaryOperator::ShiftLeft)
-                        && !expression_has_side_effect(left)
+                // Remaining subscripts are computed loads, not register leaves for
+                // the legacy single-scratch operand placer. Constant-index
+                // schedules above have already had first refusal.
+                if !fits_single_scratch(expression, destination == GENERAL_SCRATCH)
+                    || matches!(left.as_ref(), Expression::Index { .. })
+                    || matches!(right.as_ref(), Expression::Index { .. })
+                {
+                    if matches!(
+                        operator,
+                        BinaryOperator::Add
+                            | BinaryOperator::Subtract
+                            | BinaryOperator::Multiply
+                            | BinaryOperator::BitAnd
+                            | BinaryOperator::BitOr
+                            | BinaryOperator::BitXor
+                            | BinaryOperator::ShiftLeft
+                    ) && !expression_has_side_effect(left)
                         && !expression_has_side_effect(right)
                     {
-                        // The specialized mask schedules have had first refusal.
+                        // The specialized arithmetic and mask schedules have had first refusal.
                         // Keep both remaining subtrees in independent virtual
                         // homes, including narrowing casts on an inserted value.
                         let first = self.fresh_virtual_general();
-                        self.with_reserved_inputs(right, |me| me.evaluate_general(left, first))?;
+                        self.with_reserved_inputs(right, |me| {
+                            me.evaluate_promoted_general_operand(left, first)
+                        })?;
                         if *operator == BinaryOperator::ShiftLeft {
                             if let Some(shift) = constant_value(right).filter(|shift| (0..=31).contains(shift)) {
                                 self.output.instructions.push(Instruction::ShiftLeftImmediate {
@@ -1151,7 +1167,7 @@ impl Generator {
                         }
                         let second = self.fresh_virtual_general();
                         let restore = self.reserved.insert(first);
-                        let evaluated = self.evaluate_general(right, second);
+                        let evaluated = self.evaluate_promoted_general_operand(right, second);
                         if restore {
                             self.reserved.remove(&first);
                         }

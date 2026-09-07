@@ -4,13 +4,89 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, GC/1.1p1 O0 transaction and context spill bugs (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete GXAttr translation unit and switch-table liveness (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `988e63526b1916066c5ebb58ed9b0ab82e7926c689ff1cde59ded705f9077b94:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `a61358dc7a54f4b87caa66ef23ce4631ca37b1f78d42a62d9c48a7eb83e6a709:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete GXAttr translation unit and switch-table liveness, 2026-09-07
+
+BfBB's unchanged, fully configured `GXAttr.c` now compiles, advancing the GX
+survey from **11/14 to 12/14 complete translation units**. Its
+`__GXCalculateVLim`, `GXSetVtxAttrFmtv`, and `GXSetTexCoordGen2` pass **3,072
+three-way PowerPC execution comparisons** against a fresh GC/1.2.5n object and
+the original DOL. Checks cover the complete 1,456-byte GX context, format-list
+memory, FIFO writes, saved GPR/FPR images, and SP/LR/PC. The only controlled
+helper is `__GXSetMatrixIndex`; its argument, context effects, and volatile
+register clobbers are checked. The real inline format dispatcher executes in
+all three objects.
+
+Computed integer arithmetic now uses independent virtual operands after the
+specialized schedules decline, including signed-byte promotion and variable
+accesses to small SDA byte arrays. Uninitialized scalar declarations used only
+as bare discarded-value hints no longer request register homes. Initialized,
+assigned, address-taken, volatile, and assembly-visible locals retain their
+existing handling. Frames establish unnamed saved slots reserved for loop
+pressure, and leaf linkage removal accepts intervening saved-register reloads
+without deleting those reloads.
+
+The allocator now includes switch-table successors in liveness. A separate
+module recovers the selected dispatcher's table identity from relocations and
+register copies, allowing hoisted table addresses and distinct dispatches.
+This recovery follows the emitted instruction stream; it is not general
+indirect-branch analysis. Dense switches use virtual temporaries instead of
+rewriting named parameter homes inside a loop, preserving the first loop test
+and values used by switch arms. Condition cleanup uses the shared instruction
+retargeting helper so branch removal also adjusts jump-table entries. Native
+execution exposed both the missing indirect edges and stale table offsets.
+
+Canaries **1970–1977** cover arithmetic/casts/indexed loads, the vertex-limit
+accumulator, inline format lists, and discarded local hints. Across fifteen
+builds at O0/O4, compilation improves **30/120 to 120/120 objects**; the fresh
+references also compile **120/120**. There are **0/120 whole-object matches**
+and **4/450 exact function text plus symbolic relocation comparisons**.
+Of **230,400 paired execution comparisons**, **229,684 agree**. Candidate output
+passes the independent C/ABI models throughout this panel. The remaining
+**716 differences** expose two further GC/1.1p1 O0 reference spill bugs in
+canary 1977: `hinted` reads the second parameter from the shared spill slot as
+its switch selector (**204 cases**), while `assigned` restores the first
+parameter over saved r30 (**512 cases**). A separate **1,536-case** rerun
+validates these reference-specific models with no unexplained discrepancies;
+the candidate does **not yet reproduce** those two bugs. These are open parity
+gaps, not passing paired comparisons.
+
+The pinned [GXAttr layout](reference-layouts/bfbb-gxattr.json) verifies five
+fresh-reference functions byte-for-byte against the original DOL. The linked
+checker now accepts verified initialized `.sdata` images and disambiguates
+reused source ordinals by their pinned address and size, while retaining
+unique-image checks. The candidate matches **0/5** linked functions. Its full
+object has **4,264 text bytes**, versus **3,412** for the reference; frame layout,
+scheduling, and jump-table images remain different. Matching execution of the
+three tested functions does not establish full GXAttr or project parity.
+
+Regression checks preserve **1,114** compiling indexed objects byte-for-byte,
+including **972** known exact results. Of **2,235** recent source/build pairs,
+**2,042** retain identical objects, **89** retain their compilation failures,
+and **104** matrix objects change with the corrected liveness. The complete
+120-object matrix panel passes **107,520** execution checks against independent
+models and existing original-game fixtures. Final recompilation verifies all
+120 execution-tested hashes. Ten other complete GX units and the AX voice
+parameter unit retain identical objects; changed `GXPerf.c` passes **4,701
+three-way execution comparisons** against a fresh reference and the DOL.
+Compiler-library tests pass **1,590**, excluding the previously confirmed
+embedded-assembly failure; allocator tests pass **104** with **8 ignored**, and
+all **21** linked-checker tests pass.
+
+Artifacts are under `target/gx-vlim-{canaries,real,perf,matrix,index,recent,library,full-ax}`.
+The canary directory records compilation, reference comparison, execution, and
+`hint-spill-bug-execution-results.json`; real-unit directories record compiled
+objects and native execution. `target/gx-vlim-verified-objects.json` records the
+matrix hash bridge. These focused counts are not a corpus parity estimate.
+`GXMisc.c` and `GXTexture.c` remain the two GX compilation blockers, alongside
+the new O0 spill-bug reproductions and instruction matching work.
 
 ## GC/1.1p1 O0 transaction and context spill bugs, 2026-09-07
 

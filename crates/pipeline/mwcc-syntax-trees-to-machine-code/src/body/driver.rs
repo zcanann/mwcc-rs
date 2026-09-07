@@ -1241,6 +1241,9 @@ impl Generator {
                 }
             }
         }
+        if let Some(lowered) = remove_uninitialized_value_hints(function) {
+            return self.evaluate_body(&lowered);
+        }
         if self.behavior.posttest_readback_high_first {
             if let Some(scheduled) =
                 crate::legacy_readback_schedule::materialize(function, &self.globals)

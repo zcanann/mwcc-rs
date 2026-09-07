@@ -21,6 +21,7 @@ mod description;
 mod labels;
 mod linearize;
 mod liveness;
+mod jump_table_flow;
 mod register;
 mod schedule;
 
@@ -31,5 +32,6 @@ pub use description::*;
 pub use labels::*;
 pub use linearize::*;
 pub use liveness::*;
+pub use jump_table_flow::*;
 pub use register::*;
 pub use schedule::*;

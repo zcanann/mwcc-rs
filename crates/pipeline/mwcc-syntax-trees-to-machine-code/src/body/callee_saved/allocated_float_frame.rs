@@ -126,9 +126,19 @@ impl Generator {
                     Instruction::BranchToLinkRegister,
                 ]
             );
+        let interleaved_saved_restores = common_prefix
+            .then(|| {
+                interleaved_leaf_linkage_reload(
+                    &self.output.instructions,
+                    self.frame_size,
+                    &self.callee_saved,
+                )
+            })
+            .flatten();
         if !reload_before_stack_restore
             && !stack_restore_before_reload
             && !stack_restore_between_reload_and_link
+            && interleaved_saved_restores.is_none()
         {
             if std::env::var_os("MWCC_CAPTURE_FUNCTION")
                 .is_some_and(|name| name == std::ffi::OsStr::new(&self.output.name))
@@ -143,7 +153,10 @@ impl Generator {
             ));
         }
 
-        if reload_before_stack_restore {
+        if let Some(reload) = interleaved_saved_restores {
+            crate::remove_instruction_retargeting_to_next(self, len - 2);
+            crate::remove_instruction_retargeting_to_next(self, reload);
+        } else if reload_before_stack_restore {
             crate::remove_instruction_retargeting_to_next(self, len - 3);
             crate::remove_instruction_retargeting_to_next(self, len - 4);
         } else if stack_restore_between_reload_and_link {
@@ -689,6 +702,44 @@ fn materialize_leaf_predecrement_frame(
     }
     *instructions = rebuilt;
     Ok((permutation, frame_growth))
+}
+
+/// Allocation may insert saved GPR reloads between the LR reload and stack
+/// restore. They must remain when inlining removes the need to preserve LR.
+fn interleaved_leaf_linkage_reload(
+    instructions: &[Instruction],
+    frame_size: i16,
+    saved: &[u8],
+) -> Option<usize> {
+    let tail = instructions.len().checked_sub(3)?;
+    if !matches!(&instructions[tail..], [
+        Instruction::AddImmediate { d: 1, a: 1, immediate },
+        Instruction::MoveToLinkRegister { s: 0 },
+        Instruction::BranchToLinkRegister,
+    ] if *immediate == frame_size)
+    {
+        return None;
+    }
+    let mut reload = tail;
+    while reload > 0 {
+        match &instructions[reload - 1] {
+            Instruction::LoadWord { d, a: 1, offset }
+                if saved.iter().enumerate().any(|(slot, home)| {
+                    d == home && *offset == frame_size - 4 * (slot as i16 + 1)
+                }) =>
+            {
+                reload -= 1;
+            }
+            _ => break,
+        }
+    }
+    if reload == tail || reload == 0 {
+        return None;
+    }
+    matches!(instructions[reload - 1],
+        Instruction::LoadWord { d: 0, a: 1, offset }
+            if Some(offset) == frame_size.checked_add(4))
+    .then_some(reload - 1)
 }
 
 fn leaf_retains_linkage_state(instructions: &[Instruction], frame_size: i16) -> bool {
@@ -1256,5 +1307,54 @@ mod tests {
         assert!(restore < restore_gprs);
         assert_eq!(permutation[5], restore);
     }
+}
 
+#[cfg(test)]
+mod interleaved_linkage_tests {
+    use super::interleaved_leaf_linkage_reload;
+    use mwcc_machine_code::Instruction;
+
+    #[test]
+    fn retains_saved_register_reloads_when_removing_leaf_linkage() {
+        let code = [
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::LoadWord {
+                d: 31,
+                a: 1,
+                offset: 12,
+            },
+            Instruction::LoadWord {
+                d: 30,
+                a: 1,
+                offset: 8,
+            },
+            Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::BranchToLinkRegister,
+        ];
+        assert_eq!(
+            interleaved_leaf_linkage_reload(&code, 16, &[31, 30]),
+            Some(0)
+        );
+        assert_eq!(interleaved_leaf_linkage_reload(&code, 16, &[30, 31]), None);
+        assert_eq!(interleaved_leaf_linkage_reload(&code, 24, &[31, 30]), None);
+        let mut clobbered = code.to_vec();
+        clobbered[2] = Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 8,
+        };
+        assert_eq!(
+            interleaved_leaf_linkage_reload(&clobbered, 16, &[31, 30]),
+            None
+        );
+    }
 }

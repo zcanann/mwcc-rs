@@ -1,0 +1,64 @@
+{
+  "dol_sha256": "865f446cf8efd52230dac506d6334a357b4c738cd6eb6e3a68c827efac51c3e0",
+  "symbols_sha256": "92f658ac1a6f91ec64d851dcfdf92a0907f3c06f5c68a97096052e99b5f3dfa4",
+  "functions": [
+    "__GXCalculateVLim",
+    "GXSetVtxAttrFmtv",
+    "GXSetTexCoordGen2",
+    "GXSetVtxDesc",
+    "GXSetVtxAttrFmt"
+  ],
+  "sda_bases": {
+    "2": 2151500160,
+    "13": 2151491840
+  },
+  "data_symbols": {
+    "__GXData": 2151480440
+  },
+  "literals": [],
+  "external_functions": [
+    "__GXSetMatrixIndex"
+  ],
+  "data_images": [
+    {
+      "reference_symbol": "tbl1$263",
+      "address": 2151460568,
+      "hex": "00040102"
+    },
+    {
+      "reference_symbol": "tbl2$264",
+      "address": 2151460572,
+      "hex": "00080102"
+    },
+    {
+      "reference_symbol": "tbl3$265",
+      "address": 2151460576,
+      "hex": "000c0102"
+    },
+    {
+      "reference_symbol": "@176",
+      "address": 2150320576,
+      "hex": "801cad7c801cad90801cada4801cadb8801cadcc801cade0801cadf4801cae08801cae1c801cae30801cae44801caeac801caec0801caed4801caee8801caefc801caf10801caf24801caf38801caf4c801caf60801caf70801caf70801caf70801caf70801cae78"
+    },
+    {
+      "reference_symbol": "@498",
+      "address": 2150320680,
+      "hex": "801cb21c801cb244801cb298801cb2b4801cb2d0801cb2f8801cb320801cb348801cb370801cb398801cb3c0801cb3e8801cb40c801cb40c801cb40c801cb40c801cb244"
+    },
+    {
+      "reference_symbol": "@525",
+      "address": 2150320748,
+      "hex": "801cb48c801cb4b4801cb508801cb524801cb540801cb568801cb590801cb5b8801cb5e0801cb608801cb630801cb658801cb67c801cb67c801cb67c801cb67c801cb4b4"
+    },
+    {
+      "reference_symbol": "@819",
+      "address": 2150320844,
+      "hex": "801cb82c801cb838801cb844801cb850801cb86c801cb874801cb87c801cb884801cb88c801cb894801cb89c801cb8a4801cb8a8801cb8a8801cb8a8801cb8a8801cb8a8801cb8a8801cb8a8801cb85c801cb864"
+    },
+    {
+      "reference_symbol": "@820",
+      "address": 2150320816,
+      "hex": "801cb9c0801cb9d4801cb9e8801cb9fc801cba10801cba24801cba38"
+    }
+  ]
+}

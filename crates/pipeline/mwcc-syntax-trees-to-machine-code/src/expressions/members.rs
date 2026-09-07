@@ -2255,7 +2255,20 @@ impl Generator {
             let small =
                 self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
             if small {
-                return Err(Diagnostic::error("a variable subscript of a SMALL byte global array is not supported yet (roadmap)"));
+                // The index has no scale, but still owns its promotions and
+                // computations. Keep it separate from the SDA address so an
+                // index that reads the eventual destination survives the load.
+                let index_register = self.fresh_virtual_general();
+                self.evaluate_general(index, index_register)?;
+                let base = self.fresh_virtual_general();
+                self.emit_global_array_base(name, total_size, base)?;
+                self.output.instructions.push(indexed_load(
+                    pointee,
+                    destination,
+                    base,
+                    index_register,
+                )?);
+                return Ok(());
             }
             let byte_normalized = match index {
                 Expression::Cast {

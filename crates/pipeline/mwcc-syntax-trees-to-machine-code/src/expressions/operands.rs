@@ -4,6 +4,21 @@
 use super::*;
 
 impl Generator {
+    /// Materialize an arithmetic operand with C's integer promotions. Byte
+    /// memory loads produce raw bits; signed bytes need an explicit extension
+    /// when the surrounding operation consumes more than the stored byte.
+    pub(crate) fn evaluate_promoted_general_operand(
+        &mut self,
+        operand: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
+        self.evaluate_general(operand, destination)?;
+        if !self.narrow_truncation_context && self.is_signed_byte_load(operand)? {
+            self.emit_widen(destination, destination, 8, true);
+        }
+        Ok(())
+    }
+
     /// Load a signed-byte operand into the scratch and sign-extend it in place (`lbz r0; extsb
     /// r0,r0`), returning the scratch — for the unary/shift idioms (`neg`, `not`, `srawi`) that
     /// read their operand from r0, where mwcc keeps it. (`addi` cannot take r0 as a source — it

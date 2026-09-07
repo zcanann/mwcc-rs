@@ -212,6 +212,37 @@ class LinkedDolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             compare(data, dol, source, layout)
 
+    def test_initialized_small_data_uses_verified_r13_section(self):
+        data, dol, source, layout = self.fixture(literal=True)
+        data = data.replace(b'.sdata2\0', b'.sdata\0\0').replace(b'\0f\0g\0', b'\0f\0h\0')
+        source = source.replace('.sdata2:', '.sdata:')
+        dol = bytearray(dol)
+        struct.pack_into('>I', dol, 0x100, 0x806DFFF0)
+        layout.update(dol_sha256=hashlib.sha256(dol).hexdigest(),
+                      symbols_sha256=hashlib.sha256(source.encode()).hexdigest(),
+                      sda_bases={'2': 0x80004018, '13': 0x80004020},
+                      data_images=[dict(reference_symbol='g', **layout['literals'][0])], literals=[])
+        self.assertTrue(compare(data, bytes(dol), source, layout)['functions'][0]['exact'])
+
+    def test_initialized_data_pin_disambiguates_reused_source_ordinals(self):
+        data, dol, source, layout = self.fixture(literal=True)
+        data = data.replace(b'.sdata2\0', b'.data\0\0\0')
+        source = source.replace('.sdata2:', '.data:')
+        source += 'g = .data:0x80004014; // type:object size:0x4\n'
+        layout.update(symbols_sha256=hashlib.sha256(source.encode()).hexdigest(),
+                      data_images=[dict(reference_symbol='g', **layout['literals'][0])], literals=[])
+        self.assertTrue(compare(data, dol, source, layout)['functions'][0]['exact'])
+
+    def test_equal_initialized_small_objects_do_not_alias(self):
+        data, dol, source, layout = self.fixture(literal=True, duplicate=True)
+        data = data.replace(b'.sdata2\0', b'.sdata\0\0')
+        source = source.replace('.sdata2:', '.sdata:')
+        layout.update(symbols_sha256=hashlib.sha256(source.encode()).hexdigest(),
+                      data_images=[dict(reference_symbol='g', **layout['literals'][0])], literals=[])
+        result = compare(data, dol, source, layout)['functions'][0]
+        self.assertFalse(result['exact'])
+        self.assertIn('ambiguous', result['unresolved_relocations'][0]['reason'])
+
     def test_address_halves_preserve_opcode_and_apply_signed_low_carry(self):
         self.assertEqual(relocate(0x3C600000, 5, 0x80008010, 0, {}), 0x3C608000)
         self.assertEqual(relocate(0x3C600000, 6, 0x80008010, 0, {}), 0x3C608001)

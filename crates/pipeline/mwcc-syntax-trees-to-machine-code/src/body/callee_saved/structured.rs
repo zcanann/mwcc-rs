@@ -3988,6 +3988,19 @@ impl Generator {
                 );
             }
         }
+        // Loop-pressure planning can reserve more saved slots than there are
+        // named survivors. Dense ranges save those slots with stmw; individual
+        // frames must establish them too, so allocation can repaint the range
+        // when the loop's temporaries acquire their physical saved registers.
+        if !dense_saved_range {
+            for home_index in base_home_count..count {
+                self.emit_structured_saved_home_store(
+                    homes[home_index],
+                    frame_slot_for_home(home_index),
+                    plan.frame_size,
+                );
+            }
+        }
         for local in deferred_saved_locals {
             let group = deferred_home_plan.group(&local.name);
             let home = homes[parameter_home_reuse.home_index(group)];

@@ -22,7 +22,7 @@ impl Generator {
         arms: &[mwcc_syntax_trees::SwitchArm],
         default: Option<&ArmBody>,
         function: &Function,
-        live_after: Option<&std::collections::HashSet<&str>>,
+        _live_after: Option<&std::collections::HashSet<&str>>,
         ephemeral_locals: &[&LocalDeclaration],
         return_branches: &mut Vec<usize>,
         label_positions: &mut std::collections::HashMap<String, usize>,
@@ -57,75 +57,42 @@ impl Generator {
             ));
         }
 
-        let mut preserved_dispatch_values = self
-            .locations
-            .iter()
-            .filter(|(name, location)| {
-                location.class == ValueClass::General
-                    && matches!(location.register, 3 | 4)
-                    && (switch_bodies_use_name(arms, default, name)
-                        || live_after.is_some_and(|names| names.contains(name.as_str())))
-            })
-            .map(|(name, location)| (name.clone(), location.register))
-            .collect::<Vec<_>>();
-        // Both dispatch scratch lanes may hold live parameters. Stable input
-        // order keeps their preferred homes independent of HashMap iteration.
-        preserved_dispatch_values.sort_by(|(left_name, left), (right_name, right)| {
-            left.cmp(right).then_with(|| left_name.cmp(right_name))
-        });
-
-        let reused_guarded_bitfield =
-            super::structured_guarded_bitfield_switch::consume(
-                &mut self.structured_guarded_bitfield_value,
-                scrutinee,
-            );
+        let reused_guarded_bitfield = super::structured_guarded_bitfield_switch::consume(
+            &mut self.structured_guarded_bitfield_value,
+            scrutinee,
+        );
         let mut temporary_scrutinee = reused_guarded_bitfield;
         let scrutinee_register = if reused_guarded_bitfield {
             GENERAL_SCRATCH
         } else {
             match scrutinee {
-            Expression::Variable(name) if self.locations.contains_key(name) => {
-                let location = &self.locations[name];
-                if location.class != ValueClass::General {
-                    return Err(Diagnostic::error(
-                        "structured switch scrutinee is not an integer",
-                    ));
+                Expression::Variable(name) if self.locations.contains_key(name) => {
+                    let location = &self.locations[name];
+                    if location.class != ValueClass::General {
+                        return Err(Diagnostic::error(
+                            "structured switch scrutinee is not an integer",
+                        ));
+                    }
+                    location.register
                 }
-                location.register
-            }
-            _ => {
-                temporary_scrutinee = true;
-                // PowerPC treats r0 as literal zero in `addi`'s base field.
-                // A negative minimum rebases the value with `addi`, so first
-                // evaluate a computed scrutinee in the next ABI scratch.
-                let register = computed_scrutinee_register(subtract);
-                self.evaluate_general(scrutinee, register)?;
-                register
-            }
+                _ => {
+                    temporary_scrutinee = true;
+                    let register = self
+                        .fresh_virtual_general_preferring(computed_scrutinee_register(subtract));
+                    self.evaluate_general(scrutinee, register)?;
+                    register
+                }
             }
         };
-        for (offset, (name, source)) in preserved_dispatch_values.into_iter().enumerate() {
-            let preferred = 7u8.saturating_sub(offset as u8);
-            let retained = self.fresh_virtual_general_preferring(preferred);
-            self.output
-                .instructions
-                .push(Instruction::move_register(retained, source));
-            self.locations
-                .get_mut(&name)
-                .expect("dispatch value came from a known location")
-                .register = retained;
-        }
-
         let (index_register, table_register) = if subtract {
             self.output.instructions.push(Instruction::AddImmediate {
                 d: GENERAL_SCRATCH,
                 a: scrutinee_register,
                 immediate: negated_base as i16,
             });
-            // Rebasing moves the live index to r0, so the source local's home
-            // is immediately reusable for the jump-table address. This is the
-            // same lifetime rule as the ordinary switch owner, generalized
-            // from its fixed r3 scrutinee to an allocator-backed local.
+            // Prefer the old scrutinee home when allocation proves it dead.
+            // A separate virtual keeps arm and loop-carried inputs intact;
+            // changing a named location here would miss the loop's first test.
             let table_register = if temporary_scrutinee
                 || scrutinee_register == GENERAL_SCRATCH
             {
@@ -133,14 +100,28 @@ impl Generator {
             } else {
                 scrutinee_register
             };
-            (GENERAL_SCRATCH, table_register)
+            (
+                GENERAL_SCRATCH,
+                self.fresh_virtual_general_preferring(if table_register < 32 {
+                    table_register
+                } else {
+                    3
+                }),
+            )
         } else {
             let table_register = if scrutinee_register == Eabi::general_result().number {
                 4
             } else {
                 Eabi::general_result().number
             };
-            (scrutinee_register, table_register)
+            (
+                scrutinee_register,
+                self.fresh_virtual_general_preferring(if table_register < 32 {
+                    table_register
+                } else {
+                    3
+                }),
+            )
         };
 
         self.output
@@ -195,13 +176,14 @@ impl Generator {
                     s: index_register,
                     shift: 2,
                 });
+            let base = self.fresh_virtual_general_preferring(Eabi::general_result().number);
             self.record_target(RelocationKind::Addr16Lo, table_target);
             self.output.instructions.push(Instruction::AddImmediate {
-                d: Eabi::general_result().number,
+                d: base,
                 a: table_register,
                 immediate: 0,
             });
-            Eabi::general_result().number
+            base
         };
         self.output.instructions.push(Instruction::LoadWordIndexed {
             d: GENERAL_SCRATCH,

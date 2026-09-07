@@ -1565,7 +1565,11 @@ pub(crate) fn allocation_operator_returns_pointer(name: &str) -> bool {
 /// each migration step verified byte-exact against the oracle. Running it
 /// unconditionally keeps one pipeline (no fork between a legacy and a vreg path).
 fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
-    let mut liveness = mwcc_vreg::analyze(&generator.output.instructions);
+    let mut liveness = mwcc_vreg::analyze_with_jump_tables(
+        &generator.output.instructions,
+        &generator.output.relocations,
+        &generator.output.jump_tables,
+    );
     if liveness.intervals.is_empty() {
         return Ok(Vec::new()); // no virtuals — selection chose physical registers directly
     }

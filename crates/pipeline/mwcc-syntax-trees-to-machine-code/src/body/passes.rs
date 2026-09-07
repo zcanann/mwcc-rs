@@ -2,6 +2,84 @@
 
 #[allow(unused_imports)]
 use super::*;
+use mwcc_syntax_trees::ArmBody;
+
+/// Remove uninitialized scalar declarations whose only occurrences are bare
+/// discarded-value hints. They have no emitted load, but retaining the hint in
+/// value-flow analysis falsely requests an uninitialized register home.
+/// Initialized, assigned, address-taken, and volatile locals keep their uses.
+pub(crate) fn remove_uninitialized_value_hints(function: &Function) -> Option<Function> {
+    if function.locals.is_empty()
+        || !function.inline_asm_blocks.is_empty()
+        || function.asm_body.is_some()
+    {
+        return None;
+    }
+    fn discard(statements: &mut Vec<Statement>, name: &str) -> usize {
+        let old_len = statements.len();
+        statements.retain(|statement| {
+            !matches!(statement,
+            Statement::Expression(Expression::Variable(value)) if value == name)
+        });
+        let mut removed = old_len - statements.len();
+        for statement in statements {
+            match statement {
+                Statement::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    removed += discard(then_body, name) + discard(else_body, name);
+                }
+                Statement::Loop { body, .. } => removed += discard(body, name),
+                Statement::Switch { arms, default, .. } => {
+                    for arm in arms {
+                        if let ArmBody::Statements(body) = &mut arm.body {
+                            removed += discard(body, name);
+                        }
+                    }
+                    if let Some(ArmBody::Statements(body)) = default {
+                        removed += discard(body, name);
+                    }
+                }
+                _ => {}
+            }
+        }
+        removed
+    }
+    let mut lowered = function.clone();
+    let mut changed = false;
+    for local in &function.locals {
+        if local.initializer.is_some()
+            || local.is_static
+            || local.is_volatile
+            || local.array_length.is_some()
+            || !matches!(
+                local.declared_type,
+                Type::Int
+                    | Type::UnsignedInt
+                    | Type::Char
+                    | Type::UnsignedChar
+                    | Type::Short
+                    | Type::UnsignedShort
+                    | Type::Pointer(_)
+            )
+        {
+            continue;
+        }
+        let mut trial = lowered.clone();
+        if discard(&mut trial.statements, &local.name) != 0
+            && !crate::analysis::function_uses_name(&trial, &local.name)
+        {
+            trial
+                .locals
+                .retain(|candidate| candidate.name != local.name);
+            lowered = trial;
+            changed = true;
+        }
+    }
+    changed.then_some(lowered)
+}
 
 /// How a run of constant stores materializes its values (see `constant_store_run_plan`). `AllSame`
 /// reuses the scratch register for one repeated `li`; `Distinct` gives each store's value its own

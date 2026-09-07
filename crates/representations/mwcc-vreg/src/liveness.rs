@@ -44,8 +44,19 @@ pub struct Liveness {
 /// Within an instruction reads precede the write. A register first seen as a
 /// use is an incoming value, live along the paths leading to that use.
 pub fn analyze(instructions: &[Instruction]) -> Liveness {
-    let nonzero_bases: HashSet<_> = instructions.iter()
-        .filter_map(crate::description::nonzero_base).collect();
+    analyze_with_indirect_successors(instructions, &HashMap::new())
+}
+
+/// Include verified local targets of indirect branches, such as switch tables.
+/// Without these edges a value used in an arm appears dead at the dispatcher.
+pub fn analyze_with_indirect_successors(
+    instructions: &[Instruction],
+    indirect_successors: &HashMap<usize, Vec<usize>>,
+) -> Liveness {
+    let nonzero_bases: HashSet<_> = instructions
+        .iter()
+        .filter_map(crate::description::nonzero_base)
+        .collect();
     // The currently-open range per register key, as (start, last-touched).
     let mut open: HashMap<(Class, u8), (usize, usize)> = HashMap::new();
     let mut ranges: Vec<((Class, u8), usize, usize)> = Vec::new();
@@ -167,6 +178,7 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
         instructions,
         &uses_by_instruction,
         &definitions_by_instruction,
+        indirect_successors,
     );
 
     let mut liveness = Liveness::default();
@@ -220,6 +232,7 @@ fn control_flow_live_slots(
     instructions: &[Instruction],
     uses: &[HashSet<RegisterKey>],
     definitions: &[HashSet<RegisterKey>],
+    indirect_successors: &HashMap<usize, Vec<usize>>,
 ) -> HashMap<RegisterKey, Vec<usize>> {
     let count = instructions.len();
     let mut live_in = vec![HashSet::new(); count];
@@ -229,7 +242,11 @@ fn control_flow_live_slots(
         let mut changed = false;
         for index in (0..count).rev() {
             let mut next_out = HashSet::new();
-            for successor in successors(instructions, index) {
+            let next = indirect_successors
+                .get(&index)
+                .cloned()
+                .unwrap_or_else(|| successors(instructions, index));
+            for successor in next {
                 if successor < count {
                     next_out.extend(live_in[successor].iter().copied());
                 }

@@ -71,12 +71,16 @@ def compare(data, dol, symbol_text, layout):
     for item in data_images:
         value = bytes.fromhex(item['hex'])
         matches = re.findall(r'^\s*' + re.escape(item['reference_symbol'])
-                             + r'\s*=\s*\.data:(0x[0-9a-fA-F]+);[^\n]*type:object size:(0x[0-9a-fA-F]+)',
+                             + r'\s*=\s*\.(data|sdata):(0x[0-9a-fA-F]+);[^\n]*type:object size:(0x[0-9a-fA-F]+)',
                              symbol_text, re.MULTILINE)
-        if len(matches) != 1 or (int(matches[0][0], 16), int(matches[0][1], 16)) != (item['address'], len(value)):
+        matches = [entry for entry in matches
+                   if (int(entry[1], 16), int(entry[2], 16)) == (item['address'], len(value))]
+        if len(matches) != 1:
             raise ValueError("initialized data image does not match the pinned symbol range")
         if not value or read_dol_range(dol, item['address'], len(value)) != value:
             raise ValueError("initialized data image does not contain the expected bytes")
+        if matches[0][0] == 'sdata':
+            literal_sda_registers[item['address']] = '13'
     if data[:7] != b'\x7fELF\x01\x02\x01' or struct.unpack_from('>HH', data, 16) != (1, 20):
         raise ValueError("candidate must be a big-endian ELF32 PowerPC relocatable object")
     sections = parse_sections(data)
@@ -170,14 +174,14 @@ def compare(data, dol, symbol_text, layout):
         if len(matches) != 1:
             raise ValueError("relocation symbol is missing or ambiguous")
         _, offset, size, _, index = matches[0]
-        if index >= len(sections) or sections[index].name not in ('.sdata2', '.rodata', '.data') or size <= 0:
+        if index >= len(sections) or sections[index].name not in ('.sdata2', '.rodata', '.data', '.sdata') or size <= 0:
             raise ValueError("relocation symbol has no configured placement")
         pool = sections[index]
         if offset + size > pool.size or pool.offset + offset + size > len(data):
             raise ValueError("literal symbol extends outside its section")
         value = object_image(pool, offset, size)
         images = layout['literals']
-        if pool.name == '.data':
+        if pool.name in ('.data', '.sdata'):
             images = data_images
             # An ordinal-independent placement requires one unique object image
             # on each side. Equal initialized objects must not be silently aliased.

@@ -263,35 +263,10 @@ impl Generator {
     }
 
     pub(crate) fn remove_structured_condition_instruction(&mut self, at: usize) {
-        self.output.instructions.remove(at);
-        self.labels.removed(at, 1);
-        self.output
-            .relocations
-            .retain(|relocation| relocation.instruction_index != at);
-        for relocation in &mut self.output.relocations {
-            if relocation.instruction_index > at {
-                relocation.instruction_index -= 1;
-            }
-        }
         self.output
             .deferred_displacements
-            .retain(|displacement| displacement.instruction_index != at);
-        for displacement in &mut self.output.deferred_displacements {
-            if displacement.instruction_index > at {
-                displacement.instruction_index -= 1;
-            }
-        }
-        for instruction in &mut self.output.instructions {
-            match instruction {
-                Instruction::BranchConditionalForward { target, .. }
-                | Instruction::Branch { target }
-                    if *target > at =>
-                {
-                    *target -= 1;
-                }
-                _ => {}
-            }
-        }
+            .retain(|item| item.instruction_index != at);
+        crate::remove_instruction_retargeting_to_next(self, at);
     }
 
     /// Reuse a nested member base loaded by the preceding `&&` term. The first
