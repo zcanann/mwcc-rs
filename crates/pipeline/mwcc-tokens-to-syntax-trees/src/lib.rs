@@ -8783,6 +8783,32 @@ blr\n\
     }
 
     #[test]
+    fn preserves_a_pointer_load_before_arrow_member_address() {
+        let source = r#"
+            struct Block { int prefix; unsigned short data[8]; };
+            void* dot(struct Block* p) { return &(*p).data; }
+            void* arrow(struct Block** p) { return &(*p)->data; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        for (function, indirect) in unit.functions.iter().zip([false, true]) {
+            let Some(Expression::AddressOf { operand }) = &function.return_expression else {
+                panic!("expected member address-of")
+            };
+            let Expression::MemberAddress { base, offset: 4, .. } = operand.as_ref() else {
+                panic!("expected embedded array")
+            };
+            assert_eq!(matches!(base.as_ref(), Expression::Dereference { .. }), indirect);
+        }
+    }
+
+    #[test]
     fn recovers_function_pointer_class_member_layout() {
         let source = r#"
             class Handler {

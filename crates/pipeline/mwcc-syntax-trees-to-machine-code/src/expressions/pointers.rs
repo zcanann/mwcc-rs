@@ -911,11 +911,15 @@ impl Generator {
             // loads `data`, then indexes through that address. Keep the loaded
             // pointer in an allocator-backed result-preferred home rather than
             // requiring the cast operand to be a named leaf.
+            // Address-valued operands use this same lane without an extra load;
+            // the cast's pointee still determines the eventual access width.
             if matches!(
                 operand.as_ref(),
                 Expression::Member { .. }
                     | Expression::Dereference { .. }
                     | Expression::Index { .. }
+                    | Expression::AddressOf { .. }
+                    | Expression::MemberAddress { .. }
             ) {
                 let register = self.fresh_virtual_general_preferring(3);
                 self.evaluate_general(operand, register)?;

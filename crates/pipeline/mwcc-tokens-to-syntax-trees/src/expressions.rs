@@ -1796,7 +1796,7 @@ impl Parser {
                     let mut base_offset = 0u32;
                     let mut base_stride: Option<u32> = None;
                     expression = match expression {
-                        Expression::Dereference { pointer } => *pointer,
+                        Expression::Dereference { pointer } if !is_arrow => *pointer,
                         // An EMBEDDED struct-value member folds into its base:
                         // `p->state.eof` is ONE access at offset(state)+offset(eof)
                         // — a struct VALUE member is storage, not a pointer, so no

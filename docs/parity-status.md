@@ -4,13 +4,88 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete AX lookup sums and retained table bases (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete BfBB AX service execution (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `09bc48e4e7997d99a83696c81737b10f4d9354157f45ebbbbdc2c554da95507c:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `cf506c553b82c0ac04d47d8ad3ca2a6600fcafceef1222f57a79cb21f59419c2:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete BfBB AX service execution, 2026-09-07
+
+The configured GC/1.2.5n BfBB AX file now lowers all of `__AXServiceVPB`.
+A source prefix ending before `__AXSyncPBs`, compiled with the project's exact
+flags and include paths, improves from a baseline `fd0aaa00` decline to a
+2,840-byte service function. Against the original game's 1,868-byte linked
+function, all **2,160 execution comparisons pass**. This is complete service
+function execution evidence, not instruction/object parity or a completed AX
+translation unit. The full configured file now stops in `__AXSyncPBs` at the
+skipped inline call `__AXDumpVPB`. Reference project files were not changed.
+
+Three shared lowering paths now accept the forms encountered in that service:
+
+- A discarded register-resident local read emits no instruction. AX explicitly
+  contains `dst; // fixes reg alloc`; it is not a residual assignment. Bare
+  frame-backed values and globals remain outside this new no-op case.
+- Taking the address of an embedded array (`&pvpb->updateData`) reuses the
+  existing member-address storage/offset logic for `MemberAddress` nodes,
+  including automatic aggregates and globals.
+- A cast of an address-valued member expression materializes its address in a
+  virtual register. The cast's pointee supplies the load/store width, preserving
+  word copies through nested halfword-member addresses.
+
+Execution testing also found that the parser unconditionally unwrapped a
+member base dereference: `(*p)->data` incorrectly became `p + offset`. Only the
+`(*p).data` spelling now unwraps that dereference. The arrow form retains its
+pointer load; a parser regression checks both forms, and candidate execution
+checks the loaded address on every build at both optimization levels.
+
+Canaries **1709–1716 improve 30/120 → 120/120 compilations** across fifteen
+builds at O0/O4. They cover discarded scalar/pointer parameters, the original
+52-word COPYALL sequence, pointer/global/frame/nested embedded-array addresses,
+and cast member loads and stores. All **20,160 candidate calls pass**, including
+forward/backward overlapping copies, aliasing cast addresses, integer wraparound,
+callee-saved registers, stack restoration, and a frame-address callee that
+clobbers caller-saved registers. The thirty already-supported COPYALL objects
+remain byte-identical to the baseline. The 52-copy count deliberately follows
+the project source despite its comment claiming a 0xF4-byte copy.
+
+The complete-service comparison uses every individual sync bit, zero, all-bit
+combinations, and 100 deterministic random flags; indices 0, 1, 31, 63; and
+update counts 0, 1, 7, 64. Each case compares the full voice object, all DSP
+parameter blocks, all update blocks, the ITD buffer, and the voice counter after
+running both original and candidate code. Stack restoration and nonvolatile
+registers are checked too. Thus **22,320 candidate calls pass in total**. The
+original function is extracted from BfBB's fingerprinted GQPE78 DOL with
+`tools/extract_dol_reference.py`; its manifest and the candidate object are in
+`target/discarded-value-full-ax/`.
+
+Validation after the parser correction:
+
+- Captured paired-memory matrix: **300/300 whole-object exact**.
+- Index regression: **1,096 compiled objects unchanged**, retaining **972 known
+  reference matches**, plus **578 identical declines**; no timeouts.
+- Cumulative metadata regression against `db48e092`: **1,494 compiled objects
+  unchanged**, retaining **1,179 known reference matches**, plus **704 identical
+  declines**; no timeouts.
+- Bare volatile-global, volatile-local, and address-taken-parameter reads:
+  **90/90 unchanged declines**. The new no-op case does not silently accept them.
+- Parser tests: **407 pass**, with the same two previously documented failures
+  (`recovers_friend_bearing_layouts_and_expression_template_arguments` and
+  `retains_brace_initialized_aggregate_image_from_discarded_inline`). Filtering
+  those two produces a passing suite, including the new arrow/dot regression.
+
+Reproduction scripts and results: `target/check_discarded_values.py`,
+`target/check_discarded_execution.py`,
+`target/check_discarded_service_execution.py`,
+`target/probe_discarded_value_service.py`,
+`target/probe_discarded_value_full_ax.py`,
+`target/check_discarded_value_regression.py`, and
+`target/check_discarded_value_metadata.py`. Fresh reference compiler objects
+remain unavailable while the same six wibo processes remain stuck in kernel
+uninterruptible state. No new compiler-object matches or full-project panel
+improvement are claimed beyond the captured checks above.
 
 ## Complete AX lookup sums and retained table bases, 2026-09-07
 

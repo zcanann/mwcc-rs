@@ -9,6 +9,12 @@ impl Generator {
     /// global must retain its load. Register locals and non-volatile globals have no
     /// observable read side effect and mwcc emits no instruction for them.
     pub(crate) fn is_discarded_pure_value(&self, expression: &Expression) -> bool {
+        // Decomp sources also use bare local reads as allocation hints (AX's
+        // `dst;`). Reading a resident value needs no instruction. Frame-backed
+        // objects, including volatile locals, retain their memory-access path.
+        if let Expression::Variable(name) = expression {
+            return self.locations.contains_key(name) && !self.frame_slots.contains_key(name);
+        }
         let Expression::Cast {
             target_type: Type::Void,
             operand,

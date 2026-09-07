@@ -2637,7 +2637,15 @@ impl Generator {
         if let Expression::Dereference { pointer } = operand {
             return self.evaluate_general(pointer, destination);
         }
+        // Embedded arrays already have address-valued MemberAddress nodes;
+        // taking their address uses the same storage base and byte offset.
         if let Expression::Member {
+            base,
+            offset,
+            index_stride: None,
+            ..
+        }
+        | Expression::MemberAddress {
             base,
             offset,
             index_stride: None,
