@@ -1,6 +1,6 @@
 """Narrow Gekko paired-single support for instruction-level Unicorn probes.
 
-Only non-updating psq_l/psq_st and an explicitly zero GQR are supported.
+Only non-updating psq_l/psq_lx/psq_st and an explicitly zero GQR are supported.
 W=0 transfers both lanes; W=1 transfers lane zero and fills load lane one with 1.
 Finite binary32 values (including signed zero and subnormals) round-trip through
 Unicorn's ordinary FPR lane; the second lane is tracked separately. Arithmetic,
@@ -28,17 +28,22 @@ class UnquantizedPairedSingle:
     def _step(self, uc, address, size, _data):
         word = int.from_bytes(uc.mem_read(address, 4), 'big')
         opcode = word >> 26
-        if opcode not in (56, 60):
+        indexed_load = opcode == 4 and (word & 0x7f) == 12
+        if opcode not in (56, 60) and not indexed_load:
             return
         register, base = (word >> 21) & 31, (word >> 16) & 31
-        w, gqr = (word >> 15) & 1, (word >> 12) & 7
+        if indexed_load:
+            w, gqr = (word >> 10) & 1, (word >> 7) & 7
+            displacement = uc.reg_read(self.gpr0 + ((word >> 11) & 31))
+        else:
+            w, gqr = (word >> 15) & 1, (word >> 12) & 7
+            displacement = word & 4095
+            if displacement & 2048:
+                displacement -= 4096
         if self.gqr_values.get(gqr) != 0:
             raise ValueError(f'unsupported paired-single format at {address:#x}: {word:#x}')
-        displacement = word & 4095
-        if displacement & 2048:
-            displacement -= 4096
         effective = ((uc.reg_read(self.gpr0 + base) if base else 0) + displacement) & 0xffffffff
-        if opcode == 56:
+        if opcode == 56 or indexed_load:
             if w:
                 first = struct.unpack('>f', uc.mem_read(effective, 4))[0]
                 second = 1.0

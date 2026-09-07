@@ -12,13 +12,15 @@ use mwcc_syntax_trees::{AsmItem, AsmOperand, Function};
 use mwcc_versions::{FrameConvention, VirtualCallDispatchSchedule};
 
 /// Bind the symbolic floating operands of a retained register-inline-assembly
-/// helper to caller-side FPRs. General register parameters were resolved by
+/// helper to caller-side FPRs and integer locals to virtual GPRs. General
+/// register parameters were resolved by
 /// the parser to their incoming EABI GPRs, so ordinary argument marshaling is
 /// sufficient for pointer operands.
 fn bind_parameterized_asm_fragment(
     function: &Function,
     destination: Option<u8>,
     float_result: bool,
+    general_locals: &std::collections::HashMap<String, u8>,
 ) -> Option<(Vec<AsmItem>, Option<u8>)> {
     let [block] = function.inline_asm_blocks.as_slice() else {
         return None;
@@ -52,6 +54,10 @@ fn bind_parameterized_asm_fragment(
         !parameter_registers.contains(register) && Some(*register) != direct_result
     });
     for local in &function.locals {
+        if matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+            general_locals.get(&local.name)?;
+            continue;
+        }
         let register = if Some(local.name.as_str()) == return_name {
             direct_result.or_else(|| volatile_fprs.next())?
         } else {
@@ -72,6 +78,8 @@ fn bind_parameterized_asm_fragment(
             };
             if let Some(register) = bindings.get(name.as_str()) {
                 *operand = AsmOperand::Fpr(*register);
+            } else if let Some(register) = general_locals.get(name) {
+                *operand = AsmOperand::Gpr(*register);
             }
         }
     }
@@ -185,7 +193,7 @@ mod parameterized_asm_tests {
             peephole_disabled: false,
         };
 
-        let (items, result) = bind_parameterized_asm_fragment(&helper, Some(5), true)
+        let (items, result) = bind_parameterized_asm_fragment(&helper, Some(5), true, &Default::default())
             .expect("the register-only helper should bind");
         assert_eq!(result, Some(5));
         assert!(matches!(
@@ -882,8 +890,14 @@ impl Generator {
         }
         if let Some(function) = self.inline_bodies.parameterized_asm_fragment(name).cloned() {
             if arguments.len() == function.parameters.len() {
+                // Integer asm locals are independent virtual values. They must
+                // not alias pointer argument homes or surrounding live values.
+                let general_locals = function.locals.iter()
+                    .filter(|local| matches!(local.declared_type, Type::Int | Type::UnsignedInt))
+                    .map(|local| (local.name.clone(), self.fresh_virtual_general()))
+                    .collect();
                 if let Some((fragment, result_register)) =
-                    bind_parameterized_asm_fragment(&function, destination, float_result)
+                    bind_parameterized_asm_fragment(&function, destination, float_result, &general_locals)
                 {
                     let mut fragment = fragment;
                     if self.try_bind_parameterized_asm_addresses(

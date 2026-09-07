@@ -4,13 +4,116 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete configured GXTransform compilation and execution (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete configured GXLight and versioned floating negation (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `40d97b780543fafa74484510eb360a91d5943c062e65e7c40d6aa375d27e09c6:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `1f9e4d1df9ba689df418533950efc26919304720b7e5c7de58478a1122e1ee12:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete configured GXLight and versioned floating negation, 2026-09-07
+
+The complete BfBB **`GXLight.c` now compiles and links its required local
+helpers with the project's GC/1.2.5n configuration**, advancing the fourteen-unit
+GX compilation survey from **4/14 to 5/14**. All **twelve light functions pass
+1,024 comparisons each against the original DOL**: **12,288 candidate calls**
+cover attenuation, spotlight and distance calculations, position/direction/color,
+paired-single FIFO uploads, and channel colors/count/control. Both sides execute
+the original cosine implementation; the candidate reaches it through a branch
+trampoline, with no replacement arithmetic or function stubs in this full-unit
+comparison. Floating arguments and light data are finite binary32 values.
+
+The candidate is **4,400 ELF bytes / 1,796 text bytes**, SHA-256
+`b2f9427e383c1bb43ab6def8e60c9bd31b75f0bedcc5a381b6d2cc18feb1b6b7`.
+A fresh configured reference compilation produces **3,928 ELF bytes / 1,556 text
+bytes**, SHA-256
+`4bdf9aa4ee178e8a69196fc8f624ed6317fedc0bd98bfdad149af008355efb01`.
+The pinned `docs/reference-layouts/bfbb-gxlight.json` reports **0/12 exact linked
+functions**; unresolved literals and relocations remain non-matches. Spotlight
+text is 432 candidate bytes versus 400 original bytes. Execution agreement on
+these inputs does not imply instruction parity or whole-project completion.
+
+Frozen baseline `2f786142` declines at the spotlight's `-cr * a1`. Shared fixes
+now provide:
+
+- Negated register arithmetic with measured operand order. The 2.x optimizer
+  cancels paired product negations and normalizes negative sums through the
+  existing subtraction/contraction selector. O0 and 4.x retain explicit
+  operations. A named profile decision and an inspectable behavior quirk select
+  this difference; it affects NaN signs and fused rounding, not just scheduling.
+  O1/O2/O3 reference probes confirm the optimized generation split. Existing
+  memory and call specializations retain their earlier selection paths.
+- The pure `__cntlzw` intrinsic, classified once for frame planning, symbol
+  traversal, and instruction selection. Nested, loaded, computed, constant-zero,
+  and call-result operands use the shared integer operand evaluator. The light
+  upload no longer emits an unresolved external intrinsic call.
+- Integer register locals in the existing parameterized assembly binder. Their
+  virtual GPR lifetimes coexist with pointer arguments and symbolic FPR locals,
+  allowing the real mixed-register `PushLight` body to expand at the call site.
+- Assignment-time local allocation that retains the declared register class.
+  A float local first materialized there previously received a GPR identity;
+  its later call argument then converted unrelated integer bits. The spotlight
+  cosine argument and the reduced forwarding samples now keep their FPR value.
+
+Canaries **1871–1882** compile **180/180** sample/version pairs, compared with
+**90/180** baseline successes; all fresh references compile **180/180**. Baseline
+compilation of the intrinsic and mixed-assembly samples still leaves unresolved
+helper symbols, so those successes are not executable parity. The four core
+float samples are **60/60 whole-object exact** across all fifteen versions,
+O4/O0, and contraction on/off. Across all twelve samples, **60/180 whole
+objects** and **1,064/1,410 function texts plus symbolic relocations** match.
+
+Candidate execution validation covers **1,382,400 arithmetic/intrinsic/spotlight/
+local-argument calls**, **15,360 mixed-assembly calls**, and the **12,288** full-unit
+calls: **1,410,048 calls** in total. Arithmetic checks compare exact FPR result
+bits and FPSCR against reference instructions, including signed zeros,
+subnormals, large finite values, infinities, and NaN payloads. Local forwarding
+also has an explicit rounding model. Spotlight reductions reuse original-DOL
+fixtures. Mixed-assembly checks include the intermediate store sequence, final
+memory, and register preservation. The sample's external `fetch` and identity
+acceptors are controlled ABI probes; they are separate from full-unit validation.
+
+Cross-version parity still has measured gaps, retained in the result artifacts:
+
+- **5,120 GC/1.1p1 O0 calls** expose reference spill corruption in the spotlight
+  and local-argument samples. Saved GPR/FPR homes are overwritten by parameter
+  spills; the switched forwarding function also has **1,024 result mismatches**.
+  Candidate values pass the original spotlight fixtures or explicit rounding
+  model, but do not reproduce this compiler bug.
+- **256 GC/1.3 optimized FIFO-copy calls** reproduce the previously observed
+  incorrect paired-single displacement folding in the reference. This version's
+  behavior remains a candidate mismatch.
+- **1,536 optimized 4.x assembly calls** differ in their intermediate store
+  sequence: references eliminate overwritten stores to the helper's non-volatile
+  destination. The candidate preserves the source assembly sequence. Matching
+  this optimization remains work; final memory agrees on these inputs.
+
+The paired-single probe helper now also executes non-updating indexed `psq_lx`,
+including an r0 index and the RA=0 absolute-base rule. This removes the indexed
+callee-save-restore harness limitation for the new samples. Explicit zero GQRs
+and finite lanes remain required; quantization, updating transfers, indexed
+stores, paired arithmetic, and non-finite paired operands remain unsupported.
+Full-unit checks execute **12,288 modeled paired instructions on each side** and
+validate FIFO writes, complete GX context and light memory, callee-saved GPRs and
+first FPR lanes, stack restoration, and return control flow.
+
+Focused checks pass: **45** version, **4** intrinsic, **3** floating-negation,
+**2** parameterized-assembly, **31** frame-convention, **40** object, and **8**
+paired-single probe tests. Cached panels retain **300/300** memory-operand object
+matches; **1,097** unchanged indexed-panel objects, **972** known reference
+matches, and **577** identical declines; and **1,494** cumulative compiled
+objects, **1,487** unchanged, **1,179** known matches, and **704** identical
+declines. The seven historical variable-shift changes predate this checkpoint.
+Full GXBump, TEV, GXTransform, and AXVPB object hashes remain unchanged. The full
+corpus was not rerun.
+
+Artifacts are `target/negated-float-canaries/{results,reference-results,
+reference-comparison,execution-results,asm-execution-results}.json`,
+`target/negated-float-light/{execution-results,verified-linked-text}.json`, and
+`target/negated-float-{gx-library,index,metadata}/results.json`. Drivers are
+`target/check_negated_float*.py`, `target/recheck_negated_float*.py`,
+`target/measure_negated_float.py`, and `target/probe_negated_float*.py`.
 
 ## Complete configured GXTransform compilation and execution, 2026-09-07
 

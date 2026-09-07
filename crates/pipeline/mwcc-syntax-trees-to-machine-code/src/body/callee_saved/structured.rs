@@ -6034,6 +6034,11 @@ impl Generator {
                         );
                     } else {
                         let previous = previous.unwrap_or_else(|| {
+                            // A local first materialized at assignment retains
+                            // its declared register class. Float expressions
+                            // written into a GPR identity otherwise look like
+                            // integers when forwarded to a prototyped call.
+                            let class = class_of(declared_type).expect("eligibility checked");
                             let version_preference = has_split_value_version(function, name)
                                 .then(|| {
                                     32usize
@@ -6042,7 +6047,9 @@ impl Generator {
                                         .and_then(|register| u8::try_from(register).ok())
                                 })
                                 .flatten();
-                            let register = if let Some(preferred) = version_preference {
+                            let register = if class == ValueClass::Float {
+                                self.fresh_virtual_float()
+                            } else if let Some(preferred) = version_preference {
                                 self.fresh_virtual_general_preferring(preferred)
                             } else {
                                 self.fresh_virtual_general()
@@ -6050,7 +6057,7 @@ impl Generator {
                             self.locations.insert(
                                 name.clone(),
                                 Location {
-                                    class: ValueClass::General,
+                                    class,
                                     register,
                                     signed: self.signed_of(declared_type),
                                     width: declared_type.width(),

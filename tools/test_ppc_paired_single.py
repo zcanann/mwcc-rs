@@ -50,6 +50,25 @@ class PairedSingleTests(unittest.TestCase):
         self.assertEqual(writes, [(0x100100, struct.pack('>f', -1.25))])
         self.assertEqual(bytes(uc.mem_read(0x100104, 4)), bytes(4))
 
+    def test_indexed_load_reads_r0_as_the_index_and_preserves_its_base(self):
+        # psq_lx f2,r3,r0,0,0; psq_st f2,0(r4),0,0
+        raw = struct.pack('>2f', -1.25, 2.5)
+        uc, _, writes = self.machine([0x1043000c, 0xf0440000], raw)
+        uc.reg_write(UC_PPC_REG_0, 0xfffffff8)
+        uc.emu_start(0x10000, 0x1f000, count=20)
+        self.assertEqual(writes, [(0x100100, raw)])
+        self.assertEqual(uc.reg_read(UC_PPC_REG_0 + 3), 0x100018)
+
+    def test_indexed_single_load_treats_ra_zero_as_an_absolute_address(self):
+        # psq_lx f2,0,r5,1,0; psq_st f2,0(r4),1,0
+        raw = struct.pack('>2f', -1.25, 2.5)
+        uc, model, writes = self.machine([0x10402c0c, 0xf0448000], raw)
+        uc.reg_write(UC_PPC_REG_0, 0xdeadbeef)
+        uc.reg_write(UC_PPC_REG_0 + 5, 0x100010)
+        uc.emu_start(0x10000, 0x1f000, count=20)
+        self.assertEqual(writes, [(0x100100, raw[:4])])
+        self.assertEqual(model.second[2], 1.0)
+
     def test_rejects_unmodeled_formats_and_nonfinite_data(self):
         for word, gqr, raw in [(0xe0431ff8, {0: 0}, bytes(8)),
                                (0xe0430ff8, {0: 4}, bytes(8)),

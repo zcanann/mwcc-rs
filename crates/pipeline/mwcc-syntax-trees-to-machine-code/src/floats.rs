@@ -305,11 +305,13 @@ impl Generator {
                 )? {
                     return Ok(());
                 }
-                // A commutative float op (`+`/`*`) with a NEGATE operand diverges: `-a + b` keeps the
-                // fneg but swaps the fadds operand order (mwcc puts the fneg result FIRST), and
-                // `-(a*b) + c` contracts to a single `fnmsubs` we emit un-fused (fmuls; fneg; fadds).
-                // Defer until those are modeled. A SUBTRACT (`-a - b`, `c - a*b`) and a bare negate keep
-                // their byte-exact form, so this is gated to add/multiply with a direct negate operand.
+                if self.try_emit_negated_float_arithmetic(
+                    *operator, left, right, destination, double,
+                )? {
+                    return Ok(());
+                }
+                // Remaining negated memory/computed trees need their own
+                // operand-order and contraction evidence before selection.
                 if matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply)
                     && (matches!(left.as_ref(), Expression::Unary { operator: UnaryOperator::Negate, .. })
                         || matches!(right.as_ref(), Expression::Unary { operator: UnaryOperator::Negate, .. }))

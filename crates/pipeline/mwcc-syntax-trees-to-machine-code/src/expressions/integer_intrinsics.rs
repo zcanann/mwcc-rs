@@ -32,6 +32,15 @@ impl Generator {
                 source
             }
         };
+        if crate::intrinsics::classify(name, arguments.len())
+            == Some(crate::intrinsics::Intrinsic::CountLeadingZeros)
+        {
+            self.output.instructions.push(Instruction::CountLeadingZeros {
+                a: destination,
+                s: source,
+            });
+            return Ok(true);
+        }
         // Leaf schedules use r0 for the sign mask. In a non-leaf allocation the
         // ordinary volatile-register order wins instead (WENC selects r5), while
         // a scratch-resident operand naturally makes the r0 preference spill to

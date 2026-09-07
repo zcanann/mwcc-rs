@@ -8,6 +8,7 @@
 pub(crate) enum Intrinsic {
     FloatAbsolute,
     IntegerAbsolute,
+    CountLeadingZeros,
     RotateLeftWordInsert,
     Synchronize,
     InstructionSynchronize,
@@ -61,6 +62,7 @@ pub(crate) fn classify(name: &str, argument_count: usize) -> Option<Intrinsic> {
     match name {
         "__fabs" => Some(Intrinsic::FloatAbsolute),
         "__abs" => Some(Intrinsic::IntegerAbsolute),
+        "__cntlzw" => Some(Intrinsic::CountLeadingZeros),
         _ => None,
     }
 }
@@ -73,7 +75,7 @@ pub(crate) fn is_pure_intrinsic_call(name: &str, argument_count: usize) -> bool 
     matches!(
         classify(name, argument_count),
         Some(
-            Intrinsic::FloatAbsolute | Intrinsic::IntegerAbsolute | Intrinsic::RotateLeftWordInsert
+            Intrinsic::FloatAbsolute | Intrinsic::IntegerAbsolute | Intrinsic::CountLeadingZeros | Intrinsic::RotateLeftWordInsert
         )
     )
 }
@@ -98,7 +100,7 @@ pub(crate) fn is_float_intrinsic_call(name: &str, argument_count: usize) -> bool
 pub(crate) fn is_integer_intrinsic_call(name: &str, argument_count: usize) -> bool {
     matches!(
         classify(name, argument_count),
-        Some(Intrinsic::IntegerAbsolute | Intrinsic::RotateLeftWordInsert)
+        Some(Intrinsic::IntegerAbsolute | Intrinsic::CountLeadingZeros | Intrinsic::RotateLeftWordInsert)
     )
 }
 
@@ -147,6 +149,9 @@ mod tests {
     fn classifies_only_measured_unary_spellings() {
         assert_eq!(classify("__fabs", 1), Some(Intrinsic::FloatAbsolute));
         assert_eq!(classify("__abs", 1), Some(Intrinsic::IntegerAbsolute));
+        assert_eq!(classify("__cntlzw", 1), Some(Intrinsic::CountLeadingZeros));
+        assert_eq!(classify("__cntlzw", 0), None);
+        assert_eq!(classify("__cntlzw", 2), None);
         assert_eq!(classify("abs", 1), None);
         assert_eq!(classify("__abs", 0), None);
         assert_eq!(classify("__abs", 2), None);

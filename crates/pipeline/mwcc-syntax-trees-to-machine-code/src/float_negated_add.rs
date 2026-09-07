@@ -1,6 +1,7 @@
-//! Operand placement for a negated float leaf added to a call result.
+//! Negated floating arithmetic and its measured operand order.
 
-use crate::generator::Generator;
+use crate::generator::{Generator, FLOAT_SCRATCH};
+use crate::operands::{float_combine, Operands};
 use mwcc_core::Compilation;
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, UnaryOperator};
@@ -29,6 +30,95 @@ fn negated_operand_and_call<'a>(
 }
 
 impl Generator {
+    /// Register operands need no memory or call reordering. Normalize the
+    /// negative sum/product identities MWCC uses, then reuse subtraction and
+    /// contraction selection. A remaining direct negate stays on its original
+    /// side of the operation, with a virtual lifetime protecting other inputs.
+    pub(crate) fn try_emit_negated_float_arithmetic(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+        double: bool,
+    ) -> Compilation<bool> {
+        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply) {
+            return Ok(false);
+        }
+        let negated = |expression: &Expression| {
+            matches!(expression, Expression::Unary { operator: UnaryOperator::Negate, .. })
+        };
+        let left_inner = match left {
+            Expression::Unary { operator: UnaryOperator::Negate, operand } => operand.as_ref(),
+            _ => left,
+        };
+        let right_inner = match right {
+            Expression::Unary { operator: UnaryOperator::Negate, operand } => operand.as_ref(),
+            _ => right,
+        };
+        let left_negative = negated(left);
+        let right_negative = negated(right);
+        if !left_negative && !right_negative {
+            return Ok(false);
+        }
+        let optimize = self.behavior.simplify_negated_float_arithmetic;
+        if operator == BinaryOperator::Add && left_negative && !right_negative
+            && self.is_float_leaf(right)
+            && matches!(left_inner, Expression::Binary { operator: BinaryOperator::Multiply, left: a, right: b }
+                if self.is_float_leaf(a) && self.is_float_leaf(b))
+        {
+            if !optimize {
+                let operands = self.place_float_operands(operator, left, right, destination, double)?;
+                self.output.instructions.push(float_combine(operator, destination, operands, double)?);
+                return Ok(true);
+            }
+            self.evaluate_float(&Expression::Binary {
+                operator: BinaryOperator::Subtract,
+                left: Box::new(right.clone()),
+                right: Box::new(left_inner.clone()),
+            }, destination)?;
+            return Ok(true);
+        }
+        if !self.is_float_leaf(left_inner) || !self.is_float_leaf(right_inner) {
+            return Ok(false);
+        }
+        if optimize && ((operator == BinaryOperator::Multiply && left_negative && right_negative)
+            || (operator == BinaryOperator::Add && right_negative))
+        {
+            self.evaluate_float(&Expression::Binary {
+                operator: if operator == BinaryOperator::Add { BinaryOperator::Subtract } else { operator },
+                left: Box::new(if operator == BinaryOperator::Multiply { left_inner } else { left }.clone()),
+                right: Box::new(right_inner.clone()),
+            }, destination)?;
+            return Ok(true);
+        }
+        let left_home = if left_negative {
+            let preference = if !right_negative {
+                FLOAT_SCRATCH
+            } else if self.behavior.optimization == mwcc_versions::Optimization::O0 {
+                3
+            } else {
+                self.float_register_of_leaf(left_inner)?
+            };
+            let home = self.fresh_virtual_float_preferring(preference);
+            self.evaluate_float(left, home)?;
+            home
+        } else {
+            self.float_register_of_leaf(left)?
+        };
+        let right_home = if right_negative {
+            let home = self.fresh_virtual_float_preferring(FLOAT_SCRATCH);
+            self.evaluate_float(right, home)?;
+            home
+        } else {
+            self.float_register_of_leaf(right)?
+        };
+        self.output.instructions.push(float_combine(
+            operator, destination, Operands::ordered(left_home, right_home)?, double,
+        )?);
+        Ok(true)
+    }
+
     /// Lower `-leaf + call()` in MWCC's measured order. The call must happen
     /// before the negate so its `f1` result does not need another home; the
     /// negated leaf remains the first source of the commutative add.

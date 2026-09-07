@@ -136,6 +136,7 @@ pub enum Quirk {
     /// before loading the bias double (`lfd f1,0(0)`), reversing the mainline
     /// schedule. Unique to GC/2.0p1.
     FloatCastStoresValueFirst,
+    ExplicitNegatedFloatArithmetic,
     FloatCompareLoadsValueFirst,
     /// Build 163's int-to-float lowering stores a biased signed value through
     /// r0 before materializing the high word in that same register.
@@ -226,6 +227,7 @@ impl Quirk {
             Quirk::UnsignedPlainChar => QuirkKind::Intentional,
             // A scheduling change introduced by the 2.0 patch release.
             Quirk::FloatCastStoresValueFirst => QuirkKind::Intentional,
+            Quirk::ExplicitNegatedFloatArithmetic => QuirkKind::Intentional,
             Quirk::FloatCompareLoadsValueFirst => QuirkKind::Intentional,
             Quirk::LegacyFloatCastSchedule => QuirkKind::Intentional,
             Quirk::LegacyPointerValueRegisterOrder => QuirkKind::Intentional,
@@ -312,6 +314,9 @@ impl Quirk {
             }
             Quirk::UnsignedPlainChar => {
                 "plain `char` defaults to unsigned (build 53 / -char unsigned)"
+            }
+            Quirk::ExplicitNegatedFloatArithmetic => {
+                "the 4.x optimizer preserves explicit floating negations instead of folding negative sums and products"
             }
             Quirk::FloatCastStoresValueFirst => {
                 "int->float stores the value before loading the bias double (GC/2.0p1)"
@@ -961,6 +966,8 @@ pub struct Behavior {
     /// Whether floating multiply/add and multiply/subtract expressions may
     /// contract into fused instructions.
     pub contract_floating_point: bool,
+    /// Whether optimized negative sums/products use the 2.x algebraic forms.
+    pub simplify_negated_float_arithmetic: bool,
     /// Whether whole-file IPA may replace a terminal call/return with a sibling
     /// branch after marshaling its arguments.
     pub tail_call_optimization: bool,
@@ -1572,6 +1579,8 @@ impl Behavior {
             use_lmw_stmw: config.flags.use_lmw_stmw,
             scheduler_enabled: config.flags.scheduler_enabled,
             contract_floating_point: config.flags.fp_contract,
+            simplify_negated_float_arithmetic: config.flags.optimization != Optimization::O0
+                && config.build.profile.simplify_negated_float_arithmetic(),
             tail_call_optimization: config.flags.whole_file_optimization_enabled(),
             terminal_indirect_tail_call: config.build.profile.terminal_indirect_tail_call()
                 && config.flags.optimization >= Optimization::O2,
@@ -1583,6 +1592,9 @@ impl Behavior {
     /// list is exactly "what makes this configuration special".
     pub fn active_quirks(&self) -> Vec<ActiveQuirk> {
         let mut quirks = Vec::new();
+        if !self.simplify_negated_float_arithmetic && self.optimization != Optimization::O0 {
+            quirks.push(ActiveQuirk::of(Quirk::ExplicitNegatedFloatArithmetic));
+        }
         if !self.char_is_signed {
             quirks.push(ActiveQuirk::of(Quirk::UnsignedPlainChar));
         }

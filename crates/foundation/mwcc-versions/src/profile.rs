@@ -1001,6 +1001,12 @@ pub enum StaticPointerInitializationStyle {
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
 pub trait CodegenProfile: core::fmt::Debug {
+    /// The 2.x optimizer folds paired negations and negative sums before
+    /// contraction. The 4.x line preserves the explicit negation operations.
+    fn simplify_negated_float_arithmetic(&self) -> bool {
+        true
+    }
+
     fn static_pointer_initialization_style(&self) -> StaticPointerInitializationStyle {
         StaticPointerInitializationStyle::GuardedScheduled
     }
@@ -1988,6 +1994,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn simplify_negated_float_arithmetic(&self) -> bool {
+        false
+    }
+
     fn global_load_pair_style(&self) -> GlobalLoadPairStyle {
         GlobalLoadPairStyle::IndexedRetainedBases
     }
@@ -2248,6 +2258,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn simplify_negated_float_arithmetic(&self) -> bool {
+        false
+    }
+
     fn global_load_pair_style(&self) -> GlobalLoadPairStyle {
         GlobalLoadPairStyle::IndexedRetainedBases
     }

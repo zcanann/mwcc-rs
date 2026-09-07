@@ -2496,8 +2496,8 @@ fn materialize_embedded_asm_statements(function: &Function) -> Option<Function> 
 /// Whether an embedded-assembly helper has the register-only shape that can be
 /// instantiated by call emission. The parser has already resolved every
 /// `register` pointer used as a memory base to its incoming EABI GPR. What
-/// remains symbolic is limited to floating parameters and floating locals,
-/// which the caller can bind without inventing stack storage or C semantics.
+/// remains symbolic is limited to floating parameters and scalar register
+/// locals, which the caller can bind without inventing stack storage.
 fn parameterized_asm_fragment(function: &Function) -> bool {
     if function.asm_body.is_some()
         || !function.statements.is_empty()
@@ -2511,7 +2511,7 @@ fn parameterized_asm_fragment(function: &Function) -> bool {
     if block.statement_index != 0
         || function.parameters.is_empty()
         || function.locals.iter().any(|local| {
-            local.declared_type != Type::Float
+            !matches!(local.declared_type, Type::Float | Type::Int | Type::UnsignedInt)
                 || local.initializer.is_some()
                 || local.is_static
                 || local.array_length.is_some()
@@ -2535,7 +2535,7 @@ fn parameterized_asm_fragment(function: &Function) -> bool {
         _ => return false,
     }
 
-    let symbolic_floats: HashSet<&str> = function
+    let symbolic_registers: HashSet<&str> = function
         .parameters
         .iter()
         .filter(|parameter| matches!(parameter.parameter_type, Type::Float | Type::Double))
@@ -2553,7 +2553,7 @@ fn parameterized_asm_fragment(function: &Function) -> bool {
     block.items.iter().all(|item| match item {
         AsmItem::Instruction(instruction) => instruction.operands.iter().all(|operand| match operand {
             mwcc_syntax_trees::AsmOperand::Label(name) => {
-                symbolic_floats.contains(name.as_str()) || labels.contains(name.as_str())
+                symbolic_registers.contains(name.as_str()) || labels.contains(name.as_str())
             }
             _ => true,
         }),
