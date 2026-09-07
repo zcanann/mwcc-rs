@@ -1265,13 +1265,19 @@ impl Generator {
                 }
                 let indexed_source = matches!(value, Expression::Index { .. })
                     && !matches!(element, Pointee::Float | Pointee::Double);
-                if !matches!(value, Expression::Variable(_)) && !indexed_source {
+                let floating_source = matches!(value, Expression::Index { .. })
+                    && matches!(element, Pointee::Float | Pointee::Double);
+                if !matches!(value, Expression::Variable(_)) && !indexed_source && !floating_source {
                     return Err(Diagnostic::error(
                         "array store with a variable index needs a simple value (roadmap)",
                     ));
                 }
                 let loaded_index = !matches!(index.as_ref(), Expression::Variable(_));
-                let index_register = if loaded_index {
+                let index_register = if loaded_index && floating_source {
+                    let index_register = self.fresh_virtual_general_preferring(3);
+                    self.evaluate_general(index, index_register)?;
+                    index_register
+                } else if loaded_index {
                     self.evaluate_general(index, GENERAL_SCRATCH)?;
                     GENERAL_SCRATCH
                 } else {
@@ -1282,13 +1288,33 @@ impl Generator {
                 // arrays preserve the loaded value in its own virtual while
                 // r0 scales the destination, matching the ordinary indexed
                 // store path's scratch-barrier transaction.
-                let source = if indexed_source && (loaded_index || element.size() > 1) {
+                let source = if floating_source {
+                    // The loaded value belongs to the FPR file; retaining it
+                    // there leaves the integer destination-index scale intact.
+                    let source = self.fresh_virtual_float_preferring(0);
+                    let value_type = if *element == Pointee::Double { Type::Double } else { Type::Float };
+                    self.evaluate(value, value_type, source)?;
+                    source
+                } else if indexed_source && (loaded_index || element.size() > 1) {
                     let source = self
                         .fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT + 2);
                     self.evaluate_general(value, source)?;
                     source
                 } else {
                     self.place_store_value(value, *element)?
+                };
+                // Narrowing a register source can materialize it in r0. The
+                // following index scale also defines r0, so retain that value
+                // independently before building the destination address.
+                let source = if source == GENERAL_SCRATCH
+                    && !matches!(element, Pointee::Float | Pointee::Double)
+                    && element.size() > 1
+                {
+                    let retained = self.fresh_virtual_general();
+                    self.output.instructions.push(Instruction::move_register(retained, source));
+                    retained
+                } else {
+                    source
                 };
                 let size = element.size();
                 let scaled = if size == 1 {

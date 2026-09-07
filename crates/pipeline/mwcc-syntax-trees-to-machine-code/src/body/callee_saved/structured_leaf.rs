@@ -15,11 +15,37 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
+        self.try_leaf_value_body(function, false)
+    }
+
+    /// Preserve local snapshots that copy propagation cannot substitute across
+    /// stores. Reuse structured statement emission even when there is no branch.
+    pub(crate) fn try_straight_line_leaf_body(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !function.statements.iter().any(|statement| matches!(statement, Statement::Store { .. }))
+            || !function.statements.iter().all(|statement| matches!(statement,
+                Statement::Assign { .. } | Statement::Store { .. } | Statement::Expression(_)))
+        {
+            return Ok(false);
+        }
+        self.try_leaf_value_body(function, true)
+    }
+
+    fn try_leaf_value_body(
+        &mut self,
+        function: &Function,
+        allow_straight_line: bool,
+    ) -> Compilation<bool> {
         let has_flush_tail = function.return_type == Type::Void
             && function.return_expression.is_none()
             && self.fixed_address_object_flush_tail(&function.statements).is_some();
         if !requires_structured_branch_graph(&leaf_structured_statements(function))
             && !has_flush_tail
+            && !allow_straight_line
         {
             return Ok(false);
         }
@@ -37,7 +63,7 @@ impl Generator {
         if function_makes_call(function)
             || !self.frame_slots.is_empty()
             || !leaf_return_shape_is_supported(function)
-            || (!requires_structured_branch_graph(&structured_statements) && !has_flush_tail)
+            || (!requires_structured_branch_graph(&structured_statements) && !has_flush_tail && !allow_straight_line)
             || !supports_leaf_structured_statements(&structured_statements)
             || function.locals.iter().any(|local| {
                 local.is_static

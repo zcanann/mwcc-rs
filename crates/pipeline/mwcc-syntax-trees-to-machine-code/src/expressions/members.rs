@@ -1480,13 +1480,19 @@ impl Generator {
                 if !self.locations.contains_key(name.as_str())
                     && matches!(
                         self.globals.get(name.as_str()),
-                        Some(Type::StructPointer { .. })
+                        Some(Type::Pointer(_) | Type::StructPointer { .. })
                     ) =>
             {
                 if let Some(register) = self.condition_global_base(name)? {
                     Ok(register)
                 } else {
-                    self.general_register_of(name)
+                    // An uncached file-scope pointer is a memory-backed value,
+                    // not a missing local register. Keep its loaded address in
+                    // a distinct virtual so index/value evaluation cannot
+                    // overwrite it before the eventual member access.
+                    let register = self.fresh_virtual_general_preferring(3);
+                    self.emit_global_load_value(name, register)?;
+                    Ok(register)
                 }
             }
             Expression::Variable(name) => {

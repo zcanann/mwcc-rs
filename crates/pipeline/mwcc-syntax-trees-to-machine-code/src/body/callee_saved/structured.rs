@@ -5950,7 +5950,12 @@ impl Generator {
                         && !self
                             .inline_global_transaction_result_homes
                             .contains(name);
-                    if terminal_volatile && matches!(value, Expression::Call { .. }) {
+                    // Pure intrinsics have call-shaped syntax but no ABI
+                    // result register. Keep their virtual destination: forcing
+                    // r3 would overwrite a still-live first parameter.
+                    if terminal_volatile && matches!(value, Expression::Call { .. })
+                        && expression_has_call(value)
+                    {
                         self.evaluate(value, declared_type, Eabi::general_result().number)?;
                         self.locations
                             .get_mut(name)

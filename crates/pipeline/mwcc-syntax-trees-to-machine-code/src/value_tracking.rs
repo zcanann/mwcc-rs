@@ -488,6 +488,11 @@ impl Generator {
                     }
                 }
             }
+            // Failed substitution does not make a local snapshot unsupported:
+            // a leaf can retain it in a virtual across the intervening stores.
+            if self.try_straight_line_leaf_body(function)? {
+                return Ok(true);
+            }
             return Err(Diagnostic::error(
                 "value tracking for a void function is not supported yet (roadmap)",
             ));

@@ -63,7 +63,7 @@ impl Generator {
         if !matches!(store.index, Expression::Variable(_)) {
             return Ok(false);
         }
-        let aggregate = self.general_register_of_leaf(store.aggregate)?;
+        let aggregate = self.member_base_register(store.aggregate)?;
         let index = self.general_register_of_leaf(store.index)?;
         let member_offset = i16::try_from(store.member_offset)
             .map_err(|_| Diagnostic::error("member-array offset is out of range"))?;

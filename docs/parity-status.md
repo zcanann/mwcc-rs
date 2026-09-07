@@ -4,13 +4,102 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, all eight GX functions have exact linked text (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, global member-array bases and retained leaf values (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `d4164c7f7ca869b17e8f93b2cc3e4f727d01c3663bdd192fe06b6f340ce2d014:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `c6a8ff2c88b3fd268965bc0745ee573d7432bcc168c61a4a46e805ebd25e4beb:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Global member-array bases and retained leaf values, 2026-09-07
+
+The configured BfBB **first five `GXTev.c` functions now compile and execute
+correctly against their original DOL code**. Frozen baseline `bc4936a9` declines
+in `GXSetTevOp` because its embedded arrays use an uncached global struct pointer.
+The configured five-function prefix now produces a 2,144-byte object with
+784 text bytes, SHA-256
+`c7bc17582465c56f1c7c2121b042c19a615f0dae45448bce9d4b888c534e81cc`.
+These functions are **not instruction-byte matches**:
+
+| Function | Candidate bytes | Original bytes |
+| --- | ---: | ---: |
+| `GXSetTevOp` | 216 | 140 |
+| `GXSetTevColorIn` | 112 | 68 |
+| `GXSetTevAlphaIn` | 112 | 68 |
+| `GXSetTevColorOp` | 172 | 104 |
+| `GXSetTevAlphaOp` | 172 | 104 |
+
+A native survey compiles the fourteen GX translation units listed by the
+project's `configure.py` using its GC/1.2.5n flags. Both checkpoints compile
+**2/14 complete units**, `GXBump.c` and `GXDisplayList.c`; this milestone does
+not claim a new complete GX unit. The first failure advances from `GXSetTevOp`
+to the later `GXSetTevOrder`, where a conditional local assignment still needs
+support. `GXTransform.c` advances from `GXSetProjection` to
+`GXLoadPosMtxImm`, whose absolute member address needs support. `GXLight.c`
+advances from `GXInitLightAttn` to `GXInitLightSpot`, whose negated floating
+multiply needs operand-order support. These are compiler diagnostics, not
+reference-object parity measurements.
+
+The changes use shared lowering paths:
+
+- `member_base_register` loads an uncached file-scope pointer into a fresh
+  virtual instead of requiring a local register. Existing condition-cache
+  values and shadowing rules remain in force. O0 member-array constant stores
+  now use the same resolver. Scalar-pointer casts and SDA/absolute globals
+  share the ordinary global-load policy.
+- When the existing void-local substitution paths decline, supported leaf
+  bodies can retain their locals through the structured statement emitter.
+  This preserves memory snapshots across intervening writes or pointer
+  replacement. The adapter reuses the existing local type and frame checks;
+  it does not add a separate statement engine or call/frame policy.
+- Indexed float/double copies keep the loaded value in an FPR and retain a
+  computed destination index independently. Narrowed integer store values
+  produced in r0 are saved before destination-index scaling overwrites r0.
+- Pure intrinsics keep their virtual assignment destination. Call-shaped
+  intrinsic syntax no longer selects the ABI-result optimization that forces
+  r3 and can overwrite a live first parameter. Actual calls retain that path.
+
+Twelve new canaries **1829–1840** improve **0/180 → 180/180 compiled objects**
+across fifteen builds at O0/O4. They cover global embedded arrays, pointer
+casts and shadowing, zero and variable stores, SDA/absolute addressing, signed
+narrow snapshots, multiple retained values, global-pointer replacement,
+float/double copies with computed indices, and the five complete TEV reductions.
+
+Validation totals **343,040 passing candidate calls**:
+
+- **337,920** corpus calls, including **153,600** TEV calls compared with
+  original DOL fixtures across all builds. The remaining cases check independent
+  memory models, overwritten-source snapshots, input/output/context and stack
+  sentinels, signed-halfword promotion, and GPR/FPR/SDA/stack restoration.
+  Volatile-pointer cases switch the pointer's referent between its first and
+  second reads and require the correct read count and referent for each access.
+- **5,120** configured-prefix calls against the original five DOL functions,
+  covering every valid TEV stage/table mode, both operation branches, random
+  field inputs, complete 1,456-byte GX context, FIFO widths/values, and saved
+  GPR/FPR/stack restoration. The original functions execute without call stubs.
+
+The complete configured `GXBump.c` object remains byte-identical, SHA-256
+`411f42222cf4814ac1272149fd7319eb67afdfb5413e0d29a42b38e9cfc505e0`;
+the checked-in linked-DOL verifier still reports **8/8 exact functions**.
+The complete configured AX object also remains byte-identical, SHA-256
+`1a8fed48a1634517cd66e23f09754e75274d170ca826e61408ff96650605e7e3`.
+The cached paired-memory matrix retains **300/300 exact objects**. The index
+panel retains **1,097 unchanged objects / 972 known reference matches /
+577 identical declines**. The cumulative metadata panel against `db48e092`
+retains **1,494 unchanged objects / 1,179 known matches / 704 identical declines**.
+Neither native panel timed out. **3 structured-leaf, 17 switch-lowering,
+2 member-array constant-store, 31 frame-convention, and 40 object-writer tests
+pass**.
+
+Local scripts are `target/check_member_global_base*.py` and
+`target/probe_member_global_base*.py`; artifacts are in
+`target/member-global-base-{canaries,tev,gx-library,index,metadata,full-ax}/`.
+The initial fourteen-unit survey is pinned in `target/gx-library-baseline/`.
+The six existing wibo processes remain in kernel U state after more than
+6 hours 47 minutes. No fresh reference-compiler process or full-project parity
+panel was launched. Complete project builds and cross-version reference parity
+remain open.
 
 ## All eight GX functions have exact linked text, 2026-09-07
 
