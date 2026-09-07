@@ -84,6 +84,24 @@ impl Generator {
             self.structured_constant_address_home = Some(work_homes.constant_address);
         }
 
+        // Declaration initializers precede statement-flow reservations. Inputs
+        // consumed by the body must survive destructive address schedules here.
+        let initializer_survivors: Vec<_> = function
+            .parameters
+            .iter()
+            .filter(|parameter| {
+                function.statements.iter().any(|statement| {
+                    super::structured_liveness::statement_reads_name(statement, &parameter.name)
+                }) || function
+                    .return_expression
+                    .as_ref()
+                    .is_some_and(|value| expression_reads_name(value, &parameter.name))
+            })
+            .filter_map(|parameter| self.locations.get(&parameter.name))
+            .filter(|location| location.class == ValueClass::General)
+            .map(|location| location.register)
+            .filter(|register| self.reserved.insert(*register))
+            .collect();
         for local in &function.locals {
             let class = class_of(local.declared_type).expect("eligibility checked");
             let home = match class {
@@ -108,6 +126,8 @@ impl Generator {
                 },
             );
         }
+
+        self.release_reserved_physical_homes(initializer_survivors);
 
         // All profiles can lower the terminal region's control flow. Only
         // the measured linkage-first profile uses its retained-pointer schedule.

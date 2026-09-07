@@ -1,9 +1,13 @@
 //! Expose ABI-backed casts before structured call liveness and frame planning.
 
-use super::structured_expression_visit::{rewrite_expression, rewrite_statement};
+use super::structured_expression_visit::{
+    rewrite_expression, rewrite_statement, visit_statement_nodes_mut,
+};
 use crate::generator::Generator;
 use crate::runtime_conversions::FLOAT_TO_UNSIGNED;
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Pointee, Type, UnaryOperator};
+use mwcc_syntax_trees::{
+    ArmBody, BinaryOperator, Expression, Function, Pointee, Statement, Type, UnaryOperator,
+};
 use std::collections::HashMap;
 
 /// Type evidence for scalar conversion operands, independent of register homes.
@@ -33,6 +37,7 @@ impl ConversionTypes<'_> {
                 match self.value_type(pointer)? {
                     Type::Pointer(Pointee::Float) => Some(Type::Float),
                     Type::Pointer(Pointee::Double) => Some(Type::Double),
+                    Type::Pointer(Pointee::UnsignedInt) => Some(Type::UnsignedInt),
                     _ => None,
                 }
             }
@@ -79,7 +84,34 @@ impl ConversionTypes<'_> {
         }
     }
 
+    fn implicit(
+        &self,
+        value: &Expression,
+        target: Option<Type>,
+        changed: &mut bool,
+    ) -> Option<Expression> {
+        if target != Some(Type::UnsignedInt) {
+            return None;
+        }
+        self.convert(
+            &Expression::Cast {
+                target_type: Type::UnsignedInt,
+                operand: Box::new(value.clone()),
+            },
+            changed,
+        )
+    }
+
     fn convert(&self, expression: &Expression, changed: &mut bool) -> Option<Expression> {
+        if let Expression::Assign { target, value } = expression {
+            let converted = self.implicit(value, self.value_type(target), changed)?;
+            return Some(Expression::Assign {
+                target: Box::new(rewrite_expression(target, &mut |value| {
+                    self.convert(value, changed)
+                })),
+                value: Box::new(converted),
+            });
+        }
         let Expression::Cast {
             target_type: Type::UnsignedInt,
             operand,
@@ -134,11 +166,48 @@ fn expose(function: &Function, types: &ConversionTypes<'_>) -> Option<Function> 
         .return_expression
         .as_ref()
         .map(|value| rewrite_expression(value, &mut rewrite));
+    // Statement assignment targets and return types live outside expression
+    // trees. Apply their contextual conversions after the shared expression walk.
+    let mut convert_value = |value: &mut Expression, target: Option<Type>| {
+        if let Some(converted) = types.implicit(value, target, &mut changed) {
+            *value = converted;
+        }
+    };
+    for local in &mut lowered.locals {
+        if local.array_length.is_none() && !local.is_static {
+            if let Some(value) = &mut local.initializer {
+                convert_value(value, Some(local.declared_type));
+            }
+        }
+    }
+    for statement in &mut lowered.statements {
+        visit_statement_nodes_mut(statement, &mut |statement| match statement {
+            Statement::Assign { name, value } => {
+                convert_value(value, types.values.get(name).copied())
+            }
+            Statement::Store { target, value } => convert_value(value, types.value_type(target)),
+            Statement::Return(Some(value)) => convert_value(value, Some(function.return_type)),
+            Statement::Switch { arms, default, .. } => {
+                for arm in arms.iter_mut().map(|arm| &mut arm.body).chain(default) {
+                    if let ArmBody::Return(value) = arm {
+                        convert_value(value, Some(function.return_type));
+                    }
+                }
+            }
+            _ => {}
+        });
+    }
+    for guard in &mut lowered.guards {
+        convert_value(&mut guard.value, Some(function.return_type));
+    }
+    if let Some(value) = &mut lowered.return_expression {
+        convert_value(value, Some(function.return_type));
+    }
     changed.then_some(lowered)
 }
 
 impl Generator {
-    pub(super) fn expose_structured_runtime_conversions(
+    pub(crate) fn expose_structured_runtime_conversions(
         &mut self,
         function: &Function,
     ) -> Option<Function> {
@@ -273,5 +342,33 @@ mod tests {
             matches!(&arguments[0], Expression::Cast { operand, .. } if matches!(operand.as_ref(), Expression::Call { name, .. } if name == FLOAT_TO_UNSIGNED))
         );
         assert!(!types.convert(&converted, &mut false).is_some());
+    }
+    #[test]
+    fn implicit_conversion_uses_destination_type() {
+        let returns = HashMap::new();
+        let types = ConversionTypes {
+            values: HashMap::from([("x".into(), Type::Float), ("y".into(), Type::UnsignedInt)]),
+            returns: &returns,
+        };
+        let value = Expression::Variable("x".into());
+        for target in [
+            None,
+            Some(Type::Int),
+            Some(Type::Float),
+            Some(Type::UnsignedChar),
+        ] {
+            assert!(types.implicit(&value, target, &mut false).is_none());
+        }
+        assert!(matches!(
+            types.implicit(&value, Some(Type::UnsignedInt), &mut false),
+            Some(Expression::Call { .. })
+        ));
+        let assigned = Expression::Assign {
+            target: Box::new(Expression::Variable("y".into())),
+            value: Box::new(value),
+        };
+        assert!(
+            matches!(types.convert(&assigned, &mut false), Some(Expression::Assign { value, .. }) if matches!(value.as_ref(), Expression::Call { .. }))
+        );
     }
 }

@@ -591,6 +591,7 @@ impl Generator {
         {
             return Ok(false);
         }
+        let index = self.preserve_address_index(index);
         if let Some(base) = self
             .data_section_anchor
             .as_ref()
@@ -669,6 +670,7 @@ impl Generator {
         {
             return Ok(false);
         }
+        let index = self.preserve_address_index(index);
         if let Some(base) = self
             .data_section_anchor
             .as_ref()
@@ -836,6 +838,7 @@ impl Generator {
         {
             return Ok(false);
         }
+        let index = self.preserve_address_index(index);
         self.emit_legacy_global_array_address(name, total_size, pointee.size(), index, index)?;
         self.output
             .instructions
@@ -930,6 +933,7 @@ impl Generator {
         {
             return Ok(false);
         }
+        let index = self.preserve_address_index(index);
         let high = self.fresh_virtual_general();
         self.emit_address_high(high, name);
         let shift = pointee.size().trailing_zeros() as u8;

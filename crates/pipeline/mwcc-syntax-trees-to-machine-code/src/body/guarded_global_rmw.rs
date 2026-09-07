@@ -18,14 +18,32 @@ pub(super) fn guarded_body_read_needs_value_reuse(
     if matches!(global_type, Type::Struct { .. }) {
         return false;
     }
+    let reads_value = |expression: &Expression| {
+        if !matches!(global_type, Type::Pointer(_) | Type::StructPointer { .. }) {
+            return expression_reads_name(expression, global);
+        }
+        // A pointer used only as a member address belongs to the structured
+        // address cache, just like a direct struct global. Passing the pointer
+        // itself still requires scalar value reuse across the guard.
+        let scalar_uses = super::callee_saved::rewrite_structured_expression(
+            expression,
+            &mut |expression| match expression {
+                Expression::Member { base, .. } if matches!(base.as_ref(), Expression::Variable(name) if name == global) => {
+                    Some(Expression::IntegerLiteral(0))
+                }
+                _ => None,
+            },
+        );
+        expression_reads_name(&scalar_uses, global)
+    };
     match statement {
-        Statement::Expression(expression) => expression_reads_name(expression, global),
+        Statement::Expression(expression) => reads_value(expression),
         Statement::Store { target, value }
             if is_independently_reloaded_narrow_increment(target, value, global, global_type) =>
         {
             false
         }
-        Statement::Store { value, .. } => expression_reads_name(value, global),
+        Statement::Store { value, .. } => reads_value(value),
         _ => false,
     }
 }
@@ -112,6 +130,34 @@ mod tests {
             &statement,
             "queue",
             Type::Struct { size: 32, align: 4 },
+        ));
+    }
+    #[test]
+    fn struct_pointer_members_use_the_address_owner_but_pointer_arguments_do_not() {
+        let ty = Type::StructPointer { element_size: 12 };
+        let member = Expression::Member {
+            base: Box::new(variable("state")),
+            offset: 4,
+            member_type: Type::UnsignedInt,
+            index_stride: None,
+        };
+        let member_call = Statement::Expression(Expression::Call {
+            name: "consume".into(),
+            arguments: vec![member.clone()],
+        });
+        assert!(!guarded_body_read_needs_value_reuse(
+            &member_call,
+            "state",
+            ty
+        ));
+        let pointer_call = Statement::Expression(Expression::Call {
+            name: "consume".into(),
+            arguments: vec![member, variable("state")],
+        });
+        assert!(guarded_body_read_needs_value_reuse(
+            &pointer_call,
+            "state",
+            ty
         ));
     }
 }

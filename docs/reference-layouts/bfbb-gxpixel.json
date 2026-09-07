@@ -1,0 +1,69 @@
+{
+  "dol_sha256": "865f446cf8efd52230dac506d6334a357b4c738cd6eb6e3a68c827efac51c3e0",
+  "symbols_sha256": "92f658ac1a6f91ec64d851dcfdf92a0907f3c06f5c68a97096052e99b5f3dfa4",
+  "functions": [
+    "GXSetFog",
+    "GXSetFogRangeAdj",
+    "GXSetBlendMode",
+    "GXSetColorUpdate",
+    "GXSetAlphaUpdate",
+    "GXSetZMode",
+    "GXSetZCompLoc",
+    "GXSetPixelFmt",
+    "GXSetDither",
+    "GXSetDstAlpha",
+    "GXSetFieldMask",
+    "GXSetFieldMode"
+  ],
+  "sda_bases": {
+    "2": 2151500160
+  },
+  "data_symbols": {
+    "__GXData": 2151480440
+  },
+  "literals": [
+    {
+      "address": 2151480608,
+      "hex": "00000000"
+    },
+    {
+      "address": 2151480612,
+      "hex": "3f800000"
+    },
+    {
+      "address": 2151480616,
+      "hex": "3f000000"
+    },
+    {
+      "address": 2151480624,
+      "hex": "3ff0000000000000"
+    },
+    {
+      "address": 2151480632,
+      "hex": "40000000"
+    },
+    {
+      "address": 2151480640,
+      "hex": "3fe0000000000000"
+    },
+    {
+      "address": 2151480648,
+      "hex": "4b00001e"
+    },
+    {
+      "address": 2151480656,
+      "hex": "4330000080000000"
+    }
+  ],
+  "external_functions": [
+    "__cvt_fp2unsigned",
+    "__GXFlushTextureState"
+  ],
+  "data_images": [
+    {
+      "reference_symbol": "p2f$362",
+      "address": 2150321872,
+      "hex": "0000000000000001000000020000000300000004000000040000000400000005"
+    }
+  ]
+}

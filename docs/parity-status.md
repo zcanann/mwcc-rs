@@ -4,13 +4,104 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, full GXFrameBuf and structured runtime conversions (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, full GXPixel, implicit conversions, and live array indices (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `c65a679aea6703440875549f437eae1f0d8b3c09f66cfe9d3d419ee34f9c93d0:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `0b6bca8bc1753ffd0578f68d01a58dee1fc5727532a6034376708932496c38eb:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Full GXPixel, implicit conversions, and live array indices, 2026-09-07
+
+The complete, unmodified BfBB `GXPixel.c` compiles with the project's GC/1.2.5n
+flags. Its **12 functions pass 12,288 original-DOL comparisons**, 1,024 cases
+per function, on both the candidate and a fresh reference object. Configured
+GX compilation advances from **6/14 to 7/14** translation units. This covers
+fog and fog-range adjustment, blend/alpha/depth/pixel-format state, dithering,
+destination alpha, field masks, and field mode.
+
+The shared structured conversion pass now exposes implicit unsigned-word
+conversions at local initializers, assignments, assignment expressions, scalar
+stores, and returns (including guards and switch arms). It retains the explicit
+cast path and uses destination types rather than inferring a conversion from
+floating descendants alone. An early structured trial lets straight-line
+hidden calls receive nonleaf frame/liveness planning after earlier specialized
+owners have had first refusal. Other integer widths, implicit call-argument
+conversions, and static-data initialization are outside this extension.
+
+Member access through a global struct pointer now belongs to the address-cache
+owner; passing the pointer itself still requires scalar value reuse. The shared
+leaf CFG emitter can handle multi-statement guarded tails after leading stores.
+Native pixel-format execution then exposed a separate destructive-index bug:
+a legacy array-address schedule scaled `pix_fmt` in place before subsequent
+comparisons and lookups consumed its original value. Address schedules now copy
+reserved or named virtual indices before overwriting them, including ordinary
+indexed stores. Leaf declaration initializers reserve inputs that the body will
+consume before statement-level liveness reservations begin.
+
+Canaries **1915–1920** cover fifteen functions at O0/O4 across fifteen builds:
+implicit conversion destinations, global-pointer guarded members, repeated
+array loads, indexed stores, and byte-index normalization. The frozen
+`855109e4` baseline compiles **0/90** complete objects; candidate and fresh
+references compile **90/90**. All **230,400 candidate calls** pass their return,
+ordered FIFO, memory, and ABI models. **0/90 whole objects** and **25/450 function
+text plus symbolic relocation comparisons** match exactly. Separate canaries
+**1921/1922** retain a repeated-load-plus-index return frontier: all **30**
+candidate/baseline pairs still decline with the scratch-expression diagnostic,
+while the references compile. These are recorded gaps, not passing samples.
+
+The reference execution panel has **3,392 failing cases**, all GC/1.1p1 O0.
+Disassembly confirms overlapping parameter and saved-register spills at `8(r1)`.
+For example, `initialized`/`assigned` spill f1 there, overwrite it with the
+integer parameter, and then reload that integer bit pattern as a float for
+`__cvt_fp2unsigned`. Other cases overwrite saved GPR/FPR images. These original
+bugs remain explicit reproduction gaps; ordinary semantic correctness is not
+bug-for-bug parity.
+
+Native GXPixel tests compare all 1,456 context bytes, ordered FIFO write
+widths/values, input buffers, GPR14–31, FPR14–31, SP, and LR. Fog cases include
+both projection paths and equal near/far or start/end degeneracies, with finite
+binary32 inputs. Pixel formats span 0–7; booleans are canonical. The conversion
+helper executes original DOL code. Texture flushes use the original helper with
+only its `__GXData` address reference relocated into the harness. This is not
+an exhaustive floating-point or invalid-enum claim.
+
+Full GXPixel is **4,360 ELF bytes / 2,004 text bytes**, SHA-256
+`1e5e7c5a02c091537d6cc37e53f6e635bed941ff9f44500a1f10afa1032541b7`.
+The fresh reference is **3,568 ELF bytes / 1,608 text bytes**, SHA-256
+`794e10e14b6976632c8a98c7fe1946ef2791e16f37ac2b7e27e0207b694786aa`.
+`docs/reference-layouts/bfbb-gxpixel.json` pins **0/12 candidate** and **12/12
+reference** exact linked functions, with no unresolved relocations. The linked
+checker now handles low/high/adjusted-high address relocations and initialized
+`.data` images whose bytes, symbol range, and unique identity are verified. This
+resolves the pixel-format lookup table despite different local-symbol ordinals.
+
+Regression controls retain **300/300** exact memory objects, **1,097** unchanged
+indexed objects with **972** known exact results and **577** identical declines.
+Cumulative metadata retains **1,494** compiled, **1,487** unchanged, **1,179**
+known exact, and **704** identical declines; its seven historical `1469` changes
+predate this checkpoint. All **1,410** recent objects compile; **1,380** are
+unchanged. Only the thirty reduced `GXGetYScaleFactor` objects change, and their
+**30,720** candidate/reference/baseline calls pass. The full GXFrameBuf repeats
+all **14,336** native comparisons successfully; its scale-factor function shrinks
+from **684 to 676 bytes**. The five other previously compiling GX objects remain
+byte-identical. Full AXVPB still compiles; its sole changed function,
+`AXSetVoiceSrcRatio`, remains 128 bytes and only commutes two independent
+prologue instructions, verified directly against the frozen object.
+
+These panels total **287,744 passing candidate calls**. Tests pass: **665**
+structured tests, **5** guarded-global classifier tests, and **10** linked-DOL
+checker tests. Full-project builds, the remaining GX units, instruction parity,
+and reproduction of reference bugs remain open.
+
+Artifacts: `target/implicit-conversion-canaries/{results,reference-results,
+reference-comparison,execution-results-0..5}.json`,
+`target/implicit-conversion-pixel/{compilation-results,full-execution-results,
+verified-linked-text,reference-verified-linked-text}.json`, its twelve DOL
+fixture files, `target/implicit-conversion-scale-regression/`,
+`target/implicit-conversion-framebuf/`, and
+`target/implicit-conversion-{index,metadata,recent,gx-library,full-ax}/`.
 
 ## Full GXFrameBuf and structured runtime conversions, 2026-09-07
 

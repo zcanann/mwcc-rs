@@ -208,6 +208,7 @@ mod structured_guarded_mutating_inline_linkage;
 mod structured_guarded_mutating_inline_schedule;
 mod structured_expression_visit;
 pub(in crate::body) use structured_expression_visit::{
+    rewrite_expression as rewrite_structured_expression,
     rewrite_statement as rewrite_structured_statement,
     statements_assign_name as structured_statements_assign_name,
     visit_expression as visit_structured_expression,

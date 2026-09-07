@@ -2885,6 +2885,7 @@ impl Generator {
                 )
             })?;
             let index_register = self.materialize_index_operand(index_leaf)?;
+            let index_register = self.preserve_address_index(index_register);
             if self.emit_legacy_global_array_constant_store(
                 name,
                 pointee,
@@ -2948,6 +2949,7 @@ impl Generator {
             self.general_register_of_leaf(value)?
         };
         let index_register = self.materialize_index_operand(index)?;
+        let index_register = self.preserve_address_index(index_register);
         if self.emit_legacy_global_array_variable_store(
             name,
             total_size,

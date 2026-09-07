@@ -330,7 +330,7 @@ pub(in crate::body) fn rewrite_statement(
     }
 }
 
-pub(super) fn rewrite_expression(
+pub(in crate::body) fn rewrite_expression(
     expression: &Expression,
     rewrite: &mut impl FnMut(&Expression) -> Option<Expression>,
 ) -> Expression {
@@ -507,4 +507,47 @@ fn rewrite_arm_body(
                 .collect(),
         ),
     }
+}
+
+/// Visit statement nodes after their children, preserving expression ownership.
+/// Contextual rewrites use this when a destination lives on the statement.
+pub(super) fn visit_statement_nodes_mut(
+    statement: &mut Statement,
+    visit: &mut impl FnMut(&mut Statement),
+) {
+    match statement {
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for child in then_body.iter_mut().chain(else_body) {
+                visit_statement_nodes_mut(child, visit);
+            }
+        }
+        Statement::Loop { body, .. } => {
+            for child in body {
+                visit_statement_nodes_mut(child, visit);
+            }
+        }
+        Statement::Switch { arms, default, .. } => {
+            for arm in arms.iter_mut().map(|arm| &mut arm.body).chain(default) {
+                if let ArmBody::Statements(body) = arm {
+                    for child in body {
+                        visit_statement_nodes_mut(child, visit);
+                    }
+                }
+            }
+        }
+        Statement::Assign { .. }
+        | Statement::Store { .. }
+        | Statement::Expression(_)
+        | Statement::Return(_)
+        | Statement::InlineAsm(_)
+        | Statement::Break
+        | Statement::Continue
+        | Statement::Goto(_)
+        | Statement::Label(_) => {}
+    }
+    visit(statement);
 }

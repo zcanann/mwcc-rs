@@ -6,7 +6,7 @@ from compare_linked_dol import compare, relocate
 
 
 class LinkedDolTests(unittest.TestCase):
-    def fixture(self, kind=109, literal=False):
+    def fixture(self, kind=109, literal=False, duplicate=False):
         address = 0x80004000
         dol = bytearray(0x120)
         for table, value in [(0, 0x100), (0x48, address), (0x90, 0x20)]:
@@ -18,8 +18,10 @@ class LinkedDolTests(unittest.TestCase):
         sym = struct.Struct('>IIIBBH')
         entries = bytes(16) + sym.pack(1, 0, 8, 0x12, 0, 1)
         entries += sym.pack(3, 0, 4 if literal else 0, 0x11, 0, 6 if literal else 0)
+        if duplicate:
+            entries += sym.pack(5, 0, 4, 0x11, 0, 6)
         blobs = [b'', struct.pack('>II', 0x80600000, 0x4E800020), entries,
-                 b'\0f\0g\0', names, struct.pack('>IIi', 2, (2 << 8) | kind, 0), bytes.fromhex('44800000')]
+                 b'\0f\0g\0j\0', names, struct.pack('>IIi', 2, (2 << 8) | kind, 0), bytes.fromhex('44800000')]
         section_names = ['', '.text', '.symtab', '.strtab', '.shstrtab', '.rela.text', '.sdata2']
         data = bytearray(52)
         headers = []
@@ -94,6 +96,39 @@ class LinkedDolTests(unittest.TestCase):
         layout['external_functions'] = ['missing_helper']
         with self.assertRaises(ValueError):
             compare(bytes(data), bytes(dol), source, layout)
+
+    def test_initialized_data_ignores_local_ordinals_but_verifies_range_and_bytes(self):
+        data, dol, source, layout = self.fixture(literal=True)
+        data = data.replace(b'.sdata2\0', b'.data\0\0\0').replace(b'\0f\0g\0', b'\0f\0h\0')
+        source = source.replace('.sdata2:', '.data:')
+        layout['symbols_sha256'] = hashlib.sha256(source.encode()).hexdigest()
+        layout['data_images'] = [dict(reference_symbol='g', **layout['literals'][0])]
+        layout['literals'] = []
+        self.assertTrue(compare(data, dol, source, layout)['functions'][0]['exact'])
+        layout['data_images'][0]['address'] += 4
+        with self.assertRaises(ValueError):
+            compare(data, dol, source, layout)
+        layout['data_images'][0]['address'] -= 4
+        layout['data_images'][0]['hex'] = '00000000'
+        with self.assertRaises(ValueError):
+            compare(data, dol, source, layout)
+
+    def test_address_halves_preserve_opcode_and_apply_signed_low_carry(self):
+        self.assertEqual(relocate(0x3C600000, 5, 0x80008010, 0, {}), 0x3C608000)
+        self.assertEqual(relocate(0x3C600000, 6, 0x80008010, 0, {}), 0x3C608001)
+        self.assertEqual(relocate(0x38630000, 4, 0x80008010, 0, {}), 0x38638010)
+        self.assertEqual(relocate(0x3C600000, 6, 0x80007FFF, 0, {}), 0x3C608000)
+
+    def test_equal_initialized_objects_do_not_alias(self):
+        data, dol, source, layout = self.fixture(literal=True, duplicate=True)
+        data = data.replace(b'.sdata2\0', b'.data\0\0\0')
+        source = source.replace('.sdata2:', '.data:')
+        layout['symbols_sha256'] = hashlib.sha256(source.encode()).hexdigest()
+        layout['data_images'] = [dict(reference_symbol='g', **layout['literals'][0])]
+        layout['literals'] = []
+        result = compare(data, dol, source, layout)['functions'][0]
+        self.assertFalse(result['exact'])
+        self.assertIn('ambiguous', result['unresolved_relocations'][0]['reason'])
 
     def test_sda_requires_one_valid_base(self):
         self.assertEqual(relocate(0x80600000, 109, 0x100010, 0, {'13': 0x100020}), 0x806DFFF0)

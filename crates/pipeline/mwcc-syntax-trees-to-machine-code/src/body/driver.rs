@@ -2973,6 +2973,19 @@ impl Generator {
                 }
             }
         }
+        // Hidden ABI conversions also make straight-line assignments nonleaf.
+        // Earlier exact owners keep first refusal; try the explicit call tree
+        // before a leaf path can classify it without the runtime call.
+        let mut runtime_trial = self.clone();
+        if let Some(lowered) = runtime_trial.expose_structured_runtime_conversions(function) {
+            if matches!(
+                runtime_trial.try_callee_saved_structured_body(&lowered),
+                Ok(true)
+            ) {
+                *self = runtime_trial;
+                return Ok(());
+            }
+        }
         if self.try_callee_saved_structured_frame_body(function)? {
             return Ok(());
         }
@@ -4229,6 +4242,13 @@ impl Generator {
                     .iter()
                     .all(|statement| matches!(statement, Statement::Store { .. }))
             {
+                // Multi-statement guarded tails have a shared CFG owner,
+                // including local snapshots taken before the leading stores.
+                let mut trial = self.clone();
+                if matches!(trial.try_leaf_structured_body(function), Ok(true)) {
+                    *self = trial;
+                    return Ok(());
+                }
                 return Err(Diagnostic::error(format!(
                     "a leading store before a trailing if needs the cross-statement scheduler (roadmap; function '{}')",
                     function.name

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare ELF function text at a pinned original DOL's link addresses.
 
-A layout supplies SDA bases, named symbols, external functions, and literals. Unknown
+A layout supplies SDA bases, named symbols, external functions, literals, and initialized data images. Unknown
 relocations prevent an exact result. This measures linked function text, not
 relocatable object, debug information, or whole-project parity.
 """
@@ -18,6 +18,9 @@ from extract_dol_reference import function_range, read_dol_range
 
 
 def relocate(word, kind, target, place, sda_bases):
+    if kind in (4, 5, 6):  # R_PPC_ADDR16_LO, HI, HA
+        immediate = target if kind == 4 else (target + (0x8000 if kind == 6 else 0)) >> 16
+        return (word & 0xFFFF0000) | (immediate & 0xFFFF)
     if kind == 10:  # R_PPC_REL24
         delta = target - place
         if word >> 26 != 18 or word & 2 or delta & 3 or not -(1 << 25) <= delta < (1 << 25):
@@ -50,6 +53,16 @@ def compare(data, dol, symbol_text, layout):
         value = bytes.fromhex(literal['hex'])
         if read_dol_range(dol, literal['address'], len(value)) != value:
             raise ValueError("literal placement does not contain the expected bytes")
+    data_images = layout.get('data_images', [])
+    for item in data_images:
+        value = bytes.fromhex(item['hex'])
+        matches = re.findall(r'^\s*' + re.escape(item['reference_symbol'])
+                             + r'\s*=\s*\.data:(0x[0-9a-fA-F]+);[^\n]*type:object size:(0x[0-9a-fA-F]+)',
+                             symbol_text, re.MULTILINE)
+        if len(matches) != 1 or (int(matches[0][0], 16), int(matches[0][1], 16)) != (item['address'], len(value)):
+            raise ValueError("initialized data image does not match the pinned symbol range")
+        if not value or read_dol_range(dol, item['address'], len(value)) != value:
+            raise ValueError("initialized data image does not contain the expected bytes")
     if data[:7] != b'\x7fELF\x01\x02\x01' or struct.unpack_from('>HH', data, 16) != (1, 20):
         raise ValueError("candidate must be a big-endian ELF32 PowerPC relocatable object")
     sections = parse_sections(data)
@@ -69,13 +82,23 @@ def compare(data, dol, symbol_text, layout):
         if len(matches) != 1:
             raise ValueError("relocation symbol is missing or ambiguous")
         _, offset, size, _, index = matches[0]
-        if index >= len(sections) or sections[index].name not in ('.sdata2', '.rodata') or size <= 0:
+        if index >= len(sections) or sections[index].name not in ('.sdata2', '.rodata', '.data') or size <= 0:
             raise ValueError("relocation symbol has no configured placement")
         pool = sections[index]
         if offset + size > pool.size or pool.offset + offset + size > len(data):
             raise ValueError("literal symbol extends outside its section")
         value = data[pool.offset + offset:pool.offset + offset + size]
-        matches = [item['address'] for item in layout['literals'] if bytes.fromhex(item['hex']) == value]
+        images = layout['literals']
+        if pool.name == '.data':
+            images = data_images
+            # An ordinal-independent placement requires one unique object image
+            # on each side. Equal initialized objects must not be silently aliased.
+            candidates = [(at, length) for _, at, length, info, section_index in table
+                          if section_index == index and info & 15 == 1 and length == size
+                          and data[pool.offset+at:pool.offset+at+length] == value]
+            if len(candidates) != 1:
+                raise ValueError("initialized data image is ambiguous in the candidate")
+        matches = [item['address'] for item in images if bytes.fromhex(item['hex']) == value]
         if len(matches) != 1:
             raise ValueError("literal placement is missing or ambiguous")
         return matches[0]
@@ -97,6 +120,8 @@ def compare(data, dol, symbol_text, layout):
                 continue
             at = (where - offset) & ~3
             try:
+                if kind in (4, 5, 6) and (where-offset) % 4 != 2:
+                    raise ValueError("address-half relocation is not on the immediate field")
                 word = struct.unpack_from('>I', blob, at)[0]
                 word = relocate(word, kind, placement(symbol) + addend, address + at, layout['sda_bases'])
                 struct.pack_into('>I', blob, at, word)
