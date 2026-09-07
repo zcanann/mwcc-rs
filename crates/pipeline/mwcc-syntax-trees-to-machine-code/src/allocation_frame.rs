@@ -3,9 +3,9 @@
 //! Structured selection declares logical saved homes before allocation.  A
 //! home can subsequently color into a caller-saved register while another
 //! temporary crosses a call and colors into a callee-saved register.  Canonical
-//! individual-save frames can absorb that change when their existing aligned
-//! frame has unused save-slot capacity; specialized and dense frames retain
-//! their explicit owners. Linkage-first dense ranges may temporarily outgrow
+//! individual-save frames absorb that change using alignment slack or growing
+//! their save area; specialized and dense frames retain their explicit owners.
+//! Linkage-first dense ranges may temporarily outgrow
 //! the selected frame: the convention normalizer runs after allocation and
 //! owns their final frame size.
 
@@ -13,6 +13,8 @@ use crate::generator::Generator;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, RelocationTarget};
 use mwcc_vreg::{Allocation, Class, Reg};
+
+mod growth;
 
 impl Generator {
     pub(crate) fn reconcile_allocated_general_frame(
@@ -96,20 +98,10 @@ impl Generator {
             .unwrap_or(8);
         let lowest_save =
             i32::from(self.frame_size) - 4 * i32::try_from(required.len()).unwrap_or(i32::MAX);
-        if lowest_save < local_end
+        let needs_growth = lowest_save < local_end
             && self.behavior.frame_convention
-                != mwcc_versions::FrameConvention::LinkageFirst
-        {
-            return Err(Diagnostic::error(format!(
-                "allocation needs {} callee-saved slots but the existing frame has capacity for {} \
-                 (declared {declared:?}, required {required:?}, frame size {}, local end {local_end}; \
-                 frame growth needed)",
-                required.len(),
-                declared.len(),
-                self.frame_size,
-            )));
-        }
-        if self.grow_dense_general_save_range(&declared, &required)? {
+                != mwcc_versions::FrameConvention::LinkageFirst;
+        if !needs_growth && self.grow_dense_general_save_range(&declared, &required)? {
             return Ok(());
         }
 
@@ -169,6 +161,27 @@ impl Generator {
                     )))
                 }
             }
+        }
+
+        if needs_growth {
+            if self.callee_saved_float != 0 {
+                return Err(Diagnostic::error(
+                    "allocated GPR frame growth requires a frame without existing FPR saves",
+                ));
+            }
+            let old_size = self.frame_size;
+            let new_size = growth::grow(
+                &mut self.output.instructions, old_size, declared.len(), required.len(),
+                &save_indices, &restore_indices,
+            ).map_err(Diagnostic::error)?;
+            for slot in self.frame_slots.values_mut() {
+                if slot.offset >= old_size {
+                    slot.offset = slot.offset.checked_add(new_size - old_size).ok_or_else(|| {
+                        Diagnostic::error("allocated GPR frame slot displacement is out of range")
+                    })?;
+                }
+            }
+            self.frame_size = new_size;
         }
 
         // Logical-home saves may be interleaved with the moves that define

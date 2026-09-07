@@ -4,13 +4,73 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete BfBB AX compilation and sync execution (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, allocated GPR frame growth and LR restoration (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `9fc06ef37a4bd1daac320a8b29d96028abc33949aa03ac13882ba0c82f92f794:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `894839921da86bb1e894b230b7f434992c9e8b5d3049b64a9b4425b4b70dd114:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Allocated GPR frame growth and LR restoration, 2026-09-07
+
+The frame failures retained by canaries **1739–1740** are fixed. They now
+compile and execute on all fifteen builds at O0/O4, improving **19/30 → 30/30
+compilations** and fixing the GC/1.1p1 O4 return-address corruption.
+
+The linkage-first slot relayout now distinguishes a restored-stack LR reload
+from saved GPR slots. During frame growth, a logical saved slot can temporarily
+occupy offset 4; a later `lwz r0,4(r1)` after stack restoration uses the caller's
+SP and must not be repainted as that saved register. The fix covers every
+canonical restored-stack reload pair, with a unit regression for the collision.
+
+A separate allocation-frame growth helper now increases canonical predecrement
+frames when the allocator requires more individual GPR saves than selection
+reserved. It adds an aligned save area above existing locals and outgoing
+arguments, moves saved-register slots and caller-frame accesses, and updates
+frame metadata. The existing reconciler still owns insertion of physical saves
+and restores and branch/relocation retargeting. Untracked stack addressing is
+rejected before publishing a resized stream; existing FPR-save layouts retain
+their separate owner. Unit coverage checks local versus caller-frame offsets,
+address formation, linkage/save offsets, and transactional rejection.
+
+Six new canaries **1741–1746** cover local arrays surviving calls, a ninth
+integer parameter, and conditional assignment chains. Across **1739–1746**,
+candidate compilation improves **87/120 → 120/120** against frozen `c3625e24`.
+Of 87 previously compiling objects, 85 remain byte-identical; the two changes
+are GC/1.1p1 O4 LR-reload repairs in 1739 and 1743.
+
+The **90 objects excluding the ninth-parameter cases pass 5,760 execution
+calls**, covering every packet index 0–63, complete packet memory, local array
+contents across two callbacks, branch outcomes, unsigned return arithmetic,
+caller-parameter storage, stack restoration, and all callee-saved GPRs.
+Callbacks clobber r3–r12. This includes all thirty original failing-frame probes.
+
+Canaries **1743–1744** expose a distinct incoming-argument bug and are retained
+as the next regression target. All thirty compiled objects incorrectly read the
+ninth integer parameter from r11. With 1 at the caller's `8(r1)` and 2 in r11,
+they return 2. Their compilation gain is not execution parity. The growth
+helper's caller-frame displacement handling has unit coverage, but these
+frontend/entry-location failures prevent validating that path through these
+C functions yet.
+
+Validation at the recorded final fingerprint:
+
+- Captured paired-memory matrix: **300/300 whole-object exact**.
+- Index panel: **1,096 compiled objects unchanged**, retaining **972 known
+  reference matches**, plus **578 identical declines**; no timeouts.
+- Cumulative metadata panel against `db48e092`: **1,494 compiled objects
+  unchanged**, retaining **1,179 known reference matches**, plus **704 identical
+  declines**; no timeouts.
+- **3 allocation-frame tests and 31 frame-convention tests pass**.
+- The complete configured BfBB AX object is byte-identical to `c3625e24`'s
+  measured object, retaining its 256 complete sync execution comparisons.
+
+Scripts and results are in `target/check_frame_growth*.py`,
+`target/probe_frame_growth_full_ax.py`, `target/frame-growth-canaries/`, and
+`target/frame-growth-full-ax/`. The existing six wibo processes remain stuck
+in kernel U state; no new reference-compiler processes were launched, and no
+fresh reference-object or full-project-panel improvement is claimed.
 
 ## Complete BfBB AX compilation and sync execution, 2026-09-07
 

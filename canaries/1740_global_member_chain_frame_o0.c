@@ -1,5 +1,5 @@
 // Frame-growth regression probe; fresh reference-compiler objects pending.
-// Known capacity declines and an LR-restore failure are tracked in docs/parity-status.md.
+// Regresses saved-register capacity growth and restored-stack LR slot identity.
 // flags: -O0 -Cpp_exceptions off -pragma "cats off"
 // AX's final inactive-voice sweep stores through a 244-byte global element stride.
 struct Packet { unsigned short pad[7]; unsigned short state; unsigned short gap[26]; unsigned short updates[5]; unsigned short tail[83]; };

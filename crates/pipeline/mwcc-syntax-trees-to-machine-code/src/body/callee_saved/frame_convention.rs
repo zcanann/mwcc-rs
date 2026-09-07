@@ -1985,7 +1985,19 @@ fn relayout_callee_saved_slots(
             )
         })
         .collect();
-    for instruction in instructions {
+    let restored_stack_link_reloads: Vec<_> = instructions.windows(2).enumerate()
+        .filter_map(|(index, pair)| {
+            matches!(pair, [
+                Instruction::AddImmediate { d: 1, a: 1, immediate },
+                Instruction::LoadWord { d: 0, a: 1, offset: 4 },
+            ] if *immediate == old_frame_size).then_some(index + 1)
+        }).collect();
+    for (index, instruction) in instructions.iter_mut().enumerate() {
+        // This displacement is relative to the caller's restored SP, not the
+        // frame being resized. A growing save range can have an old slot at 4.
+        if restored_stack_link_reloads.contains(&index) {
+            continue;
+        }
         match instruction {
             Instruction::StoreWord { s, a: 1, offset } => {
                 if let Some((_, _, new_offset)) = slots
@@ -3097,6 +3109,21 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn growing_saved_slots_preserves_the_restored_stack_link_reload() {
+        let mut instructions = vec![
+            Instruction::LoadWord { d: 31, a: 1, offset: 12 },
+            Instruction::LoadWord { d: 30, a: 1, offset: 8 },
+            Instruction::LoadWord { d: 29, a: 1, offset: 4 },
+            Instruction::AddImmediate { d: 1, a: 1, immediate: 16 },
+            Instruction::LoadWord { d: 0, a: 1, offset: 4 },
+            Instruction::MoveToLinkRegister { s: 0 },
+        ];
+        relayout_callee_saved_slots(&mut instructions, &[31, 30, 29], 16, 32);
+        assert_eq!(instructions[2], Instruction::LoadWord { d: 29, a: 1, offset: 20 });
+        assert_eq!(instructions[4], Instruction::LoadWord { d: 0, a: 1, offset: 4 });
     }
 
     #[test]
