@@ -216,6 +216,7 @@ pub enum Quirk {
     LegacySerialVaArgSchedule,
     Gc11PatchPlainLinkageReload,
     SharedUnoptimizedParameterSpills,
+    HighFirstPosttestReadback,
     LaterSavedPointerFirstEpilogue,
     LaterPackedCallDispatcher,
     LaterTerminalIndirectTailCall,
@@ -304,7 +305,9 @@ impl Quirk {
             Quirk::LegacyCompareFirstNarrowGuards => QuirkKind::Intentional,
             Quirk::LegacySerialVaArgSchedule => QuirkKind::Intentional,
             Quirk::Gc11PatchPlainLinkageReload => QuirkKind::Intentional,
-            Quirk::SharedUnoptimizedParameterSpills => QuirkKind::BugReproduction,
+            Quirk::SharedUnoptimizedParameterSpills | Quirk::HighFirstPosttestReadback => {
+                QuirkKind::BugReproduction
+            }
             Quirk::LaterSavedPointerFirstEpilogue => QuirkKind::Intentional,
             Quirk::LaterPackedCallDispatcher => QuirkKind::Intentional,
             Quirk::LaterTerminalIndirectTailCall => QuirkKind::Intentional,
@@ -543,6 +546,7 @@ impl Quirk {
             Quirk::LegacySerialVaArgSchedule => {
                 "__va_arg ALIGN paths use build 163's serial r0 schedule"
             }
+            Quirk::HighFirstPosttestReadback => "2.3.3 O4 reorders volatile halfword samples in a post-test readback loop",
             Quirk::SharedUnoptimizedParameterSpills => "GC/1.1p1 O0 parameter spills share an address and may overwrite saved state",
             Quirk::Gc11PatchPlainLinkageReload => {
                 "GC/1.1p1 restores r1 before reloading LR from the caller linkage area"
@@ -751,6 +755,8 @@ pub struct Behavior {
     pub structured_saved_gpr_stack_first: bool,
     /// Reproduce the patch-1 O0 parameter spill-address aliasing bug.
     pub unoptimized_shared_parameter_spills: bool,
+    /// Reproduce the 2.3.3 O4 volatile readback-sample ordering bug.
+    pub posttest_readback_high_first: bool,
     /// Whether the SDK DVD FST loader uses build 163's early saved-LR issue
     /// slot instead of the distribution's ordinary saved-GPR epilogue.
     pub dvd_fst_loader_early_epilogue: bool,
@@ -1266,6 +1272,8 @@ impl Behavior {
                 .build
                 .profile
                 .saved_float_parameter_copy_order(),
+            posttest_readback_high_first: config.flags.optimization == Optimization::O4
+                && config.build.profile.posttest_readback_high_first(),
             unoptimized_shared_parameter_spills: config.flags.optimization == Optimization::O0
                 && config.build.profile.unoptimized_shared_parameter_spills(),
             structured_saved_gpr_stack_first: config
@@ -1883,6 +1891,9 @@ impl Behavior {
         }
         if self.va_arg_schedule_style == VaArgScheduleStyle::SerialScratch {
             quirks.push(ActiveQuirk::of(Quirk::LegacySerialVaArgSchedule));
+        }
+        if self.posttest_readback_high_first {
+            quirks.push(ActiveQuirk::of(Quirk::HighFirstPosttestReadback));
         }
         if self.unoptimized_shared_parameter_spills {
             quirks.push(ActiveQuirk::of(Quirk::SharedUnoptimizedParameterSpills));
@@ -2615,6 +2626,43 @@ mod tests {
             Behavior::resolve(&CompilerConfig::new(build::WII_1_0)).ksin_uncontracted_label_bump,
             13
         );
+    }
+
+    #[test]
+    fn high_first_readback_is_an_explicit_233_o4_bug() {
+        for compiler_build in [
+            build::GC_1_1,
+            build::GC_1_1P1,
+            build::GC_1_2_5,
+            build::GC_1_2_5N,
+            build::GC_1_3,
+            build::WII_1_0,
+        ] {
+            let mut config = CompilerConfig::new(compiler_build);
+            for optimization in [
+                Optimization::O0,
+                Optimization::O1,
+                Optimization::O2,
+                Optimization::O3,
+                Optimization::O4,
+            ] {
+                config.flags.optimization = optimization;
+                let behavior = Behavior::resolve(&config);
+                let expected = matches!(
+                    compiler_build.label,
+                    "GC/1.1" | "GC/1.1p1" | "GC/1.2.5" | "GC/1.2.5n"
+                ) && optimization == Optimization::O4;
+                assert_eq!(behavior.posttest_readback_high_first, expected);
+                let quirk = behavior
+                    .active_quirks()
+                    .into_iter()
+                    .find(|q| q.quirk == Quirk::HighFirstPosttestReadback);
+                assert_eq!(quirk.is_some(), expected);
+                if let Some(quirk) = quirk {
+                    assert_eq!(quirk.kind, QuirkKind::BugReproduction);
+                }
+            }
+        }
     }
 
     #[test]

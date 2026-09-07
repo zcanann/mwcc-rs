@@ -4,13 +4,102 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, full GXGeometry and preserved loop/local values (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, GXInit assembly and legacy counter-readback behavior (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `2569f065d1e62aa2da0847c9504112d236dfdf7d0e200e11a2c32bd6b75cebc6:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `869e8552bc16639d508a9f3583faf3c88fe1f9c8d26bbc8b637418cb388ca2f1:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GXInit assembly and legacy counter-readback behavior, 2026-09-07
+
+The unmodified BfBB `GXInit.c` advances past its write-gather assembly helper
+and retained inline memory-counter reader. Its next diagnostic is the 64-bit
+expression in `__GXShutdown`. **GX compilation remains 9/14** translation
+units; this checkpoint advances a real unit's blockers without claiming that
+the complete unit now compiles.
+
+The assembler maps `andi.` and `andis.` to the existing record-form machine
+instructions. Canaries **1939/1940** cover compact `andi.r3` tokenization,
+zero/full/high-bit masks, distinct destination registers, condition-register
+reads, and conditional branches. Candidate and fresh references produce
+**30/30 byte-identical objects** across fifteen builds at O0/O4, including all
+**240 function text plus symbolic relocation comparisons**. All **122,880
+candidate/reference executions** agree with the result and condition-flag model.
+The harness seeds SO with an actual `mtxer` instruction, checks CR0 including
+SO, and verifies that unrelated condition fields and saved registers survive.
+
+Retained integer inline helpers can now compose read-only memory-sampling loops
+through the existing statement lane. Post-test dominance checks visit the body
+before the condition and retain assignments that are available after its first
+iteration. Locals remain hygienically renamed; scalar arguments are captured
+per invocation. Calls, escaping locals, and nonlocal control flow retain their
+existing eligibility checks. Unit tests distinguish a post-test assignment from
+the same uninitialized read in a pretest condition.
+
+Fresh reference execution exposed a **2.3.3 O4 compiler bug**: GC/1.1, GC/1.1p1,
+GC/1.2.5, and GC/1.2.5n move a split-counter loop's second high-half read ahead
+of its low-half read, including volatile accesses. The source's initial
+`high, low, high` read sequence becomes `high, high, low`. The same builds at
+O0–O3 and the later builds preserve source order in this panel. A build-profile
+policy resolves into an O4-only `BugReproduction` quirk. The isolated
+`legacy_readback_schedule` transform applies the measured halfword schedule
+through ordinary statement emission. It checks the snapshot/comparison shape,
+common global pointer base, and address dependencies, excludes shadowed globals,
+and is idempotent. Semantic inline composition remains independent of this bug.
+
+Canaries **1941–1945** cover fixed/dynamic register indices, repeated calls with
+an intervening output store, and guarded calls at O0–O4 across fifteen builds.
+**153,600 candidate/reference comparisons agree**, including exact read
+addresses, widths, values, returns, output memory, saved GPR/FPR images, SP/LR,
+and execution faults. Inputs cover zero through four retries and halfword
+rollover. **7,168 cases differ from the independent source-order model on both
+sides**; these are deliberately reproduced reference results, not semantic
+correctness passes. Instruction parity remains **0/75 whole objects** and
+**0/300 function comparisons** for these counter samples. Together, the seven
+new canaries advance from **0/105** compiling baseline objects at `b0638235` to
+**105/105** candidate and reference objects, with **30/105** whole objects exact.
+
+The O1–O3 controls reset optimization with `-O0` before selecting their level.
+The reference retains O4 scheduling when only a lower optimization flag is
+appended after `-O4`; parity for that cumulative option sequence remains open.
+The separate 25-pair optimization probe sets each level directly.
+
+A probe using the **actual BfBB SDK headers** and the unchanged
+`IsWriteGatherBufferEmpty` source body compiles with the project's configured
+GC/1.2.5n flags. Its write-gather helper is **12/12 instruction bytes exact**
+against the fresh reference object. Wrappers around `__GXReadMEMCounterU32`
+and `__GXReadPECounterU32` pass another **1,024 execution comparisons**, all
+reproducing the original read-order difference. The probe is **952 candidate
+versus 856 reference ELF bytes**, SHA-256
+`c1d7d08e00c8705dbbf58487124eda1dd1c8c196780b58fffcbb8f16789eb04a` and
+`62b86eb5a2ccb1656d26e084523bd95131ca1d010ec0eac1c8445ad97ccd27f5`, respectively.
+Its two counter bodies still differ in instruction scheduling and size. These
+are SDK-source/reference-object checks; no whole GXInit or linked-DOL parity
+claim is made. Overall, **277,504 candidate/reference executions agree**,
+including **8,192 reproduced source-order-model differences**.
+
+Regression controls retain **300/300** exact memory objects; **1,098** unchanged
+indexed objects, including **972** known exact results and **576** identical
+declines; and cumulative metadata's **1,494** compiled, **1,486** unchanged,
+**1,179** known exact, and **704** identical declines. Metadata's eight changes
+predate this checkpoint. All **1,681** compiling recent objects are unchanged,
+with **89** identical declines among **1,770** pairs. The nine previously
+compiling GX objects and full AXVPB are byte-identical. **1,586 compiler library
+and 48 version-policy tests pass**, excluding the previously baseline-confirmed
+`inline_expansion::tests::composes_zero_argument_embedded_asm_at_a_nested_call_site`
+failure. Full-project builds, the remaining five GX units, counter instruction
+schedules, cumulative optimization flags, and further reference bugs remain open.
+
+Artifacts: `target/asm-mask-canaries/{results,reference-results,
+reference-comparison,execution-results}.json`,
+`target/asm-mask-sdk/{results,function-comparison,execution-results}.json`
+and its generated `sdk.c`,
+`target/asm-mask-optimization/results.json` and its disassemblies,
+`target/asm-mask-{index,metadata,recent,gx-library,full-ax}/`,
+`target/asm-mask-{tests-final,version-tests-final,execution-final,
+sdk-execution-final,gx-library-final}.log`.
 
 ## Full GXGeometry and preserved loop/local values, 2026-09-07
 

@@ -1406,6 +1406,11 @@ pub trait CodegenProfile: core::fmt::Debug {
         SavedFloatParameterCopyOrder::AscendingSavedHome
     }
 
+    /// The 2.3.3 O4 scheduler moves a readback loop's high sample before its low sample.
+    fn posttest_readback_high_first(&self) -> bool {
+        false
+    }
+
     /// GC/1.1 patch 1 assigns unoptimized scalar parameter spills to one
     /// byte address, including overlaps with saved registers and linkage.
     fn unoptimized_shared_parameter_spills(&self) -> bool {
@@ -2740,6 +2745,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn posttest_readback_high_first(&self) -> bool {
+        true
+    }
+
     fn unoptimized_shared_parameter_spills(&self) -> bool {
         self.unoptimized_shared_parameter_spills
     }

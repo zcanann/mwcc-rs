@@ -72,6 +72,7 @@ mod inline_summaries;
 mod intrinsics;
 mod legacy_comparisons;
 mod legacy_dual_float_condition;
+mod legacy_readback_schedule;
 mod narrow;
 mod operands;
 mod ordinal_accounting;

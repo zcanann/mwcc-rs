@@ -262,7 +262,7 @@ pub(super) fn automatic_statement_value_function(function: &Function) -> bool {
         || automatic_conditional_local_value_function(function)
 }
 
-/// A retained inline integer helper can carry local-only pretest loops in the
+/// A retained inline integer helper can carry local assignments and read-only loops in the
 /// statement lane. Its control flow cannot be summarized as one expression,
 /// but alpha-renamed locals and captured arguments preserve each invocation.
 /// This admission is for retained definitions, not an automatic-inline size
@@ -285,10 +285,31 @@ pub(super) fn retained_scalar_loop_value_function(function: &Function) -> bool {
             Expression::IntegerLiteral(_) => true,
             Expression::Binary { left, right, .. } => value(left, names) && value(right, names),
             Expression::Unary { operand, .. } => value(operand, names),
+            Expression::Dereference { pointer } => address(pointer, names),
+            Expression::Index { base, index } => address(base, names) && value(index, names),
             Expression::Cast {
                 target_type,
                 operand,
             } => scalar(*target_type) && value(operand, names),
+            _ => false,
+        }
+    }
+    // Memory samples remain statements at their original loop positions. Only
+    // address calculation is admitted here; calls, updates, and escaped locals
+    // still need a different composition proof.
+    fn address(expression: &Expression, names: &HashSet<&str>) -> bool {
+        match expression {
+            Expression::Variable(_) | Expression::IntegerLiteral(_) => true,
+            Expression::Cast {
+                target_type: Type::Pointer(_),
+                operand,
+            } => address(operand, names),
+            Expression::Binary {
+                operator:
+                    mwcc_syntax_trees::BinaryOperator::Add | mwcc_syntax_trees::BinaryOperator::Subtract,
+                left,
+                right,
+            } => address(left, names) && value(right, names),
             _ => false,
         }
     }
@@ -313,7 +334,7 @@ pub(super) fn retained_scalar_loop_value_function(function: &Function) -> bool {
                     && statements(else_body, names, locals, loops)
             }
             Statement::Loop {
-                kind: LoopKind::While,
+                kind: LoopKind::While | LoopKind::DoWhile,
                 initializer: None,
                 condition: Some(condition),
                 step: None,
@@ -837,6 +858,23 @@ fn reads_are_dominated<'a>(
                 if value
                     .as_ref()
                     .is_some_and(|value| reads_unassigned(value, tracked, assigned))
+                {
+                    return false;
+                }
+            }
+            Statement::Loop {
+                kind: LoopKind::DoWhile,
+                initializer: None,
+                condition,
+                step: None,
+                body,
+            } => {
+                // A post-test body executes before both the condition and the
+                // continuation. Its dominating assignments are available there.
+                if !reads_are_dominated(body, tracked, assigned)
+                    || condition.as_ref().is_some_and(|condition| {
+                        !record_dominating_assignment(condition, tracked, assigned)
+                    })
                 {
                     return false;
                 }
@@ -1983,5 +2021,27 @@ mod tests {
 
         assert!(automatic_statement_value_function(&function));
         assert!(!automatic_composable_function(&function));
+    }
+    #[test]
+    fn posttest_assignments_dominate_the_condition_and_continuation() {
+        let tracked = HashSet::from(["sample"]);
+        let mut body = vec![Statement::Loop {
+            kind: LoopKind::DoWhile,
+            initializer: None,
+            condition: Some(Expression::Variable("sample".into())),
+            step: None,
+            body: vec![Statement::Assign {
+                name: "sample".into(),
+                value: Expression::IntegerLiteral(0),
+            }],
+        }];
+        let mut assigned = HashSet::new();
+        assert!(reads_are_dominated(&body, &tracked, &mut assigned));
+        assert!(assigned.contains("sample"));
+        let Statement::Loop { kind, .. } = &mut body[0] else {
+            unreachable!();
+        };
+        *kind = LoopKind::While;
+        assert!(!reads_are_dominated(&body, &tracked, &mut HashSet::new()));
     }
 }

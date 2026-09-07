@@ -1241,6 +1241,13 @@ impl Generator {
                 }
             }
         }
+        if self.behavior.posttest_readback_high_first {
+            if let Some(scheduled) =
+                crate::legacy_readback_schedule::materialize(function, &self.globals)
+            {
+                return self.evaluate_body(&scheduled);
+            }
+        }
         if self.behavior.unoptimized_shared_parameter_spills {
             let mut trial = self.clone();
             if trial.try_shared_parameter_spill_call(function)? {

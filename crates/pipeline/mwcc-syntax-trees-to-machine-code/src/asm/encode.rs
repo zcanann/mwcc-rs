@@ -453,6 +453,14 @@ pub(super) fn assemble_line(
             Instruction::SubtractFromImmediate { d, a, immediate }
         }
         // Register + unsigned-immediate logical (`op dst, src, UIMM`).
+        "andi." => {
+            let (a, s, immediate) = rri_u(mnemonic, operands)?;
+            Instruction::AndImmediateRecord { a, s, immediate }
+        }
+        "andis." => {
+            let (a, s, immediate) = rri_u(mnemonic, operands)?;
+            Instruction::AndImmediateShiftedRecord { a, s, immediate }
+        }
         "ori" => {
             // The immediate may be a `sym@l` relocation (assembled as 0, patched later).
             expect_operand_count(mnemonic, operands, 3)?;
