@@ -4,13 +4,109 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, GX FIFO stores and rotate-insert execution (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete GXBump compilation and switch execution (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `2d0b61b68619f78a01f3b984823797f5214eb25c8313c5f883eee2d42522e15a:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `758e8d0414bc8504a09e9f5d7821cab21cd6a11f9cd3d60cc82791b2b28da549:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete GXBump compilation and switch execution, 2026-09-07
+
+The **complete configured BfBB `GXBump.c` now compiles** under GC/1.2.5n,
+using its DolphinLib flags and unchanged project source/headers. Frozen
+baseline `b0d530ae` declines in `GXSetIndTexCoordScale`. The complete candidate
+object SHA-256 is
+`0985d613f3b8774b41354d9302eb6a1feb955b005b9d0bd03c5280d35ed397b8`;
+three independent recompilations produce identical objects.
+
+The shared constant-false `do`-loop normalizer now descends into switch cases
+and defaults, preserving case values, order, and fallthrough. Control-edge
+analysis distinguishes switch-local breaks from continues targeting the
+surrounding loop; wrappers containing their own early exits remain intact.
+
+Leaf functions with guarded assignments, switch-selected locals, or joined
+fallthrough arms now use the existing structured switch and named-value
+lowering. Analysis and emission use the same statement tree, including
+restored terminal guards: cloning a separate emission list previously lost
+statement-identity liveness facts. Existing simple terminal-switch owners
+retain their dispatch policy.
+
+Two execution failures exposed by full-source compilation are fixed:
+
+- Generic statement-switch arms now share the structured emitter's cache reset
+  at case/default entries and the join. A FIFO base materialized in one arm
+  can no longer be reused by another arm that never executed that definition.
+- Dense dispatch preserves physical argument homes read by the arms **or the
+  continuation** before its r3/r4 scratch use. The matrix input pointer had been
+  overwritten by the jump-table address. Retained homes are ordered by physical
+  register/name so generated code is independent of hash-map iteration.
+
+Ten new canaries **1771–1780** cover switch macro wrappers, nested/default and
+fallthrough paths, GX scale/order updates, a dense-switch pointer continuation,
+and the complete matrix-packet reduction. **150/150 objects compile** across
+fifteen builds at O0/O4, up from **30/150** under the frozen baseline.
+The thirty matrix objects already compiled before the change; their execution
+improves from **23,040 failures in 30,720 calls to zero failures**.
+
+At the final compiler fingerprint, **123,392 candidate executions pass**:
+
+- **8,192** calls exercise all eight functions in the complete configured GX
+  object against their original GQPE78 DOL implementations, with 1,024 fixtures
+  per function. The emulator loads the original DOL's code/data, including the
+  real matrix constants and internal `GXSetTevIndirect` call. Checks compare
+  ordered FIFO writes, all 1,456 context bytes, unchanged matrix input, stack
+  restoration, and callee-saved GPR/FPRs. Fixtures cover valid/out-of-range
+  selectors, 255-to-zero parameter guards, randomized field values, all byte
+  scale exponents, and finite matrix entries in [-2, 2].
+- **115,200** calls execute the 150 corpus objects. GX reductions compare with
+  the same pinned original fixtures; standalone switch cases check expected
+  state updates or indexed return values and ABI preservation.
+
+Linked-text comparison applies the known SDA and direct-call relocations at
+original symbol addresses. **`__GXFlushTextureState` (36 bytes) and
+`__GXUpdateBPMask` (4 bytes) are exact**, including the empty function.
+The other six functions still differ in size:
+
+| Function | Candidate bytes | Original bytes |
+| --- | ---: | ---: |
+| `GXSetTevIndirect` | 124 | 108 |
+| `GXSetIndTexMtx` | 432 | 376 |
+| `GXSetIndTexCoordScale` | 472 | 324 |
+| `GXSetIndTexOrder` | 280 | 236 |
+| `GXSetNumIndStages` | 52 | 36 |
+| `GXSetTevDirect` | 76 | 72 |
+
+The matrix function's anonymous table/constant relocations remain unresolved
+in that text comparison; its differing length already excludes exactness.
+This milestone proves tested execution equivalence and compilation of this
+translation unit, not whole-object or full-project parity. Remaining GX work
+includes instruction selection, register placement, and scheduling for those
+six functions.
+
+Other validation:
+
+- Captured paired-memory matrix: **300/300 whole-object exact**.
+- Index panel: **1,097 objects unchanged**, retaining **972 known reference
+  matches**, and **577 identical declines**, with no timeouts.
+- Cumulative metadata panel against `db48e092`: **1,494 objects unchanged**,
+  retaining **1,179 known reference matches**, and **704 identical declines**,
+  with no timeouts.
+- **44 targeted codegen tests and 40 object-writer tests pass**: loop
+  normalization, leaf eligibility, dense dispatch, switch lowering, and named
+  value flow.
+- The complete configured AX object remains byte-identical, SHA-256
+  `1a8fed48a1634517cd66e23f09754e75274d170ca826e61408ff96650605e7e3`,
+  retaining its prior complete sync execution evidence.
+
+Local scripts are `target/check_gx_switch*.py` and
+`target/probe_gx_switch*.py`; objects, input manifests, fixtures, and results
+are under `target/gx-switch-{canaries,gx,index,metadata,full-ax}/`.
+Original-function manifests pin the same DOL/map hashes as earlier GX work.
+The six existing wibo processes remain in kernel U state after more than
+four hours forty-five minutes. No new reference compiler was launched and
+no fresh reference-object or full-project-panel gain is claimed.
 
 ## GX FIFO stores and rotate-insert execution, 2026-09-07
 

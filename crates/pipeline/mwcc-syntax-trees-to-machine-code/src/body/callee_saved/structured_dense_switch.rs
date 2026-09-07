@@ -22,6 +22,7 @@ impl Generator {
         arms: &[mwcc_syntax_trees::SwitchArm],
         default: Option<&ArmBody>,
         function: &Function,
+        live_after: Option<&std::collections::HashSet<&str>>,
         ephemeral_locals: &[&LocalDeclaration],
         return_branches: &mut Vec<usize>,
         label_positions: &mut std::collections::HashMap<String, usize>,
@@ -56,16 +57,22 @@ impl Generator {
             ));
         }
 
-        let preserved_dispatch_values = self
+        let mut preserved_dispatch_values = self
             .locations
             .iter()
             .filter(|(name, location)| {
                 location.class == ValueClass::General
-                    && location.register == Eabi::general_result().number
-                    && switch_bodies_use_name(arms, default, name)
+                    && matches!(location.register, 3 | 4)
+                    && (switch_bodies_use_name(arms, default, name)
+                        || live_after.is_some_and(|names| names.contains(name.as_str())))
             })
             .map(|(name, location)| (name.clone(), location.register))
             .collect::<Vec<_>>();
+        // Both dispatch scratch lanes may hold live parameters. Stable input
+        // order keeps their preferred homes independent of HashMap iteration.
+        preserved_dispatch_values.sort_by(|(left_name, left), (right_name, right)| {
+            left.cmp(right).then_with(|| left_name.cmp(right_name))
+        });
 
         let reused_guarded_bitfield =
             super::structured_guarded_bitfield_switch::consume(
@@ -212,7 +219,7 @@ impl Generator {
         let mut join_branches = Vec::new();
         for (source_index, arm) in arms.iter().enumerate() {
             body_offsets[source_index] = self.output.instructions.len() as u32 * 4;
-            self.reset_structured_switch_edge_caches();
+            self.reset_switch_edge_caches();
             let falls_through_body = match &arm.body {
                 ArmBody::Statements(statements) => {
                     self.emit_structured_arm_with_global_pointer_cache(
@@ -253,7 +260,7 @@ impl Generator {
 
         let default_offset = self.output.instructions.len() as u32 * 4;
         if let Some(default) = default {
-            self.reset_structured_switch_edge_caches();
+            self.reset_switch_edge_caches();
             match default {
                 ArmBody::Statements(statements) => {
                     self.emit_structured_arm_with_global_pointer_cache(
@@ -281,7 +288,7 @@ impl Generator {
             }
         }
         let join = self.output.instructions.len();
-        self.reset_structured_switch_edge_caches();
+        self.reset_switch_edge_caches();
 
         if let Instruction::BranchConditionalForward { target, .. } =
             &mut self.output.instructions[out_of_range]
@@ -396,29 +403,7 @@ impl Generator {
         Ok(())
     }
 
-    pub(super) fn reset_structured_switch_edge_caches(&mut self) {
-        self.condition_global_values.clear();
-        if let Some((name, register)) =
-            self.structured_shared_switch_global_value.as_ref()
-        {
-            self.condition_global_values.insert(
-                name.clone(),
-                crate::condition_global_cache::ConditionGlobalValue::Register(
-                    *register,
-                ),
-            );
-        }
-        self.condition_float_cache = Default::default();
-        self.condition_member_cache = Default::default();
-        self.wide_pair_mask_cache = Default::default();
-        self.const_address_bases.clear();
-        self.stored_globals.clear();
-        self.transient_global_index_base = None;
-        self.reuse_scratch_constant = false;
-        self.scratch_constant = None;
-        self.prematerialized_constants.clear();
-        self.prematerialized_float_constants.clear();
-    }
+
 }
 
 /// A dense switch that only selects the scalar returned after the switch has

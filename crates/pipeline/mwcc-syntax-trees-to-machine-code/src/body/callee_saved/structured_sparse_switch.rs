@@ -303,7 +303,7 @@ impl Generator {
         let trailing_default_is_empty = default_body_is_empty(default);
         for (source_index, arm) in arms.iter().enumerate() {
             body_start[sorted_index_by_value[&arm.value]] = self.output.instructions.len();
-            self.reset_structured_switch_edge_caches();
+            self.reset_switch_edge_caches();
             let falls_through_body = match &arm.body {
                 ArmBody::Statements(statements) => {
                     self.emit_structured_arm_with_global_pointer_cache(
@@ -344,7 +344,7 @@ impl Generator {
 
         let default_start = self.output.instructions.len();
         if let Some(default) = default {
-            self.reset_structured_switch_edge_caches();
+            self.reset_switch_edge_caches();
             match default {
                 ArmBody::Statements(statements) => {
                     self.emit_structured_arm_with_global_pointer_cache(
@@ -372,7 +372,7 @@ impl Generator {
             }
         }
         let join = self.output.instructions.len();
-        self.reset_structured_switch_edge_caches();
+        self.reset_switch_edge_caches();
 
         for branch in join_branches {
             let Instruction::Branch { target } = &mut self.output.instructions[branch] else {

@@ -106,7 +106,7 @@ impl Generator {
                 .position(|&(_, index)| index == source_index)
                 .expect("each source arm has one sorted dispatch slot");
             body_start[sorted_index] = self.output.instructions.len();
-            self.reset_structured_switch_edge_caches();
+            self.reset_switch_edge_caches();
             let falls_through_body = match &arm.body {
                 ArmBody::Statements(statements) => {
                     self.emit_structured_arm_with_global_pointer_cache(
@@ -147,7 +147,7 @@ impl Generator {
 
         let default_start = self.output.instructions.len();
         if let Some(default) = default {
-            self.reset_structured_switch_edge_caches();
+            self.reset_switch_edge_caches();
             match default {
                 ArmBody::Statements(statements) => {
                     self.emit_structured_arm_with_global_pointer_cache(
@@ -175,7 +175,7 @@ impl Generator {
             }
         }
         let join = self.output.instructions.len();
-        self.reset_structured_switch_edge_caches();
+        self.reset_switch_edge_caches();
 
         for branch in join_branches {
             if let Instruction::Branch { target } = &mut self.output.instructions[branch] {

@@ -15,7 +15,20 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        let structured_statements = leaf_structured_statements(function);
+        if !requires_structured_branch_graph(&leaf_structured_statements(function)) {
+            return Ok(false);
+        }
+        // Leaf guards that assign values need the same switch-to-CFG lowering
+        // as framed bodies before named-value planning runs. Simple terminal
+        // switches keep their existing dispatch owners.
+        let mut lowered = super::structured_switch_lowering::lower_structured_switches_for_emission(function)
+            .unwrap_or_else(|| function.clone());
+        lowered.statements = leaf_structured_statements(&lowered);
+        lowered.guards.clear();
+        // NamedValueFlow keys its facts by statement identity. Analyze and emit
+        // the same tree, including restored terminal guards and switch joins.
+        let function = &lowered;
+        let structured_statements = &function.statements;
         if function_makes_call(function)
             || !self.frame_slots.is_empty()
             || !leaf_return_shape_is_supported(function)
@@ -160,6 +173,11 @@ fn leaf_structured_statements(function: &Function) -> Vec<Statement> {
 
 fn requires_structured_branch_graph(statements: &[Statement]) -> bool {
     statements.iter().any(|statement| match statement {
+        Statement::Switch { arms, .. } => arms.iter().any(|arm| {
+            arm.falls_through || matches!(&arm.body,
+                mwcc_syntax_trees::ArmBody::Statements(body)
+                    if body.iter().any(|statement| matches!(statement, Statement::Assign { .. })))
+        }),
         Statement::If {
             then_body,
             else_body,
@@ -168,6 +186,7 @@ fn requires_structured_branch_graph(statements: &[Statement]) -> bool {
             then_body.len() > 1
                 || !else_body.is_empty()
                 || then_body.iter().any(|inner| matches!(inner, Statement::If { .. }))
+                || then_body.iter().any(|inner| matches!(inner, Statement::Assign { .. }))
                 || requires_structured_branch_graph(then_body)
                 || requires_structured_branch_graph(else_body)
         }
@@ -178,6 +197,7 @@ fn requires_structured_branch_graph(statements: &[Statement]) -> bool {
 fn supports_leaf_structured_statements(statements: &[Statement]) -> bool {
     statements.iter().all(|statement| match statement {
         Statement::Assign { .. } | Statement::Store { .. } | Statement::Return(_) => true,
+        Statement::Expression(expression) => !crate::analysis::expression_has_side_effect(expression),
         Statement::If {
             then_body,
             else_body,
@@ -185,6 +205,15 @@ fn supports_leaf_structured_statements(statements: &[Statement]) -> bool {
         } => {
             supports_leaf_structured_statements(then_body)
                 && supports_leaf_structured_statements(else_body)
+        }
+        Statement::Switch { arms, default, .. } => {
+            let supported = |body: &mwcc_syntax_trees::ArmBody| match body {
+                mwcc_syntax_trees::ArmBody::Return(_) => true,
+                mwcc_syntax_trees::ArmBody::Statements(body) =>
+                    supports_leaf_structured_statements(body),
+            };
+            arms.iter().all(|arm| supported(&arm.body))
+                && default.as_ref().is_none_or(supported)
         }
         _ => false,
     })

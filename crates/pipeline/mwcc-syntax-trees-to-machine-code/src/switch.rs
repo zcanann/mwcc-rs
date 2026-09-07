@@ -44,6 +44,31 @@ enum SwitchCompareOperand {
 }
 
 impl Generator {
+    /// Retire values that are not available on every incoming switch edge.
+    pub(crate) fn reset_switch_edge_caches(&mut self) {
+        self.condition_global_values.clear();
+        if let Some((name, register)) =
+            self.structured_shared_switch_global_value.as_ref()
+        {
+            self.condition_global_values.insert(
+                name.clone(),
+                crate::condition_global_cache::ConditionGlobalValue::Register(
+                    *register,
+                ),
+            );
+        }
+        self.condition_float_cache = Default::default();
+        self.condition_member_cache = Default::default();
+        self.wide_pair_mask_cache = Default::default();
+        self.const_address_bases.clear();
+        self.stored_globals.clear();
+        self.transient_global_index_base = None;
+        self.reuse_scratch_constant = false;
+        self.scratch_constant = None;
+        self.prematerialized_constants.clear();
+        self.prematerialized_float_constants.clear();
+    }
+
     /// Evaluate a switch operand after C/C++ integral promotion. Narrow entry
     /// parameters still carry unspecified high bits in their ABI register, so
     /// every switch topology shares this one canonicalization policy.
@@ -163,6 +188,7 @@ impl Generator {
         let mut body_start = vec![0usize; sorted.len()];
         let mut join_branches = Vec::with_capacity(arms.len());
         for arm in arms {
+            self.reset_switch_edge_caches();
             body_start[sorted_index_by_value[&arm.value]] = self.output.instructions.len();
             let ArmBody::Statements(statements) = &arm.body else {
                 unreachable!()
@@ -177,11 +203,13 @@ impl Generator {
         }
 
         let default_start = self.output.instructions.len();
+        self.reset_switch_edge_caches();
         if let Some(statements) = default_statements {
             for statement in statements {
                 self.emit_statement(statement)?;
             }
         }
+        self.reset_switch_edge_caches();
         let continuation = self.output.instructions.len();
 
         for index in join_branches {
@@ -792,6 +820,7 @@ impl Generator {
     }
 
     fn emit_terminal_switch_block(&mut self, statements: &[Statement]) -> Compilation<()> {
+        self.reset_switch_edge_caches();
         if self.try_terminal_float_direction(statements)? {
             return Ok(());
         }

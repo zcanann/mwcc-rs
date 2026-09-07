@@ -5179,6 +5179,7 @@ impl Generator {
                             arms,
                             default.as_ref(),
                             function,
+                            value_flow.after(statement),
                             ephemeral_locals,
                             return_branches,
                             label_positions,

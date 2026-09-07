@@ -5,6 +5,7 @@
 //! should not each need a private loop special case.
 
 use super::*;
+use mwcc_syntax_trees::ArmBody;
 
 pub(super) fn flatten_constant_false_do_while(function: &Function) -> Option<Function> {
     let (statements, changed) = flatten_statements(&function.statements);
@@ -62,23 +63,76 @@ fn flatten_statements(statements: &[Statement]) -> (Vec<Statement>, bool) {
                 });
                 changed |= body_changed;
             }
+            Statement::Switch {
+                scrutinee,
+                arms,
+                default,
+            } => {
+                let arms = arms
+                    .iter()
+                    .map(|arm| {
+                        let (body, body_changed) = flatten_arm(&arm.body);
+                        changed |= body_changed;
+                        mwcc_syntax_trees::SwitchArm {
+                            value: arm.value,
+                            body,
+                            falls_through: arm.falls_through,
+                        }
+                    })
+                    .collect();
+                let default = default.as_ref().map(|body| {
+                    let (body, body_changed) = flatten_arm(body);
+                    changed |= body_changed;
+                    body
+                });
+                output.push(Statement::Switch {
+                    scrutinee: scrutinee.clone(),
+                    arms,
+                    default,
+                });
+            }
             _ => output.push(statement.clone()),
         }
     }
     (output, changed)
 }
 
-/// A break/continue nested in an `if` targets this loop; one inside a nested
-/// loop does not. Leave the former to CFG lowering until the transform can
-/// preserve its early-exit behavior.
+fn flatten_arm(body: &ArmBody) -> (ArmBody, bool) {
+    match body {
+        ArmBody::Statements(statements) => {
+            let (statements, changed) = flatten_statements(statements);
+            (ArmBody::Statements(statements), changed)
+        }
+        ArmBody::Return(_) => (body.clone(), false),
+    }
+}
+
+/// A switch captures breaks, but its continues still target the surrounding
+/// loop. A nested loop captures both. Keep wrappers with their own early exits
+/// until CFG lowering can preserve those edges.
 fn has_direct_loop_control(statements: &[Statement]) -> bool {
+    has_loop_control(statements, true)
+}
+
+fn has_loop_control(statements: &[Statement], break_targets_loop: bool) -> bool {
     statements.iter().any(|statement| match statement {
-        Statement::Break | Statement::Continue => true,
+        Statement::Break => break_targets_loop,
+        Statement::Continue => true,
         Statement::If {
             then_body,
             else_body,
             ..
-        } => has_direct_loop_control(then_body) || has_direct_loop_control(else_body),
+        } => {
+            has_loop_control(then_body, break_targets_loop)
+                || has_loop_control(else_body, break_targets_loop)
+        }
+        Statement::Switch { arms, default, .. } => {
+            let escapes = |body: &ArmBody| match body {
+                ArmBody::Statements(statements) => has_loop_control(statements, false),
+                ArmBody::Return(_) => false,
+            };
+            arms.iter().any(|arm| escapes(&arm.body)) || default.as_ref().is_some_and(escapes)
+        }
         Statement::Loop { .. } => false,
         _ => false,
     })
@@ -123,8 +177,7 @@ mod tests {
             body: vec![statement.clone()],
         });
 
-        let normalized =
-            flatten_constant_false_do_while(&function).expect("shell should flatten");
+        let normalized = flatten_constant_false_do_while(&function).expect("shell should flatten");
 
         assert!(matches!(
             normalized.statements.as_slice(),
@@ -144,5 +197,75 @@ mod tests {
         });
 
         assert!(flatten_constant_false_do_while(&function).is_none());
+    }
+
+    fn wrapper(body: Vec<Statement>) -> Statement {
+        Statement::Loop {
+            kind: LoopKind::DoWhile,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(0)),
+            step: None,
+            body,
+        }
+    }
+
+    fn switch(body: Vec<Statement>, default: Option<ArmBody>) -> Statement {
+        Statement::Switch {
+            scrutinee: Expression::Variable("selector".into()),
+            arms: vec![mwcc_syntax_trees::SwitchArm {
+                value: 7,
+                body: ArmBody::Statements(body),
+                falls_through: true,
+            }],
+            default,
+        }
+    }
+
+    #[test]
+    fn flattens_case_and_default_wrappers_without_changing_fallthrough() {
+        let function = function_with(switch(
+            vec![wrapper(vec![Statement::Return(None)])],
+            Some(ArmBody::Statements(vec![wrapper(vec![Statement::Return(
+                None,
+            )])])),
+        ));
+        let normalized = flatten_constant_false_do_while(&function).unwrap();
+        let Statement::Switch { arms, default, .. } = &normalized.statements[0] else {
+            panic!("switch must remain");
+        };
+        assert_eq!(arms[0].value, 7);
+        assert!(arms[0].falls_through);
+        assert!(matches!(&arms[0].body,
+            ArmBody::Statements(body) if matches!(body.as_slice(), [Statement::Return(None)])));
+        assert!(matches!(default,
+            Some(ArmBody::Statements(body)) if matches!(body.as_slice(), [Statement::Return(None)])));
+        assert!(flatten_constant_false_do_while(&normalized).is_none());
+    }
+
+    #[test]
+    fn switch_continue_keeps_the_surrounding_wrapper() {
+        for body in [
+            switch(vec![Statement::Continue], None),
+            switch(
+                Vec::new(),
+                Some(ArmBody::Statements(vec![Statement::Continue])),
+            ),
+        ] {
+            let function = function_with(wrapper(vec![body]));
+            assert!(flatten_constant_false_do_while(&function).is_none());
+        }
+    }
+
+    #[test]
+    fn switch_break_and_nested_loop_continue_do_not_escape_the_wrapper() {
+        for body in [
+            switch(vec![Statement::Break], None),
+            wrapper(vec![Statement::Continue]),
+        ] {
+            let function = function_with(wrapper(vec![body]));
+            let normalized = flatten_constant_false_do_while(&function).unwrap();
+            assert_eq!(normalized.statements.len(), 1);
+            assert!(flatten_constant_false_do_while(&normalized).is_none());
+        }
     }
 }
