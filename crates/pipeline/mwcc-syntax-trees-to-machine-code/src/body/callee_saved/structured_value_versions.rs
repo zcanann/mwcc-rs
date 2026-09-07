@@ -170,6 +170,46 @@ pub(super) fn split_reassigned_local_versions(function: &Function) -> Option<Fun
     Some(rewritten)
 }
 
+/// A copied value cannot share its source's home when a later write to
+/// either identity overlaps a surviving read of the other. Nested loop writes
+/// matter even when the enclosing block's first use is only a condition.
+pub(super) fn mutable_copy_needs_distinct_home(
+    function: &Function,
+    statement: &Statement,
+    remaining: &[Statement],
+    destination: &str,
+    source: &str,
+) -> bool {
+    // A nested block's suffix omits enclosing continuations and loop back
+    // edges. Use the full body conservatively until those edges have an
+    // explicit source-liveness query; never infer that the source is dead
+    // merely because its next read lies outside this block.
+    let remaining = if function
+        .statements
+        .iter()
+        .any(|entry| std::ptr::eq(entry, statement))
+    {
+        remaining
+    } else {
+        &function.statements
+    };
+    let read_later = |name| {
+        super::structured_locals::body_reads_local(remaining, name)
+            || function
+                .return_expression
+                .as_ref()
+                .is_some_and(|value| expression_reads_name(value, name))
+            || function.guards.iter().any(|guard| {
+                expression_reads_name(&guard.condition, name)
+                    || expression_reads_name(&guard.value, name)
+            })
+    };
+    (super::structured_expression_visit::statements_assign_name(remaining, destination)
+        && read_later(source))
+        || (super::structured_expression_visit::statements_assign_name(remaining, source)
+            && read_later(destination))
+}
+
 /// Find a different source value read by a reassignment and still needed
 /// afterward. The emitter combines this proof with its location table: when
 /// source and destination share a home, the write must break that alias.

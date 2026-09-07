@@ -5965,12 +5965,31 @@ impl Generator {
                     }
                     if terminal_volatile {
                         if let Expression::Variable(source) = value {
-                            if let Some(source) = self.lookup_general(source) {
-                                self.locations
-                                    .get_mut(name)
-                                    .expect("structured assignment home")
-                                    .register = source;
-                                continue;
+                            if let Some(source_register) = self.lookup_general(source) {
+                                // Several immutable copies may already share
+                                // this register. A new mutable copy must keep
+                                // every surviving identity, not only its direct
+                                // source, intact through nested control flow.
+                                let needs_distinct_home =
+                                    self.locations.iter().any(|(alias, location)| {
+                                        alias != name
+                                            && same_class_register(
+                                                location.class,
+                                                location.register,
+                                                ValueClass::General,
+                                                source_register,
+                                            )
+                                            && super::structured_value_versions::mutable_copy_needs_distinct_home(
+                                                function, statement, remaining, name, alias,
+                                            )
+                                    });
+                                if !needs_distinct_home {
+                                    self.locations
+                                        .get_mut(name)
+                                        .expect("structured assignment home")
+                                        .register = source_register;
+                                    continue;
+                                }
                             }
                         }
                     }

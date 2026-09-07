@@ -262,6 +262,128 @@ pub(super) fn automatic_statement_value_function(function: &Function) -> bool {
         || automatic_conditional_local_value_function(function)
 }
 
+/// A retained inline integer helper can carry local-only pretest loops in the
+/// statement lane. Its control flow cannot be summarized as one expression,
+/// but alpha-renamed locals and captured arguments preserve each invocation.
+/// This admission is for retained definitions, not an automatic-inline size
+/// heuristic for ordinary functions.
+pub(super) fn retained_scalar_loop_value_function(function: &Function) -> bool {
+    fn scalar(ty: Type) -> bool {
+        matches!(
+            ty,
+            Type::Int
+                | Type::UnsignedInt
+                | Type::Char
+                | Type::UnsignedChar
+                | Type::Short
+                | Type::UnsignedShort
+        )
+    }
+    fn value(expression: &Expression, names: &HashSet<&str>) -> bool {
+        match expression {
+            Expression::Variable(name) => names.contains(name.as_str()),
+            Expression::IntegerLiteral(_) => true,
+            Expression::Binary { left, right, .. } => value(left, names) && value(right, names),
+            Expression::Unary { operand, .. } => value(operand, names),
+            Expression::Cast {
+                target_type,
+                operand,
+            } => scalar(*target_type) && value(operand, names),
+            _ => false,
+        }
+    }
+    fn statements(
+        body: &[Statement],
+        names: &HashSet<&str>,
+        locals: &HashSet<&str>,
+        loops: &mut usize,
+    ) -> bool {
+        body.iter().all(|statement| match statement {
+            Statement::Assign {
+                name,
+                value: expression,
+            } => locals.contains(name.as_str()) && value(expression, names),
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                value(condition, names)
+                    && statements(then_body, names, locals, loops)
+                    && statements(else_body, names, locals, loops)
+            }
+            Statement::Loop {
+                kind: LoopKind::While,
+                initializer: None,
+                condition: Some(condition),
+                step: None,
+                body,
+            } => {
+                *loops += 1;
+                value(condition, names) && statements(body, names, locals, loops)
+            }
+            _ => false,
+        })
+    }
+    if !scalar(function.return_type)
+        || function.asm_body.is_some()
+        || !function.inline_asm_blocks.is_empty()
+        || !function.guards.is_empty()
+        || !function.parameters.iter().all(|parameter| {
+            scalar(parameter.parameter_type)
+                && !variable_is_modified_or_escaped(function, &parameter.name)
+        })
+        || !function.locals.iter().all(|local| {
+            scalar(local.declared_type)
+                && !local.is_static
+                && !local.is_volatile
+                && local.array_length.is_none()
+        })
+    {
+        return false;
+    }
+    let locals: HashSet<_> = function
+        .locals
+        .iter()
+        .map(|local| local.name.as_str())
+        .collect();
+    let names: HashSet<_> = locals
+        .iter()
+        .copied()
+        .chain(
+            function
+                .parameters
+                .iter()
+                .map(|parameter| parameter.name.as_str()),
+        )
+        .collect();
+    let tracked: HashSet<_> = function
+        .locals
+        .iter()
+        .filter(|local| local.initializer.is_none())
+        .map(|local| local.name.as_str())
+        .collect();
+    let mut assigned = HashSet::new();
+    if !reads_are_dominated(&function.statements, &tracked, &mut assigned) {
+        return false;
+    }
+    let mut loops = 0;
+    function
+        .return_expression
+        .as_ref()
+        .is_some_and(|expression| {
+            value(expression, &names) && !reads_unassigned(expression, &tracked, &assigned)
+        })
+        && function.locals.iter().all(|local| {
+            local.initializer.as_ref().is_none_or(|expression| {
+                value(expression, &names)
+                    && !reads_unassigned(expression, &tracked, &HashSet::new())
+            })
+        })
+        && statements(&function.statements, &names, &locals, &mut loops)
+        && loops > 0
+}
+
 /// A source-visible scalar helper may keep its result in one initialized local
 /// and select later values through a nested `if`/`else if` tree. Keeping this
 /// as statements preserves the local's single captured image and avoids
@@ -1015,6 +1137,33 @@ pub(super) fn stable_arguments(
     })
 }
 
+/// Pure arithmetic may be captured once before an integer loop body. Keep
+/// memory, calls, and explicit floating expressions out of this admission.
+fn integer_argument_arithmetic(expression: &Expression) -> bool {
+    match expression {
+        Expression::Variable(_) | Expression::IntegerLiteral(_) => true,
+        Expression::Binary { left, right, .. } => {
+            integer_argument_arithmetic(left) && integer_argument_arithmetic(right)
+        }
+        Expression::Unary { operand, .. } => integer_argument_arithmetic(operand),
+        Expression::Cast {
+            target_type,
+            operand,
+        } => {
+            matches!(
+                target_type,
+                Type::Int
+                    | Type::UnsignedInt
+                    | Type::Char
+                    | Type::UnsignedChar
+                    | Type::Short
+                    | Type::UnsignedShort
+            ) && integer_argument_arithmetic(operand)
+        }
+        _ => false,
+    }
+}
+
 /// Whether arguments that cannot be substituted repeatedly may instead be
 /// evaluated into hygienic scalar temporaries at the inline call site.
 ///
@@ -1043,6 +1192,8 @@ pub(super) fn materializable_arguments(
             .zip(arguments)
             .all(|(parameter, argument)| {
                 stable_argument(argument, stable_variables)
+                    || (retained_scalar_loop_value_function(function)
+                        && integer_argument_arithmetic(argument))
                     || (forwarded_reference_arguments.is_some_and(|forwarded| {
                         parameter_forwarded_by_address(forwarded, &parameter.name)
                     }) && stable_lvalue_address(argument, stable_variables))

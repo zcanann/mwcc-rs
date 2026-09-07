@@ -20,6 +20,7 @@ mod logical_value;
 mod member_bound_select;
 mod nested_phi_select;
 mod narrow_member_compare;
+mod narrow_leaf_compare;
 mod negated_short_circuit;
 mod passes;
 mod post_step_condition;

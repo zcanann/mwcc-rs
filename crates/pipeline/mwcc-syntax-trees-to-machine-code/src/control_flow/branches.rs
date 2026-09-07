@@ -1961,6 +1961,10 @@ impl Generator {
                                 }
                             }
                             _ => {
+                                if self.try_emit_mixed_width_leaf_compare(left, right, signed)? {
+                                    return Ok(false_branch_bo_bi(*operator)
+                                        .expect("is_comparison restricts the operator"));
+                                }
                                 if self.try_emit_narrow_memory_compare(
                                     left,
                                     right,

@@ -79,6 +79,22 @@ class LinkedDolTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 relocate(0x48000001, 10, target, 0x80004000, {})
 
+    def test_external_call_is_verified_without_becoming_a_candidate_function(self):
+        data, dol, source, layout = self.fixture(kind=10)
+        data, dol = bytearray(data), bytearray(dol)
+        struct.pack_into('>I', data, 52, 0x48000001)
+        struct.pack_into('>I', dol, 0x100, 0x48000011)
+        source = source.replace('g = .sdata2:', 'g = .text:').replace('type:object', 'type:function')
+        layout.update(dol_sha256=hashlib.sha256(dol).hexdigest(),
+                      symbols_sha256=hashlib.sha256(source.encode()).hexdigest(),
+                      data_symbols={}, external_functions=['g'])
+        results = compare(bytes(data), bytes(dol), source, layout)['functions']
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0]['exact'])
+        layout['external_functions'] = ['missing_helper']
+        with self.assertRaises(ValueError):
+            compare(bytes(data), bytes(dol), source, layout)
+
     def test_sda_requires_one_valid_base(self):
         self.assertEqual(relocate(0x80600000, 109, 0x100010, 0, {'13': 0x100020}), 0x806DFFF0)
         for bases in [{}, {'2': 0}, {'2': 0x100000, '13': 0x100020}, {'3': 0x100000}]:

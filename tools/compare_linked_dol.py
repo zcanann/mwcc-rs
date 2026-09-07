@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare ELF function text at a pinned original DOL's link addresses.
 
-A layout supplies SDA bases, named data symbols, and literal placements. Unknown
+A layout supplies SDA bases, named symbols, external functions, and literals. Unknown
 relocations prevent an exact result. This measures linked function text, not
 relocatable object, debug information, or whole-project parity.
 """
@@ -39,6 +39,8 @@ def compare(data, dol, symbol_text, layout):
             raise ValueError(f"{key} does not match the pinned reference")
     ranges = {name: function_range(symbol_text, name) for name in layout['functions']}
     placements = {name: address for name, (address, _) in ranges.items()}
+    for name in layout.get('external_functions', []):
+        placements[name] = function_range(symbol_text, name)[0]
     for name, address in layout['data_symbols'].items():
         matches = re.findall(r'^\s*' + re.escape(name) + r'\s*=\s*\.[\w.]+:(0x[0-9a-fA-F]+);', symbol_text, re.MULTILINE)
         if len(matches) != 1 or int(matches[0], 16) != address:

@@ -4,13 +4,98 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, GXFrameBuf copy setup and cyclic argument preservation (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, GXFrameBuf vertical scaling and retained integer loops (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `5ed100150ba1401c268b44c44d54df80c93c24c0483453407d036fa825d3f056:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `8bd1178515c64ff9fe133cd7c0b0fe0efb59dfbfba748bb9cbafbb7cc37a4a47:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GXFrameBuf vertical scaling and retained integer loops, 2026-09-07
+
+BfBB's unmodified `GXSetDispCopyYScale` now compiles with the project's
+GC/1.2.5n flags and passes **2,048 original-DOL comparisons**. A source slice
+retains the first six copy-setup functions, the inline scanline helper, and
+vertical scaling, omitting `GXGetYScaleFactor`. The six earlier functions also
+pass their **6,144** original-DOL checks again. Vertical scaling checks the
+returned height, all 1,456 context bytes, ordered FIFO write widths/values,
+GPR14–31, FPR14–31, SP, and LR. Both compiled objects call the original DOL
+`__cvt_fp2unsigned` through a trampoline; no replacement conversion model is
+used. Inputs cover finite binary32 scales from 1 through 256 and randomized
+context heights. Render-mode data objects and the complete translation unit
+remain outside this execution claim.
+
+Three shared paths account for this progress:
+
+- Retained integer-valued inline definitions can compose local assignments,
+  nested conditionals, and pretest loops through the existing statement lane.
+  Locals are renamed per invocation; typed parameter captures preserve formal
+  conversions and argument evaluation. Direct tail calls receive a local result
+  destination after the caller's earlier guarded exits. Admission requires
+  dominated reads, including the final return, and excludes memory effects,
+  calls, mutable parameters, floating values, and nonlocal control transfers in
+  the helper. It does not broaden automatic inlining of ordinary definitions.
+- Branch comparisons between narrow and word register operands extend the
+  narrow value using its declared signedness, then use the comparison selected
+  by integer promotion rules. Both operand orders retain the word operand.
+- Structured assignment aliases now preserve every live identity sharing a
+  register before admitting a mutable copy. This includes transitive copies,
+  later return/guard reads, and enclosing continuations of nested blocks.
+  Nested blocks conservatively consult the full body until source liveness
+  explicitly exposes those continuation and back edges.
+
+Execution exposed the importance of the last rule: a first inline scanline
+call could halve the caller's scale register before the second call consumed
+it. Ordinary copy probes also expose incorrect branch joins and chained aliases.
+The frozen `a871a122` baseline compiles **30/120** new sample/version pairs;
+its **153,600** calls in the five ordinary copy probes contain
+**20,820** model errors. The final candidate fixes these errors.
+
+Canaries **1899–1906**, containing 33 functions at O0/O4 across fifteen builds,
+compile **120/120** on both the candidate and fresh references. They cover the
+real scanline helper, repeated calls, changing values, guarded tail returns,
+name collisions, narrow formal parameters, signed actual arguments, sixteen
+mixed-width comparison shapes, and five copy-survivor shapes. All
+**1,013,760 candidate calls** and **1,013,760 reference calls** pass their
+explicit integer/ABI models and agree. Including the **8,192** original-DOL
+calls gives **1,021,952 candidate calls** in this checkpoint. **4/120 whole
+objects** and **72/990 function text plus symbolic relocation comparisons**
+match exactly; semantic agreement is not instruction parity.
+
+The configured seven-function slice is **3,624 ELF bytes / 1,308 text bytes**,
+SHA-256 `bfd4e5866446c12953aad59aae5e04747f7454bcf7bedb0043f40aeb3206b665`.
+The fresh reference is **2,616 ELF bytes / 932 text bytes**, SHA-256
+`85bc1a1c9887946eab6a173ed5597ba47c3b1a4d16d5407985507caca7365ace`.
+`docs/reference-layouts/bfbb-gxframebuf-copy-scale.json` pins **0/7 candidate**
+and **7/7 reference** exact linked functions, with every relocation resolved.
+Vertical scaling is **244 versus 204 bytes**. The linked checker now accepts
+external function names, verifies their ranges against the pinned symbol map,
+and resolves their calls without counting those helpers as candidate functions.
+
+Full GX remains **5/14**. `GXGetYScaleFactor` advances through inline expansion
+and mixed-width comparisons, then declines with “allocated callee-saved values
+need a canonical frame owner.” Its hidden float-to-unsigned runtime calls still
+need consistent call-liveness and frame planning. All five compiling GX objects
+and full AXVPB remain byte-identical. No full-project or whole-corpus claim is
+made.
+
+Regression controls retain **300/300** exact memory-operand objects, all
+**1,170** recent objects (1821–1898), **1,097** unchanged indexed objects with
+**972** known exact results and **577** identical declines. Cumulative metadata
+retains **1,494** compiled, **1,487** unchanged, **1,179** known exact, and
+**704** identical declines; its seven historical `1469` changes predate this
+checkpoint. Tests pass: **121** inline tests, including three new admission and
+hygiene tests, **4** value-version tests, and **7** linked-DOL tool tests. The
+previously documented embedded-asm composition test remains excluded; a broad
+inline run reproduced that existing failure before the focused passing run.
+
+Artifacts: `target/inline-scalar-loop-canaries/{results,reference-results,
+reference-comparison,execution-results}.json`,
+`target/inline-scalar-loop-framebuf/{compilation-results,execution-results,
+prefix-execution-results,verified-linked-text,reference-verified-linked-text}.json`,
+its seven original-DOL fixture files, and
+`target/inline-scalar-loop-{index,metadata,recent,gx-library,full-ax}/`.
 
 ## GXFrameBuf copy setup and cyclic argument preservation, 2026-09-07
 

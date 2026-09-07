@@ -434,7 +434,7 @@ impl InlineBodySet {
             .filter(|function| safety::automatic_statement_value_function(function))
             .map(|function| (function.name.clone(), function.clone()))
             .collect();
-        let statement_value_bodies: HashMap<String, Function> = statement_value_candidates
+        let mut statement_value_bodies: HashMap<String, Function> = statement_value_candidates
             .iter()
             .filter(|(name, _)| {
                 source_visible_call_counts
@@ -445,6 +445,12 @@ impl InlineBodySet {
             })
             .map(|(name, function)| (name.clone(), function.clone()))
             .collect();
+        statement_value_bodies.extend(
+            skipped
+                .iter()
+                .filter(|function| safety::retained_scalar_loop_value_function(function))
+                .map(|function| (function.name.clone(), function.clone())),
+        );
         let source_visible_statement_value_bodies: HashMap<String, Function> =
             statement_value_candidates
             .into_iter()
@@ -1301,6 +1307,58 @@ impl InlineBodySet {
         expanded.expand_calls_with_facts_policy(function, false)
     }
 
+    /// A loop-valued tail call needs a statement destination before composing
+    /// the callee. Preserve the caller's earlier guarded exits ahead of it.
+    fn expose_retained_scalar_loop_return(&self, function: &Function) -> Option<Function> {
+        let call @ Expression::Call { name, .. } = function.return_expression.as_ref()? else {
+            return None;
+        };
+        let callee = self.statement_value_bodies.get(name)?;
+        if !self.required.contains(name) || !safety::retained_scalar_loop_value_function(callee) {
+            return None;
+        }
+        let mut expanded = function.clone();
+        let mut index = 0;
+        let result = loop {
+            let name = format!("__mwcc_inline_loop_result_{index}");
+            index += 1;
+            if !function.locals.iter().any(|local| local.name == name)
+                && !function
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == name)
+            {
+                break name;
+            }
+        };
+        expanded.locals.push(mwcc_syntax_trees::LocalDeclaration {
+            declared_type: callee.return_type,
+            name: result.clone(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            attribute_alignment: None,
+            row_bytes: None,
+        });
+        for guard in expanded.guards.drain(..) {
+            expanded.statements.push(Statement::If {
+                condition: guard.condition,
+                then_body: vec![Statement::Return(Some(guard.value))],
+                else_body: Vec::new(),
+            });
+        }
+        expanded.statements.push(Statement::Assign {
+            name: result.clone(),
+            value: call.clone(),
+        });
+        expanded.return_expression = Some(Expression::Variable(result));
+        Some(expanded)
+    }
+
     fn expand_calls_with_facts_policy(
         &self,
         function: &Function,
@@ -1308,6 +1366,8 @@ impl InlineBodySet {
     ) -> Option<ExpandedCalls> {
         let exposed = constant_result::expose_values(function, &self.statement_value_bodies);
         let function = exposed.as_ref().unwrap_or(function);
+        let loop_return = self.expose_retained_scalar_loop_return(function);
+        let function = loop_return.as_ref().unwrap_or(function);
         let bound_names: HashSet<String> = function
             .parameters
             .iter()
@@ -1592,8 +1652,11 @@ impl InlineBodySet {
 
         let callee_stable = stable_local_values(callee);
         let mut nested_stable_variables = stable_variables.clone();
-        let materialize =
-            !terminal_direct && !stable_arguments(callee, arguments, stable_variables);
+        // Preserve formal integer promotions as well as once-only argument
+        // evaluation when a retained loop is composed into a different caller.
+        let capture_integer_loop_parameters = safety::retained_scalar_loop_value_function(callee);
+        let materialize = capture_integer_loop_parameters
+            || (!terminal_direct && !stable_arguments(callee, arguments, stable_variables));
         let forwarded_reference_arguments = reference_forwarding_call_callee(callee)
             .then(|| match callee.statements.as_slice() {
                 [Statement::Expression(Expression::Call { arguments, .. })] => {
@@ -1612,7 +1675,8 @@ impl InlineBodySet {
                 });
             let parameter_is_mutable =
                 parameter_requires_materialization(callee, &parameter.name);
-            if (!parameter_is_mutable || terminal_direct || forwarded_reference_lvalue)
+            if !capture_integer_loop_parameters
+                && (!parameter_is_mutable || terminal_direct || forwarded_reference_lvalue)
                 && (!materialize
                     || stable_argument(argument, stable_variables)
                     || known_function_designator(argument)
@@ -2779,6 +2843,128 @@ mod tests {
             attribute_alignment: None,
             row_bytes: None,
         }
+    }
+
+    fn retained_integer_loop() -> Function {
+        let mut helper = function(
+            "fold",
+            vec![Parameter {
+                parameter_type: Type::UnsignedInt,
+                name: "input".into(),
+            }],
+            vec![Statement::Loop {
+                kind: LoopKind::While,
+                initializer: None,
+                condition: Some(Expression::Variable("cursor".into())),
+                step: None,
+                body: vec![Statement::Assign {
+                    name: "cursor".into(),
+                    value: Expression::Binary {
+                        operator: BinaryOperator::ShiftRight,
+                        left: Box::new(Expression::Variable("cursor".into())),
+                        right: Box::new(Expression::IntegerLiteral(1)),
+                    },
+                }],
+            }],
+        );
+        helper.return_type = Type::UnsignedInt;
+        helper.locals = vec![local(
+            "cursor",
+            Type::UnsignedInt,
+            Expression::Variable("input".into()),
+        )];
+        helper.return_expression = Some(Expression::Variable("cursor".into()));
+        helper
+    }
+
+    #[test]
+    fn retained_scalar_loop_requires_a_dominating_return_value() {
+        let mut helper = retained_integer_loop();
+        assert!(safety::retained_scalar_loop_value_function(&helper));
+        let mut result = local("result", Type::UnsignedInt, Expression::IntegerLiteral(0));
+        result.initializer = None;
+        helper.locals.push(result);
+        helper.return_expression = Some(Expression::Variable("result".into()));
+        let Statement::Loop { body, .. } = &mut helper.statements[0] else {
+            unreachable!()
+        };
+        body.push(Statement::Assign {
+            name: "result".into(),
+            value: Expression::IntegerLiteral(42),
+        });
+        assert!(!safety::retained_scalar_loop_value_function(&helper));
+        helper.statements.insert(
+            0,
+            Statement::Assign {
+                name: "result".into(),
+                value: Expression::IntegerLiteral(0),
+            },
+        );
+        assert!(safety::retained_scalar_loop_value_function(&helper));
+    }
+
+    #[test]
+    fn retained_scalar_loop_rejects_memory_calls_and_float_conversions() {
+        let helper = retained_integer_loop();
+        for value in [
+            Expression::Variable("unbound_global".into()),
+            Expression::Call {
+                name: "observe".into(),
+                arguments: Vec::new(),
+            },
+            Expression::Cast {
+                target_type: Type::UnsignedInt,
+                operand: Box::new(Expression::FloatLiteral(1.0)),
+            },
+        ] {
+            let mut changed = helper.clone();
+            changed.return_expression = Some(value);
+            assert!(!safety::retained_scalar_loop_value_function(&changed));
+        }
+        assert!(!safety::automatic_statement_value_function(&helper));
+    }
+
+    #[test]
+    fn retained_scalar_loop_tail_keeps_guards_before_the_call_and_avoids_name_collisions() {
+        let helper = retained_integer_loop();
+        let bodies = InlineBodySet::analyze(&[helper]);
+        let mut caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::UnsignedInt,
+                name: "input".into(),
+            }],
+            Vec::new(),
+        );
+        caller.return_type = Type::UnsignedInt;
+        caller.locals.push(local(
+            "__mwcc_inline_loop_result_0",
+            Type::Int,
+            Expression::IntegerLiteral(9),
+        ));
+        caller.guards.push(GuardedReturn {
+            condition: Expression::Variable("input".into()),
+            value: Expression::IntegerLiteral(77),
+        });
+        caller.return_expression = Some(Expression::Call {
+            name: "fold".into(),
+            arguments: vec![Expression::Variable("input".into())],
+        });
+        let exposed = bodies.expose_retained_scalar_loop_return(&caller).unwrap();
+        assert!(exposed.guards.is_empty());
+        assert!(
+            matches!(&exposed.statements[0], Statement::If { then_body, .. } if matches!(then_body.as_slice(), [Statement::Return(Some(Expression::IntegerLiteral(77)))]))
+        );
+        assert!(
+            matches!(exposed.return_expression, Some(Expression::Variable(name)) if name == "__mwcc_inline_loop_result_1")
+        );
+        let expanded = bodies
+            .expand_calls(&caller)
+            .expect("retained tail loop should compose");
+        assert!(expanded
+            .statements
+            .iter()
+            .any(|statement| matches!(statement, Statement::Loop { .. })));
     }
 
     #[test]
