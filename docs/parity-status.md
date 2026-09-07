@@ -4,13 +4,87 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete BfBB AX service execution (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, retained inline cursor calls and AX initialization (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `cf506c553b82c0ac04d47d8ad3ca2a6600fcafceef1222f57a79cb21f59419c2:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `66f21625951b2ad6d4e44faa3ce9c89241aa21795f7039659e400007f3877227:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Retained inline cursor calls and AX initialization, 2026-09-07
+
+BfBB's `__AXDumpVPB` now expands in the mutable `pvpb` list walk inside
+`__AXSyncPBs`. The expanded caller also gets past its array-address cache calls
+and initial cycle arithmetic. The configured file now reports its next actual
+failure: the three-table cycle sum indexed by the `pvpb->pb.mixerCtrl` member.
+The existing sum selector accepts register-derived indices; member-derived
+indices and their load-sharing schedule remain unimplemented. This advances
+full-file lowering but does not yet produce a complete AX object.
+
+The retained-inline path now uses its existing hygienic parameter temporaries
+for scalar arguments read from changing caller variables. It captures the
+argument once at each call site, including inside a loop, instead of rejecting
+it because the variable is reassigned elsewhere. Ordinary automatic-inline
+eligibility remains governed by its existing policy. The escape check remains
+in force. A new unit regression checks that both expanded calls use the same
+captured cursor and that the caller's subsequent cursor assignment is separate;
+the previous changing-value test now checks capture while retaining its escape
+rejection assertion.
+
+Two shared lowering fixes handle the next real-source failures. Call scheduling
+now distinguishes array-address arguments from scalar global loads before
+applying the constant-after-load restriction. Wide integer constant addition
+can now produce a scratch result through a separate running register: the high
+adjustment uses that register, and the final `addi` writes r0 without interpreting
+r0 as a literal-zero base. This handles AX's `(get_cycles() + 0x10000) - 0x55f0 +
+extra`, including unsigned wraparound. When required inline expansion succeeds
+but subsequent lowering fails, the driver returns that underlying diagnostic
+instead of incorrectly blaming the original skipped inline call.
+
+Canaries **1717–1726 improve 15/150 → 150/150 candidate compilations** against
+frozen baseline `8fb69501`, covering all fifteen builds at O0/O4. The fifteen
+already-supported O0 array-call objects remain byte-identical. All **9,600
+candidate execution calls pass**, checking mutable list cursors, scalar and
+global argument snapshots, callback order, global mutation between argument
+uses, array addresses and sizes, arithmetic overflow, and the AX dump transaction.
+Every callback clobbers caller-saved registers; stack restoration and
+callee-saved registers are checked. All 150 final-compiler objects are
+byte-identical to the executed objects.
+
+The dump reduction preserves the original 556-byte voice and 244-byte packet
+layouts, conditionally calls depop, clears the chained state/update fields, and
+calls the callback-stack helper. Across thirty candidate objects, its walks
+match **3,990 original inlined dump-block executions** from BfBB's linked
+`__AXSyncPBs` at `[0x801BA274, 0x801BA2BC)`. The comparison covers all packet and
+voice bytes and callback arguments. The reduction's additional caller-side index
+clear is applied after each original block before comparison. The initial-cycle
+reductions also match **1,920 original linked arithmetic-block executions** at
+`[0x801BA1A4, 0x801BA1B4)`, seeding the call result and extra-cycle input. These
+are execution comparisons of reductions, not complete `__AXSyncPBs` parity.
+The original code comes from the previously fingerprinted DOL extraction in
+`target/bfbb-ax-linked/AXSyncPBs.bin`.
+
+Validation:
+
+- Captured paired-memory matrix: **300/300 whole-object exact**.
+- Index panel: **1,096 compiled objects unchanged**, retaining **972 known
+  reference matches**, and **578 identical declines**, with no timeouts.
+- Cumulative metadata panel against `db48e092`: **1,494 compiled objects
+  unchanged**, retaining **1,179 known reference matches**, and **704 identical
+  declines**, with no timeouts.
+- **117 inline-expansion tests pass**, excluding the previously documented
+  `composes_zero_argument_embedded_asm_at_a_nested_call_site` failure.
+- The complete isolated BfBB service object is byte-identical to the previous
+  milestone's object, retaining its 2,160 linked-function execution comparisons.
+
+Scripts and measurements are in `target/check_inline_chain.py`,
+`target/check_inline_chain_execution.py`, `target/check_inline_chain_regression.py`,
+`target/check_inline_chain_metadata.py`, `target/probe_inline_chain_full_ax.py`,
+`target/inline-chain-canaries/`, and `target/inline-chain-full-ax/`. Fresh
+reference-compiler objects remain unavailable because the previously identified
+wibo processes are still stuck; no new compiler-object matches or full-project
+panel improvement are claimed beyond the captured checks above.
 
 ## Complete BfBB AX service execution, 2026-09-07
 

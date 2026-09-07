@@ -1578,7 +1578,11 @@ impl InlineBodySet {
                 callee,
                 arguments,
                 stable_variables,
-                allow_changing_scalar_arguments,
+                // Retained inline definitions must also compose at call sites
+                // using a reassigned local (for example a list cursor). Capture
+                // that value in the existing hygienic parameter lane; changing
+                // elsewhere in the caller does not make the call unsafe.
+                allow_changing_scalar_arguments || self.required.contains(callee_name),
             )
             && !terminal_direct
             && !direct_arguments
@@ -3870,6 +3874,48 @@ mod tests {
     }
 
     #[test]
+    fn captures_a_changing_cursor_at_each_retained_inline_call() {
+        let parameter = Parameter {
+            parameter_type: Type::UnsignedInt,
+            name: "cursor".into(),
+        };
+        let call = |name: &str| Statement::Expression(Expression::Call {
+            name: name.into(),
+            arguments: vec![Expression::Variable("cursor".into())],
+        });
+        let callee = function("visit", vec![parameter.clone()], vec![call("first"), call("second")]);
+        let caller = function("walk", vec![parameter], vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::Variable("cursor".into())),
+            step: None,
+            body: vec![call("visit"), Statement::Assign {
+                name: "cursor".into(),
+                value: Expression::IntegerLiteral(0),
+            }],
+        }]);
+        let expanded = InlineBodySet::analyze(&[callee])
+            .expand_calls(&caller)
+            .expect("retained inline arguments can capture a changing cursor");
+        let [Statement::Loop { body, .. }] = expanded.statements.as_slice() else {
+            panic!("the caller loop must remain")
+        };
+        let [Statement::Assign { name: captured, value: Expression::Variable(source) },
+            Statement::Expression(Expression::Call { name: first, arguments: first_args }),
+            Statement::Expression(Expression::Call { name: second, arguments: second_args }),
+            Statement::Assign { name: cursor, .. }] = body.as_slice() else {
+            panic!("capture must execute inside the loop before both calls")
+        };
+        assert_eq!(source, "cursor");
+        assert_eq!(cursor, "cursor");
+        assert_ne!(captured, cursor);
+        assert_eq!((first.as_str(), second.as_str()), ("first", "second"));
+        for arguments in [first_args, second_args] {
+            assert!(matches!(arguments.as_slice(), [Expression::Variable(name)] if name == captured));
+        }
+    }
+
+    #[test]
     fn expands_a_once_addressed_reference_forwarding_leaf() {
         let aggregate_pointer = Type::StructPointer { element_size: 12 };
         let add = function(
@@ -4610,7 +4656,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_changing_caller_value_and_an_escape() {
+    fn captures_a_changing_caller_value_but_rejects_an_escape() {
         let write = function(
             "write",
             vec![Parameter {
@@ -4636,9 +4682,14 @@ mod tests {
                 },
             ],
         );
-        assert!(InlineBodySet::analyze(&[write])
+        let expanded = InlineBodySet::analyze(&[write])
             .expand_calls(&caller)
-            .is_none());
+            .expect("a changing value is captured at the call site");
+        assert!(matches!(expanded.statements.as_slice(), [
+            Statement::Assign { name: captured, value: Expression::Variable(source) },
+            Statement::Expression(Expression::Variable(read)),
+            Statement::Assign { name: changed, .. },
+        ] if source == "data" && changed == "data" && captured == read && captured != changed));
 
         caller.statements.pop();
         assert!(InlineBodySet::analyze(&[function(

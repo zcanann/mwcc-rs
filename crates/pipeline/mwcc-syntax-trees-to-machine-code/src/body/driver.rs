@@ -2081,6 +2081,12 @@ impl Generator {
                 {
                     eprintln!("expanded inline lowering declined: {result:?}");
                 }
+                // Required calls have already been expanded successfully. If
+                // their caller now fails later lowering, expose that actual
+                // blocker instead of blaming the original inline call again.
+                if calls_skipped_inline {
+                    return result;
+                }
             }
             if calls_skipped_inline {
                 let mut unresolved: Vec<_> = self

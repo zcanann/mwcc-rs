@@ -1378,7 +1378,10 @@ impl Generator {
             let mut constant_after_global = false;
             for argument in arguments {
                 match argument {
-                    Expression::Variable(name) if self.globals.contains_key(name.as_str()) => {
+                    Expression::Variable(name)
+                        if self.globals.contains_key(name.as_str())
+                            && self.global_array_address_extent(name).is_none() =>
+                    {
                         seen_global_load = true
                     }
                     Expression::IntegerLiteral(_) if seen_global_load => {

@@ -1036,17 +1036,19 @@ impl Generator {
         {
             let value = constant as u32;
             let low = value as u16 as i16;
-            if destination == GENERAL_SCRATCH && low != 0 {
-                return Ok(false);
-            }
+            let running = if destination == GENERAL_SCRATCH && low != 0 {
+                self.fresh_virtual_general()
+            } else {
+                destination
+            };
             let high = ((value >> 16) as i16).wrapping_add(if value & 0x8000 != 0 { 1 } else { 0 });
-            let Some(source) = self.place_operand(variable, destination, true)? else {
+            let Some(source) = self.place_operand(variable, running, true)? else {
                 return Ok(false);
             };
             self.output
                 .instructions
                 .push(Instruction::AddImmediateShifted {
-                    d: destination,
+                    d: running,
                     a: source,
                     immediate: high,
                 });
@@ -1054,7 +1056,7 @@ impl Generator {
             if low != 0 {
                 self.output.instructions.push(Instruction::AddImmediate {
                     d: destination,
-                    a: destination,
+                    a: running,
                     immediate: low,
                 });
             }
