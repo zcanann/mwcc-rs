@@ -2025,6 +2025,87 @@ fn declaration_order_data_only_statics_keep_local_initializer_bindings() {
 }
 
 #[test]
+fn bss_initializer_anchors_follow_declarations_and_include_object_offsets() {
+    for position in [0, 1, 2] {
+        let mut input = static_frontier_input(position, false);
+        input.object_format.small_zero_data_in_declaration_order = true;
+        input.object_format.data_relocations_use_section_anchors = true;
+        input.object_format.data_anchor_comment_flags = 0x0010_0000;
+        input.data_objects[0].size = 12;
+        input.data_objects[1].size = 20;
+        let mut pointer = static_frontier_input(position, false).data_objects.remove(0);
+        pointer.name = "pointer";
+        pointer.is_static = false;
+        pointer.initial_bytes = Some(vec![0; 4]);
+        pointer.relocations.push(crate::DataRelocation {
+            offset: 0,
+            target: "second".into(),
+            addend: 3,
+        });
+        input.data_objects.push(pointer);
+        let bytes = write_object(&input);
+        let names = symbol_names(&bytes);
+        let first = names.iter().position(|name| name == "first").unwrap();
+        assert_eq!(&names[first..first + 3], ["first", "...bss.0", "second"]);
+        let anchor = first + 1;
+        let before = names.iter().position(|name| name == "before").unwrap();
+        let after = names.iter().position(|name| name == "after").unwrap();
+        assert_eq!(anchor > before, position > 0);
+        assert_eq!(anchor > after, position > 1);
+        let header = section_header(&bytes, section_index(&bytes, ".rela.sdata"));
+        let offset = be_u32(&bytes, header + 16) as usize;
+        assert_eq!(be_u32(&bytes, offset + 4) >> 8, anchor as u32);
+        assert_eq!(be_u32(&bytes, offset + 8), 15);
+        let header = section_header(&bytes, section_index(&bytes, ".comment"));
+        let offset = be_u32(&bytes, header + 16) as usize;
+        let size = be_u32(&bytes, header + 20) as usize;
+        let record = offset + size - names.len() * 8 + anchor * 8;
+        assert_eq!(be_u32(&bytes, record), 1);
+        assert_eq!(be_u32(&bytes, record + 4), 0x0010_0000);
+    }
+}
+
+#[test]
+fn bss_initializer_anchor_eligibility_distinguishes_c_tentative_globals() {
+    for cxx in [false, true] {
+        let mut input = static_frontier_input(0, false);
+        input.functions.clear();
+        input.object_format.small_zero_data_in_declaration_order = cxx;
+        input.object_format.data_relocations_use_section_anchors = true;
+        for object in &mut input.data_objects {
+            object.is_static = false;
+            object.size = 12;
+        }
+        let mut pointer = static_frontier_input(0, false).data_objects.remove(0);
+        pointer.name = "pointer";
+        pointer.is_static = false;
+        pointer.initial_bytes = Some(vec![0; 4]);
+        pointer.relocations.push(crate::DataRelocation {
+            offset: 0,
+            target: "first".into(),
+            addend: 3,
+        });
+        input.data_objects.push(pointer);
+        let bytes = write_object(&input);
+        let names = symbol_names(&bytes);
+        assert_eq!(names.iter().any(|name| name == "...bss.0"), cxx);
+        let header = section_header(&bytes, section_index(&bytes, ".rela.sdata"));
+        let offset = be_u32(&bytes, header + 16) as usize;
+        let symbol = (be_u32(&bytes, offset + 4) >> 8) as usize;
+        assert_eq!(names[symbol], if cxx { "...bss.0" } else { "first" });
+        if cxx {
+            assert!(symbol < names.iter().position(|name| name == "pointer").unwrap());
+        }
+        let section_addend = if cxx {
+            symbol_value_and_size(&bytes, "first").0
+        } else {
+            0
+        };
+        assert_eq!(be_u32(&bytes, offset + 8), section_addend + 3);
+    }
+}
+
+#[test]
 fn tentative_statics_follow_the_discovering_function_and_unused_tail() {
     for (order, full, expected) in [
         (

@@ -4,13 +4,62 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, C++ zero-static declaration events (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, BSS initializer section anchors (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `9c6665f39ff8a092f27d73d74bed2e62293c5bc42b0ff9edc36c5789dbbc0425:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `e612c58ab68d7f5f05bf5417e85dd28661a47a0fedb719525c6b341e68cf13cd:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## BSS initializer section anchors, 2026-09-06
+
+Against frozen baseline `b04e2202`, the targeted set improves from **20/60
+to 34/60 whole-object exact pairs** across all fifteen builds. Canary 1625
+now matches **15/15**, closing its five older-build initializer-relocation
+gaps. New C/C++ local-BSS canaries 1627/1628 improve from **0/15 to 4/15**
+and **10/15 to 15/15**, respectively. New exported-C++ canary 1629 remains
+**0/15**, retaining the separate global symbol-order and storage-layout gap.
+All 60 pairs compile, with no exclusions or reference rejections.
+
+The writer now gives declaration-allocated BSS definitions the older builds'
+initializer section-anchor behavior. Legacy C statics qualify; C++ also
+includes exported definitions through GC/1.3. C tentative globals retain
+named relocations. The existing version and language policies determine
+eligibility without introducing build-name checks in the writer.
+
+The shared anchor emitter handles source declaration positions, existing
+code-reference creation points, and captured symbol order. Initializer
+relocations carry the target object's section offset plus their own addend.
+GC/1.3's initializer anchor records the measured section-anchor comment flag;
+legacy builds keep zero flags. Unit tests cover front/middle/tail creation,
+local versus exported eligibility, addend composition, and comment metadata.
+All **37 writer tests pass**, and compiler/oracle builds pass.
+
+Ten source shapes across C/C++ and fifteen builds supply **300 reference
+pairs, 270 candidate-compilable and 30 existing compiler declines**. Exact
+objects improve from **101/270 to 153/270**, with no lost matches. Complete
+relocation-record sets improve from **175/270 to 242/270**, and symbol-name
+sequences from **122/270 to 174/270**. Remaining differences include C++ full
+BSS global layout/order, C initializer first-use symbol events, and other
+section-anchor creation positions. Const pointer-address definitions cause
+the 30 declines. Separate reference probes preserve nonzero indexed and
+arithmetic initializer addresses; the current parser declines those forms,
+so the paired writer panel uses zero-index addresses into distinct objects.
+
+The fixed metadata regression selection retains **908/1,750 exact runnable
+pairs**, with every verdict unchanged across **2,250 slots, 500 exclusions,
+and zero timeouts**. The combined real-project metadata/transport panel
+retains every object and code verdict across **126 configurations: 47 BYTE,
+16 DIFF, 59 compiler DEFER, and four missing dependencies**, with no harness
+failures. Code remains **46/109 exact measured objects**, five empty and 12
+unmeasured; the 109 include 51 nonexact partial-TU diagnostic projections.
+The transport subset still has **36/40 exact complete objects**, including
+Melee, and **34/34 exact nonempty code projections** plus two empty objects.
+
+Local evidence: `target/bss-anchor-*`, `target/check_bss_anchor*.py`,
+`target/probe_bss_initializer_anchors.py`, and
+`target/reference-parity/e612c58ab68d7f5f-5e4ca1ddc460f4d8.jsonl`.
 
 ## C++ zero-static declaration events, 2026-09-06
 

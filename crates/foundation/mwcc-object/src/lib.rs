@@ -77,8 +77,9 @@ pub struct ObjectFormat {
     pub rodata_anchor_before_data_symbols: bool,
     /// `.comment` attribute flags for `...rodata.0`.
     pub rodata_anchor_comment_flags: u32,
-    /// Whether data initializers targeting full `.data`/`.rodata` objects bind
-    /// through the corresponding zero-offset section anchor.
+    /// Whether data initializers targeting full `.data`/`.rodata` objects and
+    /// declaration-allocated `.bss` definitions bind through a section anchor.
+    /// C tentative BSS globals retain named relocations.
     pub data_relocations_use_section_anchors: bool,
     /// `.comment` attribute flags for `...data.0`.
     pub data_anchor_comment_flags: u32,

@@ -2289,11 +2289,55 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             matches!(&relocation.target, RelocationTarget::External(name) if name == "...bss.0")
         })
     });
+    // Initializers can use a section base only for definitions allocated at
+    // declaration. Legacy C does this for statics; C++ includes exported BSS
+    // definitions. C tentative globals keep their named relocations.
+    let bss_anchor_targets: std::collections::HashSet<&str> = input
+        .data_objects
+        .iter()
+        .filter(|object| {
+            input.object_format.data_relocations_use_section_anchors
+                && input.object_format.local_data_symbols_in_declaration_order
+                && (object.is_static || input.object_format.small_zero_data_in_declaration_order)
+                && data_section[object.name] == ".bss"
+        })
+        .map(|object| object.name)
+        .collect();
+    let bss_anchor_needed_by_data = input.data_objects.iter().any(|object| {
+        object
+            .relocations
+            .iter()
+            .any(|relocation| bss_anchor_targets.contains(relocation.target.as_str()))
+    });
     let rodata_anchor_needed_by_data = input.object_format.data_relocations_use_section_anchors
         && data_relocation_targets_section(".rodata");
     let rodata_anchor_needed = rodata_anchor_needed_by_code || rodata_anchor_needed_by_data;
     let mut rodata_anchor_emitted = false;
     let mut bss_anchor_emitted = false;
+    macro_rules! emit_bss_anchor {
+        () => {{
+            if !std::mem::replace(&mut bss_anchor_emitted, true) {
+                local_data_symbols.insert("...bss.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                write_symbol(
+                    &mut symtab,
+                    strtab.add("...bss.0"),
+                    0,
+                    0,
+                    0,
+                    0,
+                    index_of(".bss") as u16,
+                );
+                comment_values.push((
+                    1,
+                    if bss_anchor_needed_by_data {
+                        input.object_format.data_anchor_comment_flags
+                    } else {
+                        0
+                    },
+                ));
+            }
+        }};
+    }
     // A data-initializer relocation creates the writable anchor at the first
     // source `.data` declaration, even when that declaration has external
     // linkage and its own symbol belongs to the later GLOBAL run. Code-only
@@ -2320,6 +2364,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         rodata_anchor_emitted = true;
     }
     for object in &input.data_objects {
+        if bss_anchor_needed_by_data
+            && bss_anchor_targets.contains(object.name)
+            && !object.is_static
+            && object.functions_before == 0
+        {
+            emit_bss_anchor!();
+        }
         if data_marker_pending
             && data_section[object.name] == ".data"
             && (data_marker_needed_by_data
@@ -2393,23 +2444,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 comment_values.push((1, input.object_format.rodata_anchor_comment_flags));
                 rodata_anchor_emitted = true;
             }
-            if input.object_format.bss_anchor_after_first_local_object
-                && bss_anchor_needed_by_code
-                && !bss_anchor_emitted
+            if ((input.object_format.bss_anchor_after_first_local_object
+                && bss_anchor_needed_by_code)
+                || (bss_anchor_needed_by_data && bss_anchor_targets.contains(object.name)))
                 && data_section[object.name] == ".bss"
             {
-                local_data_symbols.insert("...bss.0", (symtab.len() / SYMBOL_SIZE) as u32);
-                write_symbol(
-                    &mut symtab,
-                    strtab.add("...bss.0"),
-                    0,
-                    0,
-                    0,
-                    0,
-                    index_of(".bss") as u16,
-                );
-                comment_values.push((1, 0));
-                bss_anchor_emitted = true;
+                emit_bss_anchor!();
             }
         }
     }
@@ -2419,19 +2459,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // at a prior declaration or definition, interleaved with those data symbols.
     // Names not in the pin continue through the general policies below.
     for name in local_symbol_order {
-        if name == "...bss.0" && bss_anchor_needed_by_code && !bss_anchor_emitted {
-            local_data_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
-            write_symbol(
-                &mut symtab,
-                strtab.add(name),
-                0,
-                0,
-                0,
-                0,
-                index_of(".bss") as u16,
-            );
-            comment_values.push((1, 0));
-            bss_anchor_emitted = true;
+        if name == "...bss.0"
+            && (bss_anchor_needed_by_code || bss_anchor_needed_by_data)
+            && !bss_anchor_emitted
+        {
+            emit_bss_anchor!();
             continue;
         }
         if name == "...data.0" && data_marker_pending {
@@ -2641,17 +2673,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // section's zero-offset local anchor. MWCC emits that marker after the
     // file-local BSS objects and before function-local anonymous entries.
     if bss_anchor_needed_by_code && !bss_anchor_emitted {
-        local_data_symbols.insert("...bss.0", (symtab.len() / SYMBOL_SIZE) as u32);
-        write_symbol(
-            &mut symtab,
-            strtab.add("...bss.0"),
-            0,
-            0,
-            0,
-            0,
-            index_of(".bss") as u16,
-        );
-        comment_values.push((1, 0));
+        emit_bss_anchor!();
     }
     // `static` functions are file-local: a LOCAL `STT_FUNC` symbol each, in
     // declaration order, after the static data and before the functions' `@N`
@@ -2753,6 +2775,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     macro_rules! emit_file_static_declarations {
         ($position:expr) => {{
             for object in &input.data_objects {
+                if bss_anchor_needed_by_data
+                    && bss_anchor_targets.contains(object.name)
+                    && !object.is_static
+                    && object.functions_before.min(functions.len()) == $position
+                    && $position > 0
+                {
+                    emit_bss_anchor!();
+                }
                 if object.is_static
                     && static_forward(object)
                     && !function_string_names.contains(object.name)
@@ -2788,6 +2818,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         section,
                     );
                     comment_values.push((data_aligns[object.name], data_comment_flags(object)));
+                    if bss_anchor_needed_by_data && bss_anchor_targets.contains(object.name) {
+                        emit_bss_anchor!();
+                    }
                     // The `...rodata.0` anchor also follows the FIRST .rodata
                     // static in the INTERLEAVED source-position run (pikmin
                     // e_pow's `bp`, declared after scalbn).
@@ -3342,6 +3375,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             index_of(".rodata") as u16,
         );
         comment_values.push((1, input.object_format.rodata_anchor_comment_flags));
+    }
+
+    if bss_anchor_needed_by_data {
+        emit_bss_anchor!();
     }
 
     // The GLOBAL run. mwcc emits symbols in source-encounter order, which for the
@@ -4539,6 +4576,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut rela_rodata = Vec::new();
     let mut rela_sdata = Vec::new();
     let resolve_data_target = |name: &str| -> (u32, u32) {
+        if bss_anchor_targets.contains(name) {
+            return (local_data_symbols["...bss.0"], data_offsets[name]);
+        }
         if input.object_format.data_relocations_use_section_anchors {
             match data_section.get(name).copied() {
                 Some(".data") => return (local_data_symbols["...data.0"], data_offsets[name]),
