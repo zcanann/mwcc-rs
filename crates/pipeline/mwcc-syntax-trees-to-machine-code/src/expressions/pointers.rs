@@ -920,6 +920,10 @@ impl Generator {
                     | Expression::Index { .. }
                     | Expression::AddressOf { .. }
                     | Expression::MemberAddress { .. }
+                    | Expression::Cast {
+                        target_type: Type::Pointer(_) | Type::StructPointer { .. },
+                        ..
+                    }
             ) {
                 let register = self.fresh_virtual_general_preferring(3);
                 self.evaluate_general(operand, register)?;

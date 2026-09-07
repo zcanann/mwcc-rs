@@ -46,6 +46,11 @@ enum SwitchCompareOperand {
 impl Generator {
     /// Retire values that are not available on every incoming switch edge.
     pub(crate) fn reset_switch_edge_caches(&mut self) {
+        self.reset_control_flow_edge_caches();
+    }
+
+    /// Retire cached values that may only have been produced on another branch.
+    pub(crate) fn reset_control_flow_edge_caches(&mut self) {
         self.condition_global_values.clear();
         if let Some((name, register)) =
             self.structured_shared_switch_global_value.as_ref()

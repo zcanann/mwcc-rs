@@ -4943,6 +4943,11 @@ impl Parser {
         // folds to a `size_t` constant.
         self.variable_types.clear();
         self.variable_array_bytes.clear();
+        self.aggregate_value_parameters = parameters
+            .iter()
+            .filter(|parameter| matches!(parameter.parameter_type, Type::Struct { .. }))
+            .map(|parameter| parameter.name.clone())
+            .collect();
         self.cxx_reference_variables = cxx_reference_parameters;
         self.cxx_scalar_reference_pointees = cxx_scalar_reference_parameters;
         self.cxx_const_object_variables = cxx_const_object_parameters;

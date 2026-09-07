@@ -325,6 +325,12 @@ impl Generator {
         // leaf value that does not occupy the destination — a full-word load brought
         // into the destination first (`*q ? x : 0` is `lwz r3; neg; or; srawi; and`).
         let value_leaf = leaf_name(value).and_then(|name| self.lookup_general(name));
+        // Computed and constant values occupy r0 while the mask uses the
+        // destination. A store targeting r0 would overwrite that value and
+        // combine the mask with itself; let the ordinary select handle it.
+        if destination == GENERAL_SCRATCH && value_leaf.is_none() {
+            return Ok(false);
+        }
         let condition_register = if let Some(register) =
             leaf_name(condition).and_then(|name| self.lookup_general(name))
         {

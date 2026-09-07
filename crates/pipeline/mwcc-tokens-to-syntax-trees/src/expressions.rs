@@ -680,6 +680,19 @@ impl Parser {
         if *self.peek() == Token::Ampersand {
             self.advance();
             let operand = self.factor()?;
+            // Aggregate value parameters already carry the address of their
+            // source object. Taking that address must not spill the ABI pointer
+            // and subsequently read its bytes as the aggregate payload.
+            if let Expression::Variable(name) = &operand {
+                if self.aggregate_value_parameters.contains(name) {
+                    if let Some(Type::Struct { size, .. }) = self.variable_types.get(name) {
+                        return Ok(Expression::Cast {
+                            target_type: Type::StructPointer { element_size: *size },
+                            operand: Box::new(operand),
+                        });
+                    }
+                }
+            }
             return Ok(Expression::AddressOf {
                 operand: Box::new(operand),
             });

@@ -5,6 +5,18 @@ use super::*;
 use mwcc_syntax_trees::Type;
 
 impl Generator {
+    /// The false arm of a speculative select runs even when the true arm wins.
+    /// Arithmetic syntax alone is insufficient: an operand can read guarded or
+    /// volatile memory, or contain a call or update.
+    fn select_arm_can_speculate(&self, expression: &Expression) -> bool {
+        let register_names = self.locations.keys()
+            .filter(|name| self.lookup_general(name).is_some())
+            .map(String::as_str)
+            .collect();
+        !expression_has_side_effect(expression)
+            && !expression_reads_memory(expression, &register_names)
+    }
+
     pub(crate) fn patch_forward(&mut self, branch_index: usize, target: usize) {
         if let Instruction::BranchConditionalForward { target: slot, .. } =
             &mut self.output.instructions[branch_index]
@@ -800,7 +812,10 @@ impl Generator {
         // when the condition is false (keeping the false arm), evaluates the true arm into r0,
         // then `mr dest, r0`: `cmpwi r3,0; addi r0,r3,-1; bge skip; addi r0,r3,1; skip: mr r3,r0`.
         if tail || destination == GENERAL_SCRATCH {
-            if is_simple_arithmetic_arm(when_true) && is_simple_arithmetic_arm(when_false) {
+            if is_simple_arithmetic_arm(when_true)
+                && is_simple_arithmetic_arm(when_false)
+                && self.select_arm_can_speculate(when_false)
+            {
                 let (options, condition_bit) = self.emit_condition_test(condition)?;
                 // When the destination is a real register that NEITHER arm reads, stage the false
                 // arm directly in it and conditionally return — `addi r3,r4,-1; bgelr; addi r3,r4,1`
@@ -853,7 +868,9 @@ impl Generator {
         // arithmetic arm shape (a comparison/load/call/cast false-arm uses different codegen).
         if tail {
             if let Some(leaf) = leaf_name(when_true) {
-                if is_simple_arithmetic_arm(when_false) {
+                if is_simple_arithmetic_arm(when_false)
+                    && self.select_arm_can_speculate(when_false)
+                {
                     if let Some(leaf_register) = self.lookup_general(leaf) {
                         if leaf_register != destination {
                             let (options, condition_bit) = self.emit_condition_test(condition)?;
@@ -1051,6 +1068,34 @@ impl Generator {
             self.bind_label(false_arm);
             self.evaluate_general(when_false, destination)?;
             self.bind_label(join);
+            return Ok(());
+        }
+
+        // The register-phi schedule below requires two actual register homes.
+        // Constants and computed integer arms instead keep their source CFG
+        // after the measured select schedules have declined. Evaluate only the
+        // chosen arm, including memory reads whose address is invalid otherwise.
+        if integer_arms
+            && !expression_has_call(when_true)
+            && !expression_has_call(when_false)
+            && (self.general_register_of_leaf(when_true).is_err()
+                || self.general_register_of_leaf(when_false).is_err())
+        {
+            let (options, condition_bit) = self.with_reserved_inputs(when_true, |generator| {
+                generator.with_reserved_inputs(when_false, |generator| {
+                    generator.emit_condition_test(condition)
+                })
+            })?;
+            let false_arm = self.fresh_label();
+            let join = self.fresh_label();
+            self.emit_branch_conditional_to(options, condition_bit, false_arm);
+            self.evaluate_general(when_true, destination)?;
+            self.emit_branch_to(join);
+            self.bind_label(false_arm);
+            self.reset_control_flow_edge_caches();
+            self.evaluate_general(when_false, destination)?;
+            self.bind_label(join);
+            self.reset_control_flow_edge_caches();
             return Ok(());
         }
 

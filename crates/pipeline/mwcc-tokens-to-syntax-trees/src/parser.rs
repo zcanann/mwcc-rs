@@ -522,6 +522,9 @@ pub(crate) struct Parser {
     /// distinction prevents ordinary `T*` assignments from entering aggregate
     /// field-copy scalarization while preserving `T const&` setters.
     pub(crate) cxx_reference_variables: std::collections::HashSet<String>,
+    /// Aggregate source objects passed through an implicit EABI pointer. Their
+    /// explicit address is the incoming pointer, unlike a declared pointer parameter.
+    pub(crate) aggregate_value_parameters: std::collections::HashSet<String>,
     /// Scalar subset of `cxx_reference_variables`, retaining the referenced
     /// value type after the executable parameter has become an ABI pointer.
     /// Bare uses are lvalues loaded and stored through that pointer; aggregate

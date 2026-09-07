@@ -1081,6 +1081,32 @@ impl Generator {
                 if is_compound_load(left) && is_compound_load(right) {
                     return Err(Diagnostic::error("a binary over two compound-load operands needs the allocator (roadmap)"));
                 }
+                // A variable shift of a constant still needs a source register
+                // (`1u << bit`). Constants are not register leaves, and using
+                // the shared scratch for both operands loses computed counts.
+                if *operator == BinaryOperator::ShiftLeft
+                    && constant_value(left).is_some()
+                    && constant_value(right).is_none()
+                    && !expression_has_side_effect(right)
+                {
+                    let source = self.fresh_virtual_general();
+                    self.with_reserved_inputs(right, |me| me.evaluate_general(left, source))?;
+                    let amount = match self.general_register_of_leaf(right) {
+                        Ok(register) => register,
+                        Err(_) => {
+                            let register = self.fresh_virtual_general();
+                            let restore = self.reserved.insert(source);
+                            let result = self.evaluate_general(right, register);
+                            if restore { self.reserved.remove(&source); }
+                            result?;
+                            register
+                        }
+                    };
+                    self.output.instructions.push(general_combine(
+                        *operator, destination, Operands::ordered(source, amount)?,
+                    )?);
+                    return Ok(());
+                }
                 if !fits_single_scratch(expression, destination == GENERAL_SCRATCH) {
                     if matches!(operator, BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor | BinaryOperator::ShiftLeft)
                         && !expression_has_side_effect(left)

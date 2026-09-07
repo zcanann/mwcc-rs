@@ -359,6 +359,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         template_alias_scalar_arguments: HashMap::new(),
         variable_structs: HashMap::new(),
         cxx_reference_variables: std::collections::HashSet::new(),
+        aggregate_value_parameters: std::collections::HashSet::new(),
         cxx_scalar_reference_pointees: HashMap::new(),
         cxx_const_object_variables: std::collections::HashSet::new(),
         function_return_structs: HashMap::new(),
@@ -10197,6 +10198,27 @@ blr\n\
                 .map(String::as_str),
             Some("Color")
         );
+    }
+
+    #[test]
+    fn addresses_aggregate_parameters_without_addressing_the_abi_pointer() {
+        let source = r#"
+            struct Color { unsigned char r, g, b, a; };
+            void* value(struct Color color) { return &color; }
+            void* pointer(struct Color* color) { return &color; }
+            void* scalar(unsigned color) { return &color; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), false, true, 1, 3,
+        ).unwrap();
+        assert!(matches!(&unit.functions[0].return_expression,
+            Some(Expression::Cast { target_type: mwcc_syntax_trees::Type::StructPointer { element_size: 4 }, operand })
+                if matches!(operand.as_ref(), Expression::Variable(name) if name == "color")));
+        for function in &unit.functions[1..] {
+            assert!(matches!(&function.return_expression,
+                Some(Expression::AddressOf { operand })
+                    if matches!(operand.as_ref(), Expression::Variable(name) if name == "color")));
+        }
     }
 
     #[test]

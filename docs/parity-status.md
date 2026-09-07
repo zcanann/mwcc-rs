@@ -4,13 +4,97 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, global member-array bases and retained leaf values (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete configured TEV compilation and execution (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `c6a8ff2c88b3fd268965bc0745ee573d7432bcc168c61a4a46e805ebd25e4beb:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `343d9c3250e34098e58237aa582828a082d57a305289ba5a333d225ea15e3f51:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete configured TEV compilation and execution, 2026-09-07
+
+The complete BfBB **`GXTev.c` now compiles with the project's GC/1.2.5n
+configuration**, advancing the fourteen-unit GX compilation survey from
+**2/14 to 3/14** (`GXBump`, `GXDisplayList`, and `GXTev`). Frozen baseline
+`6e57cf1e` declines in `GXSetTevOrder`. All **sixteen TEV functions pass
+1,024 execution comparisons each against the original DOL**, with no function
+stubs: **16,384 candidate calls** validate FIFO write order, width and value,
+the full 1,456-byte context, unchanged input aggregates, callee-saved GPRs/FPRs,
+stack restoration, and return control flow. This is execution agreement on
+these inputs, not byte parity or a whole-project claim.
+
+The complete candidate is 4,680 ELF bytes / 2,464 text bytes, SHA-256
+`1e2c3bbf80854d315c2c9eb69d9827037ea2d760ab507ab6c05ebe65b26ef841`.
+A fresh configured reference compilation produces 3,840 ELF bytes / 1,892 text
+bytes, SHA-256
+`8ca1794362db022a3dfdd04ff79f9bdf634fd87fc2e98192230bc7108da0bd09`.
+**0/16 functions match instruction bytes and symbolic relocations.** In
+particular, `GXSetTevOrder` is 452 vs 412 bytes and `GXSetTevColor` is 156 vs
+124 bytes. Matching their schedules remains work to do.
+
+The shared lowering changes are:
+
+- Integer selects whose arms cannot use the existing register-phi schedule
+  retain a branch diamond. Only the selected arm is evaluated, and branch
+  boundaries retire conditional caches through the common control-flow helper.
+  Existing speculative arithmetic selects now reject memory-reading or
+  side-effecting false arms. A branchless mask also declines when its value
+  and mask would both occupy r0 in a store.
+- A variable left shift with a constant source materializes the source in its
+  own virtual register, preserving leaf or computed shift counts. Other shift
+  operators and existing earlier measured schedules retain their owners.
+- The parser remembers aggregate value parameters before ABI lowering. Their
+  explicit address is the incoming aggregate address, with a pointer cast
+  preserving `sizeof` and arithmetic stride. Declared pointer parameters still
+  take the address of their pointer storage. Pointer access accepts nested
+  pointer casts through the existing computed-address resolver. This fixes
+  `GXSetTevColor`, whose otherwise-unused `rgba = *(u32*)&color` previously
+  caused later channel loads to read bytes of the ABI pointer.
+
+Canaries **1841–1852** cover nested/computed selects, destination aliases,
+volatile and invalid unselected memory arms, narrowed values, constant variable
+shifts, the full TEV order reduction, aggregate value/pointer distinction,
+function-scope identity reset, and aggregate address size/stride, at O4 and O0.
+Across fifteen compiler versions, compilation advances **60/180 → 180/180**.
+Candidate execution passes **199,680 calls**. The baseline's compiled samples
+execute 69,120 calls, including **15,360 aggregate-address failures**.
+
+The previously blocked reference runner recovered during this checkpoint.
+Fresh MWCC compilation succeeds for **180/180** new sample/version pairs, and
+those reference objects independently pass the same **199,680 execution
+checks**. Reference O0 code uses original DOL EABI GPR save/restore routines,
+relocated as an instruction bank; these are not stubbed. Checks permit the
+callee's linkage-area writes while preserving caller argument storage.
+Whole-object equality is **2/180**, and function text plus symbolic relocation
+equality is **173/690**. These are new-sample diagnostics, not corpus estimates.
+
+Focused regression checks retain **300/300** cached memory-operand object
+matches and **1,097/1,097** compiled indexed-panel objects, including **972**
+known reference matches; all **577** declines are unchanged. The cumulative
+metadata panel compiles **1,494/2,198**, retains **1,179** known reference
+matches, and keeps **704** declines unchanged. Seven previously nonmatching
+`1469_global_computed_operands` objects change under the constant-shift path;
+all other **1,487** compiled objects remain unchanged. Those seven versions
+pass **8,960 calls each** for baseline, candidate, and fresh reference objects.
+Total new candidate execution validation is **225,024 calls**.
+
+Full `GXBump.c` remains byte-identical to the checkpoint with all eight linked
+functions exact (`411f42222cf4814ac1272149fd7319eb67afdfb5413e0d29a42b38e9cfc505e0`).
+Full `AXVPB.c` also remains byte-identical
+(`1a8fed48a1634517cd66e23f09754e75274d170ca826e61408ff96650605e7e3`).
+Focused tests pass: 1 aggregate-parameter parser test, 44 control-flow tests,
+6 pointer-expression tests, 3 structured-leaf tests, 17 switch-lowering tests,
+31 frame-convention tests, and 40 object tests. The full corpus was not rerun.
+
+Measurement artifacts: `target/tev-select-canaries/{results,execution-results,
+reference-results,reference-execution-results,reference-comparison}.json`,
+`target/tev-select-tev/{full-execution-results,reference-comparison}.json`,
+`target/tev-select-gx-library/results.json`, `target/tev-select-index/results.json`,
+and `target/tev-select-metadata/{results,changed-execution-results}.json`.
+Drivers are `target/check_tev_select*.py`, `target/measure_tev_select.py`, and
+`target/probe_tev_select*.py`. Original DOL and symbol-map hashes remain those
+pinned in `docs/reference-layouts/bfbb-gxbump.json`.
 
 ## Global member-array bases and retained leaf values, 2026-09-07
 
