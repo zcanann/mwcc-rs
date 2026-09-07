@@ -4,13 +4,107 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, affine byte field updates and first TEV byte match (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete configured GXTransform compilation and execution (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `4f7c9c18d85cc66c158876b77cf4c46e2264450a25b7eff507672bf0314075fc:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `40d97b780543fafa74484510eb360a91d5943c062e65e7c40d6aa375d27e09c6:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete configured GXTransform compilation and execution, 2026-09-07
+
+The complete BfBB **`GXTransform.c` now compiles with the project's GC/1.2.5n
+configuration**, advancing the fourteen-unit GX compilation survey from
+**3/14 to 4/14** (`GXBump`, `GXDisplayList`, `GXTev`, and `GXTransform`). All
+**fourteen functions pass 1,024 execution comparisons each against the original
+DOL**: **14,336 candidate calls**, including matrix uploads, projection getters
+and setters, scissor controls, clip mode, viewport operations, and matrix-index
+updates. Internal calls execute their actual instructions; there are no function
+stubs in this configured-unit comparison.
+
+The candidate is 3,832 ELF bytes / 1,708 text bytes, SHA-256
+`0d771ac3d55b325ded722807ad77221a63dded0e20cc6df246a64b13fddb757b`.
+A fresh configured reference compilation produces 3,064 ELF bytes / 1,428 text
+bytes, SHA-256
+`61de4d87bb96089a90a68c039aba8eba3dbf83fb1ba2c4ec3ae6381af6dcbeec`.
+**0/14 functions match linked instruction bytes** using the new pinned
+`docs/reference-layouts/bfbb-gxtransform.json`. Unknown literal relocations
+prevent exact claims where unresolved. Matrix upload sizes are 92/80, 96/80,
+and 192/180 candidate/reference bytes; matching their schedules remains work.
+
+Frozen baseline `0d89b328` declines on an absolute member address in the first
+matrix upload. Three shared lowering fixes enable the full unit:
+
+- Constant aggregate-pointer member addresses fold their field/index displacement
+  with 32-bit wrapping arithmetic, including a low-half carry and destinations
+  using r0. Variable indexes materialize the absolute base in a virtual register.
+- Address-of indexed/member expressions expose their input registers to dependency
+  collection. Pure indexed-address call arguments use the existing dependency
+  scheduler, preserving a pointer before another argument occupies its ABI home.
+  This fixes the projection getter's overwritten destination pointer.
+- Structured if/else arms begin with the dominating constant-address cache and
+  intersect their outgoing caches at the join. A hardware base created only in
+  the then arm can no longer leak into the else arm or following code. This fixes
+  the matrix-index update's missing FIFO base initialization.
+
+The new `tools/ppc_paired_single.py` instruction hook models only non-updating,
+immediate `psq_l`/`psq_st` with explicitly zero GQR values and finite binary32
+lanes. It handles W=0 pairs and W=1 single transfers, including signed zero and
+subnormals. Native Unicorn executes ordinary scalar FP instructions; PS1 is
+tracked separately. Quantization, paired arithmetic, indexed/updating transfers,
+and non-finite operands are outside this model. Configured-unit comparisons
+execute **53,248 modeled instructions on each side** and check FIFO write order,
+width and value, the whole 1,456-byte context, matrix/output memory, callee-saved
+GPRs and first FPR lanes, stack restoration, and return control flow. They do not
+claim arbitrary floating-point or paired-lane ABI coverage.
+
+Canaries **1861–1870** cover absolute/nested/indexed member addresses, call
+argument dependencies, overlapping inline-assembly copies, the three real
+matrix-upload reductions, and shared/different/nested hardware-address branches
+at O4/O0. Candidate compilation advances **60/150 → 150/150** across fifteen
+versions. Fresh references compile **146/150**: GC/3.0a3 and GC/3.0a3p1 decline
+both matrix-upload samples over a const array-pointer argument type. Candidate
+acceptance remains a diagnostic mismatch for those four pairs. Among reference
+successes, **0/146 whole objects** and **117/558 function texts plus symbolic
+relocations** match.
+
+All **215,040 candidate sample executions pass**, for **229,376 new candidate
+calls** including the configured full unit. Matrix samples reuse original-DOL
+fixtures; other samples use explicit address, copy, call-argument, and FIFO
+models. Only the sample's external `take` function is replaced by argument
+capture. The baseline records **46,080 failures in 53,760 calls**. Reference
+execution records **8,704 non-passing calls out of 202,752**, so this is not an
+all-version execution-parity claim:
+
+- GC/1.1p1 O0 `variable_index` has **256 mismatches**: both incoming parameters
+  spill to the same slot, producing `5*i` instead of `p + 4*i`. Reproducing this
+  original compiler bug remains required work.
+- GC/1.3 optimized matrix uploads have **3,072 mismatches**. Its inline assembly
+  folds the FIFO's 16-bit displacement into a paired-single instruction's
+  narrower displacement/control fields, changing the destination/transfer.
+  This original behavior is not yet reproduced.
+- GC/3.0a3, GC/3.0a3p1, and Wii/1.0 O0 copies, plus Wii/1.0 O0 matrix uploads,
+  account for **5,376 incomplete comparisons**. Their indexed paired-single
+  callee-save restores raise unsupported CPU exceptions in this harness;
+  they are recorded as unvalidated, not compiler mismatches or passes.
+
+Cached regression panels retain **300/300** memory-operand object matches,
+**1,097** unchanged compiled indexed-panel objects (including **972** known
+reference matches), and **577** identical declines. The cumulative metadata
+panel retains **1,494** compiled objects, **1,487** unchanged from its older
+baseline, **1,179** known matches, and **704** identical declines; its seven
+historical variable-shift changes predate this checkpoint. Full GXBump, TEV,
+and AXVPB object hashes remain unchanged. Focused tests pass: **3** dependency,
+**20** member-address, **4** structured-if/else, **31** frame-convention,
+**40** object, and **6** paired-single model tests. The full corpus was not rerun.
+
+Artifacts are `target/absolute-member-canaries/{results,reference-results,
+reference-comparison,execution-results}.json`,
+`target/absolute-member-transform/{execution-results,verified-linked-text}.json`,
+and `target/absolute-member-{gx-library,index,metadata}/results.json`.
+Drivers are `target/check_absolute_member*.py`,
+`target/measure_absolute_member.py`, and `target/probe_absolute_member*.py`.
 
 ## Affine byte field updates and first TEV byte match, 2026-09-07
 

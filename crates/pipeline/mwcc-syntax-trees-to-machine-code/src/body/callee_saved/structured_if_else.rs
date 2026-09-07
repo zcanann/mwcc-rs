@@ -302,6 +302,10 @@ impl Generator {
         // run. Neither arm can pre-scale an index for the mutually exclusive
         // arm, and no run survives the join.
         self.emitted_leaf_variable_index_store_since_scratch_barrier = false;
+        // A constant hardware-address base created in one arm is unavailable
+        // on its sibling edge. Keep only bases established on every path at
+        // the join, while preserving bases that dominate the whole diamond.
+        let incoming_constant_bases = self.const_address_bases.clone();
         let then_start = self.output.instructions.len();
         for branch in branches.enter_then {
             self.patch_forward(branch, then_start);
@@ -354,6 +358,10 @@ impl Generator {
             self.restore_wide_pair_mask_cache(previous_wide_mask_cache);
             return Err(diagnostic);
         }
+        let then_exit_constant_bases = std::mem::replace(
+            &mut self.const_address_bases,
+            incoming_constant_bases,
+        );
         let skip_else = self.output.instructions.len();
         self.output
             .instructions
@@ -414,6 +422,9 @@ impl Generator {
             self.restore_wide_pair_mask_cache(previous_wide_mask_cache);
             return Err(diagnostic);
         }
+        self.const_address_bases.retain(|high, register| {
+            then_exit_constant_bases.get(high) == Some(register)
+        });
         let join = self.output.instructions.len();
         if let Instruction::Branch { target } = &mut self.output.instructions[skip_else] {
             *target = join;

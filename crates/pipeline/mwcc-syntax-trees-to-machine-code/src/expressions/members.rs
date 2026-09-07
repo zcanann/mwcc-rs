@@ -3,6 +3,15 @@
 #[allow(unused_imports)]
 use super::*;
 
+/// A constant aggregate pointer carries an address rather than a register home.
+fn absolute_member_base(base: &Expression) -> Option<u32> {
+    let Expression::Cast {
+        target_type: Type::StructPointer { .. },
+        operand,
+    } = base else { return None; };
+    constant_value(operand).map(|address| address as u32)
+}
+
 /// Reduce casts and constant byte arithmetic around a pointer-valued member
 /// base to the underlying address expression plus a signed displacement.
 ///
@@ -209,6 +218,10 @@ impl Generator {
         if let Some(displacement) =
             constant_embedded_aggregate_displacement(offset, stride, index)
         {
+            if let Some(address) = absolute_member_base(base) {
+                self.load_integer_constant(destination, i64::from(address.wrapping_add(displacement as u32)));
+                return Ok(true);
+            }
             let base = self.member_base_register(base)?;
             if displacement == 0 {
                 if base != destination {
@@ -304,6 +317,13 @@ impl Generator {
         offset: u32,
         destination: u8,
     ) -> Compilation<()> {
+        // An absolute-address object carries a constant aggregate pointer. Its
+        // member address is arithmetic on that pointer, with no memory access
+        // and no register-resident base required (for example `&PORT.f32`).
+        if let Some(address) = absolute_member_base(base) {
+            self.load_integer_constant(destination, i64::from(address.wrapping_add(offset)));
+            return Ok(());
+        }
         if self.try_emit_embedded_struct_array_address(base, offset, destination)? {
             return Ok(());
         }
@@ -1448,6 +1468,11 @@ impl Generator {
     /// is in its own register; a chained base `a->b` is itself a pointer member, so
     /// its value is loaded into the inner base register (reused) before use.
     pub(crate) fn member_base_register(&mut self, base: &Expression) -> Compilation<u8> {
+        if let Some(address) = absolute_member_base(base) {
+            let register = self.fresh_virtual_general();
+            self.load_integer_constant(register, i64::from(address));
+            return Ok(register);
+        }
         // A dominating condition can retain a pointer-valued member for a
         // nested short-circuit term. Reuse that exact value as the chained
         // member base; loading it again would discard the edge-scoped CSE

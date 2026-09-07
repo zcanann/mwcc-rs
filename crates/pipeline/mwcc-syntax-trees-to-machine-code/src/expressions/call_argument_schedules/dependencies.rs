@@ -5,6 +5,12 @@ use super::*;
 fn pure_general_argument(expression: &Expression) -> bool {
     match expression {
         Expression::Variable(_) | Expression::IntegerLiteral(_) => true,
+        Expression::AddressOf { operand }
+            if matches!(operand.as_ref(), Expression::Index { .. }) =>
+        {
+            let Expression::Index { base, index } = operand.as_ref() else { unreachable!() };
+            pure_general_argument(base) && pure_general_argument(index)
+        }
         Expression::Cast { operand, .. } | Expression::AddressOf { operand } => {
             pure_general_argument(operand)
         }

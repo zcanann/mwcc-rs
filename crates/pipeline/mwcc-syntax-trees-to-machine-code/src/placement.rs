@@ -790,6 +790,14 @@ impl Generator {
                 self.collect_registers(base, registers);
                 self.collect_registers(index, registers);
             }
+            // Taking an indexed/member address still consumes its pointer and
+            // index registers. The address of a named object itself uses its
+            // storage location, not the value in its register.
+            Expression::AddressOf { operand } => {
+                if !matches!(operand.as_ref(), Expression::Variable(_)) {
+                    self.collect_registers(operand, registers);
+                }
+            }
             Expression::Dereference { pointer } => self.collect_registers(pointer, registers),
             _ => {}
         }
