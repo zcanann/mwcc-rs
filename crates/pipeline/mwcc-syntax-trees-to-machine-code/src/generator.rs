@@ -351,6 +351,9 @@ pub(crate) struct Generator {
     /// Resolved into `output.instructions` once body emission completes.
     pub(crate) labels: mwcc_vreg::Labels,
     pub(crate) locations: HashMap<String, Location>,
+    pub(crate) incoming_stack_parameters: Vec<crate::incoming_parameters::StackParameter>,
+    /// End of the parameter area required by known word-only outgoing calls.
+    pub(crate) outgoing_general_parameter_end: i16,
     /// Source parameters retain ABI-entry provenance after value tracking and
     /// register allocation have merged them with ordinary scalar locations.
     pub(crate) parameter_names: HashSet<String>,
@@ -841,10 +844,10 @@ pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {
 
 impl Generator {
     pub(crate) fn record_data_section_symbol_displacement(&mut self, symbol: &str) {
-        self.output.data_section_displacements.push(
-            mwcc_machine_code::DataSectionDisplacement {
+        self.output.deferred_displacements.push(
+            mwcc_machine_code::DeferredDisplacement {
                 instruction_index: self.output.instructions.len(),
-                target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+                target: mwcc_machine_code::DeferredDisplacementTarget::Symbol(
                     symbol.to_owned(),
                 ),
             },

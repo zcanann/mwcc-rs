@@ -304,10 +304,10 @@ impl Generator {
 
     fn record_anonymous_rodata_displacement(&mut self, blob: usize) {
         self.output
-            .data_section_displacements
-            .push(mwcc_machine_code::DataSectionDisplacement {
+            .deferred_displacements
+            .push(mwcc_machine_code::DeferredDisplacement {
                 instruction_index: self.output.instructions.len(),
-                target: mwcc_machine_code::DataSectionDisplacementTarget::AnonymousRodata(blob),
+                target: mwcc_machine_code::DeferredDisplacementTarget::AnonymousRodata(blob),
             });
     }
 }

@@ -274,9 +274,9 @@ impl Generator {
             }
         }
         self.output
-            .data_section_displacements
+            .deferred_displacements
             .retain(|displacement| displacement.instruction_index != at);
-        for displacement in &mut self.output.data_section_displacements {
+        for displacement in &mut self.output.deferred_displacements {
             if displacement.instruction_index > at {
                 displacement.instruction_index -= 1;
             }

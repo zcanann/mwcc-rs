@@ -7,7 +7,7 @@
 //! emitting that interprocedural schedule.
 
 use super::*;
-use mwcc_machine_code::{DataSectionDisplacement, RelocationTarget};
+use mwcc_machine_code::{DeferredDisplacement, RelocationTarget};
 
 struct FloatOctantTableDispatch {
     table: String,
@@ -371,10 +371,10 @@ fn classify(
 impl Generator {
     fn emit_octant_table_load(&mut self, table: &str) {
         self.output
-            .data_section_displacements
-            .push(DataSectionDisplacement {
+            .deferred_displacements
+            .push(DeferredDisplacement {
                 instruction_index: self.output.instructions.len(),
-                target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+                target: mwcc_machine_code::DeferredDisplacementTarget::Symbol(
                     table.to_owned(),
                 ),
             });

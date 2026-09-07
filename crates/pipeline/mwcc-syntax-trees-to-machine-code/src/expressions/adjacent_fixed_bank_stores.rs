@@ -124,7 +124,7 @@ impl Generator {
             .any(|relocation| range.contains(&relocation.instruction_index))
             || self
                 .output
-                .data_section_displacements
+                .deferred_displacements
                 .iter()
                 .any(|displacement| range.contains(&displacement.instruction_index))
         {

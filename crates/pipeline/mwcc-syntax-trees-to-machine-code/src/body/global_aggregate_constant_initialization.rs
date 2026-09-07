@@ -8,7 +8,7 @@
 
 #[allow(unused_imports)]
 use super::*;
-use mwcc_machine_code::DataSectionDisplacement;
+use mwcc_machine_code::DeferredDisplacement;
 
 struct GlobalAggregateConstantInitialization {
     aggregate: String,
@@ -152,10 +152,10 @@ impl Generator {
 
     fn record_aggregate_displacement(&mut self, aggregate: &str) {
         self.output
-            .data_section_displacements
-            .push(DataSectionDisplacement {
+            .deferred_displacements
+            .push(DeferredDisplacement {
                 instruction_index: self.output.instructions.len(),
-                target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+                target: mwcc_machine_code::DeferredDisplacementTarget::Symbol(
                     aggregate.to_owned(),
                 ),
             });

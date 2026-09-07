@@ -54,7 +54,7 @@ fn external_relocation_index_after(
 fn anchored_guarded_value_transaction(
     instructions: &[Instruction],
     relocations: &[mwcc_machine_code::Relocation],
-    displacements: &[mwcc_machine_code::DataSectionDisplacement],
+    displacements: &[mwcc_machine_code::DeferredDisplacement],
 ) -> Option<AnchoredGuardedValueTransaction> {
     let retry_store =
         first_external_relocation_index(relocations, RelocationKind::EmbSda21, "NumInternalRetry")?;
@@ -192,7 +192,7 @@ impl Generator {
         let Some(plan) = anchored_guarded_value_transaction(
             &self.output.instructions,
             &self.output.relocations,
-            &self.output.data_section_displacements,
+            &self.output.deferred_displacements,
         ) else {
             return;
         };
@@ -358,9 +358,9 @@ mod tests {
             relocation(16, RelocationKind::EmbSda21, "executing"),
             relocation(18, RelocationKind::Rel24, "stateReady"),
         ];
-        let displacements = vec![mwcc_machine_code::DataSectionDisplacement {
+        let displacements = vec![mwcc_machine_code::DeferredDisplacement {
             instruction_index: 15,
-            target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+            target: mwcc_machine_code::DeferredDisplacementTarget::Symbol(
                 "DummyCommandBlock".into(),
             ),
         }];

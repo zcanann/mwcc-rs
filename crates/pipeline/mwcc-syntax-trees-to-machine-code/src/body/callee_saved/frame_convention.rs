@@ -610,7 +610,12 @@ impl Generator {
                 .saturating_add(i16::try_from(physical_saved.len() * 4).unwrap_or(i16::MAX));
             conversion_end.saturating_add(7) & !7
         };
-        let new_size = base_size.max(conversion_size);
+        let outgoing_size = if self.outgoing_general_parameter_end > 8 {
+            (self.outgoing_general_parameter_end + 4 * physical_saved.len() as i16 + 7) & !7
+        } else {
+            0
+        };
+        let new_size = base_size.max(conversion_size).max(outgoing_size);
         if std::env::var_os("MWCC_DIAGNOSTIC_FRAME")
             .is_some_and(|requested| requested == std::ffi::OsStr::new(&self.output.name))
             || std::env::var_os("MWCC_CAPTURE_FUNCTION")
@@ -1581,7 +1586,7 @@ impl Generator {
         );
         self.non_leaf = true;
         self.callee_saved = callee_saved.to_vec();
-        let unaligned_size = 8 + 4 * callee_saved.len() as i16;
+        let unaligned_size = self.outgoing_general_parameter_end + 4 * callee_saved.len() as i16;
         self.frame_size = (unaligned_size + 7) & !7;
         self.output
             .instructions
@@ -1615,13 +1620,13 @@ impl Generator {
         self.non_leaf = true;
         match self.behavior.frame_convention {
             FrameConvention::Predecrement => {
-                self.frame_size = 16;
+                self.frame_size = (self.outgoing_general_parameter_end.max(16) + 15) & !15;
                 self.output
                     .instructions
                     .push(Instruction::StoreWordWithUpdate {
                         s: 1,
                         a: 1,
-                        offset: -16,
+                        offset: -self.frame_size,
                     });
                 self.output
                     .instructions
@@ -1629,7 +1634,7 @@ impl Generator {
                 self.output.instructions.push(Instruction::StoreWord {
                     s: 0,
                     a: 1,
-                    offset: 20,
+                    offset: self.frame_size + 4,
                 });
                 self.output.instructions.len() - 1
             }

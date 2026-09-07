@@ -51,7 +51,7 @@ fn external_indices(
 }
 
 fn has_symbol_displacement(
-    displacements: &[mwcc_machine_code::DataSectionDisplacement],
+    displacements: &[mwcc_machine_code::DeferredDisplacement],
     index: usize,
     target: &str,
 ) -> bool {
@@ -59,7 +59,7 @@ fn has_symbol_displacement(
         displacement.instruction_index == index
             && matches!(
                 &displacement.target,
-                mwcc_machine_code::DataSectionDisplacementTarget::Symbol(name)
+                mwcc_machine_code::DeferredDisplacementTarget::Symbol(name)
                     if name == target
             )
     })
@@ -68,7 +68,7 @@ fn has_symbol_displacement(
 fn recognize(
     instructions: &[Instruction],
     relocations: &[mwcc_machine_code::Relocation],
-    displacements: &[mwcc_machine_code::DataSectionDisplacement],
+    displacements: &[mwcc_machine_code::DeferredDisplacement],
 ) -> Option<PreloadedRetainedTransaction> {
     let executing = external_indices(relocations, RelocationKind::EmbSda21, "executing");
     let canceling = external_indices(relocations, RelocationKind::EmbSda21, "Canceling");
@@ -279,7 +279,7 @@ impl Generator {
         let Some(plan) = recognize(
             &self.output.instructions,
             &self.output.relocations,
-            &self.output.data_section_displacements,
+            &self.output.deferred_displacements,
         ) else {
             return;
         };
@@ -344,13 +344,13 @@ impl Generator {
 
         let dummy_address = self
             .output
-            .data_section_displacements
+            .deferred_displacements
             .iter()
             .find_map(|displacement| {
                 (displacement.instruction_index > plan.resume_store
                     && matches!(
                         &displacement.target,
-                        mwcc_machine_code::DataSectionDisplacementTarget::Symbol(name)
+                        mwcc_machine_code::DeferredDisplacementTarget::Symbol(name)
                             if name == "DummyCommandBlock"
                     ))
                 .then_some(displacement.instruction_index)
@@ -439,13 +439,13 @@ impl Generator {
         .expect("validated completion object load disappeared");
         let second_dummy_address = self
             .output
-            .data_section_displacements
+            .deferred_displacements
             .iter()
             .find_map(|displacement| {
                 (displacement.instruction_index > second_executing_load
                     && matches!(
                         &displacement.target,
-                        mwcc_machine_code::DataSectionDisplacementTarget::Symbol(name)
+                        mwcc_machine_code::DeferredDisplacementTarget::Symbol(name)
                             if name == "DummyCommandBlock"
                     ))
                 .then_some(displacement.instruction_index)
@@ -495,7 +495,7 @@ impl Generator {
 mod tests {
     use super::*;
     use mwcc_machine_code::{
-        DataSectionDisplacement, DataSectionDisplacementTarget, Relocation, RelocationTarget,
+        DeferredDisplacement, DeferredDisplacementTarget, Relocation, RelocationTarget,
     };
 
     fn relocation(index: usize, kind: RelocationKind, target: &str) -> Relocation {
@@ -610,13 +610,13 @@ mod tests {
             relocation(29, RelocationKind::Rel24, "stateReady"),
         ];
         let displacements = vec![
-            DataSectionDisplacement {
+            DeferredDisplacement {
                 instruction_index: 12,
-                target: DataSectionDisplacementTarget::Symbol("DummyCommandBlock".into()),
+                target: DeferredDisplacementTarget::Symbol("DummyCommandBlock".into()),
             },
-            DataSectionDisplacement {
+            DeferredDisplacement {
                 instruction_index: 19,
-                target: DataSectionDisplacementTarget::Symbol("DummyCommandBlock".into()),
+                target: DeferredDisplacementTarget::Symbol("DummyCommandBlock".into()),
             },
         ];
 

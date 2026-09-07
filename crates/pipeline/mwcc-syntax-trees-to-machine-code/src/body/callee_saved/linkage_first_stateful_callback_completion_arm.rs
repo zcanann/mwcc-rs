@@ -33,7 +33,7 @@ fn external_target_at<'a>(
 fn recognize_at(
     instructions: &[Instruction],
     relocations: &[mwcc_machine_code::Relocation],
-    displacements: &[mwcc_machine_code::DataSectionDisplacement],
+    displacements: &[mwcc_machine_code::DeferredDisplacement],
     start: usize,
 ) -> Option<StatefulCompletionArm> {
     if start < 5 {
@@ -155,7 +155,7 @@ impl Generator {
             let Some(arm) = recognize_at(
                 &self.output.instructions,
                 &self.output.relocations,
-                &self.output.data_section_displacements,
+                &self.output.deferred_displacements,
                 start,
             ) else {
                 start += 1;
@@ -313,9 +313,9 @@ mod tests {
             relocation(7, "MotorState"),
             relocation(9, "executing"),
         ];
-        let displacements = vec![mwcc_machine_code::DataSectionDisplacement {
+        let displacements = vec![mwcc_machine_code::DeferredDisplacement {
             instruction_index: 8,
-            target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+            target: mwcc_machine_code::DeferredDisplacementTarget::Symbol(
                 "DummyCommandBlock".into(),
             ),
         }];

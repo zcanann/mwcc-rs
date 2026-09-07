@@ -27,7 +27,7 @@ fn external_target(relocation: &mwcc_machine_code::Relocation) -> Option<&str> {
 fn recognize_at(
     instructions: &[Instruction],
     relocations: &[mwcc_machine_code::Relocation],
-    displacements: &[mwcc_machine_code::DataSectionDisplacement],
+    displacements: &[mwcc_machine_code::DeferredDisplacement],
     start: usize,
 ) -> Option<CompletionArm> {
     let [Instruction::LoadWord {
@@ -114,7 +114,7 @@ impl Generator {
             let Some(arm) = recognize_at(
                 &self.output.instructions,
                 &self.output.relocations,
-                &self.output.data_section_displacements,
+                &self.output.deferred_displacements,
                 start,
             ) else {
                 start += 1;
@@ -205,9 +205,9 @@ mod tests {
             Instruction::BranchToLinkRegisterAndLink,
         ];
         let relocations = vec![relocation(0, "executing"), relocation(2, "executing")];
-        let displacements = vec![mwcc_machine_code::DataSectionDisplacement {
+        let displacements = vec![mwcc_machine_code::DeferredDisplacement {
             instruction_index: 1,
-            target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol("dummy".into()),
+            target: mwcc_machine_code::DeferredDisplacementTarget::Symbol("dummy".into()),
         }];
 
         assert_eq!(

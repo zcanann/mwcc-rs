@@ -44,7 +44,7 @@ fn external_indices(
 fn recognize(
     instructions: &[Instruction],
     relocations: &[mwcc_machine_code::Relocation],
-    displacements: &[mwcc_machine_code::DataSectionDisplacement],
+    displacements: &[mwcc_machine_code::DeferredDisplacement],
 ) -> Option<RetainedTransaction> {
     let cancel_indices = external_indices(relocations, RelocationKind::EmbSda21, "Canceling");
     let executing_indices = external_indices(relocations, RelocationKind::EmbSda21, "executing");
@@ -186,7 +186,7 @@ impl Generator {
         let Some(plan) = recognize(
             &self.output.instructions,
             &self.output.relocations,
-            &self.output.data_section_displacements,
+            &self.output.deferred_displacements,
         ) else {
             return;
         };
@@ -329,9 +329,9 @@ mod tests {
             relocation(10, RelocationKind::EmbSda21, "executing"),
             relocation(12, RelocationKind::Rel24, "stateReady"),
         ];
-        let displacements = vec![mwcc_machine_code::DataSectionDisplacement {
+        let displacements = vec![mwcc_machine_code::DeferredDisplacement {
             instruction_index: 9,
-            target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+            target: mwcc_machine_code::DeferredDisplacementTarget::Symbol(
                 "DummyCommandBlock".into(),
             ),
         }];

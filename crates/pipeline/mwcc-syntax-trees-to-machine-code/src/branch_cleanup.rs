@@ -155,7 +155,7 @@ pub(crate) fn collapse_forwarding_branch_blocks(
 ) {
     if !generator.output.entry_points.is_empty()
         || !generator.output.jump_tables.is_empty()
-        || !generator.output.data_section_displacements.is_empty()
+        || !generator.output.deferred_displacements.is_empty()
     {
         return;
     }

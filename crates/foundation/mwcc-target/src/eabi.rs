@@ -16,6 +16,12 @@ impl Eabi {
     /// First float argument register (f1).
     pub const FIRST_FLOAT_ARGUMENT: u8 = 1;
 
+    /// Caller-SP offset for a word argument beyond r3..r10.
+    pub fn general_stack_offset(argument_register: u8) -> Option<i16> {
+        (argument_register > Self::LAST_GENERAL_ARGUMENT)
+            .then(|| 8 + i16::from(argument_register - Self::LAST_GENERAL_ARGUMENT - 1) * 4)
+    }
+
     pub fn general_result() -> Register {
         Register::general(3)
     }

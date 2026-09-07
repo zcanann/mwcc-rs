@@ -29,7 +29,7 @@ fn external_target_at<'a>(
 fn recognize_at(
     instructions: &[Instruction],
     relocations: &[mwcc_machine_code::Relocation],
-    displacements: &[mwcc_machine_code::DataSectionDisplacement],
+    displacements: &[mwcc_machine_code::DeferredDisplacement],
     start: usize,
 ) -> Option<RetainedCancelDiamond> {
     let [Instruction::LoadWord {
@@ -351,7 +351,7 @@ pub(super) fn schedule(generator: &mut Generator) {
         let Some(plan) = recognize_at(
             &generator.output.instructions,
             &generator.output.relocations,
-            &generator.output.data_section_displacements,
+            &generator.output.deferred_displacements,
             start,
         ) else {
             start += 1;

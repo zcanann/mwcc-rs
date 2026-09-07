@@ -4,13 +4,95 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, allocated GPR frame growth and LR restoration (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, incoming stack arguments and GX packet execution (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `894839921da86bb1e894b230b7f434992c9e8b5d3049b64a9b4425b4b70dd114:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `6b84624b42cb128720a72e61ca1c7f4d3816eeb262e6fad30bf6b6888849136e:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Incoming stack arguments and GX packet execution, 2026-09-07
+
+The ninth-parameter calling-convention failures in **1743–1744** are fixed.
+All thirty objects now pass 1,920 execution calls using the caller's stack
+arguments instead of r11/r12. The source cases already compiled under frozen
+baseline `e1b66bec`; this milestone corrects their behavior rather than claiming
+a compilation-count gain.
+
+Incoming word-class parameters beyond r3–r10 now receive virtual identities.
+The selected entry block materializes each needed value before its first use
+or control edge. A straight-line definition that kills the incoming value
+suppresses its load. Register inputs still referenced by the source are excluded
+from these load allocations, including arguments forwarded naturally to a call
+without explicit self-moves. Address-taken parameter slots use the same entry
+locations. Byte and halfword stack arguments load from the right-aligned part
+of their four-byte slot, with the appropriate sign or zero extension.
+
+The machine representation's existing data displacement records have been
+generalized to **deferred displacements**, adding a caller-SP target alongside
+section symbols and anonymous data. Existing scheduling, insertion, removal,
+and relocation remappers carry all three target kinds. Incoming displacements
+are resolved from the final stack position and consumed before object assembly;
+section displacements retain their existing object-layout resolution. This
+avoids baking a provisional frame size into incoming loads. Most touched
+scheduler files contain only this shared record/type rename.
+
+Caller and callee now share the EABI word-stack offset calculation. Known
+word-only call signatures reserve their outgoing parameter area in plain frame
+planning, and linkage-first normalization preserves that minimum. This fixes a
+forwarding case whose old eight-byte frame placed its tenth outgoing argument
+on the saved LR slot. Stores also reject overlap with declared GPR saves or
+locals. Wide-pair incoming stack placement and general floating/variadic
+outgoing stack planning remain outside this change.
+
+Sixteen new canaries **1747–1762** cover leaf reads, ninth/tenth parameter sums,
+assignments and guards, calls, forwarding, pointer parameters, address-taking,
+independent floating-register arguments, narrow stack values, and a BfBB GX
+packet reduction. Together with 1743–1744, **270/270 objects compile** across
+fifteen builds at O0/O4, both before and after the change. All **84,480 candidate
+execution calls pass**:
+
+- AX frame case: 1,920 calls, including packet memory and register preservation.
+- Leaf/control/call/pointer/address cases: 21,120 calls, checking forwarded ABI
+  registers and stack slots, callback mutation, overflow, and callee-saved state.
+- Narrow arguments: 30,720 calls with randomized unused stack-slot bytes,
+  exhaustive byte inputs, and signed/unsigned halfword values.
+- GX packet reduction: 30,720 comparisons with the original linked function.
+
+The GX source is the configured GC/1.2.5n BfBB `GXBump.c` function
+`GXSetTevIndirect`, with ten integer-class parameters. The original 108-byte
+function at `0x801CE8CC` is extracted from the pinned GQPE78 DOL/map. Its code
+SHA-256 is `139a706141f2830879900b9e9cac556eb46cfb88ccc0078feb09898ba422ae61`.
+All **1,024 original executions** check its FIFO command/value writes, context
+flag clear, and stack/register restoration. Each of the thirty reduction
+objects returns the same packed FIFO value. The reduction expresses the
+original constant-mask `__rlwimi` operations in C and returns the packet instead
+of writing hardware; it is not full-function or instruction parity.
+
+The full configured `GXBump.c` and an isolated source prefix still decline at
+GX's constant-address FIFO member store requiring base reuse. That is the next
+real-source blocker. Reference project files were not changed.
+
+Validation at the final compiler fingerprint:
+
+- Captured paired-memory matrix: **300/300 whole-object exact**.
+- Index panel: **1,096 objects unchanged**, preserving **972 known reference
+  matches**, and **578 identical declines**, with no timeouts.
+- Cumulative metadata panel against `db48e092`: **1,494 objects unchanged**,
+  preserving **1,179 known reference matches**, and **704 identical declines**,
+  with no timeouts.
+- **3 incoming-parameter tests, 31 frame-convention tests, and 40 object-writer
+  tests pass**.
+- The complete configured BfBB AX object remains byte-identical to the previous
+  measured object, retaining its complete sync execution evidence.
+
+Local scripts and measurements are in `target/check_incoming*.py`,
+`target/probe_incoming_gx.py`, `target/probe_incoming_arguments_full_ax.py`,
+`target/incoming-arguments-canaries/`, and `target/incoming-arguments-gx/`.
+The six existing wibo processes remain in kernel U state after more than four
+hours; no additional reference-compiler processes were launched and no fresh
+reference-object or full-project-panel gain is claimed.
 
 ## Allocated GPR frame growth and LR restoration, 2026-09-07
 

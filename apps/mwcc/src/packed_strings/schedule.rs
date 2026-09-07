@@ -410,7 +410,7 @@ fn remap_instruction_owners(function: &mut MachineFunction, permutation: &[usize
     for relocation in &mut function.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];
     }
-    for displacement in &mut function.data_section_displacements {
+    for displacement in &mut function.deferred_displacements {
         displacement.instruction_index = permutation[displacement.instruction_index];
     }
 }

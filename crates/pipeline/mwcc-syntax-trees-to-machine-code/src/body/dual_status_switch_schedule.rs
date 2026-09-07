@@ -33,7 +33,7 @@ impl Generator {
             || !self.output.jump_tables.is_empty()
             || self
                 .output
-                .data_section_displacements
+                .deferred_displacements
                 .iter()
                 .any(|displacement| (start..start + 77).contains(&displacement.instruction_index))
         {

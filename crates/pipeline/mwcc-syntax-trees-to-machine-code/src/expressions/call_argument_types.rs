@@ -29,8 +29,7 @@ pub(super) enum CallArgumentPlacement {
 /// The first overflow word occupies the caller parameter area at `8(r1)`;
 /// each subsequent word advances by four bytes.
 pub(super) fn outgoing_general_stack_offset(next_register: u8) -> Option<i16> {
-    (next_register > Eabi::LAST_GENERAL_ARGUMENT)
-        .then(|| 8 + i16::from(next_register - Eabi::LAST_GENERAL_ARGUMENT - 1) * 4)
+    Eabi::general_stack_offset(next_register)
 }
 
 pub(super) fn classify_call_argument(

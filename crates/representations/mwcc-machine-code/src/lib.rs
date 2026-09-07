@@ -14,7 +14,7 @@ mod relocation;
 
 pub use frame::FrameInfo;
 pub use function::{
-    AnonymousRodata, DataSectionDisplacement, DataSectionDisplacementTarget, DebugVariable,
+    AnonymousRodata, DeferredDisplacement, DeferredDisplacementTarget, DebugVariable,
     DebugVariableLocation, JumpTable, MachineFunction, PoolConstant, StaticLocal,
 };
 pub use instruction::Instruction;

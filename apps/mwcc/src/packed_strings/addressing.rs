@@ -250,7 +250,7 @@ fn swap_adjacent_instructions(function: &mut MachineFunction, left: usize) {
     for relocation in &mut function.relocations {
         swap_index(&mut relocation.instruction_index);
     }
-    for displacement in &mut function.data_section_displacements {
+    for displacement in &mut function.deferred_displacements {
         swap_index(&mut displacement.instruction_index);
     }
 }
@@ -282,7 +282,7 @@ fn insert_instruction(function: &mut MachineFunction, position: usize, instructi
             relocation.instruction_index += 1;
         }
     }
-    for displacement in &mut function.data_section_displacements {
+    for displacement in &mut function.deferred_displacements {
         if displacement.instruction_index >= position {
             displacement.instruction_index += 1;
         }

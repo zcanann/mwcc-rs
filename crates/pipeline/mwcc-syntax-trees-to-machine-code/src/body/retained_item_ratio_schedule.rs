@@ -38,7 +38,7 @@ impl Generator {
             || !self.output.jump_tables.is_empty()
             || self
                 .output
-                .data_section_displacements
+                .deferred_displacements
                 .iter()
                 .any(|displacement| {
                     displacement.instruction_index == start + 4

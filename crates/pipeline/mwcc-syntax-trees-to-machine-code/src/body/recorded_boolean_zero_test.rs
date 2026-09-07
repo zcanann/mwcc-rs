@@ -105,7 +105,7 @@ fn instruction_has_entry(
         .iter()
         .any(|relocation| relocation.instruction_index == index)
         || output
-            .data_section_displacements
+            .deferred_displacements
             .iter()
             .any(|displacement| displacement.instruction_index == index)
 }

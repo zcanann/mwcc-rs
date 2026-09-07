@@ -2167,7 +2167,8 @@ impl Generator {
                             slot_start + i32::try_from(slot.size).unwrap_or(i32::MAX);
                         slot_start < stack_end && stack_start < slot_end
                     });
-                    if self.frame_size == 0 || overlaps_local {
+                    let save_start = i32::from(self.frame_size) - 4 * self.callee_saved.len() as i32;
+                    if self.frame_size == 0 || overlaps_local || stack_end > save_start {
                         return Err(Diagnostic::error(format!(
                             "general argument {index} to '{name}' needs an unreserved outgoing stack slot"
                         )));

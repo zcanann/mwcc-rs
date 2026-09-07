@@ -183,7 +183,7 @@ fn stage_saved_result_output(
             relocation.instruction_index += 1;
         }
     }
-    for displacement in &mut output.data_section_displacements {
+    for displacement in &mut output.deferred_displacements {
         if displacement.instruction_index >= insertion {
             displacement.instruction_index += 1;
         }

@@ -163,18 +163,21 @@ pub fn assemble_object(
             force_active: function.force_active,
             text,
             data_section_displacements: function
-                .data_section_displacements
+                .deferred_displacements
                 .iter()
                 .map(|fixup| {
                     (
                         fixup.instruction_index as u32 * 4 + 2,
                         match &fixup.target {
-                            mwcc_machine_code::DataSectionDisplacementTarget::Symbol(symbol) => {
+                            mwcc_machine_code::DeferredDisplacementTarget::IncomingStack(_) => {
+                                unreachable!("incoming stack displacements must be resolved before object assembly")
+                            }
+                            mwcc_machine_code::DeferredDisplacementTarget::Symbol(symbol) => {
                                 mwcc_object::DataSectionDisplacementTarget::Symbol(
                                     local_static_target(function_index, symbol),
                                 )
                             }
-                            mwcc_machine_code::DataSectionDisplacementTarget::AnonymousRodata(
+                            mwcc_machine_code::DeferredDisplacementTarget::AnonymousRodata(
                                 blob,
                             ) => {
                                 mwcc_object::DataSectionDisplacementTarget::AnonymousRodata(*blob)

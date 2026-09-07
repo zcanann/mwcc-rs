@@ -200,7 +200,7 @@ impl Generator {
                         .any(|relocation| relocation.instruction_index == constant)
                     && !self
                         .output
-                        .data_section_displacements
+                        .deferred_displacements
                         .iter()
                         .any(|displacement| displacement.instruction_index == constant)
                 {

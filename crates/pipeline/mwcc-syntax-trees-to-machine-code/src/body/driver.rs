@@ -47,8 +47,26 @@ impl Generator {
             let register = match class {
                 ValueClass::General => {
                     let register = next_general;
-                    next_general += 1;
-                    register
+                    next_general = next_general.checked_add(1).ok_or_else(|| {
+                        Diagnostic::error("too many incoming general parameters")
+                    })?;
+                    if let Some(offset) = Eabi::general_stack_offset(register) {
+                        if function.parameters.iter().any(|p| p.parameter_type.width() > 32
+                            && !matches!(p.parameter_type, Type::Double))
+                        {
+                            return Err(Diagnostic::error("wide incoming stack parameters need pair placement"));
+                        }
+                        let home = self.fresh_virtual_general();
+                        self.incoming_stack_parameters.push(crate::incoming_parameters::StackParameter {
+                            register: home,
+                            offset: offset + i16::from(4 - (parameter.parameter_type.width() / 8).clamp(1, 4)),
+                            width: parameter.parameter_type.width(),
+                            signed: self.signed_of(parameter.parameter_type),
+                        });
+                        home
+                    } else {
+                        register
+                    }
                 }
                 ValueClass::Float => {
                     let register = next_float;
@@ -73,6 +91,50 @@ impl Generator {
                     stride,
                 },
             );
+        }
+        {
+            // A naturally forwarded register argument may reach a call without
+            // an explicit machine read. Entry loads must not color over those
+            // still-used ABI inputs merely because the call omits a self-move.
+            let mut referenced = std::collections::HashSet::new();
+            let mut outgoing_end = 8;
+            let mut collect = |expression: &Expression| {
+                if let Expression::Variable(name) = expression {
+                    referenced.insert(name.clone());
+                }
+                if let Expression::Call { name, arguments } = expression {
+                    if self.call_parameter_types.get(name).is_some_and(|types| {
+                        types.len() == arguments.len() && types.iter().all(|ty| {
+                            ty.width() <= 32 && class_of(*ty).ok() == Some(ValueClass::General)
+                        })
+                    }) {
+                        if let Some(last) = arguments.len().checked_add(2)
+                            .and_then(|register| u8::try_from(register).ok())
+                            .and_then(Eabi::general_stack_offset)
+                        {
+                            outgoing_end = outgoing_end.max(last + 4);
+                        }
+                    }
+                }
+            };
+            for statement in &function.statements {
+                super::callee_saved::visit_structured_statement(statement, &mut collect);
+            }
+            for expression in function.locals.iter().filter_map(|local| local.initializer.as_ref())
+                .chain(function.return_expression.iter())
+                .chain(function.guards.iter().flat_map(|guard| [&guard.condition, &guard.value]))
+            {
+                super::callee_saved::visit_structured_expression(expression, &mut collect);
+            }
+            self.outgoing_general_parameter_end = outgoing_end;
+            let avoid: Vec<_> = self.locations.iter().filter_map(|(name, location)| {
+                (referenced.contains(name) && location.class == ValueClass::General
+                    && (Eabi::FIRST_GENERAL_ARGUMENT..=Eabi::LAST_GENERAL_ARGUMENT)
+                        .contains(&location.register)).then_some(location.register)
+            }).collect();
+            for parameter in self.incoming_stack_parameters.clone() {
+                self.avoid_virtual_general(parameter.register, &avoid);
+            }
         }
         Ok(())
     }

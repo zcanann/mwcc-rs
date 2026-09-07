@@ -836,6 +836,8 @@ impl Generator {
                 }
             };
             if address_taken.contains(parameter.name.as_str()) {
+                let register = self.locations.get(&parameter.name)
+                    .map_or(register, |location| location.register);
                 let size = slot_size(parameter.parameter_type);
                 offset = align_to(offset, slot_align(parameter.parameter_type));
                 self.frame_slots.insert(

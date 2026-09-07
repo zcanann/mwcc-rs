@@ -70,20 +70,21 @@ pub struct StaticLocal {
     pub relocations: Vec<(u32, String, i32)>,
 }
 
-/// A D-form access whose immediate includes the final section-relative
-/// displacement of a named full-data object. Function lowering records the
-/// semantic target; object layout adds its `.data`/`.bss` offset only after all
-/// source-positioned objects have been laid out.
+/// A D-form access whose semantic base is finalized after instruction selection.
+/// Frame finalization resolves incoming stack arguments; object layout resolves
+/// section-relative globals and anonymous data. Scheduling preserves the index.
 #[derive(Debug, Clone)]
-pub struct DataSectionDisplacement {
+pub struct DeferredDisplacement {
     pub instruction_index: usize,
-    pub target: DataSectionDisplacementTarget,
+    pub target: DeferredDisplacementTarget,
 }
 
 #[derive(Debug, Clone)]
-pub enum DataSectionDisplacementTarget {
+pub enum DeferredDisplacementTarget {
     Symbol(String),
     AnonymousRodata(usize),
+    /// Byte offset from the caller's stack pointer at function entry.
+    IncomingStack(i16),
 }
 
 /// Final optimized location of a source parameter or automatic local. This is
@@ -116,9 +117,8 @@ pub struct MachineFunction {
     pub instructions: Vec<Instruction>,
     /// `.text` relocations, by the instruction they patch.
     pub relocations: Vec<Relocation>,
-    /// Late-bound D-form immediates that name an object through a zero-offset
-    /// full-data section anchor (`...data.0` or `...bss.0`).
-    pub data_section_displacements: Vec<DataSectionDisplacement>,
+    /// D-form immediates awaiting final frame or data-section placement.
+    pub deferred_displacements: Vec<DeferredDisplacement>,
     /// Optimized source-variable homes retained for exact debug information.
     /// Debug lowering decides which declarations receive DIEs for a measured
     /// compiler generation; this list only reports physical allocation.
@@ -356,7 +356,7 @@ impl MachineFunction {
             section: None,
             instructions: Vec::new(),
             relocations: Vec::new(),
-            data_section_displacements: Vec::new(),
+            deferred_displacements: Vec::new(),
             debug_variables: Vec::new(),
             constants: Vec::new(),
             string_literals: Vec::new(),

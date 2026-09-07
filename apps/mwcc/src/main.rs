@@ -2568,8 +2568,8 @@ fn compile(
                 _ => {}
             }
         }
-        for displacement in &mut machine_function.data_section_displacements {
-            let mwcc_machine_code::DataSectionDisplacementTarget::Symbol(name) =
+        for displacement in &mut machine_function.deferred_displacements {
+            let mwcc_machine_code::DeferredDisplacementTarget::Symbol(name) =
                 &mut displacement.target
             else {
                 continue;

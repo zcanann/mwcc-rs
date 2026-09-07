@@ -273,7 +273,7 @@ impl Generator {
                 offset: 24
             })
         ) || variadic_arguments.len() != 6
-            || self.output.data_section_displacements.len() != 6
+            || self.output.deferred_displacements.len() != 6
         {
             return;
         }

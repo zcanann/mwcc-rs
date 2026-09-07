@@ -30,7 +30,7 @@ pub(super) fn permute_contents<const N: usize>(
     output
         .relocations
         .sort_by_key(|relocation| relocation.instruction_index);
-    for displacement in &mut output.data_section_displacements {
+    for displacement in &mut output.deferred_displacements {
         remap_owner(&mut displacement.instruction_index);
     }
 }

@@ -14,6 +14,7 @@ mod analysis;
 mod allocation_debug;
 mod allocation_diagnostics;
 mod allocation_frame;
+mod incoming_parameters;
 mod arithmetic;
 mod asm;
 mod automatic_rodata;
@@ -606,6 +607,8 @@ fn lower_function_body(
         compiler_generated_symbols: Vec::new(),
         labels: mwcc_vreg::Labels::default(),
         locations: HashMap::new(),
+        incoming_stack_parameters: Vec::new(),
+        outgoing_general_parameter_end: 8,
         parameter_names: function
             .parameters
             .iter()
@@ -1068,6 +1071,7 @@ fn lower_function_body(
         generator.output.static_locals_lead = true;
     }
     generator.reuse_float_snapshot_loads(function);
+    generator.materialize_incoming_stack_parameters()?;
     // Schedule on the virtual-register stream, then allocate. Ordering matters:
     // scheduling first means physical-register reuse cannot create false
     // dependencies that block a hoist, and allocation then colors the scheduled
@@ -1456,6 +1460,8 @@ fn lower_function_body(
     if !generator.preserve_terminal_return_branches {
         collapse_forward_branch_to_terminal_blr(&mut generator.output.instructions);
     }
+
+    generator.resolve_incoming_stack_displacements()?;
 
     // Debug lowering consumes final physical allocation, not the frontend's
     // provisional variable table. Frame slots are authoritative for
@@ -1891,7 +1897,7 @@ fn self_move_metadata_owners(output: &MachineFunction) -> Vec<usize> {
         .map(|relocation| relocation.instruction_index)
         .chain(
             output
-                .data_section_displacements
+                .deferred_displacements
                 .iter()
                 .map(|displacement| displacement.instruction_index),
         )
@@ -1977,7 +1983,7 @@ fn schedule_allocated_structured_array_pool_control_flow(generator: &mut Generat
     for relocation in &mut generator.output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];
     }
-    for displacement in &mut generator.output.data_section_displacements {
+    for displacement in &mut generator.output.deferred_displacements {
         displacement.instruction_index = permutation[displacement.instruction_index];
     }
 }
@@ -1999,7 +2005,7 @@ pub(crate) fn remap_machine_function_indices(
     for relocation in &mut output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];
     }
-    for displacement in &mut output.data_section_displacements {
+    for displacement in &mut output.deferred_displacements {
         displacement.instruction_index = permutation[displacement.instruction_index];
     }
     // Jump-table entries are byte offsets into the same instruction stream.
@@ -2132,7 +2138,7 @@ pub(crate) fn insert_instruction_retargeting(
             relocation.instruction_index += 1;
         }
     }
-    for displacement in &mut generator.output.data_section_displacements {
+    for displacement in &mut generator.output.deferred_displacements {
         if displacement.instruction_index >= index {
             displacement.instruction_index += 1;
         }
@@ -2357,10 +2363,10 @@ mod instruction_index_tests {
             },
             Instruction::move_register(4, 4),
         ];
-        output.data_section_displacements.push(
-            mwcc_machine_code::DataSectionDisplacement {
+        output.deferred_displacements.push(
+            mwcc_machine_code::DeferredDisplacement {
                 instruction_index: 0,
-                target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+                target: mwcc_machine_code::DeferredDisplacementTarget::Symbol(
                     "object".into(),
                 ),
             },

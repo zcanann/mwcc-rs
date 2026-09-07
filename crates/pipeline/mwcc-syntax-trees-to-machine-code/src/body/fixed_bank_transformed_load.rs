@@ -17,7 +17,7 @@ struct TransformedLoad {
 
 fn owns_index(
     relocations: &[mwcc_machine_code::Relocation],
-    displacements: &[mwcc_machine_code::DataSectionDisplacement],
+    displacements: &[mwcc_machine_code::DeferredDisplacement],
     instruction_index: usize,
 ) -> bool {
     relocations
@@ -85,7 +85,7 @@ fn general_value_dies_before_use_on_all_paths(
 fn recognize_at(
     instructions: &[Instruction],
     relocations: &[mwcc_machine_code::Relocation],
-    displacements: &[mwcc_machine_code::DataSectionDisplacement],
+    displacements: &[mwcc_machine_code::DeferredDisplacement],
     start: usize,
 ) -> Option<TransformedLoad> {
     let [Instruction::AddImmediateShifted { d: high, a: 0, .. }, Instruction::AddImmediate {
@@ -153,7 +153,7 @@ impl Generator {
             let Some(plan) = recognize_at(
                 &self.output.instructions,
                 &self.output.relocations,
-                &self.output.data_section_displacements,
+                &self.output.deferred_displacements,
                 start,
             ) else {
                 start += 1;

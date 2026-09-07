@@ -7,7 +7,7 @@
 
 #[allow(unused_imports)]
 use super::*;
-use mwcc_machine_code::DataSectionDisplacement;
+use mwcc_machine_code::DeferredDisplacement;
 
 use super::linked_list_append::{classify as classify_append, LinkedListAppend};
 mod recognize;
@@ -106,10 +106,10 @@ impl Generator {
         ]);
         self.record_relocation(RelocationKind::Addr16Lo, BSS_ANCHOR);
         self.output
-            .data_section_displacements
-            .push(DataSectionDisplacement {
+            .deferred_displacements
+            .push(DeferredDisplacement {
                 instruction_index: self.output.instructions.len(),
-                target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+                target: mwcc_machine_code::DeferredDisplacementTarget::Symbol(
                     shape.registry.clone(),
                 ),
             });

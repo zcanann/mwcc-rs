@@ -13,7 +13,7 @@ impl Generator {
             != mwcc_versions::ConstantStoreScheduleStyle::InterleavedPairs
             || !self.output.entry_points.is_empty()
             || !self.output.jump_tables.is_empty()
-            || !self.output.data_section_displacements.is_empty()
+            || !self.output.deferred_displacements.is_empty()
         {
             return;
         }
