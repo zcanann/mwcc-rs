@@ -16,22 +16,28 @@ impl Parser {
     /// data image plus the relocation carried by a non-null address.
     pub(crate) fn parse_static_local_pointer_initializer(
         &mut self,
-    ) -> Compilation<(Vec<u8>, Vec<(u32, String, i32)>)> {
+    ) -> Compilation<(Vec<u8>, Vec<LocalDataRelocation>)> {
         let mut bytes = vec![0; 4];
-        let relocations = match self.parse_pointer_init_element()? {
-            PointerElement::Symbol(target) => vec![(0, target, 0)],
-            PointerElement::SymbolWithAddend { symbol, addend } => vec![(0, symbol, addend)],
-            PointerElement::Null => Vec::new(),
+        let address = match self.parse_pointer_init_element()? {
+            PointerElement::Symbol(target) => {
+                Some((LocalDataRelocationTarget::Symbol(target), 0))
+            }
+            PointerElement::SymbolWithAddend { symbol, addend } => {
+                Some((LocalDataRelocationTarget::Symbol(symbol), addend))
+            }
+            PointerElement::Str(literal) => {
+                Some((LocalDataRelocationTarget::StringLiteral(literal), 0))
+            }
+            PointerElement::Null => None,
             PointerElement::Scalar(value) => {
                 bytes.copy_from_slice(&(value as u32).to_be_bytes());
-                Vec::new()
-            }
-            PointerElement::Str(_) => {
-                return Err(Diagnostic::error(
-                    "a static-local pointer to a string needs local string pooling (roadmap)",
-                ));
+                None
             }
         };
+        let relocations = address
+            .into_iter()
+            .map(|(target, addend)| LocalDataRelocation { offset: 0, target, addend })
+            .collect();
         Ok((bytes, relocations))
     }
 

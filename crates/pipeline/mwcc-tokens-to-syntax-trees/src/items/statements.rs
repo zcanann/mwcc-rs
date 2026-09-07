@@ -630,7 +630,12 @@ impl Parser {
             self.advance();
         }
         {
-            let declared_type = self.parse_type()?;
+            let declared_type = self.parse_type_with_prefix_const(declaration_const)?;
+            // Capture object constness before an initializer parses another type.
+            // `static const char* p` is a writable pointer to const characters.
+            let static_pointer_const = (is_static
+                && matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. }))
+                .then_some(self.last_pointer_const);
             let source_fundamental = self.last_source_fundamental.take();
             self.last_type_was_const |= declaration_const;
             self.last_type_was_volatile |= declaration_volatile;
@@ -942,11 +947,7 @@ impl Parser {
                     {
                         let (bytes, relocations) = self.parse_static_local_pointer_initializer()?;
                         data_bytes = Some(bytes);
-                        data_relocations.extend(relocations.into_iter().map(
-                            |(offset, target, addend)| {
-                                local_data_relocation(offset, target, addend)
-                            },
-                        ));
+                        data_relocations.extend(relocations);
                     } else if matches!(
                         declared_type,
                         Type::Int
@@ -1014,7 +1015,7 @@ impl Parser {
                     is_static,
                     data_bytes,
                     data_relocations,
-                    is_const: false,
+                    is_const: static_pointer_const.unwrap_or(false),
                     attribute_alignment,
                     row_bytes: None,
                 });

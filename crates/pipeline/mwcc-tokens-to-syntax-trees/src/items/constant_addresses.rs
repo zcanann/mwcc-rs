@@ -211,6 +211,43 @@ mod tests {
     }
 
     #[test]
+    fn static_pointer_strings_preserve_raw_bytes_in_both_declaration_paths() {
+        let unit = crate::parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(
+                r#"char* get() {
+                    static const char* lead="\xff\0x";
+                    { static char* const nested="\x80y"; }
+                    return lead;
+                }"#,
+            )
+            .unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let literals: Vec<_> = unit.functions[0]
+            .locals
+            .iter()
+            .flat_map(|local| local.data_relocations.iter())
+            .filter_map(|relocation| match &relocation.target {
+                mwcc_syntax_trees::LocalDataRelocationTarget::StringLiteral(bytes) => {
+                    Some(bytes.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(literals, [vec![0xff, 0, b'x'], vec![0x80, b'y']]);
+        let constness: Vec<_> = unit.functions[0]
+            .locals
+            .iter()
+            .map(|local| local.is_const)
+            .collect();
+        assert_eq!(constness, [false, true]);
+    }
+
+    #[test]
     fn runtime_offsets_do_not_become_constant_addresses() {
         let result = crate::parse_translation_unit(
             mwcc_source_to_tokens::tokenize("int words[8]; int index; int* p=words+index;")

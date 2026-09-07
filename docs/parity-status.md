@@ -4,13 +4,64 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, const address tables and pointer-array storage (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, string storage and static-local string pointers (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `f688e1cbc9d85b1966ce0d804631bb6271ba38b04a703eacfd9123d20873e60c:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `a44c3fb8074c7d7a472ad9f19624e204eb3480a3a24574c365f5d1fb6575defb:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## String storage and static-local string pointers, 2026-09-06
+
+Against frozen baseline `3542bbff`, seven new canaries (1641–1647) improve
+from **28/105 to 65/105 whole-object exact pairs**, all reference-runnable.
+The optimized and O0 literal-size canaries each match **15/15**, as does the
+BFBB data reduction containing the 89 original file-scope string pointers from
+`zNPCTypeVillager.cpp` (**12/15 → 15/15**). Packed-pool alignment and short-pool
+storage each match **10/15**; the five oldest builds retain relocation-anchor
+mismatches. The static-local pointer canary and three original Mario Kart
+Double Dash `GeoTree.cpp` getter bodies now compile on every build, but remain
+nonexact. The latter reduction substitutes minimal class declarations for the
+project headers; neither reduction establishes a whole-project build result.
+
+All five driver paths that materialize string objects now share the existing
+versioned array-alignment calculation. Byte size includes the terminator, or
+the complete packed pool. Mainline O0 strings retain byte packing in both
+small and full sections; the newest builds promote whole sizes divisible by
+eight. Packed pools always use full `.data`/`.rodata`, including pools at or
+below the small-data threshold.
+
+Static-local scalar pointer initializers now return typed relocation targets,
+allowing strings to reach the existing function-owned pool without converting
+raw literal bytes through text. Leading and nested local declarations both
+preserve the pointer object's constness before parsing its initializer;
+`static const char* p` stays writable, while `static char* const p` is const.
+The parser test covers embedded NUL and non-UTF-8 bytes in both declaration paths.
+
+The four-shape matrix spans globals, aggregate fields, function literals, and
+static-local pointers; nineteen literal sizes; C/C++; O0/O4; normal, far,
+read-only, and packed storage; and all fifteen builds. Among **960 reference
+pairs**, compilation improves **720/960 → 960/960**, and complete objects
+**348/960 → 612/960**, with no exact losses. The separate 240-pair packed-pool
+size panel improves **60/240 → 156/240**. Remaining differences include static
+local numbering/order and code, and older read-only/packed relocation policy.
+The preceding pointer-table matrix improves **404/420 → 420/420 exact objects**.
+
+The real-project panel preserves every individual object and code verdict
+across **128 configurations: 47 BYTE, 16 DIFF, 59 compiler DEFER, two HARNESS,
+and four missing dependencies**. Code remains **46/109 exact measured
+objects**, five empty and fourteen unmeasured; the 51 emitted partial
+translation units remain nonexact. Both actual `GeoTree.cpp` configurations
+reach the 30-second cap in baseline and candidate, so their reduced getters'
+new compilability is not a complete-file result.
+
+The focused existing metadata panel retains all **1,179 exact objects** among
+**2,198 runnable pairs** (2,940 selected slots, 742 build exclusions), without
+exact losses or timeouts. Validation also passes **406 parser tests**, excluding
+the same two documented pre-existing failures, and the driver array-alignment
+matrix. Evidence, frozen binaries, and probe scripts are under
+`target/string-align-*` and `target/string-alignment-probes/`.
 
 ## Const address tables and pointer-array storage, 2026-09-06
 

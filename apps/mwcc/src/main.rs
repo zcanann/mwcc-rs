@@ -1587,6 +1587,22 @@ fn compile(
         bytes
     };
     let small_data = config.flags.global_addressing == mwcc_versions::GlobalAddressing::SmallData;
+    // Literals are byte arrays, including a materialized packed pool. Unlike
+    // named small-data arrays, they retain byte packing at O0 on mainline builds.
+    let string_alignments = |size: usize| {
+        global_alignments(
+            GlobalAlignmentInput {
+                element_size: 1,
+                struct_alignment: None,
+                array_length: Some(size as u32),
+                is_read_only: false,
+                requested_alignment: 1,
+                unoptimized: config.flags.optimization == mwcc_versions::Optimization::O0,
+                small_data: false,
+            },
+            config.build.profile,
+        )
+    };
     // Globals retain their position in the parser's complete source-function
     // stream. Speculative deferred inline candidates can subsequently disappear
     // from the object, so translate those positions into the emitted stream
@@ -1877,8 +1893,8 @@ fn compile(
                                     functions_before: global.functions_before,
                                     name: name.clone(),
                                     size: object_bytes.len() as u32,
-                                    alignment: 4,
-                                    comment_alignment: 4,
+                                    alignment: string_alignments(object_bytes.len()).layout,
+                                    comment_alignment: string_alignments(object_bytes.len()).comment,
                                     initial_bytes: Some(object_bytes),
                                     is_const: config.flags.string_literals_read_only,
                                     force_full_data_section: config.flags.string_literals_read_only
@@ -2172,8 +2188,8 @@ fn compile(
                                             functions_before: 0,
                                             name: name.clone(),
                                             size: object_bytes.len() as u32,
-                                            alignment: 4,
-                                            comment_alignment: 4,
+                                            alignment: string_alignments(object_bytes.len()).layout,
+                                            comment_alignment: string_alignments(object_bytes.len()).comment,
                                             initial_bytes: Some(object_bytes),
                                             is_const: config.flags.string_literals_read_only,
                                             force_full_data_section: config
@@ -2312,8 +2328,8 @@ fn compile(
                                     functions_before: 0,
                                     name: name.clone(),
                                     size: object_bytes.len() as u32,
-                                    alignment: 4,
-                                    comment_alignment: 4,
+                                    alignment: string_alignments(object_bytes.len()).layout,
+                                    comment_alignment: string_alignments(object_bytes.len()).comment,
                                     initial_bytes: Some(object_bytes),
                                     is_const: config.flags.string_literals_read_only
                                         || machine_function.strings_are_const,
@@ -2353,8 +2369,8 @@ fn compile(
                         functions_before: 0,
                         name: name.clone(),
                         size: object_bytes.len() as u32,
-                        alignment: 4,
-                        comment_alignment: 4,
+                        alignment: string_alignments(object_bytes.len()).layout,
+                        comment_alignment: string_alignments(object_bytes.len()).comment,
                         initial_bytes: Some(object_bytes),
                         is_const: config.flags.string_literals_read_only
                             || machine_function.strings_are_const,
@@ -2587,11 +2603,13 @@ fn compile(
             functions_before: 0,
             name: "@stringBase0".to_owned(),
             size: object_bytes.len() as u32,
-            alignment: 4,
-            comment_alignment: 4,
+            alignment: string_alignments(object_bytes.len()).layout,
+            comment_alignment: string_alignments(object_bytes.len()).comment,
             initial_bytes: Some(object_bytes),
             is_const: config.flags.string_literals_read_only,
-            force_full_data_section: config.flags.string_literals_read_only,
+            // Even a pool smaller than the small-data threshold is one full
+            // `.data`/`.rodata` object in the reference compiler.
+            force_full_data_section: true,
             is_static: true,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
