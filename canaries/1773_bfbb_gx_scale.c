@@ -63,4 +63,3 @@ void GXSetIndTexCoordScale(GXIndTexStageID ind_state, GXIndTexScale scale_s, GXI
     }
     __GXData->bpSentNot = 0;
 }
-

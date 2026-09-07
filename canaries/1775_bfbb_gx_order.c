@@ -66,4 +66,3 @@ void GXSetIndTexOrder(GXIndTexStageID ind_stage, GXTexCoordID tex_coord, GXTexMa
     __GXData->dirtyState |= 3;
     __GXData->bpSentNot = 0;
 }
-

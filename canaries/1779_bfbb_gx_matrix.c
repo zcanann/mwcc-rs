@@ -100,4 +100,3 @@ void GXSetIndTexMtx(GXIndTexMtxID mtx_id, const f32 offset[2][3], s8 scale_exp)
 
     __GXData->bpSentNot = 0;
 }
-
