@@ -4,13 +4,97 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, exact GX forwarding and outgoing stack-word arguments (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, exact GX order update and reusable terminal port flushes (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `32aec8bfb4c32bf9a6f64b5f8da0b5506a7d694104bb82722ca329b5ea3fad44:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `d0b224b5b5becbf3f582e5177175c6bbee3057909c0cd364e96bee50cce50e4e:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Exact GX order update and terminal port flushes, 2026-09-07
+
+The configured BfBB **`GXSetIndTexOrder` now matches all 236 original linked
+instruction bytes**, improving from 248 bytes under frozen baseline `6eb6ba53`.
+Its original/candidate linked-code SHA-256 is
+`b41a2361c65528a180ae0cfd4fb20ff3d1bed1758ab5f40764ff63849d5fd6cd`.
+**Five of the complete GX object's eight functions now have exact linked text**;
+the other four retained matches are `GXSetNumIndStages`, `GXSetTevDirect`,
+`__GXFlushTextureState`, and the empty `__GXUpdateBPMask`. Known symbol
+relocations are resolved at original DOL addresses. This is not a fresh
+relocatable reference-object comparison.
+
+The complete configured GX object remains compilable, SHA-256
+`0c3316db0b75041d68c0c3e2e50547132b37a27ebc24d432a430555c3e97f697`.
+Text shrinks **1,424 → 1,412 bytes**; the ELF shrinks **3,296 → 3,240 bytes**.
+The other seven function sizes are unchanged. Indirect setup, matrix setup,
+and coordinate scaling still differ from the original; full GX parity is open.
+
+The existing absolute-object port-flush owner now separates recognition from
+emission. Its plan represents a command/data pair, optional dirty-word OR,
+and halfword clear. A whole function and a terminal structured region share
+one emitter. The structured lowerer emits guards and switch arms normally,
+then the eligible build profile retains one state pointer through the tail.
+Early returns skip the complete tail. All profiles can lower this control flow;
+the linkage-first profile alone selects the measured retained-pointer schedule.
+Word casts from SDK macros are accepted, while narrowing casts, aggregate
+object bases, volatile pointer globals, different state bases, and unsupported
+masks retain general emission. The declaration-address metadata continues to
+select absolute-object scheduling.
+
+Two correctness issues surfaced in the boundary corpus. The old three-store
+flush owner reused a volatile pointer, suppressing its second read and clearing
+the wrong object when the pointer changed. Recognition now excludes volatile
+pointer globals. It also distinguishes aggregate storage from a pointer value,
+so an ordinary struct global reaches address-based emission. Exercising that
+fallback exposed a fixed-bank scheduler swapping a symbol-address instruction
+without its relocation. The fixed-bank pass now excludes relocation/deferred-
+displacement owners and uses the shared instruction-move operation to preserve
+metadata and branch destinations for accepted literal-address schedules.
+
+Ten new canaries **1793–1802** improve **112/150 → 150/150 compiled objects**
+across fifteen builds at O0/O4. The gains are thirty early-return wrapper
+objects and eight aggregate-object cases. They cover ordinary/dirty/aliased
+flushes, branch updates, pointer replacement, early returns, the complete GX
+order reduction with absolute-object syntax, volatile pointers, differing
+state bases, high masks, an explicit port cast at a different address,
+narrowing data casts, aggregate storage, and an overlapping halfword clear.
+
+Validation totals **146,432 passing candidate calls**:
+
+- **138,240** calls cover the new corpus, including **30,720** order-reduction
+  calls compared with the original DOL's complete context and FIFO fixtures.
+  Checks include both state objects, pointer replacement, FIFO address/width/
+  value, stack/SDA, and saved GPR/FPR restoration. Aggregate addresses exercise
+  positive and negative low-half relocation values. The baseline executes
+  109,056 calls with 2,048 failures, all from suppressed volatile-pointer
+  reloads in the simple flush.
+- **8,192** calls rerun all eight complete configured GX functions against
+  the original DOL, comparing FIFO traces, complete context memory, matrix
+  input preservation, and GPR/FPR/stack restoration.
+
+The volatile compound-update boundary still emits four pointer reads in both
+baseline and candidate. Its fixture changes the pointer after the first read
+and then holds it stable; it does not establish full volatile compound-update
+read-count parity. Only the configured GC/1.2.5n original supplies linked-byte
+evidence; the other builds have candidate execution coverage.
+
+The captured paired-memory matrix retains **300/300 exact objects**. The index
+panel retains **1,097 unchanged objects / 972 known reference matches / 577
+identical declines**. The cumulative metadata panel against `db48e092` retains
+**1,494 unchanged objects / 1,179 known matches / 704 identical declines**.
+Neither native panel timed out. **3 structured-leaf, 17 switch-lowering,
+1 fixed-bank scheduling, 11 instruction-index, and 40 object-writer tests pass**.
+The bank test now rejects symbol/deferred address operands while retaining
+literal bank scheduling. The complete configured AX object remains byte-identical,
+SHA-256 `1a8fed48a1634517cd66e23f09754e75274d170ca826e61408ff96650605e7e3`.
+
+Local scripts are `target/check_gx_flush*.py` and `target/probe_gx_flush*.py`;
+results, pinned originals, and object hashes are in
+`target/gx-flush-{canaries,gx,index,metadata,full-ax}/`.
+The six existing wibo processes remain in kernel U state after more than
+5 hours 41 minutes. No new reference-compiler process was launched and no fresh
+full-project panel was measured.
 
 ## Exact GX forwarding and outgoing stack words, 2026-09-07
 

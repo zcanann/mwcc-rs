@@ -4236,6 +4236,15 @@ impl Generator {
             }
         }
 
+        // A recognized terminal port flush can use structured return handling.
+        // Let an early return skip the complete tail before the general
+        // early-return/store scheduling diagnostic below.
+        if self.fixed_address_object_flush_tail(&function.statements).is_some()
+            && self.try_leaf_structured_body(function)?
+        {
+            return Ok(());
+        }
+
         // A leading early-return if whose continuation MATERIALIZES store values (a
         // constant/computed value, or several stores) schedules the return value between
         // the materialization and the store (`li r0,5; li r3,0; stw r0`), or interleaves

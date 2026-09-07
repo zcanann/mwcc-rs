@@ -15,7 +15,12 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        if !requires_structured_branch_graph(&leaf_structured_statements(function)) {
+        let has_flush_tail = function.return_type == Type::Void
+            && function.return_expression.is_none()
+            && self.fixed_address_object_flush_tail(&function.statements).is_some();
+        if !requires_structured_branch_graph(&leaf_structured_statements(function))
+            && !has_flush_tail
+        {
             return Ok(false);
         }
         // Leaf guards that assign values need the same switch-to-CFG lowering
@@ -32,7 +37,7 @@ impl Generator {
         if function_makes_call(function)
             || !self.frame_slots.is_empty()
             || !leaf_return_shape_is_supported(function)
-            || !requires_structured_branch_graph(&structured_statements)
+            || (!requires_structured_branch_graph(&structured_statements) && !has_flush_tail)
             || !supports_leaf_structured_statements(&structured_statements)
             || function.locals.iter().any(|local| {
                 local.is_static
@@ -78,11 +83,20 @@ impl Generator {
             );
         }
 
+        // All profiles can lower the terminal region's control flow. Only
+        // the measured linkage-first profile uses its retained-pointer schedule.
+        let flush_tail = (self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && function.return_type == Type::Void
+            && function.return_expression.is_none())
+            .then(|| self.fixed_address_object_flush_tail(structured_statements))
+            .flatten();
+        let prefix_len = structured_statements.len()
+            - flush_tail.as_ref().map_or(0, |plan| plan.statement_count);
         let mut return_branches = Vec::new();
         let mut label_positions = std::collections::HashMap::new();
         let mut pending_gotos = Vec::new();
         self.emit_structured_statements(
-            &structured_statements,
+            &structured_statements[..prefix_len],
             function,
             &[],
             false,
@@ -91,6 +105,10 @@ impl Generator {
             &mut pending_gotos,
             &mut None,
         )?;
+        if let Some(plan) = flush_tail {
+            self.reset_switch_edge_caches();
+            self.emit_fixed_address_object_flush(plan)?;
+        }
         self.retain_guarded_nested_member_base();
         self.reuse_guarded_narrow_member_update();
         self.schedule_volatile_bitset_hint_tail();
