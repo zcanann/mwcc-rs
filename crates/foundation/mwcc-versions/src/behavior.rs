@@ -137,6 +137,8 @@ pub enum Quirk {
     /// schedule. Unique to GC/2.0p1.
     FloatCastStoresValueFirst,
     ExplicitNegatedFloatArithmetic,
+    LegacyMaskedConstantEquality,
+    AdditiveComputedConstantEquality,
     FloatCompareLoadsValueFirst,
     /// Build 163's int-to-float lowering stores a biased signed value through
     /// r0 before materializing the high word in that same register.
@@ -228,6 +230,7 @@ impl Quirk {
             // A scheduling change introduced by the 2.0 patch release.
             Quirk::FloatCastStoresValueFirst => QuirkKind::Intentional,
             Quirk::ExplicitNegatedFloatArithmetic => QuirkKind::Intentional,
+            Quirk::LegacyMaskedConstantEquality | Quirk::AdditiveComputedConstantEquality => QuirkKind::Intentional,
             Quirk::FloatCompareLoadsValueFirst => QuirkKind::Intentional,
             Quirk::LegacyFloatCastSchedule => QuirkKind::Intentional,
             Quirk::LegacyPointerValueRegisterOrder => QuirkKind::Intentional,
@@ -314,6 +317,12 @@ impl Quirk {
             }
             Quirk::UnsignedPlainChar => {
                 "plain `char` defaults to unsigned (build 53 / -char unsigned)"
+            }
+            Quirk::LegacyMaskedConstantEquality => {
+                "early GC compares matching masks through addi/cntlzw, retaining single-bit mask operations"
+            }
+            Quirk::AdditiveComputedConstantEquality => {
+                "4.x compares computed integers through addi/cntlzw when the negative constant fits"
             }
             Quirk::ExplicitNegatedFloatArithmetic => {
                 "the 4.x optimizer preserves explicit floating negations instead of folding negative sums and products"
@@ -812,6 +821,8 @@ pub struct Behavior {
     pub stored_global_read_style: StoredGlobalReadStyle,
     /// Whether zero equality negates its value into r0 before `cntlzw`.
     pub negate_before_zero_equality: bool,
+    /// Optimized computed equality instruction selection.
+    pub computed_constant_equality_style: crate::ComputedConstantEqualityStyle,
     /// Frame/merge convention for type-punned floating parameters.
     pub punned_float_frame_convention: PunnedFloatFrameConvention,
     /// Anonymous labels retained by the uncontracted `__kernel_sin` lowering.
@@ -1326,6 +1337,7 @@ impl Behavior {
             indexed_rmw_assignment_style: config.build.profile.indexed_rmw_assignment_style(),
             stored_global_read_style: config.build.profile.stored_global_read_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
+            computed_constant_equality_style: config.build.profile.computed_constant_equality_style(),
             punned_float_frame_convention: config.build.profile.punned_float_frame_convention(),
             ksin_uncontracted_label_bump: config.build.profile.ksin_uncontracted_label_bump(),
             punned_float_composition_deferred_label_bump: if config.flags.inline_deferred {
@@ -1883,6 +1895,15 @@ impl Behavior {
         if self.asm_negative_quantized_displacement_overwrites_fields {
             quirks.push(ActiveQuirk::of(Quirk::NegativeQuantizedDisplacementOverwritesFields));
         }
+        if self.optimization >= Optimization::O3 {
+            match self.computed_constant_equality_style {
+                crate::ComputedConstantEqualityStyle::LegacyMaskedAdd =>
+                    quirks.push(ActiveQuirk::of(Quirk::LegacyMaskedConstantEquality)),
+                crate::ComputedConstantEqualityStyle::AddImmediate =>
+                    quirks.push(ActiveQuirk::of(Quirk::AdditiveComputedConstantEquality)),
+                crate::ComputedConstantEqualityStyle::SubtractImmediate => {}
+            }
+        }
         quirks
     }
 }
@@ -2268,9 +2289,10 @@ mod tests {
     }
 
     #[test]
-    fn mainline_has_no_active_quirks() {
+    fn build_81_retains_legacy_mask_equality() {
         let behavior = Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2));
-        assert!(behavior.active_quirks().is_empty());
+        assert_eq!(behavior.active_quirks().iter().map(|q| q.quirk).collect::<Vec<_>>(),
+            vec![Quirk::LegacyMaskedConstantEquality]);
         assert!(behavior.char_is_signed);
     }
 
@@ -2278,7 +2300,7 @@ mod tests {
     fn build_53_reports_the_unsigned_char_quirk() {
         let behavior = Behavior::resolve(&CompilerConfig::new(build::GC_1_3));
         let quirks = behavior.active_quirks();
-        assert_eq!(quirks.len(), 5);
+        assert_eq!(quirks.len(), 6);
         assert_eq!(quirks[0].quirk, Quirk::UnsignedPlainChar);
         assert_eq!(quirks[0].kind, QuirkKind::Intentional);
         assert_eq!(quirks[1].quirk, Quirk::EarlyDataSectionRelocationAnchors);
@@ -2294,6 +2316,7 @@ mod tests {
         assert_eq!(quirks[3].quirk, Quirk::EarlyOutOfLineQueueService);
         assert_eq!(quirks[4].quirk, Quirk::NegativeQuantizedDisplacementOverwritesFields);
         assert_eq!(quirks[4].kind, QuirkKind::BugReproduction);
+        assert_eq!(quirks[5].quirk, Quirk::LegacyMaskedConstantEquality);
 
         let mut deferred_config = CompilerConfig::new(build::GC_1_3);
         deferred_config.flags.inline_deferred = true;
@@ -3104,4 +3127,25 @@ mod tests {
             WideCallResultMaskStyle::ScalarizeLowWord
         );
     }
+    #[test]
+    fn computed_equality_profiles_and_quirks_follow_optimizer_generations() {
+        use crate::ComputedConstantEqualityStyle::{LegacyMaskedAdd, SubtractImmediate, AddImmediate};
+        for (build, style, quirk) in [
+            (build::GC_1_2_5N, LegacyMaskedAdd, Some(Quirk::LegacyMaskedConstantEquality)),
+            (build::GC_1_3_2, LegacyMaskedAdd, Some(Quirk::LegacyMaskedConstantEquality)),
+            (build::GC_2_7, SubtractImmediate, None),
+            (build::GC_3_0A3P1, AddImmediate, Some(Quirk::AdditiveComputedConstantEquality)),
+            (build::WII_1_0, AddImmediate, Some(Quirk::AdditiveComputedConstantEquality)),
+        ] {
+            let mut config = CompilerConfig::new(build);
+            let behavior = Behavior::resolve(&config);
+            assert_eq!(behavior.computed_constant_equality_style, style);
+            if let Some(quirk) = quirk {
+                assert!(behavior.active_quirks().iter().any(|q| q.quirk == quirk));
+                config.flags.optimization = Optimization::O0;
+                assert!(!Behavior::resolve(&config).active_quirks().iter().any(|q| q.quirk == quirk));
+            }
+        }
+    }
+
 }

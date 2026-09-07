@@ -4,13 +4,82 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete configured GXLight and versioned floating negation (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, computed integer equality from GXFrameBuf (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `1f9e4d1df9ba689df418533950efc26919304720b7e5c7de58478a1122e1ee12:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `9ff4d349cc056e08713d5a4b7afb74396fa429d0e5115e942762415be3d2267d:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Computed integer equality from GXFrameBuf, 2026-09-07
+
+The configured BfBB `GXFrameBuf.c` advances past
+`__GXData->cpTexZ = (fmt & 16) == 16` in `GXSetTexCopyDst`. Its next decline is
+the discarded `!peTexFmt;` expression. The full unit still does not compile;
+the fourteen-unit GX survey remains **5/14**. This checkpoint adds a shared
+comparison path, rather than a function-specific GX replacement.
+
+Computed integer operands now materialize once before comparison with a small
+nonzero constant, including arithmetic, masks, casts, calls, and conditional
+values. Existing register-leaf, direct-load, zero-equality, and floating paths
+retain their selection precedence. Narrow call returns are promoted from their
+declared low bits before comparison; poisoned upper bits exposed **1,260 wrong
+results** in the first candidate, all resolved in the final panel. Conditional
+volatile operands retain their guarded access and calls execute once.
+
+`ComputedConstantEqualityStyle` separates three measured O3/O4 choices:
+early GC through 1.3.2r retains the masked-value/add-negative-constant sequence;
+GC 2.0–2.7 uses `subfic`; 4.x uses `addi` when the negated immediate fits.
+Later profiles extract a matching single-bit mask directly. The divergent
+choices have named, inspectable intentional quirks. O0–O2 retain a constant
+register and `subf`; O0 keeps computed temporaries out of operand homes, while
+O1/O2 permit coalescing. Representable narrow constants retain their redundant
+O0–O2 conversion. The `-32768` boundary avoids overflowing the negated immediate.
+
+Canaries **1883–1890** compile **120/120** sample/version pairs, up from
+**0/120** with frozen baseline `b8c8ef8e`; fresh references compile **120/120**.
+The panel contains 28 functions at O4 and O0 across all fifteen builds.
+**30/120 whole objects** and **506/840 function text plus symbolic relocation
+comparisons** match exactly. Both core eight-function objects match for every
+build: **30/30**. The additional call, store, conditional, narrow, reused-value,
+and immediate-boundary cases remain separately measured; execution agreement
+does not imply their instruction parity.
+
+All **430,080 candidate calls** and **430,080 reference calls** pass the
+explicit integer/access model and agree with each other. Each function runs
+512 inputs, including masks and comparison boundaries, upper-bit-poisoned
+narrow call returns, canonical narrow parameters, and random words. The harness
+checks return values or complete state bytes, ordered reads/writes, call counts,
+preserved GPRs, and SP/LR restoration. Small explicit external helper bodies
+supply call results; this is a reduced-sample execution panel, not a linked
+original-DOL validation of `GXSetTexCopyDst`.
+
+An additional fresh O1/O2/O3 panel compiles **45/45** on each side, with
+**19/45 whole objects exact**. Lower optimization levels still differ in
+legacy operand ordering and the O2 single-bit extraction threshold; Wii O3
+also differs in object layout. These are recorded non-matches, not evidence
+that every optimization level has the O4 schedule. All **184,320 additional calls per side** pass the same integer and ABI
+checks, bringing this checkpoint to **614,400 candidate calls** validated
+against references and explicit models.
+
+Cached regressions retain **300/300** exact memory-operand objects and
+**1,097/1,097** compiled indexed objects unchanged, including all **972** known
+exact results; **577** declines remain identical. The cumulative metadata panel
+retains **1,494** compiled objects, **1,487** unchanged, **1,179** known exact,
+and **704** identical declines. Its seven changed historical `1469` shift
+objects predate this checkpoint. All five compiling GX units and full AXVPB
+retain their previous object hashes. Focused tests pass: **46** version/profile,
+**11** comparison, **32** frame, and **40** object tests. No full corpus or full
+reference-project holdout was rerun.
+
+Artifacts: `target/computed-equality-canaries/{results,reference-results,
+reference-comparison,execution-results}.json`,
+`target/computed-equality-levels/`, `target/computed-equality-gx-library/`,
+`target/computed-equality-{index,metadata,full-ax}/`, and
+`target/memory-operands-probes/computed-equality-results.json`.
+The full GXFrameBuf discard/loop/switch frontier and the nonmatching reduced
+object schedules remain follow-up work; no new original-DOL exactness is claimed.
 
 ## Complete configured GXLight and versioned floating negation, 2026-09-07
 

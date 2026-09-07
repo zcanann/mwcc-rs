@@ -232,6 +232,11 @@ impl Generator {
                 }
             }
         }
+        if operator == BinaryOperator::Equal
+            && self.try_emit_computed_constant_equality(left, right, d)?
+        {
+            return Ok(());
+        }
         if self.try_emit_legacy_integer_comparison(operator, left, right, d, signed_comparison)? {
             return Ok(());
         }
@@ -2003,6 +2008,162 @@ impl Generator {
             (left_register, right_register)
         };
         Ok((left_placed, right_placed))
+    }
+
+    /// Materialize a computed integer value once before comparing it with a
+    /// small nonzero constant. Leaves and direct loads retain their established
+    /// promotion and placement paths. Equality permits either source order.
+    fn try_emit_computed_constant_equality(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let (value, constant) = if let Some(constant) = as_small_integer(right) {
+            (left, constant)
+        } else if let Some(constant) = as_small_integer(left) {
+            (right, constant)
+        } else {
+            return Ok(false);
+        };
+        if constant == 0
+            || self.leaf_info(value).is_ok()
+            || self.is_byte_load(value)
+            || self.is_word_load(value)
+            || self.is_signed_byte_load(value)?
+            || !matches!(
+                value,
+                Expression::Binary { .. }
+                    | Expression::Unary { .. }
+                    | Expression::Cast { .. }
+                    | Expression::Call { .. }
+                    | Expression::Conditional { .. }
+                    | Expression::Comma { .. }
+                    | Expression::Assign { .. }
+            )
+        {
+            return Ok(false);
+        }
+        let optimized = self.behavior.optimization >= mwcc_versions::Optimization::O3;
+        use mwcc_versions::ComputedConstantEqualityStyle;
+        let style = self.behavior.computed_constant_equality_style;
+        let matching_mask =
+            as_masked_leaf(value).filter(|(_, mask)| i64::from(*mask) == i64::from(constant));
+        if optimized && style != ComputedConstantEqualityStyle::LegacyMaskedAdd {
+            if let Some((operand, mask)) = matching_mask {
+                if mask.is_power_of_two() {
+                    if let Ok((source, 32, _)) = self.leaf_info(operand) {
+                        self.output.instructions.push(Instruction::RotateAndMask {
+                            a: destination,
+                            s: source,
+                            shift: ((32 - mask.trailing_zeros()) % 32) as u8,
+                            begin: 31,
+                            end: 31,
+                        });
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        if !optimized {
+            let mut occupied = std::collections::HashSet::from([GENERAL_SCRATCH]);
+            if self.behavior.optimization == mwcc_versions::Optimization::O0 {
+                occupied.insert(destination);
+                self.collect_registers(value, &mut occupied);
+            }
+            let computed = self.fresh_virtual_general_avoiding(occupied.into_iter().collect());
+            self.evaluate_computed_equality_operand(value, computed)?;
+            self.load_integer_constant(GENERAL_SCRATCH, i64::from(constant));
+            // O0-O2 retain the narrow conversion on a representable constant too.
+            let narrow_type = match value {
+                Expression::Cast { target_type, .. } => Some(*target_type),
+                Expression::Call { name, .. } => self.call_return_types.get(name).copied(),
+                _ => None,
+            }
+            .filter(|ty| {
+                matches!(
+                    ty,
+                    Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort
+                )
+            });
+            if let Some(ty) = narrow_type {
+                let signed = self.signed_of(ty);
+                let range = if signed {
+                    -(1i64 << (ty.width() - 1))..(1i64 << (ty.width() - 1))
+                } else {
+                    0..(1i64 << ty.width())
+                };
+                if range.contains(&i64::from(constant)) {
+                    self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, ty.width(), signed);
+                }
+            }
+            self.output.instructions.push(Instruction::SubtractFrom {
+                d: GENERAL_SCRATCH,
+                a: computed,
+                b: GENERAL_SCRATCH,
+            });
+        } else if constant.checked_neg().is_some()
+            && (style == ComputedConstantEqualityStyle::AddImmediate
+                || (matching_mask.is_some()
+                    && style == ComputedConstantEqualityStyle::LegacyMaskedAdd))
+        {
+            let computed = self.fresh_virtual_general();
+            self.evaluate_computed_equality_operand(value, computed)?;
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: GENERAL_SCRATCH,
+                a: computed,
+                immediate: -constant,
+            });
+        } else {
+            self.evaluate_computed_equality_operand(value, GENERAL_SCRATCH)?;
+            self.output
+                .instructions
+                .push(Instruction::SubtractFromImmediate {
+                    d: GENERAL_SCRATCH,
+                    a: GENERAL_SCRATCH,
+                    immediate: constant,
+                });
+        }
+        self.output
+            .instructions
+            .push(Instruction::CountLeadingZeros {
+                a: GENERAL_SCRATCH,
+                s: GENERAL_SCRATCH,
+            });
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightLogicalImmediate {
+                a: destination,
+                s: GENERAL_SCRATCH,
+                shift: 5,
+            });
+        Ok(true)
+    }
+
+    /// A narrow call result only defines its declared low bits at the ABI
+    /// boundary. Promote it before comparing, as for the zero/sign idioms.
+    fn evaluate_computed_equality_operand(
+        &mut self,
+        value: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
+        self.evaluate_general(value, destination)?;
+        if let Expression::Call { name, .. } = value {
+            if let Some(return_type) = self
+                .call_return_types
+                .get(name)
+                .copied()
+                .filter(|return_type| return_type.width() < 32)
+            {
+                self.emit_widen(
+                    destination,
+                    destination,
+                    return_type.width(),
+                    self.signed_of(return_type),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Place the two operands of a general signed comparison into registers. A

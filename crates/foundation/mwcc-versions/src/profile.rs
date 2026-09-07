@@ -7,6 +7,17 @@
 //! existing one is "add a profile struct, override one method", never a fork of
 //! the whole code generator.
 
+/// Optimized materialization of a computed value's equality with a small constant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComputedConstantEqualityStyle {
+    /// Early GC: add the negative constant for `(value & mask) == mask`.
+    LegacyMaskedAdd,
+    /// Later 2.x: subtract the computed value from the immediate.
+    SubtractImmediate,
+    /// 4.x: add the negative constant to a value held outside r0.
+    AddImmediate,
+}
+
 /// Placement of the linkage area relative to stack-pointer adjustment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameConvention {
@@ -1579,6 +1590,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         StoredGlobalReadStyle::ReuseStoredRegister
     }
 
+    /// Materialization of computed equality at O3/O4. O0-O2 use their
+    /// explicit constant-register/subtract sequence across these generations.
+    fn computed_constant_equality_style(&self) -> ComputedConstantEqualityStyle {
+        ComputedConstantEqualityStyle::SubtractImmediate
+    }
+
     /// Whether `value == 0` negates the value into r0 before `cntlzw`.
     /// This preserves build 163's older equality idiom for both register
     /// leaves and computed values.
@@ -1994,6 +2011,9 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn computed_constant_equality_style(&self) -> ComputedConstantEqualityStyle {
+        ComputedConstantEqualityStyle::AddImmediate
+    }
     fn simplify_negated_float_arithmetic(&self) -> bool {
         false
     }
@@ -2258,6 +2278,9 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn computed_constant_equality_style(&self) -> ComputedConstantEqualityStyle {
+        ComputedConstantEqualityStyle::AddImmediate
+    }
     fn simplify_negated_float_arithmetic(&self) -> bool {
         false
     }
@@ -2538,6 +2561,9 @@ impl CodegenProfile for Wii43Build145 {
 #[derive(Debug)]
 pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
+    fn computed_constant_equality_style(&self) -> ComputedConstantEqualityStyle {
+        ComputedConstantEqualityStyle::LegacyMaskedAdd
+    }
     fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
         FixedBankStreamStyle::MainlineRegisterMask
     }
@@ -2613,6 +2639,9 @@ impl CodegenProfile for Gc13Build53 {
 #[derive(Debug)]
 pub struct Gc132Build81;
 impl CodegenProfile for Gc132Build81 {
+    fn computed_constant_equality_style(&self) -> ComputedConstantEqualityStyle {
+        ComputedConstantEqualityStyle::LegacyMaskedAdd
+    }
     fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
         FixedBankStreamStyle::MainlineImmediateMask
     }
@@ -2700,6 +2729,9 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn computed_constant_equality_style(&self) -> ComputedConstantEqualityStyle {
+        ComputedConstantEqualityStyle::LegacyMaskedAdd
+    }
     fn global_load_pair_style(&self) -> GlobalLoadPairStyle {
         self.global_load_pair_style
     }
