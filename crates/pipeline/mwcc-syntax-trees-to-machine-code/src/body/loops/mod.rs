@@ -6,6 +6,7 @@ use super::*;
 mod ascii_hash;
 mod ascii_upper;
 mod bit_reverse;
+mod byte_word_transfer;
 mod count_register;
 mod counted_member_pointer_search;
 mod counted_pointer_search;

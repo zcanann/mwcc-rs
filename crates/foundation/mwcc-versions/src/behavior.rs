@@ -29,7 +29,7 @@ use crate::profile::{
     GuardedByteCopyStyle, NullPointerCompareStyle,
     GuardedMemberInitializationStyle,
     IndexedRmwAssignmentStyle, IntCallResultConversionStyle, IntegerComparisonValueStyle,
-    IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle, JumpTableBaseStyle,
+    ByteWordTransferStyle, IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle, JumpTableBaseStyle,
     LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle, LongLongTimerStyle,
     MaterializationCopyStyle, MemCopyRemainderMaskStyle, MemCopyWordScheduleStyle,
     NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowGuardScheduleStyle,
@@ -682,6 +682,8 @@ pub struct Behavior {
     pub integer_dag_style: IntegerDagStyle,
     /// Entry, allocation, and scheduling policy for specialized integer loops.
     pub integer_loop_style: IntegerLoopStyle,
+    /// Measured packet and frame layout for unrolled byte/word transfers.
+    pub byte_word_transfer_style: ByteWordTransferStyle,
     /// Register allocation and issue order for MSL's aligned word-copy unroll.
     pub mem_copy_word_schedule_style: MemCopyWordScheduleStyle,
     /// Instruction selection for MSL's final three-byte remainder mask.
@@ -1163,6 +1165,7 @@ impl Behavior {
             raise_family_style: config.build.profile.raise_family_style(),
             integer_dag_style: config.build.profile.integer_dag_style(),
             integer_loop_style: config.build.profile.integer_loop_style(),
+            byte_word_transfer_style: config.build.profile.byte_word_transfer_style(),
             mem_copy_word_schedule_style: config.build.profile.mem_copy_word_schedule_style(),
             mem_copy_remainder_mask_style: config.build.profile.mem_copy_remainder_mask_style(),
             schedule_latency_slots: config.flags.optimization == Optimization::O4,
@@ -2896,6 +2899,26 @@ mod tests {
         assert!(!Behavior::resolve(&config).power_pc_7400_scheduling_enabled());
         config.flags.scheduler_enabled = true;
         assert!(Behavior::resolve(&config).power_pc_7400_scheduling_enabled());
+    }
+
+    #[test]
+    fn byte_word_transfer_packets_follow_the_measured_profile_family() {
+        for compiler_build in [build::GC_1_1, build::GC_1_2_5, build::GC_1_2_5N] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build)).byte_word_transfer_style,
+                ByteWordTransferStyle::LegacyDependencyFirst,
+            );
+        }
+        assert_eq!(
+            Behavior::resolve(&CompilerConfig::new(build::GC_1_1P1)).byte_word_transfer_style,
+            ByteWordTransferStyle::LegacyInterleaved,
+        );
+        for compiler_build in [build::GC_1_3_2, build::GC_2_7, build::WII_1_0] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build)).byte_word_transfer_style,
+                ByteWordTransferStyle::Structured,
+            );
+        }
     }
 
     #[test]

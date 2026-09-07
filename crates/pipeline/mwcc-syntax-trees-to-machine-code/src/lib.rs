@@ -138,7 +138,7 @@ pub fn lower_function(
     call_return_fundamentals: &HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
-    lower_function_with_memory_facts(
+    lower_function_with_source_facts(
         function,
         globals,
         aggregate_definitions,
@@ -156,14 +156,30 @@ pub fn lower_function(
         inline_expansion_facts,
         source_inline_string_symbols,
         call_return_fundamentals,
-        &HashSet::new(),
+        SourceFunctionFacts {
+            nonvolatile_pointer_parameters: &HashSet::new(),
+            parameter_fundamentals: &HashMap::new(),
+            local_fundamentals: &HashMap::new(),
+        },
         config,
     )
 }
 
-/// Lower with source-proven parameter memory facts. Missing facts disable reuse.
+/// Declaration facts whose source identities are finer than executable storage.
+/// Keeping them together lets lowering consume new facts without widening its
+/// call boundary each time. Keys use emitted function names and source locals.
+#[derive(Clone, Copy)]
+pub struct SourceFunctionFacts<'a> {
+    pub nonvolatile_pointer_parameters: &'a HashSet<(String, String)>,
+    pub parameter_fundamentals:
+        &'a HashMap<(String, String), mwcc_syntax_trees::SourceFundamentalType>,
+    pub local_fundamentals:
+        &'a HashMap<(String, String), mwcc_syntax_trees::SourceFundamentalType>,
+}
+
+/// Lower with source-proven declaration facts. Missing facts disable reuse.
 #[allow(clippy::too_many_arguments)]
-pub fn lower_function_with_memory_facts(
+pub fn lower_function_with_source_facts(
     function: &Function,
     globals: &[GlobalDeclaration],
     aggregate_definitions: &HashMap<String, mwcc_syntax_trees::AggregateDefinition>,
@@ -181,7 +197,7 @@ pub fn lower_function_with_memory_facts(
     inline_expansion_facts: mwcc_syntax_trees::InlineExpansionFacts,
     source_inline_string_symbols: &HashMap<Vec<u8>, String>,
     call_return_fundamentals: &HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
-    nonvolatile_pointer_parameters: &HashSet<(String, String)>,
+    source_facts: SourceFunctionFacts<'_>,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
     let mut output = lower_function_body(
@@ -202,7 +218,7 @@ pub fn lower_function_with_memory_facts(
         inline_expansion_facts,
         source_inline_string_symbols,
         call_return_fundamentals,
-        nonvolatile_pointer_parameters,
+        source_facts,
         config,
     )?;
     automatic_rodata::retain_unused_array_images(
@@ -264,7 +280,7 @@ fn lower_function_body(
     inline_expansion_facts: mwcc_syntax_trees::InlineExpansionFacts,
     source_inline_string_symbols: &HashMap<Vec<u8>, String>,
     call_return_fundamentals: &HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
-    nonvolatile_pointer_parameters: &HashSet<(String, String)>,
+    source_facts: SourceFunctionFacts<'_>,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
     if let Some(output) = body::lower_register_inline_asm_wrapper(
@@ -738,6 +754,16 @@ fn lower_function_body(
         behavior,
         return_source_fundamental: call_return_fundamentals.get(&function.name).copied(),
         call_return_fundamentals: call_return_fundamentals.clone(),
+        parameter_source_fundamentals: source_facts.parameter_fundamentals
+            .iter()
+            .filter(|((owner, _), _)| owner == &function.name)
+            .map(|((_, name), kind)| (name.clone(), *kind))
+            .collect(),
+        local_source_fundamentals: source_facts.local_fundamentals
+            .iter()
+            .filter(|((owner, _), _)| owner == &function.name)
+            .map(|((_, name), kind)| (name.clone(), *kind))
+            .collect(),
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
         artificial_structured_leaf_frame: false,
@@ -853,7 +879,7 @@ fn lower_function_body(
         materialized_float_window: None,
         materialized_float_assignment_active: false,
         promoted_float_locals: std::collections::HashSet::new(),
-        nonvolatile_pointer_parameters: nonvolatile_pointer_parameters
+        nonvolatile_pointer_parameters: source_facts.nonvolatile_pointer_parameters
             .iter()
             .filter(|(owner, _)| owner == &function.name)
             .map(|(_, parameter)| parameter.clone())

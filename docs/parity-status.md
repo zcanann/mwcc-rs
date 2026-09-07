@@ -4,13 +4,74 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, physical register lifetimes in immediate transfers (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, legacy byte/word transfer unrolling (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `c89a23104712d73a5be7c0fc523349aa276ab83fbfc21ade97d3656f9435bbc2:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `5d501c41df5b04213539c3e5ff72a089617a816c385e098d8578a69d3a1ff117:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Legacy byte/word transfer unrolling, 2026-09-06
+
+Against baseline `c6abb794`, Melee's `DBGEXIImm` now matches all **664 reference
+function bytes**. The complete source improves from **13/21 to 14/21 exact
+functions** and **856/3320 to 1520/3320 exact reference function bytes**, with
+all 21 compiling. Seven functions remain nonexact: `DBGRead`, `DBGWrite`,
+`CheckMailBox`, `DBInitComm`, `DBQueryData`, `DBRead`, and `DBWrite`.
+
+A semantic recognizer proves the byte-pack loop, register write, control word,
+busy wait, conditional register read, byte-unpack loop, and constant success
+return. It derives the bank address, register offsets, control fields, poll bit,
+and source variable roles. Separate packet emitters and the version-resolved
+`ByteWordTransferStyle` own eight-byte unrolling, remainder loops, register
+placement, and frame layout. GC/1.1, GC/1.2.5, and GC/1.2.5n share the 72-byte
+frame and dependency-first packets. GC/1.1p1 uses a 64-byte frame, different
+word/index/buffer homes, and interleaved packets. The legacy layout preserves
+the reference's out-of-line packing-remainder setup after the result block.
+Other version families retain structured lowering. Admission requires O4
+performance optimization and the measured scheduling conditions.
+
+Reference probes revealed that an `int` induction variable and `long` bound
+retain register comparisons, while equal source types permit comparisons
+against zero. Both types occupy 32 bits. The same distinction holds for a
+`long` index with an `int` bound; making both `long` restores the equal-type
+schedule. `SourceFunctionFacts` now carries the frontend's existing parameter
+and local scalar identities alongside pointer memory facts into codegen.
+Missing scalar identity facts do not authorize the new schedule. The compact
+executable type representation remains unchanged.
+
+New canary **1600** covers all three long-type combinations and changes the
+bank to `0xCC00F000`, both register indices, the trigger/poll bit, and control
+field shifts. Together with 1599, it improves **0/22 to 8/22 whole-object exact
+pairs** across all 11 measured builds: both objects are exact on all four
+legacy builds, and the other 14 pairs remain nonexact. All 22 pairs compile,
+with no exclusions or reference rejections. Recognition rejects altered loop
+bounds/steps, extra effects, signed byte or word storage, narrowing pointer
+casts, aliasing local roles, mismatched device registers, and runtime
+expressions that only appear constant through algebraic identities.
+
+**116,640 paired Unicorn cases** pass: 28,512 for 1599, 85,536 for 1600's three
+variants, and 2,592 executing Melee's actual transfer body. Checks retain the
+previous milestone's transfer-length, shift-behavior, device-access, buffer,
+return, and saved-register coverage. Ordinary input-byte loads may be
+reordered within a contiguous read packet; device accesses and stores retain
+execution order. Reference ABI save/restore helpers execute synthesized
+load/store stubs where required by the other version families.
+
+The 182-canary regression selection retains identical verdicts on five builds:
+**910 slots, 242 exclusions, 668 runnable pairs, 376 exact objects, and 183
+existing candidate rejections**, with no reference rejections or timeouts.
+The 40-configuration reference selection retains **35 whole-object exact,
+one DIFF, and four missing dependencies**. Code remains exact on **33/34
+measured configurations**, with two empty and four unmeasured; Melee gains
+function coverage within the remaining DIFF. Seven admission tests, one
+profile-resolution test, and 117 inline tests pass, with the independently
+confirmed preexisting embedded-asm composition failure excluded from the
+inline selection. Evidence is retained under `target/exi-unroll-*.log`,
+`target/check_exi_unroll*.py`, `target/probe_exi_unroll.py`, and the existing
+immediate-transfer execution harness. These are focused diagnostics, not a
+corpus-wide parity estimate.
 
 ## Physical register lifetimes in immediate transfers, 2026-09-06
 

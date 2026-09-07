@@ -494,6 +494,12 @@ pub(crate) struct Generator {
     /// `bool` result distinct from converting an `unsigned char` result to bool.
     pub(crate) call_return_fundamentals:
         HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
+    /// Source scalar identities used by optimizations that distinguish equal
+    /// storage types, such as an int induction variable versus a long bound.
+    pub(crate) parameter_source_fundamentals:
+        HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
+    pub(crate) local_source_fundamentals:
+        HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
     /// The target's register-allocation rules — the allocatable pools and scratch.
     /// The free-register helpers draw from here, so the pools have one authoritative
     /// home (shared with the future allocator) rather than literals in placement.
