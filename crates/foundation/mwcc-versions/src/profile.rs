@@ -946,10 +946,28 @@ pub enum CxxTrivialDestructorStyle {
     ExplicitTests,
 }
 
+/// File-array alignment differs from element/member alignment and section
+/// minimum alignment. Keep its generation-specific promotion in the profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArrayAlignmentStyle {
+    /// Legacy arrays retain at least word alignment, including metadata at O0.
+    Word,
+    /// At O0, use natural alignment except scalar arrays in small data, whose
+    /// storage is word-aligned while metadata retains element alignment.
+    NaturalAtO0,
+    /// Arrays whose byte size is a nonzero multiple of eight align to eight;
+    /// other arrays retain a word minimum, independently of optimization.
+    SizeMultipleOfEight,
+}
+
 /// The version-varying codegen decisions. Every method defaults to the GameCube
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
 pub trait CodegenProfile: core::fmt::Debug {
+    fn array_alignment_style(&self) -> ArrayAlignmentStyle {
+        ArrayAlignmentStyle::NaturalAtO0
+    }
+
     /// The 2.x optimizer promotes private floating aggregate fields. The
     /// measured 4.x line retains the stores and forwards rounded field values.
     fn promote_private_float_aggregates(&self) -> bool {
@@ -1893,6 +1911,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn array_alignment_style(&self) -> ArrayAlignmentStyle {
+        ArrayAlignmentStyle::SizeMultipleOfEight
+    }
+
     fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
         FixedBankStreamStyle::RetainedPage
     }
@@ -2131,6 +2153,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn array_alignment_style(&self) -> ArrayAlignmentStyle {
+        ArrayAlignmentStyle::SizeMultipleOfEight
+    }
+
     fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
         FixedBankStreamStyle::RetainedPageEarlyStore
     }
@@ -2542,6 +2568,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn array_alignment_style(&self) -> ArrayAlignmentStyle {
+        ArrayAlignmentStyle::Word
+    }
+
     fn saved_call_token_style(&self) -> SavedCallTokenStyle {
         self.saved_call_token_style
     }

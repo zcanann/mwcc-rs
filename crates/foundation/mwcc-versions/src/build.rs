@@ -417,6 +417,39 @@ mod tests {
     }
 
     #[test]
+    fn array_alignment_conventions_follow_the_compiler_family() {
+        use crate::ArrayAlignmentStyle;
+        for (labels, expected) in [
+            (
+                &["GC/1.1", "GC/1.1p1", "GC/1.2.5", "GC/1.2.5n"][..],
+                ArrayAlignmentStyle::Word,
+            ),
+            (
+                &[
+                    "GC/1.3",
+                    "GC/1.3.2",
+                    "GC/1.3.2r",
+                    "GC/2.0",
+                    "GC/2.0p1",
+                    "GC/2.5",
+                    "GC/2.6",
+                    "GC/2.7",
+                ][..],
+                ArrayAlignmentStyle::NaturalAtO0,
+            ),
+            (
+                &["GC/3.0a3", "GC/3.0a3p1", "Wii/1.0"][..],
+                ArrayAlignmentStyle::SizeMultipleOfEight,
+            ),
+        ] {
+            for label in labels {
+                let build = by_label_experimental(label).unwrap();
+                assert_eq!(build.profile.array_alignment_style(), expected, "{label}");
+            }
+        }
+    }
+
+    #[test]
     fn gc3_builds_are_measured_experimental_identities() {
         assert!(by_label("GC/3.0a3").is_none());
         for label in ["GC/3.0a3", "GC/3.0a3p1"] {

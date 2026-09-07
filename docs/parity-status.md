@@ -4,13 +4,70 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, zero-static first-use transactions (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, array object alignment (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `4bc2052621eecb1a0966362fd2f92d9b379dcdcce87797947a2a74c6f8004d08:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `d4daf8e25b284d81bf96993d0028e350a3e90275453be7cc42bdd9ad2a549dcf:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Array object alignment, 2026-09-06
+
+Against frozen baseline `d6867f32`, the targeted set improves from **24/45
+to 45/45 whole-object exact pairs**. Canary 1618 now matches all fifteen
+builds, closing its unused array alignment gap. New optimized/O0 canaries
+**1622/1623 improve from 12/30 to 30/30 exact pairs**; every pair compiles,
+with no exclusions or reference rejections.
+
+The discrepancy involved storage offsets as well as `.comment` metadata.
+The new `ArrayAlignmentStyle` profile separates three measured conventions:
+legacy builds retain a word minimum even at O0; intermediate builds use
+natural array alignment at O0, except arithmetic arrays in small data keep
+word-aligned storage while recording element alignment; newest builds align
+arrays whose nonzero byte size is divisible by eight to at least eight bytes,
+with a word minimum otherwise. Explicit alignment requests remain lower
+bounds. The rule covers read-only and writable arrays and struct elements;
+scalar aggregate conventions remain separate.
+
+A named alignment input now carries element size/alignment, array extent,
+read-only state, requested alignment, optimization, and small-data mode.
+Storage and metadata remain distinct outputs. Promotion uses the whole array
+size, rather than confusing element width with object size or applying the
+large scalar-aggregate metadata rule to every array.
+
+**10,500/10,500 C scalar-array alignment records match**, across five element
+types, seven extents, storage/initialization variants, two optimization levels,
+and all fifteen builds. C++ contributes another **9,730/9,730 comparable
+alignment records**; its other 770 reference symbols are absent from candidate
+data-only objects, identically in the frozen baseline. That existing C++
+zero-static emission gap remains outstanding. These record counts measure
+alignment, not complete-object parity.
+
+Storage-offset and explicit-alignment probes match all **60/60 full symbol
+record sets** across fifteen builds and O0/O4. Another **12/12 sets match
+with `-sdata 0`** on GC/1.3, GC/2.7, and Wii/1.0. Struct-array edge probes
+confirm the same array rules; scalar-struct alignment differences remain
+outside this change. The new canaries cover sizes 8, 9, and 16, mixed scalar
+padding, read-only arrays, and an explicit 32-byte alignment.
+
+The driver alignment matrix and all **45 version tests pass**, including a
+new family-policy test. The metadata regression selection improves from
+**899 to 908 exact objects**, with no regressions: **2,250 slots, 500
+exclusions, 1,750 runnable pairs**, and no timeouts. The nine gains are
+canaries 701, 741, and 1230 on GC/3.0a3, GC/3.0a3p1, and Wii/1.0.
+
+All 86 real-project metadata configurations retain their object and code
+verdicts: **11 BYTE, 16 DIFF, and 59 compiler DEFER**, with no harness or
+dependency failures. Code projections remain 12/75 exact, three empty,
+and eight unmeasured, including 51 measured partial-TU diagnostics. The
+transport panel retains **36/40 byte-identical objects**, four missing
+dependencies, 34/34 exact nonempty code projections, and two empty objects.
+Melee's complete transport object remains byte-identical.
+
+Local evidence: `target/array-align-*`, `target/check_array_align*.py`,
+`target/probe_array_comment_alignment*.py`, `target/probe_array_alignment*.py`,
+and `target/reference-parity/d4daf8e25b284d81-5e4ca1ddc460f4d8.jsonl`.
 
 ## Zero-static first-use transactions, 2026-09-06
 

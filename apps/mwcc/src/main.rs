@@ -660,43 +660,57 @@ struct GlobalAlignments {
     comment: u32,
 }
 
-/// Resolve the two alignment domains MWCC assigns to an aggregate. At O0,
-/// scalar arrays are word-aligned in their section while `.comment` retains
-/// the element alignment. Optimized builds record the storage alignment.
-fn global_alignments(
+#[derive(Clone, Copy, Debug)]
+struct GlobalAlignmentInput {
     element_size: u32,
     struct_alignment: Option<u32>,
-    is_array: bool,
+    array_length: Option<u32>,
     is_read_only: bool,
     requested_alignment: u32,
     unoptimized: bool,
-    large_aggregate_comment_alignment: u32,
+    small_data: bool,
+}
+
+/// Element layout, object storage, and per-symbol metadata are distinct domains.
+/// Array promotion uses the full object size; scalar aggregates retain their
+/// independent build convention.
+fn global_alignments(
+    input: GlobalAlignmentInput,
+    profile: &dyn mwcc_versions::CodegenProfile,
 ) -> GlobalAlignments {
-    let layout = match struct_alignment {
-        // Arrays of aggregate elements receive MWCC's minimum word object
-        // alignment even when the aggregate itself contains only byte members.
-        // A scalar packed/byte-only aggregate retains its natural alignment.
-        Some(alignment) if is_array => alignment.max(4),
-        // A struct object uses the alignment established by its layout. This is
-        // not necessarily word alignment: packed/byte-only aggregates and
-        // compiler-generated C++ type-name records can legitimately align 1.
-        Some(alignment) => alignment,
-        None if is_array => element_size.max(4),
-        None => element_size,
+    use mwcc_versions::ArrayAlignmentStyle;
+    let natural = input.struct_alignment.unwrap_or(input.element_size);
+    if let Some(count) = input.array_length {
+        let size = input.element_size * count;
+        let style = profile.array_alignment_style();
+        let layout = match style {
+            ArrayAlignmentStyle::NaturalAtO0 if input.unoptimized => {
+                if input.struct_alignment.is_none() && input.small_data && size <= 8 {
+                    natural.max(4)
+                } else {
+                    natural
+                }
+            }
+            ArrayAlignmentStyle::SizeMultipleOfEight if size != 0 && size % 8 == 0 => {
+                natural.max(8)
+            }
+            _ => natural.max(4),
+        }
+        .max(input.requested_alignment);
+        let comment = if style == ArrayAlignmentStyle::NaturalAtO0 && input.unoptimized {
+            natural.max(input.requested_alignment)
+        } else {
+            layout
+        };
+        return GlobalAlignments { layout, comment };
     }
-    .max(requested_alignment);
-    let comment = if unoptimized && struct_alignment.is_none() {
-        element_size.max(requested_alignment)
-    } else if !is_read_only && struct_alignment.is_some() && element_size > 8 {
-        // A build may give writable full-section aggregate symbols a metadata
-        // alignment larger than their actual member layout. Read-only
-        // aggregates retain their declared alignment even in `.rodata`.
-        // Keep that convention in the build profile rather than inferring it
-        // from source language here.
-        layout.max(large_aggregate_comment_alignment)
-    } else {
-        layout
-    };
+    let layout = natural.max(input.requested_alignment);
+    let comment =
+        if !input.is_read_only && input.struct_alignment.is_some() && input.element_size > 8 {
+            layout.max(profile.large_aggregate_comment_alignment())
+        } else {
+            layout
+        };
     GlobalAlignments { layout, comment }
 }
 
@@ -1924,17 +1938,19 @@ fn compile(
         };
         let count = global.array_length.unwrap_or(1) as u32;
         let size = element_size * count;
-        // mwcc aligns a scalar to its element alignment but any *array* object to at
-        // least a word (4), so a `char[4]`/`short[2]` is 4-aligned, not 1/2-aligned. A
-        // struct takes its own alignment (already the max of its members').
+        // Array promotion uses the complete byte size and compiler policy,
+        // independently of element/member alignment and symbol metadata.
         let alignments = global_alignments(
-            element_size,
-            struct_alignment,
-            global.array_length.is_some(),
-            const_is_read_only,
-            global.attribute_alignment.map_or(1, u32::from),
-            config.flags.optimization == mwcc_versions::Optimization::O0,
-            config.build.profile.large_aggregate_comment_alignment(),
+            GlobalAlignmentInput {
+                element_size,
+                struct_alignment,
+                array_length: global.array_length.map(u32::from),
+                is_read_only: const_is_read_only,
+                requested_alignment: global.attribute_alignment.map_or(1, u32::from),
+                unoptimized: config.flags.optimization == mwcc_versions::Optimization::O0,
+                small_data,
+            },
+            config.build.profile,
         );
         let alignment = alignments.layout;
         let comment_alignment = alignments.comment;
@@ -3022,7 +3038,7 @@ mod tests {
 
     use super::{
         adjusted_anonymous_number, anonymous_string_ordinal_count, compile, global_alignments,
-        parse_invocation, GlobalAlignments, SourceLanguage,
+        parse_invocation, GlobalAlignmentInput, GlobalAlignments, SourceLanguage,
     };
     use mwcc_versions::{EnumStorage, GlobalAddressing};
 
@@ -4930,61 +4946,175 @@ mod tests {
     }
 
     #[test]
-    fn scalar_array_layout_and_comment_alignment_are_independent() {
+    fn global_array_alignment_follows_size_build_and_optimization() {
+        let base = GlobalAlignmentInput {
+            element_size: 1,
+            struct_alignment: None,
+            array_length: Some(4),
+            is_read_only: false,
+            requested_alignment: 1,
+            unoptimized: true,
+            small_data: true,
+        };
+        for (label, input, expected) in [
+            (
+                "GC/1.2.5",
+                base,
+                GlobalAlignments {
+                    layout: 4,
+                    comment: 4,
+                },
+            ),
+            (
+                "GC/1.3",
+                base,
+                GlobalAlignments {
+                    layout: 4,
+                    comment: 1,
+                },
+            ),
+            (
+                "GC/1.3",
+                GlobalAlignmentInput {
+                    array_length: Some(9),
+                    ..base
+                },
+                GlobalAlignments {
+                    layout: 1,
+                    comment: 1,
+                },
+            ),
+            (
+                "GC/1.3",
+                GlobalAlignmentInput {
+                    small_data: false,
+                    ..base
+                },
+                GlobalAlignments {
+                    layout: 1,
+                    comment: 1,
+                },
+            ),
+            (
+                "GC/1.3",
+                GlobalAlignmentInput {
+                    struct_alignment: Some(1),
+                    ..base
+                },
+                GlobalAlignments {
+                    layout: 1,
+                    comment: 1,
+                },
+            ),
+            (
+                "GC/1.3",
+                GlobalAlignmentInput {
+                    unoptimized: false,
+                    ..base
+                },
+                GlobalAlignments {
+                    layout: 4,
+                    comment: 4,
+                },
+            ),
+            (
+                "GC/3.0a3",
+                GlobalAlignmentInput {
+                    array_length: Some(8),
+                    ..base
+                },
+                GlobalAlignments {
+                    layout: 8,
+                    comment: 8,
+                },
+            ),
+            (
+                "Wii/1.0",
+                GlobalAlignmentInput {
+                    array_length: Some(9),
+                    ..base
+                },
+                GlobalAlignments {
+                    layout: 4,
+                    comment: 4,
+                },
+            ),
+            (
+                "Wii/1.0",
+                GlobalAlignmentInput {
+                    array_length: Some(16),
+                    is_read_only: true,
+                    ..base
+                },
+                GlobalAlignments {
+                    layout: 8,
+                    comment: 8,
+                },
+            ),
+            (
+                "Wii/1.0",
+                GlobalAlignmentInput {
+                    element_size: 3,
+                    struct_alignment: Some(1),
+                    array_length: Some(8),
+                    ..base
+                },
+                GlobalAlignments {
+                    layout: 8,
+                    comment: 8,
+                },
+            ),
+            (
+                "Wii/1.0",
+                GlobalAlignmentInput {
+                    array_length: Some(16),
+                    requested_alignment: 32,
+                    ..base
+                },
+                GlobalAlignments {
+                    layout: 32,
+                    comment: 32,
+                },
+            ),
+        ] {
+            let build = mwcc_versions::by_label_experimental(label).unwrap();
+            assert_eq!(
+                global_alignments(input, build.profile),
+                expected,
+                "{label}, {input:?}"
+            );
+        }
+        // Array rules do not override scalar aggregate metadata conventions.
+        let wii = mwcc_versions::by_label_experimental("Wii/1.0").unwrap();
         assert_eq!(
-            global_alignments(1, None, true, false, 1, true, 4),
+            global_alignments(
+                GlobalAlignmentInput {
+                    element_size: 24,
+                    struct_alignment: Some(4),
+                    array_length: None,
+                    ..base
+                },
+                wii.profile
+            ),
             GlobalAlignments {
                 layout: 4,
-                comment: 1,
+                comment: 8
             }
         );
         assert_eq!(
-            global_alignments(2, None, true, false, 1, true, 4),
+            global_alignments(
+                GlobalAlignmentInput {
+                    element_size: 12,
+                    struct_alignment: Some(4),
+                    array_length: None,
+                    is_read_only: true,
+                    ..base
+                },
+                wii.profile
+            ),
             GlobalAlignments {
                 layout: 4,
-                comment: 2,
-            }
-        );
-        assert_eq!(
-            global_alignments(1, None, true, false, 32, true, 4),
-            GlobalAlignments {
-                layout: 32,
-                comment: 32,
-            }
-        );
-        assert_eq!(
-            global_alignments(1, None, true, false, 1, false, 4),
-            GlobalAlignments {
-                layout: 4,
-                comment: 4,
-            }
-        );
-        assert_eq!(
-            global_alignments(14, Some(1), false, false, 1, false, 4),
-            GlobalAlignments {
-                layout: 1,
-                comment: 4,
-            }
-        );
-        assert_eq!(
-            global_alignments(4, Some(1), true, false, 1, false, 4),
-            GlobalAlignments {
-                layout: 4,
-                comment: 4,
-            }
-        );
-        assert_eq!(
-            global_alignments(24, Some(4), false, false, 1, false, 8),
-            GlobalAlignments {
-                layout: 4,
-                comment: 8,
-            }
-        );
-        assert_eq!(
-            global_alignments(12, Some(4), false, true, 1, true, 8),
-            GlobalAlignments {
-                layout: 4,
-                comment: 4,
+                comment: 4
             }
         );
     }
