@@ -129,7 +129,9 @@ fn automatic_local_has_composable_storage(
 /// Apply MWCC's small-body gate to ordinary one-call definitions newly made
 /// composable by dominated, uninitialized locals. Explicit inline definitions
 /// retain the broader semantic safety check above. Previously composable
-/// initialized-local bodies also retain their established behavior.
+/// initialized-local bodies also retain their established behavior. A verified
+/// two-word packet publication has its own small-body admission: its array is
+/// initialized by calls, rather than by scalar declaration initializers.
 pub(super) fn automatic_composable_function(function: &Function) -> bool {
     let ordinary = composable_function(function)
         && !function
@@ -140,7 +142,8 @@ pub(super) fn automatic_composable_function(function: &Function) -> bool {
             .locals
             .iter()
             .all(|local| local.initializer.is_some())
-            || statement_weight(&function.statements) <= 6);
+            || statement_weight(&function.statements) <= 6
+            || crate::packet_publication::helper(function).is_some());
     let parameter_select = function.locals.is_empty()
         && function.return_type == Type::Void
         && function.return_expression.is_none()

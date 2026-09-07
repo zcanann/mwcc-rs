@@ -2100,6 +2100,11 @@ impl Generator {
                 )));
             }
         }
+        // Compose source-visible callees before selecting the packet snapshot
+        // schedule, so future deeper helper expansion keeps its opportunity.
+        if self.try_packet_publication(function)? {
+            return Ok(());
+        }
         // Give retained helper effects a chance to compose before selecting
         // an out-of-line boolean wrapper. Optional expansion may still decline,
         // in which case the measured linked-call schedule remains available.

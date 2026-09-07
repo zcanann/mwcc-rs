@@ -51,6 +51,18 @@ pub enum SavedCallTokenStyle {
     LegacyPatched,
 }
 
+/// Schedules for packet bitfields published by an interrupt-protected query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketPublicationStyle {
+    Structured,
+    /// Reload the published result after restoring the stack.
+    LegacyLateResult,
+    /// Reload the result before restoring the saved frame.
+    LegacyEarlyResult,
+    /// Copy the token through r0 and reload LR through the restored stack.
+    LegacyPatched,
+}
+
 /// Ordering of a post-call floating result relative to the saved-LR reload and
 /// allocator-selected FPR restores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1243,6 +1255,9 @@ pub trait CodegenProfile: core::fmt::Debug {
 
     fn saved_call_token_style(&self) -> SavedCallTokenStyle {
         SavedCallTokenStyle::Structured
+    }
+    fn packet_publication_style(&self) -> PacketPublicationStyle {
+        PacketPublicationStyle::Structured
     }
 
     fn mem_copy_word_schedule_style(&self) -> MemCopyWordScheduleStyle {
@@ -2470,6 +2485,7 @@ pub struct Gc233Build163 {
     byte_word_transfer_style: ByteWordTransferStyle,
     fixed_bank_stream_style: FixedBankStreamStyle,
     saved_call_token_style: SavedCallTokenStyle,
+    packet_publication_style: PacketPublicationStyle,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle,
     saved_float_epilogue_style: SavedFloatEpilogueStyle,
@@ -2479,6 +2495,7 @@ pub struct Gc233Build163 {
 
 pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
     saved_call_token_style: SavedCallTokenStyle::LegacyInterleaved,
+    packet_publication_style: PacketPublicationStyle::LegacyLateResult,
     byte_word_transfer_style: ByteWordTransferStyle::LegacyDependencyFirst,
     fixed_bank_stream_style: FixedBankStreamStyle::LegacyFusedCommand,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
@@ -2490,6 +2507,7 @@ pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
 
 pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
     saved_call_token_style: SavedCallTokenStyle::LegacyInterleaved,
+    packet_publication_style: PacketPublicationStyle::LegacyLateResult,
     byte_word_transfer_style: ByteWordTransferStyle::LegacyDependencyFirst,
     fixed_bank_stream_style: FixedBankStreamStyle::LegacyFusedCommand,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
@@ -2501,6 +2519,7 @@ pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
 
 pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
     saved_call_token_style: SavedCallTokenStyle::LegacyStackLast,
+    packet_publication_style: PacketPublicationStyle::LegacyEarlyResult,
     byte_word_transfer_style: ByteWordTransferStyle::LegacyDependencyFirst,
     fixed_bank_stream_style: FixedBankStreamStyle::LegacyFusedCommand,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
@@ -2512,6 +2531,7 @@ pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
 
 pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
     saved_call_token_style: SavedCallTokenStyle::LegacyPatched,
+    packet_publication_style: PacketPublicationStyle::LegacyPatched,
     byte_word_transfer_style: ByteWordTransferStyle::LegacyInterleaved,
     fixed_bank_stream_style: FixedBankStreamStyle::LegacySeparateCommand,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::StackRestoreBeforeReload,
@@ -2524,6 +2544,9 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 impl CodegenProfile for Gc233Build163 {
     fn saved_call_token_style(&self) -> SavedCallTokenStyle {
         self.saved_call_token_style
+    }
+    fn packet_publication_style(&self) -> PacketPublicationStyle {
+        self.packet_publication_style
     }
 
     fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {

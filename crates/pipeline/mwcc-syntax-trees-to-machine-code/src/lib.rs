@@ -72,6 +72,7 @@ mod legacy_dual_float_condition;
 mod narrow;
 mod operands;
 mod ordinal_accounting;
+mod packet_publication;
 mod placement;
 mod runtime_conversions;
 mod shared_global_store_base;

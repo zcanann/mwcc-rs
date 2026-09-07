@@ -21,7 +21,7 @@ use crate::profile::{
     CxxConstructorInlineOrdinalWeights, CxxParameterInitializerOrdinalWeights,
     DeferredFunctionEmissionStyle,
     DiscardedInlineAggregateImageStyle, FieldMergeStyle, FixedAddressConstantStoreStyle,
-    FixedAddressParameterizedRmwStyle, FixedBankStreamStyle, SavedCallTokenStyle,
+    FixedAddressParameterizedRmwStyle, FixedBankStreamStyle, PacketPublicationStyle, SavedCallTokenStyle,
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
     ForwardedTraceStringStyle,
     FrameConvention, FrexpFamilyStyle, FunctionAddressStoreStyle, FunctionOrdinalAccountingStyle,
@@ -688,6 +688,8 @@ pub struct Behavior {
     pub fixed_bank_stream_style: FixedBankStreamStyle,
     /// Entry, frame, and restore schedule for a retained scalar call token.
     pub saved_call_token_style: SavedCallTokenStyle,
+    /// Snapshot, frame, and result-load schedule for guarded packet publication.
+    pub packet_publication_style: PacketPublicationStyle,
     /// Register allocation and issue order for MSL's aligned word-copy unroll.
     pub mem_copy_word_schedule_style: MemCopyWordScheduleStyle,
     /// Instruction selection for MSL's final three-byte remainder mask.
@@ -1172,6 +1174,7 @@ impl Behavior {
             byte_word_transfer_style: config.build.profile.byte_word_transfer_style(),
             fixed_bank_stream_style: config.build.profile.fixed_bank_stream_style(),
             saved_call_token_style: config.build.profile.saved_call_token_style(),
+            packet_publication_style: config.build.profile.packet_publication_style(),
             mem_copy_word_schedule_style: config.build.profile.mem_copy_word_schedule_style(),
             mem_copy_remainder_mask_style: config.build.profile.mem_copy_remainder_mask_style(),
             schedule_latency_slots: config.flags.optimization == Optimization::O4,
@@ -2905,6 +2908,25 @@ mod tests {
         assert!(!Behavior::resolve(&config).power_pc_7400_scheduling_enabled());
         config.flags.scheduler_enabled = true;
         assert!(Behavior::resolve(&config).power_pc_7400_scheduling_enabled());
+    }
+
+    #[test]
+    fn packet_publications_follow_measured_legacy_schedules() {
+        for (compiler_build, style) in [
+            (build::GC_1_1, PacketPublicationStyle::LegacyLateResult),
+            (build::GC_1_2_5, PacketPublicationStyle::LegacyLateResult),
+            (build::GC_1_2_5N, PacketPublicationStyle::LegacyEarlyResult),
+            (build::GC_1_1P1, PacketPublicationStyle::LegacyPatched),
+            (build::GC_1_3, PacketPublicationStyle::Structured),
+            (build::GC_2_7, PacketPublicationStyle::Structured),
+            (build::GC_3_0A3, PacketPublicationStyle::Structured),
+            (build::WII_1_0, PacketPublicationStyle::Structured),
+        ] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build)).packet_publication_style,
+                style,
+            );
+        }
     }
 
     #[test]

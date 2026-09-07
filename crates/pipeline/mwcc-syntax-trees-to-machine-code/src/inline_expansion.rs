@@ -1539,7 +1539,9 @@ impl InlineBodySet {
             ),
             _ => return None,
         };
-        if active.contains(callee_name)
+        if crate::packet_publication::helper(callee)
+            .is_some_and(|plan| plan.captures(occupied_names))
+            || active.contains(callee_name)
             || !self.nesting_budget.permits(active, callee_name)
             || callee.parameters.len() != arguments.len()
             || ((constant_result::is_poll(callee) || constant_result::is_memory_transaction(callee))

@@ -29,6 +29,7 @@ mod fixed_address_copy_barrier;
 mod fixed_read;
 mod fixed_rmw;
 mod fixed_bank_transaction;
+mod packet_publication;
 mod fixed_rmw_inline_tail;
 mod fixed_rmw_leaf;
 mod fixed_rmw_split_word;

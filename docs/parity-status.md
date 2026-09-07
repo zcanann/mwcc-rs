@@ -4,13 +4,72 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, saved-call-token wrapper matching (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, guarded packet query matching (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `d6395ae4f816b994300bedd0d103b8ce1a9f24a895799723bc0c610751088081:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `6d0f22279be70554e352a12b7ae9590b825e690e1ce32921c5fe438b87db3a83:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Guarded packet query matching, 2026-09-06
+
+Against frozen baseline `7b70119c`, Melee's `DBQueryData` now matches all
+**156 reference function bytes**. Its transport translation unit improves
+from **18/21 to 19/21 exact functions** and **2220/3320 to 2376/3320 exact
+reference function bytes**. All 21 functions compile. `CheckMailBox` and
+`DBWrite` remain nonexact because their reference bodies compose additional
+status/mailbox transactions.
+
+A shared semantic description recognizes a two-word automatic packet read,
+a readiness guard, a masked packet update, a tag guard, and publication of
+the whole word, one bitfield, and a byte flag. Names, array index, masks,
+flag value, and callees come from the source. The automatic inliner admits
+this bounded helper while preserving its existing single-use, visibility,
+and nesting policies. Alpha-renamed packet storage prevents collisions;
+caller bindings that would capture published globals or callees decline.
+The general scalar-local size threshold is unchanged.
+
+The legacy physical owner uses that same description for the helper and
+its interrupt-protected query. It retains the tested packet word through
+publication, uses a 16-byte helper frame and 24-byte query frame, and leaves
+the query's source token uninitialized on the bypass path. The
+`PacketPublicationStyle` policy separates the original late result load,
+Nintendo's early result load, and GC/1.1p1's extra token copy and restored
+stack LR load. ABI declarations, scalar global types, volatility, small-data
+addressing, masks, storage, and optimization settings gate admission.
+Other builds continue through structured lowering.
+
+New canaries **1612 and 1613 improve from 0/30 to 8/30 whole-object exact
+pairs** across all 15 builds. Both objects match on all four legacy builds;
+the other 22 pairs remain nonexact. All 30 compile, with no exclusions or
+reference rejections. The variant changes source typedefs, names, packet
+index, readiness bit, preserved and tested masks, published bitfield, and
+flag value.
+
+**106,272 paired Unicorn cases pass**: 103,680 across both canaries and all
+15 builds, plus 2,592 using Melee's actual query body. Checks cover ordered
+calls and global writes, packet identity and untouched words, byte-store
+guards, callback-clobbered volatile registers, token restoration, stack and
+saved registers, and result reloads after a state-mutating release callback.
+They also compare the measured incoming-r31 behavior on the source's
+uninitialized bypass path. Read/acquire/release calls are modeled; this does
+not claim full hardware transport execution.
+
+Four new semantic/composition tests, the profile-family test, and 117
+inline-expansion tests pass. The previously documented embedded-asm
+composition failure remains explicitly skipped. The focused regression
+selection retains identical verdicts: **1,040 slots, 281 exclusions, 759
+runnable pairs, and 417 exact objects**, with no timeouts. Another **240
+neighboring pairs retain all verdicts and 125 exact objects**.
+
+The 40 real-project transport configurations retain **35 BYTE, one DIFF,
+and four missing dependencies**; **33/34 measured code-exact**, two empty,
+and four unmeasured. Melee's whole object remains nonexact.
+
+Local evidence: `target/mailbox-inline-*`,
+`target/check_mailbox_inline*.py`, `target/probe_mailbox_inline.py`, and
+`target/reference-parity/6d0f22279be70554-5e4ca1ddc460f4d8.jsonl`.
 
 ## Saved-call-token wrapper matching, 2026-09-06
 
