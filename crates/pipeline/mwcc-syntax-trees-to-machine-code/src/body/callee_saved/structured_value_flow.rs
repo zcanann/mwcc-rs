@@ -1,4 +1,4 @@
-//! Named-value liveness for selection's remaining physical homes.
+//! Named-value flow for structured instruction selection.
 //!
 //! Machine liveness cannot repair a scratch instruction that already overwrote
 //! a named physical home. Analyze the structured emitter's label/if graph before
@@ -17,12 +17,14 @@ struct Node<'a> {
     successors: Vec<usize>,
 }
 
-pub(super) struct PhysicalHomeLiveness<'a> {
+pub(super) struct NamedValueFlow<'a> {
     nodes: Vec<Node<'a>>,
     live_out: Vec<HashSet<&'a str>>,
+    entry: usize,
+    emission_order: Vec<usize>,
 }
 
-impl<'a> PhysicalHomeLiveness<'a> {
+impl<'a> NamedValueFlow<'a> {
     pub(super) fn new(function: &'a Function) -> Self {
         let names: Vec<_> = function
             .parameters
@@ -50,7 +52,10 @@ impl<'a> PhysicalHomeLiveness<'a> {
             ..Node::default()
         }];
         let mut labels = HashMap::new();
-        build(statements, 0, names, &mut nodes, &mut labels);
+        let entry = build(statements, 0, names, &mut nodes, &mut labels);
+        let mut emission_order = Vec::new();
+        collect_emission_order(statements, &nodes, &mut emission_order);
+        emission_order.push(0); // the fallthrough return expression
         for node in &mut nodes {
             if let Some(Statement::Goto(label)) = node.statement {
                 if let Some(&target) = labels.get(label.as_str()) {
@@ -85,7 +90,58 @@ impl<'a> PhysicalHomeLiveness<'a> {
                 break;
             }
         }
-        Self { nodes, live_out }
+        Self {
+            nodes,
+            live_out,
+            entry,
+            emission_order,
+        }
+    }
+
+    /// Per-assignment versioning is safe only if every read sees the most
+    /// recently emitted definition on every incoming path. Otherwise selection
+    /// needs one mutable home (or explicit phi copies, which it does not emit).
+    /// Checking emission order also catches disjoint early-return arms: those
+    /// can require different definitions even without a shared CFG use node.
+    pub(super) fn requires_shared_home(&self, name: &str) -> bool {
+        let initial = self.nodes.len();
+        let mut incoming = vec![HashSet::new(); self.nodes.len()];
+        incoming[self.entry].insert(initial);
+        loop {
+            let mut changed = false;
+            for (index, node) in self.nodes.iter().enumerate() {
+                if incoming[index].is_empty() {
+                    continue; // unreachable, rather than an undefined value
+                }
+                let outgoing = if node.definition == Some(name) {
+                    HashSet::from([index])
+                } else {
+                    incoming[index].clone()
+                };
+                for &next in &node.successors {
+                    let before = incoming[next].len();
+                    incoming[next].extend(outgoing.iter().copied());
+                    changed |= incoming[next].len() != before;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let mut latest = initial;
+        for &index in &self.emission_order {
+            let node = &self.nodes[index];
+            if !incoming[index].is_empty()
+                && node.uses.contains(name)
+                && (incoming[index].len() != 1 || !incoming[index].contains(&latest))
+            {
+                return true;
+            }
+            if node.definition == Some(name) {
+                latest = index;
+            }
+        }
+        false
     }
 
     pub(super) fn after(&self, statement: &Statement) -> Option<&HashSet<&'a str>> {
@@ -98,6 +154,28 @@ impl<'a> PhysicalHomeLiveness<'a> {
                     .is_some_and(|source| std::ptr::eq(source, statement))
             })
             .map(|index| &self.live_out[index])
+    }
+}
+
+fn collect_emission_order(statements: &[Statement], nodes: &[Node<'_>], order: &mut Vec<usize>) {
+    for statement in statements {
+        let index = nodes
+            .iter()
+            .position(|node| {
+                node.statement
+                    .is_some_and(|source| std::ptr::eq(source, statement))
+            })
+            .expect("the emission statement has a flow node");
+        order.push(index);
+        if let Statement::If {
+            then_body,
+            else_body,
+            ..
+        } = statement
+        {
+            collect_emission_order(then_body, nodes, order);
+            collect_emission_order(else_body, nodes, order);
+        }
     }
 }
 
@@ -192,8 +270,8 @@ mod tests {
             else_body,
         }
     }
-    fn live<'a>(statements: &'a [Statement]) -> PhysicalHomeLiveness<'a> {
-        PhysicalHomeLiveness::analyze(statements, None, &["data", "mode", "result"])
+    fn live<'a>(statements: &'a [Statement]) -> NamedValueFlow<'a> {
+        NamedValueFlow::analyze(statements, None, &["data", "mode", "result"])
     }
 
     #[test]
@@ -277,7 +355,74 @@ mod tests {
     fn the_fallthrough_return_expression_keeps_its_input_live() {
         let statements = [set("result")];
         let tail = Expression::Variable("data".into());
-        let plan = PhysicalHomeLiveness::analyze(&statements, Some(&tail), &["data", "result"]);
+        let plan = NamedValueFlow::analyze(&statements, Some(&tail), &["data", "result"]);
         assert!(plan.after(&statements[0]).unwrap().contains("data"));
+    }
+    #[test]
+    fn a_loop_merge_requires_one_value_home() {
+        let statements = [
+            set("result"),
+            Statement::Goto("test".into()),
+            Statement::Label("body".into()),
+            read("result"),
+            set("result"),
+            Statement::Label("test".into()),
+            branch(vec![Statement::Goto("body".into())], vec![]),
+            read("result"),
+        ];
+        assert!(live(&statements).requires_shared_home("result"));
+    }
+
+    #[test]
+    fn a_skipped_definition_cannot_replace_the_join_value() {
+        let statements = [
+            set("result"),
+            branch(vec![set("result")], vec![]),
+            read("result"),
+        ];
+        assert!(live(&statements).requires_shared_home("result"));
+    }
+
+    #[test]
+    fn independent_return_arms_cannot_inherit_each_others_definition() {
+        let statements = [
+            set("result"),
+            branch(
+                vec![
+                    read("result"),
+                    set("result"),
+                    Statement::Return(Some(Expression::Variable("result".into()))),
+                ],
+                vec![],
+            ),
+            read("result"),
+            set("result"),
+            read("result"),
+        ];
+        assert!(live(&statements).requires_shared_home("result"));
+    }
+
+    #[test]
+    fn unrelated_polling_keeps_straight_line_versioning() {
+        let statements = [
+            set("result"),
+            Statement::Label("poll".into()),
+            branch(vec![Statement::Goto("poll".into())], vec![]),
+            read("result"),
+            set("result"),
+            read("result"),
+        ];
+        assert!(!live(&statements).requires_shared_home("result"));
+    }
+
+    #[test]
+    fn an_unconditional_redefinition_after_a_join_can_be_versioned() {
+        let statements = [
+            set("result"),
+            branch(vec![set("result")], vec![]),
+            set("result"),
+            read("result"),
+        ];
+        assert!(!live(&statements).requires_shared_home("result"));
     }
 }

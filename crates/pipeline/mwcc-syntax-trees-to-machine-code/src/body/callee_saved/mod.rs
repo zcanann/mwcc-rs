@@ -187,7 +187,7 @@ mod structured_global_member_address_schedule;
 mod structured_global_pointer_replacement_schedule;
 mod structured_multi_member_cache_entry_schedule;
 mod structured_store_liveness;
-mod structured_physical_liveness;
+mod structured_value_flow;
 mod structured_guarded_narrow_update;
 mod structured_guarded_effect_spawn_schedule;
 mod structured_guarded_aggregate_result_schedule;

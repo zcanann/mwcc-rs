@@ -3438,7 +3438,15 @@ impl Generator {
         let paired_eager_deferred_homes = self.legacy_callee_saved_frame_layout
             == LegacyCalleeSavedFrameLayout::RetainEagerLocalLane
             && count == 2;
-        let batched_saved_home_stores = unused_array_two_homes
+        let eager_initializers_call =
+            super::structured_entry_alias::eager_initializers_clobber_entry_alias(
+                &function.locals,
+                &eager_saved_locals,
+            );
+        // A call in an eager initializer must happen after incoming values
+        // have reached their saved homes, including the homes' ABI saves.
+        let batched_saved_home_stores = eager_initializers_call
+            || unused_array_two_homes
             || compact_aggregate_scratch_pair
             || paired_eager_deferred_homes
             || unused_array_eager_homes
@@ -3521,8 +3529,10 @@ impl Generator {
         } else {
             false
         };
-        let stagger_dense_parameter_copies =
-            dense_saved_range && saved_parameter_base != 0 && saved_parameter_homes.len() >= 2;
+        let stagger_dense_parameter_copies = !eager_initializers_call
+            && dense_saved_range
+            && saved_parameter_base != 0
+            && saved_parameter_homes.len() >= 2;
         let ordered_entry_save_order = loop_member_receiver_layout
             .as_ref()
             .map(|layout| layout.save_order().to_vec())
@@ -4979,14 +4989,17 @@ impl Generator {
         let mut carried_adjacent_assignment_member_cache_end = None;
         let mut adjacent_global_store_base_restore = None;
         let mut scheduled_float_store = None;
-        let physical_liveness =
-            super::structured_physical_liveness::PhysicalHomeLiveness::new(function);
+        let value_flow = super::structured_value_flow::NamedValueFlow::new(function);
+        let shared_accumulator_homes: std::collections::HashSet<_> = call_accumulator_names(function)
+            .into_iter()
+            .filter(|name| value_flow.requires_shared_home(name))
+            .collect();
         let mut reserved_flow_homes = Vec::new();
         for (statement_index, statement) in statements.iter().enumerate() {
             // Keep an enclosing arm's reservations while recursively emitting
             // its body. Retire this statement's additions even after `continue`.
             self.release_reserved_physical_homes(std::mem::take(&mut reserved_flow_homes));
-            if let Some(names) = physical_liveness.after(statement) {
+            if let Some(names) = value_flow.after(statement) {
                 reserved_flow_homes = names
                     .iter()
                     .filter_map(|name| self.locations.get(*name))
@@ -5975,6 +5988,7 @@ impl Generator {
                         previous,
                         dying_preference,
                         accumulator_value_is_observed(function, name),
+                        shared_accumulator_homes.contains(name.as_str()),
                     )?;
                     if let Some(destination) = accumulator {
                         self.locations.insert(

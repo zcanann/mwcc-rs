@@ -4,13 +4,72 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, mainline byte/word transfer schedules (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, control-flow accumulator and initializer correctness (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `f8e511b1e6615226cc3e13fb80c009c7acfaeed3e224139a673fdf201281665f:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `5f4e78613599835f71edc05df5cc258ca355b5a213231db6b108fe7c6c691511:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Control-flow accumulators and initializer calls, 2026-09-06
+
+Against baseline `8e32b501`, Melee's `DBGRead` and `DBGWrite` now retain their
+error reductions across zero iterations and loop backedges. The baseline
+writes each loop update to a new register but keeps reading the entry value
+on subsequent iterations. It also returns the loop-only register when the
+loop never runs. Paired execution reproduces both failures: a successful
+zero-length operation incorrectly reports failure, and a middle transfer
+failure is forgotten when a later transfer succeeds.
+
+The existing named-value liveness graph is now `NamedValueFlow`, shared by
+physical-home reservation and a reaching-definition check. Fresh assignment
+homes are allowed only when each read sees the latest emitted definition on
+all incoming paths. Otherwise boolean call-result assignments retain one
+mutable home, including replacement assignments that do not OR the old value.
+The check includes emission order so disjoint early-return arms cannot inherit
+each other's definitions. Straight-line versioning remains available across
+unrelated polling loops. Five new graph tests cover loops, joins, independent
+return arms, unrelated polling, and unconditional redefinition after a join;
+the seven previous physical-liveness tests remain intact.
+
+A declaration-initializer variant exposed another ABI bug: eager saved-local
+initializers could call a function before incoming parameters had been copied
+to their saved homes. The subsequent copies captured clobbered argument/result
+registers. Such initializers now select the existing batched save/copy path
+and disable staggered copies. The check includes preceding declarations that
+may supply initializer dependencies. Existing entry-alias retirement still
+switches subsequent reads to the saved parameter homes after a call.
+
+New canaries **1602 and 1603** cover accumulating and replacing loop updates,
+conditional/alternative arms, early returns, continue/break, nested branches,
+explicit gotos, call-containing initializers, and two incoming parameters.
+Across all 15 builds, compilation improves from **8/30 to 30/30 pairs**; the
+22 baseline rejections were excess saved-register demand from the incorrect
+version splitting. Whole-object matching remains **0/30** for this selection,
+with no build exclusions or reference rejections.
+
+**89,268 paired Unicorn cases pass**: 26,520 for 1602, 30,300 for 1603, 25,056
+for Melee's actual `DBGRead`/`DBGWrite` caller bodies, and 7,392 for the prior
+straight-line accumulator canary. Caller tests intercept the transfer function
+with an ABI-clobbering model, inject failures at different call positions,
+and check command words, buffer payloads/guards, device event order, return
+values, stack restoration, and saved registers. The reference and frozen
+baseline reproduce the bugs before the fix. These checks do not claim new
+instruction scheduling parity for the caller bodies.
+
+The expanded 208-canary regression selection retains identical verdicts on
+five builds: **1,040 slots, 281 exclusions, 759 runnable pairs, 417 exact
+objects, and 223 existing candidate rejections**, with no reference rejections
+or timeouts. The previous transfer selection remains **45/45 exact**. The
+fresh 40-configuration project selection remains **35 exact objects, one
+DIFF, and four missing dependencies**, with **33/34 measured code projections
+exact**, two empty, and four unmeasured. Melee remains **14/21 exact functions
+and 1520/3320 exact reference function bytes**. Twelve flow tests, eleven
+entry-alias tests, six call-accumulator tests, and 117 inline tests pass; the
+previously confirmed embedded-asm composition failure remains excluded.
+Evidence is retained under `target/accumulator-flow-*`,
+`target/accumulator-initializer-*`, and `target/check_accumulator*.py`.
 
 ## Mainline byte/word transfer schedules, 2026-09-06
 

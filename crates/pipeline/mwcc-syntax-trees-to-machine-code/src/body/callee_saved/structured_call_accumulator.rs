@@ -378,6 +378,7 @@ impl Generator {
         previous: Option<u8>,
         preference: Option<u8>,
         optimizer_owned_lane: bool,
+        shared_home: bool,
     ) -> Compilation<Option<u8>> {
         let (call, include_previous) = match value {
             Expression::Unary {
@@ -405,6 +406,7 @@ impl Generator {
             }
             _ => return Ok(None),
         };
+        let home = previous;
         let previous = if include_previous {
             Some(previous.ok_or_else(|| {
                 Diagnostic::error("structured call accumulator is read before its first value")
@@ -416,7 +418,11 @@ impl Generator {
         // value graph. Keep its virtual identity across each `|=` so allocation
         // sees the complete lifetime and can leave the value in r29. Ordinary
         // accumulator chains retain their measured versioned destinations.
-        let destination = if reuses_accumulator_value_lane(
+        let destination = if shared_home && home.is_some() {
+            // A join/backedge must update the incoming identity, even for
+            // replacement assignments that do not merge the previous value.
+            home.expect("the shared accumulator already has a home")
+        } else if reuses_accumulator_value_lane(
             self.structured_repeated_indirect_member_loop_entry,
             include_previous,
         ) {

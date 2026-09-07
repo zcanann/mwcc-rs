@@ -27,6 +27,19 @@ pub(super) fn initializer_clobbers_entry_alias(local: &LocalDeclaration) -> bool
         .is_some_and(crate::analysis::expression_has_call)
 }
 
+/// Eager saved locals can execute while the frame's parameter copies are
+/// normally still pending. Include preceding declarations because an eager
+/// initializer may force one of those dependencies to be evaluated first.
+pub(super) fn eager_initializers_clobber_entry_alias(
+    locals: &[LocalDeclaration],
+    eager: &[&LocalDeclaration],
+) -> bool {
+    locals
+        .iter()
+        .rposition(|local| eager.iter().any(|item| item.name == local.name))
+        .is_some_and(|last| locals[..=last].iter().any(initializer_clobbers_entry_alias))
+}
+
 impl Generator {
     pub(super) fn retire_entry_parameter_aliases_after_initializer(
         &mut self,
@@ -215,6 +228,15 @@ mod tests {
             row_bytes: None,
         };
         assert!(initializer_clobbers_entry_alias(&local));
+        let mut plain = local.clone();
+        plain.name = "later".into();
+        plain.initializer = Some(Expression::IntegerLiteral(7));
+        let declarations = [local.clone(), plain.clone()];
+        assert!(eager_initializers_clobber_entry_alias(&declarations, &[&declarations[1]]));
+        let declarations = [plain, local];
+        assert!(!eager_initializers_clobber_entry_alias(&declarations, &[&declarations[0]]));
+        assert!(eager_initializers_clobber_entry_alias(&declarations, &[&declarations[1]]));
+        assert!(!eager_initializers_clobber_entry_alias(&declarations, &[]));
     }
 
     #[test]
