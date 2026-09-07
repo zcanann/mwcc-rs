@@ -1610,6 +1610,16 @@ impl Generator {
             &parameter_home_reuse,
             count,
         );
+        let saved_call_token_layout = (self.behavior.saved_call_token_style != mwcc_versions::SavedCallTokenStyle::Structured
+            && self.behavior.optimization == mwcc_versions::Optimization::O4
+            && self.behavior.optimization_goal == mwcc_versions::OptimizationGoal::Performance
+            && self.behavior.scheduler_enabled
+            && !self.behavior.power_pc_7400_scheduling_enabled()
+            && !function.peephole_disabled)
+            .then(|| super::structured_saved_call_token::SavedCallTokenLayout::plan(
+                function, &eager_saved_locals, &saved_parameters, &deferred_saved_locals,
+                &deferred_home_plan, &parameter_home_reuse, count,
+            )).flatten();
         let guarded_call_publication_layout = StructuredGuardedCallPublicationLayout::plan(
             function,
             &eager_saved_locals,
@@ -2024,6 +2034,10 @@ impl Generator {
                     .and_then(|layout| layout.preference(home_index))
                 {
                     self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = saved_call_token_layout
+                    .as_ref().and_then(|layout| layout.preference(home_index))
+                {
+                    self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = guarded_call_publication_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
@@ -2359,6 +2373,8 @@ impl Generator {
                 layout
                     .frame_slot(home_index)
                     .expect("the publication layout owns every saved home")
+            } else if let Some(layout) = &saved_call_token_layout {
+                layout.frame_slot(home_index)
             } else if let Some(layout) = &guarded_call_publication_layout {
                 layout
                     .frame_slot(home_index)
@@ -2425,6 +2441,8 @@ impl Generator {
                     .into_iter()
                     .map(|home_index| homes[home_index]),
             );
+        } else if let Some(layout) = &saved_call_token_layout {
+            logical_saved_homes.extend(layout.save_order().into_iter().map(|index| homes[index]));
         } else if let Some(layout) = &guarded_call_publication_layout {
             logical_saved_homes.extend(
                 layout
@@ -3451,6 +3469,7 @@ impl Generator {
             || paired_eager_deferred_homes
             || unused_array_eager_homes
             || sequenced_callback_wait_layout
+            || saved_call_token_layout.is_some()
             || loop_member_receiver_layout.is_some()
             || loop_call_publication_layout.is_some()
             || guarded_call_publication_layout.is_some()
@@ -3536,6 +3555,7 @@ impl Generator {
         let ordered_entry_save_order = loop_member_receiver_layout
             .as_ref()
             .map(|layout| layout.save_order().to_vec())
+            .or_else(|| saved_call_token_layout.as_ref().map(|layout| layout.save_order().to_vec()))
             .or_else(|| {
                 loop_call_publication_layout
                     .as_ref()

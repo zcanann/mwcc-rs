@@ -4,13 +4,74 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, saved-register frame correctness (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, saved-call-token wrapper matching (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `0c5e63e6e675fd2af1073ee198c4fb0d812ffe4fd1b2bbbc8a825bcdd8126040:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `d6395ae4f816b994300bedd0d103b8ce1a9f24a895799723bc0c610751088081:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Saved-call-token wrapper matching, 2026-09-06
+
+Against frozen baseline `c44aee37`, Melee's `DBInitComm` and `DBRead` now match
+all **120 and 140 reference function bytes**, respectively. The translation
+unit improves from **16/21 to 18/21 exact functions** and **1960/3320 to
+2220/3320 exact reference function bytes**, with all 21 functions compiling.
+The three remaining nonexact functions are `CheckMailBox`, `DBQueryData`,
+and `DBWrite`.
+
+A structured saved-home plan recognizes an entry call result retained until
+a final release call, with two surviving incoming arguments. The immutable
+scalar token gets the highest saved register; parameter homes, prologue
+order, frame slots, and restores share that role assignment. Early uses,
+escapes, assignments, exits, and incompatible token storage decline. The
+ordinary expression and statement emitters continue to generate the body.
+
+A separate physical scheduler fills the measured token-capture and outgoing
+argument latency slots. It preserves relocation and branch ownership while
+permuting verified instruction packets. `SavedCallTokenStyle` selects the
+legacy schedules: GC/1.1 and GC/1.2.5 restore LR before the final saved GPR;
+GC/1.2.5n restores it last; GC/1.1p1 uses a 24-byte frame and earlier argument
+materialization. The other legacy frames use 32 bytes. Compact-frame
+admission proves there are no outgoing stack arguments or scratch accesses
+that could overlap the saved slots. Profile selection, semantic planning,
+and physical scheduling are separate; no project names or device addresses
+select the implementation.
+
+New canaries **1610 and 1611 improve from 0/30 to 8/30 whole-object exact
+pairs** across all 15 builds. Both objects match on all four legacy builds;
+the remaining 22 pairs still use structured lowering and remain nonexact.
+All 30 compile, with no exclusions or reference rejections. The variant
+changes source typedefs, names, bank address and register index, interrupt
+mask, tested mailbox bit, selected offset, command base, length rounding,
+and the constant return value.
+
+**65,720 paired Unicorn cases pass**: 63,600 across the two canaries and all
+15 builds, plus 2,120 using Melee's actual initialization/read wrapper bodies.
+ABI-clobbering call models check interrupt-token restoration, published
+pointers and callbacks, command and rounded-length arguments, state resets,
+ordered writes and calls, buffer guards, return values, and saved registers.
+Inputs include high-bit and all-ones words, size-rounding wraparound, both
+mailbox branches, and varied initial state. The transfer calls are modeled;
+this does not claim complete hardware transport execution.
+
+Five new planning/scheduling tests, the profile-family test, and 117
+inline-expansion tests pass. The previously documented embedded-asm
+composition failure remains explicitly skipped. The 208-canary regression
+selection retains identical verdicts: **1,040 slots, 281 exclusions, 759
+runnable pairs, 417 exact objects, and 223 existing candidate rejections**,
+with no reference rejections or timeouts. Another **210 neighboring pairs
+retain all verdicts and 117 exact objects**.
+
+The 40 real-project transport configurations retain **35 BYTE, one DIFF,
+and four missing dependencies**; **33/34 measured code-exact**, two empty,
+and four unmeasured. The gain is in Melee's function-level comparison; its
+whole object remains nonexact.
+
+Local evidence: `target/token-frame-*`, `target/check_token_frame*.py`,
+`target/probe_token_frames.py`, and
+`target/reference-parity/d6395ae4f816b994-5e4ca1ddc460f4d8.jsonl`.
 
 ## Saved-register frame correctness, 2026-09-06
 

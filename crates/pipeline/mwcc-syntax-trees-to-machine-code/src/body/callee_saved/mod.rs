@@ -378,6 +378,7 @@ mod structured_stream_sync_entry_schedule;
 mod structured_parameter_home_reuse;
 mod structured_parameter_frame_origin;
 mod structured_prologue;
+mod structured_saved_call_token;
 mod structured_release_schedule;
 mod structured_register_width;
 mod structured_rounded_pointer_schedule;

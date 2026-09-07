@@ -21,7 +21,7 @@ use crate::profile::{
     CxxConstructorInlineOrdinalWeights, CxxParameterInitializerOrdinalWeights,
     DeferredFunctionEmissionStyle,
     DiscardedInlineAggregateImageStyle, FieldMergeStyle, FixedAddressConstantStoreStyle,
-    FixedAddressParameterizedRmwStyle, FixedBankStreamStyle,
+    FixedAddressParameterizedRmwStyle, FixedBankStreamStyle, SavedCallTokenStyle,
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
     ForwardedTraceStringStyle,
     FrameConvention, FrexpFamilyStyle, FunctionAddressStoreStyle, FunctionOrdinalAccountingStyle,
@@ -686,6 +686,8 @@ pub struct Behavior {
     pub byte_word_transfer_style: ByteWordTransferStyle,
     /// Frame and command issue policy for fixed-bank word streams.
     pub fixed_bank_stream_style: FixedBankStreamStyle,
+    /// Entry, frame, and restore schedule for a retained scalar call token.
+    pub saved_call_token_style: SavedCallTokenStyle,
     /// Register allocation and issue order for MSL's aligned word-copy unroll.
     pub mem_copy_word_schedule_style: MemCopyWordScheduleStyle,
     /// Instruction selection for MSL's final three-byte remainder mask.
@@ -1169,6 +1171,7 @@ impl Behavior {
             integer_loop_style: config.build.profile.integer_loop_style(),
             byte_word_transfer_style: config.build.profile.byte_word_transfer_style(),
             fixed_bank_stream_style: config.build.profile.fixed_bank_stream_style(),
+            saved_call_token_style: config.build.profile.saved_call_token_style(),
             mem_copy_word_schedule_style: config.build.profile.mem_copy_word_schedule_style(),
             mem_copy_remainder_mask_style: config.build.profile.mem_copy_remainder_mask_style(),
             schedule_latency_slots: config.flags.optimization == Optimization::O4,
@@ -2902,6 +2905,22 @@ mod tests {
         assert!(!Behavior::resolve(&config).power_pc_7400_scheduling_enabled());
         config.flags.scheduler_enabled = true;
         assert!(Behavior::resolve(&config).power_pc_7400_scheduling_enabled());
+    }
+
+    #[test]
+    fn saved_call_tokens_follow_measured_legacy_schedules() {
+        for (compiler_build, style) in [
+            (build::GC_1_1, SavedCallTokenStyle::LegacyInterleaved),
+            (build::GC_1_2_5, SavedCallTokenStyle::LegacyInterleaved),
+            (build::GC_1_2_5N, SavedCallTokenStyle::LegacyStackLast),
+            (build::GC_1_1P1, SavedCallTokenStyle::LegacyPatched),
+            (build::GC_1_3, SavedCallTokenStyle::Structured),
+            (build::GC_2_7, SavedCallTokenStyle::Structured),
+            (build::GC_3_0A3, SavedCallTokenStyle::Structured),
+            (build::WII_1_0, SavedCallTokenStyle::Structured),
+        ] {
+            assert_eq!(Behavior::resolve(&CompilerConfig::new(compiler_build)).saved_call_token_style, style);
+        }
     }
 
     #[test]

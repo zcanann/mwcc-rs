@@ -39,6 +39,18 @@ pub enum SavedGprEpilogueStyle {
     StackRestoreBeforeLinkRegisterReload,
 }
 
+/// Saved-token transactions retain an entry result through a final release call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedCallTokenStyle {
+    Structured,
+    /// Original legacy schedule, with LR restored before the final saved GPR.
+    LegacyInterleaved,
+    /// Nintendo retains the original entry schedule but restores LR last.
+    LegacyStackLast,
+    /// Patched build 159 uses a compact frame and earlier argument materialization.
+    LegacyPatched,
+}
+
 /// Ordering of a post-call floating result relative to the saved-LR reload and
 /// allocator-selected FPR restores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1227,6 +1239,10 @@ pub trait CodegenProfile: core::fmt::Debug {
 
     fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
         FixedBankStreamStyle::Structured
+    }
+
+    fn saved_call_token_style(&self) -> SavedCallTokenStyle {
+        SavedCallTokenStyle::Structured
     }
 
     fn mem_copy_word_schedule_style(&self) -> MemCopyWordScheduleStyle {
@@ -2453,6 +2469,7 @@ impl CodegenProfile for Gc132Build81 {
 pub struct Gc233Build163 {
     byte_word_transfer_style: ByteWordTransferStyle,
     fixed_bank_stream_style: FixedBankStreamStyle,
+    saved_call_token_style: SavedCallTokenStyle,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle,
     saved_float_epilogue_style: SavedFloatEpilogueStyle,
@@ -2461,6 +2478,7 @@ pub struct Gc233Build163 {
 }
 
 pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
+    saved_call_token_style: SavedCallTokenStyle::LegacyInterleaved,
     byte_word_transfer_style: ByteWordTransferStyle::LegacyDependencyFirst,
     fixed_bank_stream_style: FixedBankStreamStyle::LegacyFusedCommand,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
@@ -2471,6 +2489,7 @@ pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
 };
 
 pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
+    saved_call_token_style: SavedCallTokenStyle::LegacyInterleaved,
     byte_word_transfer_style: ByteWordTransferStyle::LegacyDependencyFirst,
     fixed_bank_stream_style: FixedBankStreamStyle::LegacyFusedCommand,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
@@ -2481,6 +2500,7 @@ pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
 };
 
 pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
+    saved_call_token_style: SavedCallTokenStyle::LegacyStackLast,
     byte_word_transfer_style: ByteWordTransferStyle::LegacyDependencyFirst,
     fixed_bank_stream_style: FixedBankStreamStyle::LegacyFusedCommand,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
@@ -2491,6 +2511,7 @@ pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
 };
 
 pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
+    saved_call_token_style: SavedCallTokenStyle::LegacyPatched,
     byte_word_transfer_style: ByteWordTransferStyle::LegacyInterleaved,
     fixed_bank_stream_style: FixedBankStreamStyle::LegacySeparateCommand,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::StackRestoreBeforeReload,
@@ -2501,6 +2522,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn saved_call_token_style(&self) -> SavedCallTokenStyle {
+        self.saved_call_token_style
+    }
+
     fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
         self.byte_word_transfer_style
     }
