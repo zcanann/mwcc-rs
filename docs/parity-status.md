@@ -4,13 +4,69 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, BSS initializer section anchors (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, C++ zero-storage declaration order (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `e612c58ab68d7f5f05bf5417e85dd28661a47a0fedb719525c6b341e68cf13cd:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `a1aaaed17c7a07dbe6b1df75872942186cf59ba8c8bf22dc6d37bffbfe121cc7:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## C++ zero-storage declaration order, 2026-09-06
+
+Against frozen baseline `b9f4933a`, four targeted canaries improve from
+**10/60 to 57/60 whole-object exact pairs** across all fifteen builds.
+Exported-BSS canary 1629 now matches **15/15**, up from zero. New canaries
+1630/1631/1632 cover mixed static/exported BSS, declarations around function
+definitions, and initializer references before and after a definition. They
+improve from **10/45 to 42/45**. All 60 pairs compile without exclusions or
+reference rejections; 1630 retains three modern pointer-array alignment gaps.
+
+C++ now allocates full BSS in source declaration order across static and
+exported definitions, and emits exported BSS symbols at their declaration
+events alongside other globals. Function-local statics, appended separately
+to the writer input, rejoin the sequence at their owning function's source
+position. A shared stable ordering feeds both `.bss` and `.sbss`. The format
+policy is renamed `zero_data_in_declaration_order` to describe its full scope;
+C's independent placement and reference-order conventions remain separate.
+
+Initializer section anchors also respect definition order. A reference to a
+preceding extern declaration keeps its named relocation until storage is
+defined. A later initializer can use the same target's BSS anchor. Eligibility
+is resolved per initializer, so both relocation forms can coexist in one
+object without retargeting the earlier reference.
+
+Ten source shapes across fifteen builds and three modes (O4, O0, and O4 with
+`-sdata 0`) improve from **30/450 to 375/450 exact objects**, with every pair
+compilable and no lost matches. Symbol-name sequences improve from **103/450
+to 435/450**; complete symbol-record sets from **45/450 to 396/450**; relocation
+record sets from **337/450 to 428/450**. Both forward-reference forms match
+all 45 mode/build pairs each. Remaining nonexact cases expose explicit-zero
+section selection, pointer-array alignment, function-local static conventions,
+and code scheduling. These are targeted diagnostics, not population estimates.
+
+All **39 writer tests pass**, including mixed exported/body-local zero storage
+and a single target used by both pre-definition and post-definition
+initializers. Compiler and oracle builds pass. The fixed metadata selection
+retains **908/1,750 exact runnable pairs**, with **2,250 slots, 500 exclusions,
+and no timeouts**.
+
+The combined **191-configuration** real-project panel retains all **47 exact
+objects** and all previously measured code verdicts. Candidate results are
+**47 BYTE, 22 DIFF, 105 compiler DEFER, 13 HARNESS, and four missing dependencies**.
+Code is exact for **47/156 measured objects**, with five empty and 30 unmeasured;
+92 of the measured objects are nonexact partial-TU projections. The baseline
+has 104 DEFER and 14 HARNESS: Wind Waker's `m_Do_DVDError.cpp` reaches a long-long
+codegen diagnostic in the candidate instead of the 30-second cap. That adds
+one nonexact partial projection and is not counted as a parity gain. An
+isolated baseline rerun reaches the same diagnostic and code verdict, confirming
+timing variability at this cap. The transport subset retains **36/40 exact objects**, including Melee, with four
+missing dependencies and **34/34 exact nonempty code projections** plus two
+empty objects.
+
+Local evidence: `target/cxx-bss-*`, `target/check_cxx_bss*.py`,
+`target/probe_cxx_bss_declarations.py`, and
+`target/reference-parity/a1aaaed17c7a07db-5e4ca1ddc460f4d8.jsonl`.
 
 ## BSS initializer section anchors, 2026-09-06
 

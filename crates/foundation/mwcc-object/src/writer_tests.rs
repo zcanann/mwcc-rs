@@ -207,7 +207,7 @@ fn deferred_body_can_complete_reference_discovery_before_its_symbol() {
             initialized_globals_before_deferred_functions: true,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,
-            small_zero_data_in_declaration_order: false,
+            zero_data_in_declaration_order: false,
             rodata_anchor_before_data_symbols: false,
             rodata_anchor_comment_flags: 0,
             data_relocations_use_section_anchors: false,
@@ -278,7 +278,7 @@ fn compiler_register_helpers_precede_function_first_body_symbols() {
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,
-            small_zero_data_in_declaration_order: false,
+            zero_data_in_declaration_order: false,
             rodata_anchor_before_data_symbols: false,
             rodata_anchor_comment_flags: 0,
             data_relocations_use_section_anchors: false,
@@ -733,7 +733,7 @@ fn data_relocations_follow_interleaved_creation_order() {
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,
-            small_zero_data_in_declaration_order: false,
+            zero_data_in_declaration_order: false,
             rodata_anchor_before_data_symbols: false,
             rodata_anchor_comment_flags: 0,
             data_relocations_use_section_anchors: false,
@@ -888,7 +888,7 @@ fn analysis_constant_placement_is_independent_of_counter_advancement() {
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,
-            small_zero_data_in_declaration_order: false,
+            zero_data_in_declaration_order: false,
             rodata_anchor_before_data_symbols: false,
             rodata_anchor_comment_flags: 0,
             data_relocations_use_section_anchors: false,
@@ -994,7 +994,7 @@ fn function_pool_prefix_padding_precedes_alignment_of_its_first_fresh_slot() {
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,
-            small_zero_data_in_declaration_order: false,
+            zero_data_in_declaration_order: false,
             rodata_anchor_before_data_symbols: false,
             rodata_anchor_comment_flags: 0,
             data_relocations_use_section_anchors: false,
@@ -1375,7 +1375,7 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,
-            small_zero_data_in_declaration_order: false,
+            zero_data_in_declaration_order: false,
             rodata_anchor_before_data_symbols: false,
             rodata_anchor_comment_flags: 0,
             data_relocations_use_section_anchors: false,
@@ -1505,7 +1505,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,
-            small_zero_data_in_declaration_order: false,
+            zero_data_in_declaration_order: false,
             rodata_anchor_before_data_symbols: false,
             rodata_anchor_comment_flags: 0,
             data_relocations_use_section_anchors: true,
@@ -1596,7 +1596,7 @@ fn code_data_anchor_precedes_pools_when_full_data_is_declared_upfront() {
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,
-            small_zero_data_in_declaration_order: false,
+            zero_data_in_declaration_order: false,
             rodata_anchor_before_data_symbols: false,
             rodata_anchor_comment_flags: 0,
             data_relocations_use_section_anchors: false,
@@ -1669,7 +1669,7 @@ fn code_data_anchor_follows_earlier_static_functions_before_an_owned_string() {
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,
-            small_zero_data_in_declaration_order: false,
+            zero_data_in_declaration_order: false,
             rodata_anchor_before_data_symbols: false,
             rodata_anchor_comment_flags: 0,
             data_relocations_use_section_anchors: false,
@@ -1806,7 +1806,7 @@ fn const_pointer_arrays_emit_reverse_rodata_relocations() {
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,
-            small_zero_data_in_declaration_order: false,
+            zero_data_in_declaration_order: false,
             rodata_anchor_before_data_symbols: false,
             rodata_anchor_comment_flags: 0,
             data_relocations_use_section_anchors: true,
@@ -1933,7 +1933,7 @@ fn static_frontier_input(position: usize, referenced: bool) -> ObjectInput<'stat
             initialized_globals_before_deferred_functions: true,
             local_data_symbols_in_declaration_order: true,
             small_zero_statics_in_declaration_order: false,
-            small_zero_data_in_declaration_order: false,
+            zero_data_in_declaration_order: false,
             rodata_anchor_before_data_symbols: false,
             rodata_anchor_comment_flags: 0,
             data_relocations_use_section_anchors: false,
@@ -1993,7 +1993,7 @@ fn declaration_order_statics_keep_front_middle_and_tail_events() {
 fn declaration_order_data_only_statics_keep_local_initializer_bindings() {
     let mut input = static_frontier_input(0, false);
     input.functions.clear();
-    input.object_format.small_zero_data_in_declaration_order = true;
+    input.object_format.zero_data_in_declaration_order = true;
     input.data_objects[1].is_explicit_zero = true;
     let mut pointer = static_frontier_input(0, false).data_objects.remove(0);
     pointer.name = "pointer";
@@ -2028,7 +2028,7 @@ fn declaration_order_data_only_statics_keep_local_initializer_bindings() {
 fn bss_initializer_anchors_follow_declarations_and_include_object_offsets() {
     for position in [0, 1, 2] {
         let mut input = static_frontier_input(position, false);
-        input.object_format.small_zero_data_in_declaration_order = true;
+        input.object_format.zero_data_in_declaration_order = true;
         input.object_format.data_relocations_use_section_anchors = true;
         input.object_format.data_anchor_comment_flags = 0x0010_0000;
         input.data_objects[0].size = 12;
@@ -2070,7 +2070,7 @@ fn bss_initializer_anchor_eligibility_distinguishes_c_tentative_globals() {
     for cxx in [false, true] {
         let mut input = static_frontier_input(0, false);
         input.functions.clear();
-        input.object_format.small_zero_data_in_declaration_order = cxx;
+        input.object_format.zero_data_in_declaration_order = cxx;
         input.object_format.data_relocations_use_section_anchors = true;
         for object in &mut input.data_objects {
             object.is_static = false;
@@ -2103,6 +2103,84 @@ fn bss_initializer_anchor_eligibility_distinguishes_c_tentative_globals() {
         };
         assert_eq!(be_u32(&bytes, offset + 8), section_addend + 3);
     }
+}
+
+#[test]
+fn cxx_zero_storage_interleaves_exported_definitions_and_body_local_statics() {
+    for full in [false, true] {
+        let mut input = static_frontier_input(0, false);
+        input.object_format.zero_data_in_declaration_order = true;
+        input.object_format.function_symbol_order = FunctionSymbolOrder::ReferencesFirst;
+        input
+            .object_format
+            .initialized_globals_before_deferred_functions = false;
+        for function in &mut input.functions {
+            function.is_static = false;
+        }
+        for object in &mut input.data_objects {
+            object.is_static = false;
+            object.size = if full { 12 } else { 4 };
+        }
+        input.data_objects[1].functions_before = 1;
+        let mut local = static_frontier_input(0, false).data_objects.remove(0);
+        local.name = "body_local";
+        local.static_local_owner = Some(0);
+        local.force_full_data_section = full;
+        input.data_objects.push(local);
+        let bytes = write_object(&input);
+        let names = symbol_names(&bytes);
+        let local = names
+            .iter()
+            .find(|name| name.starts_with("body_local$"))
+            .unwrap();
+        let width = if full { 12 } else { 4 };
+        assert_eq!(symbol_value_and_size(&bytes, "first"), (0, width));
+        assert_eq!(symbol_value_and_size(&bytes, local), (width, 4));
+        assert_eq!(symbol_value_and_size(&bytes, "second"), (width + 4, width));
+        let globals: Vec<_> = names
+            .iter()
+            .filter(|name| ["first", "before", "second", "after"].contains(&name.as_str()))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(globals, ["first", "before", "second", "after"]);
+    }
+}
+
+#[test]
+fn bss_initializer_before_definition_keeps_named_target_after_later_anchor_use() {
+    let mut input = static_frontier_input(0, false);
+    input.functions.clear();
+    input.object_format.zero_data_in_declaration_order = true;
+    input.object_format.data_relocations_use_section_anchors = true;
+    let mut target = input.data_objects.remove(0);
+    target.name = "target";
+    target.is_static = false;
+    target.size = 12;
+    input.data_objects.clear();
+    for name in ["before_pointer", "after_pointer"] {
+        let mut pointer = static_frontier_input(0, false).data_objects.remove(0);
+        pointer.name = name;
+        pointer.is_static = false;
+        pointer.initial_bytes = Some(vec![0; 4]);
+        pointer.relocations.push(crate::DataRelocation {
+            offset: 0,
+            target: "target".into(),
+            addend: 0,
+        });
+        input.data_objects.push(pointer);
+    }
+    input.data_objects.insert(1, target);
+    let bytes = write_object(&input);
+    let names = symbol_names(&bytes);
+    let header = section_header(&bytes, section_index(&bytes, ".rela.sdata"));
+    let offset = be_u32(&bytes, header + 16) as usize;
+    let targets: Vec<_> = (0..2)
+        .map(|index| {
+            let symbol = be_u32(&bytes, offset + index * 12 + 4) >> 8;
+            names[symbol as usize].as_str()
+        })
+        .collect();
+    assert_eq!(targets, ["target", "...bss.0"]);
 }
 
 #[test]

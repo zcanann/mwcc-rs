@@ -70,9 +70,10 @@ pub struct ObjectFormat {
     /// Whether file-scope static `.sbss` objects form a declaration-order phase
     /// between exported explicit-zero and tentative-definition objects.
     pub small_zero_statics_in_declaration_order: bool,
-    /// Whether the complete `.sbss` definition run preserves source declaration
-    /// order, including exported tentative definitions.
-    pub small_zero_data_in_declaration_order: bool,
+    /// Whether complete `.sbss` and `.bss` storage and exported-symbol runs
+    /// preserve source declaration order, including definitions without an
+    /// initializer. C++ uses this policy independently of small-data mode.
+    pub zero_data_in_declaration_order: bool,
     /// Whether `...rodata.0` precedes named `.rodata` data symbols.
     pub rodata_anchor_before_data_symbols: bool,
     /// `.comment` attribute flags for `...rodata.0`.

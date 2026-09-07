@@ -1162,13 +1162,42 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .functions
         .iter()
         .any(|function| !function.jump_tables.is_empty());
-    // Large zero `.bss` follows the build's LOCAL-symbol convention first. Later
-    // builds keep file-scope statics in declaration order; other objects follow
-    // SYMBOL-EMISSION order: referenced objects first (including named objects
-    // reached through a section-anchor displacement), then unreferenced objects
-    // in reverse declaration order. Small-data `.sbss` has its own rules below.
+    // C++ allocates full BSS at declaration. C follows the build's local-data
+    // convention, then first references (including section displacements), then
+    // unreferenced definitions in reverse order. Small BSS follows below.
     let mut bss_size = 0u32;
     let mut placed_bss: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
+    // Body-local statics are appended to the input after file globals. Rejoin
+    // them at their owning function's source event, before subsequent file
+    // declarations. Both zero-storage sections consume this stable order.
+    let mut declaration_ordered_zero_objects: Vec<_> =
+        if input.object_format.zero_data_in_declaration_order {
+            input
+                .data_objects
+                .iter()
+                .filter(|object| matches!(section_of(object), ".bss" | ".sbss"))
+                .collect()
+        } else {
+            Vec::new()
+        };
+    declaration_ordered_zero_objects.sort_by_key(|object| {
+        (
+            object
+                .static_local_owner
+                .unwrap_or(object.functions_before)
+                .min(input.functions.len()),
+            object.static_local_owner.is_some(),
+        )
+    });
+    if input.object_format.zero_data_in_declaration_order {
+        for object in declaration_ordered_zero_objects
+            .iter()
+            .filter(|object| section_of(object) == ".bss")
+        {
+            placed_bss.insert(object.name);
+            place(object, ".bss", &mut bss_size);
+        }
+    }
     // The early grouped-data convention applies its `.sbss` tentative-definition
     // order to the full `.bss` run when `-sdata 0` redirects every object there:
     // file-scope statics first, then exported objects in reverse declaration
@@ -1330,13 +1359,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             place(object, ".sdata", &mut sdata_size);
         }
     }
-    // mwcc lays `.sbss` out as: EXPLICITLY zero-initialized globals (`int a = 0;`) in
+    // C lays `.sbss` out as: EXPLICITLY zero-initialized globals (`int a = 0;`) in
     // DECLARATION order, then UNINITIALIZED globals (`int a;`) in REVERSE declaration order.
     // (An all-uninitialized `.sbss` therefore just reverses, as before.)
     let mut sbss_size = 0u32;
-    if input.object_format.small_zero_data_in_declaration_order {
-        for object in input
-            .data_objects
+    if input.object_format.zero_data_in_declaration_order {
+        for object in declaration_ordered_zero_objects
             .iter()
             .filter(|object| section_of(object) == ".sbss")
         {
@@ -2298,16 +2326,29 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .filter(|object| {
             input.object_format.data_relocations_use_section_anchors
                 && input.object_format.local_data_symbols_in_declaration_order
-                && (object.is_static || input.object_format.small_zero_data_in_declaration_order)
+                && (object.is_static || input.object_format.zero_data_in_declaration_order)
                 && data_section[object.name] == ".bss"
         })
         .map(|object| object.name)
         .collect();
+    let data_declaration_indices: HashMap<&str, usize> = input
+        .data_objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| (object.name, index))
+        .collect();
+    // A preceding extern declaration does not allocate storage. An initializer
+    // before the definition therefore keeps its named relocation, even if a
+    // later initializer can use the same target's section anchor.
+    let bss_initializer_uses_anchor = |object: &DataObject, target: &str| {
+        bss_anchor_targets.contains(target)
+            && data_declaration_indices[target] <= data_declaration_indices[object.name]
+    };
     let bss_anchor_needed_by_data = input.data_objects.iter().any(|object| {
         object
             .relocations
             .iter()
-            .any(|relocation| bss_anchor_targets.contains(relocation.target.as_str()))
+            .any(|relocation| bss_initializer_uses_anchor(object, &relocation.target))
     });
     let rodata_anchor_needed_by_data = input.object_format.data_relocations_use_section_anchors
         && data_relocation_targets_section(".rodata");
@@ -2547,7 +2588,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // Immediate C compilation discovers tentative file statics inside each
     // function's creation transaction. Deferred/C++ layouts retain their own
     // grouped declaration phases below.
-    let zero_references_at_function = !input.object_format.small_zero_data_in_declaration_order
+    let zero_references_at_function = !input.object_format.zero_data_in_declaration_order
         && matches!(
             input.object_format.function_symbol_order,
             FunctionSymbolOrder::ReferencesFirst | FunctionSymbolOrder::FunctionFirst
@@ -2627,7 +2668,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     .iter()
                     .find(|object| object.name == name && is_pending_zero_static(object))
                 {
-                    if input.object_format.small_zero_data_in_declaration_order && object.is_static
+                    if input.object_format.zero_data_in_declaration_order && object.is_static
                     {
                         continue;
                     }
@@ -2652,7 +2693,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             if is_pending_zero_static(object)
                 && !zero_statics_after_function_strings.contains(object.name)
                 && !emitted_zero_static.contains(object.name)
-                && !(input.object_format.small_zero_data_in_declaration_order && object.is_static)
+                && !(input.object_format.zero_data_in_declaration_order && object.is_static)
             {
                 local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
                 let section = index_of(data_section[object.name]) as u16;
@@ -2766,7 +2807,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // static data and before per-function `@N` blocks. Build 163 delays this
     // declaration event until the first function's pool transaction closes.
     if !input.object_format.early_static_functions_after_first_pool
-        && !input.object_format.small_zero_data_in_declaration_order
+        && !input.object_format.zero_data_in_declaration_order
     {
         emit_early_static_function_symbols!();
     }
@@ -3068,7 +3109,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
             rodata_blob_symbols.push(symbols_of_blobs);
         }
-        if index == 0 && input.object_format.small_zero_data_in_declaration_order {
+        if index == 0 && input.object_format.zero_data_in_declaration_order {
             // C++ file statics use the source declaration events above. An
             // early static prototype still follows the first anonymous pool.
             if !input.object_format.early_static_functions_after_first_pool {
@@ -3659,9 +3700,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             && (matches!(
                 section_name,
                 ".sdata" | ".data" | ".sdata2" | ".rodata" | ".ctors" | ".dtors"
-            ) || (section_name == ".sbss"
-                && (object.is_explicit_zero
-                    || input.object_format.small_zero_data_in_declaration_order)))
+            ) || (section_name == ".sbss" && object.is_explicit_zero)
+                || (matches!(section_name, ".sbss" | ".bss")
+                    && input.object_format.zero_data_in_declaration_order))
     };
     // Retained weak inline statics are registered while parsing headers before
     // section-attributed asm prototypes. Build 163 emits that leading weak run
@@ -4575,8 +4616,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // writable arrays.
     let mut rela_rodata = Vec::new();
     let mut rela_sdata = Vec::new();
-    let resolve_data_target = |name: &str| -> (u32, u32) {
-        if bss_anchor_targets.contains(name) {
+    let resolve_data_target = |object: &DataObject, name: &str| -> (u32, u32) {
+        if bss_initializer_uses_anchor(object, name) {
             return (local_data_symbols["...bss.0"], data_offsets[name]);
         }
         if input.object_format.data_relocations_use_section_anchors {
@@ -4602,7 +4643,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter().rev() {
-            let (symbol, section_addend) = resolve_data_target(&relocation.target);
+            let (symbol, section_addend) = resolve_data_target(object, &relocation.target);
             write_rela(
                 &mut rela_rodata,
                 data_offsets[object.name] + relocation.offset,
@@ -4617,7 +4658,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter().rev() {
-            let (symbol, section_addend) = resolve_data_target(&relocation.target);
+            let (symbol, section_addend) = resolve_data_target(object, &relocation.target);
             write_rela(
                 &mut rela_sdata,
                 data_offsets[object.name] + relocation.offset,
@@ -4633,7 +4674,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter().rev() {
-            let (symbol, section_addend) = resolve_data_target(&relocation.target);
+            let (symbol, section_addend) = resolve_data_target(object, &relocation.target);
             write_rela(
                 &mut rela_sdata2,
                 data_offsets[object.name] + relocation.offset,
@@ -4670,7 +4711,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         for (object_index, relocation_index) in data_object_relocation_schedule.entries {
             let object = &input.data_objects[object_index];
             let relocation = &object.relocations[relocation_index];
-            let (symbol, section_addend) = resolve_data_target(&relocation.target);
+            let (symbol, section_addend) = resolve_data_target(object, &relocation.target);
             closure_entries.push((
                 data_offsets[object.name] + relocation.offset,
                 symbol,
@@ -4743,7 +4784,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 current_object = Some(object_index);
             }
             let relocation = &object.relocations[relocation_index];
-            let (symbol, section_addend) = resolve_data_target(&relocation.target);
+            let (symbol, section_addend) = resolve_data_target(object, &relocation.target);
             transactions.last_mut().unwrap().1.push((
                 data_offsets[object.name] + relocation.offset,
                 symbol,
@@ -4764,7 +4805,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter() {
-            let (symbol, section_addend) = resolve_data_target(&relocation.target);
+            let (symbol, section_addend) = resolve_data_target(object, &relocation.target);
             write_rela(
                 &mut rela_ctors,
                 data_offsets[object.name] + relocation.offset,
@@ -4780,7 +4821,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter().rev() {
-            let (symbol, section_addend) = resolve_data_target(&relocation.target);
+            let (symbol, section_addend) = resolve_data_target(object, &relocation.target);
             write_rela(
                 &mut rela_dtors,
                 data_offsets[object.name] + relocation.offset,
