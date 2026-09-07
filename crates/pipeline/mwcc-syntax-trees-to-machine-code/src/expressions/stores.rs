@@ -340,6 +340,9 @@ impl Generator {
                 return self.emit_store(base, value);
             }
         }
+        if self.try_emit_wide_call_result_store(target, value)? {
+            return Ok(());
+        }
         if self.try_emit_wide_pointer_mask_store(target, value)? {
             return Ok(());
         }

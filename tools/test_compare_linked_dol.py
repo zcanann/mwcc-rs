@@ -42,6 +42,47 @@ class LinkedDolTests(unittest.TestCase):
                       literals=[dict(hex='44800000', address=address+16)] if literal else [])
         return bytes(data), bytes(dol), source, layout
 
+    def bss_alias_fixture(self):
+        data, dol, source, layout = self.fixture(literal=True)
+        data = bytearray(data.replace(b'.sdata2\0', b'.sbss\0\0\0').replace(b'\0f\0g\0', b'\0f\0h\0'))
+        shoff = struct.unpack_from('>I', data, 32)[0]
+        struct.pack_into('>I', data, shoff + 6 * 40 + 4, 8)
+        dol = bytearray(dol)
+        struct.pack_into('>II', dol, 0xD8, 0x80004010, 4)
+        source = source.replace('.sdata2:', '.sbss:')
+        layout.update(dol_sha256=hashlib.sha256(dol).hexdigest(),
+                      symbols_sha256=hashlib.sha256(source.encode()).hexdigest(),
+                      literals=[], data_symbols={'g': 0x80004010},
+                      bss_symbol_aliases={'h': 'g'})
+        return bytes(data), bytes(dol), source, layout
+
+    def test_explicit_bss_alias_checks_section_size_and_original_range(self):
+        data, dol, source, layout = self.bss_alias_fixture()
+        self.assertTrue(compare(data, dol, source, layout)['functions'][0]['exact'])
+        bad = bytearray(dol)
+        struct.pack_into('>I', bad, 0xDC, 0)
+        layout['dol_sha256'] = hashlib.sha256(bad).hexdigest()
+        with self.assertRaises(ValueError):
+            compare(data, bytes(bad), source, layout)
+        layout['dol_sha256'] = hashlib.sha256(dol).hexdigest()
+        bad = bytearray(data)
+        shoff = struct.unpack_from('>I', bad, 32)[0]
+        struct.pack_into('>I', bad, shoff + 6 * 40 + 4, 1)
+        with self.assertRaises(ValueError):
+            compare(bytes(bad), dol, source, layout)
+        bad = bytearray(data)
+        symoff = struct.unpack_from('>I', bad, shoff + 2 * 40 + 16)[0]
+        struct.pack_into('>I', bad, symoff + 2 * 16 + 8, 8)
+        with self.assertRaises(ValueError):
+            compare(bytes(bad), dol, source, layout)
+
+    def test_bss_alias_rejects_missing_and_conflicting_symbols(self):
+        data, dol, source, layout = self.bss_alias_fixture()
+        for aliases in [{'missing': 'g'}, {'g': 'g'}, {'h': 'unverified'}]:
+            layout['bss_symbol_aliases'] = aliases
+            with self.assertRaises(ValueError):
+                compare(data, dol, source, layout)
+
     def test_named_data_and_verified_literal_link_to_original(self):
         for literal in [False, True]:
             with self.subTest(literal=literal):

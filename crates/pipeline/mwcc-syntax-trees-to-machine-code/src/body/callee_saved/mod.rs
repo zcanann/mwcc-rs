@@ -1028,6 +1028,10 @@ impl Generator {
         let matched = match pointee {
             Pointee::Float => self.call_return_types.get(name) == Some(&Type::Float),
             Pointee::Double => self.call_return_types.get(name) == Some(&Type::Double),
+            Pointee::LongLong | Pointee::UnsignedLongLong => matches!(
+                self.call_return_types.get(name),
+                Some(Type::LongLong | Type::UnsignedLongLong)
+            ),
             _ => !matches!(
                 self.call_return_types.get(name),
                 Some(Type::Float | Type::Double)
@@ -1104,9 +1108,25 @@ impl Generator {
                 .push(Instruction::ExtendSignByte { a: 0, s: result });
             result = 0;
         }
-        self.output
-            .instructions
-            .push(displacement_store(pointee, result, saved, offset)?);
+        if matches!(pointee, Pointee::LongLong | Pointee::UnsignedLongLong) {
+            let low_offset = offset.checked_add(4).ok_or_else(|| {
+                Diagnostic::error("wide store-through-saved-pointer offset out of range")
+            })?;
+            self.output.instructions.push(Instruction::StoreWord {
+                s: result + 1,
+                a: saved,
+                offset: low_offset,
+            });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: result,
+                a: saved,
+                offset,
+            });
+        } else {
+            self.output
+                .instructions
+                .push(displacement_store(pointee, result, saved, offset)?);
+        }
         // A non-void function materializes its constant return value in r3 after the store.
         if let Some(return_expression) = function.return_expression.as_ref() {
             self.evaluate_tail(

@@ -71,6 +71,30 @@ def compare(data, dol, symbol_text, layout):
         raise ValueError("candidate must be a big-endian ELF32 PowerPC relocatable object")
     sections = parse_sections(data)
     table = symbols(data, sections)
+    # Extracted functions retain their source-local objects, but their numeric
+    # suffixes can change with the translation unit's anonymous-label stream.
+    # Accept only explicit aliases to pinned, equally sized BSS objects.
+    for alias, original in layout.get('bss_symbol_aliases', {}).items():
+        if alias in placements or original not in layout['data_symbols']:
+            raise ValueError("BSS alias conflicts or has no verified original symbol")
+        matches = re.findall(r'^\s*' + re.escape(original)
+                             + r'\s*=\s*\.(s?bss2?):(0x[0-9a-fA-F]+);[^\n]*type:object size:(0x[0-9a-fA-F]+)',
+                             symbol_text, re.MULTILINE)
+        candidates = [entry for entry in table if entry[0] == alias and entry[3] & 15 == 1]
+        if len(matches) != 1 or len(candidates) != 1:
+            raise ValueError("BSS alias needs unique source and candidate objects")
+        section, address, size = matches[0]
+        address, size = int(address, 16), int(size, 16)
+        _, offset, candidate_size, _, index = candidates[0]
+        bss_address, bss_size = struct.unpack_from('>II', dol, 0xD8)
+        if (size == 0 or not bss_address <= address < address + size <= bss_address + bss_size
+                or index >= len(sections) or sections[index].section_type != 8
+                or sections[index].name != '.' + section or candidate_size != size
+                or offset + size > sections[index].size):
+            raise ValueError("BSS alias storage does not match the pinned object")
+        placements[alias] = placements[original]
+        if original in symbol_sda_registers:
+            symbol_sda_registers[alias] = symbol_sda_registers[original]
     text_sections = [s for s in sections if s.name == '.text']
     if len(text_sections) != 1:
         raise ValueError("candidate needs one text section")

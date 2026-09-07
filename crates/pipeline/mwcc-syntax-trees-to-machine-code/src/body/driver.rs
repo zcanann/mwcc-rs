@@ -2734,7 +2734,26 @@ impl Generator {
             .iter()
             .any(|local| matches!(local.declared_type, Type::LongLong | Type::UnsignedLongLong))
         {
-            return self.emit_long_long(function);
+            let mut native = self.clone();
+            let native_result = native.emit_long_long(function);
+            if native_result.is_ok() {
+                *self = native;
+                return native_result;
+            }
+            if let Some(lowered) = super::wide_frame_values::materialize(
+                function,
+                &self.globals,
+                &self.volatile_globals,
+                &self.call_return_types,
+            ) {
+                let mut trial = self.clone();
+                if trial.try_callee_saved_structured_frame_body(&lowered)? {
+                    *self = trial;
+                    return Ok(());
+                }
+                return self.evaluate_body(&lowered);
+            }
+            return native_result;
         }
         if self.try_saved_global_exchange(function)? {
             return Ok(());

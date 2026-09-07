@@ -4,13 +4,112 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, GXInit assembly and legacy counter-readback behavior (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, GX shutdown and retained 64-bit frame values (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `869e8552bc16639d508a9f3583faf3c88fe1f9c8d26bbc8b637418cb388ca2f1:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `a9b7f471cb429dfbba84b82202866db04177e631262f1bd6833a3bfc4325521a:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GX shutdown and retained 64-bit frame values, 2026-09-07
+
+BfBB's unchanged `__GXShutdown` function now compiles and passes **2,048
+original-DOL execution comparisons** on both the candidate and a fresh reference
+object. The full `GXInit.c` source advances to a later call-survivor diagnostic
+in `GXInit` itself. **GX compilation remains 9/14** complete translation units.
+
+Wide call-result stores capture the complete EABI r3:r4 result. Global and
+pointer destinations receive the low word at offset four and the high word at
+offset zero; the existing saved-pointer call owner uses the same two-word
+semantics. The general store path reserves both result registers while computing
+a pure destination address and declines side-effecting address evaluation.
+It excludes local bindings from global-symbol recognition.
+
+A new `wide_frame_values` fallback represents retained 64-bit automatic values
+as aligned, eight-byte frame images. Existing specialized pair emitters retain
+first refusal through a cloned trial, preserving their measured schedules.
+The fallback reuses the ordinary frame allocator, call emitter, and structured
+control flow. It lowers entry initializers in declaration order and captures
+both words before overwriting a pair destination. Addition/subtraction carry
+and borrow, signed/unsigned comparisons, equality, and explicit low-word
+conversions become scalar operations with explicit temporary values. This also
+keeps timestamps intact across intervening calls. Static-local assignments use
+ordinary global stores; the original object pipeline retains their storage.
+
+The frame fallback is deliberately a separate implementation choice from
+register-pair scheduling. Address escapes, volatile wide operands, wide
+parameters/returns, and wide loop-condition preludes remain outside this lane.
+Unsupported short-circuit expressions decline before any pair reads are hoisted;
+a focused unit test checks that boundary. These restrictions leave existing
+specialized handlers and diagnostics available.
+
+Canaries **1946–1949** cover two complete-result stores and six frame/value
+functions at O0/O4 across fifteen builds. The frozen `0f73ee0c` baseline compiles
+**0/60** complete objects; candidate and fresh references compile **60/60**.
+**21/60 whole objects** and **54/240 function text plus symbolic relocation
+comparisons** are exact. All exact functions are in the call-store cohort;
+the frame-backed schedules remain non-exact. All **245,760 candidate/reference
+executions** agree on returns, complete global/output memory, call order and
+arguments, saved GPR/FPR images, SP/LR, and execution faults. Inputs cover
+sign boundaries, low-word carry/borrow, near-threshold differences, equality,
+and the wrapping arithmetic observed in the reference output. An ordered
+initializer control retains both a scalar token and the wide result across a
+later call that changes the comparison state.
+
+The shutdown probe uses the actual project headers, the preceding write-gather
+assembly helper, and the unchanged shutdown body; a function-pointer initializer
+keeps the static function emitted. It checks all 1,456 GX context bytes, the
+command-processor register image, three persistent shutdown objects, ordered
+hardware reads/writes, external call order/arguments, and the ABI. Cases vary
+final/nonfinal paths, prior initialization, timer thresholds, counter equality,
+halfword rollover, and zero through four readback retries. Its six external
+services are controlled identically: `OSGetTime` returns supplied 64-bit values;
+three callback setters and `__GXAbort` record calls and clobber volatile registers;
+`PPCSync` records the barrier-service call without executing its OS trap. This
+validates shutdown control flow and call behavior, not those services' bodies.
+Together the panels have **247,808 passing candidate/reference comparisons**.
+
+The extracted candidate is **2,144 ELF bytes / 520 text bytes**, SHA-256
+`2e3048b9420128a481d8df7e3f61db1eb5f322cfdaedbe52830c2ca309996e8c`.
+The fresh reference is **1,984 ELF bytes / 412 text bytes**, SHA-256
+`62f200ba4386a9788c8159b97398319cf3c433845061a7ecb11eaa47557671bf`.
+`__GXShutdown` itself is **508 versus 400 bytes**. The pinned
+`docs/reference-layouts/bfbb-gxshutdown.json` reports **0/1 candidate** and
+**1/1 reference** exact linked functions, with no unresolved relocations.
+The companion write-gather helper accounts for twelve text bytes on each side.
+
+The linked-DOL checker accepts explicit BSS symbol aliases for source-local
+objects whose numeric suffixes change when a function is extracted. It verifies
+the original symbol/address, DOL BSS range, candidate object type, matching
+section/size, and section bounds, and rejects missing/conflicting aliases.
+**15 checker tests pass**. The three shutdown aliases connect the extracted
+`peCount$18`, `time$19`, and `calledOnce$20` objects to the original `$35/$36/$37`
+objects; no guessed placement or unchecked relocation is treated as exact.
+
+Regression controls retain **300/300** exact memory objects; **1,098** unchanged
+indexed objects, including **972** known exact results and **576** identical
+declines; and cumulative metadata's **1,494** compiled, **1,486** unchanged,
+**1,179** known exact, and **704** identical declines. Metadata's eight changes
+predate this checkpoint. All **1,786** compiling recent objects are unchanged,
+with **89** identical declines among **1,875** pairs. A separate **120-pair** wide
+control panel retains **51** unchanged compiling objects and **69** identical
+declines. The prior nine GX objects and full AXVPB are byte-identical.
+**1,587 compiler library tests pass**, excluding the previously baseline-confirmed
+`inline_expansion::tests::composes_zero_argument_embedded_asm_at_a_nested_call_site`
+failure. Final recompilation preserves all sixty new candidate objects and the
+shutdown object byte for byte. Full-project builds, the remaining five GX units,
+optimized wide schedules, broader wide expression forms, and further reference
+bugs remain open.
+
+Artifacts: `target/wide-clock-canaries/{results,reference-results,
+reference-comparison,execution-results}.json`,
+`target/wide-clock-shutdown/{shutdown.c,compilation-results.json,
+execution-results.json,fixtures.json,candidate-verified-linked-text.json,
+reference-verified-linked-text.json}`,
+`target/wide-clock-{index,metadata,recent,wide-regression,gx-library,full-ax}/`,
+`target/wide-clock-{tests-final,linked-tests,execution,shutdown-execution}.log`,
+and `target/wide-clock-preformat-objects.json`.
 
 ## GXInit assembly and legacy counter-readback behavior, 2026-09-07
 

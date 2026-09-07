@@ -189,6 +189,7 @@ mod loop_normalization;
 mod long_long_initialize;
 mod long_long_serial_fold;
 mod long_long_support;
+mod wide_frame_values;
 mod long_long_wait;
 mod loops;
 mod member_copy_call;
