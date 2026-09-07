@@ -4,13 +4,122 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete GXInit translation unit (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete GXFifo translation unit (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `77c69e7a86e2d51d09447bce3ae5962f010a81efc9523c417850e12cea7a32ff:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `8a375e9797de3cf5d1fe4bd4f2138f0726b9c330bc91ba6047678da1b3e5f0db:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete GXFifo translation unit and retained context frames, 2026-09-07
+
+BfBB's unchanged, fully configured `GXFifo.c` now compiles, advancing the GX
+survey from **10/14 to 11/14 complete translation units**. Three entry points
+pass **3,072 three-way native execution comparisons** against the original DOL
+and a fresh reference object: `GXCPInterruptHandler`, `GXGetFifoPtrs`, and
+`GXSetBreakPtCallback`. Full-project parity remains open, including three newly
+exposed GC/1.1p1 O0 shared-spill cases described below.
+
+Retained void inline bodies now admit uninitialized automatic aggregate images
+as frame storage, just as fixed arrays already did. Each inline instance keeps
+its own renamed declaration; scalar uninitialized-read checks remain active.
+Single-iteration `do { ... } while (0)` macro blocks compose recursively when
+their statements are eligible, preserving the existing rejection of unsupported
+control transfers. A frame-backed structured trial can handle a guarded callback
+that is read again after intervening calls, before the conservative global-reuse
+diagnostic rejects the function. The exception-context path uses the ordinary
+frame planner, allocator, and callback emitter.
+
+The paired-load arithmetic owner recognizes pointer-member subtraction through
+byte-pointer casts. Wider-pointee casts keep their scaling semantics. Global
+pointer initializers retain their captured values when calls or writes may
+replace the source global; direct named store destinations now count as writes
+in this copy-propagation check. This fixes a callback setter that previously
+rewrote `return old_callback` into a fresh read of the replacement global.
+
+Execution of `GXGetFifoPtrs` exposed a separate existing high-half addition
+miscompile. `addis` with RA=0 reads literal zero, even if an earlier instruction
+put the operand in r0. The constant arithmetic emitter now places that operand
+in a nonzero register while allowing the result to use r0. The reference's
+masked physical-address conversion and the candidate now produce the same
+pointer. A separate baseline panel confirms **630/630 incorrect results** from
+the old emitter across thirty compiling high-half-store objects; the fresh
+reference passes the same model cases.
+
+Canaries **1956–1965** cover inline aggregate contexts, repeated inline instances,
+macro blocks, byte-pointer member differences, global pointer snapshots, and
+computed high-half stores. Baseline compilation is **30/150** complete objects;
+candidate and fresh reference compilation is **150/150** across fifteen builds
+at O0/O4. **45/150 whole objects** and **148/390 function text plus symbolic
+relocation comparisons** are exact. Both byte-pointer cohorts are wholly exact;
+the O4 high-half-store cohort contributes the other fifteen exact objects.
+
+All **199,680 candidate executions** satisfy the source/memory/ABI model. Of the
+paired candidate/reference executions, **198,315 agree** and **1,365 differ**.
+Every difference is in **GC/1.1p1 O0**, extending coverage of the existing
+`SharedUnoptimizedParameterSpills` bug beyond its implemented owner:
+
+- In `1957`'s `dispatch`, the reference spills the prior-context parameter at
+  the start of the inline aggregate. The second clear overwrites that parameter;
+  **341 cases** pass the overwritten word to `set_context`. The candidate retains
+  the original pointer. The raw reference instructions place both at SP+8.
+- In `1959`'s `nested`, the reference restores r30 from storage overwritten by
+  the output-pointer parameter: **512 saved-register differences**.
+- In `1963`'s `protected_swap`, the reference restores r30 from storage overwritten
+  by the replacement pointer: **512 saved-register differences**.
+
+These samples remain in the corpus. They are **unmatched reference bugs**, not
+passing parity results or filtered invalid inputs. The other fourteen builds
+and the remaining GC/1.1p1 cases agree. Callback services deliberately change
+the callback global between the condition and the indirect call; snapshot
+services change their global during entry/exit calls, proving that captured
+values and fresh reads remain distinct.
+
+The real FIFO panel varies interrupt enable/status combinations, callbacks,
+prior overflow state/count, CPU/GP FIFO membership, hardware register images,
+FIFO contents, and overlapping output-pointer destinations. It compares all
+**1,456 GX context bytes**, **1,024 object/output bytes**, hardware-register
+memory and ordered access traces, callback/context events, persistent globals,
+and saved GPR/FPR/SP/LR state. Six external OS services and two callback targets
+are controlled identically, including volatile-register clobbering. The two
+in-unit FIFO interrupt helpers execute their actual candidate/reference/DOL
+bodies. This validates the selected entry points and those helpers, without
+claiming execution of the controlled OS service bodies.
+
+The complete candidate object is **6,344 ELF bytes / 2,336 text bytes**, SHA-256
+`2122482415e4adc02d253cab38233b4910425d0ea249aa080f429ededb344c57`.
+The fresh reference is **5,728 ELF bytes / 2,044 text bytes**, SHA-256
+`d218540f9c38d0b3d1fb2a80265c54c35da02550a8e53954653e6673cdb0c06b`.
+The pinned `docs/reference-layouts/bfbb-gxfifo.json` checks the three entry
+points and `__GXWriteFifoIntEnable`/`__GXWriteFifoIntReset`: **0/5 candidate**
+and **5/5 fresh reference** exact linked functions, with no unresolved relocations.
+
+Regression panels preserve **1,098** prior indexed objects, including **972 known
+exact matches**, and add **16 compiling pairs** among **1,674**. Those sixteen
+pairs (canary 993 on all builds and 1272 on GC/1.2.5n) pass **3,968** additional
+reference execution comparisons, including changes to the global state pointer
+across calls. All **1,936** previously compiling recent objects are unchanged
+among **2,025** pairs; **89** still decline. The previous ten GX objects and
+complete AXVPB remain byte-identical. **1,589 compiler library tests pass** with
+one known embedded-assembly test excluded; that test was separately rerun and
+still fails. **18 linked-checker tests pass**. Final recompilation preserves all
+150 new candidate objects and the real FIFO object byte for byte.
+
+Together the candidate/reference panels check **206,720 executions**: **205,355
+match** and the **1,365 shared-spill differences remain open**. Next GX frontiers
+are GXAttr's retained descriptor helper, GXMisc's switch-arm scheduling, and
+GXTexture's fallthrough switch. Exact FIFO schedules, broader shared-spill bug
+reproduction, and full project builds remain unfinished.
+
+Artifacts: `target/inline-context-canaries/{results,reference-results,
+reference-comparison,execution-results,baseline-high-execution-results}.json`,
+`target/inline-context-real/{compilation-results,execution-results,fixtures,
+candidate-verified-linked-text,reference-verified-linked-text}.json`,
+`target/inline-context-{index,recent,library,full-ax,new-controls}/`,
+`target/inline-context-{tests-final,known-failure,linked-tests,execution,
+real-execution,new-controls}.log`, and
+`target/inline-context-preformat-objects.json`.
 
 ## Complete GXInit translation unit, 2026-09-07
 

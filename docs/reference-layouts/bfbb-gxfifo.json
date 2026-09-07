@@ -1,0 +1,35 @@
+{
+  "dol_sha256": "865f446cf8efd52230dac506d6334a357b4c738cd6eb6e3a68c827efac51c3e0",
+  "symbols_sha256": "92f658ac1a6f91ec64d851dcfdf92a0907f3c06f5c68a97096052e99b5f3dfa4",
+  "functions": [
+    "GXCPInterruptHandler",
+    "GXGetFifoPtrs",
+    "GXSetBreakPtCallback",
+    "__GXWriteFifoIntEnable",
+    "__GXWriteFifoIntReset"
+  ],
+  "sda_bases": {
+    "2": 2151500160,
+    "13": 2151491840
+  },
+  "data_symbols": {
+    "__GXData": 2151480440,
+    "__cpReg": 2151466148,
+    "__piReg": 2151466144,
+    "CPUFifo": 2151466184,
+    "GPFifo": 2151466188,
+    "__GXCurrentThread": 2151466192,
+    "GXOverflowSuspendInProgress": 2151466200,
+    "BreakPointCB": 2151466204,
+    "__GXOverflowCount": 2151466208
+  },
+  "literals": [],
+  "external_functions": [
+    "OSResumeThread",
+    "OSSuspendThread",
+    "OSClearContext",
+    "OSSetCurrentContext",
+    "OSDisableInterrupts",
+    "OSRestoreInterrupts"
+  ]
+}

@@ -1042,9 +1042,24 @@ impl Generator {
                 destination
             };
             let high = ((value >> 16) as i16).wrapping_add(if value & 0x8000 != 0 { 1 } else { 0 });
-            let Some(source) = self.place_operand(variable, running, true)? else {
+            // The result may be r0, but the addis base may not: RA=0
+            // denotes literal zero, even when the previous instruction wrote r0.
+            let operand_home = if running == GENERAL_SCRATCH {
+                self.fresh_virtual_general()
+            } else {
+                running
+            };
+            let Some(mut source) = self.place_operand(variable, operand_home, true)? else {
                 return Ok(false);
             };
+            if source == GENERAL_SCRATCH {
+                source = self.fresh_virtual_general();
+                self.output.instructions.push(Instruction::Or {
+                    a: source,
+                    s: GENERAL_SCRATCH,
+                    b: GENERAL_SCRATCH,
+                });
+            }
             self.output
                 .instructions
                 .push(Instruction::AddImmediateShifted {

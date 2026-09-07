@@ -239,7 +239,8 @@ pub(crate) fn inline_immutable_pointer_aliases(function: &Function) -> Option<Fu
     fn assigns(statement: &Statement, name: &str) -> bool {
         match statement {
             Statement::Store { target, value } => {
-                crate::analysis::expression_assigns_name(target, name)
+                matches!(target, Expression::Variable(target) if target == name)
+                    || crate::analysis::expression_assigns_name(target, name)
                     || crate::analysis::expression_assigns_name(value, name)
             }
             Statement::Assign {
@@ -323,6 +324,36 @@ pub(crate) fn inline_immutable_pointer_aliases(function: &Function) -> Option<Fu
         // after the call and change both allocation and instruction order.
         if derived_address_live_across_call {
             continue;
+        }
+        let source = match initializer {
+            Expression::Variable(name) => Some(name.as_str()),
+            Expression::Cast { operand, .. } => match operand.as_ref() {
+                Expression::Variable(name) => Some(name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(source) = source {
+            let register_binding = function.parameters.iter().any(|p| p.name == source)
+                || function.locals.iter().any(|local| local.name == source);
+            // A global pointer initializer captures a memory value. Calls or
+            // subsequent writes may replace that storage; substituting the
+            // symbol would silently turn a saved old pointer into a fresh read.
+            if !register_binding
+                && (crate::analysis::block_has_call(&function.statements)
+                    || function.locals.iter().any(|local| {
+                        local
+                            .initializer
+                            .as_ref()
+                            .is_some_and(crate::analysis::expression_has_call)
+                    })
+                    || function
+                        .statements
+                        .iter()
+                        .any(|statement| assigns(statement, source)))
+            {
+                continue;
+            }
         }
         let alias = match initializer {
             Expression::Variable(_) => initializer.clone(),

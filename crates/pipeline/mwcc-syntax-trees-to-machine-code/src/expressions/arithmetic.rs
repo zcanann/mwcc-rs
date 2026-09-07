@@ -351,6 +351,31 @@ impl Generator {
         destination: u8,
     ) -> Compilation<bool> {
         use BinaryOperator::*;
+        // Byte-pointer subtraction uses the loaded address bits directly.
+        // Wider pointees must retain their casts for element-count scaling.
+        fn byte_pointer_member(expression: &Expression) -> &Expression {
+            match expression {
+                Expression::Cast {
+                    target_type: Type::Pointer(Pointee::Char | Pointee::UnsignedChar),
+                    operand,
+                } if matches!(
+                    operand.as_ref(),
+                    Expression::Member {
+                        member_type: Type::Pointer(_) | Type::StructPointer { .. },
+                        ..
+                    }
+                ) =>
+                {
+                    operand
+                }
+                _ => expression,
+            }
+        }
+        let (left, right) = if operator == Subtract {
+            (byte_pointer_member(left), byte_pointer_member(right))
+        } else {
+            (left, right)
+        };
         if !matches!(
             operator,
             Add | Subtract | BitAnd | BitOr | BitXor | Multiply

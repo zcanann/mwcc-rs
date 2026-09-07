@@ -2677,6 +2677,18 @@ impl Generator {
                         }),
                     });
                 if body_reads_condition_global {
+                    // An inlined automatic aggregate requires real frame
+                    // storage. Let that allocator handle calls which can change
+                    // the guarded global before it is read again in the arm.
+                    if function.locals.iter().any(|local| {
+                        !local.is_static && matches!(local.declared_type, Type::Struct { .. })
+                    }) {
+                        let mut trial = self.clone();
+                        if trial.try_callee_saved_structured_frame_body(function)? {
+                            *self = trial;
+                            return Ok(());
+                        }
+                    }
                     return Err(Diagnostic::error(format!(
                         "a global read in both an if-condition and its body needs value reuse across the branch (roadmap; function '{}')",
                         function.name

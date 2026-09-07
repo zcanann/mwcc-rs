@@ -82,8 +82,7 @@ fn composable_function_with_assignable_parameters(
             !local.is_static
                 && !local.is_volatile
                 && automatic_local_has_composable_storage(local)
-                && (local.initializer.is_some()
-                    || !matches!(local.declared_type, Type::Void | Type::Struct { .. }))
+                && local.declared_type != Type::Void
         })
         && uninitialized_local_reads_are_dominated(function)
         && function.guards.is_empty()
@@ -94,14 +93,13 @@ fn composable_function_with_assignable_parameters(
 }
 
 /// An inline instance gets an independently alpha-renamed declaration in the
-/// caller. Fixed automatic arrays are therefore as hygienic as scalar locals,
+/// caller. Fixed automatic arrays and aggregates are as hygienic as scalar locals,
 /// provided their declaration is one the structured frame planner can
 /// represent. Their contents are intentionally not treated as an
 /// uninitialized scalar value: taking the array address or filling its
-/// elements is the initialization.
-fn automatic_local_has_composable_storage(
-    local: &mwcc_syntax_trees::LocalDeclaration,
-) -> bool {
+/// elements is the initialization. Aggregate images likewise belong to frame
+/// storage, including images initialized through calls receiving their address.
+fn automatic_local_has_composable_storage(local: &mwcc_syntax_trees::LocalDeclaration) -> bool {
     let Some(length) = local.array_length else {
         return true;
     };
@@ -800,7 +798,11 @@ fn uninitialized_local_reads_are_dominated(function: &Function) -> bool {
     let tracked: HashSet<&str> = function
         .locals
         .iter()
-        .filter(|local| local.initializer.is_none() && local.array_length.is_none())
+        .filter(|local| {
+            local.initializer.is_none()
+                && local.array_length.is_none()
+                && !matches!(local.declared_type, Type::Struct { .. })
+        })
         .map(|local| local.name.as_str())
         .collect();
     reads_are_dominated(&function.statements, &tracked, &mut HashSet::new())
@@ -1011,7 +1013,7 @@ fn composable_statements(statements: &[Statement], local_names: &HashSet<&str>) 
             condition: Some(Expression::IntegerLiteral(0)),
             step: None,
             body,
-        } => body.is_empty(),
+        } => composable_statements(body, local_names),
         Statement::Switch { arms, default, .. } => {
             arms.iter().all(|arm| match &arm.body {
                 mwcc_syntax_trees::ArmBody::Statements(body) => {
