@@ -1484,6 +1484,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         CommaValuePlacementStyle::RegisterResident
     }
 
+    /// Newer masked-index loads finish the address in its high-half register;
+    /// earlier indexed loads reuse the consumed parameter's register instead.
+    fn masked_global_index_retains_base(&self) -> bool {
+        false
+    }
+
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
         GlobalArrayIndexStyle::Indexed
     }
@@ -1980,6 +1986,10 @@ impl CodegenProfile for Gc41Build51213 {
         CopySignStyle::ExplicitSignMask
     }
 
+    fn masked_global_index_retains_base(&self) -> bool {
+        true
+    }
+
     fn unoptimized_global_array_index_style(&self) -> GlobalArrayIndexStyle {
         GlobalArrayIndexStyle::Indexed
     }
@@ -2224,6 +2234,10 @@ impl CodegenProfile for Wii43Build145 {
 
     fn copy_sign_style(&self) -> CopySignStyle {
         CopySignStyle::ExplicitSignMask
+    }
+
+    fn masked_global_index_retains_base(&self) -> bool {
+        true
     }
 
     fn unoptimized_global_array_index_style(&self) -> GlobalArrayIndexStyle {

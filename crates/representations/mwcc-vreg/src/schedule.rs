@@ -52,6 +52,8 @@ fn is_barrier(instruction: &Instruction) -> bool {
             | LoadHalfwordAlgebraicIndexed { .. }
             | LoadFloatSingleIndexed { .. }
             | FloatCompareOrdered { .. }
+            | AndImmediateRecord { .. }
+            | AndImmediateShiftedRecord { .. }
             | CompareWord { .. }
             | CompareWordImmediate { .. }
             | CompareWordImmediateField { .. }
@@ -908,6 +910,41 @@ pub fn schedule_branch_bounded(instructions: &mut Vec<Instruction>) -> Vec<usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn immediate_record_masks_finish_before_later_address_setup() {
+        for mask in [
+            Instruction::AndImmediateRecord {
+                a: 0,
+                s: 3,
+                immediate: 85,
+            },
+            Instruction::AndImmediateShiftedRecord {
+                a: 0,
+                s: 3,
+                immediate: 85,
+            },
+        ] {
+            let mut instructions = vec![
+                mask.clone(),
+                Instruction::load_immediate_shifted(4, 0),
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: 0,
+                },
+                Instruction::ShiftLeftImmediate {
+                    a: 0,
+                    s: 0,
+                    shift: 2,
+                },
+                Instruction::LoadWordIndexed { d: 3, a: 4, b: 0 },
+            ];
+            assert_eq!(fill_address_latency_slots(&mut instructions)[0], 0);
+            assert_eq!(schedule(&mut instructions)[0], 0);
+            assert_eq!(instructions[0], mask);
+        }
+    }
 
     #[test]
     fn paired_update_memory_operations_keep_arithmetic_on_its_side_of_the_access() {

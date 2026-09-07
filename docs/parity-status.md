@@ -4,13 +4,66 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, static aggregate storage and addressing (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, masked array-index selection and scheduling (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `1987ab59f15dfe9cf0af66495a3b66784274b8b643da9ec953770ac70179c4c2:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `5cc5321f3169ae1f89cab2ac378f4a11bda2d366baf2667657891f453b6c8a5c:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Masked array-index selection and scheduling, 2026-09-07
+
+Against frozen baseline `ca796627`, Wind Waker's original module-type getter
+body in canary 1656 improves **0/15 → 12/15 whole-object exact pairs**. The
+remaining newer-build objects have static-local identity differences; their
+optimized instruction bytes now match. Two new optimized canaries (1657–1658)
+cover global arrays and pointer bases and each improve **0/15 → 15/15**. The
+O0 companion 1659 remains nonexact. Combined, the four canaries improve
+**0/60 → 42/60**, with all references runnable and all candidates compilable.
+
+A separate expression selector combines an integer index mask with the byte,
+halfword, or word element scale. Contiguous results use `rlwinm`; discontiguous
+immediate masks retain AND followed by the scale. Parameter and loaded-member
+indices retain their measured address-setup order, and the existing profile
+separates legacy explicit element addresses from indexed loads. A new profile
+setting captures newer builds retaining the high-half address register.
+Pointer bases share the mask/scale selector without global-address setup.
+The O0 path retains separate lowering. Small global arrays, wider elements,
+and other source expressions continue through their existing owners.
+
+The scheduler now treats record-form immediate ANDs as boundaries, so later
+address materialization cannot move ahead of the completed mask. A focused
+scheduler test checks both immediate and shifted-immediate forms through
+latency filling and list scheduling.
+
+The main matrix has **1,470 runnable pairs**: four index sources, three base
+kinds, four element types, and O0/O4 across 15 builds, plus the C++ Wind Waker
+getter. Each synthetic object contains three masks, including a discontiguous
+mask. Whole objects improve **0/1,470 → 657/1,470**, with every candidate
+compilable. An additional 180-pair edge panel covers repeated uses, commuted
+masks, a high-bit mask, and zero. It improves **0/180 → 30/180** while retaining
+**150/180 compilations**; the broader expression with a second table read
+still declines on all 30 configurations.
+
+Unicorn execution validates **540 candidate/reference object pairs** with
+**12,960 calls**, covering byte, halfword, and word loads, all three masks,
+and four input bit patterns. Another **600 calls across 75 edge pairs** check
+reused indices, commutation, high-bit scaling, and zero. All checks pass.
+All **100 register-allocation/scheduler tests** pass (eight pre-existing
+ignored tests), as do **45 version tests** and **eight focused driver tests**.
+
+The original index regression selection retains **972 exact objects across
+1,674 runnable pairs** (2,115 slots, 441 exclusions). The metadata selection
+retains **1,179 exact objects across 2,198 runnable pairs** (2,940 slots,
+742 exclusions). Neither panel loses an exact match or hits a timeout.
+Every individual object and code verdict remains unchanged in the
+**132-config real-project panel: 47 BYTE, 16 DIFF, 59 compiler DEFER, six
+HARNESS, four missing dependencies**. Code remains **46/109 exact measured
+objects**, five empty and eighteen unmeasured; all 51 measured partial
+translation units remain nonexact. Complete `DynamicLink.cpp` and `GeoTree.cpp`
+configurations still hit their 30-second caps, so the getter result is not a
+complete-file or project-build claim. Evidence is under `target/masked-index-*`.
 
 ## Static aggregate storage and addressing, 2026-09-06
 

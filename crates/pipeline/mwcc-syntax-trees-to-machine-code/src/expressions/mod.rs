@@ -58,6 +58,7 @@ mod retained_global_pointer_store;
 mod scaled_integer_call_narrow_store;
 mod spr_instruction_encoding;
 mod members;
+mod masked_index;
 mod narrow_compound;
 mod nested_global_pointer_float_store;
 mod nested_global_member_pointer_store;

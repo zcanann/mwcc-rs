@@ -783,6 +783,8 @@ pub struct Behavior {
     pub comma_value_placement_style: CommaValuePlacementStyle,
     /// Addressing shape for variable-indexed file-scope arrays.
     pub global_array_index_style: GlobalArrayIndexStyle,
+    /// Retain the address high-half register in masked-index loads.
+    pub masked_global_index_retains_base: bool,
     /// Register placement for a bare array address stored to a pointer global.
     pub global_array_decay_store_style: GlobalArrayDecayStoreStyle,
     /// Register placement for a function address stored to a pointer global.
@@ -1295,6 +1297,7 @@ impl Behavior {
             } else {
                 config.build.profile.global_array_index_style()
             },
+            masked_global_index_retains_base: config.build.profile.masked_global_index_retains_base(),
             global_array_decay_store_style: config.build.profile.global_array_decay_store_style(),
             function_address_store_style: config.build.profile.function_address_store_style(),
             unoptimized_range_copy_shared_scratch: config.build.profile.unoptimized_range_copy_shared_scratch(),

@@ -1925,6 +1925,9 @@ impl Generator {
             return Ok(());
         }
         let (pointee, address) = self.resolve_pointer(base)?;
+        if self.try_emit_masked_pointer_subscript(pointee, address, index, destination)? {
+            return Ok(());
+        }
         if let Some(constant) = constant_value(index) {
             let offset = constant * pointee.size() as i64;
             let offset = i16::try_from(offset)
@@ -2077,6 +2080,9 @@ impl Generator {
         let pointee = pointee_of_type(element_type).ok_or_else(|| {
             Diagnostic::error("a global array of this element type is not supported yet (roadmap)")
         })?;
+        if self.try_emit_masked_global_subscript(name, total_size, pointee, index, destination)? {
+            return Ok(());
+        }
         // A constant index folds into the load displacement.
         if let Some(constant) = constant_value(index) {
             let offset = constant * pointee.size() as i64;
