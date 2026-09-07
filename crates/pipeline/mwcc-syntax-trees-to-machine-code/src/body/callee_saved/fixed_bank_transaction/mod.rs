@@ -8,13 +8,25 @@ use mwcc_versions::{FixedAddressParameterizedRmwStyle, Optimization};
 
 mod legacy;
 mod recognize;
+mod stream;
+mod stream_legacy;
 #[cfg(test)]
 mod tests;
 
 #[derive(Debug, Clone, Copy)]
 enum Payload {
-    Write { begin: u8, end: u8, high: u16 },
-    Read { high: u16 },
+    Write {
+        begin: u8,
+        end: u8,
+        high: u16,
+    },
+    Read {
+        high: u16,
+    },
+    Stream {
+        command: stream::Command,
+        writing: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -40,7 +52,17 @@ impl Generator {
         {
             return Ok(false);
         }
-        let Some(plan) = recognize::transaction(function, &self.fixed_address_arrays) else {
+        let plan = recognize::transaction(function, &self.fixed_address_arrays).or_else(|| {
+            (self.behavior.fixed_bank_stream_style
+                != mwcc_versions::FixedBankStreamStyle::Structured
+                && self.behavior.optimization_goal == mwcc_versions::OptimizationGoal::Performance
+                && self.behavior.scheduler_enabled
+                && !self.behavior.power_pc_7400_scheduling_enabled()
+                && !function.peephole_disabled)
+                .then(|| stream::transaction(function, &self.fixed_address_arrays))
+                .flatten()
+        });
+        let Some(plan) = plan else {
             return Ok(false);
         };
         let target = plan.transfer;
@@ -68,13 +90,16 @@ impl Generator {
                 .parameterized_asm_fragment(target)
                 .is_some()
             || crate::intrinsics::ordering_instruction(target, 3).is_some()
-            || !self
-                .locations
-                .get(&function.parameters[0].name)
-                .is_some_and(|location| {
-                    location.class == ValueClass::General
-                        && location.register == 3
-                        && location.width == 32
+            || function
+                .parameters
+                .iter()
+                .enumerate()
+                .any(|(index, parameter)| {
+                    !self.locations.get(&parameter.name).is_some_and(|location| {
+                        location.class == ValueClass::General
+                            && location.register == 3 + index as u8
+                            && location.width == 32
+                    })
                 })
         {
             return Ok(false);

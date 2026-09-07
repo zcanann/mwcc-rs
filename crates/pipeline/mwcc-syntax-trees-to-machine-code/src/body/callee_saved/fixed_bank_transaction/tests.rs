@@ -295,3 +295,186 @@ fn algebraic_constant_identities_do_not_hide_volatile_reads() {
     );
     assert!(recognize::transaction(&function, &banks()).is_none());
 }
+
+fn stream_fixture(writing: bool) -> Function {
+    let mut f = fixture(false);
+    f.parameters.extend([
+        mwcc_syntax_trees::Parameter {
+            name: "data".into(),
+            parameter_type: Type::Pointer(Pointee::UnsignedInt),
+        },
+        mwcc_syntax_trees::Parameter {
+            name: "count".into(),
+            parameter_type: Type::Int,
+        },
+    ]);
+    f.locals.extend([
+        local(
+            "cursor",
+            Type::Pointer(Pointee::UnsignedInt),
+            Some(var("data")),
+        ),
+        local("word", Type::UnsignedInt, None),
+    ]);
+    f.statements[3] = assign(
+        "payload",
+        binary(
+            BinaryOperator::BitOr,
+            binary(
+                BinaryOperator::ShiftLeft,
+                binary(BinaryOperator::BitAnd, var("value"), integer(0x1fffc0)),
+                integer(6),
+            ),
+            integer(0x80000000),
+        ),
+    );
+    let address = Expression::Dereference {
+        pointer: Box::new(Expression::PostStep {
+            target: Box::new(var("cursor")),
+            operator: BinaryOperator::Add,
+            pointer_link: None,
+        }),
+    };
+    let exchange = transfer(
+        Expression::AddressOf {
+            operand: Box::new(var("word")),
+        },
+        4,
+        i64::from(writing),
+    );
+    let mut body = if writing {
+        vec![assign("word", address), exchange, wait()]
+    } else {
+        vec![
+            exchange,
+            wait(),
+            Statement::Store {
+                target: address,
+                value: var("word"),
+            },
+        ]
+    };
+    body.extend([
+        assign(
+            "count",
+            binary(BinaryOperator::Subtract, var("count"), integer(4)),
+        ),
+        Statement::If {
+            condition: binary(BinaryOperator::Less, var("count"), integer(0)),
+            then_body: vec![assign("count", integer(0))],
+            else_body: Vec::new(),
+        },
+    ]);
+    f.statements.insert(
+        6,
+        Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            step: None,
+            condition: Some(binary(BinaryOperator::NotEqual, var("count"), integer(0))),
+            body,
+        },
+    );
+    f
+}
+
+#[test]
+fn stream_recognition_derives_both_directions_and_command_geometry() {
+    for writing in [false, true] {
+        let f = stream_fixture(writing);
+        let plan = stream::transaction(&f, &banks()).unwrap();
+        assert_eq!(
+            (plan.address, plan.selected, plan.poll),
+            (0xcc00f000, 12, 20)
+        );
+        assert!(
+            matches!(plan.payload, Payload::Stream { writing: direction, command }
+            if direction == writing && command.shift == 6 && command.mask == (11, 25)
+                && command.fused_mask == (5, 19) && !command.shift_first && command.high == 0x8000)
+        );
+    }
+}
+
+#[test]
+fn stream_rejects_extra_effects_and_changed_bounds_or_clamps() {
+    for writing in [false, true] {
+        for change in 0..5 {
+            let mut f = stream_fixture(writing);
+            let Statement::Loop {
+                condition, body, ..
+            } = &mut f.statements[6]
+            else {
+                unreachable!()
+            };
+            match change {
+                0 => body.push(assign("error", integer(0))),
+                1 => *condition = Some(binary(BinaryOperator::Greater, var("count"), integer(0))),
+                2 => {
+                    body[3] = assign(
+                        "count",
+                        binary(BinaryOperator::Subtract, var("count"), integer(1)),
+                    )
+                }
+                3 => {
+                    let Statement::If { then_body, .. } = &mut body[4] else {
+                        unreachable!()
+                    };
+                    then_body[0] = assign("count", integer(4));
+                }
+                _ => {
+                    let Statement::If { else_body, .. } = &mut body[4] else {
+                        unreachable!()
+                    };
+                    else_body.push(assign("error", integer(0)));
+                }
+            }
+            assert!(stream::transaction(&f, &banks()).is_none());
+        }
+    }
+}
+
+#[test]
+fn stream_requires_unsigned_word_storage_and_distinct_roles() {
+    for change in 0..5 {
+        let mut f = stream_fixture(false);
+        match change {
+            0 => f.locals[3].declared_type = Type::Pointer(Pointee::UnsignedChar),
+            1 => f.locals[4].declared_type = Type::Int,
+            2 => f.locals[3].is_volatile = true,
+            3 => f.locals[4].name = "cursor".into(),
+            _ => f.parameters[2].parameter_type = Type::UnsignedInt,
+        }
+        assert!(stream::transaction(&f, &banks()).is_none());
+    }
+}
+
+#[test]
+fn stream_rejects_mismatched_poll_and_nonconstant_command_masks() {
+    let mut f = stream_fixture(false);
+    let Statement::Loop { body, .. } = &mut f.statements[6] else {
+        unreachable!()
+    };
+    let Statement::Loop { condition, .. } = &mut body[1] else {
+        unreachable!()
+    };
+    *condition = Some(binary(BinaryOperator::BitAnd, bank(7), integer(4)));
+    assert!(stream::transaction(&f, &banks()).is_none());
+    let mut f = stream_fixture(true);
+    f.statements[3] = assign(
+        "payload",
+        binary(
+            BinaryOperator::BitOr,
+            binary(
+                BinaryOperator::ShiftLeft,
+                binary(
+                    BinaryOperator::BitAnd,
+                    var("value"),
+                    binary(BinaryOperator::Subtract, bank(1), bank(1)),
+                ),
+                integer(6),
+            ),
+            integer(0x80000000),
+        ),
+    );
+    assert!(stream::transaction(&f, &banks()).is_none());
+}

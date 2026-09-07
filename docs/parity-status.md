@@ -4,13 +4,70 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, control-flow accumulator and initializer correctness (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, legacy fixed-bank word-stream matching (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `5f4e78613599835f71edc05df5cc258ca355b5a213231db6b108fe7c6c691511:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `b428c951a74b735a05d8b427127bb829d992ce25a4044fdadd8abf0739cbe890:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Legacy fixed-bank word streams, 2026-09-06
+
+Against baseline `a2dbd3c6`, Melee's `DBGRead` and `DBGWrite` now each match
+all **220 reference function bytes**. The complete source improves from
+**14/21 to 16/21 exact functions** and **1520/3320 to 1960/3320 exact reference
+function bytes**, with all 21 compiling. Five functions remain nonexact:
+`CheckMailBox`, `DBInitComm`, `DBQueryData`, `DBRead`, and `DBWrite`.
+
+The existing fixed-bank transaction plan now includes a word-stream payload.
+A semantic recognizer proves the selected-register update, command expression,
+initial transfer, repeated word calls and polling, cursor increments, signed
+remaining-byte decrement/clamp, reset, and boolean result. It derives the
+bank, slots, masks, insertion bits, command geometry, direction, and callee;
+function names and device addresses do not determine admission. Select,
+call, poll, and reset emission are shared with the prior mailbox transactions.
+Extra effects, altered loop bounds/steps/clamps, incompatible word storage,
+aliased local roles, mismatched polls, and effectful apparent constants decline.
+
+`FixedBankStreamStyle` resolves the measured frame and command policy by
+profile. GC/1.1, GC/1.2.5, and GC/1.2.5n share 64-byte frames, fused command
+rotate/mask operations, retained bank/slot homes, and the call/poll/clamp
+schedule. GC/1.1p1 uses 56-byte frames, preserves source mask/shift order,
+advances the write cursor earlier, and restores the stack before reloading LR;
+its functions are 224 bytes. Other profile families retain structured lowering.
+The stream owner requires O4 performance optimization and the measured
+scheduling conditions; the general shift/mask fusion policy is unchanged.
+
+New canaries **1604 and 1605 improve from 0/30 to 8/30 whole-object exact
+pairs** across all 15 builds. Both objects match on all four legacy builds;
+the other 22 pairs remain nonexact. All 30 pairs compile, with no exclusions
+or reference rejections. The second canary changes the bank to `0xCC00F000`,
+register indices, selection/poll masks, insertion bits, command shifts/masks
+and tags, source typedefs, and public names.
+
+**231,840 paired Unicorn cases pass**: 200,448 detailed caller cases across
+the four changed legacy profiles and both new canaries, 6,336 smaller checks
+across the other eleven profiles, and 25,056 executing Melee's actual read/write
+caller bodies. An ABI-clobbering transfer model checks command words, data
+payloads, buffer guards, device event order, stack/register restoration, and
+return values. Cases include negative/zero lengths, partial final words,
+multiple iterations through 32 bytes, varied busy waits, and failures at each
+call position. The previous milestone's accumulator correctness is retained.
+
+The 208-canary regression selection retains identical verdicts: **1,040 slots,
+281 exclusions, 759 runnable pairs, 417 exact objects, and 223 existing
+candidate rejections**, with no reference rejections or timeouts. An additional
+120 neighboring build/canary pairs retain identical verdicts, including 57
+exact objects. The fresh 40-configuration project selection remains **35 exact
+objects, one DIFF, and four missing dependencies**; code remains exact on
+**33/34 measured configurations**, with two empty and four unmeasured. Melee's
+function coverage improves inside the remaining DIFF. Ten transaction admission
+tests, one profile test, and 117 inline tests pass; the previously confirmed
+embedded-asm composition failure remains excluded. Evidence is retained under
+`target/stream-match-*`, `target/check_stream_match*.py`, and
+`target/probe_word_streams.py`. These remain targeted diagnostics rather than
+a corpus-wide parity estimate.
 
 ## Control-flow accumulators and initializer calls, 2026-09-06
 

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 // A transaction constant must require no runtime evaluation. The general
 // constant query also knows identities such as x - x; that is insufficient
 // here because dropping fixed-bank reads could remove observable effects.
-fn integer_constant(value: &Expression) -> Option<i64> {
+pub(super) fn integer_constant(value: &Expression) -> Option<i64> {
     match value {
         Expression::IntegerLiteral(_) => constant_value(value),
         Expression::Unary { operand, .. } | Expression::Cast { operand, .. }
@@ -21,11 +21,11 @@ fn integer_constant(value: &Expression) -> Option<i64> {
     }
 }
 
-fn named(value: &Expression, name: &str) -> bool {
+pub(super) fn named(value: &Expression, name: &str) -> bool {
     matches!(value, Expression::Variable(read) if read == name)
 }
 
-fn field(value: &Expression, operator: BinaryOperator, name: &str) -> Option<i64> {
+pub(super) fn field(value: &Expression, operator: BinaryOperator, name: &str) -> Option<i64> {
     let Expression::Binary {
         operator: actual,
         left,
@@ -39,7 +39,7 @@ fn field(value: &Expression, operator: BinaryOperator, name: &str) -> Option<i64
         .flatten()
 }
 
-fn slot(value: &Expression) -> Option<(&str, i64)> {
+pub(super) fn slot(value: &Expression) -> Option<(&str, i64)> {
     let Expression::Index { base, index } = value else {
         return None;
     };
@@ -49,7 +49,7 @@ fn slot(value: &Expression) -> Option<(&str, i64)> {
     Some((bank, integer_constant(index)?))
 }
 
-fn pointer_casts(mut value: &Expression) -> &Expression {
+pub(super) fn pointer_casts(mut value: &Expression) -> &Expression {
     while let Expression::Cast {
         target_type: Type::Pointer(_),
         operand,
@@ -60,7 +60,7 @@ fn pointer_casts(mut value: &Expression) -> &Expression {
     value
 }
 
-fn accumulated_call<'a>(
+pub(super) fn accumulated_call<'a>(
     statement: &'a Statement,
     error: &str,
 ) -> Option<(&'a str, &'a [Expression])> {
@@ -92,7 +92,7 @@ fn accumulated_call<'a>(
     Some((name, arguments))
 }
 
-fn poll(statement: &Statement) -> Option<(&str, i64, u8, u8)> {
+pub(super) fn poll(statement: &Statement) -> Option<(&str, i64, u8, u8)> {
     let Statement::Loop {
         kind: LoopKind::While,
         initializer: None,

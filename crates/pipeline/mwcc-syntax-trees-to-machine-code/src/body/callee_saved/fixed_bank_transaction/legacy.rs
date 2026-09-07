@@ -11,17 +11,20 @@ impl Generator {
                 self.emit_legacy_bank_write(plan, begin, end, high)
             }
             Payload::Read { high } => self.emit_legacy_bank_read(plan, high),
+            Payload::Stream { command, writing } => {
+                self.emit_legacy_bank_stream(plan, command, writing)
+            }
         }
     }
 
-    fn bank_transfer_call(&mut self, target: &str) {
+    pub(super) fn bank_transfer_call(&mut self, target: &str) {
         self.record_relocation(RelocationKind::Rel24, target);
         self.output.instructions.push(Instruction::BranchAndLink {
             target: target.to_owned(),
         });
     }
 
-    fn bank_poll_test(&mut self, plan: &Transaction<'_>, target: usize) {
+    pub(super) fn bank_poll_test(&mut self, plan: &Transaction<'_>, target: usize) {
         self.output.instructions.extend([
             Instruction::AndMaskRecord {
                 a: 0,
@@ -37,11 +40,14 @@ impl Generator {
         ]);
     }
 
-    fn bank_select_store(&mut self, plan: &Transaction<'_>, page: u8, selected: u8, payload: i16) {
+    pub(super) fn bank_select_word(
+        &mut self,
+        plan: &Transaction<'_>,
+        page: u8,
+        selected: u8,
+        value: u8,
+    ) {
         let (_, low) = crate::expressions::split_address(plan.address);
-        let early_mode = self.behavior.plain_linkage_epilogue_style
-            == PlainLinkageEpilogueStyle::StackRestoreBeforeReload;
-        let value = if early_mode { 6 } else { 5 };
         self.output.instructions.extend([
             Instruction::LoadWord {
                 d: value,
@@ -64,6 +70,13 @@ impl Generator {
                 offset: plan.selected,
             },
         ]);
+    }
+
+    fn bank_select_store(&mut self, plan: &Transaction<'_>, page: u8, selected: u8, payload: i16) {
+        let early_mode = self.behavior.plain_linkage_epilogue_style
+            == PlainLinkageEpilogueStyle::StackRestoreBeforeReload;
+        let value = if early_mode { 6 } else { 5 };
+        self.bank_select_word(plan, page, selected, value);
         if !early_mode {
             self.output
                 .instructions
@@ -77,7 +90,12 @@ impl Generator {
         self.bank_transfer_call(plan.transfer);
     }
 
-    fn bank_reset_and_result(&mut self, plan: &Transaction<'_>, selected: u8, error: u8) {
+    pub(super) fn bank_reset_and_result(
+        &mut self,
+        plan: &Transaction<'_>,
+        selected: u8,
+        error: u8,
+    ) {
         self.output.instructions.extend([
             Instruction::LoadWord {
                 d: 4,

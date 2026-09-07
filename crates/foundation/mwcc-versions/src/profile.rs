@@ -264,6 +264,16 @@ pub enum ByteWordTransferStyle {
     GuardedWii,
 }
 
+/// Word-at-a-time call/poll streams over a fixed register bank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedBankStreamStyle {
+    Structured,
+    /// 64-byte frame with a fused command rotate/mask.
+    LegacyFusedCommand,
+    /// 56-byte frame, source-ordered command operations, early cursor update.
+    LegacySeparateCommand,
+}
+
 /// Entry, allocation, and scheduling policy for specialized integer loops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegerLoopStyle {
@@ -1205,6 +1215,10 @@ pub trait CodegenProfile: core::fmt::Debug {
 
     fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
         ByteWordTransferStyle::Structured
+    }
+
+    fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
+        FixedBankStreamStyle::Structured
     }
 
     fn mem_copy_word_schedule_style(&self) -> MemCopyWordScheduleStyle {
@@ -2406,6 +2420,7 @@ impl CodegenProfile for Gc132Build81 {
 #[derive(Debug)]
 pub struct Gc233Build163 {
     byte_word_transfer_style: ByteWordTransferStyle,
+    fixed_bank_stream_style: FixedBankStreamStyle,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle,
     saved_float_epilogue_style: SavedFloatEpilogueStyle,
@@ -2415,6 +2430,7 @@ pub struct Gc233Build163 {
 
 pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
     byte_word_transfer_style: ByteWordTransferStyle::LegacyDependencyFirst,
+    fixed_bank_stream_style: FixedBankStreamStyle::LegacyFusedCommand,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved,
     saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeResult,
@@ -2424,6 +2440,7 @@ pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
 
 pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
     byte_word_transfer_style: ByteWordTransferStyle::LegacyDependencyFirst,
+    fixed_bank_stream_style: FixedBankStreamStyle::LegacyFusedCommand,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterAfterStackRestore,
     saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeResult,
@@ -2433,6 +2450,7 @@ pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
 
 pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
     byte_word_transfer_style: ByteWordTransferStyle::LegacyDependencyFirst,
+    fixed_bank_stream_style: FixedBankStreamStyle::LegacyFusedCommand,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterAfterStackRestore,
     saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeFinalRestore,
@@ -2442,6 +2460,7 @@ pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
 
 pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
     byte_word_transfer_style: ByteWordTransferStyle::LegacyInterleaved,
+    fixed_bank_stream_style: FixedBankStreamStyle::LegacySeparateCommand,
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::StackRestoreBeforeReload,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload,
     saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeResult,
@@ -2452,6 +2471,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 impl CodegenProfile for Gc233Build163 {
     fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
         self.byte_word_transfer_style
+    }
+
+    fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
+        self.fixed_bank_stream_style
     }
 
     fn asm_subtract_immediate_minimum(&self) -> i32 {
