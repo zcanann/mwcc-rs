@@ -72,12 +72,62 @@ impl Generator {
         Operands::ordered(left_target, right_target)
     }
 
+    fn place_frame_scalar_operands(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+    ) -> Compilation<Option<Operands>> {
+        let is_frame = |value: &Expression| {
+            let Expression::Variable(name) = value else {
+                return false;
+            };
+            !self.passive_frame_scalar_mirrors.contains(name)
+                && self.frame_slots.get(name).is_some_and(|slot| {
+                    !slot.is_array
+                        && slot.class == ValueClass::General
+                        && slot.value_type.width() <= 32
+                })
+        };
+        let (left_frame, right_frame) = (is_frame(left), is_frame(right));
+        if !(left_frame || right_frame)
+            || (!left_frame && self.leaf_info(left).is_err())
+            || (!right_frame && self.leaf_info(right).is_err())
+        {
+            return Ok(None);
+        }
+        let left_register = if let Ok((register, 32, _)) = self.leaf_info(left) {
+            register
+        } else {
+            let register = self.fresh_virtual_general();
+            self.with_reserved_inputs(right, |me| me.evaluate_general(left, register))?;
+            register
+        };
+        let right_register = if let Ok((register, 32, _)) = self.leaf_info(right) {
+            register
+        } else {
+            let register = self.fresh_virtual_general_avoiding(vec![left_register]);
+            let reserved = self.reserved.insert(left_register);
+            let result = self.evaluate_general(right, register);
+            if reserved {
+                self.reserved.remove(&left_register);
+            }
+            result?;
+            register
+        };
+        Operands::ordered(left_register, right_register).map(Some)
+    }
+
     pub(crate) fn place_general_operands(
         &mut self,
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
     ) -> Compilation<Operands> {
+        // Address-taken scalar locals are memory operands even though their
+        // syntax is still a Variable. Calls can replace them through aliases.
+        if let Some(operands) = self.place_frame_scalar_operands(left, right)? {
+            return Ok(operands);
+        }
         // A dereference operand loads into a register but orders like a leaf, not
         // like a reversed sub-expression — handle it before the complexity match.
         if as_dereference(left).is_some() || as_dereference(right).is_some() {

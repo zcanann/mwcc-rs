@@ -4952,6 +4952,7 @@ impl Generator {
             }
             Statement::Expression(expression) => {
                 if self.is_discarded_pure_value(expression)
+                    || self.try_emit_discarded_integer_unary(expression)?
                     || self.try_emit_conditional_call_statement(expression)?
                 {
                     Ok(())

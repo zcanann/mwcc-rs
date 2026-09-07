@@ -30,6 +30,48 @@ impl Generator {
                 && !self.volatile_globals.contains(name.as_str()))
     }
 
+    /// Discarded integer unary operations retain operand effects. Optimized
+    /// MWCC removes the operation itself; O0 still materializes it in r0.
+    pub(crate) fn try_emit_discarded_integer_unary(
+        &mut self,
+        expression: &Expression,
+    ) -> Compilation<bool> {
+        let Expression::Unary { operand, .. } = expression else {
+            return Ok(false);
+        };
+        if self.is_float_value(operand) {
+            return Ok(false);
+        }
+        if self.behavior.optimization == mwcc_versions::Optimization::O0 {
+            self.evaluate_general(expression, GENERAL_SCRATCH)?;
+        } else {
+            self.emit_discarded_integer_unary_operand(operand)?;
+        }
+        Ok(true)
+    }
+
+    fn emit_discarded_integer_unary_operand(&mut self, operand: &Expression) -> Compilation<()> {
+        match operand {
+            Expression::Variable(name)
+                if (self.locations.contains_key(name) && !self.frame_slots.contains_key(name))
+                    || (self.globals.contains_key(name)
+                        && !self.volatile_globals.contains(name)) =>
+            {
+                Ok(())
+            }
+            Expression::IntegerLiteral(_) => Ok(()),
+            Expression::Unary { operand, .. } => self.emit_discarded_integer_unary_operand(operand),
+            Expression::Call { .. }
+            | Expression::CallThrough { .. }
+            | Expression::VirtualCall { .. } => {
+                self.emit_statement(&Statement::Expression(operand.clone()))
+            }
+            // Memory and computed operands retain their ordinary evaluation.
+            // In particular, a volatile access must not disappear with `!`.
+            _ => self.evaluate_general(operand, GENERAL_SCRATCH),
+        }
+    }
+
     /// Lower `condition ? (void)0 : call()` (and its mirrored form) as a
     /// guarded call. Macro assertions use this expression-statement shape after
     /// preprocessing; mwcc branches over the cold call without materializing a

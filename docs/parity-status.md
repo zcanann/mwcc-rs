@@ -4,13 +4,97 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, computed integer equality from GXFrameBuf (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, GXFrameBuf copy setup and cyclic argument preservation (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `9ff4d349cc056e08713d5a4b7afb74396fa429d0e5115e942762415be3d2267d:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `5ed100150ba1401c268b44c44d54df80c93c24c0483453407d036fa825d3f056:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GXFrameBuf copy setup and cyclic argument preservation, 2026-09-07
+
+The unmodified first six functions of BfBB `GXFrameBuf.c`, compiled as a source
+prefix with the project's GC/1.2.5n flags, now pass **6,144 original-DOL
+comparisons**: 1,024 each for display/texture copy source and destination,
+frame-to-field mode, and copy clamp. The complete unit advances to the skipped
+nested-loop inline helper `__GXGetNumXfbLines` in `GXGetYScaleFactor`; it still
+does not compile, and the complete GX survey remains **5/14**.
+
+This milestone extends three shared lowering paths:
+
+- Discarded integer unary expressions retain their arithmetic at O0. Optimized
+  code removes the unary operation while keeping calls and memory operands;
+  resident scalar values and nonvolatile scalar globals need no evaluation.
+  Floating operands and more elaborate unused-expression optimization remain
+  outside this focused extension.
+- Address-taken scalar variables participate in arithmetic as frame loads,
+  including narrow promotion. A helper can overwrite their stack slots through
+  escaped pointers; register homes cannot substitute for those stored values.
+  Passive frame mirrors and existing register-only arithmetic retain their owners.
+- The general argument scheduler handles leaf-register permutations and narrow
+  formals, with independent frame-address arguments. It emits ready moves first
+  and breaks cycles by preserving a source in a virtual temporary. Narrowing an
+  argument in its own register also counts as a write: a later full-width alias
+  must be consumed before those upper bits disappear. Existing two-word swaps
+  and acyclic word-expression schedules keep their selection precedence.
+
+The first executable prefix passed final GX-state comparisons but **1,008 of
+1,024 texture-destination calls passed the wrong height** to the tile helper.
+The unused column count hid the error. The final harness compares the helper's
+actual format/width/height arguments as well as all 1,456 context bytes and
+preserved GPRs/SP/LR. Both sides execute the original tile-count helper from the
+DOL, with the candidate reaching it through a branch trampoline. There are no
+replacement tile calculations in this prefix validation.
+
+The prefix candidate is **3,120 ELF bytes / 1,064 text bytes**, SHA-256
+`5f5160be177f851e350f176a2341ad4f6cdf6d5ac84c30dfc36edddb6b153b40`;
+the fresh configured reference is **2,184 ELF bytes / 728 text bytes**, SHA-256
+`aadf3ff38309bb1f3d478c7bbdc6160bef15e1db77c8a759c13ac14669563637`.
+The pinned `docs/reference-layouts/bfbb-gxframebuf-copy-setup.json` records
+**0/6 exact linked functions**. Texture destination is 372 candidate bytes
+versus 304 original bytes; the linked-text checker also leaves its external tile
+helper relocation unresolved. Prefix execution and instruction parity are
+separate measurements; the four render-mode data objects are not validated here.
+
+Canaries **1891–1898** compile **120/120** sample/version pairs, up from
+**0/120** with frozen baseline `7d4466b6`; all fresh references compile
+**120/120**. The 27 functions cover unary effects, eight escaped-scalar
+arithmetic shapes, ten argument permutations/conversions, and the real texture
+copy-destination reduction. **12/120 whole objects** and **238/810 function text plus symbolic relocation comparisons** match exactly. All **414,720 candidate calls**
+pass their integer/access/call models, plus the **6,144** original-DOL prefix
+calls: **420,864 candidate calls** in this checkpoint. Explicit helper bodies
+supply reduced fill/call-result samples; the texture reduction uses the original
+DOL helper and context fixtures.
+
+The reference panel executes the same **414,720 calls**. **4,604** expose a
+GC/1.1p1 O0 fidelity gap: **4,096** permutation calls overwrite multiple
+parameters in the same `8(r1)` spill slot, and **508** texture-destination calls
+pass wrong tile arguments (**494** also change the final context). Fresh
+disassembly confirms the repeated stores and reloads at the same stack offset.
+The candidate follows the explicit models and original-DOL fixtures here but
+does not yet reproduce that version's spill-slot defect. The other **410,116**
+reference calls pass and agree with the candidate; these exceptional rows are
+retained as non-matches, not counted as reference parity.
+
+Fresh O1/O2/O3 probes of the eight unary functions compile **45/45** per side,
+with **38/45 whole objects exact**. They confirm that optimized discard begins
+at O1. Cached regressions retain **300/300** exact memory-operand objects,
+**1,097/1,097** compiled indexed objects unchanged, **972** known exact results,
+and **577** identical declines. Cumulative metadata retains **1,494** compiled,
+**1,487** unchanged, **1,179** known exact, and **704** identical declines; its
+seven changed historical `1469` shift objects predate this milestone. All
+**1,050** recent sample/version objects (1821–1890), all five compiling GX
+units, and full AXVPB remain byte-identical to the previous compiler. Focused
+checks pass: **12** argument-scheduler, **32** frame, **40** object, and **46**
+version tests. No whole corpus or full project holdout was rerun.
+
+Artifacts: `target/discarded-unary-canaries/{results,reference-results,
+reference-comparison,execution-results}.json`,
+`target/discarded-unary-framebuf/{compilation-results,execution-results,
+verified-linked-text}.json`, its six original-DOL fixture files,
+`target/discarded-unary-probes/level-results.json`, and
+`target/discarded-unary-{index,metadata,recent,gx-library,full-ax}/`.
 
 ## Computed integer equality from GXFrameBuf, 2026-09-07
 

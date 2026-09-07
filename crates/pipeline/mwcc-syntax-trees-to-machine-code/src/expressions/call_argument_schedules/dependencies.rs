@@ -109,6 +109,104 @@ impl Generator {
         Ok(true)
     }
 
+    /// Resolve register permutations, including cycles and narrow formals.
+    /// Frame addresses have no incoming GPR dependencies. Other computed
+    /// expressions retain the general dependency scheduler and its owners.
+    pub(crate) fn try_emit_leaf_general_argument_permutation(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let Some(types) = self.call_parameter_types.get(name).cloned() else {
+            return Ok(false);
+        };
+        if !direct_call
+            || arguments.len() < 2
+            || arguments.len() > 8
+            || types.len() < arguments.len()
+            || !types[..arguments.len()].iter().all(|ty| {
+                matches!(
+                    ty,
+                    Type::Int
+                        | Type::UnsignedInt
+                        | Type::Char
+                        | Type::UnsignedChar
+                        | Type::Short
+                        | Type::UnsignedShort
+                        | Type::Pointer(_)
+                        | Type::StructPointer { .. }
+                )
+            })
+        {
+            return Ok(false);
+        }
+        let mut sources = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            if let Ok(source @ (_, 1..=32, _)) = self.leaf_info(argument) {
+                sources.push(Some(source));
+            } else if matches!(argument, Expression::AddressOf { operand }
+                if matches!(operand.as_ref(), Expression::Variable(name) if self.frame_slots.contains_key(name)))
+            {
+                sources.push(None);
+            } else {
+                return Ok(false);
+            }
+        }
+        let destinations: Vec<u8> = (0..arguments.len()).map(|i| 3 + i as u8).collect();
+        let unsafe_order = destinations.iter().enumerate().any(|(i, target)| {
+            sources[i].is_none_or(|(source, width, _)|
+                source != *target || width < 32 || types[i].width() < 32)
+                && sources[i + 1..]
+                    .iter()
+                    .flatten()
+                    .any(|(source, _, _)| source == target)
+        });
+        if !unsafe_order {
+            return Ok(false);
+        }
+
+        let mut remaining: Vec<usize> = (0..arguments.len()).collect();
+        while !remaining.is_empty() {
+            if let Some(ready) = remaining.iter().rposition(|&index| {
+                remaining.iter().all(|&other| {
+                    other == index
+                        || sources[other].is_none_or(|(source, _, _)| source != destinations[index])
+                })
+            }) {
+                let index = remaining.remove(ready);
+                let destination = destinations[index];
+                if let Some((source, width, signed)) = sources[index] {
+                    let formal = types[index];
+                    let (width, signed) = if formal.width() < 32 {
+                        (formal.width(), self.signed_of(formal))
+                    } else {
+                        (width, signed)
+                    };
+                    self.emit_widen(destination, source, width, signed);
+                } else {
+                    self.evaluate_general(&arguments[index], destination)?;
+                }
+            } else {
+                // Break one cycle without overwriting another argument's home.
+                // Virtual identity keeps the saved value live until every use.
+                let source = sources[remaining[0]].unwrap().0;
+                let saved = self.fresh_virtual_general_avoiding(destinations.clone());
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(saved, source));
+                for &index in &remaining {
+                    if let Some((register, _, _)) = sources[index].as_mut() {
+                        if *register == source {
+                            *register = saved;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(true)
+    }
+
     /// Topologically marshal a pure, word-sized general argument list.
     ///
     /// Each expression may overwrite only its own ABI destination and r0. When
