@@ -4,13 +4,69 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, mainline fixed-bank word-stream matching (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, saved-register frame correctness (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `7e5436efe318234932247e22a06ac9a433cffd78e3fe2eabd8859c2ccaec9274:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `0c5e63e6e675fd2af1073ee198c4fb0d812ffe4fd1b2bbbc8a825bcdd8126040:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Saved-register frame correctness, 2026-09-06
+
+Inspection of Melee's remaining `DBWrite` mismatch exposed an ABI failure in
+baseline `a8f7329a`: the candidate saved r31 at frame offset 24 and r30 at 20,
+then restored r30 from 24 and r31 from 20. Paired execution confirms that
+Melee's actual caller and the reduced transport caller corrupt both incoming
+registers on return. The reduced case fails on all four legacy builds.
+
+The final linkage-first frame-order pass previously sorted adjacent saves
+and restores independently over the entire instruction stream. Interleaved
+entry copies split the save windows differently from the restores. The same
+pass also rewrote ordinary body stores: opposite two-word packet assignments
+became identical code, corrupting the reversed packet on all four legacy
+builds. This is candidate miscompilation, not reference behavior.
+
+Save scheduling now proves a complete set of unique individual frame slots
+before the first control transfer, confines scheduling to that entry region,
+and assigns restores from the resulting physical slot map. It declines
+incomplete, duplicate, mixed multiple-register, and relocatable entry layouts.
+Ordinary body packet stores and loads are outside its scheduling scope.
+The existing frame-convention owner carries this shared rule; neither the
+transport names nor particular register permutations select the fix.
+
+New canaries **1608 and 1609** retain **30/30 compiling pairs** across all 15
+builds, with **0/30 whole-object exact**, no exclusions, and no reference
+rejections. Their exact schedules remain unfinished. The corpus now covers
+the observed transport ABI failure and the independent packet-value failure.
+
+**58,932 paired Unicorn cases pass**: 51,030 reduced transport caller cases,
+4,500 two-direction packet cases, and 3,402 cases using Melee's actual
+`DBWrite` bodies. Call models clobber volatile registers and check command
+arguments, busy polling, retries, counter wraparound, interrupt-state tokens,
+packet order, results, stack restoration, and all saved GPRs. The Melee
+comparison models transfer calls in the inlined reference transactions and
+out-of-line helpers in the candidate; it is not a complete hardware execution.
+Frozen-baseline runs reproduce both failures before applying the fix.
+
+All **30 frame-convention tests** pass. The new permutation test covers
+**9,216 save/copy/restore layouts**, each with two exit orders; additional
+tests protect body packets and reject unproven frame layouts. The 117
+inline-expansion tests pass with the previously documented embedded-asm
+composition failure explicitly skipped.
+
+The 208-canary regression selection retains identical verdicts: **1,040
+slots, 281 exclusions, 759 runnable pairs, 417 exact objects, and 223 existing
+candidate rejections**, with no reference rejections or timeouts. Another
+**180 neighboring pairs retain all verdicts and 117 exact objects**. The
+40 real-project transport configurations retain **35 BYTE, one DIFF, and
+four missing dependencies**; **33/34 measured code-exact**, two empty, and
+four unmeasured. Melee retains **16/21 exact functions** and **1960/3320 exact
+reference function bytes**. This milestone fixes execution without claiming
+an additional exact object or real-project configuration.
+
+Local evidence: `target/frame-order-*`, `target/check_frame_order*.py`, and
+`target/reference-parity/0c5e63e6e675fd2a-5e4ca1ddc460f4d8.jsonl`.
 
 ## Mainline fixed-bank word streams, 2026-09-06
 

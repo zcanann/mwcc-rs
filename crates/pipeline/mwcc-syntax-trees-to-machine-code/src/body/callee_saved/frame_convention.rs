@@ -88,63 +88,18 @@ impl Generator {
         ));
     }
 
-    /// Canonicalize adjacent linkage-first GPR saves and restores by physical
-    /// register number. Virtual home order follows source lifetimes, but MWCC's
-    /// frame slots remain r31 downward regardless of that semantic order.
+    /// Schedule saved GPRs as one frame layout: every restore follows the
+    /// physical register captured in its slot, even across interleaved copies.
     pub(crate) fn normalize_linkage_first_saved_register_order(&mut self) {
         if self.behavior.frame_convention != FrameConvention::LinkageFirst {
             return;
         }
-        schedule_interleaved_saved_register_copy(&mut self.output.instructions);
-        for index in 0..self.output.instructions.len().saturating_sub(1) {
-            let saved = match (
-                &self.output.instructions[index],
-                &self.output.instructions[index + 1],
-            ) {
-                (
-                    Instruction::StoreWord { s: first, a: 1, offset: first_offset },
-                    Instruction::StoreWord { s: second, a: 1, offset: second_offset },
-                ) if (14..=31).contains(first)
-                    && (14..=31).contains(second)
-                    && first < second
-                    && *first_offset == second_offset.saturating_add(4) => Some((*first, *second)),
-                _ => None,
-            };
-            if let Some((first, second)) = saved {
-                let Instruction::StoreWord { s, .. } = &mut self.output.instructions[index] else {
-                    unreachable!()
-                };
-                *s = second;
-                let Instruction::StoreWord { s, .. } = &mut self.output.instructions[index + 1] else {
-                    unreachable!()
-                };
-                *s = first;
-                continue;
-            }
-            let restored = match (
-                &self.output.instructions[index],
-                &self.output.instructions[index + 1],
-            ) {
-                (
-                    Instruction::LoadWord { d: first, a: 1, offset: first_offset },
-                    Instruction::LoadWord { d: second, a: 1, offset: second_offset },
-                ) if (14..=31).contains(first)
-                    && (14..=31).contains(second)
-                    && first < second
-                    && *first_offset == second_offset.saturating_add(4) => Some((*first, *second)),
-                _ => None,
-            };
-            if let Some((first, second)) = restored {
-                let Instruction::LoadWord { d, .. } = &mut self.output.instructions[index] else {
-                    unreachable!()
-                };
-                *d = second;
-                let Instruction::LoadWord { d, .. } = &mut self.output.instructions[index + 1] else {
-                    unreachable!()
-                };
-                *d = first;
-            }
-        }
+        normalize_individual_saved_gpr_order(
+            &mut self.output.instructions,
+            &self.output.relocations,
+            self.frame_size,
+            self.callee_saved.len(),
+        );
     }
 
     /// Fill the linkage slot left by an inlined statement body with its
@@ -1805,6 +1760,149 @@ fn linkage_first_saved_register_epilogue(
     instructions
 }
 
+/// Save scheduling and restore assignment share a physical slot map. Sorting
+/// independent instruction windows is unsafe: entry copies split save packets,
+/// while the corresponding restores can be adjacent in a different order.
+fn normalize_individual_saved_gpr_order(
+    instructions: &mut [Instruction],
+    relocations: &[mwcc_machine_code::Relocation],
+    frame_size: i16,
+    saved_count: usize,
+) {
+    if saved_count == 0 || saved_count > 18 {
+        return;
+    }
+    let entry_end = instructions
+        .iter()
+        .position(|instruction| {
+            matches!(
+                instruction,
+                Instruction::BranchAndLink { .. }
+                    | Instruction::Branch { .. }
+                    | Instruction::BranchConditionalForward { .. }
+                    | Instruction::BranchConditionalToLinkRegister { .. }
+                    | Instruction::BranchToLinkRegister
+                    | Instruction::BranchToLinkRegisterAndLink
+                    | Instruction::BranchExternal { .. }
+                    | Instruction::BranchToCountRegister
+                    | Instruction::BranchToCountRegisterAndLink
+            )
+        })
+        .unwrap_or(instructions.len());
+    let mut slots = Vec::with_capacity(saved_count);
+    for index in 0..saved_count {
+        let Some(offset) = frame_size.checked_sub(4 * (index as i16 + 1)) else {
+            return;
+        };
+        let mut saves =
+            instructions[..entry_end]
+                .iter()
+                .enumerate()
+                .filter_map(|(index, instruction)| match instruction {
+                    Instruction::StoreWord {
+                        s,
+                        a: 1,
+                        offset: at,
+                    } if *at == offset => Some((index, *s)),
+                    _ => None,
+                });
+        let Some((index, register)) = saves.next() else {
+            return;
+        };
+        if !(14..=31).contains(&register)
+            || saves.next().is_some()
+            || slots.iter().any(|&(_, _, saved)| saved == register)
+        {
+            return;
+        }
+        slots.push((index, offset, register));
+    }
+    let save_end = slots.iter().map(|&(index, _, _)| index + 1).max().unwrap();
+    // Helper frames and unrelated frame stores do not belong to this layout.
+    // Relocatable entry materializations must keep their instruction indices.
+    if relocations
+        .iter()
+        .any(|relocation| relocation.instruction_index < save_end)
+        || instructions[..save_end]
+            .iter()
+            .any(|instruction| match instruction {
+                Instruction::StoreWord { s, a: 1, offset } if (14..=31).contains(s) => {
+                    !slots.iter().any(|&(_, at, _)| at == *offset)
+                }
+                Instruction::StoreMultipleWord { .. } => true,
+                _ => false,
+            })
+    {
+        return;
+    }
+    if instructions[save_end..]
+        .iter()
+        .any(|instruction| matches!(instruction, Instruction::LoadMultipleWord { a: 1, .. }))
+        || slots.iter().any(|&(_, offset, _)| {
+            !instructions[save_end..].iter().any(|instruction| {
+                matches!(instruction, Instruction::LoadWord { d, a: 1, offset: at }
+                if *at == offset && (14..=31).contains(d))
+            })
+        })
+    {
+        return;
+    }
+    schedule_interleaved_saved_register_copy(&mut instructions[..save_end]);
+    for index in 0..save_end.saturating_sub(1) {
+        let pair = match (&instructions[index], &instructions[index + 1]) {
+            (
+                Instruction::StoreWord {
+                    s: first,
+                    a: 1,
+                    offset: first_offset,
+                },
+                Instruction::StoreWord {
+                    s: second,
+                    a: 1,
+                    offset: second_offset,
+                },
+            ) if (14..=31).contains(first)
+                && (14..=31).contains(second)
+                && first < second
+                && *first_offset == second_offset.saturating_add(4) =>
+            {
+                Some((*first, *second))
+            }
+            _ => None,
+        };
+        if let Some((first, second)) = pair {
+            if let Instruction::StoreWord { s, .. } = &mut instructions[index] {
+                *s = second;
+            }
+            if let Instruction::StoreWord { s, .. } = &mut instructions[index + 1] {
+                *s = first;
+            }
+        }
+    }
+    for (_, offset, register) in &mut slots {
+        *register = instructions[..save_end]
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::StoreWord {
+                    s,
+                    a: 1,
+                    offset: at,
+                } if at == offset => Some(*s),
+                _ => None,
+            })
+            .expect("scheduling preserves each saved slot");
+    }
+    for instruction in &mut instructions[save_end..] {
+        if let Instruction::LoadWord { d, a: 1, offset } = instruction {
+            if (14..=31).contains(d) {
+                if let Some(&(_, _, register)) = slots.iter().find(|&&(_, at, _)| at == *offset) {
+                    *d = register;
+                }
+            }
+        }
+    }
+}
+
 /// Move an entry-value copy out of a pair of GPR saves before canonicalizing
 /// their frame slots. The copy overwrites the lower-numbered saved register,
 /// so leaving it between the stores prevents the save-order pass from seeing
@@ -2754,6 +2852,181 @@ mod tests {
             1,
             4,
         ));
+    }
+
+    #[test]
+    fn saved_frame_permutations_preserve_registers_across_interleaved_copies_and_exits() {
+        fn permutations(values: &mut [u8], at: usize, result: &mut Vec<Vec<u8>>) {
+            if at == values.len() {
+                result.push(values.to_vec());
+                return;
+            }
+            for index in at..values.len() {
+                values.swap(at, index);
+                permutations(values, at + 1, result);
+                values.swap(at, index);
+            }
+        }
+        let mut orders = Vec::new();
+        permutations(&mut [28, 29, 30, 31], 0, &mut orders);
+        for saves in &orders {
+            for copies in 0..16 {
+                for restores in &orders {
+                    let mut instructions = Vec::new();
+                    for (index, &register) in saves.iter().enumerate() {
+                        instructions.push(Instruction::StoreWord {
+                            s: register,
+                            a: 1,
+                            offset: 28 - 4 * index as i16,
+                        });
+                        if copies & (1 << index) != 0 {
+                            instructions.push(Instruction::AddImmediate {
+                                d: register,
+                                a: 3 + index as u8,
+                                immediate: 0,
+                            });
+                        }
+                    }
+                    let entry_end = instructions.len();
+                    instructions.push(Instruction::BranchAndLink {
+                        target: "work".into(),
+                    });
+                    for reverse in [false, true] {
+                        for index in 0..4 {
+                            let register = restores[if reverse { 3 - index } else { index }];
+                            let slot = saves.iter().position(|&saved| saved == register).unwrap();
+                            instructions.push(Instruction::LoadWord {
+                                d: register,
+                                a: 1,
+                                offset: 28 - 4 * slot as i16,
+                            });
+                        }
+                        instructions.push(Instruction::BranchToLinkRegister);
+                    }
+                    normalize_individual_saved_gpr_order(&mut instructions, &[], 32, 4);
+                    let original: Vec<u32> = (0..32).map(|r| 0x10000000 + r).collect();
+                    let mut registers = original.clone();
+                    let mut stack = std::collections::HashMap::new();
+                    for instruction in &instructions[..entry_end] {
+                        match instruction {
+                            Instruction::StoreWord { s, a: 1, offset } => {
+                                stack.insert(*offset, registers[usize::from(*s)]);
+                            }
+                            Instruction::AddImmediate { d, a, immediate: 0 } => {
+                                registers[usize::from(*d)] = registers[usize::from(*a)];
+                            }
+                            other => panic!("unexpected entry instruction: {other:?}"),
+                        }
+                    }
+                    for exit in instructions[entry_end + 1..].chunks_exact(5) {
+                        registers[14..32].fill(0);
+                        for instruction in &exit[..4] {
+                            let Instruction::LoadWord { d, a: 1, offset } = instruction else {
+                                panic!("expected a saved-register restore")
+                            };
+                            registers[usize::from(*d)] = stack[offset];
+                        }
+                        assert_eq!(
+                            registers[28..32],
+                            original[28..32],
+                            "saves={saves:?}, copies={copies}, restores={restores:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn saved_frame_order_does_not_rewrite_body_packet_stores_or_loads() {
+        let mut instructions = vec![
+            Instruction::StoreWord { s: 31, a: 1, offset: 28 },
+            Instruction::StoreWord { s: 30, a: 1, offset: 24 },
+            Instruction::BranchAndLink { target: "barrier".into() },
+            Instruction::StoreWord { s: 30, a: 1, offset: 12 },
+            Instruction::StoreWord { s: 31, a: 1, offset: 8 },
+            Instruction::LoadWord { d: 14, a: 1, offset: 12 },
+            Instruction::LoadWord { d: 15, a: 1, offset: 8 },
+            Instruction::BranchAndLink { target: "consume".into() },
+            Instruction::LoadWord { d: 31, a: 1, offset: 28 },
+            Instruction::LoadWord { d: 30, a: 1, offset: 24 },
+        ];
+        let packet = instructions[3..7].to_vec();
+        normalize_individual_saved_gpr_order(&mut instructions, &[], 32, 2);
+        assert_eq!(instructions[3..7], packet);
+    }
+
+    #[test]
+    fn saved_frame_order_leaves_unproven_layouts_and_relocatable_copies_untouched() {
+        let base = vec![
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::AddImmediate {
+                d: 30,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 16,
+            },
+            Instruction::BranchAndLink {
+                target: "work".into(),
+            },
+            Instruction::LoadWord {
+                d: 30,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::LoadWord {
+                d: 31,
+                a: 1,
+                offset: 16,
+            },
+        ];
+        for change in 0..8 {
+            let mut instructions = base.clone();
+            let mut relocations = Vec::new();
+            match change {
+                0 => {
+                    instructions[2] = Instruction::StoreMultipleWord {
+                        s: 30,
+                        a: 1,
+                        offset: 16,
+                    }
+                }
+                1 => {
+                    instructions[2] = Instruction::StoreWord {
+                        s: 30,
+                        a: 1,
+                        offset: 16,
+                    }
+                }
+                2 => {
+                    instructions[2] = Instruction::StoreWord {
+                        s: 31,
+                        a: 1,
+                        offset: 12,
+                    }
+                }
+                3 => instructions[1] = Instruction::Branch { target: 3 },
+                4 => instructions[4] = Instruction::LoadMultipleWord { d: 30, a: 1, offset: 16 },
+                5 => instructions[4] = Instruction::BranchToLinkRegister,
+                6 => instructions.insert(0, Instruction::StoreWord { s: 0, a: 1, offset: 20 }),
+                _ => relocations.push(Relocation {
+                    instruction_index: 1,
+                    kind: RelocationKind::EmbSda21,
+                    target: RelocationTarget::External("entry".into()),
+                }),
+            }
+            let before = instructions.clone();
+            normalize_individual_saved_gpr_order(&mut instructions, &relocations, 24, 2);
+            assert_eq!(instructions, before);
+        }
     }
 
     #[test]
