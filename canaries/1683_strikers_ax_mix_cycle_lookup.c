@@ -1,7 +1,7 @@
 // Reduction of Super Mario Strikers src/Dolphin/ax/AXVPB.c:15-38,420.
 // Source-only Strikers file; absent from its active inventory. Equivalent AX code is active in BfBB.
 // Original tables and cycle-increment RHS; the u16 mixerCtrl field is a parameter.
-// Frontier: repeated shifted/masked indices into defined static global tables.
+// Supported lookup RHS with mixerCtrl extracted as a parameter; full AX body remains a frontier.
 // flags: -Cpp_exceptions off -pragma "cats off"
 typedef unsigned int u32;
 typedef unsigned short u16;

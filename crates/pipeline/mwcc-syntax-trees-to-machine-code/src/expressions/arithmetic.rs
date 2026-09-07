@@ -196,6 +196,9 @@ impl Generator {
         right: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
+        if self.try_emit_global_lookup_sum(left, right, destination)? {
+            return Ok(true);
+        }
         let Expression::Binary {
             operator: BinaryOperator::Add,
             left: x,

@@ -5,24 +5,24 @@ use super::masked_index::MaskedIndex;
 use super::*;
 use mwcc_versions::GlobalLoadPairStyle;
 
-struct GlobalMaskedLoad<'a> {
-    name: &'a str,
-    pointee: Pointee,
-    index: MaskedIndex<'a>,
+pub(super) struct GlobalMaskedLoad<'a> {
+    pub(super) name: &'a str,
+    pub(super) total_size: u32,
+    pub(super) pointee: Pointee,
+    pub(super) index: MaskedIndex<'a>,
 }
 
 impl Generator {
-    fn global_masked_load<'a>(&self, expression: &'a Expression) -> Option<GlobalMaskedLoad<'a>> {
+    pub(super) fn global_masked_load<'a>(
+        &self,
+        expression: &'a Expression,
+    ) -> Option<GlobalMaskedLoad<'a>> {
         let Expression::Index { base, index } = expression else {
             return None;
         };
         let name = leaf_name(base)?;
-        if self.global_array_address_extent(name)? <= 8
-            || self
-                .data_section_anchor
-                .as_ref()
-                .is_some_and(|a| a.symbols.contains(name))
-        {
+        let total_size = self.global_array_address_extent(name)?;
+        if total_size <= 8 {
             return None;
         }
         let pointee = self.globals.get(name).copied().and_then(pointee_of_type)?;
@@ -43,6 +43,7 @@ impl Generator {
         }
         Some(GlobalMaskedLoad {
             name,
+            total_size,
             pointee,
             index,
         })
@@ -65,7 +66,12 @@ impl Generator {
         ) else {
             return Ok(None);
         };
-        if first.name == second.name {
+        if first.name == second.name
+            || self
+                .data_section_anchor
+                .as_ref()
+                .is_some_and(|a| a.symbols.contains(first.name) || a.symbols.contains(second.name))
+        {
             return Ok(None);
         }
         if self.behavior.optimization == mwcc_versions::Optimization::O0 {

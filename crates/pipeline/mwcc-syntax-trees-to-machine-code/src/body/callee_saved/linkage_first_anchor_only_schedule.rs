@@ -3,6 +3,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use mwcc_vreg::{register_operands, Class, RegisterRole};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct InitialPartition {
@@ -12,6 +13,16 @@ struct InitialPartition {
 
 impl Generator {
     pub(super) fn schedule_anchor_only_frame(&mut self) {
+        // The prefix can also precede a local initializer and a later saved
+        // parameter copy. Preserve the allocator's staging register when r3
+        // still carries that incoming value.
+        let high = if self.entry_parameter_words != 0
+            && uses_entry_r3_before_definition(&self.output.instructions[6..])
+        {
+            5
+        } else {
+            3
+        };
         // Build 163 starts materializing a retained writable-section base
         // between `mflr` and the linkage stores, then finishes it directly
         // into the sole saved register after that register has been saved.
@@ -19,11 +30,11 @@ impl Generator {
         let Instruction::AddImmediateShifted { d, .. } = &mut self.output.instructions[1] else {
             unreachable!("the anchor-only high half was matched")
         };
-        *d = 3;
+        *d = high;
         let Instruction::AddImmediate { a, .. } = &mut self.output.instructions[5] else {
             unreachable!("the anchor-only low half was matched")
         };
-        *a = 3;
+        *a = high;
 
         self.normalize_anchor_only_command_transactions();
         self.normalize_anchor_only_initial_partition();
@@ -97,6 +108,29 @@ impl Generator {
         *condition_bit = 2;
         *target = partition.condition + 2;
     }
+}
+
+fn uses_entry_r3_before_definition(instructions: &[Instruction]) -> bool {
+    for instruction in instructions {
+        let operands = register_operands(instruction);
+        let is_r3 = |operand: &&mwcc_vreg::RegisterOperand| {
+            operand.class == Class::General && operand.register == 3
+        };
+        if operands.iter().filter(is_r3).any(|operand| operand.role == RegisterRole::Use) {
+            return true;
+        }
+        if operands.iter().filter(is_r3).any(|operand| operand.role == RegisterRole::Define) {
+            return false;
+        }
+        if matches!(instruction, Instruction::Branch { .. } | Instruction::BranchConditionalForward { .. }
+            | Instruction::BranchAndLink { .. } | Instruction::BranchExternal { .. }
+            | Instruction::BranchToCountRegister | Instruction::BranchToCountRegisterAndLink
+            | Instruction::BranchToLinkRegister | Instruction::BranchToLinkRegisterAndLink
+            | Instruction::BranchConditionalToLinkRegister { .. }) {
+            return true;
+        }
+    }
+    false
 }
 
 pub(super) fn is_anchor_only_prefix(instructions: &[Instruction], frame_size: i16) -> bool {
@@ -253,6 +287,24 @@ fn callback_publication_transaction(instructions: &[Instruction]) -> Option<usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_an_input_read_by_an_initializer_before_its_saved_copy() {
+        assert!(uses_entry_r3_before_definition(&[
+            Instruction::StoreWord { s: 30, a: 1, offset: 24 },
+            Instruction::RotateAndMask { a: 4, s: 3, shift: 0, begin: 30, end: 31 },
+            Instruction::move_register(29, 3),
+        ]));
+        assert!(!uses_entry_r3_before_definition(&[
+            Instruction::LoadWord { d: 3, a: 31, offset: 0 },
+            Instruction::move_register(29, 3),
+        ]));
+        assert!(uses_entry_r3_before_definition(&[
+            Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 2 },
+            Instruction::LoadWord { d: 3, a: 31, offset: 0 },
+            Instruction::move_register(29, 3),
+        ]));
+    }
 
     #[test]
     fn recognizes_a_calling_equality_partition_with_a_shared_exit() {

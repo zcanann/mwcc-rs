@@ -4,13 +4,77 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, shifted AX lookup composition and linked-DOL references (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete AX lookup sums and retained table bases (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `581a98df18d8df1ef2c4f97e46b48a1e50bdfffcd24c4c1e8100fbf3c0906908:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `09bc48e4e7997d99a83696c81737b10f4d9354157f45ebbbbdc2c554da95507c:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete AX lookup sums and retained table bases, 2026-09-07
+
+The complete three-lookup AX cycle expression and its addition to an existing
+cycle count now compile for all fifteen builds at O0/O4. Against frozen baseline
+`4b5eaede`, new canaries 1701–1708 improve **0/120 → 120/120 candidate
+compilations**. These include sixty project-derived sum/accumulator objects,
+thirty mixed sum objects, and thirty functions that retain table bases across a
+call. Fresh compiler-reference objects remain unavailable, so no new whole-object
+matches are claimed. Existing canary 1683 also compiles in all thirty configurations;
+its code, data, and relocations equal the executed complete-sum reduction, apart
+from the separate file-symbol identity.
+
+`global_lookup_sum` plans additive chains of masked integer global-array loads,
+integer constants, and resident word values. Validation finishes before emission.
+O4 composes the tail first, shares each table's base, prepares the leading address
+before the pending tail addition, and keeps loaded values in separate virtual
+registers. It consumes an existing section anchor when one is already planned.
+O0 evaluates complete lookup operands in source order while reserving all input
+registers. The common lookup recognizer and fused-index selector are reused;
+ordinary two-load expressions retain their measured selectors. Memory-loaded
+indices and their common-subexpression handling remain outside this sum planner.
+
+Canaries 1701–1704 preserve BfBB's original tables, complete lookup right-hand
+side, and accumulated-cycle form with the mixerCtrl field extracted as a u16
+parameter. All **3,932,160 candidate calls across sixty objects** pass exhaustive
+comparison for the 65,536 possible mixer values against the original linked
+`__AXSyncPBs` observations, including accumulator overflow. The final compiler's
+sixty objects are byte-identical to the executed objects. This is an execution
+comparison of reductions, not full-function instruction or object parity.
+
+Canaries 1705–1706 add five-term sums, large and negative constants, repeated
+scalar inputs, mixed byte/signed-halfword/word loads, volatile reads, and a global
+store through r0. Their thirty objects pass **7,800 calls**. Canaries 1707–1708
+load a value before a call, pass all three tables to a mutating callee, then sum
+new table values and the saved value. All thirty objects pass **780 calls** with
+caller-saved register clobbers, array-read counts, stack restoration, and
+callee-saved register preservation checked. Eight configurations use a retained
+section anchor. All **3,940,740 candidate calls pass**.
+
+The across-call case exposed a prologue scheduler bug: the anchor-only prefix
+matcher also matched a frame with a local initializer before the saved parameter
+copy. Retargeting its anchor high half to r3 destroyed the incoming parameter.
+The scheduler now preserves the allocated staging register when r3 can still be
+read before a definition. Both relevant scheduler tests pass, including the new
+initializer/branch regression.
+
+The captured memory-operand matrix retains **300/300 exact objects**. The masked
+index panel retains **1,341/1,470 exact objects** and all candidate compilations.
+Direct index regressions retain **1,096 compiled objects**, **972 previously
+reference-exact objects**, and **578 decline diagnostics** (1,674 runnable pairs
+from 2,115 slots, 441 prior exclusions). A cumulative metadata comparison against
+the preserved `db48e092` compiler also retains **1,494 compiled objects**, **1,179
+previously reference-exact objects**, and **704 decline diagnostics** (2,198
+runnable pairs from 2,940 slots, 742 prior exclusions). Neither panel times out.
+The native compiler and oracle build successfully.
+
+The configured full BfBB AX source was retried with the inventory's GC/1.2.5n
+flags, configuration `28bbd3861e4ba5aaaa7937e409f8af691d305fd46ad02945195bc980beb94522`.
+Both frozen and current compilers stop earlier in `__AXServiceVPB`: a discarded
+`Variable("dst@4")` expression reaches the “only a call may be a bare statement”
+guard. Full AX-file compilation, member-derived index CSE, and fresh full-project
+object parity remain unfinished. Evidence is under `target/lookup-sum-*` and
+`target/check_lookup_sum_*`; captured matrices use the `lookup-sum` label.
 
 ## Shifted AX lookup composition and linked-DOL references, 2026-09-07
 
