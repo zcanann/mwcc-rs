@@ -2468,7 +2468,11 @@ impl Generator {
         logical_saved_homes.extend(loop_jump_table_homes.iter().copied());
         let mut frame_homes = logical_saved_homes.clone();
         frame_homes.resize(frame_saved_count, frame_first_saved as u8);
-        let mut plan = mwcc_vreg::FramePlan::with_local_region(frame_homes, local_region_bytes);
+        // Outgoing word slots occupy the low frame above linkage just like
+        // caller-laid-out locals. Reserve their capacity before placing saved
+        // homes; call emission separately rejects any actual local-slot overlap.
+        let low_region_bytes = local_region_bytes.max(self.outgoing_general_parameter_end - 8);
+        let mut plan = mwcc_vreg::FramePlan::with_local_region(frame_homes, low_region_bytes);
         let base_frame_size = plan.frame_size;
         let retained_linkage_lanes = usize::from(
             dense_frame

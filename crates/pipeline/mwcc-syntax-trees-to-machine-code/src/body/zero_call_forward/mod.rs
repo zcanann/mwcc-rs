@@ -25,25 +25,56 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [Statement::Expression(Expression::Cast {
-            target_type: Type::Void,
-            operand: noop,
-        }), Statement::Expression(Expression::Call {
+        let statements = match function.statements.as_slice() {
+            [Statement::Expression(Expression::Cast {
+                target_type: Type::Void,
+                operand,
+            }), rest @ ..]
+                if constant_value(operand) == Some(0) =>
+            {
+                rest
+            }
+            statements => statements,
+        };
+        let [Statement::Expression(Expression::Call {
             name: callee,
             arguments,
-        })] = function.statements.as_slice()
+        })] = statements
         else {
             return Ok(false);
         };
         let [first, rest @ ..] = arguments.as_slice() else {
             return Ok(false);
         };
-        if constant_value(noop) != Some(0)
-            || arguments.len() != 10
+        if arguments.len() != 10
             || !matches!(first, Expression::Variable(name) if name == &parameter.name)
             || rest
                 .iter()
                 .any(|argument| constant_value(argument) != Some(0))
+        {
+            return Ok(false);
+        }
+        // This schedule owns ten word-class argument positions, not floating,
+        // wide, reference, or aggregate marshaling, nor an indirect call.
+        if self.locations.contains_key(callee)
+            || self.globals.contains_key(callee)
+            || self.call_parameter_types.get(callee).is_some_and(|types| {
+                types.len() != arguments.len()
+                    || types.first().is_some_and(|ty| ty.width() < 32)
+                    || types.iter().any(|ty| {
+                        !matches!(
+                            ty,
+                            Type::Char
+                                | Type::UnsignedChar
+                                | Type::Short
+                                | Type::UnsignedShort
+                                | Type::Int
+                                | Type::UnsignedInt
+                                | Type::Pointer(_)
+                                | Type::StructPointer { .. }
+                        )
+                    })
+            })
         {
             return Ok(false);
         }

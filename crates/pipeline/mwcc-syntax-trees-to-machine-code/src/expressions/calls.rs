@@ -2183,12 +2183,37 @@ impl Generator {
                             "general argument {index} to '{name}' needs an unreserved outgoing stack slot"
                         )));
                     }
+                    // The logical argument cursor continues past r10 to name
+                    // stack slots. It is not a physical register: r13 and above
+                    // include SDA and callee-saved state. Keep completed register
+                    // arguments intact while materializing this stack value.
+                    let first_temporary = self.virtual_cursors.general;
+                    let source = self.fresh_virtual_general_preferring(GENERAL_SCRATCH);
+                    let reserved_arguments: Vec<_> =
+                        (Eabi::FIRST_GENERAL_ARGUMENT..=Eabi::LAST_GENERAL_ARGUMENT)
+                            .filter(|register| self.reserved.insert(*register))
+                            .collect();
                     let evaluated = match reference_argument {
                         Some(ReferenceArgumentSource::Lvalue(lvalue)) => {
-                            self.emit_address_of(lvalue, next_general)
+                            self.emit_address_of(lvalue, source)
                         }
-                        _ => self.evaluate_general(general_argument, next_general),
+                        _ => self.evaluate_general(general_argument, source),
                     };
+                    for register in reserved_arguments {
+                        self.reserved.remove(&register);
+                    }
+                    // Nested address/value temporaries belong to the same
+                    // marshaling operation and must preserve those arguments too.
+                    let argument_registers: Vec<_> =
+                        (Eabi::FIRST_GENERAL_ARGUMENT..=Eabi::LAST_GENERAL_ARGUMENT).collect();
+                    for id in first_temporary..self.virtual_cursors.general {
+                        let register = mwcc_vreg::Reg::Virtual(mwcc_vreg::VirtualRegister::new(
+                            id,
+                            mwcc_vreg::Class::General,
+                        ))
+                        .to_field();
+                        self.avoid_virtual_general(register, &argument_registers);
+                    }
                     evaluated
                         .map_err(|mut diagnostic| {
                             diagnostic.message.push_str(&format!(
@@ -2199,7 +2224,7 @@ impl Generator {
                             diagnostic
                         })?;
                     self.output.instructions.push(Instruction::StoreWord {
-                        s: next_general,
+                        s: source,
                         a: 1,
                         offset: stack_offset,
                     });

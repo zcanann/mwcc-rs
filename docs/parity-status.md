@@ -4,13 +4,84 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, exact GX stage update and address-base allocation constraints (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, exact GX forwarding and outgoing stack-word arguments (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `264bb8c0241d6f06e68ffb48027c624c94b597582ad7f1e81ac60fcadeaf978b:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `32aec8bfb4c32bf9a6f64b5f8da0b5506a7d694104bb82722ca329b5ea3fad44:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Exact GX forwarding and outgoing stack words, 2026-09-07
+
+The configured BfBB **`GXSetTevDirect` now matches all 72 original linked
+instruction bytes**, improving from 76 bytes under frozen baseline `fa1bdc84`.
+Its original/candidate linked-code SHA-256 is
+`331083a14facf477a788303f0b97fcfa83689dded3bf4678e9e7d176778771f0`.
+Together with `GXSetNumIndStages`, `__GXFlushTextureState`, and the empty
+`__GXUpdateBPMask`, **four of the complete GX object's eight functions have
+exact linked text**. Known symbol relocations are resolved at original DOL
+addresses; this is not a fresh relocatable reference-object comparison.
+The complete configured object remains compilable, SHA-256
+`575451c7cdab3fb8d7efc4123f4c704eb907b4f7abbe30724a1d099d92f48d6c`.
+Text shrinks **1,428 → 1,424 bytes**; the ELF remains 3,296 bytes. The other
+seven function sizes are unchanged. Full GX instruction/object parity is open.
+
+The existing linkage-first zero-forwarding scheduler now accepts a plain call
+as well as a call preceded by a macro no-op. It verifies that the callee is a
+direct call with ten word-class positions and that the passthrough argument
+needs no narrowing. Floating, wide, reference, aggregate, and indirect calls
+fall back to general emission. This retains the existing build-profile gate.
+The new prototype checks also fix incorrect floating/narrowing macro wrappers
+that the old scheduler accepted.
+
+General outgoing word arguments now use virtual temporaries instead of treating
+the logical argument cursor beyond r10 as a physical register number. This
+prevents eleventh and later arguments from writing SDA/callee-saved registers.
+Already placed r3–r10 arguments are reserved during materialization, including
+allocation constraints on newly created nested address/value temporaries.
+Structured frames reserve outgoing word capacity before locating saved homes.
+Existing checks still reject overlap with local slots: this change does not
+relocate locals, or complete every wide/narrow/call-containing argument path.
+
+Eight new canaries **1785–1792** improve **60/120 → 120/120 compiled objects**
+across fifteen builds at O0/O4. They cover ten-zero wrappers, eleven arguments
+with literal/computed/loaded stack words, sixteen arguments with large words,
+and floating/narrowing prototypes. Computed arithmetic is unsigned so the
+wraparound fixtures have defined behavior. **76,800 candidate calls pass**, with
+argument values and stack/SDA/callee-saved GPR/FPR restoration checked. The
+baseline executes 46,080 calls, of which 4,080 expose the incorrect floating or
+narrowing macro wrappers; it declines the 60 eleven/sixteen-argument objects.
+Instruction-byte evidence is from the configured GC/1.2.5n original; the other
+builds have candidate execution coverage.
+
+Validation totals **106,112 passing candidate calls**:
+
+- **76,800** in the new corpus described above.
+- **21,120** in the prior incoming-stack corpus, including ten-word forwarding,
+  call survival, pointer arguments, and address-taken parameters. All 270 prior
+  incoming-stack objects still compile; only the 30 forwarding objects change.
+- **8,192** across all eight complete GX functions against the original DOL,
+  comparing FIFO traces, complete context memory, matrix input preservation,
+  and GPR/FPR/stack restoration.
+
+The captured paired-memory matrix retains **300/300 exact objects**. The index
+panel retains **1,097 unchanged objects / 972 known reference matches / 577
+identical declines**. The cumulative metadata panel against `db48e092` retains
+**1,494 unchanged objects / 1,179 known matches / 704 identical declines**.
+Neither native panel timed out. **31 frame-convention, 3 incoming-parameter,
+5 vreg-frame, and 40 object-writer tests pass**. The complete configured AX
+object remains byte-identical, SHA-256
+`1a8fed48a1634517cd66e23f09754e75274d170ca826e61408ff96650605e7e3`.
+Removing a redundant behavior flag during review preserves all 392 measured
+new/prior canary and complete-project object hashes.
+
+Local scripts are `target/check_gx_forward*.py` and `target/probe_gx_forward*.py`;
+results, pinned originals, and object hashes are in
+`target/gx-forward-{canaries,incoming-canaries,gx,index,metadata,full-ax}/`.
+The six existing wibo processes remain in kernel U state after more than
+5 hours 21 minutes. No new reference-compiler process was launched and no fresh
+full-project panel was measured.
 
 ## Exact GX stage update and address-base constraints, 2026-09-07
 
