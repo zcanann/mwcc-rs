@@ -2912,9 +2912,21 @@ mod tests {
         }
         assert_eq!(Behavior::resolve(&CompilerConfig::new(build::GC_1_1P1)).fixed_bank_stream_style,
             FixedBankStreamStyle::LegacySeparateCommand);
-        for compiler_build in [build::GC_1_3, build::GC_2_7, build::GC_3_0A3, build::WII_1_0] {
+        for (compiler_build, style) in [
+            (build::GC_1_3, FixedBankStreamStyle::MainlineRegisterMask),
+            (build::GC_1_3_2, FixedBankStreamStyle::MainlineImmediateMask),
+            (build::GC_1_3_2R, FixedBankStreamStyle::MainlineImmediateMask),
+            (build::GC_2_0, FixedBankStreamStyle::MainlineImmediateMask),
+            (build::GC_2_0P1, FixedBankStreamStyle::MainlineImmediateMask),
+            (build::GC_2_5, FixedBankStreamStyle::MainlineImmediateMask),
+            (build::GC_2_6, FixedBankStreamStyle::MainlineImmediateMask),
+            (build::GC_2_7, FixedBankStreamStyle::MainlineImmediateMask),
+            (build::GC_3_0A3, FixedBankStreamStyle::RetainedPage),
+            (build::GC_3_0A3P1, FixedBankStreamStyle::RetainedPage),
+            (build::WII_1_0, FixedBankStreamStyle::RetainedPageEarlyStore),
+        ] {
             assert_eq!(Behavior::resolve(&CompilerConfig::new(compiler_build)).fixed_bank_stream_style,
-                FixedBankStreamStyle::Structured);
+                style);
         }
     }
 

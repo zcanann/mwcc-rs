@@ -10,6 +10,7 @@ mod legacy;
 mod recognize;
 mod stream;
 mod stream_legacy;
+mod stream_mainline;
 #[cfg(test)]
 mod tests;
 
@@ -44,24 +45,27 @@ struct Transaction<'a> {
 
 impl Generator {
     pub(crate) fn try_fixed_bank_transaction(&mut self, function: &Function) -> Compilation<bool> {
-        if self.behavior.fixed_address_parameterized_rmw_style
-            != FixedAddressParameterizedRmwStyle::Legacy233
-            || self.behavior.optimization != Optimization::O4
+        if self.behavior.optimization != Optimization::O4
             || self.variadic_definition
             || !self.frame_slots.is_empty()
         {
             return Ok(false);
         }
-        let plan = recognize::transaction(function, &self.fixed_address_arrays).or_else(|| {
-            (self.behavior.fixed_bank_stream_style
-                != mwcc_versions::FixedBankStreamStyle::Structured
-                && self.behavior.optimization_goal == mwcc_versions::OptimizationGoal::Performance
-                && self.behavior.scheduler_enabled
-                && !self.behavior.power_pc_7400_scheduling_enabled()
-                && !function.peephole_disabled)
-                .then(|| stream::transaction(function, &self.fixed_address_arrays))
-                .flatten()
-        });
+        let plan = (self.behavior.fixed_address_parameterized_rmw_style
+            == FixedAddressParameterizedRmwStyle::Legacy233)
+            .then(|| recognize::transaction(function, &self.fixed_address_arrays))
+            .flatten()
+            .or_else(|| {
+                (self.behavior.fixed_bank_stream_style
+                    != mwcc_versions::FixedBankStreamStyle::Structured
+                    && self.behavior.optimization_goal
+                        == mwcc_versions::OptimizationGoal::Performance
+                    && self.behavior.scheduler_enabled
+                    && !self.behavior.power_pc_7400_scheduling_enabled()
+                    && !function.peephole_disabled)
+                    .then(|| stream::transaction(function, &self.fixed_address_arrays))
+                    .flatten()
+            });
         let Some(plan) = plan else {
             return Ok(false);
         };
@@ -103,6 +107,24 @@ impl Generator {
                 })
         {
             return Ok(false);
+        }
+        if let Payload::Stream { command, writing } = plan.payload {
+            if matches!(
+                self.behavior.fixed_bank_stream_style,
+                mwcc_versions::FixedBankStreamStyle::MainlineRegisterMask
+                    | mwcc_versions::FixedBankStreamStyle::MainlineImmediateMask
+                    | mwcc_versions::FixedBankStreamStyle::RetainedPage
+                    | mwcc_versions::FixedBankStreamStyle::RetainedPageEarlyStore
+            ) {
+                let (_, low) = crate::expressions::split_address(plan.address);
+                let Some(poll_offset) = low.checked_add(plan.poll) else {
+                    return Ok(false);
+                };
+                self.non_leaf = true;
+                self.output.pre_scheduled = true;
+                self.emit_mainline_bank_stream(&plan, command, writing, poll_offset);
+                return Ok(true);
+            }
         }
         self.emit_legacy_fixed_bank_transaction(&plan);
         Ok(true)

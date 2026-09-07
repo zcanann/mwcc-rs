@@ -4,13 +4,69 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, legacy fixed-bank word-stream matching (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, mainline fixed-bank word-stream matching (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `b428c951a74b735a05d8b427127bb829d992ce25a4044fdadd8abf0739cbe890:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `7e5436efe318234932247e22a06ac9a433cffd78e3fe2eabd8859c2ccaec9274:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Mainline fixed-bank word streams, 2026-09-06
+
+Against frozen baseline `7569218c`, the Melee-derived stream canaries **1604
+and 1605 improve from 8/30 to 30/30 whole-object exact pairs**. New canaries
+**1606 and 1607 also improve from 8/30 to 30/30**, covering a preservation
+mask with bit 15 set and `-use_lmw_stmw on`. Combined, **16/60 becomes 60/60**
+across all 15 supported compiler builds, with all pairs compiling and no
+exclusions or reference rejections. This is a targeted diagnostic, not a
+corpus-wide parity estimate.
+
+The existing semantic transaction recognizer feeds a separate mainline
+emitter. `FixedBankStreamStyle` selects the measured frame, address lifetime,
+and reset schedule; no source names or device addresses select a template.
+Mainline frames use 32 bytes and individually save r28-r31 even when multiple
+register saves are enabled. GC/1.3 materializes reset masks in registers,
+including the distinct unsigned-high-mask schedule. Later 2.4 builds use an
+immediate reset and materialize the polling slot for writes. 4.x retains the
+bank page through the first call and poll; Wii advances the write-frame store
+and reuses the existing polling-alignment policy. Checked displacement
+admission prevents folded addresses from overflowing their signed fields.
+Legacy single-word mailbox admission and emission remain unchanged.
+
+For canary 1604, reference read/write function sizes are respectively
+**252/252 bytes** on GC/1.3, **248/256** on later 2.4, **240/240** on GC/3.0a3,
+and **244/248** on Wii/1.0. Both functions now match each corresponding size,
+instruction stream, and relocation sequence.
+
+**413,568 paired Unicorn cases pass**: 400,896 detailed cases across GC/1.3,
+GC/1.3.2, GC/3.0a3, and Wii/1.0 for all four canaries, plus 12,672 smaller
+checks across the other eleven builds. An ABI-clobbering transfer model
+compares command/data words, buffer guards, device event order, stack and
+saved registers, and results. It includes negative/zero lengths, partial
+words, repeated iterations through 32 bytes, varied polling delays, and
+failures at each call position. These execute compiled caller bodies with
+a modeled transfer, not the complete hardware transport.
+
+The 208-canary regression selection retains identical verdicts: **1,040
+slots, 281 exclusions, 759 runnable pairs, 417 exact objects, and 223 existing
+candidate rejections**, with no reference rejections or timeouts. Another
+**120 neighboring pairs retain all verdicts and 57 exact objects**. Ten
+transaction tests, the expanded profile-family test, and 117 inline-expansion
+tests pass; the previously documented embedded-asm composition failure
+remains explicitly skipped.
+
+The 40 real-project transport configurations retain **35 BYTE, one DIFF,
+and four missing dependencies**, with **33/34 measured code-exact**, two
+empty, and four unmeasured. Melee retains **16/21 exact functions** and
+**1960/3320 exact reference function bytes**; its five remaining nonexact
+functions are `CheckMailBox`, `DBInitComm`, `DBQueryData`, `DBRead`, and
+`DBWrite`. This milestone extends the extracted transport behavior across
+versions without claiming a new exact real-project configuration.
+
+Local evidence: `target/stream-modern-*`, `target/check_stream_modern*.py`,
+`target/probe_stream_modern.py`, and
+`target/reference-parity/7e5436efe3182349-5e4ca1ddc460f4d8.jsonl`.
 
 ## Legacy fixed-bank word streams, 2026-09-06
 

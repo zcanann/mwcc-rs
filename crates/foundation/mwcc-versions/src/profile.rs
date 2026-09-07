@@ -272,6 +272,14 @@ pub enum FixedBankStreamStyle {
     LegacyFusedCommand,
     /// 56-byte frame, source-ordered command operations, early cursor update.
     LegacySeparateCommand,
+    /// 2.4 build 53 uses a register mask when resetting the selected slot.
+    MainlineRegisterMask,
+    /// Later 2.4 folds the reset mask and materializes polling slots for writes.
+    MainlineImmediateMask,
+    /// 4.1 retains the bank page through the first transfer and poll.
+    RetainedPage,
+    /// 4.3 also moves the write-frame store ahead of argument constants.
+    RetainedPageEarlyStore,
 }
 
 /// Entry, allocation, and scheduling policy for specialized integer loops.
@@ -1819,6 +1827,10 @@ pub trait CodegenProfile: core::fmt::Debug {
 #[derive(Debug)]
 pub struct Mainline;
 impl CodegenProfile for Mainline {
+    fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
+        FixedBankStreamStyle::MainlineImmediateMask
+    }
+
     fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
         ByteWordTransferStyle::Mainline
     }
@@ -1829,6 +1841,10 @@ impl CodegenProfile for Mainline {
 #[derive(Debug)]
 pub struct MainlineEarlyAggregateLoads;
 impl CodegenProfile for MainlineEarlyAggregateLoads {
+    fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
+        FixedBankStreamStyle::MainlineImmediateMask
+    }
+
     fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
         ByteWordTransferStyle::Mainline
     }
@@ -1846,6 +1862,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
+        FixedBankStreamStyle::RetainedPage
+    }
+
     fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
         ByteWordTransferStyle::GuardedGameCube
     }
@@ -2080,6 +2100,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
+        FixedBankStreamStyle::RetainedPageEarlyStore
+    }
+
     fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
         ByteWordTransferStyle::GuardedWii
     }
@@ -2330,6 +2354,10 @@ impl CodegenProfile for Wii43Build145 {
 #[derive(Debug)]
 pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
+    fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
+        FixedBankStreamStyle::MainlineRegisterMask
+    }
+
     fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
         ByteWordTransferStyle::Mainline
     }
@@ -2401,6 +2429,10 @@ impl CodegenProfile for Gc13Build53 {
 #[derive(Debug)]
 pub struct Gc132Build81;
 impl CodegenProfile for Gc132Build81 {
+    fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
+        FixedBankStreamStyle::MainlineImmediateMask
+    }
+
     fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
         ByteWordTransferStyle::Mainline
     }
@@ -2911,6 +2943,10 @@ impl CodegenProfile for Gc233Build163 {
 #[derive(Debug)]
 pub struct Gc20Patch1;
 impl CodegenProfile for Gc20Patch1 {
+    fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
+        FixedBankStreamStyle::MainlineImmediateMask
+    }
+
     fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
         ByteWordTransferStyle::Mainline
     }
