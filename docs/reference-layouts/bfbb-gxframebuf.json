@@ -1,0 +1,40 @@
+{
+  "dol_sha256": "865f446cf8efd52230dac506d6334a357b4c738cd6eb6e3a68c827efac51c3e0",
+  "symbols_sha256": "92f658ac1a6f91ec64d851dcfdf92a0907f3c06f5c68a97096052e99b5f3dfa4",
+  "functions": [
+    "GXSetDispCopySrc",
+    "GXSetTexCopySrc",
+    "GXSetDispCopyDst",
+    "GXSetTexCopyDst",
+    "GXSetDispCopyFrame2Field",
+    "GXSetCopyClamp",
+    "GXGetYScaleFactor",
+    "GXSetDispCopyYScale",
+    "GXSetCopyClear",
+    "GXSetCopyFilter",
+    "GXSetDispCopyGamma",
+    "GXCopyDisp",
+    "GXCopyTex",
+    "GXClearBoundingBox"
+  ],
+  "sda_bases": {
+    "2": 2151500160
+  },
+  "data_symbols": {
+    "__GXData": 2151480440
+  },
+  "literals": [
+    {
+      "address": 2151480480,
+      "hex": "43800000"
+    },
+    {
+      "address": 2151480488,
+      "hex": "4330000000000000"
+    }
+  ],
+  "external_functions": [
+    "__GetImageTileCount",
+    "__cvt_fp2unsigned"
+  ]
+}

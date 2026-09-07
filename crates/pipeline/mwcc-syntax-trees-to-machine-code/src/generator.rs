@@ -581,6 +581,8 @@ pub(crate) struct Generator {
     /// A call-free O0 source-home chain whose final physical schedule retains
     /// narrow parameter extension and distinct intermediate scratch lanes.
     pub(crate) structured_unoptimized_leaf_source_homes: bool,
+    /// Named loop values keep one home across entry and back edges.
+    pub(crate) structured_loop_carried_names: HashSet<String>,
     /// Volatile homes reserved by a structured branch whose returned float
     /// parameter remains live across mutually exclusive member-store arms.
     pub(crate) structured_branch_float_work_home: Option<u8>,

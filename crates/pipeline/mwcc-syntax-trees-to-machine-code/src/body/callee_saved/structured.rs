@@ -434,8 +434,13 @@ impl Generator {
         with_frame_array: bool,
         suppressed_constant_lane: bool,
     ) -> Compilation<bool> {
-        let folded_entry_accumulators = (self.behavior.optimization != mwcc_versions::Optimization::O0)
-            .then(|| super::structured_call_accumulator::fold_entry_zero_call_accumulators(function))
+        let runtime_conversions = self.expose_structured_runtime_conversions(function);
+        let function = runtime_conversions.as_ref().unwrap_or(function);
+        let folded_entry_accumulators = (self.behavior.optimization
+            != mwcc_versions::Optimization::O0)
+            .then(|| {
+                super::structured_call_accumulator::fold_entry_zero_call_accumulators(function)
+            })
             .flatten();
         let folded_entry_names: std::collections::HashSet<&str> = folded_entry_accumulators
             .iter()
@@ -4544,6 +4549,26 @@ impl Generator {
                 .register = *home;
         }
 
+        self.structured_loop_carried_names = function
+            .locals
+            .iter()
+            .map(|local| &local.name)
+            .chain(function.parameters.iter().map(|parameter| &parameter.name))
+            .filter(|name| {
+                super::structured_loop_carried_leaf::statements_carry_local(
+                    &function.statements,
+                    name,
+                    function
+                        .return_expression
+                        .as_ref()
+                        .is_some_and(|value| expression_reads_name(value, name)),
+                ) && super::structured_loop_carried_leaf::loop_assigns_transient_result(
+                    &function.statements,
+                    name,
+                )
+            })
+            .cloned()
+            .collect();
         let mut return_branches = Vec::new();
         let mut label_positions = std::collections::HashMap::new();
         let mut pending_gotos = Vec::new();
@@ -5712,6 +5737,7 @@ impl Generator {
                     // `guarded_true_cache` below owns the proven first-statement
                     // handoff. Preserve the enclosing scope while emitting the
                     // body with an otherwise empty condition cache.
+                    let incoming_constant_bases = self.const_address_bases.clone();
                     let enclosing_condition_cache =
                         std::mem::take(&mut self.condition_global_values);
                     self.commit_structured_float_handoff();
@@ -5783,6 +5809,11 @@ impl Generator {
                         diagnostic
                     });
                     self.restore_wide_pair_mask_cache(previous_wide_mask_cache);
+                    // A base first materialized in the true arm does not
+                    // dominate the false edge into the continuation.
+                    self.const_address_bases.retain(|high, register| {
+                        incoming_constant_bases.get(high) == Some(register)
+                    });
                     body_result?;
                     if grouped_equality {
                         self.fold_logical_equality_alternative_goto(
@@ -5942,6 +5973,7 @@ impl Generator {
                         .is_some_and(|expression| expression_reads_name(expression, name))
                         && remaining.iter().any(statement_has_call);
                     let terminal_volatile = matches!(declared_type, Type::Int | Type::UnsignedInt)
+                        && !self.structured_loop_carried_names.contains(name)
                         && value_read_before_redefinition(remaining, name)
                         && !read_after_possible_call(remaining, name, false).read_after_call
                         && !returned_after_later_call

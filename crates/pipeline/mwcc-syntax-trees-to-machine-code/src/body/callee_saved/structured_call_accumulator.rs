@@ -349,25 +349,44 @@ impl Generator {
         destination: u8,
     ) -> Compilation<bool> {
         let Expression::Binary {
-            operator: BinaryOperator::BitOr,
+            operator,
             left,
             right,
         } = value
         else {
             return Ok(false);
         };
-        if !matches!(left.as_ref(), Expression::Variable(read) if read == name)
-            || !matches!(right.as_ref(), Expression::Call { .. })
+        let mut call = right.as_ref();
+        while let Expression::Cast {
+            target_type: Type::Int | Type::UnsignedInt,
+            operand,
+        } = call
+        {
+            call = operand;
+        }
+        if !matches!(operator, BinaryOperator::BitOr | BinaryOperator::Add)
+            || !matches!(left.as_ref(), Expression::Variable(read) if read == name)
+            || !matches!(call, Expression::Call { .. })
         {
             return Ok(false);
         }
 
         self.evaluate(right, Type::Int, Eabi::general_result().number)?;
-        self.output.instructions.push(Instruction::Or {
-            a: destination,
-            s: destination,
-            b: Eabi::general_result().number,
-        });
+        self.output
+            .instructions
+            .push(if *operator == BinaryOperator::Add {
+                Instruction::Add {
+                    d: destination,
+                    a: destination,
+                    b: Eabi::general_result().number,
+                }
+            } else {
+                Instruction::Or {
+                    a: destination,
+                    s: destination,
+                    b: Eabi::general_result().number,
+                }
+            });
         Ok(true)
     }
 

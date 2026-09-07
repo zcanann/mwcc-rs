@@ -891,6 +891,7 @@ fn lower_function_body(
             .map(|(_, parameter)| parameter.clone())
             .collect(),
         structured_unoptimized_leaf_source_homes: false,
+        structured_loop_carried_names: std::collections::HashSet::new(),
         structured_branch_float_work_home: None,
         structured_constant_address_home: None,
         skipped_inline_names: skipped_inline_names.clone(),

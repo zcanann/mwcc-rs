@@ -10,7 +10,7 @@ use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Pointee, Type};
 use mwcc_target::Eabi;
 
-const FLOAT_TO_UNSIGNED: &str = "__cvt_fp2unsigned";
+pub(crate) const FLOAT_TO_UNSIGNED: &str = "__cvt_fp2unsigned";
 
 impl Generator {
     /// Whether evaluating `expression` can invoke the float-to-unsigned helper.

@@ -135,7 +135,45 @@ pub(super) fn transient_loop_member_home_preference(
     })
 }
 
-fn statements_carry_local(statements: &[Statement], name: &str, read_after: bool) -> bool {
+/// Copy/call assignments inside a loop cannot redirect its carried identity
+/// to a temporary home. Ordinary self-updates retain the entry alias and do
+/// not use the transient copy/call result fast path.
+pub(super) fn loop_assigns_transient_result(statements: &[Statement], name: &str) -> bool {
+    fn visit(statements: &[Statement], name: &str, in_loop: bool) -> bool {
+        statements.iter().any(|statement| match statement {
+            Statement::Assign {
+                name: assigned,
+                value,
+            } => {
+                in_loop
+                    && assigned == name
+                    && matches!(value, Expression::Variable(_) | Expression::Call { .. })
+            }
+            Statement::Loop { body, .. } => visit(body, name, true),
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => visit(then_body, name, in_loop) || visit(else_body, name, in_loop),
+            Statement::Switch { arms, default, .. } => arms
+                .iter()
+                .map(|arm| &arm.body)
+                .chain(default)
+                .any(|body| match body {
+                    ArmBody::Statements(body) => visit(body, name, in_loop),
+                    _ => false,
+                }),
+            _ => false,
+        })
+    }
+    visit(statements, name, false)
+}
+
+pub(super) fn statements_carry_local(
+    statements: &[Statement],
+    name: &str,
+    read_after: bool,
+) -> bool {
     for (index, statement) in statements.iter().enumerate() {
         let continuation_reads = read_after
             || statements[index + 1..]

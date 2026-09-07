@@ -615,7 +615,32 @@ impl Generator {
         } else {
             0
         };
-        let new_size = base_size.max(conversion_size).max(outgoing_size);
+        // Allocation can add saved GPRs after the conversion images were
+        // planned. Include their final shifted extent before placing the
+        // physical save range; anonymous scratch is not in frame_slots.
+        let conversion_scratch_shift = inline_aggregate_frame.as_ref().map_or_else(
+            || {
+                if self.frame_slots.is_empty() && entry_lane_bytes != 0 {
+                    entry_lane_bytes.saturating_add(16 * i16::from(guarded_inline_conversion))
+                } else {
+                    0
+                }
+            },
+            |plan| plan.prefix_bytes,
+        );
+        let planned_conversion_size = if has_planned_conversion_scratch {
+            planned_conversion_scratch_end
+                .saturating_add(conversion_scratch_shift)
+                .saturating_add(i16::try_from(physical_saved.len() * 4).unwrap_or(i16::MAX))
+                .saturating_add(7)
+                & !7
+        } else {
+            0
+        };
+        let new_size = base_size
+            .max(conversion_size)
+            .max(outgoing_size)
+            .max(planned_conversion_size);
         if std::env::var_os("MWCC_DIAGNOSTIC_FRAME")
             .is_some_and(|requested| requested == std::ffi::OsStr::new(&self.output.name))
             || std::env::var_os("MWCC_CAPTURE_FUNCTION")

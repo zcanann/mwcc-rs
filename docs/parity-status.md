@@ -4,13 +4,97 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, GXFrameBuf vertical scaling and retained integer loops (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, full GXFrameBuf and structured runtime conversions (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `8bd1178515c64ff9fe133cd7c0b0fe0efb59dfbfba748bb9cbafbb7cc37a4a47:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `c65a679aea6703440875549f437eae1f0d8b3c09f66cfe9d3d419ee34f9c93d0:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Full GXFrameBuf and structured runtime conversions, 2026-09-07
+
+The complete, unmodified BfBB `GXFrameBuf.c` now compiles with the project's
+GC/1.2.5n flags. All **14 functions pass 14,336 original-DOL comparisons**,
+1,024 cases per function, on both the candidate and a fresh reference object.
+This includes `GXGetYScaleFactor`, both copy commands, clear/filter setup, and
+bounding-box clearing. The configured GX survey advances from **5/14 to 6/14**
+translation units; the five earlier GX objects and full AXVPB are byte-identical.
+
+The implementation exposes explicit float/double-to-unsigned casts as runtime
+calls before structured liveness and frame planning. Operand classification
+uses declarations and expression types, including floating locals, arrays,
+dereferences, double members, and nested casts. Comparisons and logical results
+remain integers. The shared call path handles unsigned additions of conversion
+results. This normalization currently covers explicit casts, not every implicit
+conversion, and the existing specialized conversion planners remain available.
+
+Three control-flow/frame corrections complete the real unit:
+
+- Loop-carried copy/call results retain their register home across entry and
+  backedges. Ordinary self-updates retain their existing entry aliases.
+- A constant-address register first established in an `if` body is discarded
+  from the continuation's cache unless it also existed on the incoming edge.
+  This fixes copy commands taking their `clear == 0` path.
+- GPR save placement accounts for anonymous numeric-conversion scratch and its
+  final displacement. Planned FPR saves permit GPR frame growth before those
+  saves are emitted; already-emitted FPR saves still require their own owner.
+  This prevents later register allocation from overlapping conversion scratch
+  with saved GPRs.
+
+Canaries **1907–1914** contain 13 functions at O0/O4 across fifteen builds.
+The frozen `98d5d1d4` baseline compiles **60/120** pairs; the candidate and fresh
+references compile **120/120**. All **215,040 candidate calls** pass their value,
+ordered call/FIFO, input-memory, and ABI models. The baseline's **92,160** calls
+contain **38,160** failing cases: **26,880** conditional-port cases and **11,280**
+loop-home cases. Known broken baseline loops use a bounded instruction budget.
+**0/120 whole objects** and **15/390 function text plus symbolic relocation
+comparisons** match the reference exactly.
+
+The **215,040 reference calls** agree on return values and traces, but **1,536**
+fail ABI preservation. All occur in GC/1.1p1 O0: 512 each in `local_sum`,
+`member_sum`, and `until`. Disassembly confirms an incoming parameter spill
+at `8(r1)` overwrites the saved r30 slot, which the epilogue subsequently loads.
+These version-specific behaviors remain explicit reproduction gaps; passing
+the ordinary ABI model does not constitute bug-for-bug parity.
+
+Native comparisons use the original DOL `__cvt_fp2unsigned` and
+`__GetImageTileCount`, not replacement arithmetic implementations. They check
+return GPR/FPR bits where applicable, all 1,456 GX context bytes, ordered FIFO
+write widths/values, input buffers, GPR14–31, FPR14–31, SP, and LR. Scale-factor
+inputs use finite valid dimensions; vertical scales span 1 through 256. Clear,
+AA, and vertical-filter arguments use canonical booleans. Render-mode data
+objects are compiled but are outside the execution/linked-function claim.
+Cross-version probes additionally check the modeled paired-single second lanes
+with GQR0; this is not validation of unsupported quantized or paired arithmetic.
+
+Full GXFrameBuf is **7,312 ELF bytes / 4,048 text bytes**, SHA-256
+`1e4f7dec05630c32d8a1e585a093b82ae9965ecfa14dfe04e480c1ca29f4f1a1`.
+The fresh reference is **5,248 ELF bytes / 2,972 text bytes**, SHA-256
+`845d874e673adc76c1b02b7d7d48ee8015cc0424a5d33c5e3c2f608ca9138d2b`.
+`docs/reference-layouts/bfbb-gxframebuf.json` pins **0/14 candidate** and
+**14/14 reference** exact linked functions, with every relocation resolved.
+`GXGetYScaleFactor` is **684 versus 568 bytes**. Instruction parity, the remaining
+GX units, and full-project builds remain open.
+
+Regression controls retain **300/300** exact memory objects, **1,097** unchanged
+indexed objects with **972** known exact results and **577** identical declines.
+Cumulative metadata retains **1,494** compiled, **1,487** unchanged, **1,179** known
+exact, and **704** identical declines; the seven historical `1469` changes
+predate this checkpoint. All **1,290** recent objects compile; **1,260** are
+unchanged. The other 30 change only `outer` in canaries 1901/1902. Its **30,720**
+candidate and reference calls pass; all eight earlier exact functions in those
+objects remain exact. Including this rerun and native checks yields **260,096
+passing candidate calls**. Tests pass: **664** structured tests, including the
+three new conversion tests, and **3** allocation-frame tests. These focused
+controls are not a whole-corpus parity estimate.
+
+Artifacts: `target/runtime-call-canaries/{results,reference-results,
+reference-comparison,execution-results-0..5}.json`,
+`target/runtime-call-framebuf/{compilation-results,full-execution-results,
+verified-linked-text,reference-verified-linked-text}.json`, its fourteen
+original-DOL fixture files, and
+`target/runtime-call-{index,metadata,recent,gx-library,full-ax}/`.
 
 ## GXFrameBuf vertical scaling and retained integer loops, 2026-09-07
 

@@ -95,7 +95,9 @@ impl Generator {
             .values()
             .map(|slot| i32::from(slot.offset) + i32::try_from(slot.size).unwrap_or(i32::MAX))
             .max()
-            .unwrap_or(8);
+            .unwrap_or(8)
+            .max(i32::from(self.int_to_float_scratch_end))
+            .max(i32::from(self.float_to_int_scratch_end));
         let lowest_save =
             i32::from(self.frame_size) - 4 * i32::try_from(required.len()).unwrap_or(i32::MAX);
         let needs_growth = lowest_save < local_end
@@ -164,7 +166,17 @@ impl Generator {
         }
 
         if needs_growth {
-            if self.callee_saved_float != 0 {
+            // A requested FPR save count is only a plan here; allocation
+            // materializes those slots after GPR reconciliation. Existing
+            // emitted saves still need their own relocation-aware owner.
+            if self.callee_saved_float != 0
+                && self.output.instructions.iter().any(|instruction| {
+                    matches!(instruction,
+                    Instruction::StoreFloatDouble { s, a: 1, .. }
+                        | Instruction::PairedSingleQuantizedStore { s, a: 1, .. }
+                        if *s >= 14)
+                })
+            {
                 return Err(Diagnostic::error(
                     "allocated GPR frame growth requires a frame without existing FPR saves",
                 ));
