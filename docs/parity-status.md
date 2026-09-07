@@ -4,13 +4,63 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, array object alignment (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, C++ zero-static declaration events (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `d4daf8e25b284d81bf96993d0028e350a3e90275453be7cc42bdd9ad2a549dcf:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `9c6665f39ff8a092f27d73d74bed2e62293c5bc42b0ff9edc36c5789dbbc0425:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## C++ zero-static declaration events, 2026-09-06
+
+Against frozen baseline `8c929c5f`, three new canaries improve from **6/45
+to 35/45 whole-object exact pairs**, across all fifteen builds with no
+exclusions or reference rejections. Data-only canary 1624 improves from
+4/15 to 15/15; initializer references in 1625 improve from 0/15 to 10/15;
+string/declaration frontiers in 1626 improve from 2/15 to 10/15.
+
+C++ now selects the writer's existing source-declaration policy for local
+data symbols on every build. The old tentative-zero phase depended on the
+first function, omitting those symbols entirely in data-only objects and
+misordering them around explicit-zero definitions and function-owned pools.
+Removing that duplicate phase also lets initializer relocations resolve to
+the defined local symbols. Physical small-data layout, early static-function
+prototypes, and owned RTTI capture policies retain their separate controls.
+
+The C++ array matrix now contains **10,500/10,500 reference symbols with
+matching alignment records**, restoring all 770 previously missing symbols.
+This is symbol/alignment evidence, not a whole-object count. Four targeted
+source shapes improve from **8/60 to 40/60 exact objects**. Six additional
+function/string/float/declaration shapes improve from **18/90 to 78/90**;
+all 90 symbol-name sequences match. No previously exact probe regresses.
+The five older-build failures in canary 1625 still need full-BSS initializer
+section anchors. Canary 1626 retains existing code scheduling differences
+on GC/1.1, GC/1.2.5, and the three newest builds.
+
+All **35 object-writer tests pass**, including a data-only test that checks
+local binding, section identity, and initializer relocation resolution.
+The fixed metadata regression selection retains **908/1,750 exact runnable
+pairs**, with every verdict unchanged across **2,250 slots, 500 exclusions,
+and zero timeouts**. Compiler and oracle builds pass.
+
+A new local-project diagnostic selection takes the 65 smallest existing C++
+sources containing a tentative static declaration, after deduplicating by
+project/build/basename. Its paired object and code verdicts are unchanged:
+**0 BYTE, 6 DIFF, 45 compiler DEFER, and 14 HARNESS**. Eleven harness results
+hit the 30-second cap; three are other harness failures. Code is exact for
+**1/46 measured objects**, with 19 unmeasured; the 46 include 40 partial-TU
+projections, none exact. Metroid Prime's `IWeaponRenderer.cpp` retains its
+exact executable projection but differs in the complete object. This is a
+failure-biased diagnostic panel, not a representative parity estimate.
+
+The established transport panel retains **36/40 byte-identical objects**,
+four missing dependencies, and **34/34 exact nonempty code projections**
+plus two empty objects. Melee's complete transport object remains exact.
+
+Local evidence: `target/cxx-zero-*`, `target/check_cxx_zero*.py`,
+`target/probe_cxx_zero*.py`, `target/array-align-probes/cxx-alignments.json`,
+and `target/reference-parity/9c6665f39ff8a092-5e4ca1ddc460f4d8.jsonl`.
 
 ## Array object alignment, 2026-09-06
 

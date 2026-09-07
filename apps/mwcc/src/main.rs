@@ -2885,8 +2885,11 @@ fn compile(
         weak_vtable_function_symbol_tail: behavior.weak_vtable_function_symbol_tail,
         owned_rtti_closure_relocation_order: behavior.cxx_rtti_owned_closure_schedule,
         initialized_globals_before_deferred_functions: config.flags.inline_deferred,
-        local_data_symbols_in_declaration_order: behavior.local_data_symbol_order
-            == mwcc_versions::LocalDataSymbolOrder::DeclarationOrder,
+        // C++ creates tentative file statics at declaration on every build,
+        // even when the translation unit contains no function definitions.
+        local_data_symbols_in_declaration_order: is_cxx
+            || behavior.local_data_symbol_order
+                == mwcc_versions::LocalDataSymbolOrder::DeclarationOrder,
         small_zero_statics_in_declaration_order: behavior.small_zero_data_layout_style
             == mwcc_versions::SmallZeroDataLayoutStyle::LegacyStaticDeclarationOrderFirst,
         small_zero_data_in_declaration_order: is_cxx,

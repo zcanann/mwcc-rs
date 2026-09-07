@@ -3036,30 +3036,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             rodata_blob_symbols.push(symbols_of_blobs);
         }
         if index == 0 && input.object_format.small_zero_data_in_declaration_order {
-            for object in &input.data_objects {
-                if !object.is_static
-                    || !is_pending_zero_static(object)
-                    || emitted_zero_static.contains(object.name)
-                {
-                    continue;
-                }
-                emitted_zero_static.insert(object.name);
-                local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
-                let section = index_of(data_section[object.name]) as u16;
-                write_symbol(
-                    &mut symtab,
-                    strtab.add(object.name),
-                    data_offsets[object.name],
-                    data_sizes[object.name],
-                    STB_LOCAL_OBJECT,
-                    0,
-                    section,
-                );
-                comment_values.push((data_aligns[object.name], data_comment_flags(object)));
-            }
-            // This layout style is one declaration-order creation phase. A
-            // header prototype discovered before the source definitions still
-            // registers its static function only after that data phase closes.
+            // C++ file statics use the source declaration events above. An
+            // early static prototype still follows the first anonymous pool.
             if !input.object_format.early_static_functions_after_first_pool {
                 emit_early_static_function_symbols!();
             }

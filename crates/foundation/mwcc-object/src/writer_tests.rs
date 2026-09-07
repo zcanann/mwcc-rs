@@ -1990,6 +1990,41 @@ fn declaration_order_statics_keep_front_middle_and_tail_events() {
 }
 
 #[test]
+fn declaration_order_data_only_statics_keep_local_initializer_bindings() {
+    let mut input = static_frontier_input(0, false);
+    input.functions.clear();
+    input.object_format.small_zero_data_in_declaration_order = true;
+    input.data_objects[1].is_explicit_zero = true;
+    let mut pointer = static_frontier_input(0, false).data_objects.remove(0);
+    pointer.name = "pointer";
+    pointer.is_static = false;
+    pointer.initial_bytes = Some(vec![0; 4]);
+    pointer.relocations.push(crate::DataRelocation {
+        offset: 0,
+        target: "first".into(),
+        addend: 0,
+    });
+    input.data_objects.push(pointer);
+    let bytes = write_object(&input);
+    let names = symbol_names(&bytes);
+    let first = names.iter().position(|name| name == "first").unwrap();
+    assert_eq!(&names[first..], ["first", "second", "pointer"]);
+    let header = section_header(&bytes, section_index(&bytes, ".symtab"));
+    let offset = be_u32(&bytes, header + 16) as usize;
+    for index in [first, first + 1] {
+        let symbol = offset + index * SYMBOL_SIZE;
+        assert_eq!(bytes[symbol + 12], STB_LOCAL_OBJECT);
+        assert_eq!(
+            be_u16(&bytes, symbol + 14) as usize,
+            section_index(&bytes, ".sbss")
+        );
+    }
+    let header = section_header(&bytes, section_index(&bytes, ".rela.sdata"));
+    let offset = be_u32(&bytes, header + 16) as usize;
+    assert_eq!(be_u32(&bytes, offset + 4) >> 8, first as u32);
+}
+
+#[test]
 fn tentative_statics_follow_the_discovering_function_and_unused_tail() {
     for (order, full, expected) in [
         (
