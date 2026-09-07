@@ -4,13 +4,72 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete GXFifo translation unit (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, GC/1.1p1 O0 transaction and context spill bugs (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `8a375e9797de3cf5d1fe4bd4f2138f0726b9c330bc91ba6047678da1b3e5f0db:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `988e63526b1916066c5ebb58ed9b0ab82e7926c689ff1cde59ded705f9077b94:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GC/1.1p1 O0 transaction and context spill bugs, 2026-09-07
+
+The **1,365 candidate/reference execution differences** exposed by the GXFifo
+milestone below are now closed. The existing GC/1.1p1 O0 bug profile admits two
+more scalar transaction families and a guarded inline context image. Other
+builds and optimization levels retain their existing lowering.
+
+The transaction emitter deliberately spills the source parameter over saved
+r30 at SP+8. Its epilogue restores that overwritten value. Global snapshot and
+computed-store transactions use the existing prologue, call, global access,
+and epilogue machinery. Recognition checks parameter/local types and call
+signatures before admitting the fixed register schedule. The context case
+instead expresses the prior-pointer spill as the first word of the aggregate
+image before ordinary frame allocation. Calls that overwrite that image also
+overwrite the pointer subsequently passed to the restore service. Recognition
+uses the typed statement shape rather than source symbol names or a fixed
+aggregate size; the normalization is idempotent.
+
+Canaries **1966–1969** add integer and callback-pointer swaps, signed/unsigned
+computed stores with different arithmetic constants, and a **32-byte** context
+image alongside the existing **712-byte** image. Candidate and fresh reference
+compile **60/60 objects** across fifteen builds at O0/O4. **1/60 whole objects**
+and **4/180 function text plus symbolic relocation comparisons** are exact:
+all four transactions in GC/1.1p1 O0 canary 1967. Rechecking canaries 1956–1965
+retains **150/150** compilation and **45/150** whole-object matches, while exact
+functions increase **148/390 to 150/390**: `nested` and `protected_swap` now
+match their reference's complete 80-byte bodies and relocations.
+
+All **291,840 paired execution comparisons** agree: **199,680** from the prior
+cohort, **61,440** new transaction cases, and **30,720** small-context cases.
+Independent expected models include the measured reference bugs in **3,754**
+cases; these are behavior matches, not claims of C/ABI correctness. Checks cover
+helper arguments, memory/global effects, callback replacement between the
+condition and call, overwritten context images, return values, saved GPR/FPR
+images, and SP/LR/PC. The small-context callback writes within the smaller
+image. The two context `dispatch` bodies now have the same **124-byte** size as
+the reference but remain instruction-inexact: the ordinary allocator places
+the aliased image at SP+16 rather than the reference's SP+8. Exact frame layout
+and broader shared-spill scheduling remain open.
+
+Focused regression checks preserve **1,114/1,114** compiling indexed objects,
+including **972** known exact results. Of **2,025** recent source/build pairs,
+**1,936** retain identical objects and **89** retain their compilation failures;
+this panel includes the earlier shared-parameter-spill family. All **eleven**
+compiling full GX translation units and the full AX voice-parameter unit retain
+identical objects. Compiler-library tests pass **1,589**, excluding the known,
+previously baseline-confirmed embedded-assembly test; all **18** linked-checker
+tests pass. Final recompilation verifies all **210** execution-tested canary
+objects remain byte-identical after formatting and recognition guards.
+
+Measurement artifacts are under `target/spill-transactions-{prior-canaries,canaries}`
+(`reference-results.json`, `reference-comparison.json`, `execution-results.json`,
+and the new cohort's `context-execution-results.json`), with indexed/recent
+regressions under `target/spill-transactions-{index,recent}` and full units under
+`target/spill-transactions-{library,full-ax}`. The final object hash bridge is
+`target/spill-transactions-verified-objects.json`. These focused counts are not
+a corpus parity estimate. Full-project parity remains open; the GX compilation
+frontier remains **11/14**.
 
 ## Complete GXFifo translation unit and retained context frames, 2026-09-07
 
