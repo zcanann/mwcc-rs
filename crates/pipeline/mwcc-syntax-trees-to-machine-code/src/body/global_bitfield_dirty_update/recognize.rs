@@ -16,6 +16,7 @@ pub(super) struct GlobalBitfieldDirty<'a> {
     pub(super) dirty_offset: i16,
     pub(super) dirty_mask: u16,
     pub(super) update: FieldUpdate,
+    pub(super) source_adjustment: i16,
 }
 
 fn stripped(mut expression: &Expression) -> &Expression {
@@ -152,10 +153,31 @@ pub(super) fn recognize(function: &Function) -> Option<GlobalBitfieldDirty<'_>> 
             base, offset, member_type: Type::UnsignedInt, index_stride: None,
         } if offset == field_offset
             && matches!(base.as_ref(), Expression::Variable(name) if name == global))
-        || !matches!(inserted, Expression::Variable(name) if name == &parameter.name)
     {
         return None;
     }
+    // SDK counts insert a promoted byte after an affine adjustment (`n - 1`).
+    // Keep the adjustment separate from the field operation so narrowing casts
+    // and the legacy shifted-OR semantics cannot silently change its meaning.
+    let source_adjustment = if matches!(inserted, Expression::Variable(name) if name == &parameter.name) {
+        0
+    } else if matches!(update, FieldUpdate::RotateInsert { .. }) {
+        let Expression::Binary { operator, left, right } = inserted else {
+            return None;
+        };
+        if !matches!(word_value(left), Expression::Variable(name) if name == &parameter.name) {
+            return None;
+        }
+        let amount = constant_value(right)?;
+        let amount = match operator {
+            BinaryOperator::Add => amount,
+            BinaryOperator::Subtract => amount.checked_neg()?,
+            _ => return None,
+        };
+        i16::try_from(amount).ok()?
+    } else {
+        return None;
+    };
     let Statement::Store {
         target:
             Expression::Member {
@@ -199,5 +221,6 @@ pub(super) fn recognize(function: &Function) -> Option<GlobalBitfieldDirty<'_>> 
         dirty_offset: i16::try_from(*dirty_offset).ok()?,
         dirty_mask: u16::try_from(constant_value(dirty_mask)?).ok()?,
         update,
+        source_adjustment,
     })
 }

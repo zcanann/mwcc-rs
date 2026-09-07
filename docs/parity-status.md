@@ -4,13 +4,77 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete configured TEV compilation and execution (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, affine byte field updates and first TEV byte match (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `343d9c3250e34098e58237aa582828a082d57a305289ba5a333d225ea15e3f51:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `4f7c9c18d85cc66c158876b77cf4c46e2264450a25b7eff507672bf0314075fc:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Affine byte field updates and first TEV byte match, 2026-09-07
+
+The configured BfBB **`GXSetNumTevStages` now matches all 40 original linked
+instruction bytes**, improving complete `GXTev.c` from **0/16 to 1/16** byte
+matches. Its verified linked SHA-256 is
+`f6a26aef4fdc9ace727f3f7bfe54bcf2d6160e2ec7985fde7df9a67057926022`.
+The new `docs/reference-layouts/bfbb-gxtev.json` pins the original DOL, symbol
+map, and `__GXData` placement for the existing linked-text checker. Unknown
+relocations in other TEV functions prevent exact results; the layout does not
+claim those functions match.
+
+Frozen baseline `2a6a5a00` emits 56 bytes for this function. The shared
+`global_bitfield_dirty_update` recognizer now accepts a byte parameter plus or
+minus an immediate in an intrinsic field insertion. The emitter promotes the
+byte before applying the adjustment and uses the existing field-store and
+dirty-mask schedule. The signed 16-bit immediate bound, explicit narrow casts,
+volatile pointer exclusion, and distinction from the legacy C shifted-OR form
+remain explicit. No function name or GX field offset selects this extension.
+
+Only `GXSetNumTevStages` changes in the complete TEV object's function text and
+symbolic relocations; the other fifteen functions remain unchanged. The whole
+candidate is now 4,624 ELF bytes / 2,448 text bytes, SHA-256
+`ff6a1dd84ad3d60c8e328ae95f59ca2039bf5fbe79332931fc218d50c43659fc`.
+All sixteen functions again pass **16,384 original-DOL execution comparisons**.
+The GX compilation survey remains **3/14**. Full `GXBump.c` and `AXVPB.c`
+retain their previous whole-object hashes, including all eight exact linked
+GXBump functions.
+
+Canaries **1853–1860** cover the configured count update, constant and mutable
+global pointer bindings, positive/negative adjustments, signed immediate
+limits, wrapping insertion masks, overlapping field/dirty storage, explicit
+byte narrowing, an out-of-range immediate, volatile pointer accesses, and
+absolute global addressing at O4/O0. Baseline, candidate, and fresh reference
+compilers all compile **120/120** sample/version pairs. Whole-object matches
+advance **0/120 → 23/120**, and function text plus symbolic relocation matches
+advance **0/450 → 71/450**. Remaining mutable-pointer reload and version-specific
+promotion/scheduling differences are not claimed exact.
+
+Each of baseline, candidate, and reference passes **138,240 sample executions**
+over valid byte arguments, randomized prior field values, complete context
+comparison, volatile pointer read counts, callee-saved registers, and caller
+argument storage. The TEV-count samples use **30,720 original-DOL fixtures**;
+the remaining **107,520** calls use explicit rotate/insert and dirty-word models.
+Together with the configured full-unit comparison, new candidate validation is
+**154,624 calls**. Later MWCC versions omit the incoming byte mask in some
+arithmetic forms, so arbitrary high register bits are not part of this
+cross-version byte-argument execution claim.
+
+Cached regression panels retain **300/300** memory-operand object matches,
+**1,097** unchanged compiled indexed-panel objects (including **972** known
+reference matches), and **577** identical declines. The cumulative metadata
+panel is unchanged from the preceding checkpoint: **1,494** compile, **1,487**
+remain byte-identical to its older baseline, **1,179** known matches remain,
+and **704** declines remain identical. Its seven historical variable-shift
+changes are from the preceding milestone. Focused tests pass: **4** intrinsic,
+**40** object, and **6** linked-DOL checker tests. The full corpus was not rerun.
+
+Artifacts are `target/tev-count-canaries/{results,reference-results,
+execution-results,reference-comparison,baseline-reference-comparison}.json`,
+`target/tev-count-tev/{full-execution-results,verified-linked-text}.json`, and
+`target/tev-count-{gx-library,index,metadata}/results.json`. Drivers are
+`target/check_tev_count*.py`, `target/measure_tev_count*.py`, and
+`target/probe_tev_count*.py`.
 
 ## Complete configured TEV compilation and execution, 2026-09-07
 

@@ -29,14 +29,21 @@ impl Generator {
             }
             self.output.pre_scheduled = true;
             self.evaluate(&Expression::Variable(shape.global.into()), global_type, 4)?;
+            self.output.instructions.push(Instruction::RotateAndMask {
+                a: if shape.source_adjustment == 0 { 0 } else { 3 },
+                s: 3,
+                shift: 0,
+                begin: 24,
+                end: 31,
+            });
+            if shape.source_adjustment != 0 {
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 0,
+                    a: 3,
+                    immediate: shape.source_adjustment,
+                });
+            }
             self.output.instructions.extend([
-                Instruction::RotateAndMask {
-                    a: 0,
-                    s: 3,
-                    shift: 0,
-                    begin: 24,
-                    end: 31,
-                },
                 Instruction::LoadWord {
                     d: 3,
                     a: 4,
