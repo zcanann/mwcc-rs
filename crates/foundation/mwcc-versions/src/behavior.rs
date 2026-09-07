@@ -2913,12 +2913,31 @@ mod tests {
             Behavior::resolve(&CompilerConfig::new(build::GC_1_1P1)).byte_word_transfer_style,
             ByteWordTransferStyle::LegacyInterleaved,
         );
-        for compiler_build in [build::GC_1_3_2, build::GC_2_7, build::WII_1_0] {
+        for compiler_build in [
+            build::GC_1_3,
+            build::GC_1_3_2,
+            build::GC_1_3_2R,
+            build::GC_2_0,
+            build::GC_2_0P1,
+            build::GC_2_5,
+            build::GC_2_6,
+            build::GC_2_7,
+        ] {
             assert_eq!(
                 Behavior::resolve(&CompilerConfig::new(compiler_build)).byte_word_transfer_style,
-                ByteWordTransferStyle::Structured,
+                ByteWordTransferStyle::Mainline,
             );
         }
+        for compiler_build in [build::GC_3_0A3, build::GC_3_0A3P1] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build)).byte_word_transfer_style,
+                ByteWordTransferStyle::GuardedGameCube
+            );
+        }
+        assert_eq!(
+            Behavior::resolve(&CompilerConfig::new(build::WII_1_0)).byte_word_transfer_style,
+            ByteWordTransferStyle::GuardedWii
+        );
     }
 
     #[test]

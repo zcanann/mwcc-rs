@@ -256,6 +256,12 @@ pub enum ByteWordTransferStyle {
     Structured,
     LegacyDependencyFirst,
     LegacyInterleaved,
+    /// 2.4.x uses a shared accumulator packet and an inline scalar remainder.
+    Mainline,
+    /// 4.1 checks signed induction overflow before entering either packet.
+    GuardedGameCube,
+    /// 4.3 additionally reschedules unpack stores and aligns the polling loop.
+    GuardedWii,
 }
 
 /// Entry, allocation, and scheduling policy for specialized integer loops.
@@ -1798,13 +1804,21 @@ pub trait CodegenProfile: core::fmt::Debug {
 /// GC/2.0, 2.5, 2.6, and 2.7.
 #[derive(Debug)]
 pub struct Mainline;
-impl CodegenProfile for Mainline {}
+impl CodegenProfile for Mainline {
+    fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
+        ByteWordTransferStyle::Mainline
+    }
+}
 
 /// GC/2.5 through GC/2.7 share an aggregate-copy issue order that differs from build 92 while
 /// retaining every other mainline policy.
 #[derive(Debug)]
 pub struct MainlineEarlyAggregateLoads;
 impl CodegenProfile for MainlineEarlyAggregateLoads {
+    fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
+        ByteWordTransferStyle::Mainline
+    }
+
     fn nested_global_dispatch_schedule(&self) -> NestedGlobalDispatchSchedule {
         NestedGlobalDispatchSchedule::EarlyAggregateLoads
     }
@@ -1818,6 +1832,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
+        ByteWordTransferStyle::GuardedGameCube
+    }
+
     fn fixed_address_poll_address_style(&self) -> FixedAddressPollAddressStyle {
         FixedAddressPollAddressStyle::FoldedAlignedBankDisplacement { alignment: 4 }
     }
@@ -2048,6 +2066,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
+        ByteWordTransferStyle::GuardedWii
+    }
+
     fn fixed_address_poll_address_style(&self) -> FixedAddressPollAddressStyle {
         FixedAddressPollAddressStyle::FoldedAlignedBankDisplacement { alignment: 8 }
     }
@@ -2294,6 +2316,10 @@ impl CodegenProfile for Wii43Build145 {
 #[derive(Debug)]
 pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
+    fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
+        ByteWordTransferStyle::Mainline
+    }
+
     fn asm_implicit_return_has_zero_line(&self) -> bool {
         true
     }
@@ -2361,6 +2387,10 @@ impl CodegenProfile for Gc13Build53 {
 #[derive(Debug)]
 pub struct Gc132Build81;
 impl CodegenProfile for Gc132Build81 {
+    fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
+        ByteWordTransferStyle::Mainline
+    }
+
     fn retain_unused_cxx_inline_asm_symbols(&self) -> bool {
         true
     }
@@ -2858,6 +2888,10 @@ impl CodegenProfile for Gc233Build163 {
 #[derive(Debug)]
 pub struct Gc20Patch1;
 impl CodegenProfile for Gc20Patch1 {
+    fn byte_word_transfer_style(&self) -> ByteWordTransferStyle {
+        ByteWordTransferStyle::Mainline
+    }
+
     fn guarded_member_initialization_style(&self) -> GuardedMemberInitializationStyle {
         GuardedMemberInitializationStyle::ReloadFloatPerStore
     }

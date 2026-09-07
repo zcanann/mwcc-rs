@@ -5,28 +5,28 @@ use mwcc_machine_code::Instruction;
 pub(super) fn addi(d: u8, a: u8, immediate: i16) -> Instruction {
     Instruction::AddImmediate { d, a, immediate }
 }
-fn complement(d: u8, a: u8) -> Instruction {
+pub(super) fn complement(d: u8, a: u8) -> Instruction {
     Instruction::SubtractFromImmediate { d, a, immediate: 3 }
 }
-fn scale(a: u8, s: u8) -> Instruction {
+pub(super) fn scale(a: u8, s: u8) -> Instruction {
     Instruction::ShiftLeftImmediate { a, s, shift: 3 }
 }
-fn byte(d: u8, a: u8, offset: i16) -> Instruction {
+pub(super) fn byte(d: u8, a: u8, offset: i16) -> Instruction {
     Instruction::LoadByteZero { d, a, offset }
 }
-fn left(a: u8, s: u8, b: u8) -> Instruction {
+pub(super) fn left(a: u8, s: u8, b: u8) -> Instruction {
     Instruction::ShiftLeftWord { a, s, b }
 }
-fn right(a: u8, s: u8, b: u8) -> Instruction {
+pub(super) fn right(a: u8, s: u8, b: u8) -> Instruction {
     Instruction::ShiftRightWord { a, s, b }
 }
-fn merge(a: u8, b: u8) -> Instruction {
+pub(super) fn merge(a: u8, b: u8) -> Instruction {
     Instruction::Or { a, s: a, b }
 }
-fn negative(d: u8, a: u8) -> Instruction {
+pub(super) fn negative(d: u8, a: u8) -> Instruction {
     Instruction::Negate { d, a }
 }
-fn store(s: u8, offset: i16) -> Instruction {
+pub(super) fn store(s: u8, offset: i16) -> Instruction {
     Instruction::StoreByte { s, a: 3, offset }
 }
 

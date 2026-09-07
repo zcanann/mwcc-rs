@@ -8,6 +8,8 @@ use super::*;
 use mwcc_syntax_trees::SourceFundamentalType;
 use mwcc_versions::{ByteWordTransferStyle, Optimization, OptimizationGoal};
 mod legacy;
+mod mainline;
+mod mainline_packets;
 mod packets;
 mod recognize;
 #[cfg(test)]
@@ -65,7 +67,24 @@ impl Generator {
             return Ok(false);
         }
         let mixed_count_types = index_kind != count_kind;
-        self.emit_legacy_byte_word_transfer(&plan, mixed_count_types);
+        match self.behavior.byte_word_transfer_style {
+            ByteWordTransferStyle::LegacyDependencyFirst
+            | ByteWordTransferStyle::LegacyInterleaved => {
+                self.emit_legacy_byte_word_transfer(&plan, mixed_count_types);
+            }
+            ByteWordTransferStyle::Mainline
+            | ByteWordTransferStyle::GuardedGameCube
+            | ByteWordTransferStyle::GuardedWii => {
+                // Mainline keeps only the address high live through polling.
+                // Its direct control displacement must fit independently of data.
+                let (_, low) = crate::expressions::split_address(plan.address);
+                let Some(control_offset) = low.checked_add(plan.control_offset) else {
+                    return Ok(false);
+                };
+                self.emit_mainline_byte_word_transfer(&plan, mixed_count_types, control_offset);
+            }
+            ByteWordTransferStyle::Structured => unreachable!(),
+        }
         Ok(true)
     }
 }

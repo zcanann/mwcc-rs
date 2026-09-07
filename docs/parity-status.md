@@ -4,13 +4,61 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, legacy byte/word transfer unrolling (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, mainline byte/word transfer schedules (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `5d501c41df5b04213539c3e5ff72a089617a816c385e098d8578a69d3a1ff117:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `f8e511b1e6615226cc3e13fb80c009c7acfaeed3e224139a673fdf201281665f:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Mainline byte/word transfer schedules, 2026-09-06
+
+Against baseline `314490c7`, canaries **1599–1601 improve from 12/45 to 45/45
+whole-object exact pairs** across all 15 supported compiler builds. All pairs
+compile, with no build exclusions or reference rejections. New canary 1601
+combines inline saved-register frames (`-use_lmw_stmw on`) with 1600's three
+source int/long combinations, alternate bank, register indices, and control
+fields. These are focused transfer diagnostics, not corpus-wide parity rates.
+
+The existing semantic recognizer now feeds separate mainline topology and
+packet emitters. Eight 2.4.x builds share the packing/unpacking schedules,
+32-byte frames, and inline scalar remainders. GC/3.0a3 and GC/3.0a3p1 add
+signed-overflow eligibility checks and a revised unpack schedule; Wii/1.0
+reschedules four unpack stores. Mainline preserves the source int/long
+comparison distinction measured previously, while 4.x compares the bound
+against zero in CR1 regardless of those equal-width source identities.
+
+Normal flags use `_savegpr_26` / `_restgpr_26`; enabling multiple-register
+loads/stores selects leaf frames with inline saves. Function sizes are 672
+bytes on 2.4.x and 744 on 4.x with helper frames, or 648 / 720 with inline
+saves. Wii's inline form is 724 bytes because its polling loop needs a padding
+instruction. Alignment reuses the existing fixed-address polling profile
+policy and derives padding from instruction position. Mainline admission
+also checks that the folded control-register displacement fits a signed
+immediate; otherwise it retains structured lowering.
+
+**274,752 paired full Unicorn executions pass**: 38,880 for 1599, 116,640 each
+for 1600 and 1601, and 2,592 for Melee's actual transfer body. They check
+negative/zero counts, packet boundaries through 64 bytes, modes, data words,
+busy-wait durations, randomized register/buffer contents, device event order,
+return values, stack restoration, and saved registers. A further **2,205
+paired bounded prefixes** stop at the first buffer access and verify both
+its value and CTR. Counts around the unroll boundary and `INT_MAX` confirm
+that 4.x takes the scalar path at `INT_MAX`, while earlier builds unroll.
+This tests the huge-count branch without executing billions of iterations.
+
+The 182-canary regression selection retains identical verdicts: **910 slots,
+242 exclusions, 668 runnable pairs, 376 exact objects, and 183 existing
+candidate rejections**, with no reference rejections or timeouts. The fresh
+40-configuration project selection remains **35 whole-object exact, one
+DIFF, and four missing dependencies**; code is exact on **33/34 measured**
+configurations, with two empty and four unmeasured. Melee remains **14/21
+exact functions and 1520/3320 exact reference function bytes**. Seven admission
+tests, the profile-resolution test covering all 15 builds, and 117 inline
+tests pass; the independently confirmed preexisting embedded-asm composition
+failure remains excluded. Evidence is retained under `target/exi-modern-*`,
+`target/check_exi_modern*.py`, and `target/probe_exi_modern*.py`.
 
 ## Legacy byte/word transfer unrolling, 2026-09-06
 
