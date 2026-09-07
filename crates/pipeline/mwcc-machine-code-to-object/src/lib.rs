@@ -283,6 +283,7 @@ pub fn assemble_object(
             constant_pool_prefix_padding: function.constant_pool_prefix_padding,
             phantom_externals: function.phantom_externals.clone(),
             body_references_precede_symbol: function.body_references_precede_symbol,
+            body_value_references: function.body_value_references.clone(),
             // The unit's string resolver set these: the function's NEW-string count and the `@N`
             // names of those strings. The writer numbers/emits them at the front of the function's
             // `@N` block (interleaved per-function with its constants and unwind entries).

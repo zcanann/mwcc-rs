@@ -1,5 +1,5 @@
 // Masked global-array read combined with another global in both operand orders.
-// flags: -Cpp_exceptions off -pragma "cats off"
+// flags: -Cpp_exceptions off -pragma "cats off" -O0
 struct S{unsigned pad[8],index,value;}; extern unsigned global[128],other[128],extra;
 unsigned add0(unsigned index){return (global[index&3])+(extra);}
 unsigned sub0(unsigned index){return (global[index&3])-(extra);}

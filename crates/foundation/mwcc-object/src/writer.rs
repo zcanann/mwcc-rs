@@ -4403,8 +4403,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
                 emit_referenced!(source_ordered);
             } else if function.body_references_precede_symbol {
-                emit_referenced!(source_ordered);
+                // Address formation can discover a symbol before the function,
+                // while an interleaved scalar read is still a later body event.
+                // Partition symbol discovery only; relocation order is unchanged.
+                let (early, late): (Vec<_>, Vec<_>) = source_ordered
+                    .into_iter()
+                    .partition(|name| {
+                        input.object_format.function_symbol_order == FunctionSymbolOrder::ReferencesFirst
+                            || !function.body_value_references.iter().any(|value| value == name)
+                    });
+                emit_referenced!(early);
                 emit_function_symbol!(index);
+                emit_referenced!(late);
             } else if function.is_static {
                 // Prologue helpers are created before the body. With no GLOBAL
                 // function-symbol event to divide the body stream, explicit and

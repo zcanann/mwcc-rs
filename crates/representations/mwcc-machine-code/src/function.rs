@@ -223,6 +223,10 @@ pub struct MachineFunction {
     /// registering its own global function symbol. Most deferred bodies expose
     /// the opposite event order selected by the translation-unit profile.
     pub body_references_precede_symbol: bool,
+    /// Ordinary value references distinguished from early address discovery.
+    /// With `body_references_precede_symbol`, deferred profiles place these
+    /// after the function; references-first profiles retain the complete stream.
+    pub body_value_references: Vec<String>,
     /// Whether the function emits a floating-point conditional branch. mwcc's
     /// anonymous `@N` counter advances by three for such a branch.
     pub has_float_branch: bool,
@@ -380,6 +384,7 @@ impl MachineFunction {
             keep_named_const_scalars: Vec::new(),
             phantom_externals: Vec::new(),
             body_references_precede_symbol: false,
+            body_value_references: Vec::new(),
             has_float_branch: false,
             anonymous_label_bump: 0,
             fragmented_debug_anonymous_bump: 0,

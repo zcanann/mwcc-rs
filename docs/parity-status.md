@@ -4,13 +4,80 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, two computed pointer loads and array shadowing (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, masked global-array/scalar load pairs (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `a2fac7fe37e388a1a73915a18dc7e77d8187d98b4632666f396bf9d2c5a8fb7f:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `2d1f3680bce6e823cd095e535715abb27571024bf9de47dfc0f71bfbdb252fa4:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Masked global-array/scalar load pairs, 2026-09-07
+
+Against frozen baseline `db48e092`, the captured memory-operand matrix improves
+**180/300 → 210/300 whole-object exact**, with candidate compilation improving
+by the same amount and no lost matches. All **30/30 global-array/scalar pairs**
+match, covering six integer operations in both source orders, fifteen builds,
+and O0/O4. The remaining 90 configurations still decline: a constant subscript
+sharing the global-array base, two global-array subscripts, and a more complex
+computed pointer index. All 300 references remain available from the capture
+made before the reference runner stalled.
+
+`masked_global_address` now owns address construction separately from the
+final load. Ordinary subscripts use that same builder with their existing
+register and relocation rules. A global load pair can issue its scalar read
+after the high-half address instruction on the oldest builds, or after the
+complete indexed address on later builds. Reverse subtraction reserves r0 for
+the scalar, so the address builder keeps its offset and low-half value in
+separate registers. O0 retains complete primary-first operand evaluation.
+The new pair path covers integer full-size global arrays with SDA scalar
+operands; small-array pairs, absolute scalar addressing, and two global-array
+reads still need additional schedules.
+
+Instruction bytes matched first; O0 symbol registration required a separate
+fix. The oldest four and newest three builds register the array address before
+the function symbol, but create the scalar value reference afterward. Middle
+builds retain the full reference-discovery stream before the function. Explicit
+`body_value_references` metadata now distinguishes the scalar read from early
+address discovery. The object writer applies its existing function-order
+profile to those phases without changing relocation order. Its expanded phase
+test covers all four relevant profiles with and without a later value reference;
+all **40 object-writer tests pass**.
+
+Existing canary 1674 now covers the supported O4 body, and new 1679 covers O0.
+Their **30 compiled objects** match the captured reference bodies' executable
+bytes, symbols, and comment metadata apart from changed file-symbol names.
+New canaries 1680–1681 add mixed widths, member-derived indices, discontiguous
+masks, and volatile globals. All **30 candidate objects compile and execute
+correctly**; their fresh reference comparisons remain pending and are not
+counted as exact objects. Canary 1682 preserves the shared-global-base failure
+already represented by captured objects. Canary 1683 reduces Super Mario
+Strikers `src/Dolphin/ax/AXVPB.c` using the original two mixer-cycle tables and
+the cycle-increment right-hand side from `__AXSyncPBs`, with its u16 field
+extracted as a parameter. It currently reaches the additive-chain allocator
+diagnostic on GC/2.6. This is a project-derived frontier case, not a claim of
+full AX-file compilation or a freshly measured reference match.
+
+Unicorn validates **56,160 reference/candidate calls across 30 paired objects**
+with randomized values, all operand orders, overflow, and relocated scalar/
+array storage that can overlap. The mixed-width/member cases add **6,240
+candidate calls across 30 objects**, checking results and the number of memory
+reads. All **62,400 calls** pass. The shared address refactor preserves
+**1,341/1,470 exact masked-index objects**, including the Wind Waker getter
+reduction, all 1,470 candidate compilations, and **180/180 small-array matches**.
+No match is lost in either matrix.
+
+Direct frozen/candidate regression comparisons preserve all **1,096 compiled
+index objects**, including **972 previously reference-exact objects**, and all
+578 decline diagnostics (1,674 previously runnable pairs from 2,115 slots,
+441 prior exclusions). The metadata panel preserves all **1,494 compiled
+objects**, including **1,179 previously reference-exact objects**, and all 704
+decline diagnostics (2,198 previously runnable pairs from 2,940 slots, 742
+prior exclusions). Neither panel times out. The full real-project panel remains
+unmeasured at this fingerprint because fresh reference-runner processes are
+still stalled. Evidence is under `target/global-load-pair-*`; matrix artifacts
+use the `global-pair` label in `target/memory-operands-probes`,
+`target/masked-index-probes`, and `target/masked-small-probes`.
 
 ## Two computed pointer loads and array shadowing, 2026-09-07
 

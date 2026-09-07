@@ -156,6 +156,9 @@ impl Generator {
         left: &Expression,
         right: &Expression,
     ) -> Compilation<Option<(u8, u8)>> {
+        if let Some(registers) = self.place_masked_global_load_pair(operator, left, right)? {
+            return Ok(Some(registers));
+        }
         if let Some(registers) = self.place_two_masked_subscripts(operator, left, right)? {
             return Ok(Some(registers));
         }

@@ -314,6 +314,10 @@ pub struct FunctionObject<'a> {
     /// Complete this body's reference-discovery event stream before emitting
     /// its global function symbol, overriding a function-first unit profile.
     pub body_references_precede_symbol: bool,
+    /// Ordinary value references distinguished from early address discovery.
+    /// With `body_references_precede_symbol`, deferred profiles place these
+    /// after the function; references-first profiles retain the complete stream.
+    pub body_value_references: Vec<String>,
     /// `@N` numbers consumed after the constants, before the extab pair.
     pub post_constant_bump: u32,
     /// Function-specific override for the build-wide anonymous-counter gap

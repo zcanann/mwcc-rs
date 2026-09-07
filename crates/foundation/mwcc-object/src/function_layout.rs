@@ -164,6 +164,7 @@ mod tests {
             constant_pool_prefix_padding: 0,
             phantom_externals: Vec::new(),
             body_references_precede_symbol: false,
+            body_value_references: Vec::new(),
             post_constant_bump: 0,
             post_function_anonymous_bump: None,
             post_function_counter_rollback: 0,
