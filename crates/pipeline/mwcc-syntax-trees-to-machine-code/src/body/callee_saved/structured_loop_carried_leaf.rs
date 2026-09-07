@@ -193,8 +193,15 @@ pub(super) fn statements_carry_local(
                     || step
                         .as_ref()
                         .is_some_and(|step| expression_reads_name(step, name))
-                    || body.iter().any(|statement| statement_reads_name(statement, name));
-                if carried_read && statements_assign_name(body, name) {
+                    || body
+                        .iter()
+                        .any(|statement| statement_reads_name(statement, name));
+                if carried_read
+                    && (statements_assign_name(body, name)
+                        || step
+                            .as_ref()
+                            .is_some_and(|step| expression_assigns_name(step, name)))
+                {
                     return true;
                 }
                 if statements_carry_local(body, name, continuation_reads) {
@@ -236,17 +243,18 @@ pub(super) fn statements_carry_local(
 fn statements_assign_name(statements: &[Statement], name: &str) -> bool {
     statements.iter().any(|statement| match statement {
         Statement::Assign { name: assigned, .. } => assigned == name,
-        Statement::Expression(Expression::Assign { target, .. }) => {
-            matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name)
-        }
+        Statement::Expression(expression) => expression_assigns_name(expression, name),
         Statement::If {
             then_body,
             else_body,
             ..
-        } => {
-            statements_assign_name(then_body, name) || statements_assign_name(else_body, name)
+        } => statements_assign_name(then_body, name) || statements_assign_name(else_body, name),
+        Statement::Loop { body, step, .. } => {
+            statements_assign_name(body, name)
+                || step
+                    .as_ref()
+                    .is_some_and(|step| expression_assigns_name(step, name))
         }
-        Statement::Loop { body, .. } => statements_assign_name(body, name),
         Statement::Switch { arms, default, .. } => {
             arms.iter().any(|arm| match &arm.body {
                 ArmBody::Statements(body) => statements_assign_name(body, name),
@@ -258,6 +266,17 @@ fn statements_assign_name(statements: &[Statement], name: &str) -> bool {
         }
         _ => false,
     })
+}
+
+fn expression_assigns_name(expression: &Expression, name: &str) -> bool {
+    let mut assigned = false;
+    super::structured_expression_visit::visit_expression(expression, &mut |expression| {
+        if let Expression::Assign { target, .. } | Expression::PostStep { target, .. } = expression
+        {
+            assigned |= matches!(target.as_ref(), Expression::Variable(target) if target == name);
+        }
+    });
+    assigned
 }
 
 fn statement_reads_name(statement: &Statement, name: &str) -> bool {
@@ -390,6 +409,34 @@ mod tests {
             }],
         }]);
 
+        assert!(contains_loop_carried_local(&function));
+    }
+
+    #[test]
+    fn recognizes_a_for_step_but_not_an_entry_only_assignment() {
+        let assignment = Expression::Assign {
+            target: Box::new(Expression::Variable("cursor".into())),
+            value: Box::new(Expression::Binary {
+                operator: BinaryOperator::Add,
+                left: Box::new(Expression::Variable("cursor".into())),
+                right: Box::new(Expression::IntegerLiteral(4)),
+            }),
+        };
+        let mut function = function(vec![Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(assignment.clone()),
+            condition: Some(Expression::Variable("cursor".into())),
+            step: None,
+            body: Vec::new(),
+        }]);
+        assert!(!contains_loop_carried_local(&function));
+        let Statement::Loop { step, .. } = &mut function.statements[0] else {
+            unreachable!();
+        };
+        *step = Some(Expression::Comma {
+            left: Box::new(Expression::IntegerLiteral(0)),
+            right: Box::new(assignment),
+        });
         assert!(contains_loop_carried_local(&function));
     }
 

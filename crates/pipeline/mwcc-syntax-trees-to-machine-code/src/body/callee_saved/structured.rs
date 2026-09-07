@@ -276,7 +276,9 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        if !super::structured_loop_carried_leaf::contains_loop_carried_local(function) {
+        if function_makes_call(function)
+            || !super::structured_loop_carried_leaf::contains_loop_carried_local(function)
+        {
             return Ok(false);
         }
         let claimed = self.try_callee_saved_structured_body(function)?;

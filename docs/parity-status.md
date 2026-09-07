@@ -4,13 +4,94 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, full GXPerf and casted computed-pointer accesses (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, full GXGeometry and preserved loop/local values (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `a93e33c01a86a4b9c41c32cde138899666fcb7097d70dd873a83dc9dbe55374b:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `2569f065d1e62aa2da0847c9504112d236dfdf7d0e200e11a2c32bd6b75cebc6:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Full GXGeometry and preserved loop/local values, 2026-09-07
+
+The complete, unmodified BfBB `GXGeometry.c` compiles with its configured
+GC/1.2.5n flags. **GX compilation advances from 8/14 to 9/14** translation
+units. All ten functions pass **5,120 original-DOL execution comparisons** on
+the candidate and a fresh reference object. `__GXSetDirtyState` and
+`__GXSendFlushPrim` also match the linked original exactly, at 128 and 136 bytes.
+
+Loop-carried local analysis now includes binding writes in a for-loop's step,
+including postfix updates and assignments nested in comma expressions. The
+fallback remains restricted to leaf functions; existing specialized schedules
+retain first refusal. The fixed-port zero-fill matcher accepts the SDK macro's
+redundant unsigned-halfword conversion after proving the source type. This
+recovers the original flush schedule through its existing emitter.
+
+Two plain member operands can share a nonvolatile global pointer through the
+existing scoped cache. The cache ends with the expression, allowing subsequent
+stores to change the pointer. Computed integer stores into member arrays reuse
+the existing address-preservation path, keeping the target address live while
+the value uses scratch registers. Constants retain their prior owner. Local
+switch scrutinees and returned snapshots now use the shared leaf emitter when
+intervening stores prevent substitution. The store scheduling guard recognizes
+a final read of the immediately preceding store's target as a dependency.
+
+Canaries **1931–1938** contain fifteen functions at O0/O4 across fifteen builds.
+The frozen `667b2771` baseline compiles **0/120** complete objects; candidate
+and fresh references compile **120/120**. All **230,400 candidate calls** and
+corresponding reference calls pass the independent memory, FIFO, return, and
+ABI checks. Controls cover continued loops, postfix steps, pointer replacement,
+repeated indexed bitfield writes, reuse of an index after a store, constant
+stores, and output pointers aliasing a switch's source. Instruction parity is
+still open: **0/120 whole objects** and **0/450 function text plus symbolic
+relocation comparisons** are exact.
+
+The full GXGeometry panel checks all 1,456 context bytes, output memory,
+ordered hardware-write addresses/widths/values, GPR14–31, FPR14–31, SP, LR, and
+execution faults. Each function has 512 cases spanning dirty-state combinations,
+legal geometry arguments, zero/nonzero flush extents, and randomized surrounding
+state. Five external helpers (`__GXSetSUTexRegs`, `__GXUpdateBPMask`,
+`__GXSetVCD`, `__GXSetVAT`, and `__GXCalculateVLim`) are controlled identically
+on each side: they record calls, mutate dirty state, and clobber volatile
+registers. Internal calls execute the actual unit code. These comparisons
+validate the unit and its call behavior, not those five helpers' full bodies.
+
+Full GXGeometry is **2,776 ELF bytes / 1,064 text bytes**, SHA-256
+`86a7d5eff8afed8c481ecd5698c8f406de662d645522ab67d360c38d27897f7d`.
+The fresh reference is **2,352 ELF bytes / 896 text bytes**, SHA-256
+`c075c2bc3d769a5e372048928a03bc1d8487d1023683e93f2d48c1ee0a0ff3e5`.
+The pinned `docs/reference-layouts/bfbb-gxgeometry.json` reports **2/10 candidate**
+and **10/10 reference** exact linked functions, with no unresolved relocations.
+The remaining eight functions have instruction-scheduling/size gaps.
+
+Regression controls retain **300/300** exact memory objects. The indexed panel
+has **1,098** compiled, **1,096** unchanged, **972** retained exact results, and
+**576** identical declines. Newly compiling GC/1.2.5n canary **1275** passes
+**4,096 candidate/reference execution comparisons**, covering every unsigned-byte
+first argument, all eight indices, and varied full-byte second arguments without
+assuming booleans. Together these panels total **239,616 passing candidate calls**.
+The sole changed previously compiling indexed object, GC/1.2.5 canary **1313**,
+differs only in `.strtab`; every function's text and symbolic relocations remain
+identical. Cumulative metadata has **1,494** compiled, **1,486** unchanged,
+**1,179** retained exact results, and **704** identical declines; its other seven
+changes are historical `1469` results. All **1,561** compiling recent objects are
+unchanged, with **89** identical declines among **1,650** pairs. The prior eight
+GX objects and full AXVPB are byte-identical.
+
+**1,583 compiler library tests pass**, excluding the previously baseline-confirmed
+`inline_expansion::tests::composes_zero_argument_embedded_asm_at_a_nested_call_site`
+failure. Formatting preserves all 120 new candidate objects and full GXGeometry
+byte for byte. Full-project builds, five configured GX units, remaining
+instruction schedules, and further reference-bug reproduction remain open.
+
+Artifacts: `target/geometry-loop-canaries/{results,reference-results,
+reference-comparison,execution-results}.json`,
+`target/geometry-loop-full/{compilation-results,full-execution-results,
+candidate-verified-linked-text,reference-verified-linked-text}.json`, its ten
+DOL fixtures, `target/geometry-loop-index/{1275-execution-results,
+1313-baseline-comparison,1313-reference-comparison}.json`,
+`target/geometry-loop-{index,metadata,recent,gx-library,full-ax}/`, and
+`target/geometry-loop-{tests-final,execution-final,full-execution-final}.log`.
 
 ## Full GXPerf and casted computed-pointer accesses, 2026-09-07
 

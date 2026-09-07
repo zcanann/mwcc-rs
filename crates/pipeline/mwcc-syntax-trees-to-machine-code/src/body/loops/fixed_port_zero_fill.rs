@@ -178,6 +178,15 @@ impl Generator {
         let Some((extent_port, Type::UnsignedShort)) = fixed_port_target(extent_target) else {
             return Ok(false);
         };
+        // SDK port macros retain an explicit conversion even when their
+        // source already has the header's unsigned-halfword type.
+        let extent_value = match extent_value {
+            Expression::Cast {
+                target_type: Type::UnsignedShort,
+                operand,
+            } => operand.as_ref(),
+            value => value,
+        };
         let extent_matches = match width_name {
             Some(width) => matches!(extent_value, Expression::Variable(name) if name == width),
             None => matches!(extent_value, Expression::Member { base, offset, member_type: Type::UnsignedShort, index_stride: None }

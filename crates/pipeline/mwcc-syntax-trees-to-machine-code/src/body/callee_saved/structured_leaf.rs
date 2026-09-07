@@ -11,24 +11,27 @@ use super::structured_early_return_schedule::resolve_leaf_structured_returns;
 use super::structured::structured_hidden_label_count;
 
 impl Generator {
-    pub(crate) fn try_leaf_structured_body(
-        &mut self,
-        function: &Function,
-    ) -> Compilation<bool> {
-        self.try_leaf_value_body(function, false)
+    pub(crate) fn try_leaf_structured_body(&mut self, function: &Function) -> Compilation<bool> {
+        let local_switch = matches!(function.statements.as_slice(),
+            [Statement::Switch { scrutinee: Expression::Variable(name), .. }]
+                if function.locals.iter().any(|local| local.name == *name && local.initializer.is_some()));
+        self.try_leaf_value_body(function, local_switch)
     }
 
     /// Preserve local snapshots that copy propagation cannot substitute across
     /// stores. Reuse structured statement emission even when there is no branch.
-    pub(crate) fn try_straight_line_leaf_body(
-        &mut self,
-        function: &Function,
-    ) -> Compilation<bool> {
-        if function.return_type != Type::Void
-            || !function.guards.is_empty()
-            || !function.statements.iter().any(|statement| matches!(statement, Statement::Store { .. }))
-            || !function.statements.iter().all(|statement| matches!(statement,
-                Statement::Assign { .. } | Statement::Store { .. } | Statement::Expression(_)))
+    pub(crate) fn try_straight_line_leaf_body(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty()
+            || !function
+                .statements
+                .iter()
+                .any(|statement| matches!(statement, Statement::Store { .. }))
+            || !function.statements.iter().all(|statement| {
+                matches!(
+                    statement,
+                    Statement::Assign { .. } | Statement::Store { .. } | Statement::Expression(_)
+                )
+            })
         {
             return Ok(false);
         }

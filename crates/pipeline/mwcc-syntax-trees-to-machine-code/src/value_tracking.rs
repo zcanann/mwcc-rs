@@ -498,6 +498,13 @@ impl Generator {
             ));
         }
 
+        // A returned snapshot can remain live across stores just like a void
+        // body's local. Let the shared leaf emitter retain that value before
+        // the substitution-only path rejects the intervening memory effects.
+        if self.try_straight_line_leaf_body(function)? {
+            return Ok(true);
+        }
+
         // Build each local's current value, in order: a declaration initializes it,
         // a later assignment replaces it. Both substitute the values known so far.
         // Inlining duplicates a local's value at each use; that only matches mwcc

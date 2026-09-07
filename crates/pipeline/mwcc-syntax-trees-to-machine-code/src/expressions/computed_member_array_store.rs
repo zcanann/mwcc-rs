@@ -1,9 +1,8 @@
-//! Computed floating values stored into variable-indexed scalar member arrays.
+//! Computed values stored into variable-indexed scalar member arrays.
 //!
 //! The ordinary member-array owner keeps its scaled index in r0 while placing
-//! a simple source. A float-to-integer conversion also returns through r0, so
-//! this family first completes the indexed address in its own live range and
-//! only then evaluates the value.
+//! a simple source. Computed values can also use r0, so this family completes
+//! the indexed address in its own live range before evaluating the value.
 
 #[allow(unused_imports)]
 use super::*;
@@ -35,7 +34,15 @@ fn classify<'a>(
     };
     (matches!(index.as_ref(), Expression::Variable(_))
         && !matches!(element, Pointee::Float | Pointee::Double)
-        && generator.is_float_value(value)
+        && (generator.is_float_value(value)
+            || (constant_value(value).is_none()
+                && matches!(
+                    value,
+                    Expression::Binary { .. }
+                        | Expression::Unary { .. }
+                        | Expression::Cast { .. }
+                        | Expression::Member { .. }
+                )))
         && !crate::analysis::expression_has_side_effect(value))
     .then_some(ComputedMemberArrayStore {
         aggregate,

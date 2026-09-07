@@ -670,11 +670,9 @@ impl Generator {
                         }
                     }
                 }
-                // `gp->x OP gp->y` — a GLOBAL POINTER dereferenced on BOTH sides (any op, any members):
-                // the pointer is a LOAD, and our per-operand access reloads it each time (`lwz r3,gp;
-                // lwz r3,0(r3); lwz r0,gp; lwz r0,4(r0)`), while mwcc loads the pointer ONCE and reads
-                // both members from it (`lwz r4,gp; lwz r3,0(r4); lwz r0,4(r4)`). Defer — a register-
-                // resident pointer parameter, or two DIFFERENT global pointers, load correctly.
+                // A binary pair of member reads can retain one global pointer
+                // value in a scoped cache. Other repeated global dereferences
+                // still require their corresponding shared-address schedule.
                 {
                     fn deref_base(operand: &Expression) -> Option<&str> {
                         let base = match operand {
@@ -693,7 +691,29 @@ impl Generator {
                         if left_base == right_base && self.globals.contains_key(left_base)
                             && self.global_array_address_extent(left_base).is_none()
                         {
-                            return Err(Diagnostic::error("a global pointer dereferenced on both sides needs load-once reuse (roadmap)"));
+                            // Two plain member reads share the same scoped
+                            // pointer value as a compound condition. Keep this
+                            // cache inside the expression, so a later store or
+                            // call can change the global pointer normally.
+                            if as_member(left).is_some()
+                                && as_member(right).is_some()
+                                && !self.volatile_globals.contains(left_base)
+                                && !self.global_arrays.contains(left_base)
+                                && matches!(
+                                    self.globals.get(left_base),
+                                    Some(Type::Pointer(_) | Type::StructPointer { .. })
+                                )
+                                && !self.locations.contains_key(left_base)
+                            {
+                                if !self.condition_global_values.contains_key(left_base) {
+                                    let previous = self.begin_condition_global_cache(expression);
+                                    let result = self.evaluate_general(expression, destination);
+                                    self.restore_condition_global_cache(previous);
+                                    return result;
+                                }
+                            } else {
+                                return Err(Diagnostic::error("a global pointer dereferenced on both sides needs load-once reuse (roadmap)"));
+                            }
                         }
                     }
                 }

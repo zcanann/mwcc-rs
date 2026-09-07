@@ -1,9 +1,10 @@
-//! Scoped reuse of pointer globals within side-effect-free branch conditions.
+//! Scoped reuse of pointer globals within side-effect-free expressions.
 //!
 //! Legacy MWCC retains a nonvolatile global pointer while a short-circuit
-//! condition reads several of its members. The cache is deliberately owned by
-//! the condition emitter: it never survives into a guarded body or across a
-//! call, keeping this a local value-numbering rule rather than global CSE.
+//! condition or arithmetic expression reads several of its members. The owning
+//! emitter restores the cache when that expression or guard chain ends; cached
+//! values never survive into a guarded body or across a call. This keeps reuse
+//! local rather than introducing global CSE.
 
 use crate::generator::Generator;
 use mwcc_core::Compilation;

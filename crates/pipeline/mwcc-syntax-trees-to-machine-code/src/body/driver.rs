@@ -3178,6 +3178,11 @@ impl Generator {
         if self.try_fixed_port_replay_update(function)? {
             return Ok(());
         }
+        // An SDK flush primitive writes a header to a fixed port, emits a modulo-scheduled
+        // eight-word zero-fill loop, then marks the owning global structure flushed.
+        if self.try_fixed_port_zero_fill(function)? {
+            return Ok(());
+        }
         // Residual frameless leaf loops can still require a persistent local
         // home across iterations. Specialized loop schedules above retain
         // first refusal; this gate admits only genuine loop-carried locals to
@@ -3249,11 +3254,6 @@ impl Generator {
         if self.try_cached_member_guard(function)? {
             return Ok(());
         }
-        // An SDK flush primitive writes a header to a fixed port, emits a modulo-scheduled
-        // eight-word zero-fill loop, then marks the owning global structure flushed.
-        if self.try_fixed_port_zero_fill(function)? {
-            return Ok(());
-        }
         if self.try_constructor_constant_store_fill(function)? {
             return Ok(());
         }
@@ -3282,6 +3282,13 @@ impl Generator {
         // recompiles, so `int m = n + 1; switch(m)` lowers like the direct `switch(n + 1)`.
         if let Some(inlined) = inline_switch_scrutinee_locals(function) {
             return self.evaluate_body(&inlined);
+        }
+        // A retained local scrutinee needs a home before its switch arms.
+        if !function.locals.is_empty()
+            && matches!(function.statements.as_slice(), [Statement::Switch { .. }])
+            && self.try_leaf_structured_body(function)?
+        {
+            return Ok(());
         }
         // A leaf void body that is purely constant stores of one repeated value
         // (struct/array zeroing) materializes the value once and reuses it.
@@ -3507,7 +3514,21 @@ impl Generator {
             if let Some(Statement::Store { value, .. }) = function.statements.last() {
                 let last_is_computed =
                     constant_value(value).is_none() && !matches!(value, Expression::Variable(_));
-                if last_is_computed {
+                let dependent_on_previous =
+                    match &function.statements[function.statements.len() - 2] {
+                        Statement::Store { target, .. } => {
+                            let mut dependent = false;
+                            super::callee_saved::structured_expression_visit::visit_expression(
+                                value,
+                                &mut |read| {
+                                    dependent |= structurally_equal(read, target);
+                                },
+                            );
+                            dependent
+                        }
+                        _ => false,
+                    };
+                if last_is_computed && !dependent_on_previous {
                     return Err(Diagnostic::error("a run of pointer stores whose last value mwcc latency-hoists needs the scheduler (roadmap)"));
                 }
             }
