@@ -4,13 +4,107 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, exact GX indirect packet setup (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, all eight GX functions have exact linked text (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `5e3fe70233cf31fddd9c5f66581d0d0c1f67f00055e9cd0a3ace01c27f10a70c:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
+Latest measured compiler + harness fingerprint: `d4164c7f7ca869b17e8f93b2cc3e4f727d01c3663bdd192fe06b6f340ce2d014:583ff25e49414f8ffcba7b499e9f8dcc45c498ed5bea2a84fd7573cc9c1ce22e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## All eight GX functions have exact linked text, 2026-09-07
+
+The configured BfBB **`GXSetIndTexMtx` now matches all 376 original linked
+instruction bytes**, improving from 432 bytes under frozen baseline `ec1b8362`.
+Its original/candidate linked-code SHA-256 is
+`75aa00f582e6d1eaa4b9dbaac91d3b437d530d464b53e959d51d1f058698e174`.
+**All eight functions in the complete configured `GXBump.c` object now have
+exact linked text**, including the four-byte empty update function. This
+compares code at original DOL link addresses, not relocatable object metadata,
+debug information, or complete project output. Cross-version reference parity
+and complete project builds remain open.
+
+The complete configured GX object SHA-256 is
+`411f42222cf4814ac1272149fd7319eb67afdfb5413e0d29a42b38e9cfc505e0`.
+Text shrinks **1,248 → 1,192 bytes**; the ELF shrinks **2,792 → 2,376 bytes**.
+The matrix dispatch no longer emits a jump table. The other seven function
+sizes are unchanged.
+
+The matrix owner now recognizes `__rlwimi` using the shared intrinsic decoder
+and reuses its existing range-switch dispatch for both operation kinds.
+The intrinsic schedule pairs float loads, multiplies, conversions, and spills;
+it preserves r31/r30/r29 in a 112-byte frame and interleaves packet fields
+with FIFO writes. Its port, command, and state-flag offset come from the
+recognized source. The existing linkage-first profile and a matching
+absolute-object declaration select this schedule. Shared body normalization
+handles macro wrappers; an assertion no-op is optional. All twelve fields
+must have one operation kind, and the measured matrix layout, factor, masks,
+selector ranges, and argument types must match.
+
+The recognizer now preserves narrowing casts, requires the actual signed-word
+float conversion, and excludes volatile state-pointer globals. These cases
+use general emission. Thirty older matrix objects (1779/1780) remain
+byte-identical, and all thirty `legacy` C functions in the new corpus retain
+their prior instruction bytes and relocation tuples.
+
+Eight new canaries **1821–1828** compile **120/120 objects** on both baseline
+and candidate across fifteen builds at O0/O4. They cover the full intrinsic
+reduction, wrapped/flat layouts, a different port/command/flag offset, C masks,
+narrowed field inputs, narrowed converted values and packet outputs, mixed
+operations, volatile pointers, and explicit pointer-cast ports.
+
+Validation totals **115,712 passing candidate calls**:
+
+- **107,520** calls in the new corpus, including **30,720** complete matrix
+  reductions compared with original DOL fixtures. Other variants use an
+  independent float-conversion/packet model. Inputs cover every signed-byte
+  exponent with garbage upper ABI bits, all selector arms and invalid ranges,
+  random floats, signed zero, subnormals, and finite conversion boundaries.
+  Checks include FIFO address/width/value, context and caller-stack sentinels,
+  matrix-input preservation, and stack/SDA/saved GPR/FPR restoration. Volatile
+  cases require one pointer read after all six FIFO writes.
+  The baseline has **1,071 narrowed-source, 1,071 narrowed-conversion,
+  2,048 narrowed-output, and 2,048 volatile-order failures**; the candidate
+  has none.
+- **8,192** calls rerun all eight complete configured GX functions against the
+  original DOL, comparing full context memory, FIFO traces, matrix-input
+  preservation, and GPR/FPR/stack restoration.
+
+A reusable checker, `tools/compare_linked_dol.py`, now verifies the linked-text
+claim from `docs/reference-layouts/bfbb-gxbump.json`. It pins the original DOL
+and symbol-map hashes, validates named data placements against the map and
+literal bytes against the DOL, resolves configured SDA/relative-call
+relocations, and treats unknown or ambiguous placements as mismatches.
+The matrix's 1024.0f constant is verified at original address `0x803cfd18`.
+The checker reports **7/8 for the frozen baseline and 8/8 for the candidate**.
+To reproduce with a configured GX candidate object:
+
+```sh
+python3 tools/compare_linked_dol.py \
+  --object target/gx-matrix-gx/full-candidate.o \
+  --dol ../Metrowerks/reference_projects/battle_for_bikini_bottom/orig/GQPE78/sys/main.dol \
+  --symbols ../Metrowerks/reference_projects/battle_for_bikini_bottom/config/GQPE78/symbols.txt \
+  --layout docs/reference-layouts/bfbb-gxbump.json \
+  --output target/gx-matrix-gx/verified-linked-text.json
+```
+
+Only configured GC/1.2.5n supplies original linked-byte evidence; the other
+builds have candidate execution coverage. The cached paired-memory matrix
+retains **300/300 exact objects**. The index panel retains **1,097 unchanged
+objects / 972 known reference matches / 577 identical declines**. The cumulative
+metadata panel against `db48e092` retains **1,494 unchanged objects / 1,179 known
+matches / 704 identical declines**. Neither native panel timed out.
+**5 loop-normalization, 31 frame-convention, 40 object-writer, and 10 DOL
+extraction/comparison tests pass**. The complete configured AX object remains
+byte-identical, SHA-256
+`1a8fed48a1634517cd66e23f09754e75274d170ca826e61408ff96650605e7e3`.
+
+Local execution/probe scripts are `target/check_gx_matrix*.py` and
+`target/probe_gx_matrix*.py`; results, pinned originals, and object hashes are
+in `target/gx-matrix-{canaries,gx,index,metadata,legacy,full-ax}/`.
+The six existing wibo processes remain in kernel U state after more than
+6 hours 31 minutes. No new reference-compiler process was launched and no fresh
+full-project panel was measured.
 
 ## Exact GX indirect packet setup, 2026-09-07
 

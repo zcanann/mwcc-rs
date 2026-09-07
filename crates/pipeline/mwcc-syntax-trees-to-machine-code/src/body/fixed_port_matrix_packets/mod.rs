@@ -1,10 +1,17 @@
 //! Three fixed-port matrix packets fed by scaled float pairs.
 
 mod emit;
+mod intrinsic;
 
 #[allow(unused_imports)]
 use super::*;
 use mwcc_syntax_trees::ArmBody;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum FieldOperation {
+    ShiftOr,
+    RotateInsert,
+}
 
 pub(super) struct MatrixPacket<'a> {
     pub(super) matrix_id: &'a str,
@@ -15,10 +22,17 @@ pub(super) struct MatrixPacket<'a> {
     pub(super) packet_id: &'a str,
     pub(super) global: &'a str,
     pub(super) flag_offset: i16,
+    pub(super) operation: FieldOperation,
+    pub(super) port: u32,
+    pub(super) command: i16,
 }
 
-fn stripped(mut expression: &Expression) -> &Expression {
-    while let Expression::Cast { operand, .. } = expression {
+fn word_value(mut expression: &Expression) -> &Expression {
+    while let Expression::Cast {
+        target_type: Type::Int | Type::UnsignedInt,
+        operand,
+    } = expression
+    {
         expression = operand;
     }
     expression
@@ -31,11 +45,7 @@ fn no_op(statement: &Statement) -> bool {
     }) if constant_value(operand) == Some(0))
 }
 
-fn switch_assigns_ranges(
-    statement: &Statement,
-    matrix_id: &str,
-    packet_id: &str,
-) -> bool {
+fn switch_assigns_ranges(statement: &Statement, matrix_id: &str, packet_id: &str) -> bool {
     let Statement::Switch {
         scrutinee: Expression::Variable(scrutinee),
         arms,
@@ -45,8 +55,7 @@ fn switch_assigns_ranges(
         return false;
     };
     if scrutinee != matrix_id
-        || arms.iter().map(|arm| arm.value).collect::<Vec<_>>()
-            != [1, 2, 3, 5, 6, 7, 9, 10, 11]
+        || arms.iter().map(|arm| arm.value).collect::<Vec<_>>() != [1, 2, 3, 5, 6, 7, 9, 10, 11]
         || arms
             .iter()
             .enumerate()
@@ -83,7 +92,10 @@ fn matrix_store(
     source_offset: u32,
 ) -> bool {
     let Statement::Store {
-        target: Expression::Index { base, index: target_index },
+        target: Expression::Index {
+            base,
+            index: target_index,
+        },
         value:
             Expression::Binary {
                 operator: BinaryOperator::BitAnd,
@@ -100,11 +112,18 @@ fn matrix_store(
     {
         return false;
     }
+    let Expression::Cast {
+        target_type: Type::Int,
+        operand: converted,
+    } = left.as_ref()
+    else {
+        return false;
+    };
     let Expression::Binary {
         operator: BinaryOperator::Multiply,
         left: factor,
         right: sample,
-    } = stripped(left)
+    } = converted.as_ref()
     else {
         return false;
     };
@@ -133,28 +152,34 @@ fn field_insert<'a>(
     word: &str,
     preserve: u32,
     shift: i64,
-) -> Option<&'a Expression> {
-    let Statement::Loop {
-        kind: LoopKind::DoWhile,
-        condition: Some(condition),
-        body,
-        ..
-    } = statement
-    else {
+) -> Option<(&'a Expression, FieldOperation)> {
+    let Statement::Assign { name, value } = statement else {
         return None;
     };
-    if constant_value(condition) != Some(0) {
+    if name != word {
         return None;
     }
-    let [Statement::Assign {
-        name,
-        value:
-            Expression::Binary {
-                operator: BinaryOperator::BitOr,
-                left,
-                right,
-            },
-    }] = body.as_slice()
+    if let Expression::Call { name, arguments } = word_value(value) {
+        if crate::intrinsics::classify(name, arguments.len())
+            != Some(crate::intrinsics::Intrinsic::RotateLeftWordInsert)
+        {
+            return None;
+        }
+        let insert = crate::intrinsics::rotate_insert(arguments)?;
+        if insert.shift != shift as u8
+            || insert.begin > insert.end
+            || run_mask(insert.begin, insert.end) != !preserve
+            || !matches!(word_value(insert.initial), Expression::Variable(name) if name == word)
+        {
+            return None;
+        }
+        return Some((word_value(insert.source), FieldOperation::RotateInsert));
+    }
+    let Expression::Binary {
+        operator: BinaryOperator::BitOr,
+        left,
+        right,
+    } = value
     else {
         return None;
     };
@@ -175,10 +200,10 @@ fn field_insert<'a>(
         return None;
     };
     (name == word
-        && matches!(stripped(old), Expression::Variable(name) if name == word)
+        && matches!(word_value(old), Expression::Variable(name) if name == word)
         && constant_value(mask).map(|value| value as u32) == Some(preserve)
         && constant_value(found_shift) == Some(shift))
-    .then_some(stripped(inserted))
+    .then_some((word_value(inserted), FieldOperation::ShiftOr))
 }
 
 fn indexed(expression: &Expression, values: &str, index: i64) -> bool {
@@ -225,35 +250,50 @@ fn packet_number(expression: &Expression, packet_id: &str, addend: i64) -> bool 
             && constant_value(factor) == Some(3)))
 }
 
-fn port_write(statement: &Statement, word: &str) -> bool {
-    let Statement::Loop {
-        kind: LoopKind::DoWhile,
-        condition: Some(condition),
-        body,
-        ..
-    } = statement
-    else {
-        return false;
-    };
-    if constant_value(condition) != Some(0) {
-        return false;
-    }
-    let [Statement::Store { target: command_target, value: command },
-        Statement::Store { target: data_target, value: data }] = body.as_slice()
-    else {
-        return false;
-    };
+fn port_write(command: &Statement, data: &Statement, word: &str) -> Option<(u32, i16)> {
     let port_target = |target: &Expression, member_type| {
-        matches!(target, Expression::Member {
-            base, offset: 0, member_type: found, index_stride: None
-        } if *found == member_type
-            && matches!(stripped(base), Expression::IntegerLiteral(value)
-                if *value as u32 == 0xcc00_8000))
+        let Expression::Member {
+            base,
+            offset: 0,
+            member_type: found,
+            index_stride: None,
+        } = target
+        else {
+            return None;
+        };
+        if *found != member_type {
+            return None;
+        }
+        let Expression::Cast {
+            target_type: Type::Pointer(_) | Type::StructPointer { .. },
+            operand,
+        } = base.as_ref()
+        else {
+            return None;
+        };
+        Some(constant_value(operand)? as u32)
     };
-    port_target(command_target, Type::UnsignedChar)
-        && constant_value(command) == Some(0x61)
-        && port_target(data_target, Type::UnsignedInt)
-        && matches!(stripped(data), Expression::Variable(name) if name == word)
+    let Statement::Store {
+        target: command_target,
+        value: command,
+    } = command
+    else {
+        return None;
+    };
+    let Statement::Store {
+        target: data_target,
+        value: data,
+    } = data
+    else {
+        return None;
+    };
+    let port = port_target(command_target, Type::UnsignedChar)?;
+    if port_target(data_target, Type::UnsignedInt)? != port
+        || !matches!(word_value(data), Expression::Variable(name) if name == word)
+    {
+        return None;
+    }
+    Some((port, i16::try_from(constant_value(command)?).ok()?))
 }
 
 pub(super) fn recognize(function: &Function) -> Option<MatrixPacket<'_>> {
@@ -279,22 +319,23 @@ pub(super) fn recognize(function: &Function) -> Option<MatrixPacket<'_>> {
         || values.array_length != Some(6)
         || word.declared_type != Type::UnsignedInt
         || packet_id.declared_type != Type::UnsignedInt
-        || function.locals.iter().any(|local| {
-            local.initializer.is_some() || local.is_static || local.is_volatile
-        })
+        || function
+            .locals
+            .iter()
+            .any(|local| local.initializer.is_some() || local.is_static || local.is_volatile)
     {
         return None;
     }
-    let [noop, select,
-        a0, a1, scale_add, zero0, f00, f01, f02, f03, port0,
-        a2, a3, zero1, f10, f11, f12, f13, port1,
-        a4, a5, zero2, f20, f21, f22, f23, port2, flag] =
-        function.statements.as_slice()
+    let statements = match function.statements.as_slice() {
+        [noop, rest @ ..] if no_op(noop) => rest,
+        statements => statements,
+    };
+    let [select, a0, a1, scale_add, zero0, f00, f01, f02, f03, command0, data0, a2, a3, zero1, f10, f11, f12, f13, command1, data1, a4, a5, zero2, f20, f21, f22, f23, command2, data2, flag] =
+        statements
     else {
         return None;
     };
-    if !no_op(noop)
-        || !switch_assigns_ranges(select, &matrix_id.name, &packet_id.name)
+    if !switch_assigns_ranges(select, &matrix_id.name, &packet_id.name)
         || !scale_update(scale_add, &scale.name)
         || !zero_word(zero0, &word.name)
         || !zero_word(zero1, &word.name)
@@ -305,24 +346,38 @@ pub(super) fn recognize(function: &Function) -> Option<MatrixPacket<'_>> {
         || !matrix_store(a3, &values.name, 3, &source.name, 16)
         || !matrix_store(a4, &values.name, 4, &source.name, 8)
         || !matrix_store(a5, &values.name, 5, &source.name, 20)
-        || !port_write(port0, &word.name)
-        || !port_write(port1, &word.name)
-        || !port_write(port2, &word.name)
     {
         return None;
     }
-    for (packet, fields) in [[f00, f01, f02, f03], [f10, f11, f12, f13], [f20, f21, f22, f23]]
-        .into_iter()
-        .enumerate()
+    let (port, command) = port_write(command0, data0, &word.name)?;
+    if port_write(command1, data1, &word.name)? != (port, command)
+        || port_write(command2, data2, &word.name)? != (port, command)
+    {
+        return None;
+    }
+    let mut operation = None;
+    for (packet, fields) in [
+        [f00, f01, f02, f03],
+        [f10, f11, f12, f13],
+        [f20, f21, f22, f23],
+    ]
+    .into_iter()
+    .enumerate()
     {
         let first = field_insert(fields[0], &word.name, 0xffff_f800, 0)?;
         let second = field_insert(fields[1], &word.name, 0xffc0_07ff, 11)?;
         let third = field_insert(fields[2], &word.name, 0xff3f_ffff, 22)?;
         let fourth = field_insert(fields[3], &word.name, 0x00ff_ffff, 24)?;
-        if !indexed(first, &values.name, (packet * 2) as i64)
-            || !indexed(second, &values.name, (packet * 2 + 1) as i64)
-            || !scale_bits(third, &scale.name, (packet * 2) as i64)
-            || !packet_number(fourth, &packet_id.name, packet as i64 + 6)
+        for kind in [first.1, second.1, third.1, fourth.1] {
+            if operation.is_some_and(|old| old != kind) {
+                return None;
+            }
+            operation = Some(kind);
+        }
+        if !indexed(first.0, &values.name, (packet * 2) as i64)
+            || !indexed(second.0, &values.name, (packet * 2 + 1) as i64)
+            || !scale_bits(third.0, &scale.name, (packet * 2) as i64)
+            || !packet_number(fourth.0, &packet_id.name, packet as i64 + 6)
         {
             return None;
         }
@@ -344,6 +399,9 @@ pub(super) fn recognize(function: &Function) -> Option<MatrixPacket<'_>> {
         return None;
     };
     (constant_value(value) == Some(0)).then_some(MatrixPacket {
+        operation: operation?,
+        port,
+        command,
         matrix_id: &matrix_id.name,
         source: &source.name,
         scale: &scale.name,

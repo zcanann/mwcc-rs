@@ -1,6 +1,6 @@
 //! Register scheduling for recognized scaled matrix packet runs.
 
-use super::recognize;
+use super::{recognize, FieldOperation};
 #[allow(unused_imports)]
 use super::super::*;
 
@@ -46,50 +46,39 @@ impl Generator {
             || self.locations.get(shape.matrix_id).map(|location| location.register) != Some(3)
             || self.locations.get(shape.source).map(|location| location.register) != Some(4)
             || self.locations.get(shape.scale).map(|location| location.register) != Some(5)
-            || self.globals.get(shape.global).is_none()
+            || !matches!(self.globals.get(shape.global), Some(Type::Pointer(_) | Type::StructPointer { .. }))
+            || self.volatile_globals.contains(shape.global)
         {
+            return Ok(false);
+        }
+        if shape.operation == FieldOperation::RotateInsert {
+            if !self.fixed_address_objects.values().any(|&address| address == shape.port) { return Ok(false); }
+        } else if shape.port != 0xcc00_8000 || shape.command != 0x61 {
             return Ok(false);
         }
         let _semantic_locals = (shape.values, shape.word, shape.packet_id);
         self.output.pre_scheduled = true;
         self.output.has_conversion = true;
-        self.frame_size = 120;
-
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 8 });
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -120 });
-        let beq8 = push_conditional(self, 12, 2);
-        let bge8 = push_conditional(self, 4, 0);
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 4 });
-        let beq4 = push_conditional(self, 12, 2);
-        let bge4 = push_conditional(self, 4, 0);
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 1 });
-        let bge1 = push_conditional(self, 4, 0);
-        let below1 = push_branch(self);
-        let cmp12 = self.output.instructions.len();
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 12 });
-        let bge12 = push_conditional(self, 4, 0);
-        let below12 = push_branch(self);
-        let sub1 = self.output.instructions.len();
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: -1 });
-        let join1 = push_branch(self);
-        let sub5 = self.output.instructions.len();
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: -5 });
-        let join5 = push_branch(self);
-        let sub9 = self.output.instructions.len();
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: -9 });
-        let join9 = push_branch(self);
-        let default = self.output.instructions.len();
-        self.output.instructions.push(Instruction::load_immediate(0, 0));
-        let join = self.output.instructions.len();
-        for branch in [beq8, beq4, below1, bge12] {
-            patch_branch(self, branch, default);
+        if shape.operation == FieldOperation::RotateInsert {
+            self.frame_size = 112;
+            self.callee_saved = vec![31, 30, 29];
+            self.output.instructions.extend([
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -112 },
+                Instruction::CompareWordImmediate { a: 3, immediate: 8 },
+                Instruction::StoreWord { s: 31, a: 1, offset: 108 },
+                Instruction::StoreWord { s: 30, a: 1, offset: 104 },
+                Instruction::StoreWord { s: 29, a: 1, offset: 100 },
+            ]);
+        } else {
+            self.frame_size = 120;
+            self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 8 });
+            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -120 });
         }
-        patch_branch(self, bge8, cmp12);
-        patch_branch(self, bge4, sub5);
-        patch_branch(self, bge1, sub1);
-        patch_branch(self, below12, sub9);
-        for branch in [join1, join5, join9] {
-            patch_branch(self, branch, join);
+        self.emit_matrix_packet_dispatch();
+
+        if shape.operation == FieldOperation::RotateInsert {
+            self.emit_intrinsic_matrix_packets(&shape)?;
+            return Ok(true);
         }
 
         // The source-level switch, three packet-building do/while regions, and
@@ -171,4 +160,42 @@ impl Generator {
         self.emit_epilogue_and_return();
         Ok(true)
     }
+    fn emit_matrix_packet_dispatch(&mut self) {
+        let beq8 = push_conditional(self, 12, 2);
+        let bge8 = push_conditional(self, 4, 0);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 4 });
+        let beq4 = push_conditional(self, 12, 2);
+        let bge4 = push_conditional(self, 4, 0);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 1 });
+        let bge1 = push_conditional(self, 4, 0);
+        let below1 = push_branch(self);
+        let cmp12 = self.output.instructions.len();
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 12 });
+        let bge12 = push_conditional(self, 4, 0);
+        let below12 = push_branch(self);
+        let sub1 = self.output.instructions.len();
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: -1 });
+        let join1 = push_branch(self);
+        let sub5 = self.output.instructions.len();
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: -5 });
+        let join5 = push_branch(self);
+        let sub9 = self.output.instructions.len();
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: -9 });
+        let join9 = push_branch(self);
+        let default = self.output.instructions.len();
+        self.output.instructions.push(Instruction::load_immediate(0, 0));
+        let join = self.output.instructions.len();
+        for branch in [beq8, beq4, below1, bge12] {
+            patch_branch(self, branch, default);
+        }
+        patch_branch(self, bge8, cmp12);
+        patch_branch(self, bge4, sub5);
+        patch_branch(self, bge1, sub1);
+        patch_branch(self, below12, sub9);
+        for branch in [join1, join5, join9] {
+            patch_branch(self, branch, join);
+        }
+
+    }
+
 }
