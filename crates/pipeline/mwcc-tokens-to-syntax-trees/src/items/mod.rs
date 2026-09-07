@@ -2599,7 +2599,7 @@ impl Parser {
                 self.last_array_typedef = None;
                 Type::Int
             } else {
-                self.parse_type()?
+                self.parse_type_with_prefix_const(declaration_const)?
             };
             self.last_type_was_const |= declaration_const;
             self.last_type_was_volatile |= declaration_volatile;

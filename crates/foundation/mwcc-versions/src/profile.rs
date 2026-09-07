@@ -964,6 +964,13 @@ pub enum ArrayAlignmentStyle {
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
 pub trait CodegenProfile: core::fmt::Debug {
+    /// Legacy compilers put exported C++ const addresses, and exported C
+    /// const address arrays, in writable sections. Internal const addresses
+    /// and scalar const addresses in C retain read-only storage.
+    fn writable_exported_const_addresses(&self) -> bool {
+        false
+    }
+
     fn array_alignment_style(&self) -> ArrayAlignmentStyle {
         ArrayAlignmentStyle::NaturalAtO0
     }
@@ -2568,6 +2575,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn writable_exported_const_addresses(&self) -> bool {
+        true
+    }
+
     fn array_alignment_style(&self) -> ArrayAlignmentStyle {
         ArrayAlignmentStyle::Word
     }

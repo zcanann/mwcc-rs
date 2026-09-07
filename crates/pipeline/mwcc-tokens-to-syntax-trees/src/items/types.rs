@@ -229,7 +229,13 @@ impl Parser {
     }
 
     pub(crate) fn parse_type(&mut self) -> Compilation<Type> {
-        let parsed = self.parse_type_base()?;
+        self.parse_type_with_prefix_const(false)
+    }
+
+    /// Declaration specifiers can consume const before the type grammar starts.
+    /// Restore it before resolving aliases so it qualifies the correct layer.
+    pub(crate) fn parse_type_with_prefix_const(&mut self, prefix_const: bool) -> Compilation<Type> {
+        let parsed = self.parse_type_base(prefix_const)?;
         // A POSTFIX qualifier — east const: `unsigned char const *jp` (metroid
         // prime's ansi_fp revision) — reads exactly like the prefix form.
         while matches!(self.peek(), Token::Identifier(word) if word == "const") {
@@ -244,7 +250,7 @@ impl Parser {
         Ok(parsed)
     }
 
-    fn parse_type_base(&mut self) -> Compilation<Type> {
+    fn parse_type_base(&mut self, prefix_const: bool) -> Compilation<Type> {
         self.last_struct_tag = None;
         self.last_enum_tag = None;
         self.last_type_was_wchar = false;
@@ -262,6 +268,7 @@ impl Parser {
         // is noted for the global path, which defers a read-only global); `volatile`
         // changes access semantics (memory accesses can't be elided), so defer it.
         self.skip_type_qualifiers()?;
+        self.last_type_was_const |= prefix_const;
         // `enum [Tag] [{ … }]`: a body registers its enumerators and, under
         // `-enum min`, selects storage from their complete value range.
         if matches!(self.peek(), Token::Identifier(word) if word == "enum") {
@@ -630,11 +637,22 @@ impl Parser {
                     self.last_cxx_function_type = Some(function_type);
                 }
                 self.consume_trailing_qualifiers();
+                // Qualifying a pointer alias qualifies the pointer object:
+                // `const Callback` and `Callback const` both retain const.
+                let alias_is_pointer =
+                    matches!(aliased, Type::Pointer(_) | Type::StructPointer { .. });
+                if alias_is_pointer {
+                    self.last_pointer_const = self.last_type_was_const;
+                }
                 if *self.peek() == Token::Star {
                     if !matches!(aliased, Type::Pointer(_) | Type::StructPointer { .. }) {
                         return self.parse_scalar_pointer_declarator(aliased);
                     }
                     self.advance();
+                    // An additional star introduces a new, independently
+                    // qualified outer pointer (`Callback const *p`).
+                    self.last_pointer_const =
+                        matches!(self.peek(), Token::Identifier(word) if word == "const");
                     if self.last_cxx_function_type.is_some() {
                         self.last_cxx_pointer_depth = self.last_cxx_pointer_depth.saturating_add(1);
                     }
@@ -1911,5 +1929,39 @@ impl Parser {
         layout.size = max_size.div_ceil(max_align) * max_align;
         layout.align = max_align as u8;
         Ok(layout)
+    }
+}
+
+#[cfg(test)]
+mod pointer_alias_tests {
+    #[test]
+    fn qualifiers_bind_to_the_pointer_alias_or_its_outer_pointer() {
+        let unit = crate::parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(
+                "typedef void (*Callback)(void); extern void run(void);
+                 Callback const east[1]={run}; const Callback west[1]={run};
+                 Callback const *outer=&east[0]; Callback *const fixed=&east[0];",
+            )
+            .unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let qualifiers: Vec<_> = unit
+            .globals
+            .iter()
+            .map(|global| (global.name.as_str(), global.is_const))
+            .collect();
+        assert_eq!(
+            qualifiers,
+            [
+                ("east", true),
+                ("west", true),
+                ("outer", false),
+                ("fixed", true)
+            ]
+        );
     }
 }

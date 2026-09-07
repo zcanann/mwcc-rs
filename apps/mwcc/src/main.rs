@@ -1685,10 +1685,18 @@ fn compile(
         }
         // C++ gives a non-static const definition external linkage only when
         // explicitly requested (including an out-of-class static-data-member
-        // definition). Legacy MWCC stores those externally visible objects in
-        // writable data; C consts and internal C++ consts remain read-only.
-        let const_is_read_only =
-            global.is_const && !(is_cxx && !global.is_static && !global.is_weak);
+        // definition). Address objects have their own versioned policy: early
+        // builds also store exported C const address arrays in writable data,
+        // while later builds keep all const addresses read-only.
+        let const_is_read_only = global.is_const
+            && if global.address_initializer.is_some() {
+                global.is_static
+                    || global.is_weak
+                    || !config.build.profile.writable_exported_const_addresses()
+                    || (!is_cxx && global.array_length.is_none())
+            } else {
+                !(is_cxx && !global.is_static && !global.is_weak)
+            };
         let force_full_data_section = global.section.is_none()
             && ((behavior.inferred_array_uses_full_data_section
                 && global.array_length_inferred
@@ -1739,8 +1747,7 @@ fn compile(
                 );
             // A static pointer initialized to NULL (`static T* p = 0;` — fstload's
             // idTmp/bb2) is an all-zero object: it routes to `.sbss` like any zero
-            // global, LOCAL, no relocation. Only relocated/valued static pointers
-            // still defer.
+            // global, LOCAL, no relocation.
             let all_null = global.array_length.is_none()
                 && elements
                     .iter()
@@ -1750,18 +1757,17 @@ fn compile(
             // emit at the data object's position, reverse-slot first-seen — measured
             // `{e1,e2}` -> tbl,e2,e1; shuffled `{e2,e1,e3}` -> tbl,e3,e1,e2; a
             // duplicated element hoists once by its LAST slot.)
-            // A `static` (non-const) function-pointer ARRAY can target unit functions
-            // or declared extern functions. The writer binds the table LOCAL and owns
-            // both the hoisted defined-function ordering and the relocated UND-symbol
-            // first-use ordering. CONST tables (.sdata2/.rodata) keep the defer.
-            let static_function_table = global_initializers::private_function_table(
+            // Internal or const tables can target defined or declared functions
+            // and data. The writer owns definition hoisting and undefined-symbol
+            // first-use ordering; storage and linkage are independent decisions.
+            let function_address_table = global_initializers::function_address_table(
                 global,
                 elements,
                 &machine_functions,
                 &prototyped_names,
             );
-            let static_unit_data_table =
-                global_initializers::private_unit_data_table(global, elements, &unit.globals);
+            let data_address_table =
+                global_initializers::data_address_table(global, elements, &unit.globals);
             let owned_string_table =
                 global_initializers::owned_string_table(global, elements);
             let literal_address_table =
@@ -1770,8 +1776,8 @@ fn compile(
                 && global.section.is_none()
                 && !single_target
                 && !all_null
-                && !static_function_table
-                && !static_unit_data_table
+                && !function_address_table
+                && !data_address_table
                 && !owned_string_table
                 && !literal_address_table
             {
@@ -1787,6 +1793,30 @@ fn compile(
                 ));
             }
             let size = global_initializers::storage_size(global, elements);
+            let requested_alignment = global.attribute_alignment.map_or(1, u32::from);
+            let alignments = if let Some(count) = global.array_length {
+                let (element_size, struct_alignment) = match global.declared_type {
+                    mwcc_syntax_trees::Type::Struct { size, align } => (size, Some(u32::from(align))),
+                    _ => (4, None),
+                };
+                global_alignments(
+                    GlobalAlignmentInput {
+                        element_size,
+                        struct_alignment,
+                        array_length: Some(u32::from(count)),
+                        is_read_only: const_is_read_only,
+                        requested_alignment,
+                        unoptimized: config.flags.optimization == mwcc_versions::Optimization::O0,
+                        small_data,
+                    },
+                    config.build.profile,
+                )
+            } else {
+                GlobalAlignments {
+                    layout: 4.max(requested_alignment),
+                    comment: 4.max(requested_alignment),
+                }
+            };
             let mut bytes = vec![0u8; size as usize];
             let mut relocations = Vec::new();
             for (index, element) in elements.iter().enumerate() {
@@ -1889,8 +1919,8 @@ fn compile(
                 functions_before: global.functions_before,
                 name: global.name.clone(),
                 size,
-                alignment: 4,
-                comment_alignment: 4,
+                alignment: alignments.layout,
+                comment_alignment: alignments.comment,
                 initial_bytes,
                 // A `static const` fn-pointer reference routes to `.sdata2` (read-only)
                 // as a LOCAL; the writable `int *p = &g;` case stays non-const in `.sdata`.
@@ -1904,8 +1934,8 @@ fn compile(
                         || global.is_const
                         || single_target
                         || all_null
-                        || static_function_table
-                        || static_unit_data_table
+                        || function_address_table
+                        || data_address_table
                         || owned_string_table
                         || literal_address_table),
                 is_explicit_zero,

@@ -4,13 +4,59 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-06, typed pointer-offset initializers (fingerprint below)
+Latest targeted checkpoint: 2026-09-06, const address tables and pointer-array storage (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `73acd82ec9b699eecc26dda785eacb8e0103385a844af6e6431e774384767b76:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `f688e1cbc9d85b1966ce0d804631bb6271ba38b04a703eacfd9123d20873e60c:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Const address tables and pointer-array storage, 2026-09-06
+
+Against frozen baseline `c8f317d6`, four new canaries (1637–1640) improve
+from **4/60 to 60/60 whole-object exact pairs** across all fifteen builds.
+They cover C/C++ mutable, internal const, and exported const data tables;
+const function-pointer typedefs; and both callback tables reduced from
+Melee's `src/melee/gr/grcastle.c`. The Melee reduction preserves the table
+initializers and function signatures while replacing project headers with
+opaque parameter types and omitting function bodies. It improves from
+**4/15 to 15/15**; this is an isolated data-object result, not a whole-file
+or whole-project result. Existing mixed-BSS canary 1630 also improves from
+**12/15 to 15/15** through the array-alignment fix.
+
+Address-table classification now accepts internal or const tables targeting
+declared functions and data, including external data, byte addends, and mixed
+string/data slots. Unknown targets still defer. Pointer arrays reuse the
+existing versioned array-alignment calculation, including the newest builds'
+eight-byte promotion. A separate profile policy captures the four oldest
+builds' writable placement of exported const address arrays in C and exported
+const addresses in C++; C scalar const addresses remain read-only. Later
+builds place these const addresses in read-only sections. The parser preserves
+both prefix and postfix const on pointer aliases, including declaration
+specifiers consumed before type parsing, and separates an added outer pointer.
+
+The seven-shape table matrix spans C/C++, O0/O4, and all fifteen builds:
+**420 reference-runnable pairs**, candidate compilation **60/420 → 420/420**,
+and whole-object equality **0/420 → 404/420**. The remaining 16 differences
+are O0 anonymous-string alignment metadata in the mixed string/data shape.
+A separate scalar const-address matrix matches **60/60 objects**. Rechecking
+the preceding 480-pair offset matrix raises compilation **450/480 → 480/480**
+and whole-object equality **356/480 → 393/480**, with no exact losses.
+
+The focused existing metadata panel retains **1,179 exact objects** among
+**2,198 runnable pairs** (2,940 selected slots, 742 build exclusions), with
+no exact losses or timeouts. The 126-configuration real-project panel retains
+every individual whole-object and code verdict: **47 BYTE, 16 DIFF, 59 compiler
+DEFER, and four missing dependencies**. Code remains **46/109 exact measured
+objects**, five empty and twelve unmeasured; 51 emitted partial translation
+units remain nonexact. This panel omits the separately measured BFBB asset-file
+timeout and does not imply full-corpus or project-build parity.
+
+Validation: **405 parser tests pass** with the same two documented pre-existing
+failures excluded; **nine initializer-classification tests**, the driver array
+alignment matrix, and **45 version tests** pass. Probe, frozen-baseline,
+regression, and reference-panel evidence is under `target/pointer-table-*`.
 
 ## Typed pointer-offset initializers, 2026-09-06
 

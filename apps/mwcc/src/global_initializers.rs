@@ -9,18 +9,17 @@ use mwcc_machine_code::{MachineFunction, RelocationTarget};
 use mwcc_syntax_trees::{GlobalDeclaration, PointerElement, Type};
 use std::collections::HashSet;
 
-/// A private writable function-pointer table can name functions defined in
+/// An internal or const function-pointer table can name functions defined in
 /// this unit or functions declared here and supplied by another object. Both
 /// families have unambiguous function-symbol linkage; the object writer owns
 /// their first-use ordering in the symbol table.
-pub(crate) fn private_function_table(
+pub(crate) fn function_address_table(
     global: &GlobalDeclaration,
     elements: &[PointerElement],
     functions: &[MachineFunction],
     declared_functions: &HashSet<String>,
 ) -> bool {
-    global.is_static
-        && !global.is_const
+    (global.is_static || global.is_const)
         && global.array_length.is_some()
         && elements.iter().all(|element| {
             matches!(element, PointerElement::Symbol(name)
@@ -30,25 +29,22 @@ pub(crate) fn private_function_table(
         })
 }
 
-/// A private aggregate whose address fields all name storage defined by this
-/// translation unit has no unresolved symbol-order question: every target gets
-/// an object symbol from the same writer pass. Animal Crossing animation data
-/// uses this for `{ left_table, right_table, enum_value, NULL }` records.
-pub(crate) fn private_unit_data_table(
+/// Internal and const tables can combine declared data addresses, string
+/// literals, and scalar slots. Declarations identify both local definitions
+/// and storage supplied by another object; unknown address targets still defer.
+pub(crate) fn data_address_table(
     global: &GlobalDeclaration,
     elements: &[PointerElement],
     globals: &[GlobalDeclaration],
 ) -> bool {
-    global.is_static
-        && !global.is_const
-        && matches!(global.declared_type, Type::Struct { .. })
+    (global.is_static || global.is_const)
+        && (global.array_length.is_some() || matches!(global.declared_type, Type::Struct { .. }))
         && elements.iter().all(|element| match element {
             PointerElement::Symbol(name)
             | PointerElement::SymbolWithAddend { symbol: name, .. } => globals
                 .iter()
-                .any(|candidate| candidate.name == *name && candidate.is_data_definition()),
-            PointerElement::Null | PointerElement::Scalar(_) => true,
-            PointerElement::Str(_) => false,
+                .any(|candidate| candidate.name == *name),
+            PointerElement::Null | PointerElement::Scalar(_) | PointerElement::Str(_) => true,
         })
 }
 
@@ -182,7 +178,37 @@ mod tests {
         let global = private_table(elements.clone());
         let declared = HashSet::from(["external_callback".to_string()]);
 
-        assert!(private_function_table(&global, &elements, &[], &declared));
+        assert!(function_address_table(&global, &elements, &[], &declared));
+    }
+
+    #[test]
+    fn accepts_const_tables_of_declared_functions_and_external_data() {
+        let elements = vec![PointerElement::Symbol("target".into())];
+        let mut table = private_table(elements.clone());
+        table.is_const = true;
+        table.is_static = false;
+        assert!(function_address_table(
+            &table,
+            &elements,
+            &[],
+            &HashSet::from(["target".to_string()]),
+        ));
+
+        let mut external = private_table(Vec::new());
+        external.name = "target".into();
+        external.is_extern = true;
+        external.is_static = false;
+        external.address_initializer = None;
+        let mixed = vec![
+            PointerElement::SymbolWithAddend {
+                symbol: "target".into(),
+                addend: 12,
+            },
+            PointerElement::Str(b"name".to_vec()),
+            PointerElement::Null,
+        ];
+        assert!(data_address_table(&table, &mixed, &[external]));
+        assert!(!data_address_table(&table, &mixed, &[]));
     }
 
     #[test]
@@ -190,7 +216,7 @@ mod tests {
         let elements = vec![PointerElement::Symbol("external_data".into())];
         let global = private_table(elements.clone());
 
-        assert!(!private_function_table(
+        assert!(!function_address_table(
             &global,
             &elements,
             &[],
