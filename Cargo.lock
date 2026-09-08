@@ -61,8 +61,10 @@ dependencies = [
 name = "mwcc-machine-code-to-object"
 version = "0.0.1"
 dependencies = [
+ "mwcc-core",
  "mwcc-machine-code",
  "mwcc-object",
+ "mwcc-vreg",
 ]
 
 [[package]]

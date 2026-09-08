@@ -4,6 +4,9 @@
 //! big-endian PowerPC object matching mwcceppc's layout (sections, symbols,
 //! relocations, and the Metrowerks metadata records).
 
+mod section_addresses;
+pub use section_addresses::finalize_bss_addresses;
+
 use mwcc_machine_code::{
     MachineFunction, RelocationKind as MachineRelocationKind, RelocationTarget as MachineTarget,
 };
@@ -92,6 +95,35 @@ pub struct DefinedGlobal {
     pub section: Option<String>,
 }
 
+impl DefinedGlobal {
+    fn object<'a>(&'a self, name: &'a str) -> DataObject<'a> {
+        let global = self;
+        let link_name = name;
+        DataObject {
+            name: link_name,
+            size: global.size,
+            alignment: global.alignment,
+            comment_alignment: global.comment_alignment,
+            initial_bytes: global.initial_bytes.clone(),
+            is_const: global.is_const,
+            force_full_data_section: global.force_full_data_section,
+            is_static: global.is_static,
+            force_active: global.force_active,
+            is_explicit_zero: global.is_explicit_zero,
+            preassigned_anonymous_ordinal: global.preassigned_anonymous_ordinal,
+            preassigned_ordinal_advances_counter: global.preassigned_ordinal_advances_counter,
+            preassigned_pool_prefix_credit: global.preassigned_pool_prefix_credit,
+            relocations: global.relocations.clone(),
+            non_static_functions_before: global.non_static_functions_before,
+            functions_before: global.functions_before,
+            is_weak: global.is_weak,
+            static_local_owner: global.static_local_owner,
+            anonymous_adjust: global.anonymous_adjust,
+            section: global.section.as_deref(),
+        }
+    }
+}
+
 /// Assemble a relocatable object from one or more lowered functions (in source
 /// order) plus the file-scope variables defined in the unit. `source_name` is the
 /// source file's base name (e.g. "foo.c"), used for the object's `FILE` symbol;
@@ -172,7 +204,8 @@ pub fn assemble_object(
                             mwcc_machine_code::DeferredDisplacementTarget::IncomingStack(_) => {
                                 unreachable!("incoming stack displacements must be resolved before object assembly")
                             }
-                            mwcc_machine_code::DeferredDisplacementTarget::Symbol(symbol) => {
+                            mwcc_machine_code::DeferredDisplacementTarget::Symbol(symbol)
+                            | mwcc_machine_code::DeferredDisplacementTarget::SymbolAddress(symbol) => {
                                 mwcc_object::DataSectionDisplacementTarget::Symbol(
                                     local_static_target(function_index, symbol),
                                 )
@@ -345,29 +378,7 @@ pub fn assemble_object(
     let data_objects = defined_globals
         .iter()
         .zip(&data_link_names)
-        .map(|(global, link_name)| DataObject {
-            name: link_name,
-            size: global.size,
-            alignment: global.alignment,
-            comment_alignment: global.comment_alignment,
-            initial_bytes: global.initial_bytes.clone(),
-            is_const: global.is_const,
-            force_full_data_section: global.force_full_data_section,
-            is_static: global.is_static,
-            force_active: global.force_active,
-            is_explicit_zero: global.is_explicit_zero,
-            preassigned_anonymous_ordinal: global.preassigned_anonymous_ordinal,
-            preassigned_ordinal_advances_counter: global
-                .preassigned_ordinal_advances_counter,
-            preassigned_pool_prefix_credit: global.preassigned_pool_prefix_credit,
-            relocations: global.relocations.clone(),
-            non_static_functions_before: global.non_static_functions_before,
-            functions_before: global.functions_before,
-            is_weak: global.is_weak,
-            static_local_owner: global.static_local_owner,
-            anonymous_adjust: global.anonymous_adjust,
-            section: global.section.as_deref(),
-        })
+        .map(|(global, link_name)| global.object(link_name))
         .collect();
     let local_symbol_order = functions
         .iter()

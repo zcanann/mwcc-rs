@@ -860,6 +860,17 @@ impl Generator {
         );
     }
 
+    pub(crate) fn record_data_section_address(&mut self, symbol: &str) {
+        self.output
+            .deferred_displacements
+            .push(mwcc_machine_code::DeferredDisplacement {
+                instruction_index: self.output.instructions.len(),
+                target: mwcc_machine_code::DeferredDisplacementTarget::SymbolAddress(
+                    symbol.to_owned(),
+                ),
+            });
+    }
+
     pub(crate) fn is_global_array(&self, name: &str) -> bool {
         self.global_arrays.contains(name)
     }

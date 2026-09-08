@@ -2672,7 +2672,7 @@ impl Generator {
             .filter(|anchor| anchor.symbols.contains(name))
             .and_then(|anchor| anchor.register)
         {
-            self.record_data_section_symbol_displacement(name);
+            self.record_data_section_address(name);
             self.output.instructions.push(Instruction::AddImmediate {
                 d: dest,
                 a: base,

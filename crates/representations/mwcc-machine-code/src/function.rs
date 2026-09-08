@@ -82,6 +82,9 @@ pub struct DeferredDisplacement {
 #[derive(Debug, Clone)]
 pub enum DeferredDisplacementTarget {
     Symbol(String),
+    /// Complete section-relative address, eligible for high-half expansion
+    /// once the unit's data layout is known.
+    SymbolAddress(String),
     AnonymousRodata(usize),
     /// Byte offset from the caller's stack pointer at function entry.
     IncomingStack(i16),

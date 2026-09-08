@@ -60,6 +60,7 @@ fn has_symbol_displacement(
             && matches!(
                 &displacement.target,
                 mwcc_machine_code::DeferredDisplacementTarget::Symbol(name)
+                    | mwcc_machine_code::DeferredDisplacementTarget::SymbolAddress(name)
                     if name == target
             )
     })
@@ -351,6 +352,7 @@ impl Generator {
                     && matches!(
                         &displacement.target,
                         mwcc_machine_code::DeferredDisplacementTarget::Symbol(name)
+                            | mwcc_machine_code::DeferredDisplacementTarget::SymbolAddress(name)
                             if name == "DummyCommandBlock"
                     ))
                 .then_some(displacement.instruction_index)
@@ -446,6 +448,7 @@ impl Generator {
                     && matches!(
                         &displacement.target,
                         mwcc_machine_code::DeferredDisplacementTarget::Symbol(name)
+                            | mwcc_machine_code::DeferredDisplacementTarget::SymbolAddress(name)
                             if name == "DummyCommandBlock"
                     ))
                 .then_some(displacement.instruction_index)

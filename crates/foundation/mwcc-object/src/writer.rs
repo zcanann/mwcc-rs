@@ -846,50 +846,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // real compiler: two small uninitialized scalars reverse, two large ones don't.)
     // Const objects are read-only (`.sdata2`/`.rodata`); writable ones split by the
     // 8-byte small-data threshold: small to `.sdata`/`.sbss`, large to `.data`/`.bss`.
-    let section_of = |object: &DataObject| -> &'static str {
-        // An explicit `__declspec(section "…")` override wins over the default
-        // routing. Only the sections the writer knows how to emit are honored.
-        if let Some(section) = object.section {
-            return match section {
-                ".ctors" => ".ctors",
-                ".dtors" => ".dtors",
-                ".sdata" => ".sdata",
-                ".sbss" => ".sbss",
-                ".sdata2" => ".sdata2",
-                ".sbss2" => ".sbss2",
-                ".rodata" => ".rodata",
-                ".bss" => ".bss",
-                _ => ".data",
-            };
-        }
-        if object.is_const {
-            if object.size <= 8 && !object.force_full_data_section {
-                ".sdata2"
-            } else {
-                ".rodata"
-            }
-        } else if !input.small_data {
-            // `-sdata 0` disables the small writable sections entirely. Small
-            // and large definitions share one `.data`/`.bss` layout; merely
-            // renaming separate `.sdata` and `.data` sections would create two
-            // same-named ELF sections with independent offsets.
-            if object.initial_bytes.is_some() {
-                ".data"
-            } else {
-                ".bss"
-            }
-        } else if object.size <= 8 && !object.force_full_data_section {
-            if object.initial_bytes.is_some() {
-                ".sdata"
-            } else {
-                ".sbss"
-            }
-        } else if object.initial_bytes.is_some() {
-            ".data"
-        } else {
-            ".bss"
-        }
-    };
+    let section_of = |object: &DataObject| crate::data_section(object, input.small_data);
     let has_sdata = input
         .data_objects
         .iter()
@@ -1211,7 +1168,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // convention, then first references (including section displacements), then
     // unreferenced definitions in reverse order. Small BSS follows below.
     let mut bss_size = 0u32;
-    let mut placed_bss: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
     // Body-local statics are appended to the input after file globals. Rejoin
     // them at their owning function's source event, before subsequent file
     // declarations. Both zero-storage sections consume this stable order.
@@ -1234,92 +1190,40 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             object.static_local_owner.is_some(),
         )
     });
-    if input.object_format.zero_data_in_declaration_order {
-        for object in declaration_ordered_zero_objects
-            .iter()
-            .filter(|object| section_of(object) == ".bss")
-        {
-            placed_bss.insert(object.name);
-            place(object, ".bss", &mut bss_size);
-        }
-    }
-    // The early grouped-data convention applies its `.sbss` tentative-definition
-    // order to the full `.bss` run when `-sdata 0` redirects every object there:
-    // file-scope statics first, then exported objects in reverse declaration
-    // order. First text reference does not affect physical placement.
-    let reverse_large_zero_run = !input.small_data;
-    if reverse_large_zero_run || input.object_format.local_data_symbols_in_declaration_order {
-        for object in input
-            .data_objects
-            .iter()
-            .filter(|object| object.is_static && section_of(object) == ".bss")
-        {
-            if placed_bss.insert(object.name) {
-                place(object, ".bss", &mut bss_size);
-            }
-        }
-    }
-    if reverse_large_zero_run {
-        for object in input
-            .data_objects
-            .iter()
-            .rev()
-            .filter(|object| !object.is_static && section_of(object) == ".bss")
-        {
-            if placed_bss.insert(object.name) {
-                place(object, ".bss", &mut bss_size);
-            }
-        }
-    } else {
-        for function in &input.functions {
-            // A capture-emitted function has an EMPTY symbol_order — its `.text`
-            // relocations carry the reference order instead (measured: wind_waker
-            // abort_exit, whose __atexit_funcs places by first reference).
-            let relocation_names =
-                function
-                    .relocations
-                    .iter()
-                    .filter_map(|relocation| match &relocation.target {
-                        RelocationTarget::External(name)
-                        | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
-                        _ => None,
-                    });
-            let displaced_names =
-                function
-                    .data_section_displacements
-                    .iter()
-                    .filter_map(|(_, target)| match target {
-                        DataSectionDisplacementTarget::Symbol(name) => Some(name.as_str()),
-                        DataSectionDisplacementTarget::AnonymousRodata(_) => None,
-                    });
-            for name in function
+    let bss_references: Vec<Vec<String>> = input
+        .functions
+        .iter()
+        .map(|function| {
+            function
                 .symbol_order
                 .iter()
-                .map(|name| name.as_str())
-                .chain(relocation_names)
-                .chain(displaced_names)
-            {
-                if let Some(object) = input
-                    .data_objects
-                    .iter()
-                    .find(|object| object.name == name && section_of(object) == ".bss")
-                {
-                    if placed_bss.insert(object.name) {
-                        place(object, ".bss", &mut bss_size);
-                    }
-                }
-            }
-        }
-        for object in input
-            .data_objects
-            .iter()
-            .rev()
-            .filter(|object| section_of(object) == ".bss")
-        {
-            if placed_bss.insert(object.name) {
-                place(object, ".bss", &mut bss_size);
-            }
-        }
+                .cloned()
+                .chain(function.relocations.iter().filter_map(
+                    |relocation| match &relocation.target {
+                        RelocationTarget::External(name)
+                        | RelocationTarget::ExternalWithAddend(name, _) => Some(name.clone()),
+                        _ => None,
+                    },
+                ))
+                .chain(
+                    function.data_section_displacements.iter().filter_map(
+                        |(_, target)| match target {
+                            DataSectionDisplacementTarget::Symbol(name) => Some(name.clone()),
+                            DataSectionDisplacementTarget::AnonymousRodata(_) => None,
+                        },
+                    ),
+                )
+                .collect()
+        })
+        .collect();
+    for index in crate::bss_object_order(
+        &input.data_objects,
+        &bss_references,
+        input.small_data,
+        input.object_format,
+    ) {
+        let object = &input.data_objects[index];
+        place(object, ".bss", &mut bss_size);
     }
     // Small initialized data follows the same creation timeline as `.data`.
     // Function-owned strings/statics therefore precede file declarations that

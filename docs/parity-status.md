@@ -4,13 +4,72 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, member-value scheduling across all fifteen builds (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, complete BSS addresses and the real AX voice initializer (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `731339821438b974611fed3561df756cc467245b09d8af7cebcae2e1373ec12e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `60a0ad494b5abcfdc2d45a46260c28ef8f9218c4be695234f63b32816c93656d:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete BSS addresses and the AX voice initializer, 2026-09-08
+
+The complete BfBB `AXVPB.c` initializer now passes **240 native execution
+cases across all fifteen builds**, against fresh references, the original
+GQPE78 executable, and an independent memory model. The baseline fails all
+**64 cases on GC/1.1, GC/1.1p1, GC/1.2.5, and GC/1.2.5n**: the address of
+`__AXVPB` at BSS offset `0x8d00` loses its high half, so its clearing loop
+writes 64 KiB before the intended array. The fix adds the adjusted high half
+before the low displacement. Checks cover randomized memory around all four
+arrays, all 64 initialized voices and parameter blocks, callback arguments
+and order, bus-clock division, counters, saved registers, SP, LR, and PC.
+
+Only `__AXVPBInit` changes in the four affected complete-source objects,
+from **516 to 520 bytes**, versus the 512-byte references. The other eleven
+objects are unchanged. The initializer still has **0/15 exact function
+matches**; `__AXSetPBDefault` retains **15/15 exact matches**. The supplemental
+full-source version panel removes `-W err` on every side, as before.
+
+BSS ordering and section routing now have one shared implementation used by
+the object writer and a machine-code finalization pass. A distinct
+`SymbolAddress` displacement marks a complete address; existing low-half-only
+fixups retain their meaning, including explicitly biased section pages.
+Finalization runs after unit layout is available and before debug lowering.
+It inserts `addis` when necessary, preserving the section anchor and using
+physical CFG liveness if an r0 result needs a temporary. Branches, entry points,
+and jump-table destinations target the beginning of the expansion; relocation
+and displacement owners follow their original instructions. Consumed addresses
+keep their low fixup and symbol-discovery event. Initialized-data address
+expansion remains a separate follow-up.
+
+Canaries **2076–2081** cover signed-low/page boundaries through `0x18000`,
+conditional and repeated calls, returned/stored pointers, and function-local
+static declaration ordering, at O4, O2, schedule-off, O0, C++, and debug.
+All three sides compile **90/90 objects**. All **92,160 native cases** pass
+on the candidate, eliminating **21,504 baseline failures**. The references
+have no unexpected failures. A separately modeled **128-case GC/1.1p1 O0
+saved-r30 spill alias** remains an unimplemented reference bug: `repeated`
+spills its count over the saved register at `8(sp)`. These cases are not
+claimed as ABI parity. Exact function text plus symbolic relocations remains
+**118/720**, with no lost matches; whole objects remain **0/90**.
+
+Focused regressions retain **1,110 identical objects** from 2002–2075,
+**1,114 identical compiled objects / 972 known exact matches** in the indexed
+panel, and **2,626 identical objects / 89 unchanged failures** from 1821–2001.
+All **ten AX and fourteen GX units** compile with the GC/1.2.5n project flags;
+only the expected AXVPB object changes. Tests pass **three address-finalizer**,
+**40 object-writer**, and **1,634 backend** cases, with the existing embedded-asm
+backend test excluded.
+
+Artifacts are under `target/section-address-{canaries,versions,older,index,recent,library,ax-library}`.
+`target/section-address-final-verification.json` recompiles the candidate panels
+and binds **315 execution-tested object hashes** to the final compiler and
+harness. The original executable SHA-256 is
+`865f446cf8efd52230dac506d6334a357b4c738cd6eb6e3a68c827efac51c3e0`;
+its symbol-file SHA-256 is
+`92f658ac1a6f91ec64d851dcfdf92a0907f3c06f5c68a97096052e99b5f3dfa4`.
+This is a correctness milestone; complete project builds and matching remain
+unfinished.
 
 ## Member-value scheduling across all fifteen builds, 2026-09-08
 

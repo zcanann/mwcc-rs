@@ -74,3 +74,27 @@ context registers. Unprobed remainders: the y-NaN idiom
 and the subnormal-output three-way (n<=20/31 with sraw + mr from r0).
 The knit driver = these seam rules + a whole-function liveness
 allocator that reproduces long-lived r0 ownership.
+
+## Unit-layout address finalization
+
+Complete BSS-relative addresses cannot always be encoded during function
+selection: the final offset depends on version-specific declaration and
+reference order across the whole translation unit. `mwcc-object::data_layout`
+provides the canonical routing and BSS order. Before debug lowering,
+`mwcc-machine-code-to-object::finalize_bss_addresses` resolves selected
+`SymbolAddress` fixups against that layout and inserts an adjusted high half
+when the complete displacement does not fit signed 16 bits.
+
+The destination normally holds its own high half. An r0 destination needs a
+separate volatile GPR because r0 is not a register base in `addi`; physical
+CFG liveness selects a free home without clobbering live values. Opaque assembly
+and exhausted scratch registers produce diagnostics when expansion is needed.
+Control-flow labels land on the inserted high half, while instruction-owned
+fixups remain attached to the low instruction. Debug lowering sees the final
+instruction stream. The low symbol fixup remains for object emission and
+reference ordering, but its complete-address marker is consumed.
+
+Ordinary `Symbol` displacements remain low-half-only, so owners that already
+bias a section page are not expanded twice. This pass currently resolves BSS;
+initialized-data layout and scheduling the new high instruction are follow-up
+work. Canaries 2076–2081 and BfBB `__AXVPBInit` exercise this boundary.

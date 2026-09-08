@@ -7,6 +7,9 @@
 //! code sections while sharing constant pools and unwind sections. `lib.rs` exposes the input shape
 //! and the entry point; the assembly lives in [`writer`].
 
+mod data_layout;
+pub use data_layout::{bss_object_order, data_section};
+
 mod debug;
 mod function_layout;
 mod writer;

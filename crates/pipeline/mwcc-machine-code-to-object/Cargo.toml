@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+mwcc-core.workspace = true
+mwcc-vreg.workspace = true
 mwcc-machine-code.workspace = true
 mwcc-object.workspace = true
 

@@ -2982,6 +2982,10 @@ fn compile(
         post_leaf_function_anonymous_bump: config.build.post_leaf_function_anonymous_bump,
         post_framed_function_anonymous_bump: config.build.post_framed_function_anonymous_bump,
     };
+    mwcc_machine_code_to_object::finalize_bss_addresses(
+        &mut machine_functions, &defined_globals, object_format, small_data,
+    )?;
+
     // Debug lowering describes only source declarations that actually survived
     // data materialization. In particular, `extern T x = {...}` is a definition,
     // while an unused folded `static const` is not. Keep that object-emission
