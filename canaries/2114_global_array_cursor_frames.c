@@ -1,4 +1,4 @@
-// flags: 
+// flags:
 extern void observe(unsigned*,unsigned);
 unsigned a0[64];
 unsigned a1[64];
