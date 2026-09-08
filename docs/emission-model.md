@@ -258,3 +258,16 @@ leaf eligibility checks, named-value planning, and return handling. A callback
 is not required to obtain correct CFG lowering. Canaries 2138–2142 cover simple
 and chained guarded stores, nonzero values, volatile writes, aliasing, nested
 conditions, intervening loads, and a result computed after the stores.
+
+## Prefix literals retained by fixed fills
+
+A fixed-trip fill can share a literal already used by a straight-line prefix.
+Prove the scratch definition dominates the loop setup and that no intervening
+instruction redefines it. Require the original scratch to be dead after the
+loop, and reject alternate entries or symbolic ownership of the literal.
+Promote the prefix definition and consumers to a virtual value that also feeds
+the expanded stores; allocation handles overlap with address setup and CTR
+initialization. This removes the loop's repeated literal without moving prefix
+memory operations. Existing version-dependent expansion factors and exit-value
+rules still apply. Canaries 2143–2148 cover scalar/global prefixes, ordered
+writes, aliasing, remainder packets, returned cursors, and barriers.

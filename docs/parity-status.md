@@ -4,13 +4,63 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, callback-free member-store guards (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, retained prefix values in fixed fills (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `ea3661c99164cf911130769bff6458dd1cc867e7509a56aa19a502d9065f24b0:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `c095e8255cd809c50b3c7afe3d86eda09d710ea5d83ebcc180993bcbf4e312e1:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Retained prefix values in fixed fills, 2026-09-08
+
+The fixed-fill loop expander now retains a matching literal from a dominating
+straight-line prefix. The prefix's scratch definition and its consumers become
+one virtual value, which also feeds the expanded fill. Allocation preserves that
+value while issuing the CTR source. Calls, scratch redefinitions, symbolic
+literal ownership, alternate entries, and a live outgoing scratch reject reuse.
+Existing expansion factors, remainder stores, counter/pointer exits, and version
+policies are unchanged.
+
+BfBB `__AXVPBInit` now reuses the zero stored to `__AXRecDspCycles` for its first
+clear loop. The oldest four builds shrink **516 → 512 bytes**, and the other
+eleven shrink **524 → 520 bytes**. The older/middle twelve now have the same
+instruction count as their references. This is still **0/15 exact**: register
+assignment and scheduling differ, and GC 3/Wii reference initializers retain a
+different offset-loop layout and 548-byte size. Only the initializer changes in
+each full-source AXVPB object; `__AXSetPBDefault` remains **15/15 exact**. All
+**240 full-initializer comparisons** pass against baseline, fresh references,
+the original GQPE78 executable, and the full memory/callback model.
+
+Canaries **2143–2148** add ten functions in six modes across fifteen builds
+(default, O2, scheduling disabled, O0, debug, and size optimization). All **90
+objects** compile on every side. The six positive families change in **360
+functions**: global zero/nonzero fills, parameter fills, ordered writes,
+remainder packets, and a returned cursor. Calls, different literals, scratch
+loads, and a conditional prefix retain baseline output. Exact matches rise
+**12 → 24 / 900**, with no losses.
+
+All **14,400 candidate and baseline native cases** pass. Reference execution has
+no unexpected differences after independently verifying **80 GC/1.1p1 O0
+parameter-slot bugs**. In 72 cases the saved r30 slot is overwritten by a
+parameter and restored incorrectly. Eight true-arm cases of `conditional`
+alias the pointer and condition slots, then attempt the store through address
+1; the emulator stops at that exact store with memory unchanged. The candidate
+does not reproduce these original bugs yet. These are recorded parity gaps,
+not successful ABI matches. The panel checks memory guards, aliasing, store
+order, callback arguments/mutation/clobbers, returned pointers, saved registers,
+SP, and LR.
+
+Regression panels preserve **1,110** older compiled objects, **2,626** recent
+objects plus **89** unchanged failures, all **1,674** indexed outcomes (1,114
+compiled, 972 known exact), and **1,005** preceding objects from 2076–2142.
+All ten AX and fourteen GX translation units compile under the existing
+GC/1.2.5n library flags; only the AXVPB initializer changes. Backend tests pass
+**1,661**, retaining the existing nested-asm inline-test exclusion. The full
+corpus was not rerun. `target/fill-prefix-final-verification.json` binds the
+compiler/harness fingerprints to **315 native-tested objects**, the verified
+reference-bug records, and the preserved-object hashes. Final compilation
+reproduces the tested candidate objects.
 
 ## Callback-free member-store guards, 2026-09-08
 

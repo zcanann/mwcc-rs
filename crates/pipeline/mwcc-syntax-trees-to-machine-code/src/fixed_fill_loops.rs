@@ -27,12 +27,15 @@ struct Plan {
 }
 
 impl Plan {
-    fn store_at(&self, slot: i16) -> I {
+    fn store_at(&self, slot: i16, fill: u8) -> I {
         let mut store = self.store.clone();
         match &mut store {
-            I::StoreWord { offset, .. }
-            | I::StoreHalfword { offset, .. }
-            | I::StoreByte { offset, .. } => *offset = slot * self.width,
+            I::StoreWord { s, offset, .. }
+            | I::StoreHalfword { s, offset, .. }
+            | I::StoreByte { s, offset, .. } => {
+                *s = fill;
+                *offset = slot * self.width;
+            }
             _ => unreachable!(),
         }
         store
@@ -110,6 +113,27 @@ impl Generator {
             })
             .collect();
         for plan in plans.into_iter().rev() {
+            let retained = retained_fill_prefix(&self.output, &plan, &live);
+            let fill = if let Some(load) = retained {
+                let fill = self.fresh_virtual_general_preferring(3);
+                let I::AddImmediate { d, .. } = &mut self.output.instructions[load] else {
+                    unreachable!("the retained fill owns its literal");
+                };
+                *d = fill;
+                for instruction in &mut self.output.instructions[load + 1..plan.start] {
+                    mwcc_vreg::for_each_register(instruction, |role, class, register| {
+                        if role == mwcc_vreg::RegisterRole::Use
+                            && class == Class::General
+                            && *register == plan.fill
+                        {
+                            *register = fill;
+                        }
+                    });
+                }
+                fill
+            } else {
+                plan.fill
+            };
             let trip = self.fresh_virtual_general_preferring(0);
             let mut code = Vec::new();
             let iterations = plan.count / plan.factor;
@@ -117,10 +141,12 @@ impl Generator {
                 code.push(I::load_immediate(trip, iterations));
                 code.push(I::MoveToCountRegister { s: trip });
             }
-            code.push(I::load_immediate(plan.fill, plan.value));
+            if retained.is_none() {
+                code.push(I::load_immediate(fill, plan.value));
+            }
             let body = code.len();
             for slot in 0..plan.factor {
-                code.push(plan.store_at(slot));
+                code.push(plan.store_at(slot, fill));
             }
             if iterations > 1 || plan.keep_pointer {
                 code.push(I::AddImmediate {
@@ -142,9 +168,9 @@ impl Generator {
             };
             let remainder = plan.count % plan.factor;
             if remainder != 0 {
-                code.push(I::load_immediate(plan.fill, plan.value));
+                code.push(I::load_immediate(fill, plan.value));
                 for slot in 0..remainder {
-                    code.push(plan.store_at(slot));
+                    code.push(plan.store_at(slot, fill));
                 }
                 if plan.keep_pointer {
                     code.push(I::AddImmediate {
@@ -175,6 +201,66 @@ impl Generator {
             }
         }
     }
+}
+
+/// Retain a scratch literal whose definition dominates the complete loop.
+/// The prefix must be straight-line and must not redefine the scratch. A fresh
+/// virtual value lets allocation keep it alive while the CTR source is issued.
+fn retained_fill_prefix(
+    function: &mwcc_machine_code::MachineFunction,
+    plan: &Plan,
+    live: &Liveness,
+) -> Option<usize> {
+    if plan.fill != 0 || live_at(live, plan.fill, plan.start + 7) {
+        return None;
+    }
+    for at in (0..plan.start).rev() {
+        let instruction = &function.instructions[at];
+        // Limit the prefix to ordinary address setup and memory operations.
+        // Unknown control flow, implicit definitions, and calls end the proof.
+        if !matches!(
+            instruction,
+            I::AddImmediate { .. }
+                | I::AddImmediateShifted { .. }
+                | I::LoadWord { .. }
+                | I::LoadHalfwordZero { .. }
+                | I::LoadByteZero { .. }
+                | I::StoreWord { .. }
+                | I::StoreHalfword { .. }
+                | I::StoreByte { .. }
+        ) {
+            return None;
+        }
+        if mwcc_vreg::register_operands(instruction)
+            .iter()
+            .any(|operand| {
+                operand.class == Class::General
+                    && operand.role == mwcc_vreg::RegisterRole::Define
+                    && operand.register == plan.fill
+            })
+        {
+            if !matches!(instruction, I::AddImmediate { d: 0, a: 0, immediate }
+                if *immediate == plan.value)
+                || function
+                    .relocations
+                    .iter()
+                    .any(|r| r.instruction_index == at)
+                || function
+                    .deferred_displacements
+                    .iter()
+                    .any(|r| r.instruction_index == at)
+                || function.instructions.iter().any(|i| {
+                    matches!(i,
+                    I::Branch { target } | I::BranchConditionalForward { target, .. }
+                        if (at + 1..plan.start + 1).contains(target))
+                })
+            {
+                return None;
+            }
+            return Some(at);
+        }
+    }
+    None
 }
 
 fn factor(count: i16, style: FixedFillLoopStyle, goal: OptimizationGoal) -> Option<i16> {
@@ -474,6 +560,84 @@ mod tests {
         f.instructions
             .insert(7, I::MoveFromConditionRegister { d: 3 });
         assert!(plan(&f, Type::UnsignedInt).is_none());
+    }
+
+    fn prefixed_function() -> (MachineFunction, Plan) {
+        let mut f = function();
+        f.instructions.splice(
+            0..0,
+            [
+                I::load_immediate(0, 7),
+                I::StoreWord {
+                    s: 0,
+                    a: 5,
+                    offset: 0,
+                },
+                I::AddImmediate {
+                    d: 3,
+                    a: 3,
+                    immediate: 4,
+                },
+            ],
+        );
+        if let I::BranchConditionalForward { target, .. } = &mut f.instructions[9] {
+            *target += 3;
+        }
+        let plan = recognize(
+            &f,
+            3,
+            &mwcc_vreg::analyze(&f.instructions),
+            Type::Void,
+            FixedFillLoopStyle::DivisorTen,
+            OptimizationGoal::Performance,
+        )
+        .unwrap();
+        (f, plan)
+    }
+
+    #[test]
+    fn retains_a_dominating_prefix_literal_across_address_setup() {
+        let (f, plan) = prefixed_function();
+        assert_eq!(
+            retained_fill_prefix(&f, &plan, &mwcc_vreg::analyze(&f.instructions)),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn rejects_prefix_bypasses_calls_and_redefinitions() {
+        let (mut f, plan) = prefixed_function();
+        f.instructions.push(I::Branch { target: plan.start });
+        assert!(retained_fill_prefix(&f, &plan, &mwcc_vreg::analyze(&f.instructions)).is_none());
+        for instruction in [
+            I::load_immediate(0, 9),
+            I::BranchAndLink {
+                target: "observe".into(),
+            },
+        ] {
+            let (mut f, plan) = prefixed_function();
+            f.instructions[2] = instruction;
+            assert!(
+                retained_fill_prefix(&f, &plan, &mwcc_vreg::analyze(&f.instructions)).is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_symbolic_literals_and_observable_exit_scratch() {
+        let (mut f, plan) = prefixed_function();
+        f.deferred_displacements
+            .push(mwcc_machine_code::DeferredDisplacement {
+                instruction_index: 0,
+                target: mwcc_machine_code::DeferredDisplacementTarget::SymbolAddress(
+                    "global".into(),
+                ),
+            });
+        assert!(retained_fill_prefix(&f, &plan, &mwcc_vreg::analyze(&f.instructions)).is_none());
+        f.deferred_displacements.clear();
+        f.instructions
+            .insert(plan.start + 7, I::move_register(3, 0));
+        assert!(retained_fill_prefix(&f, &plan, &mwcc_vreg::analyze(&f.instructions)).is_none());
     }
 
     #[test]
