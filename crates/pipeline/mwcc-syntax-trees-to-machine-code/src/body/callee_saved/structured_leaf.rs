@@ -176,6 +176,24 @@ impl Generator {
             &mut pending_gotos,
             &mut None,
         )?;
+        // Inline early returns are symbolic forward edges. Resolve them before
+        // scheduling so instruction moves can retarget the finished graph.
+        for (branch, label) in pending_gotos {
+            let target = label_positions.get(&label).copied().ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "structured forward branch targets an unknown label '{label}'"
+                ))
+            })?;
+            if target <= branch {
+                return Err(Diagnostic::error("leaf inline return must branch forward"));
+            }
+            if let Instruction::Branch {
+                target: branch_target,
+            } = &mut self.output.instructions[branch]
+            {
+                *branch_target = target;
+            }
+        }
         if let Some(plan) = flush_tail {
             self.reset_switch_edge_caches();
             self.emit_fixed_address_object_flush(plan)?;
@@ -184,7 +202,6 @@ impl Generator {
         self.reuse_guarded_narrow_member_update();
         self.schedule_volatile_bitset_hint_tail();
         self.schedule_leaf_global_store_compare();
-        debug_assert!(pending_gotos.is_empty());
         if let Some(return_expression) = &function.return_expression {
             let result = match function.return_type {
                 Type::Float | Type::Double => Eabi::float_result().number,
@@ -290,7 +307,12 @@ fn requires_structured_branch_graph(statements: &[Statement]) -> bool {
 fn supports_leaf_structured_statements(statements: &[Statement]) -> bool {
     statements.iter().all(|statement| match statement {
         Statement::Assign { .. } | Statement::Store { .. } | Statement::Return(_) => true,
-        Statement::Expression(expression) => !crate::analysis::expression_has_side_effect(expression),
+        Statement::Goto(label) | Statement::Label(label) => {
+            label.starts_with("__mwcc_inline_return_")
+        }
+        Statement::Expression(expression) => {
+            !crate::analysis::expression_has_side_effect(expression)
+        }
         Statement::If {
             then_body,
             else_body,

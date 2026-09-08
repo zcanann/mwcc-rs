@@ -4,13 +4,71 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete AXOut translation unit and embedded callback lifetimes (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete AXSPB translation unit and AX library compilation (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `db7d82cc04e6c181dd03f4135e7093d572c54718420b65b83a9c1ddc58214cfc:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `581b5d8e47874862329741971874b1c1ed1ba6ab8b1c8fad44bf40e19da85465:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete AXSPB translation unit and AX library compilation, 2026-09-07
+
+BfBB's unchanged, fully configured **AXSPB.c now compiles**, bringing complete
+AX translation-unit coverage from **9/10 to 10/10**. All five functions pass
+**5,120 three-way PowerPC execution comparisons** against fresh GC/1.2.5n
+output and the original DOL, with an independent signed fade/accumulation model.
+Cases include signed extrema, truncation around ±160, clamping around ±3200,
+nine distinct channels, signed halfword inputs, and wrapping word additions.
+Checks include the complete studio buffer and surrounding bytes, every unit
+owned global, unchanged input packets, flush arguments and bytes at call time,
+return values, preserved GPR/FPR registers, and SP/LR/PC. `DCFlushRange` is modeled
+with volatile-register clobbers; this is bounded integration evidence.
+
+Inline argument materialization now accepts side-effect-free addresses through
+pointer casts, capturing them once in the existing hygienic parameter lanes.
+The shared leaf structured emitter admits generated inline-return labels and
+resolves their forward branches before scheduling. Consecutive inline calls
+therefore retain separate early-return boundaries.
+
+The existing dependency-DAG emitter now handles independent word accumulators
+fed by signed or unsigned halfword fields of a pointer parameter. Global reads
+must refer to each store's own distinct nonvolatile target. Field update chains
+carry explicit staging dependencies, and hoisted accumulator loads exclude r0.
+Native execution caught an initial last-channel overwrite when both live inputs
+received r0; the staging and register constraints close all 1,024 full-unit
+mismatches. Admission is capped at nine accumulators, matching the available
+volatile register homes. Larger or cross-dependent runs still defer.
+
+Canaries **2022–2025** cover casted global/member addresses, multiple inline
+instances, signed division and clamping, and signed/unsigned field accumulation.
+Candidate compilation improves **0/60 to 60/60 objects** across fifteen builds
+at O0/O4; fresh reference compilation is **60/60**. All **61,440 paired native
+comparisons** pass, with **0/60 whole objects** and **0/120 function text plus
+symbolic relocation comparisons** exact. Compilation and execution progress
+here does not establish byte parity.
+
+The pinned layout `docs/reference-layouts/bfbb-axspb.json` gives **5/5 fresh
+reference functions exact** against the original DOL and **3/5 candidate
+functions exact** (`__AXGetStudio`, `__AXSPBInit`, `__AXSPBQuit`), with no unresolved
+relocations. The reference measurement adds its anonymous `...bss.0` anchor
+through the verified `__AXStudio` object; the candidate has no anonymous anchor.
+`__AXPrintStudio` remains 1,520 versus 1,016 bytes, and `__AXDepopVoice` remains
+148 bytes with a different schedule/register assignment.
+
+Focused regression checks preserve all **1,114 compiled objects** in the
+**1,674-row indexed panel**, including **972 known exact matches**. The recent
+1821–2001 panel retains **2,626 identical objects** and **89 unchanged failures**;
+all **300** objects from canaries 2002–2021, all fourteen complete GX objects,
+and all nine previously compiling AX objects remain identical. Backend tests
+pass **1,601**, excluding the previously confirmed embedded-assembly failure;
+DOL tooling tests pass **26**.
+
+Artifacts are under `target/depop-inline-{canaries,real,index,recent,previous,library,ax-library}`.
+`target/depop-inline-final-verification.json` records the final compiler and
+execution-tested object hashes. All configured AX sources now compile, but
+full-project builds, linking, and compiler-version matching remain unfinished.
+These focused counts are not a corpus-wide parity estimate.
 
 ## Complete AXOut translation unit and embedded callback lifetimes, 2026-09-07
 

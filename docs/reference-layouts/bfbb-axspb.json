@@ -1,0 +1,32 @@
+{
+  "dol_sha256": "865f446cf8efd52230dac506d6334a357b4c738cd6eb6e3a68c827efac51c3e0",
+  "symbols_sha256": "92f658ac1a6f91ec64d851dcfdf92a0907f3c06f5c68a97096052e99b5f3dfa4",
+  "functions": [
+    "__AXGetStudio",
+    "__AXPrintStudio",
+    "__AXSPBInit",
+    "__AXSPBQuit",
+    "__AXDepopVoice"
+  ],
+  "sda_bases": {
+    "2": 2151500160,
+    "13": 2151491840
+  },
+  "data_symbols": {
+    "__AXStudio": 2151070784,
+    "__AXSpbAL": 2151465792,
+    "__AXSpbAR": 2151465796,
+    "__AXSpbAS": 2151465800,
+    "__AXSpbAAL": 2151465804,
+    "__AXSpbAAR": 2151465808,
+    "__AXSpbAAS": 2151465812,
+    "__AXSpbABL": 2151465816,
+    "__AXSpbABR": 2151465820,
+    "__AXSpbABS": 2151465824
+  },
+  "literals": [],
+  "data_images": [],
+  "external_functions": [
+    "DCFlushRange"
+  ]
+}

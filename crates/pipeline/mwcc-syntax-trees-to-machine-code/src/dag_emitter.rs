@@ -59,6 +59,11 @@ enum Template {
     /// `mr` — a register move (the bare-parameter return chain).
     Move,
     LoadWord,
+    LoadGlobal(String),
+    LoadHalfMember {
+        offset: i16,
+        signed: bool,
+    },
     /// A small-data scalar store: `stw s, g@sda21(r0)`.
     StoreGlobal(String),
 }
@@ -84,6 +89,7 @@ struct Builder {
     /// Pure address/constant initialization runs share repeated constants.
     static_initializers: bool,
     constants: Vec<(i16, u32)>,
+    global_accumulations: bool,
 }
 
 fn static_address<'a>(expression: &'a Expression, generator: &Generator) -> Option<&'a str> {
@@ -112,6 +118,42 @@ fn static_address<'a>(expression: &'a Expression, generator: &Generator) -> Opti
         }
         _ => None,
     }
+}
+
+/// Independent word accumulators fed by halfword fields cannot overlap each
+/// other. Restrict global reads to each store's own target: cross-store reads
+/// would need additional memory dependencies in the graph.
+fn global_halfword_accumulations(function: &Function, generator: &Generator) -> bool {
+    let [parameter] = function.parameters.as_slice() else {
+        return false;
+    };
+    // r3 holds the packet and r0 stages the halfword; at most nine
+    // independent accumulator homes fit in the remaining volatile GPRs.
+    function.statements.len() <= 9
+        && matches!(parameter.parameter_type, Type::StructPointer { .. })
+        && function.return_type == Type::Void
+        && function.return_expression.is_none()
+        && function.statements.iter().all(|statement| {
+            let Statement::Store {
+                target: Expression::Variable(target),
+                value:
+                    Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left,
+                        right,
+                    },
+            } = statement
+            else {
+                return false;
+            };
+            !generator.volatile_globals.contains(target)
+                && matches!(left.as_ref(), Expression::Variable(name) if name == target)
+                && matches!(right.as_ref(), Expression::Member {
+                    base, offset, member_type: Type::Short | Type::UnsignedShort,
+                    index_stride: None,
+                } if matches!(base.as_ref(), Expression::Variable(name) if name == &parameter.name)
+                    && i16::try_from(*offset).is_ok())
+        })
 }
 
 impl Builder {
@@ -210,6 +252,21 @@ impl Builder {
         }
         match expression {
             Expression::Variable(name) => {
+                if self.global_accumulations
+                    && !generator.locations.contains_key(name.as_str())
+                    && matches!(
+                        generator.globals.get(name.as_str()),
+                        Some(Type::Int | Type::UnsignedInt)
+                    )
+                {
+                    return Some(self.push(
+                        OpKind::Load,
+                        2,
+                        2,
+                        vec![],
+                        Template::LoadGlobal(name.clone()),
+                    ));
+                }
                 // A narrow (char/short) parameter arrives UNEXTENDED: mwcc
                 // re-extends it before use (extsb/extsh signed, clrlwi
                 // unsigned) into a fresh node; repeat reads share it.
@@ -239,6 +296,24 @@ impl Builder {
                     return Some(value);
                 }
                 self.raw_param(register)
+            }
+            Expression::Member {
+                base,
+                offset,
+                member_type,
+                index_stride: None,
+            } if self.global_accumulations => {
+                let pointer = self.expression(base, generator)?;
+                Some(self.push(
+                    OpKind::Load,
+                    2,
+                    2,
+                    vec![pointer],
+                    Template::LoadHalfMember {
+                        offset: i16::try_from(*offset).ok()?,
+                        signed: *member_type == Type::Short,
+                    },
+                ))
             }
             // `*p` through a pointer parameter: a word load.
             Expression::Dereference { pointer } => {
@@ -653,6 +728,7 @@ impl Generator {
                 && function.statements.iter().any(|statement| matches!(statement,
                     Statement::Store { value, .. } if static_address(value, self).is_some())),
             constants: Vec::new(),
+            global_accumulations: global_halfword_accumulations(function, self),
         };
         let mut params: Vec<(u32, u8)> = Vec::new();
         for parameter in &function.parameters {
@@ -803,7 +879,9 @@ impl Generator {
                 Template::AddImmediate(_) | Template::AddressLow(_) => {
                     builder.nodes[index].reads.clone()
                 }
-                Template::LoadWord => builder.nodes[index].reads.clone(),
+                Template::LoadWord | Template::LoadHalfMember { .. } => {
+                    builder.nodes[index].reads.clone()
+                }
                 _ => Vec::new(),
             };
             for read in unsafe_reads {
@@ -859,6 +937,27 @@ impl Generator {
                         builder.nodes[return_start + 1].extra_deps.push(stores[1]);
                         builder.nodes[stores[2]].extra_deps.push(return_start + 1);
                     }
+                }
+            }
+        }
+        if builder.global_accumulations {
+            // MWCC stages each field update through the completed preceding
+            // store, while hoisting independent accumulator loads into its
+            // latency slots. Without this edge every sum remains live until
+            // the tail, exceeding the leaf register pool on long runs.
+            let mut previous_store = None;
+            for index in 0..builder.nodes.len() {
+                match builder.templates[index] {
+                    Template::LoadHalfMember { .. } => {
+                        if let Some(store) = previous_store {
+                            builder.nodes[index].extra_deps.push(store);
+                        }
+                    }
+                    // The halfword staging lane is r0, so a hoisted word
+                    // accumulator must survive in an ordinary register.
+                    Template::LoadGlobal(_) => builder.nodes[index].forbid_r0 = true,
+                    Template::StoreGlobal(_) => previous_store = Some(index),
+                    _ => {}
                 }
             }
         }
@@ -1044,6 +1143,31 @@ impl Generator {
                     a: operand(0)?,
                     offset: 0,
                 },
+                Template::LoadGlobal(global) => {
+                    self.record_relocation(RelocationKind::EmbSda21, global);
+                    Instruction::LoadWord {
+                        d: destination.expect("value node"),
+                        a: 0,
+                        offset: 0,
+                    }
+                }
+                Template::LoadHalfMember { offset, signed } => {
+                    let d = destination.expect("value node");
+                    let a = operand(0)?;
+                    if *signed {
+                        Instruction::LoadHalfwordAlgebraic {
+                            d,
+                            a,
+                            offset: *offset,
+                        }
+                    } else {
+                        Instruction::LoadHalfwordZero {
+                            d,
+                            a,
+                            offset: *offset,
+                        }
+                    }
+                }
                 Template::StoreGlobal(global) => {
                     self.record_relocation(RelocationKind::EmbSda21, global);
                     Instruction::StoreWord {

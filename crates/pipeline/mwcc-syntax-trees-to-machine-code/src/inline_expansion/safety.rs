@@ -1207,6 +1207,22 @@ fn integer_argument_arithmetic(expression: &Expression) -> bool {
     }
 }
 
+/// Capture an address once even when its pointer/index inputs are not stable
+/// throughout the caller. Representation-preserving pointer casts keep that
+/// address provenance; calls and mutations still use their own admission path.
+fn materializable_address_argument(expression: &Expression) -> bool {
+    match expression {
+        Expression::AddressOf { .. } | Expression::MemberAddress { .. } => {
+            !crate::analysis::expression_has_side_effect(expression)
+        }
+        Expression::Cast {
+            target_type: Type::Pointer(_) | Type::StructPointer { .. },
+            operand,
+        } => materializable_address_argument(operand),
+        _ => false,
+    }
+}
+
 /// Whether arguments that cannot be substituted repeatedly may instead be
 /// evaluated into hygienic scalar temporaries at the inline call site.
 ///
@@ -1235,6 +1251,8 @@ pub(super) fn materializable_arguments(
             .zip(arguments)
             .all(|(parameter, argument)| {
                 stable_argument(argument, stable_variables)
+                    || (matches!(parameter.parameter_type, Type::Pointer(_) | Type::StructPointer { .. })
+                        && materializable_address_argument(argument))
                     || (retained_scalar_loop_value_function(function)
                         && integer_argument_arithmetic(argument))
                     || (forwarded_reference_arguments.is_some_and(|forwarded| {
