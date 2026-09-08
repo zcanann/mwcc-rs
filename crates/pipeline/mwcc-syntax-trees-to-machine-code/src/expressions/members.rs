@@ -2585,6 +2585,27 @@ impl Generator {
         offset: u32,
         destination: u8,
     ) -> Compilation<()> {
+        // Taking a member's address uses the same retained object base as a
+        // member load/store. Derive a new address without adjusting the shared
+        // base itself; large displacements retain the full materialization path.
+        if let Some((base, displacement)) = self
+            .structured_global_base_register(name)
+            .zip(i16::try_from(offset).ok())
+        {
+            if displacement != 0 {
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: destination,
+                    a: base,
+                    immediate: displacement,
+                });
+            } else if destination != base {
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(destination, base));
+            }
+            self.consume_structured_global_base_use(name);
+            return Ok(());
+        }
         // An `addi` based on r0 reads literal zero, not the register. When the
         // expression consumer requests r0, retain the materialized global base
         // in a fresh GPR and form the member address into r0 from that base.

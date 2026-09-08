@@ -4,13 +4,54 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, guarded integer reuse and signed quotient zero tests (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, retained global member addresses (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `fba65cc0d586aa8552b3bf60a8fea89cff412ea4db095368b383079bc88438d0:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `d25f293695f7b63843564f9d4341830960f170f7ddf61b9ad404346651e604a3:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Reusing retained global bases for member addresses, 2026-09-07
+
+The complete BfBB `__AXPrintStudio` function drops from **1,232 to 1,096 bytes**;
+the fresh GC/1.2.5n reference remains **1,016 bytes**. AXSPB retains **4/5 exact
+candidate functions**, **5/5 exact fresh reference functions**, and no unresolved
+relocations against the pinned original DOL. All five functions pass **5,120
+three-way PowerPC execution comparisons** against fresh MWCC, the original
+executable, and the independent fade/accumulation model. Register allocation,
+scheduling, and other instruction differences in `__AXPrintStudio` remain open.
+
+Member address emission now consumes the existing retained global-base cache,
+just as member loads and stores already do. It derives the address with a move
+or signed displacement add; the shared base itself remains intact. Offsets
+outside the signed 16-bit range retain the full address materialization path.
+The existing planner still owns the base's lifetime and whether it crosses a
+call. The change adds no new alias pass or version policy.
+
+Canaries **2034–2035** cover O4 and explicit O0, inline word writes through
+addresses of halfword members, zero and nonzero offsets, conditional callbacks,
+and member offsets at 32 KiB and beyond. Baseline, candidate, and references
+all compile **30/30 objects** across fifteen builds. All **23,040 paired native
+comparisons** pass independent models; the baseline also passes. Checks include
+all packet and large-object bytes, unchanged inputs, callback pointers and
+writes, volatile register clobbers, saved GPR/FPR images, and SP/LR/PC. Exact
+matching remains **0/30 whole objects** and **0/90 function text plus symbolic
+relocation comparisons** in these new samples.
+
+Focused regression checks retain **1,114 identical compiled indexed objects**
+and **972 known exact matches** among 1,674 rows. Canaries 1821–2001 retain
+**2,626 identical objects** and **89 unchanged failures**; canaries 2002–2033
+retain **480 identical objects**. All fourteen configured GX units remain
+identical, and all ten configured AX units compile, with the other nine AX
+objects identical. Backend tests pass **1,604**, with the previously confirmed
+embedded-assembly failure excluded.
+
+Artifacts are under `target/static-member-alias-{canaries,real,index,recent,previous,library,ax-library}`.
+`target/static-member-alias-final-verification.json` pins the compiler and
+harness fingerprints and verifies **92 execution-tested object hashes** after
+the final rebuild. Full-project compilation, linking, and compiler-version
+matching remain unfinished; these focused counts are not a corpus parity estimate.
 
 ## Reusing guarded integer values, 2026-09-07
 
