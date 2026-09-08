@@ -22,6 +22,7 @@ mod body;
 mod branch_value_reuse;
 mod branch_cleanup;
 mod captures;
+mod member_displacements;
 mod casts;
 mod comparisons;
 #[cfg(test)]
@@ -1074,6 +1075,7 @@ fn lower_function_body(
     }
     generator.reuse_float_snapshot_loads(function);
     generator.materialize_incoming_stack_parameters()?;
+    generator.fold_retained_member_displacements();
     // Schedule on the virtual-register stream, then allocate. Ordering matters:
     // scheduling first means physical-register reuse cannot create false
     // dependencies that block a hoist, and allocation then colors the scheduled

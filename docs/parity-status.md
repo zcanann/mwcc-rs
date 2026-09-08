@@ -4,13 +4,63 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, retained global member addresses (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, folding retained member pointer displacements (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `d25f293695f7b63843564f9d4341830960f170f7ddf61b9ad404346651e604a3:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `8de277ec81e7bada487e372a9aada274c3f834072775785a02264b9b9d1cd488:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Folding captured member pointers into displacements, 2026-09-07
+
+The complete BfBB `__AXPrintStudio` function drops from **1,096 to 1,024 bytes**;
+the fresh GC/1.2.5n reference remains **1,016 bytes**. Removing the two captured
+member-pointer computations per channel leaves integer loads and stores using
+the retained studio base directly. The eight-byte size gap does not imply an
+eight-byte instruction mismatch: input reloads, narrow conversions, register
+allocation, scheduling, and final address rematerialization still differ.
+AXSPB retains **4/5 exact candidate functions**, **5/5 exact fresh reference
+functions**, and no unresolved relocations against the pinned original DOL.
+All five functions pass **5,120 three-way native comparisons** against fresh
+MWCC, the original executable, and the independent fade/accumulation model.
+
+A separate pass runs before scheduling and allocation. It folds an address
+move/add from the existing retained global base only when the destination is a
+virtual register with one dominating definition and every use is an integer
+memory base. It preserves the memory opcode and checked signed displacement.
+Escaping values, overwritten aliases or bases, update-form accesses, relocated
+instructions, overflowing displacements, bypassed definitions, back edges,
+jump tables, and opaque instruction streams remain outside the fold. Removal
+uses the shared branch, label, and relocation retargeting utility. The existing
+allocator owns the resulting base live range; no physical register rewrite or
+new version policy is introduced.
+
+Canaries **2036–2037** cover O4 and explicit O0, signed halfword and unsigned byte
+loads, word/halfword/byte updates, and positive and negative pointer indices
+through inline pointer parameters. Baseline, candidate, and fresh references
+compile **30/30 objects** across fifteen builds. All **15,360 paired native
+comparisons** pass independent models, including overflow and narrowing edges,
+every packet byte, callback observations and writes, volatile register
+clobbers, saved GPR/FPR images, and SP/LR/PC. The baseline also passes. Exact
+matching remains **0/30 whole objects** and **0/30 function text plus symbolic
+relocation comparisons** in the new samples.
+
+The thirty changed objects from canaries **2034–2035** pass another **23,040
+paired native comparisons**. The other **480/510** objects in the 2002–2035
+panel remain identical. The indexed panel retains **1,114 identical compiled
+objects** and **972 known exact matches** among 1,674 rows. Canaries 1821–2001
+retain **2,626 identical objects** and **89 unchanged failures**. All fourteen
+configured GX objects and the other nine configured AX objects remain identical;
+all ten AX units compile. Backend tests pass **1,608**, with the previously
+confirmed embedded-assembly failure excluded. Four focused pass tests also
+pass after the final cleanup.
+
+Artifacts are under `target/member-displacement-{canaries,old-canaries,real,index,recent,previous,library,ax-library}`.
+`target/member-displacement-final-verification.json` pins the compiler and
+harness fingerprints and verifies **182 execution-tested object hashes** after
+the final rebuild. Full-project compilation, linking, and compiler-version
+matching remain unfinished; these focused counts are not a corpus parity estimate.
 
 ## Reusing retained global bases for member addresses, 2026-09-07
 
