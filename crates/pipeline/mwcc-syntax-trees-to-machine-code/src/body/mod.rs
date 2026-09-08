@@ -199,6 +199,7 @@ mod member_linefeed;
 mod member_rect_control;
 mod member_equality_range_schedule;
 mod member_store_forwarding;
+mod available_integer_values;
 mod member_tab;
 mod member_store_fill;
 mod materialized_float_assignment;

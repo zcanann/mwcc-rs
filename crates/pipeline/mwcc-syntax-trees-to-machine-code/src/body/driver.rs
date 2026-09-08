@@ -1461,6 +1461,20 @@ impl Generator {
         // inline-asm helpers that lower directly at their call site.
         let calls_skipped_inline = self.inline_bodies.calls_required(function);
         let calls_inline_candidate = calls_skipped_inline || self.inline_bodies.calls_any(function);
+        if matches!(
+            self.behavior.optimization,
+            mwcc_versions::Optimization::O2
+                | mwcc_versions::Optimization::O3
+                | mwcc_versions::Optimization::O4
+        ) {
+            if let Some(rewritten) = super::available_integer_values::reuse(
+                function,
+                &self.globals,
+                &self.volatile_globals,
+            ) {
+                return self.evaluate_body(&rewritten);
+            }
+        }
         // Drop never-referenced, side-effect-free locals (an unused `int s = 0;`) — mwcc
         // emits nothing for them — then recompile the cleaned function.
         if let Some(cleaned) = remove_dead_locals(function) {

@@ -7,6 +7,28 @@
 use super::*;
 
 impl Generator {
+    /// A named signed quotient can feed its guard directly through CR0.
+    /// Run after symbolic edges are resolved so an independently reachable
+    /// compare is never removed, and every remaining index can be retargeted.
+    pub(crate) fn fold_signed_quotient_zero_tests(&mut self) {
+        if self.behavior.optimization == mwcc_versions::Optimization::O0
+            || !self.output.jump_tables.is_empty()
+            || self
+                .output
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::VerbatimWord(_)))
+        {
+            return;
+        }
+        for start in (0..self.output.instructions.len().saturating_sub(4)).rev() {
+            if let Some(record) = quotient_zero_record(&self.output.instructions, start) {
+                self.output.instructions[start + 2] = record;
+                crate::remove_instruction_retargeting_to_next(self, start + 3);
+            }
+        }
+    }
+
     /// Emit a signed comparison against zero by recording the arithmetic result.
     ///
     /// PowerPC arithmetic record forms set CR0 from the result itself, so an
@@ -134,6 +156,41 @@ impl Generator {
     }
 }
 
+fn quotient_zero_record(instructions: &[Instruction], start: usize) -> Option<Instruction> {
+    let [Instruction::ShiftRightAlgebraicImmediate { a: quotient, .. }, Instruction::ShiftRightLogicalImmediate {
+        a: correction,
+        s: sign_source,
+        shift: 31,
+    }, Instruction::Add { d, a, b }, Instruction::CompareWordImmediate {
+        a: compared,
+        immediate: 0,
+    }, Instruction::BranchConditionalForward {
+        options: 4 | 12,
+        condition_bit: 2,
+        ..
+    }] = instructions.get(start..start + 5)?
+    else {
+        return None;
+    };
+    if quotient != sign_source
+        || a != quotient
+        || b != correction
+        || d != compared
+        || instructions.iter().any(|instruction| {
+            matches!(instruction,
+            Instruction::Branch { target } | Instruction::BranchConditionalForward { target, .. }
+                if *target == start + 3)
+        })
+    {
+        return None;
+    }
+    Some(Instruction::AddRecord {
+        d: *d,
+        a: *a,
+        b: *b,
+    })
+}
+
 /// A shifted value subsequently narrowed by a constant mask lowers to one
 /// `rlwinm`. In truth position the same instruction can set CR0 directly.
 fn is_shifted_mask_truth_test(expression: &Expression) -> bool {
@@ -158,6 +215,38 @@ fn is_shifted_mask_truth_test(expression: &Expression) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quotient_record_requires_the_same_value_and_no_entry_at_the_compare() {
+        let mut instructions = vec![
+            Instruction::ShiftRightAlgebraicImmediate {
+                a: 0,
+                s: 0,
+                shift: 6,
+            },
+            Instruction::ShiftRightLogicalImmediate {
+                a: 4,
+                s: 0,
+                shift: 31,
+            },
+            Instruction::Add { d: 4, a: 0, b: 4 },
+            Instruction::CompareWordImmediate { a: 4, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 8,
+            },
+        ];
+        assert!(matches!(
+            quotient_zero_record(&instructions, 0),
+            Some(Instruction::AddRecord { d: 4, a: 0, b: 4 })
+        ));
+        instructions.push(Instruction::Branch { target: 3 });
+        assert!(quotient_zero_record(&instructions, 0).is_none());
+        instructions.pop();
+        instructions[3] = Instruction::CompareWordImmediate { a: 5, immediate: 0 };
+        assert!(quotient_zero_record(&instructions, 0).is_none());
+    }
 
     #[test]
     fn recognizes_a_constant_mask_of_a_shifted_value() {

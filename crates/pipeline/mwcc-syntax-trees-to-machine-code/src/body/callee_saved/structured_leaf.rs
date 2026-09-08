@@ -213,6 +213,7 @@ impl Generator {
         resolve_leaf_structured_returns(&mut self.output.instructions, epilogue);
         self.output.anonymous_label_bump += structured_hidden_label_count(&structured_statements);
         self.emit_epilogue_and_return();
+        self.fold_signed_quotient_zero_tests();
         Ok(true)
     }
 

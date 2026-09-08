@@ -5032,6 +5032,7 @@ impl Generator {
         self.schedule_structured_byte_call_arguments();
         self.schedule_structured_effecter_product_clamp();
         self.reuse_structured_float_clamp_literals();
+        self.fold_signed_quotient_zero_tests();
         Ok(true)
     }
 

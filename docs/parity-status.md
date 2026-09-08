@@ -4,13 +4,70 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, matching accumulator schedules across GameCube and Wii (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, guarded integer reuse and signed quotient zero tests (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `5366439c358013cd415802f52064c199160c428051ac82164af526870861cc88:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `fba65cc0d586aa8552b3bf60a8fea89cff412ea4db095368b383079bc88438d0:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Reusing guarded integer values, 2026-09-07
+
+The complete BfBB `__AXPrintStudio` function drops from **1,520 to 1,232 bytes**
+by sharing each guard's signed quotient with its body and recording the zero
+test on the quotient's final correction add. The fresh GC/1.2.5n reference is
+**1,016 bytes**. AXSPB retains **4/5 exact candidate functions**, **5/5 exact
+fresh reference functions**, and no unresolved relocations against the pinned
+original DOL. All five functions retain **5,120 three-way PowerPC execution
+comparisons** against fresh MWCC, the original executable, and an independent
+fade/accumulation model. This is progress toward the remaining mismatch, not an
+exact-output claim for `__AXPrintStudio`.
+
+A separate semantic pass tracks available named word computations through
+straight-line assignments and into dominated if arms. It reuses only equal
+expressions held in nonvolatile, unescaped locals with the same word type.
+Stores, calls, carrier/source reassignments, labels, and control-flow joins
+invalidate facts. Pointer loads and floating expressions are outside this
+pass. Existing liveness and register allocation own the resulting local copies.
+Reference probes place the reuse boundary at **O2**: O0/O1 repeat the quotient,
+while O2/O3/O4 share it. All fifteen measured builds confirm that boundary.
+
+A separate instruction fold records the final signed-quotient correction add
+when the next instructions compare that same result with zero and branch on
+CR0 equality. It rejects an independently reachable compare, jump-table bodies,
+and verbatim instruction streams; removal uses the existing branch, label, and
+relocation retargeting utility after symbolic edges have been resolved. O0
+preserves its separate compare.
+
+Canaries **2029–2033** cover all five optimization levels, repeated guarded
+computations, intervening global writes and callbacks, overwritten carriers,
+volatile input that changes between reads, and narrow intermediate values.
+Both compilers produce **75/75 objects**. The guarded quotient counts agree
+**75/75** (two at O0/O1, one at O2/O3/O4). All **230,400 paired native comparisons**
+pass independent models, including volatile read counts and observed values,
+callback effects and register clobbers, every global and neighboring byte,
+saved GPR/FPR images, and SP/LR/PC. Baseline execution also passes; this milestone
+improves optimization fidelity rather than closing a runtime miscompile.
+There are still **0/75 whole objects** and **0/450 function text plus symbolic
+relocation comparisons** exact; allocation, scheduling, and lower-level
+division selection remain open in these samples.
+
+The fifteen O4 objects from inline canary 2022 also change, and the 2022–2023
+panel passes **30,720 paired native comparisons** after remeasurement. The
+other **390/405** objects in the 2002–2028 panel remain identical, including all
+**75 exact accumulator objects** from the preceding milestone. The indexed
+panel retains **1,114 identical compiled objects** and **972 known exact
+matches** among 1,674 rows. Canaries 1821–2001 retain **2,626 identical objects**
+and **89 unchanged failures**; all fourteen complete GX objects and the other
+nine complete AX objects remain identical. Backend tests pass **1,604**, with
+the previously confirmed embedded-assembly failure excluded.
+
+Artifacts are under `target/guarded-values-{canaries,inline-canaries,real,index,recent,previous,library,ax-library}`.
+`target/guarded-values-final-verification.json` pins the compiler, harness, and
+execution-tested object hashes. Full-project compilation, linking, and
+compiler-version matching remain unfinished; these focused counts are not a
+corpus-wide parity estimate.
 
 ## Matching accumulator schedules across GameCube and Wii, 2026-09-07
 
