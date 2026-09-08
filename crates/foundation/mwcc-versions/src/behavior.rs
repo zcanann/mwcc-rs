@@ -1012,6 +1012,9 @@ pub struct Behavior {
     /// Whether contiguous GPR saves/restores use inline `stmw`/`lmw` rather
     /// than `_savegpr_N`/`_restgpr_N` helper calls.
     pub use_lmw_stmw: bool,
+    /// Cursor-loop dense frames use inline saves by default on linkage-first
+    /// builds; an explicit on/off overrides that generation's default.
+    pub cursor_frame_inline_saves: bool,
     /// Whether independent instructions may fill one another's latency slots.
     pub scheduler_enabled: bool,
     /// Whether floating multiply/add and multiply/subtract expressions may
@@ -1648,6 +1651,9 @@ impl Behavior {
             deferred_inlining: config.flags.inline_deferred,
             automatic_inlining_enabled: config.flags.automatic_inlining_enabled,
             use_lmw_stmw: config.flags.use_lmw_stmw,
+            cursor_frame_inline_saves: config.flags.use_lmw_stmw
+                || (!config.flags.use_lmw_stmw_explicit
+                    && config.build.profile.frame_convention() == FrameConvention::LinkageFirst),
             scheduler_enabled: config.flags.scheduler_enabled,
             contract_floating_point: config.flags.fp_contract,
             simplify_negated_float_arithmetic: config.flags.optimization != Optimization::O0
@@ -2966,6 +2972,19 @@ mod tests {
         let mut config = CompilerConfig::new(build::GC_1_3);
         config.flags.use_lmw_stmw = true;
         assert!(Behavior::resolve(&config).use_lmw_stmw);
+    }
+
+    #[test]
+    fn cursor_frame_save_defaults_and_explicit_overrides_follow_the_build() {
+        for (build, inline_default) in [(build::GC_1_2_5N, true), (build::GC_2_7, false)] {
+            let mut config = CompilerConfig::new(build);
+            assert_eq!(Behavior::resolve(&config).cursor_frame_inline_saves, inline_default);
+            config.flags.use_lmw_stmw_explicit = true;
+            config.flags.use_lmw_stmw = false;
+            assert!(!Behavior::resolve(&config).cursor_frame_inline_saves);
+            config.flags.use_lmw_stmw = true;
+            assert!(Behavior::resolve(&config).cursor_frame_inline_saves);
+        }
     }
 
     #[test]

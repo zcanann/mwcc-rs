@@ -1831,7 +1831,15 @@ impl Generator {
             && eager_saved_locals.is_empty()
             && saved_parameters.len() == 3
             && matches!(count, 5 | 6);
-        let dense_frame = uses_dense_saved_register_range(
+        let dense_cursor_frame = global_array_cursors.is_some()
+            && self.behavior.optimization >= mwcc_versions::Optimization::O3
+            && (5..=18).contains(&total_home_count)
+            && !with_frame_array
+            && aggregate_frame_locals.is_empty()
+            && frame_scalar_locals.is_empty()
+            && frame_scalar_parameters.is_empty()
+            && saved_float_count == 0;
+        let dense_frame = dense_cursor_frame || uses_dense_saved_register_range(
             with_frame_array,
             !aggregate_frame_locals.is_empty(),
             eager_saved_locals.len(),
@@ -3016,6 +3024,12 @@ impl Generator {
         self.non_leaf = true;
         self.structured_global_byte_loop_layout_owner = global_byte_loop_layout.is_some();
         self.structured_broad_global_base_layout_owner = broad_global_base_layout.is_some();
+        if dense_cursor_frame && self.behavior.frame_convention == FrameConvention::LinkageFirst {
+            // Measured cursor frames retain a doubleword per saved GPR,
+            // rounded to the legacy optimized frame's 16-byte boundary.
+            let cursor_bytes = ((8 * frame_saved_count + 15) / 16 * 16) as i16;
+            plan.frame_size = plan.frame_size.max(cursor_bytes);
+        }
         self.frame_size = plan.frame_size;
         self.callee_saved = if array_pool_plan.is_some() {
             (frame_first_saved as u8..=31).rev().collect()
@@ -3171,11 +3185,16 @@ impl Generator {
             && self.behavior.use_lmw_stmw
             && !pooled_dense_inline_save;
         let dense_save_helper = dense_saved_range
-            && self.behavior.frame_convention == FrameConvention::Predecrement
             && !pooled_dense_inline_save
-            && !dense_predecrement_inline_save;
-        let dense_inline_save =
-            dense_saved_range && self.behavior.frame_convention == FrameConvention::LinkageFirst;
+            && if dense_cursor_frame {
+                !self.behavior.cursor_frame_inline_saves
+            } else {
+                self.behavior.frame_convention == FrameConvention::Predecrement
+                    && !dense_predecrement_inline_save
+            };
+        let dense_inline_save = dense_saved_range
+            && self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && !dense_save_helper;
         if dense_saved_range && array_pool_plan.is_none() {
             self.output.pre_scheduled = true;
         }
@@ -3302,6 +3321,11 @@ impl Generator {
                 },
             ]);
         }
+        if dense_cursor_frame && dense_save_helper {
+            // Preserve entry registers before an anchor initializer acquires
+            // any register in the helper's saved suffix.
+            self.emit_structured_gpr_save_helper(frame_first_saved);
+        }
         if let Some(forwarding) = &entry_call_forwarding {
             forwarding.emit(self);
             // The entry guard's record-form forwarding consumes one optimizer
@@ -3424,17 +3448,8 @@ impl Generator {
                 );
             }
         }
-        if dense_save_helper {
-            self.output.instructions.push(Instruction::AddImmediate {
-                d: 11,
-                a: 1,
-                immediate: plan.frame_size,
-            });
-            let helper = format!("_savegpr_{frame_first_saved}");
-            self.record_relocation(RelocationKind::Rel24, &helper);
-            self.output
-                .instructions
-                .push(Instruction::BranchAndLink { target: helper });
+        if dense_save_helper && !dense_cursor_frame {
+            self.emit_structured_gpr_save_helper(frame_first_saved);
         }
         if aggregate_call_copy_plan.is_some() {
             let image_locals: Vec<_> = aggregate_frame_locals

@@ -4,13 +4,73 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, pointer-call composition and interior member-value reuse (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, dense cursor-loop frames and explicit GPR save modes (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `27965de483024b56163e50e6e89cf98a3e573431902dae37e5ead5db4617d772:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `a796186f20a1c9cddb2bb88e1bd9deebaeedfc27530dd98ff1c1e17aa01f0b24:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Dense cursor-loop frames and explicit GPR save modes, 2026-09-08
+
+BfBB `__AXVPBInit` now selects a contiguous GPR save range for its normalized
+array cursors. Code shrinks **564 → 524 bytes** on the oldest four builds and
+**572 → 548** on the other eleven. Reference sizes remain 512/520/548;
+matching size on GC 3/Wii is not matching output. The initializer is still
+**0/15 exact**, and the standalone `__AXSetPBDefault` remains **15/15 exact**.
+Only the initializer changes within each full AXVPB source object.
+
+The selected legacy frame grows **40 → 48 bytes**, matching the reference's
+stack allocation and `stmw r26,24(r1)` / `lmw r26,24(r1)` save image. The newer
+candidate frames remain 32 bytes and use save/restore helpers by default.
+They still retain five GPRs rather than the reference's six: shared BSS-anchor
+selection, cursor/index home order, repeated value materialization, and
+scheduling remain matching work. All **240 native comparisons** pass across
+baseline, candidate, fresh references, the original GQPE78 executable, and the
+full-memory model, including nonvolatile GPR/FPR preservation and callback
+clobbers. Supplemental full-source flags still remove `-W err` on every side.
+
+Reduced references establish a five-live-GPR threshold for these optimized
+cursor-loop frames. The existing generic frame selector waited until nine
+unless inline multiple-register saves were explicitly enabled. The normalized
+cursor owner now selects the existing dense-frame path at O3+ for five through
+eighteen saved homes, with no automatic array/aggregate, addressable scalar
+frame, or saved floating homes. Other frame owners keep their established
+admission rules. Legacy cursor frames reserve a minimum of eight bytes per
+saved GPR, rounded to 16 bytes; the minimum does not shrink an existing frame.
+
+The command-line model now distinguishes an omitted `-use_lmw_stmw` from an
+explicit override. The cursor-frame behavior resolves omission to inline
+`stmw/lmw` on linkage-first builds and `_savegpr_N` / `_restgpr_N` calls on newer
+builds; explicit `on` or `off` wins on all fifteen builds. Existing owners still
+consume their established flag policy. Cursor helper saves execute before any
+anchor initializer can acquire a saved register. Both save sites share one
+emitter for the ABI's r11 caller-stack setup and helper relocation.
+
+Canaries **2114–2120** add one through eight parallel array streams, a live
+parameter, and an eager volatile-source local across a callback. The seven
+modes are default O4, inline saves, helper saves, O2, schedule-off, O0, and debug.
+All **105 objects / 1,050 functions** compile on baseline, candidate, and all
+references. **435 functions change**, but exact counts remain **0/1,050**:
+these probes expose remaining allocation and scheduling differences. All
+**16,800 native comparisons** pass on every side, checking complete array and
+guard memory, callback arguments and effects, saved registers, and return state.
+
+Regression checks preserve **1,110** older compiled objects, **2,626** recent
+compiled objects and 89 existing failures, and all **1,674** indexed statuses
+and object comparisons (1,114 compiled, 972 previously exact). **570** preceding
+BSS, fill, split-address, array-cursor, and inline-pointer objects are identical
+to their validated predecessors. All ten AX and fourteen GX sources compile;
+nine AX objects and all fourteen GX objects are unchanged. Tests: **1,652**
+backend passes with the existing nested-assembly inline test excluded, **56**
+version-policy passes, and the command-line save-mode test passes. No full
+corpus rerun was performed.
+
+Local evidence: `target/dense-cursor-final-verification.json` binds compiler
+and harness fingerprints, 360 execution-tested object hashes, and 570 preserved
+objects. `target/verify_dense_cursor_final.py` checks those bindings; full-source,
+canary, native, and regression results live under `target/dense-cursor-*`.
 
 ## Pointer-call composition and interior member-value reuse, 2026-09-08
 

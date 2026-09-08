@@ -273,6 +273,9 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
             // restores. Accept `off` too so the last occurrence wins.
             "-use_lmw_stmw" => {
                 index += 1;
+                if matches!(arguments.get(index).map(String::as_str), Some("on" | "off")) {
+                    invocation.flags.use_lmw_stmw_explicit = true;
+                }
                 invocation.flags.use_lmw_stmw = match arguments.get(index).map(String::as_str) {
                     Some("on") => true,
                     Some("off") => false,
@@ -6997,6 +7000,8 @@ mod tests {
     fn command_line_lmw_stmw_mode_is_last_wins() {
         let on = parse_invocation(&["-use_lmw_stmw".into(), "on".into()]);
         assert!(on.flags.use_lmw_stmw);
+        assert!(on.flags.use_lmw_stmw_explicit);
+        assert!(!parse_invocation(&[]).flags.use_lmw_stmw_explicit);
 
         let last_wins = parse_invocation(&[
             "-use_lmw_stmw".into(),
@@ -7005,6 +7010,7 @@ mod tests {
             "off".into(),
         ]);
         assert!(!last_wins.flags.use_lmw_stmw);
+        assert!(last_wins.flags.use_lmw_stmw_explicit);
     }
 
     #[test]

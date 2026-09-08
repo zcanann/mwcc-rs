@@ -122,6 +122,8 @@ pub struct Flags {
     /// `-use_lmw_stmw on` asks mwcc to save and restore contiguous GPR ranges
     /// with inline `stmw`/`lmw` instructions instead of EABI helper calls.
     pub use_lmw_stmw: bool,
+    /// Distinguish an explicit override from the build's default save policy.
+    pub use_lmw_stmw_explicit: bool,
     /// `-schedule off` disables mwcc's instruction-overlap scheduler while
     /// leaving optimization and register allocation enabled.
     pub scheduler_enabled: bool,
@@ -163,6 +165,7 @@ impl Default for Flags {
             string_literals_packed: false,
             pooling_enabled: true,
             use_lmw_stmw: false,
+            use_lmw_stmw_explicit: false,
             scheduler_enabled: true,
             scheduling_model: SchedulingModel::Default,
             fp_contract: true,

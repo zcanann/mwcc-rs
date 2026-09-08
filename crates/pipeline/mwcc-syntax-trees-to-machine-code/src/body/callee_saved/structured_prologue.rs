@@ -10,6 +10,19 @@
 #[allow(unused_imports)]
 use super::*;
 
+impl Generator {
+    pub(super) fn emit_structured_gpr_save_helper(&mut self, first_saved: usize) {
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 11,
+            a: 1,
+            immediate: self.frame_size,
+        });
+        let helper = format!("_savegpr_{first_saved}");
+        self.record_relocation(RelocationKind::Rel24, &helper);
+        self.output.instructions.push(Instruction::BranchAndLink { target: helper });
+    }
+}
+
 pub(super) fn saved_home_stores_precede_initialization(
     frame_convention: FrameConvention,
     eager_local_count: usize,

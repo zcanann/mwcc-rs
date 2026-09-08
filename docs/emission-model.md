@@ -189,3 +189,21 @@ Version-specific schedules select when each value becomes ready, and ordinary
 virtual-register liveness controls placement within the surrounding function.
 Canaries 2068–2071 cover guarded regions; 2104–2113 exercise inline composition,
 volatile stores, callbacks, and pointer rebinding.
+
+## Dense saves for normalized array cursors
+
+At O3+, a register-only normalized global-array cursor loop selects the dense
+frame owner once five GPR homes survive calls (at most the ABI's eighteen saved
+GPRs). Automatic arrays/aggregates, addressable scalar frames, and saved floating
+homes retain their existing frame owners. Legacy cursor frames reserve at least
+eight bytes per saved GPR, rounded to 16 bytes. This is a layout minimum rather
+than a rewrite of already placed automatic storage.
+
+Cursor save mode is a resolved version policy. An omitted `-use_lmw_stmw`
+selects inline multiple-register instructions on linkage-first builds and helper
+calls on newer builds. An explicit override wins. The existing boolean remains
+available to older owners; the explicit bit lets a measured owner distinguish
+default from `off`. Helper saves precede anchor initialization, preserving the
+incoming saved-register image before any new value can occupy it. Canaries
+2114–2120 vary live cursor count, parameter/local survivors, optimization, debug,
+scheduling, and both explicit save modes.
