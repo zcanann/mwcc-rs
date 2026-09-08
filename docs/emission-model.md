@@ -123,3 +123,20 @@ entry. Moving a loop-entry value above a delayed stack update also moves the
 backedge there, incorrectly allocating another frame per iteration. The plain
 frame scheduler now treats those entries as a boundary. Canaries 2082–2088
 exercise both loop expansion and this frame-composition requirement.
+
+## Shared address halves in narrow stores
+
+`split_address_stores` builds a register-value graph within straight-line
+halfword-store regions before allocation. It follows copies, signed 16-bit
+address additions, and logical shifts by 16. Equal address/high-half values
+share virtual homes; a zero-offset low half uses its input register directly.
+The proof rejects mutated inputs or store bases, escaping scratch/return homes,
+body-owned symbolic fixups, and opaque/indirect control flow. Branch entries
+split regions. Store aliases do not invalidate these register-only values.
+
+At O2 or with scheduling disabled, values materialize on first use. O3/O4
+materialize later independent values after the first store. GC 3/Wii can
+exchange the first matching high/low stores in a complete ordinary leaf when
+both target disjoint fields of the same nonvolatile base. The version policy
+is independent of value recognition; volatile stores retain source order.
+Canaries 2089–2098 and the full BfBB AX initializer exercise this owner.

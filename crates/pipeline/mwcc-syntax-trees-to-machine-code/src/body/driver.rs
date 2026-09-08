@@ -3613,7 +3613,9 @@ impl Generator {
                         }
                         _ => false,
                     };
-                if last_is_computed && !dependent_on_previous {
+                if last_is_computed && !dependent_on_previous
+                    && !crate::split_address_stores::supports_source_run(function)
+                {
                     return Err(Diagnostic::error("a run of pointer stores whose last value mwcc latency-hoists needs the scheduler (roadmap)"));
                 }
             }

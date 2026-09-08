@@ -821,6 +821,8 @@ pub struct Behavior {
     pub member_value_schedule: MemberValueSchedule,
     /// Constant-trip pointer-fill expansion policy.
     pub fixed_fill_loop_style: FixedFillLoopStyle,
+    /// A ready low-half store may precede its high-half partner in a leaf.
+    pub split_address_low_store_first: bool,
     /// Issue order for stores fed by an overlapping two-value schedule.
     pub computed_store_issue_style: ComputedStoreIssueStyle,
     /// Placement of a returned local across source-level arithmetic reassignments.
@@ -1364,6 +1366,7 @@ impl Behavior {
             constant_store_schedule_style: config.build.profile.constant_store_schedule_style(),
             member_value_schedule: config.build.profile.member_value_schedule(),
             fixed_fill_loop_style: config.build.profile.fixed_fill_loop_style(),
+            split_address_low_store_first: config.build.profile.split_address_low_store_first(),
             computed_store_issue_style: config.build.profile.computed_store_issue_style(),
             value_tracked_mutation_style: config.build.profile.value_tracked_mutation_style(),
             negative_power_of_two_multiply_style: config
@@ -1995,6 +1998,8 @@ mod tests {
                 FixedFillLoopStyle::DivisorTen
             };
             assert_eq!(Behavior::resolve(&CompilerConfig::new(build)).fixed_fill_loop_style, expected, "{label}");
+            assert_eq!(Behavior::resolve(&CompilerConfig::new(build)).split_address_low_store_first,
+                expected == FixedFillLoopStyle::PacketEight, "{label}");
         }
     }
 

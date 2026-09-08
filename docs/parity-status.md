@@ -4,13 +4,82 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, constant pointer-fill loops and prologue backedge safety (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, shared pointer halves and indexed field-store compilation (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `e2b6382a9abb55491ff1fbd70a7a57432773809d3ef657d9cd9f573a722741b3:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `ce730f0eecacfa6d4fc5f74dfe2b520630df4c4ffa4f5dbed732b112a0a60cdc:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Shared pointer halves and indexed field stores, 2026-09-08
+
+The complete BfBB `__AXVPBInit` now shares repeated high/low pointer values,
+removing **thirteen instructions / 52 bytes on every reference build**.
+The oldest four builds shrink **592 → 540 bytes**, and the other eleven
+**588 → 536**, versus 512/520/548-byte references. Only this function changes
+in each full-source object; `__AXSetPBDefault` retains **15/15 exact matches**.
+All **240 native cases** still agree across baseline, candidate, fresh
+references, the original GQPE78 executable, and the independent full-memory
+model. The initializer remains **0/15 exact**: frame layout, pointer induction,
+inlining, and remaining setup/store scheduling are still outstanding. The
+supplemental complete-source panel keeps `-W err` removed on every side.
+
+A pre-allocation value graph follows register copies, constant pointer offsets,
+and logical high-half extraction across halfword stores. It shares the computed
+address and high half and uses the original pointer directly for a zero-offset
+low half. Memory aliases do not invalidate register-derived values; all store
+targets remain intact. Branch entries split regions. Symbolic fixups, mutated
+input/address registers, escaping scratch values, return-home definitions,
+opaque assembly, jump tables, and additional entry points exclude the owner.
+New values use virtual registers and ordinary CFG liveness/allocation.
+
+O2 and schedule-off materialize values at first use. O3/O4 issue the first
+store, then the other independent address values, then their remaining stores.
+`split_address_low_store_first` independently selects GC 3/Wii's ordinary leaf
+exchange: a ready low half can precede its matching high-half store when both
+write disjoint fields of the same positively nonvolatile pointer. The exchange
+requires a complete frameless leaf run; volatile stores and larger function
+fragments preserve source order. O0 keeps ordinary scalar lowering.
+
+The old indexed-pointer-store scheduling rejection now admits runs whose
+halfword targets are parameter-based constant indices/dereferences and whose
+values are parameter casts, constant offsets, or high halves. These use existing
+scalar lowering and the same value graph; other rejected families retain their
+existing diagnostics.
+
+Canaries **2089–2098** add eleven forms across member/indexed fields, O4, O3,
+O2, schedule-off, O0, and debug: shared halves, positive/negative offsets, three
+addresses, low-first source order, volatile stores, overwritten fields, returned
+pointers, callbacks, guards, and pointer mutation. Candidate and reference
+compile **150/150 objects**; the baseline compiles **90 member objects** and
+rejects all **60 indexed objects**. On the member subset, exact function text
+plus symbolic relocations improves **0 → 463/990**. The newly compiling indexed
+subset contributes **281/660 exact functions**, for **744/1,650** overall.
+No existing exact functions are lost; whole objects remain **0/150**.
+
+All **211,200 candidate/reference native cases** pass, and the baseline's
+**126,720 executable member cases** also pass. Checks cover equal and partially
+overlapping output pointers, randomized surrounding memory, high/low arithmetic
+boundaries and wraparound, callback memory effects and volatile-register
+clobbers, returned pointers, saved registers, SP, LR, and PC. Volatile cases
+also check every store's address, width, value, and order.
+
+Focused regressions retain **1,110 identical objects** from 2002–2075,
+**1,114 identical compiled objects / 972 known exact matches** in the indexed
+panel, and **2,626 identical objects / 89 unchanged failures** from 1821–2001.
+The preceding fill and BSS-boundary panels retain all **195 candidate object
+hashes**, preserving their prior execution evidence and exact counts. All ten
+AX and fourteen GX units compile under GC/1.2.5n project flags; only AXVPB
+changes. Tests pass **1,643 backend** cases, including five new value-graph
+proof cases, and **55 version** cases, with the existing embedded-assembly
+backend test excluded.
+
+Artifacts are under `target/split-address-{canaries,versions,older,index,recent,library,ax-library}`.
+`target/split-address-final-verification.json` recompiles candidate panels,
+binds **435 execution-tested object hashes**, and records the 195 preserved
+preceding objects against the final compiler and harness. Complete-project
+compilation, linking, and matching remain unfinished.
 
 ## Constant pointer-fill loops and prologue backedges, 2026-09-08
 

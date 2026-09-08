@@ -1569,6 +1569,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         BitFieldLoadPlacement::Scratch
     }
 
+    fn split_address_low_store_first(&self) -> bool {
+        false
+    }
+
     fn fixed_fill_loop_style(&self) -> FixedFillLoopStyle {
         FixedFillLoopStyle::DivisorTen
     }
@@ -2100,6 +2104,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn split_address_low_store_first(&self) -> bool {
+        true
+    }
+
     fn fixed_fill_loop_style(&self) -> FixedFillLoopStyle {
         FixedFillLoopStyle::PacketEight
     }
@@ -2379,6 +2387,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn split_address_low_store_first(&self) -> bool {
+        true
+    }
+
     fn fixed_fill_loop_style(&self) -> FixedFillLoopStyle {
         FixedFillLoopStyle::PacketEight
     }
