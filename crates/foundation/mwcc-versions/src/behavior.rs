@@ -15,6 +15,7 @@ use crate::config::CompilerConfig;
 use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal, SchedulingModel};
 use crate::profile::{
     SmallConstantMultiplyStyle,
+    NegatedUpdateScheduleStyle,
     AccumulatorIssueStyle,
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CallDispatcherStyle, ClearedLowBitPowerSelectStyle, CoefficientTableRelocationStyle,
@@ -809,6 +810,8 @@ pub struct Behavior {
     pub constant_multiply_store_conversion_style: NarrowStoreConversionStyle,
     /// Instruction family for small factors one below a power of two.
     pub small_constant_multiply_style: SmallConstantMultiplyStyle,
+    /// Placement of a pending negation around a scalar update's subtraction.
+    pub negated_update_schedule_style: NegatedUpdateScheduleStyle,
     /// Placement of the containing-unit load for source-level bit-field reads.
     pub bit_field_load_placement: BitFieldLoadPlacement,
     /// Scheduling of distinct constant values consumed by consecutive stores.
@@ -1342,6 +1345,7 @@ impl Behavior {
                 config.build.profile.narrow_store_conversion_style()
             },
             small_constant_multiply_style: config.build.profile.small_constant_multiply_style(),
+            negated_update_schedule_style: config.build.profile.negated_update_schedule_style(),
             constant_multiply_store_conversion_style: if config.flags.optimization == Optimization::O0
                 && config.build.profile.narrow_store_conversion_style()
                     == NarrowStoreConversionStyle::ElideRedundantConversion
@@ -2209,6 +2213,22 @@ mod tests {
             assert_eq!(
                 behavior.narrow_call_zero_test_style,
                 narrow_call_zero_test_style
+            );
+        }
+    }
+
+    #[test]
+    fn negated_update_schedules_retain_the_legacy_subtraction_boundary() {
+        for (build, expected) in [
+            (build::GC_1_1, NegatedUpdateScheduleStyle::AfterSubtract),
+            (build::GC_1_2_5N, NegatedUpdateScheduleStyle::AfterSubtract),
+            (build::GC_1_3_2, NegatedUpdateScheduleStyle::BeforeSubtract),
+            (build::GC_3_0A3, NegatedUpdateScheduleStyle::BeforeSubtract),
+            (build::WII_1_0, NegatedUpdateScheduleStyle::BeforeSubtract),
+        ] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(build)).negated_update_schedule_style,
+                expected
             );
         }
     }

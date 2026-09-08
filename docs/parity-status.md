@@ -4,13 +4,61 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, constant-division load scheduling (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, negated delta scheduling (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `5e72fc8868de5dd4f2fd6428b391701fe20915c9203ec62a43e3fcd1d4efbd2d:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `18f05b5f754fd12e2d1d89fcd24b351fee87b7176fff41d8a527576f030b3641:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Negated delta scheduling, 2026-09-08
+
+The complete BfBB `__AXPrintStudio` now computes all nine negated deltas before
+their host-update multiplies, matching that part of the reference schedule.
+It matches **213/254 linked instruction words at their reference offsets**, up
+from **204/254**, and remains **1,016 bytes**. The allocation of the multiply
+result and host reload still differs, as does the entry schedule. AXSPB retains
+**4/5 exact candidate functions**, **5/5 exact fresh reference functions**, no
+unresolved relocations, and **5,120 passing three-way native comparisons**
+against fresh GC/1.2.5n, the original DOL, and the independent model.
+
+A separate scheduling pass recovers the independent update value hidden by
+r0 reuse. The global update receives a virtual temporary so the negated value
+can occupy r0 earlier while memory operations retain their source order.
+Version profiles put a pending negation after the subtraction in early
+GameCube builds and before it in later builds. A preceding word store allows
+the negation to lead the multiply/load sequence. The pass requires an enabled
+scheduler and O2 or higher, an unchanged delta, a matching direct-SDA word
+load/store pair, and a terminal narrow store. Incoming control-flow edges,
+relocations outside the memory pair, and opaque flow prevent an unsafe move;
+branch entries and instruction metadata are remapped with the schedule.
+
+Canaries **2052–2055** cover thirteen forms across fifteen builds at O4, O2,
+explicit schedule-off, and O0: byte/halfword deltas, positive and negative
+multipliers, unsigned hosts, live and changed deltas, volatile host updates,
+calls, computed locals, clamping, and preceding stores. All sides compile
+**60/60 objects**. Exact function text plus symbolic relocation comparisons
+increase **242 → 298 of 780**; whole-object matching remains **0/60**. All
+**199,680 paired native comparisons** pass, including aliases between volume,
+host, narrow output, and the final live-value store; signed wrap boundaries;
+callback effects and clobbers; volatile reads; neighboring bytes; saved GPR/FPR
+images; and SP/LR/PC. Baseline and references also have no execution failures.
+
+The fifteen changed older objects from canary 2022 pass another **15,360 paired
+native comparisons**. The other **735/750 objects** in the 2002–2051 panel
+remain identical. The indexed panel retains **1,114 identical compiled objects**
+and **972 known exact matches**, and canaries 1821–2001 retain **2,626 identical
+objects** and **89 unchanged failures**. All fourteen configured GX objects and
+the other nine AX objects remain identical; all ten AX units compile. Backend
+tests pass **1,622**, with the previously confirmed embedded-assembly failure
+excluded; all **52 version tests** pass.
+
+Artifacts are under `target/early-negate-{canaries,old-inline,real,index,recent,previous,library,ax-library}`.
+`target/early-negate-final-verification.json` pins the compiler/harness and
+verifies **212 execution-tested object hashes** after the final rebuild.
+Full-project compilation, linking, and matching across versions remain
+unfinished; these focused counts are not a corpus parity estimate.
 
 ## Constant-division load scheduling, 2026-09-08
 

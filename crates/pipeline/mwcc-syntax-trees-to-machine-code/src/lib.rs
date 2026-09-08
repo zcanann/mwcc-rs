@@ -67,6 +67,7 @@ mod frexp_family;
 mod generator;
 mod global_memory_schedule;
 mod constant_division_schedule;
+mod negated_update_schedule;
 mod inline_expansion;
 mod inline_sqrtf;
 mod inline_source_order;
@@ -1078,6 +1079,7 @@ fn lower_function_body(
     generator.materialize_incoming_stack_parameters()?;
     generator.fold_retained_member_displacements();
     generator.schedule_constant_division_loads();
+    generator.schedule_negated_global_updates();
     // Schedule on the virtual-register stream, then allocate. Ordering matters:
     // scheduling first means physical-register reuse cannot create false
     // dependencies that block a hoist, and allocation then colors the scheduled

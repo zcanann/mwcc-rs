@@ -703,6 +703,13 @@ pub enum ValueTrackedMutationStyle {
     InPlaceResultRegister,
 }
 
+/// Placement of a pending negated delta beside a scalar global update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NegatedUpdateScheduleStyle {
+    AfterSubtract,
+    BeforeSubtract,
+}
+
 /// Lowering of small factors one below a power of two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmallConstantMultiplyStyle {
@@ -1541,6 +1548,10 @@ pub trait CodegenProfile: core::fmt::Debug {
 
     fn value_tracked_mutation_style(&self) -> ValueTrackedMutationStyle {
         ValueTrackedMutationStyle::InlineExpression
+    }
+
+    fn negated_update_schedule_style(&self) -> NegatedUpdateScheduleStyle {
+        NegatedUpdateScheduleStyle::BeforeSubtract
     }
 
     fn small_constant_multiply_style(&self) -> SmallConstantMultiplyStyle {
@@ -2781,6 +2792,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn negated_update_schedule_style(&self) -> NegatedUpdateScheduleStyle {
+        NegatedUpdateScheduleStyle::AfterSubtract
+    }
+
     fn posttest_readback_high_first(&self) -> bool {
         true
     }
