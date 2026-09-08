@@ -14,7 +14,7 @@
 use crate::config::CompilerConfig;
 use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal, SchedulingModel};
 use crate::profile::{
-    SmallConstantMultiplyStyle,
+    SmallConstantMultiplyStyle, MemberValueSchedule,
     NegatedUpdateScheduleStyle, DivisionAddressSchedule,
     AccumulatorIssueStyle,
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
@@ -818,6 +818,7 @@ pub struct Behavior {
     pub bit_field_load_placement: BitFieldLoadPlacement,
     /// Scheduling of distinct constant values consumed by consecutive stores.
     pub constant_store_schedule_style: ConstantStoreScheduleStyle,
+    pub member_value_schedule: MemberValueSchedule,
     /// Issue order for stores fed by an overlapping two-value schedule.
     pub computed_store_issue_style: ComputedStoreIssueStyle,
     /// Placement of a returned local across source-level arithmetic reassignments.
@@ -1359,6 +1360,7 @@ impl Behavior {
             },
             bit_field_load_placement: config.build.profile.bit_field_load_placement(),
             constant_store_schedule_style: config.build.profile.constant_store_schedule_style(),
+            member_value_schedule: config.build.profile.member_value_schedule(),
             computed_store_issue_style: config.build.profile.computed_store_issue_style(),
             value_tracked_mutation_style: config.build.profile.value_tracked_mutation_style(),
             negative_power_of_two_multiply_style: config
@@ -1977,6 +1979,35 @@ impl Behavior {
 mod tests {
     use super::*;
     use crate::{build, flags::CharDefault};
+
+    #[test]
+    fn member_value_schedules_follow_the_measured_build_families() {
+        for (label, expected) in [
+            ("GC/1.1", MemberValueSchedule::FirstStore),
+            ("GC/1.1p1", MemberValueSchedule::AddressEarly),
+            ("GC/1.2.5n", MemberValueSchedule::FirstStore),
+            ("GC/1.3", MemberValueSchedule::TwoValues),
+            ("GC/2.7", MemberValueSchedule::TwoValues),
+            (
+                "GC/3.0a3p1",
+                MemberValueSchedule::ReadyValues {
+                    ordered_issue_width: 2,
+                },
+            ),
+            (
+                "Wii/1.0",
+                MemberValueSchedule::ReadyValues {
+                    ordered_issue_width: 1,
+                },
+            ),
+        ] {
+            let build = build::by_label_experimental(label).unwrap();
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(build)).member_value_schedule,
+                expected
+            );
+        }
+    }
 
     #[test]
     fn only_the_patched_233_build_delays_division_address_completion() {

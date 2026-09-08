@@ -58,9 +58,19 @@ order stays fixed; the selected version schedule moves only independent value
 materializations. Each unique value receives a fresh virtual register with a
 scratch preference. Reverse consumer groups let later values take the first
 legal homes, while liveness keeps the member base and overlapping constants
-separate. No post-allocation physical recoloring is needed. The owner currently
-covers the old interleaved schedule with two or three unique values; control
+separate. No post-allocation physical recoloring is needed. The owner covers
+two or three unique values; control
 flow, loads, calls, indexed metadata, and non-void returns decline the owner.
+
+The independent `MemberValueSchedule` policy now covers all fifteen builds.
+First-store, two-value, patched early-address, and GC 3/Wii ready-value schedules
+operate on the same graph. Ready-value order prefers shared values, then the
+interior address, then single-use literals, preserving first-use ties. Positive
+nonvolatile-pointer facts enable that ordinary schedule; ordered pointers use
+their build's issue window and leading source value. Store order is always
+preserved. Schedule-off retains shared values but materializes them at first
+use. Register preferences and reverse allocation order remain independent of
+these instruction-order choices, so liveness determines reuse in every case.
 
 ## Original problem statement
 

@@ -681,6 +681,21 @@ pub enum ConstantStoreScheduleStyle {
     InterleavedPairs,
 }
 
+/// Value issue order for a leaf member initialization containing an interior pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberValueSchedule {
+    /// Commit the leading value before materializing the remaining values.
+    FirstStore,
+    /// Issue two values in first-use order, then commit the leading store.
+    TwoValues,
+    /// Bring the interior pointer alongside the leading immediate value.
+    AddressEarly,
+    /// Prioritize shared values, then the address, then single-use literals.
+    /// Ordered pointers retain the leading source value and the build's issue
+    /// width (one for Wii, two for GC 3); memory stores retain source order.
+    ReadyValues { ordered_issue_width: u8 },
+}
+
 /// Store issue order after a two-value overlap schedule has materialized both
 /// results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1545,6 +1560,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         BitFieldLoadPlacement::Scratch
     }
 
+    fn member_value_schedule(&self) -> MemberValueSchedule {
+        MemberValueSchedule::TwoValues
+    }
+
     fn constant_store_schedule_style(&self) -> ConstantStoreScheduleStyle {
         ConstantStoreScheduleStyle::PreloadAll
     }
@@ -2068,6 +2087,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn member_value_schedule(&self) -> MemberValueSchedule {
+        MemberValueSchedule::ReadyValues { ordered_issue_width: 2 }
+    }
+
     fn small_constant_multiply_style(&self) -> SmallConstantMultiplyStyle {
         SmallConstantMultiplyStyle::ShiftSubtract
     }
@@ -2339,6 +2362,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn member_value_schedule(&self) -> MemberValueSchedule {
+        MemberValueSchedule::ReadyValues { ordered_issue_width: 1 }
+    }
+
     fn small_constant_multiply_style(&self) -> SmallConstantMultiplyStyle {
         SmallConstantMultiplyStyle::ShiftSubtract
     }
@@ -2733,6 +2760,7 @@ impl CodegenProfile for Gc132Build81 {
 /// remain under characterization, so this profile is experimental.
 #[derive(Debug)]
 pub struct Gc233Build163 {
+    member_value_schedule: MemberValueSchedule,
     division_address_schedule: DivisionAddressSchedule,
     global_load_pair_style: GlobalLoadPairStyle,
     byte_word_transfer_style: ByteWordTransferStyle,
@@ -2748,6 +2776,7 @@ pub struct Gc233Build163 {
 }
 
 pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
+    member_value_schedule: MemberValueSchedule::FirstStore,
     division_address_schedule: DivisionAddressSchedule::CompleteBeforeDividend,
     global_load_pair_style: GlobalLoadPairStyle::SerialExplicit,
     saved_call_token_style: SavedCallTokenStyle::LegacyInterleaved,
@@ -2763,6 +2792,7 @@ pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
 };
 
 pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
+    member_value_schedule: MemberValueSchedule::FirstStore,
     division_address_schedule: DivisionAddressSchedule::CompleteBeforeDividend,
     global_load_pair_style: GlobalLoadPairStyle::SerialExplicit,
     saved_call_token_style: SavedCallTokenStyle::LegacyInterleaved,
@@ -2778,6 +2808,7 @@ pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
 };
 
 pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
+    member_value_schedule: MemberValueSchedule::FirstStore,
     division_address_schedule: DivisionAddressSchedule::CompleteBeforeDividend,
     global_load_pair_style: GlobalLoadPairStyle::SerialExplicit,
     saved_call_token_style: SavedCallTokenStyle::LegacyStackLast,
@@ -2793,6 +2824,7 @@ pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
 };
 
 pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
+    member_value_schedule: MemberValueSchedule::AddressEarly,
     division_address_schedule: DivisionAddressSchedule::LowAfterQuotient,
     global_load_pair_style: GlobalLoadPairStyle::ParallelExplicit,
     saved_call_token_style: SavedCallTokenStyle::LegacyPatched,
@@ -2808,6 +2840,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn member_value_schedule(&self) -> MemberValueSchedule {
+        self.member_value_schedule
+    }
+
     fn division_address_schedule(&self) -> DivisionAddressSchedule {
         self.division_address_schedule
     }

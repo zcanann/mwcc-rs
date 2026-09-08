@@ -4,13 +4,68 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, member initialization values and array displacements (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, member-value scheduling across all fifteen builds (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `4466b6cfba87ce673927b7e0157c86210647377042e9fad164b2c5b342ef4a1d:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `731339821438b974611fed3561df756cc467245b09d8af7cebcae2e1373ec12e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Member-value scheduling across all fifteen builds, 2026-09-08
+
+The complete BfBB `AXVPB.c` now produces **exact 64-byte `__AXSetPBDefault`
+functions for all fifteen reference compiler builds**, improving **3 → 15/15**.
+GC/1.1p1 gets its early interior-pointer calculation; the eleven later builds
+shrink from 80 to 64 bytes. The other three builds retain their exact output,
+including all sixteen instruction words in the original GQPE78 executable.
+Only `__AXSetPBDefault` changes in the twelve affected full-source objects.
+All **30,720 native cases** pass against baseline, fresh references, the original
+executable, and the independent field model. The complete-source version panel
+retains the supplemental project flags with `-W err` removed on every side.
+
+`MemberValueSchedule` now independently selects the leaf initialization
+schedule. Ordinary 2.3.3 commits the first store before the remaining values;
+the patched build advances the interior pointer; middle-generation builds issue
+two values before the first store. GC 3/Wii prioritize shared values, then the
+interior address, then single-use literals. Ordered pointers retain their
+leading source value and the build's one- or two-value issue window. Existing
+positive nonvolatile-pointer facts choose the ordinary ready-value path.
+Every policy retains source store order and uses the same value graph, fresh
+virtual registers, reverse consumer allocation group, and ordinary liveness.
+With scheduling disabled, each shared value materializes at its first store;
+O0 remains outside this owner. The previous shape and metadata exclusions remain.
+An enumerated graph test verifies each value is defined exactly once before
+its stores and that every schedule preserves all source stores in order.
+
+Canaries **2072–2075** add fourteen forms at O4, O2, schedule-off, and O0:
+leading/middle/trailing interior pointers and marker values; two shared values;
+repeated markers; a narrow all-ones literal; overwritten fields; three volatile
+orders; and a returned receiver. All sides compile **60/60 objects**. Exact
+function text plus symbolic relocations improves **239 → 672/840**, with whole
+objects still **0/60**. All **215,040 native cases** pass on baseline, candidate,
+and reference, checking full randomized memory regions, volatile write order,
+returned pointers, preserved registers, SP, LR, and PC.
+
+The preceding canaries **2068–2071** improve **328 → 521/765 exact functions**,
+with no lost exact matches and **97,920 native cases** passing on all three
+sides. Remaining examples include narrow literal materialization, non-void
+receiver returns, and GC 3's ordinary-memory store reordering and dead-store
+removal. Those differences are recorded without changing source memory order
+in the new scheduler.
+
+Focused regressions retain **990/990 identical objects** from 2002–2067,
+**1,114 identical compiled objects / 972 known exact matches** in the indexed
+panel, and **2,626 identical objects / 89 unchanged failures** from 1821–2001.
+All **ten AX and fourteen GX objects** are unchanged under the GC/1.2.5n project
+flags. Tests pass **1,634 backend** and **54 version** cases, with the existing
+embedded-assembly backend test excluded.
+
+Artifacts are under `target/member-schedule-{canaries,previous,versions,older,index,recent,library,ax-library}`.
+`target/member-schedule-final-verification.json` binds **405 execution-tested
+object hashes** and the focused regression checks to the final compiler and
+harness. These are targeted function results; complete project compilation,
+linking, and matching across versions remain unfinished.
 
 ## Member initialization values and array displacements, 2026-09-08
 
