@@ -15,7 +15,10 @@ impl Generator {
         let local_switch = matches!(function.statements.as_slice(),
             [Statement::Switch { scrutinee: Expression::Variable(name), .. }]
                 if function.locals.iter().any(|local| local.name == *name && local.initializer.is_some()));
-        self.try_leaf_value_body(function, local_switch)
+        self.try_leaf_value_body(
+            function,
+            local_switch || has_leading_store_guard(&function.statements),
+        )
     }
 
     /// Preserve local snapshots that copy propagation cannot substitute across
@@ -63,14 +66,14 @@ impl Generator {
     fn try_leaf_value_body(
         &mut self,
         function: &Function,
-        allow_straight_line: bool,
+        allow_simple_body: bool,
     ) -> Compilation<bool> {
         let has_flush_tail = function.return_type == Type::Void
             && function.return_expression.is_none()
             && self.fixed_address_object_flush_tail(&function.statements).is_some();
         if !requires_structured_branch_graph(&leaf_structured_statements(function))
             && !has_flush_tail
-            && !allow_straight_line
+            && !allow_simple_body
         {
             return Ok(false);
         }
@@ -88,7 +91,7 @@ impl Generator {
         if function_makes_call(function)
             || !self.frame_slots.is_empty()
             || !leaf_return_shape_is_supported(function)
-            || (!requires_structured_branch_graph(&structured_statements) && !has_flush_tail && !allow_straight_line)
+            || (!requires_structured_branch_graph(&structured_statements) && !has_flush_tail && !allow_simple_body)
             || !supports_leaf_structured_statements(&structured_statements)
             || function.locals.iter().any(|local| {
                 local.is_static
@@ -276,6 +279,15 @@ fn leaf_structured_statements(function: &Function) -> Vec<Statement> {
         else_body: Vec::new(),
     }));
     statements
+}
+
+/// A prefix store must execute before its trailing guard even when a chained
+/// assignment represents the entire arm as one statement. Such a body still
+/// needs the shared CFG lowerer when the dedicated store owners decline it.
+fn has_leading_store_guard(statements: &[Statement]) -> bool {
+    matches!(statements, [leading @ .., Statement::If { .. }]
+        if !leading.is_empty()
+            && leading.iter().all(|s| matches!(s, Statement::Store { .. })))
 }
 
 fn requires_structured_branch_graph(statements: &[Statement]) -> bool {

@@ -4,13 +4,57 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, member constants in dominated store arms (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, callback-free member-store guards (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `251116eddc52347140e8dd7db5aff893e7f40a49ea18118b1223a367420f0f12:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `ea3661c99164cf911130769bff6458dd1cc867e7509a56aa19a502d9065f24b0:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Callback-free member-store guards, 2026-09-08
+
+The shared leaf CFG lowerer now admits a leading store run followed by a guard,
+including a single store or assignment chain in that guard. A chain is one
+semantic statement, so the previous multi-statement admission check rejected
+these bodies even though the emitter could handle them. The change uses the
+existing lowering, liveness, return handling, and member-value graph. Dedicated
+store schedules retain priority; calls, frame requirements, unsupported locals,
+and unsupported control flow retain their existing eligibility checks.
+
+This resolves the callback-free reduction failure recorded in the preceding
+checkpoint. Canaries **2138–2142** contain nine functions in five modes across
+fifteen builds. All **75 translation units** now compile, compared with none on
+the previous compiler. Compiling each function separately establishes **450
+newly supported variants** and **225 previously compiled variants whose emitted
+functions are unchanged**. The recovered forms cover a guarded assignment
+chain, nonzero values, ordered stores, distinct values in the arm, a single
+store, and a result computed after the guard. The already supported forms cover
+if/else, an intervening load, and nested guards.
+
+The candidate produces **40/675 exact function matches**, including the eight
+previously compiled exact matches. All **10,800 candidate/reference native
+comparisons** pass, checking both branch outcomes, aliased objects, ordered
+volatile writes, full memory guards, returned values, saved GPRs/FPRs, SP, and
+LR. No assembly schedule is hard-coded for these new forms; the remaining
+matches are still limited by instruction selection, allocation, and scheduling.
+
+Regression panels retain **1,110** older compiled objects, **2,626** recent
+objects plus **89** unchanged failures, all **1,674** indexed outcomes (1,114
+compiled, 972 known exact), and **930** preceding objects from 2076–2137. All
+ten AX and fourteen GX translation units compile and are byte-identical under
+the existing GC/1.2.5n library flags. All fifteen full AXVPB objects are also
+byte-identical to the preceding checkpoint's native-tested candidates; their
+240 initializer comparisons were reused by verified object hashes. The AX
+initializer remains **0/15 exact**, with the first clear-loop zero and other
+allocation/scheduling work pending. Backend tests pass **1,658**, retaining
+the existing nested-asm inline-test exclusion. The full corpus was not rerun.
+
+`target/leaf-member-final-verification.json` binds the final compiler/harness
+fingerprints to **150 freshly native-tested objects**, **15 identical prior
+initializer objects**, and the preserved-object hashes. Final compilation
+reproduces the tested objects. Scripts/results are under `target/leaf-member-*`
+and `target/*leaf_member*.py`.
 
 ## Member constants in dominated store arms, 2026-09-08
 
@@ -56,7 +100,8 @@ Reducing the examples also exposed an existing leaf-lowering limitation:
 removing the final callback from the simple guarded sample yields the
 `leading store before a trailing if` diagnostic in `body/driver.rs`. These
 canaries retain a post-guard callback to exercise the real initializer's
-structure; supporting the callback-free form remains pending.
+structure; supporting the callback-free form was pending at this checkpoint
+and is resolved by the callback-free checkpoint above.
 
 ## Member values across independent stores, 2026-09-08
 

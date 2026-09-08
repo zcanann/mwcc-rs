@@ -4345,20 +4345,16 @@ impl Generator {
         if self.try_guarded_float_table_index(function)? {
             return Ok(());
         }
-        // A leading store (or store run) before a trailing `if` needs mwcc's cross-statement
-        // scheduler: it hoists the if's condition test as early as possible — into the leading
-        // store's value-materialize latency gap (`li r0,1; cmpwi; stw r0,g; beqlr; …`) or to the
-        // front. The sequential emission below instead emits the store fully, then the test — a
-        // DIFFERS — so defer this shape. (A whole-body store run, or a whole-body trailing `if`,
-        // are handled byte-exactly by the store-fill matchers above.)
+        // Residual stores followed by a guard share the structured CFG owner.
+        // Dedicated store schedules above retain priority. Try transactionally:
+        // an unsupported expression can reject after emitting partial code.
         if let [leading @ .., Statement::If { .. }] = function.statements.as_slice() {
             if !leading.is_empty()
                 && leading
                     .iter()
                     .all(|statement| matches!(statement, Statement::Store { .. }))
             {
-                // Multi-statement guarded tails have a shared CFG owner,
-                // including local snapshots taken before the leading stores.
+                // A chained store can represent an entire arm as one statement.
                 let mut trial = self.clone();
                 if matches!(trial.try_leaf_structured_body(function), Ok(true)) {
                     *self = trial;

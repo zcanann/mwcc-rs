@@ -247,3 +247,14 @@ interference with arguments and values used in the other arm. Remove only the
 repeated literal, using the shared instruction editor to preserve branch and
 fixup ownership. Canaries 2133–2137 cover both arm layouts, nonzero constants,
 volatile store order, aliasing, bypass entries, and barriers.
+
+## Leaf guards after store prefixes
+
+A leading store run followed by a terminal guard can require the shared CFG
+lowerer even when the guard's arm contains only one semantic statement. Chained
+assignments count as one statement while emitting several ordered stores.
+Admit that shape after dedicated store owners decline it, using the existing
+leaf eligibility checks, named-value planning, and return handling. A callback
+is not required to obtain correct CFG lowering. Canaries 2138–2142 cover simple
+and chained guarded stores, nonzero values, volatile writes, aliasing, nested
+conditions, intervening loads, and a result computed after the stores.
