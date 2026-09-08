@@ -111,9 +111,10 @@ fn expand(function: &mut MachineFunction, resolved: &[(usize, u32)]) -> Compilat
     for &(fixup, offset) in resolved {
         let at = function.deferred_displacements[fixup].instruction_index;
         let Instruction::AddImmediate { d, a, immediate } = function.instructions[at] else {
-            return Err(Diagnostic::error(
-                "complete section address must own an addi",
-            ));
+            return Err(Diagnostic::error(format!(
+                "complete section address must own an addi (instruction {at}: {:?})",
+                function.instructions[at],
+            )));
         };
         let displacement = offset.wrapping_add(immediate as i32 as u32) as i32;
         if i16::try_from(displacement).is_ok() {

@@ -207,3 +207,21 @@ default from `off`. Helper saves precede anchor initialization, preserving the
 incoming saved-register image before any new value can occupy it. Canaries
 2114–2120 vary live cursor count, parameter/local survivors, optimization, debug,
 scheduling, and both explicit save modes.
+
+## BSS-base lifetime after cursor induction
+
+The writable-section planner evaluates modern cursor loops after the same
+source induction rewrite used by body lowering. References moved into the
+loop initializer do not themselves make the section base live across the
+loop's callbacks. Later references to that BSS section can require a persistent
+base; the existing path-sensitive reference/call analysis decides this. The
+modern path requires O3+, a successfully normalized cursor loop, and qualifying
+full-BSS references. Existing legacy writable-section selection remains separate.
+Small-data and initialized-data objects never contribute to this BSS base.
+
+Section-relative addresses remain deferred until canonical unit layout is
+known. Frame-prefix rotations and entry-argument moves must therefore carry
+deferred displacements as well as relocations and branch targets. Use the
+shared machine-function remapper; relocating only ELF fixups is insufficient.
+Canaries 2121–2127 cover post-loop lifetimes, leading callbacks, mixed sections,
+and 32-KiB/64-KiB displacement boundaries across optimization and save modes.

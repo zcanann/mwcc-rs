@@ -704,7 +704,7 @@ fn lower_function_body(
         structured_global_index_cache: None,
         structured_global_base_cache: None,
         structured_global_member_address_caches: Vec::new(),
-        data_section_anchor: body::plan_linkage_first_data_anchor(
+        data_section_anchor: body::plan_writable_section_anchor(
             function,
             globals,
             behavior,

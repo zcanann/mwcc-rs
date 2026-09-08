@@ -895,8 +895,7 @@ impl Generator {
 
         // [stwu, mflr, scheduled gap..., stw LR] ->
         // [mflr, scheduled gap..., stw LR, stwu].
-        self.output.instructions[..=link_store].rotate_left(1);
-        remap_prefix_rotate_left(&mut self.output.relocations, link_store);
+        rotate_linkage_prefix(&mut self.output, link_store);
         let guarded_mixed_saved_entry =
             self.schedule_linkage_first_entry_arguments(&physical_saved);
         self.schedule_linkage_first_asm_barrier_byte_stores();
@@ -1170,8 +1169,7 @@ impl Generator {
                 _ => {}
             }
         }
-        self.output.instructions[..=link_store].rotate_left(1);
-        remap_prefix_rotate_left(&mut self.output.relocations, link_store);
+        rotate_linkage_prefix(&mut self.output, link_store);
         self.schedule_plain_linkage_first_latency(link_store);
         let first_direct_call = self
             .output
@@ -2445,18 +2443,11 @@ fn plain_linkage_control_transfer(instruction: &Instruction) -> bool {
     )
 }
 
-/// Remap instruction-index relocations after `[0..=end]` rotates left once.
-fn remap_prefix_rotate_left(
-    relocations: &mut [mwcc_machine_code::Relocation],
-    end: usize,
-) {
-    for relocation in relocations {
-        relocation.instruction_index = match relocation.instruction_index {
-            0 => end,
-            index if index <= end => index - 1,
-            index => index,
-        };
-    }
+/// Rotate the frame prefix with its relocations, deferred section addresses,
+/// and control-flow destinations attached to their original instructions.
+fn rotate_linkage_prefix(output: &mut mwcc_machine_code::MachineFunction, end: usize) {
+    let schedule: Vec<_> = (1..=end).chain(std::iter::once(0)).collect();
+    crate::permute_machine_function_region(output, 0, &schedule);
 }
 
 /// Delaying a frame update across a branch entry makes the backedge allocate
@@ -2814,10 +2805,21 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        remap_prefix_rotate_left(&mut relocations, 3);
+        let mut output = mwcc_machine_code::MachineFunction {
+            instructions: (0..5).map(|n| Instruction::load_immediate(3, n)).collect(),
+            relocations,
+            deferred_displacements: vec![mwcc_machine_code::DeferredDisplacement {
+                instruction_index: 2,
+                target: mwcc_machine_code::DeferredDisplacementTarget::SymbolAddress("array".into()),
+            }],
+            ..Default::default()
+        };
+        rotate_linkage_prefix(&mut output, 3);
+        assert_eq!(output.deferred_displacements[0].instruction_index, 1);
+        assert_eq!(output.instructions[1], Instruction::load_immediate(3, 2));
 
         assert_eq!(
-            relocations
+            output.relocations
                 .iter()
                 .map(|relocation| relocation.instruction_index)
                 .collect::<Vec<_>>(),

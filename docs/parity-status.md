@@ -4,13 +4,79 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, dense cursor-loop frames and explicit GPR save modes (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, modern cursor-loop BSS anchors and deferred-address ownership (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `a796186f20a1c9cddb2bb88e1bd9deebaeedfc27530dd98ff1c1e17aa01f0b24:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `6995ef1801136ffe4aacfb6f3e5dd90186d9478bf244475c320f2af8f30df73a:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Modern cursor-loop BSS anchors and deferred-address ownership, 2026-09-08
+
+The newer profiles now retain a shared BSS base across a normalized array-cursor
+loop when later code still references that section. BfBB `__AXVPBInit` shrinks
+**548 → 532 bytes** on eleven builds; the oldest four remain 524 bytes. The
+middle eight now save six GPRs, as the reference does, instead of independently
+materializing each array from a five-GPR frame. The GC 3/Wii reference still
+uses a different offset-loop layout and a wider saved range. Reference sizes
+are 512/520/548, and the initializer remains **0/15 exact**. The standalone
+`__AXSetPBDefault` retains **15/15 exact**.
+
+All **240 full-initializer comparisons** pass across baseline, candidate, fresh
+references, the original GQPE78 executable, and the full-memory model. Only the
+initializer changes in the eleven affected full-source objects; the four older
+objects are identical. Supplementary full-source reference flags continue to
+remove `-W err` on every side. Three redundant value definitions and instruction
+ordering remain visible against the older/middle references; equal instruction
+counts alone will not prove a match.
+
+The planner is now named `writable_section_anchor`, reflecting its shared
+role across generations. Existing legacy data/BSS and modern polling-string
+policies stay intact. The modern cursor path runs the existing array-induction
+normalizer on the effective inline-expanded body, then applies the existing
+path-sensitive reference/call analysis. A base is retained only if qualifying
+full-BSS references still span a call after loop setup has been hoisted.
+Setup-only references do not acquire another saved GPR. Initialized data and
+small-data objects are excluded from the BSS set. Canonical unit layout still
+owns the actual offsets, including addresses crossing 32 KiB and 64 KiB.
+
+The boundary probes also exposed an existing frame-scheduling bug. Moving an
+entry argument or rotating the linkage prefix updated relocations but left
+deferred BSS displacements on old instruction indices. A leading callback at
+O0/O2 could therefore make address finalization find a register-save instruction
+instead of its address producer. Both frame-entry operations now use the common
+machine-function remapper for relocations, deferred displacements, and numeric
+control-flow owners. Tests cover ownership when a constant argument moves over
+an address and when the frame prefix rotates. The finalizer's diagnostic now
+includes the offending instruction if this invariant is violated elsewhere.
+
+Canaries **2121–2127** cover retained two/three-array bases, setup-only references,
+a callback before loop setup, an initialized-data tail, and a small-data array.
+The full-BSS arrays cross signed-low and full-64-KiB displacement boundaries.
+The seven modes are O4, inline saves, helper saves, O2, schedule-off, O0, and
+debug on all fifteen builds. Compilation improves **97 → 105 / 105 objects**;
+the eight recovered cases are the four oldest builds at O0/O2. All **630
+candidate/reference functions** compile. Exact counts remain **0/630**, with
+220 previously compiled functions changing. The setup-only and initialized-data
+negative cases keep their previous output. All **5,040 candidate/reference
+native comparisons** pass; the baseline's 4,656 compilable comparisons also
+pass. Checks cover complete array/guard memory, callback arguments and memory
+effects, saved GPR/FPRs, stack, and return state.
+
+Regression panels retain **1,110** older and **2,626** recent object bytes, with
+the same 89 recent compilation failures. All **1,674** indexed results remain
+unchanged (1,114 compiled, 972 previously exact). **675** preceding BSS, fill,
+split-address, array-cursor, inline-pointer, and cursor-frame objects are
+byte-identical to their validated predecessors. All ten AX and fourteen GX
+sources compile unchanged under the existing GC/1.2.5n library flags. Backend
+checks: **1,653 passed**, with the existing nested-assembly inline test excluded;
+all **3** object-address finalization tests pass. The full corpus was not rerun.
+
+Local evidence: `target/cursor-anchor-final-verification.json` binds compiler
+and harness fingerprints, 352 execution-tested object hashes, and 675 preserved
+objects. `target/verify_cursor_anchor_final.py` checks those bindings. Full-source,
+canary, native, and regression results live under `target/cursor-anchor-*`.
 
 ## Dense cursor-loop frames and explicit GPR save modes, 2026-09-08
 

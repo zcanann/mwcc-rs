@@ -1712,7 +1712,7 @@ impl Generator {
             .as_ref()
             .filter(|_| array_pool_plan.is_none())
             .and_then(|anchor| {
-                super::linkage_first_data_anchor::reusable_deferred_group(
+                super::writable_section_anchor::reusable_deferred_group(
                     function,
                     anchor,
                     &deferred_home_plan,

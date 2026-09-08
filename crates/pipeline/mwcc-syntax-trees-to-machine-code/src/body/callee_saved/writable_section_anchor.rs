@@ -1,13 +1,11 @@
 //! A callee-saved writable-section anchor for several globals across calls.
 //!
-//! Under absolute addressing build 163 can materialize the writable data
-//! or BSS section once and address several source globals by their proven
-//! section offsets. The base is a virtual live range, so the ordinary allocator
-//! and frame reconciler choose and save its physical register.
+//! Build 163 shares writable data and BSS bases across calls; newer builds
+//! also retain a BSS base across a normalized cursor loop when later code
+//! still needs it. Proven section offsets supply addresses, while the ordinary
+//! allocator and frame owner choose and preserve the base register.
 
-use mwcc_syntax_trees::{
-    Expression, Function, GlobalDeclaration, PointerElement, Statement, Type,
-};
+use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, PointerElement, Statement, Type};
 use mwcc_versions::{Behavior, FrameConvention, GlobalAddressing};
 
 use crate::generator::DataSectionAnchorPlan;
@@ -26,23 +24,22 @@ pub(crate) fn plan(
     let repeated_call_poll_strings = behavior.frame_convention == FrameConvention::Predecrement
         && super::structured_repeated_call_poll::is_repeated_call_poll_transaction(function)
         && super::linkage_first_data_anchor_strings::owns_long_string_data_anchor(function);
-    if behavior.frame_convention != FrameConvention::LinkageFirst && !repeated_call_poll_strings {
-        return None;
-    }
     // Section-base selection happens before body lowering, while automatic
     // inline composition happens during it. Analyze the same effective body
     // here so globals referenced only by a retained helper still participate
     // in the caller's shared `.data` anchor.
     let expanded;
-    let function = if let Some(body) = inline_bodies.expanded_function_for_planning(
-        function,
-        behavior.repeatable_scalar_member_setter_inlining,
-    ) {
+    let function = if let Some(body) = inline_bodies
+        .expanded_function_for_planning(function, behavior.repeatable_scalar_member_setter_inlining)
+    {
         expanded = body;
         &expanded
     } else {
         function
     };
+    if behavior.frame_convention != FrameConvention::LinkageFirst && !repeated_call_poll_strings {
+        return plan_cursor_bss_anchor(function, globals, behavior);
+    }
     let data_symbols = full_data_symbols(
         globals,
         behavior.global_addressing == GlobalAddressing::SmallData,
@@ -63,17 +60,49 @@ pub(crate) fn plan(
         globals,
         behavior.global_addressing == GlobalAddressing::SmallData,
     );
-    let (bss_references, bss_reference_count) =
-        referenced_symbols(function, &bss_symbols);
+    let (bss_references, bss_reference_count) = referenced_symbols(function, &bss_symbols);
     ((bss_references.len() >= 2 || bss_reference_count >= 4)
         && references_span_call(function, &bss_references))
-    .then(|| {
-        DataSectionAnchorPlan {
-            symbols: bss_references,
+    .then(|| DataSectionAnchorPlan {
+        symbols: bss_references,
+        anchor_symbol: "...bss.0".into(),
+        register: None,
+    })
+}
+
+/// Modern cursor loops retain a section base only if it still spans a call
+/// after the leading array addresses have become loop-initializer values.
+/// Setup-only references do not justify another saved GPR.
+fn plan_cursor_bss_anchor(
+    function: &Function,
+    globals: &[GlobalDeclaration],
+    behavior: Behavior,
+) -> Option<DataSectionAnchorPlan> {
+    if behavior.optimization < mwcc_versions::Optimization::O3 {
+        return None;
+    }
+    let arrays = globals
+        .iter()
+        .filter(|global| global.array_length.is_some() || global.array_length_inferred)
+        .map(|global| global.name.clone())
+        .collect();
+    let types = globals
+        .iter()
+        .map(|global| (global.name.clone(), global.declared_type))
+        .collect();
+    let reduced = super::structured_global_array_cursors::reduce(function, &arrays, &types)?;
+    let symbols = full_bss_symbols(
+        globals,
+        behavior.global_addressing == GlobalAddressing::SmallData,
+    );
+    let (referenced, count) = referenced_symbols(&reduced, &symbols);
+    ((referenced.len() >= 2 || count >= 4) && references_span_call(&reduced, &referenced)).then(
+        || DataSectionAnchorPlan {
+            symbols: referenced,
             anchor_symbol: "...bss.0".into(),
             register: None,
-        }
-    })
+        },
+    )
 }
 
 fn referenced_symbols(
@@ -199,11 +228,7 @@ fn full_data_symbols(
 ) -> std::collections::HashSet<String> {
     let mut symbols = std::collections::HashSet::new();
     for global in globals {
-        if is_initialized_full_data(
-            global,
-            small_data,
-            inferred_array_uses_full_data_section,
-        ) {
+        if is_initialized_full_data(global, small_data, inferred_array_uses_full_data_section) {
             symbols.insert(global.name.clone());
         }
     }
@@ -250,7 +275,11 @@ fn is_initialized_full_data(
     if !global.is_data_definition() || global.is_const {
         return false;
     }
-    if global.section.as_deref().is_some_and(|section| section != ".data") {
+    if global
+        .section
+        .as_deref()
+        .is_some_and(|section| section != ".data")
+    {
         return false;
     }
     let element_size = match global.declared_type {
@@ -261,9 +290,8 @@ fn is_initialized_full_data(
     let Some(size) = element_size.checked_mul(count) else {
         return false;
     };
-    let forced_full_data = inferred_array_uses_full_data_section
-        && global.array_length_inferred
-        && !global.is_static;
+    let forced_full_data =
+        inferred_array_uses_full_data_section && global.array_length_inferred && !global.is_static;
     if small_data && size <= 8 && !forced_full_data {
         return false;
     }
@@ -275,9 +303,9 @@ fn is_initialized_full_data(
     } else if let Some(values) = &global.initializer {
         values.iter().any(|value| *value != 0) || global.array_length.is_some()
     } else if let Some(elements) = &global.address_initializer {
-        elements.iter().any(|element| {
-            !matches!(element, PointerElement::Null | PointerElement::Scalar(0))
-        })
+        elements
+            .iter()
+            .any(|element| !matches!(element, PointerElement::Null | PointerElement::Scalar(0)))
     } else {
         false
     }
@@ -366,8 +394,12 @@ mod tests {
         let mut cursor = 0;
         let mut last = None;
         collect_last_reference_position(
-            &statements, &["table".into()].into(), &mut cursor, &mut last,
-        ).unwrap();
+            &statements,
+            &["table".into()].into(),
+            &mut cursor,
+            &mut last,
+        )
+        .unwrap();
         assert_eq!(cursor, 6);
         assert_eq!(last, Some(5));
     }
@@ -392,8 +424,12 @@ mod tests {
             let mut cursor = 0;
             let mut last = None;
             collect_last_reference_position(
-                &statements, &["table".into()].into(), &mut cursor, &mut last,
-            ).unwrap();
+                &statements,
+                &["table".into()].into(),
+                &mut cursor,
+                &mut last,
+            )
+            .unwrap();
             assert_eq!(cursor, 4);
             assert_eq!(last, Some(expected));
         }
@@ -423,8 +459,11 @@ mod tests {
         inferred.declared_type = Type::Float;
         inferred.array_length = Some(2);
         inferred.array_length_inferred = true;
-        let symbols =
-            full_data_symbols(&[inferred.clone(), global("large", vec![2; 12])], true, true);
+        let symbols = full_data_symbols(
+            &[inferred.clone(), global("large", vec![2; 12])],
+            true,
+            true,
+        );
 
         assert!(symbols.contains("inferred"));
         assert!(symbols.contains("large"));
@@ -440,8 +479,7 @@ mod tests {
         let mut late = global("late", vec![2; 12]);
         late.non_static_functions_before = 1;
         late.functions_before = 2;
-        let symbols =
-            full_data_symbols(&[global("early", vec![1; 12]), late], true, true);
+        let symbols = full_data_symbols(&[global("early", vec![1; 12]), late], true, true);
 
         assert!(symbols.contains("early"));
         assert!(symbols.contains("late"));
@@ -550,13 +588,8 @@ mod tests {
         );
         let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
 
-        let anchor = plan(
-            &caller,
-            &[command],
-            behavior,
-            &InlineBodySet::default(),
-        )
-        .expect("four full-BSS address materializations amortize one anchor");
+        let anchor = plan(&caller, &[command], behavior, &InlineBodySet::default())
+            .expect("four full-BSS address materializations amortize one anchor");
 
         assert_eq!(anchor.anchor_symbol, "...bss.0");
         assert_eq!(anchor.symbols.len(), 1);
@@ -578,22 +611,13 @@ mod tests {
                     value: Expression::IntegerLiteral(0),
                 }],
                 else_body: vec![
-                    call(
-                        "read_instruction",
-                        vec![Expression::Variable("CPU".into())],
-                    ),
+                    call("read_instruction", vec![Expression::Variable("CPU".into())]),
                     call("post_event", Vec::new()),
                 ],
             }],
         );
         let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
 
-        assert!(plan(
-            &caller,
-            &[state, cpu],
-            behavior,
-            &InlineBodySet::default(),
-        )
-        .is_none());
+        assert!(plan(&caller, &[state, cpu], behavior, &InlineBodySet::default(),).is_none());
     }
 }

@@ -76,7 +76,7 @@ impl Generator {
         let instruction = self.output.instructions.remove(from);
         self.output.instructions.insert(to, instruction);
         self.labels.moved_before(from, to);
-        remap_relocations_for_move(&mut self.output.relocations, from, to);
+        remap_owners_for_move(&mut self.output, from, to);
     }
 }
 
@@ -225,12 +225,10 @@ fn schedule_guarded_saved_entry_values(
 
         let second_store = output.instructions.remove(start + 2);
         output.instructions.insert(start + 1, second_store);
-        remap_relocations_for_move(&mut output.relocations, start + 2, start + 1);
-        remap_branch_targets_for_move(&mut output.instructions, start + 2, start + 1);
+        remap_owners_for_move(output, start + 2, start + 1);
         let second_copy = output.instructions.remove(start + 3);
         output.instructions.insert(start + 2, second_copy);
-        remap_relocations_for_move(&mut output.relocations, start + 3, start + 2);
-        remap_branch_targets_for_move(&mut output.instructions, start + 3, start + 2);
+        remap_owners_for_move(output, start + 3, start + 2);
         return true;
     }
     false
@@ -356,7 +354,7 @@ fn schedule_entry_wide_mask(output: &mut mwcc_machine_code::MachineFunction) {
 
     let high_instruction = output.instructions.remove(high);
     output.instructions.insert(link_read + 1, high_instruction);
-    remap_relocations_for_move(&mut output.relocations, high, link_read + 1);
+    remap_owners_for_move(output, high, link_read + 1);
 
     // Moving the high half earlier leaves the low half at the same index: one
     // removal before it and one insertion before it cancel out.
@@ -365,7 +363,7 @@ fn schedule_entry_wide_mask(output: &mut mwcc_machine_code::MachineFunction) {
         matches!(instruction, Instruction::StoreWordWithUpdate { s: 1, a: 1, .. })
     }).expect("the recognized stack update remains present");
     output.instructions.insert(stack_update, low_instruction);
-    remap_relocations_for_move(&mut output.relocations, low, stack_update);
+    remap_owners_for_move(output, low, stack_update);
 }
 
 /// A scratch zero feeding the first body store cannot fill the dependency slot
@@ -412,8 +410,7 @@ fn schedule_entry_zero_store(
     }
     let instruction = output.instructions.remove(zero);
     output.instructions.insert(stack_update, instruction);
-    remap_relocations_for_move(&mut output.relocations, zero, stack_update);
-    remap_branch_targets_for_move(&mut output.instructions, zero, stack_update);
+    remap_owners_for_move(output, zero, stack_update);
     Some((zero, stack_update))
 }
 
@@ -578,7 +575,7 @@ fn schedule_entry_arguments(
 
         let instruction = output.instructions.remove(candidate);
         output.instructions.insert(insertion, instruction);
-        remap_relocations_for_move(&mut output.relocations, candidate, insertion);
+        remap_owners_for_move(output, candidate, insertion);
     }
 }
 
@@ -680,7 +677,7 @@ fn schedule_function_address_low(
     high_relocation.instruction_index = high;
     let instruction = output.instructions.remove(low);
     output.instructions.insert(stack_update, instruction);
-    remap_relocations_for_move(&mut output.relocations, low, stack_update);
+    remap_owners_for_move(output, low, stack_update);
 }
 
 fn schedule_post_asm_function_address_argument(
@@ -749,42 +746,46 @@ fn touches_general_register(instruction: &Instruction, register: u8) -> bool {
         .any(|operand| operand.class == mwcc_vreg::Class::General && operand.register == register)
 }
 
-fn remap_relocations_for_move(
-    relocations: &mut [mwcc_machine_code::Relocation],
+fn remap_owners_for_move(
+    output: &mut mwcc_machine_code::MachineFunction,
     from: usize,
     to: usize,
 ) {
-    debug_assert!(to < from);
-    for relocation in relocations {
-        relocation.instruction_index = match relocation.instruction_index {
-            index if index == from => to,
-            index if (to..from).contains(&index) => index + 1,
-            index => index,
-        };
-    }
-}
-
-fn remap_branch_targets_for_move(instructions: &mut [Instruction], from: usize, to: usize) {
-    for instruction in instructions {
-        let target = match instruction {
-            Instruction::BranchConditionalForward { target, .. }
-            | Instruction::Branch { target } => target,
-            _ => continue,
-        };
-        *target = if *target == from {
-            to
-        } else if (to..from).contains(target) {
-            *target + 1
-        } else {
-            *target
-        };
-    }
+    let permutation = crate::instruction_move_before_permutation(output.instructions.len(), from, to);
+    crate::remap_machine_function_indices(output, &permutation);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use mwcc_machine_code::{Relocation, RelocationKind, RelocationTarget};
+
+    #[test]
+    fn entry_arguments_preserve_deferred_section_address_ownership() {
+        let mut output = mwcc_machine_code::MachineFunction::new("call_before");
+        output.instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -32 },
+            Instruction::StoreWord { s: 31, a: 1, offset: 28 },
+            Instruction::load_immediate_shifted(3, 0),
+            Instruction::AddImmediate { d: 31, a: 3, immediate: 0 },
+            Instruction::StoreWord { s: 30, a: 1, offset: 24 },
+            Instruction::StoreWord { s: 29, a: 1, offset: 20 },
+            Instruction::AddImmediate { d: 3, a: 31, immediate: 0 },
+            Instruction::load_immediate(4, 999),
+            Instruction::BranchAndLink { target: "observe".into() },
+            Instruction::BranchToLinkRegister,
+        ];
+        output.deferred_displacements.push(mwcc_machine_code::DeferredDisplacement {
+            instruction_index: 8,
+            target: mwcc_machine_code::DeferredDisplacementTarget::SymbolAddress("array".into()),
+        });
+        schedule_entry_arguments(&mut output, &|_| false);
+        assert_eq!(output.instructions[1], Instruction::load_immediate(4, 999));
+        assert_eq!(output.instructions[output.deferred_displacements[0].instruction_index],
+            Instruction::AddImmediate { d: 3, a: 31, immediate: 0 });
+    }
 
     #[test]
     fn entry_scheduling_does_not_hoist_loop_argument_or_store_constants() {

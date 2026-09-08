@@ -57,7 +57,7 @@ mod linkage_first_callback_state_arms;
 mod linkage_first_retained_member_completion_arm;
 mod linkage_first_retained_object_completion_arm;
 mod linkage_first_stateful_callback_completion_arm;
-mod linkage_first_data_anchor;
+mod writable_section_anchor;
 mod linkage_first_data_anchor_strings;
 mod linkage_first_anchor_only_schedule;
 mod linkage_first_data_anchor_schedule;
@@ -437,7 +437,7 @@ pub(crate) use queue_transactions::{summarize_queue_pop, QueuePopSummary};
 pub(crate) use structured_liveness::{
     read_after_possible_call_in_function, read_after_possible_call_in_return,
 };
-pub(crate) use linkage_first_data_anchor::plan as plan_linkage_first_data_anchor;
+pub(crate) use writable_section_anchor::plan as plan_writable_section_anchor;
 
 #[allow(unused_imports)]
 use super::*;
