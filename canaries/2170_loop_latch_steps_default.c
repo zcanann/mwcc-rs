@@ -1,4 +1,4 @@
-// flags: 
+// flags:
 extern void observe(unsigned*,unsigned*,unsigned); unsigned a[64],b[64];
 void cursors(unsigned*p,unsigned*q){unsigned i;for(i=0;i<64;i++){*p=i;*q=i;observe(p,q,i);p++;q++;}}
 void signed_index(unsigned*p,unsigned*q){int i;for(i=0;i<64;i++){*p=i;*q=i;observe(p,q,i);p++;q++;}}
