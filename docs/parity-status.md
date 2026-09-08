@@ -4,13 +4,82 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, shared pointer halves and indexed field-store compilation (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, global-array pointer induction and loop-entry scheduling (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `ce730f0eecacfa6d4fc5f74dfe2b520630df4c4ffa4f5dbed732b112a0a60cdc:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `4c17ba863add28a5212de35ccdc803ab5fefdc8588d24108743965ed4ea5ed2e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Global-array pointer induction and loop-entry scheduling, 2026-09-08
+
+BfBB `__AXVPBInit` now carries its four array pointers between iterations,
+replacing repeated global-address materialization and index scaling with
+constant pointer increments. The oldest four builds shrink **540 → 512 bytes**;
+the other eleven shrink **536 → 520**. Reference sizes are 512 for the oldest
+four, 520 for the middle eight, and 548 for GC 3/Wii. Matching sizes are not
+matching output: the initializer remains **0/15 exact**. Only this function
+changes in each full-source object, and `__AXSetPBDefault` retains **15/15 exact**.
+
+All **240 native comparisons** pass across baseline, candidate, fresh references,
+the original GQPE78 executable, and the full-memory model. With clock input zero
+and the same callback stubs, instruction counts fall **21,744 → 20,981** on the
+oldest builds and **21,743 → 20,983** on the other eleven: **760–763 fewer executed
+instructions**. These are instruction counts, not timing estimates. Reference
+counts are 20,713 / 20,729 / 20,689. The supplemental full-source flags still
+remove `-W err` on every side.
+
+The source-tree owner recognizes leading `pointer = &global[index]` bindings
+in a top-level, zero-initialized, constant-bound, unit-step `for` loop at O2+.
+It reuses the original pointer locals, moving their initial addresses into the
+loop initializer and appending ordinary typed increments to the step. The
+normal allocator owns their cross-call lifetimes. The proof requires private,
+nonvolatile automatic bindings, equal array/pointer strides, no local shadowing
+of the global array, no index or pointer rebinding in the body, and no pointer
+observation after the loop. Escaped locals, alternate entries, opaque assembly,
+nested loops, early exits, and unrecognized control flow decline the rewrite.
+Assignments through a pointer remain memory writes, not pointer rebindings.
+O0 retains its source loop; schedule-off still permits induction.
+
+Reduced probes also exposed an existing linkage-first entry-scheduling bug:
+a backward branch after the first call can enter argument setup before that
+call. Hoisting a ready constant into the prologue both skips its per-iteration
+materialization and leaves intervening numeric branch targets attached to the
+wrong instruction. Entry argument and wide-mask scheduling now check incoming
+targets. Zero-store scheduling keeps its measured call-free invariant case only
+when backedges preserve r0; callbacks and r0 redefinitions require the original
+per-iteration zero.
+
+Canaries **2099–2103** add ten forms at O4, O2, schedule-off, O0, and debug:
+one/two array cursors, chained stores, conditional stores, a returned last
+element, pointer mutation, scalar arrays, zero stores, a nonunit index, and an
+explicitly written moving pointer. All three sides compile **75/75 objects**.
+All **12,000 candidate/reference native cases** pass. The baseline has **320
+failures** in the explicit pointer loop on the oldest four builds, across all
+five flag sets; the candidate fixes them. Checks cover callback arguments and
+order, memory at every callback and return, randomized surrounding storage,
+returned pointers, volatile-register clobbers, saved GPRs/FPRs, SP, LR, and PC.
+There are no new reference-bug exceptions. Exact function text plus symbolic
+relocations remains **0/750**, and whole objects **0/75**; 380 functions change,
+with no lost exact functions in this panel.
+
+Focused regressions retain **1,110 identical objects** from 2002–2075,
+**2,626 identical objects / 89 unchanged failures** from 1821–2001, and
+**1,114 identical compiled objects / 972 known exact matches** in the indexed
+panel. All **345 preceding fill, BSS-boundary, and split-pointer objects** retain
+their candidate hashes and prior execution evidence. The ten AX and fourteen
+GX units compile under strict GC/1.2.5n project flags; only AXVPB changes.
+Backend tests pass **1,647 cases**, including four new proof/scheduling cases,
+with the existing embedded-assembly exclusion unchanged.
+
+The final manifest binds **270 execution-tested object hashes** and the 345
+preserved objects to the compiler/harness fingerprint above. Artifacts are
+`target/array-cursor-{canaries,versions,older,recent,index,preserved,ax-library,library}`
+and `target/array-cursor-final-verification.json`. Remaining initializer work
+includes register/frame placement, default-helper inlining, setup/store/tail
+scheduling, and GC 3/Wii's separate byte-offset induction form for the full
+four-array transaction.
 
 ## Shared pointer halves and indexed field stores, 2026-09-08
 

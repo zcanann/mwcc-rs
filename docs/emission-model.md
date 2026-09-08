@@ -140,3 +140,26 @@ exchange the first matching high/low stores in a complete ordinary leaf when
 both target disjoint fields of the same nonvolatile base. The version policy
 is independent of value recognition; volatile stores retain source order.
 Canaries 2089–2098 and the full BfBB AX initializer exercise this owner.
+
+
+## Global-array pointer induction
+
+`structured_global_array_cursors` exposes a leading `p = &array[i]` binding as
+an ordinary loop-carried pointer at O2+. Its proof owns source relationships:
+a private zero-based unit-step integer index with a positive constant bound,
+a real unshadowed global array, an equal pointer stride, and a private pointer
+that is neither rebound in the body nor observed after the loop. Indirect
+stores do not rebind their base pointer. Escapes, volatile bindings, alternate
+entries, and unsupported control flow decline the plan. Initializers and typed
+increments feed the existing structured CFG and allocator, with no physical
+register assignments or function-name recognition. Schedule-off still applies
+the induction rewrite; O0 preserves the original source form.
+
+Entry scheduling must examine incoming branch targets, including backedges
+located after the first call. Argument constants and split masks cannot move
+across those entries. A zero store can retain the existing loop-invariant
+schedule only when the backedge preserves r0; call clobbers or other r0
+definitions require materializing zero inside the loop. Canaries 2099–2103
+exercise both source-derived and explicitly written cursors. The complete AX
+initializer now carries its four pointers, while modern reference offset
+induction and the remaining allocation/inlining schedules are still pending.

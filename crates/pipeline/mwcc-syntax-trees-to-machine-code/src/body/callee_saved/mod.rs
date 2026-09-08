@@ -343,6 +343,7 @@ mod structured_effecter_preloop_schedule;
 mod structured_effecter_loop_conversion_frame;
 mod structured_effecter_jump_table_entries;
 mod structured_loop_global_byte_cursor;
+mod structured_global_array_cursors;
 mod structured_loop_member_array_offset;
 mod structured_loop_member_element_base;
 mod structured_loop_member_array_addresses;

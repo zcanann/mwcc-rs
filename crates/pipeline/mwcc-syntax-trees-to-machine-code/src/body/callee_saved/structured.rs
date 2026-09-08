@@ -458,6 +458,10 @@ impl Generator {
         let terminal_branch_result =
             super::structured_terminal_branch_result::fold(function);
         let function = terminal_branch_result.as_ref().unwrap_or(function);
+        let global_array_cursors = (self.behavior.optimization >= mwcc_versions::Optimization::O2)
+            .then(|| super::structured_global_array_cursors::reduce(function, &self.global_arrays, &self.globals))
+            .flatten();
+        let function = global_array_cursors.as_ref().unwrap_or(function);
         let reduced_pointer_table_indices =
             super::structured_pointer_table_index_cursor::strength_reduce_pointer_table_indices(
                 function,

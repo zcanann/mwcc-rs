@@ -342,6 +342,9 @@ fn schedule_entry_wide_mask(output: &mut mwcc_machine_code::MachineFunction) {
     let Some((high, low, high_register)) = candidate else {
         return;
     };
+    if !entry_region_clear(output, link_read + 1, low) {
+        return;
+    }
     if output.relocations.iter().any(|relocation| {
         relocation.instruction_index == high || relocation.instruction_index == low
     }) || output.instructions[link_read + 1..high]
@@ -391,6 +394,11 @@ fn schedule_entry_zero_store(
     }) else {
         return None;
     };
+    if !entry_region_clear(output, stack_update, zero)
+        && !zero_store_backedges_preserve_value(output, stack_update, zero)
+    {
+        return None;
+    }
     if output.instructions[stack_update..zero]
         .iter()
         .any(|instruction| {
@@ -409,14 +417,86 @@ fn schedule_entry_zero_store(
     Some((zero, stack_update))
 }
 
+// An existing zero-store schedule can cross a call-free backedge when r0
+// remains zero throughout the loop. Keep that measured invariant case; a
+// callback or another r0 definition makes the per-iteration materialization
+// essential.
+fn zero_store_backedges_preserve_value(
+    output: &mwcc_machine_code::MachineFunction,
+    start: usize,
+    zero: usize,
+) -> bool {
+    if !output.entry_points.is_empty() || !output.jump_tables.is_empty() {
+        return false;
+    }
+    output
+        .instructions
+        .iter()
+        .enumerate()
+        .all(|(index, instruction)| {
+            let target = match instruction {
+                Instruction::Branch { target }
+                | Instruction::BranchConditionalForward { target, .. } => *target,
+                _ => return true,
+            };
+            if !(start..=zero).contains(&target) {
+                return true;
+            }
+            index > zero
+                && output.instructions[zero + 1..=index]
+                    .iter()
+                    .all(|instruction| {
+                        !matches!(
+                            instruction,
+                            Instruction::BranchAndLink { .. }
+                                | Instruction::BranchToCountRegisterAndLink
+                                | Instruction::BranchToLinkRegisterAndLink
+                                | Instruction::VerbatimWord(_)
+                        ) && !mwcc_vreg::register_operands(instruction)
+                            .iter()
+                            .any(|operand| {
+                                operand.class == mwcc_vreg::Class::General
+                                    && operand.register == 0
+                                    && operand.role == mwcc_vreg::RegisterRole::Define
+                            })
+                    })
+        })
+}
+
+// Entry scheduling must stay inside one basic block. A backedge emitted
+// after the first call is still an incoming edge to that call's setup.
+fn entry_region_clear(
+    output: &mwcc_machine_code::MachineFunction,
+    start: usize,
+    end: usize,
+) -> bool {
+    let region = start..=end;
+    output.jump_tables.is_empty()
+        && !output
+            .entry_points
+            .iter()
+            .any(|(_, index)| region.contains(index))
+        && !output
+            .instructions
+            .iter()
+            .enumerate()
+            .any(|(index, instruction)| match instruction {
+                Instruction::Branch { target }
+                | Instruction::BranchConditionalForward { target, .. } => {
+                    region.contains(&index) || region.contains(target)
+                }
+                _ => false,
+            })
+}
+
 fn schedule_entry_arguments(
     output: &mut mwcc_machine_code::MachineFunction,
     is_function_symbol: &dyn Fn(&str) -> bool,
 ) {
     // Moving instructions changes instruction-index branch targets. Structured
     // control flow before the first call is deliberately left to its semantic
-    // owner. A branch after that call cannot be crossed by these prologue-only
-    // moves and leaves every branch instruction and target at the same index.
+    // owner. Backedges after the call can still enter the moved region, so
+    // candidate selection below also checks incoming targets.
     let first_call = output.instructions.iter().position(|instruction| {
         matches!(instruction, Instruction::BranchAndLink { .. })
     });
@@ -475,6 +555,9 @@ fn schedule_entry_arguments(
             stack_update
         };
         let candidate = (stack_update + 1..first_call).find(|&index| {
+            if !entry_region_clear(output, insertion, index) {
+                return false;
+            }
             let register = match output.instructions[index] {
                 Instruction::AddImmediate { d, a: 0, .. } if (3..=10).contains(&d) => d,
                 _ => return false,
@@ -702,6 +785,27 @@ fn remap_branch_targets_for_move(instructions: &mut [Instruction], from: usize, 
 mod tests {
     use super::*;
     use mwcc_machine_code::{Relocation, RelocationKind, RelocationTarget};
+
+    #[test]
+    fn entry_scheduling_does_not_hoist_loop_argument_or_store_constants() {
+        for constant_register in [0, 4] {
+            let mut output = mwcc_machine_code::MachineFunction::new("walk");
+            output.instructions = vec![
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 },
+                Instruction::StoreWord { s: 31, a: 1, offset: 12 },
+                Instruction::load_immediate(constant_register, 0),
+                Instruction::StoreWord { s: constant_register, a: 31, offset: 0 },
+                Instruction::BranchAndLink { target: "observe".into() },
+                Instruction::BranchConditionalForward { options: 12, condition_bit: 0, target: 4 },
+            ];
+            let before = output.instructions.clone();
+            schedule_entry_arguments(&mut output, &|_| false);
+            assert!(schedule_entry_zero_store(&mut output).is_none());
+            assert_eq!(output.instructions, before);
+        }
+    }
 
     #[test]
     fn post_asm_callback_borrows_the_first_argument_lane() {
