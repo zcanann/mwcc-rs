@@ -4,13 +4,59 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, terminal object arguments and preserved signed dividends (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, constant multiplication before narrow stores (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `4c7776d1bd77fce465ff878f93e773544be1abc16aacd0e5986362fa187d921a:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `0caf2c871c207bcd5e4b45bc0f14344e6c6ee7e2cb47b26171cd55bfe23f101e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Constant multiplication before narrow stores, 2026-09-07
+
+Canaries **2040–2043** now match **60/60 whole reference objects** and
+**1,080/1,080 function text plus symbolic relocation comparisons** across fifteen
+compiler builds at O0, O1, O2, and O4. The preceding compiler matches none of
+these whole objects. Each sample covers eighteen signed and unsigned byte/halfword
+stores, identity and zero products, both constant operand positions, explicit
+casts, compound inputs, and positive/negative factors including 1, 2, 3, 7, 8,
+and 15. All **276,480 paired native comparisons** pass independent memory and
+ABI checks; baseline and references also have no execution failures. The final
+three register-placement changes pass another **13,824 paired comparisons**.
+
+A dedicated assignment-conversion policy distinguishes constant products from
+ordinary narrow stores. Early GameCube builds retain signed extensions after
+identity, optimized negation, and positive-power-of-two rewrites, while raw
+products and later negative-power rewrites omit them. Newer builds preserve
+product conversions at O0 and eliminate them starting at O1. Separate version
+profiles select immediate multiplication or shift/subtract sequences for small
+factors one below a power of two. Compound shift/subtract operands receive a
+separate virtual home so both instructions can consume the original value.
+The selector is limited to supported word integer operands and narrow stores;
+zero folding requires a register leaf without a frame slot.
+
+The complete BfBB `__AXPrintStudio` now retains all nine reference sign extensions
+after `delta * -1`. Its size increases **1,016 → 1,052 bytes**, against a
+**1,016-byte** reference: the previous equal size concealed missing conversions
+and redundant input reloads. AXSPB remains **4/5 exact candidate functions** and
+**5/5 exact fresh reference functions**, with no unresolved relocations against
+the pinned original DOL. All five functions pass **5,120 three-way native
+comparisons** against fresh GC/1.2.5n, the original executable, and the independent
+fade/accumulation model. Input reloads and instruction placement remain work for
+the next matching pass.
+
+The focused regression panels retain **1,114 identical compiled indexed objects**
+including **972 known exact matches**, **2,626 identical recent objects** with
+**89 unchanged failures**, and **570/570 identical objects** from canaries
+2002–2039. All fourteen configured GX objects and the other nine AX objects are
+identical; all ten AX units compile. Backend tests pass **1,612**, with the
+previously confirmed embedded-assembly failure excluded; all **51 version tests**
+pass.
+
+Artifacts are under `target/narrow-multiply-{canaries,real,index,recent,previous,library,ax-library}`.
+`target/narrow-multiply-final-verification.json` pins the compiler/harness and
+**182 execution-tested object hashes**. These are focused diagnostic counts;
+full-project compilation, linking, and matching across versions remain unfinished.
 
 ## Terminal object arguments and preserved signed dividends, 2026-09-07
 

@@ -14,6 +14,7 @@
 use crate::config::CompilerConfig;
 use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal, SchedulingModel};
 use crate::profile::{
+    SmallConstantMultiplyStyle,
     AccumulatorIssueStyle,
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CallDispatcherStyle, ClearedLowBitPowerSelectStyle, CoefficientTableRelocationStyle,
@@ -208,6 +209,7 @@ pub enum Quirk {
     LegacyEvaluationOrderComputedStores,
     LegacyInPlaceValueTrackedMutation,
     LegacyInPlaceNegativePowerOfTwoMultiply,
+    ShiftSubtractSmallConstantProducts,
     LegacyLeftBaseFieldMerge,
     LegacyDelayedLeadingResultStore,
     LegacyCommaParameterHomes,
@@ -299,6 +301,7 @@ impl Quirk {
             Quirk::LegacyEvaluationOrderComputedStores => QuirkKind::Intentional,
             Quirk::LegacyInPlaceValueTrackedMutation => QuirkKind::Intentional,
             Quirk::LegacyInPlaceNegativePowerOfTwoMultiply => QuirkKind::Intentional,
+            Quirk::ShiftSubtractSmallConstantProducts => QuirkKind::Intentional,
             Quirk::LegacyLeftBaseFieldMerge => QuirkKind::Intentional,
             Quirk::LegacyDelayedLeadingResultStore => QuirkKind::Intentional,
             Quirk::LegacyCommaParameterHomes => QuirkKind::Intentional,
@@ -524,6 +527,9 @@ impl Quirk {
             }
             Quirk::LegacyInPlaceValueTrackedMutation => {
                 "straight-line mutable locals remain in build 163's result register"
+            }
+            Quirk::ShiftSubtractSmallConstantProducts => {
+                "small constant products use a shift and subtraction in the 4.x compilers"
             }
             Quirk::LegacyInPlaceNegativePowerOfTwoMultiply => {
                 "negative power-of-two multiplies shift and negate in place in build 163"
@@ -798,6 +804,11 @@ pub struct Behavior {
     pub jump_table_base_style: JumpTableBaseStyle,
     /// Elimination policy for redundant narrow conversions before narrow stores.
     pub narrow_store_conversion_style: NarrowStoreConversionStyle,
+    /// Constant multiplies reach assignment conversion at a different stage:
+    /// old builds elide raw products even at O0; newer builds do so from O1.
+    pub constant_multiply_store_conversion_style: NarrowStoreConversionStyle,
+    /// Instruction family for small factors one below a power of two.
+    pub small_constant_multiply_style: SmallConstantMultiplyStyle,
     /// Placement of the containing-unit load for source-level bit-field reads.
     pub bit_field_load_placement: BitFieldLoadPlacement,
     /// Scheduling of distinct constant values consumed by consecutive stores.
@@ -1330,6 +1341,15 @@ impl Behavior {
             } else {
                 config.build.profile.narrow_store_conversion_style()
             },
+            small_constant_multiply_style: config.build.profile.small_constant_multiply_style(),
+            constant_multiply_store_conversion_style: if config.flags.optimization == Optimization::O0
+                && config.build.profile.narrow_store_conversion_style()
+                    == NarrowStoreConversionStyle::ElideRedundantConversion
+            {
+                NarrowStoreConversionStyle::PreserveAll
+            } else {
+                config.build.profile.narrow_store_conversion_style()
+            },
             bit_field_load_placement: config.build.profile.bit_field_load_placement(),
             constant_store_schedule_style: config.build.profile.constant_store_schedule_style(),
             computed_store_issue_style: config.build.profile.computed_store_issue_style(),
@@ -1736,6 +1756,9 @@ impl Behavior {
         }
         if self.value_tracked_mutation_style == ValueTrackedMutationStyle::InPlaceResultRegister {
             quirks.push(ActiveQuirk::of(Quirk::LegacyInPlaceValueTrackedMutation));
+        }
+        if self.small_constant_multiply_style == SmallConstantMultiplyStyle::ShiftSubtract {
+            quirks.push(ActiveQuirk::of(Quirk::ShiftSubtractSmallConstantProducts));
         }
         if self.negative_power_of_two_multiply_style
             == NegativePowerOfTwoMultiplyStyle::ShiftInResultRegister
@@ -2186,6 +2209,55 @@ mod tests {
             assert_eq!(
                 behavior.narrow_call_zero_test_style,
                 narrow_call_zero_test_style
+            );
+        }
+    }
+
+    #[test]
+    fn constant_multiply_store_conversions_follow_their_own_stage_boundary() {
+        use NarrowStoreConversionStyle::{
+            ElideRedundantConversion as Elide, PreserveAll, PreserveOutsideBinaryAlu as Legacy,
+        };
+        for (compiler_build, expected) in [
+            (build::GC_1_1, [Legacy; 4]),
+            (build::GC_1_2_5N, [Legacy; 4]),
+            (build::GC_1_3_2, [PreserveAll, Elide, Elide, Elide]),
+        ] {
+            let mut config = CompilerConfig::new(compiler_build);
+            for (optimization, expected) in [
+                Optimization::O0,
+                Optimization::O1,
+                Optimization::O2,
+                Optimization::O4,
+            ]
+            .into_iter()
+            .zip(expected)
+            {
+                config.flags.optimization = optimization;
+                assert_eq!(
+                    Behavior::resolve(&config).constant_multiply_store_conversion_style,
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn small_product_profiles_expose_the_measured_instruction_family() {
+        for (build, expected) in [
+            (build::GC_1_2_5N, SmallConstantMultiplyStyle::Immediate),
+            (build::GC_2_7, SmallConstantMultiplyStyle::Immediate),
+            (build::GC_3_0A3, SmallConstantMultiplyStyle::ShiftSubtract),
+            (build::WII_1_0, SmallConstantMultiplyStyle::ShiftSubtract),
+        ] {
+            let behavior = Behavior::resolve(&CompilerConfig::new(build));
+            assert_eq!(behavior.small_constant_multiply_style, expected);
+            assert_eq!(
+                behavior
+                    .active_quirks()
+                    .iter()
+                    .any(|q| q.quirk == Quirk::ShiftSubtractSmallConstantProducts),
+                expected == SmallConstantMultiplyStyle::ShiftSubtract
             );
         }
     }

@@ -703,6 +703,13 @@ pub enum ValueTrackedMutationStyle {
     InPlaceResultRegister,
 }
 
+/// Lowering of small factors one below a power of two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmallConstantMultiplyStyle {
+    Immediate,
+    ShiftSubtract,
+}
+
 /// Register used for the shift in `x * -2^N`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NegativePowerOfTwoMultiplyStyle {
@@ -1536,6 +1543,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         ValueTrackedMutationStyle::InlineExpression
     }
 
+    fn small_constant_multiply_style(&self) -> SmallConstantMultiplyStyle {
+        SmallConstantMultiplyStyle::Immediate
+    }
+
     fn negative_power_of_two_multiply_style(&self) -> NegativePowerOfTwoMultiplyStyle {
         NegativePowerOfTwoMultiplyStyle::ShiftThroughScratch
     }
@@ -2035,6 +2046,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn small_constant_multiply_style(&self) -> SmallConstantMultiplyStyle {
+        SmallConstantMultiplyStyle::ShiftSubtract
+    }
+
     fn computed_constant_equality_style(&self) -> ComputedConstantEqualityStyle {
         ComputedConstantEqualityStyle::AddImmediate
     }
@@ -2302,6 +2317,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn small_constant_multiply_style(&self) -> SmallConstantMultiplyStyle {
+        SmallConstantMultiplyStyle::ShiftSubtract
+    }
+
     fn accumulator_issue_style(&self) -> AccumulatorIssueStyle {
         AccumulatorIssueStyle::Single
     }

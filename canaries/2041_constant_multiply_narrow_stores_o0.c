@@ -1,0 +1,19 @@
+// flags: -O0 -Cpp_exceptions off -pragma "cats off"
+void negate(short *out, int value) { *out = value * -1; }
+void negate_left(short *out, int value) { *out = -1 * value; }
+void identity(short *out, int value) { *out = value * 1; }
+void identity_left(short *out, int value) { *out = 1 * value; }
+void zero(short *out, int value) { *out = value * 0; }
+void double_value(short *out, int value) { *out = value * 2; }
+void negative_double(short *out, int value) { *out = value * -2; }
+void triple(short *out, int value) { *out = value * 3; }
+void negative_triple(short *out, int value) { *out = value * -3; }
+void negative_eight(short *out, int value) { *out = value * -8; }
+void negate_byte(signed char *out, int value) { *out = value * -1; }
+void negate_unsigned(unsigned short *out, unsigned int value) { *out = value * -1; }
+void explicit_negate(short *out, int value) { *out = (short)(value * -1); }
+void computed_negate(short *out, int value) { *out = (value + 3) * -1; }
+void seven(short *out, int value) { *out = value * 7; }
+void negative_seven(short *out, int value) { *out = value * -7; }
+void fifteen(short *out, int value) { *out = value * 15; }
+void negative_fifteen(short *out, int value) { *out = value * -15; }

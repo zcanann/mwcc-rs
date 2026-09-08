@@ -2141,6 +2141,9 @@ impl Generator {
             }
         }
         if !update_syntax {
+            if let Some(source) = self.try_place_constant_multiply_narrow_store(value, pointee)? {
+                return Ok(source);
+            }
             if let Some(source) = self.try_place_implicit_narrow_store_value(value, pointee)? {
                 return Ok(source);
             }
