@@ -4443,6 +4443,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             ) || function.is_asm
             {
                 emit_referenced!(absolute_ordered);
+                // Frame helpers are created while planning the prologue, before
+                // an unoptimized function's definition event. Ordinary body
+                // calls still follow that event and retain source positions.
+                if input.object_format.function_symbol_order
+                    == FunctionSymbolOrder::FunctionFirstAtDefinition
+                    && !function.is_asm
+                {
+                    emit_referenced!(helper_ordered.iter().copied());
+                }
                 emit_function_symbol!(index);
                 // Consecutive hand-written asm definitions are registered as one
                 // source declaration run before body references are discovered.

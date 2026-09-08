@@ -143,25 +143,49 @@ impl Generator {
     /// cheaper to save through `_savegpr_N` than with individual stores. The
     /// matching epilogue is owned by [`Self::emit_restgpr_frame_epilogue`].
     pub(crate) fn emit_savegpr_frame_prologue(&mut self, first: u8, frame_size: i16) {
+        self.emit_savegpr_frame_prologue_with_convention(
+            first,
+            frame_size,
+            FrameConvention::Predecrement,
+        );
+    }
+
+    pub(crate) fn emit_savegpr_frame_prologue_with_convention(
+        &mut self,
+        first: u8,
+        frame_size: i16,
+        convention: FrameConvention,
+    ) {
         debug_assert!((14..=31).contains(&first));
         self.frame_size = frame_size;
         self.non_leaf = true;
         self.callee_saved = (first..=31).collect();
 
-        self.output
-            .instructions
-            .push(Instruction::StoreWordWithUpdate {
-                s: 1,
-                a: 1,
-                offset: -frame_size,
-            });
-        self.output
-            .instructions
-            .push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
+        let save_lr = Instruction::MoveFromLinkRegister { d: 0 };
+        let allocate = Instruction::StoreWordWithUpdate {
+            s: 1,
             a: 1,
-            offset: frame_size + 4,
+            offset: -frame_size,
+        };
+        self.output.instructions.extend(match convention {
+            FrameConvention::Predecrement => [
+                allocate,
+                save_lr,
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: frame_size + 4,
+                },
+            ],
+            FrameConvention::LinkageFirst => [
+                save_lr,
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 4,
+                },
+                allocate,
+            ],
         });
         self.output.instructions.push(Instruction::AddImmediate {
             d: 11,
@@ -178,6 +202,14 @@ impl Generator {
     /// Close a frame opened by [`Self::emit_savegpr_frame_prologue`]. Register
     /// restoration happens before the LR reload, matching MWCC's helper ABI.
     pub(crate) fn emit_restgpr_frame_epilogue(&mut self, first: u8) {
+        self.emit_restgpr_frame_epilogue_with_convention(first, FrameConvention::Predecrement);
+    }
+
+    pub(crate) fn emit_restgpr_frame_epilogue_with_convention(
+        &mut self,
+        first: u8,
+        convention: FrameConvention,
+    ) {
         debug_assert_eq!(self.callee_saved.first().copied(), Some(first));
         self.output.instructions.push(Instruction::AddImmediate {
             d: 11,
@@ -189,18 +221,31 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::BranchAndLink { target: helper });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
-            a: 1,
-            offset: self.frame_size + 4,
-        });
-        self.output
-            .instructions
-            .push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate {
+        let restore_lr = Instruction::MoveToLinkRegister { s: 0 };
+        let release = Instruction::AddImmediate {
             d: 1,
             a: 1,
             immediate: self.frame_size,
+        };
+        self.output.instructions.extend(match convention {
+            FrameConvention::Predecrement => [
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: self.frame_size + 4,
+                },
+                restore_lr,
+                release,
+            ],
+            FrameConvention::LinkageFirst => [
+                release,
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 4,
+                },
+                restore_lr,
+            ],
         });
         self.output
             .instructions

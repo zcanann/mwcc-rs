@@ -1252,6 +1252,11 @@ impl Generator {
             }
         }
         if self.behavior.unoptimized_shared_parameter_spills {
+            let mut trial = self.clone();
+            if trial.try_shared_spill_polling(function)? {
+                *self = trial;
+                return Ok(());
+            }
             if let Some(lowered) = self.materialize_shared_spill_context(function) {
                 return self.evaluate_body(&lowered);
             }

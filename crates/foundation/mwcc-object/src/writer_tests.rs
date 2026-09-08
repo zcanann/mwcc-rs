@@ -258,6 +258,11 @@ fn deferred_body_reference_phases_can_straddle_its_symbol() {
 
 #[test]
 fn compiler_register_helpers_precede_function_first_body_symbols() {
+    assert_register_helpers_precede_function(FunctionSymbolOrder::FunctionFirst);
+    assert_register_helpers_precede_function(FunctionSymbolOrder::FunctionFirstAtDefinition);
+}
+
+fn assert_register_helpers_precede_function(order: FunctionSymbolOrder) {
     let mut function = weak_function("owner");
     function.is_weak = false;
     function.weak_inline = false;
@@ -288,7 +293,7 @@ fn compiler_register_helpers_precede_function_first_body_symbols() {
             emb_sda21_offset: 0,
             code_alignment: 4,
             sdata2_writable: false,
-            function_symbol_order: FunctionSymbolOrder::FunctionFirst,
+            function_symbol_order: order,
             asm_absolute_references_before_function: false,
             early_static_functions_after_first_pool: false,
             bss_anchor_after_first_local_object: false,

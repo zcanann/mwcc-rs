@@ -4,13 +4,68 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, GC/1.1p1 O0 indirect-call parameter spills (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, GC/1.1p1 O0 polling register scopes and spill overlap (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `ed2e432c9048494522971f38c6b0908bab04d7f5fabc6c1e57f4b6c0d15872cd:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `59c366316815856c856aa886e93bcb656ec748c822fe5d27a8de5ae46e4ea008:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GC/1.1p1 O0 polling register scopes and spill overlap, 2026-09-07
+
+The **1,024 polling execution differences** exposed by the GXMisc canaries
+are closed. Both functions in GC/1.1p1 O0 canary 1985 now match their complete
+reference bodies and relocations: `wait_twice` is **204 bytes** and
+`guarded_settle` is **160 bytes**. The **entire object matches**, including
+symbol ordering and metadata.
+
+A bounded lowering path under the existing unoptimized source-spill policy
+plans register homes before wide frame-value lowering. It verifies each
+inlined pair against the retained callee's two local declarations, assigns
+each invocation a separate four-GPR block, and preserves declaration order
+within that block. Word locals consume descending homes in first-definition
+order. Shared helper-frame emission now accepts an explicit linkage
+convention while preserving existing callers' default sequences. The actual
+SP+8 parameter store overwrites the lowest helper-saved register: r24 in
+`wait_twice`, r26 in `guarded_settle`. The epilogue therefore reproduces the
+reference's saved-register corruption, including when the guard is false.
+Recognition declines unverified scopes, unsupported control flow, volatile or
+addressable locals, nonconstant thresholds, and register plans outside the
+measured aligned frame shape. Unoptimized object emission registers generated
+save/restore helpers before the current function, retaining ordinary body-call
+and assembly-definition ordering.
+
+Canaries **2000–2001** add unsigned and signed guards, reversed wide-local
+declarations, reversed scalar-local declarations, thresholds 7 and 19, and
+three separate inline invocations. Fresh candidate and reference compilation
+both pass **30/30 objects** across fifteen builds at O0/O4. All five functions
+and the entire GC/1.1p1 O0 object are exact: **1/30 whole-object matches** and
+**5/150 exact function text plus symbolic relocation comparisons**. The
+preceding 1984–1985 panel also compiles **30/30**, with **1/30 whole-object
+matches** and **2/60 exact function comparisons**.
+
+All **107,520 paired PowerPC execution comparisons** pass: **76,800** new
+cases and **30,720** preceding-panel cases. Independent models check ordered
+clock/counter calls, signed elapsed comparisons around word carries and
+64-bit wrap boundaries, guard outcomes, saved GPR/FPR images, SP/LR/PC, and
+unrelated memory. Helper callbacks clobber volatile registers; the original
+DOL's save/restore helper instructions execute on both sides. The models
+include the source-spill corruption on the affected build.
+
+Regression checks retain **1,114** compiling indexed objects byte-for-byte,
+including all **972** known exact matches. Among **2,685** recent source/build
+pairs, **2,595** objects are unchanged, **89** retain compilation failures,
+and the one changed object is the newly exact canary 1985. All fourteen full
+GX objects and the AX voice-parameter object remain byte-identical. Compiler
+library tests pass **1,601**, excluding the previously confirmed embedded-asm
+failure; object-writer tests pass **40**. Final recompilation verifies **75**
+execution-panel and full-unit object hashes after the last source changes.
+
+Artifacts are under `target/polling-spill-{canaries,previous-canaries,index,recent,library,full-ax}`;
+`target/polling-spill-final-verification.json` records the final compiler and
+verified object hashes. These are focused measurements. Broader instruction
+matching, register allocation, and full-project parity remain unfinished.
 
 ## GC/1.1p1 O0 indirect-call parameter spills, 2026-09-07
 
@@ -67,8 +122,9 @@ Artifacts are under `target/callback-spill-{canaries,previous-canaries,index,rec
 Both canary directories contain fresh-reference, exactness, and execution
 reports; `target/callback-spill-final-verification.json` records the final
 compiler and object hashes. The earlier **1,024** GXMisc polling-spill
-differences remain open, as do broader register allocation, instruction
-matching, and full-project parity. These focused counts are not a corpus
+differences were still open at this checkpoint and are closed above. Broader
+register allocation, instruction matching, and full-project parity remain
+unfinished. These focused counts are not a corpus
 parity estimate.
 
 ## Complete GXTexture translation unit and fourteen-unit GX coverage, 2026-09-07
