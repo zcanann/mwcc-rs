@@ -326,6 +326,15 @@ pub enum FixedBankStreamStyle {
     RetainedPageEarlyStore,
 }
 
+/// Constant-trip pointer fills, measured independently of register scheduling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedFillLoopStyle {
+    /// Largest exact divisor up to ten stores per iteration.
+    DivisorTen,
+    /// Fully expand fewer than 64 stores; longer fills use eight-store packets.
+    PacketEight,
+}
+
 /// Entry, allocation, and scheduling policy for specialized integer loops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegerLoopStyle {
@@ -1560,6 +1569,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         BitFieldLoadPlacement::Scratch
     }
 
+    fn fixed_fill_loop_style(&self) -> FixedFillLoopStyle {
+        FixedFillLoopStyle::DivisorTen
+    }
+
     fn member_value_schedule(&self) -> MemberValueSchedule {
         MemberValueSchedule::TwoValues
     }
@@ -2087,6 +2100,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn fixed_fill_loop_style(&self) -> FixedFillLoopStyle {
+        FixedFillLoopStyle::PacketEight
+    }
+
     fn member_value_schedule(&self) -> MemberValueSchedule {
         MemberValueSchedule::ReadyValues { ordered_issue_width: 2 }
     }
@@ -2362,6 +2379,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn fixed_fill_loop_style(&self) -> FixedFillLoopStyle {
+        FixedFillLoopStyle::PacketEight
+    }
+
     fn member_value_schedule(&self) -> MemberValueSchedule {
         MemberValueSchedule::ReadyValues { ordered_issue_width: 1 }
     }

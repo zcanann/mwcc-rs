@@ -69,6 +69,7 @@ mod global_memory_schedule;
 mod constant_division_schedule;
 mod division_address_schedule;
 mod member_store_values;
+mod fixed_fill_loops;
 mod negated_update_schedule;
 mod inline_expansion;
 mod inline_sqrtf;
@@ -1110,6 +1111,7 @@ fn lower_function_body(
     if function.return_type == mwcc_syntax_trees::Type::Void {
         generator.retain_member_store_values();
     }
+    generator.expand_fixed_fill_loops(function.return_type, globals);
     let allocated_float_saves = allocate_registers(&mut generator).map_err(|mut diagnostic| {
         let context = format!("function '{}'", function.name);
         if !diagnostic.message.contains(&context) {

@@ -1306,13 +1306,16 @@ impl Generator {
                 &self.output.relocations,
                 frame_update,
             ) {
-                self.move_plain_linkage_instruction_before(candidate, 1);
-                link_store += 1;
-                frame_update += 1;
+                if plain_linkage_entry_clear(&self.output.instructions, frame_update + 1, candidate) {
+                    self.move_plain_linkage_instruction_before(candidate, 1);
+                    link_store += 1;
+                    frame_update += 1;
+                }
             }
         }
 
         if link_store == 1
+            && plain_linkage_entry_clear(&self.output.instructions, frame_update + 1, frame_update + 1)
             && self
                 .output
                 .instructions
@@ -1327,11 +1330,12 @@ impl Generator {
         let occupied = frame_update.saturating_sub(link_store + 1);
         for _ in occupied..2 {
             let candidate = frame_update + 1;
-            if !self
-                .output
-                .instructions
-                .get(candidate)
-                .is_some_and(|instruction| plain_linkage_latency_instruction(instruction, true))
+            if !plain_linkage_entry_clear(&self.output.instructions, candidate, candidate)
+                || !self
+                    .output
+                    .instructions
+                    .get(candidate)
+                    .is_some_and(|instruction| plain_linkage_latency_instruction(instruction, true))
             {
                 break;
             }
@@ -1389,6 +1393,9 @@ impl Generator {
             return;
         };
         let branch = frame_update + 1 + branch_offset;
+        if !plain_linkage_entry_clear(&self.output.instructions, frame_update + 1, branch - 1) {
+            return;
+        }
         let prefix = &self.output.instructions[frame_update + 1..branch];
         let contains_narrowing = prefix.iter().any(|instruction| {
             matches!(
@@ -2450,6 +2457,16 @@ fn remap_prefix_rotate_left(
             index => index,
         };
     }
+}
+
+/// Delaying a frame update across a branch entry makes the backedge allocate
+/// another frame. Prologue latency work must stay in the single-entry prefix.
+fn plain_linkage_entry_clear(instructions: &[Instruction], start: usize, end: usize) -> bool {
+    !instructions.iter().any(|instruction| match instruction {
+        Instruction::Branch { target } | Instruction::BranchConditionalForward { target, .. } =>
+            (start..=end).contains(target),
+        _ => false,
+    })
 }
 
 #[cfg(test)]

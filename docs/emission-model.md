@@ -59,7 +59,8 @@ seams between claimed shapes are concatenation plus this bookkeeping.
 
 ## Loop regimes
 
-- Counted + straight-line body: the x8 unroll (DEFERRED).
+- Constant-trip pointer fill: version-selected CTR batches or full expansion
+  (see below). Other counted straight-line bodies remain deferred.
 - Counted + branchy body: plain CTR loop (mtctr; skip-branch mirroring
   the entry test exactly; bdnz). `while(n--)` skips only on zero.
 - Non-counted: the rotated form (b TEST; BODY; TEST; b<cond> BODY),
@@ -98,3 +99,27 @@ Ordinary `Symbol` displacements remain low-half-only, so owners that already
 bias a section page are not expanded twice. This pass currently resolves BSS;
 initialized-data layout and scheduling the new high instruction are follow-up
 work. Canaries 2076–2081 and BfBB `__AXVPBInit` exercise this boundary.
+
+## Constant-trip pointer fills
+
+`fixed_fill_loops` runs after ordinary instruction scheduling and before
+allocation. Its proof requires a single-entry countdown, one constant integer
+store, a matching pointer advance, and a dead final CR0 result. CFG liveness
+keeps observable pointer/counter exit values. Other CTR owners, opaque assembly,
+extra body entries, and body-owned relocations/displacements exclude the pass.
+The ordinary instruction-edit helpers keep branches, labels, and metadata in
+sync, and a fresh virtual value supplies the trip count.
+
+`FixedFillLoopStyle::DivisorTen` selects the largest exact divisor up to ten
+stores. `PacketEight` fully expands fewer than 64 stores; longer fills divide
+complete eight-store packets using the largest divisor up to seven packets,
+then emit the scalar remainder. Size mode selects one store per CTR iteration.
+Explicitly aligned global references select the divisor policy for the entire
+function, including unrelated parameter fills, on the packet-style builds.
+O3/O4 enable this owner; disabled instruction scheduling does not disable it.
+
+The linkage-first prologue's latency slots must remain above every branch
+entry. Moving a loop-entry value above a delayed stack update also moves the
+backedge there, incorrectly allocating another frame per iteration. The plain
+frame scheduler now treats those entries as a boundary. Canaries 2082–2088
+exercise both loop expansion and this frame-composition requirement.

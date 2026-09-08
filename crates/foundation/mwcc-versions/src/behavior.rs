@@ -14,7 +14,7 @@
 use crate::config::CompilerConfig;
 use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal, SchedulingModel};
 use crate::profile::{
-    SmallConstantMultiplyStyle, MemberValueSchedule,
+    SmallConstantMultiplyStyle, MemberValueSchedule, FixedFillLoopStyle,
     NegatedUpdateScheduleStyle, DivisionAddressSchedule,
     AccumulatorIssueStyle,
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
@@ -819,6 +819,8 @@ pub struct Behavior {
     /// Scheduling of distinct constant values consumed by consecutive stores.
     pub constant_store_schedule_style: ConstantStoreScheduleStyle,
     pub member_value_schedule: MemberValueSchedule,
+    /// Constant-trip pointer-fill expansion policy.
+    pub fixed_fill_loop_style: FixedFillLoopStyle,
     /// Issue order for stores fed by an overlapping two-value schedule.
     pub computed_store_issue_style: ComputedStoreIssueStyle,
     /// Placement of a returned local across source-level arithmetic reassignments.
@@ -1361,6 +1363,7 @@ impl Behavior {
             bit_field_load_placement: config.build.profile.bit_field_load_placement(),
             constant_store_schedule_style: config.build.profile.constant_store_schedule_style(),
             member_value_schedule: config.build.profile.member_value_schedule(),
+            fixed_fill_loop_style: config.build.profile.fixed_fill_loop_style(),
             computed_store_issue_style: config.build.profile.computed_store_issue_style(),
             value_tracked_mutation_style: config.build.profile.value_tracked_mutation_style(),
             negative_power_of_two_multiply_style: config
@@ -1979,6 +1982,21 @@ impl Behavior {
 mod tests {
     use super::*;
     use crate::{build, flags::CharDefault};
+
+    #[test]
+    fn fixed_fill_loop_styles_follow_the_measured_build_families() {
+        for label in ["GC/1.1", "GC/1.1p1", "GC/1.2.5", "GC/1.2.5n", "GC/1.3",
+            "GC/1.3.2", "GC/1.3.2r", "GC/2.0", "GC/2.0p1", "GC/2.5", "GC/2.6",
+            "GC/2.7", "GC/3.0a3", "GC/3.0a3p1", "Wii/1.0"] {
+            let build = build::by_label_experimental(label).unwrap();
+            let expected = if label.starts_with("GC/3") || label.starts_with("Wii/") {
+                FixedFillLoopStyle::PacketEight
+            } else {
+                FixedFillLoopStyle::DivisorTen
+            };
+            assert_eq!(Behavior::resolve(&CompilerConfig::new(build)).fixed_fill_loop_style, expected, "{label}");
+        }
+    }
 
     #[test]
     fn member_value_schedules_follow_the_measured_build_families() {

@@ -4,13 +4,83 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, complete BSS addresses and the real AX voice initializer (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, constant pointer-fill loops and prologue backedge safety (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `60a0ad494b5abcfdc2d45a46260c28ef8f9218c4be695234f63b32816c93656d:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `e2b6382a9abb55491ff1fbd70a7a57432773809d3ef657d9cd9f573a722741b3:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Constant pointer-fill loops and prologue backedges, 2026-09-08
+
+The three clearing loops in the complete BfBB `__AXVPBInit` now use the
+reference's **eight-store CTR bodies on all fifteen builds**. Their steady
+state changes from six instructions per word to ten instructions per eight
+words. All **240 native cases** still agree with baseline, fresh references,
+the original GQPE78 executable, and the independent full-memory model. Only
+`__AXVPBInit` changes in each complete-source object; `__AXSetPBDefault` retains
+**15/15 exact matches**. The initializer is still **0/15 exact**: sizes grow
+**520 → 592 bytes** on the oldest four builds and **516 → 588** on the other
+eleven, versus 512/520/548-byte references. Unrolling adds the expected stores;
+frame selection, setup scheduling, inlining, pointer induction, and repeated
+split-pointer expressions remain outstanding. The supplemental version panel
+continues to remove `-W err` on every side.
+
+A shared pre-allocation pass proves a single-entry, constant-trip countdown
+loop with one constant byte/halfword/word store and one pointer advance.
+It preserves observable counter and pointer exit values through CFG liveness,
+requires the removed comparison's CR0 result to be dead, and rejects extra
+entries, instruction-owned metadata in the body, opaque assembly, and existing
+CTR ownership. A fresh virtual register supplies CTR; branch/label and metadata
+remapping use the common instruction-editing helpers. Store order is preserved.
+O0–O2 remain outside the expansion owner.
+
+`FixedFillLoopStyle` separates version policy from recognition. Through GC/2.7,
+performance optimization selects the largest exact divisor up to ten stores.
+GC 3/Wii fully expand counts below 64; larger fills divide complete eight-store
+packets into batches of up to 56 stores and emit up to seven remainder stores.
+For example, 100 becomes two 48-store iterations plus four final stores. Size
+optimization uses a one-store CTR loop. GC 3/Wii switch the **entire function**
+back to the ten-store divisor policy when it references an explicitly aligned
+global. Probes include alignment 4, unrelated parameter fills, separate loop
+pointers, and unreferenced aligned declarations; this explains the full AX
+initializer's smaller batches.
+
+Canaries **2082–2088** add 27 forms across O4, O3, O2, size, schedule-off, debug,
+and O0: zero/small/large counts, prime counts and packet remainders, three store
+widths, returned counter/pointer values, conditional and nested loops, callbacks,
+repeated fills, volatile writes, and aligned-global context. All sides compile
+**105/105 objects**. Exact function text plus symbolic relocations improves
+**3 → 633/2,835**, with no lost matches; whole objects remain **0/105**.
+All **181,440 native cases** pass on the candidate and have no unexpected
+reference failures. Checks cover randomized surrounding memory, every write's
+address/width/value and order, callback effects and volatile-register clobbers,
+return values, preserved registers, SP, LR, and PC.
+
+The execution panel also exposed **5,376 baseline failures** on the oldest four
+builds: the plain linkage-first scheduler hoisted a loop-entry constant above
+`stwu`, causing each backedge to allocate another frame. Prologue latency work
+now stops at branch entries, fixing the O0/O2 paths as well as optimized fills.
+A separate **64-case GC/1.1p1 O0 saved-r30 spill alias** is modeled as an existing,
+unimplemented reference bug: `conditional` spills `yes` over saved r30 at
+`8(sp)`. These cases are not claimed as ABI parity.
+
+Previous boundary canaries **2076–2081** retain **118/720 exact functions**, no
+lost matches, and **92,160 passing native cases** on all sides, including their
+separately modeled 128-case reference spill bug. Focused regressions retain
+**1,110 identical objects** from 2002–2075, **1,114 identical compiled objects /
+972 known exact matches** in the indexed panel, and **2,626 identical objects /
+89 unchanged failures** from 1821–2001. All ten AX and fourteen GX units compile
+under GC/1.2.5n project flags; only AXVPB changes. Tests pass **1,638 backend**
+(including four new loop-proof cases) and **55 version** cases, with the existing
+embedded-assembly backend test excluded.
+
+Artifacts are under `target/fill-unroll-{canaries,previous,versions,older,index,recent,library,ax-library}`.
+`target/fill-unroll-final-verification.json` recompiles candidate panels and
+binds **630 execution-tested object hashes** to the final compiler and harness.
+These are targeted progress measurements; complete project compilation,
+linking, and matching remain unfinished.
 
 ## Complete BSS addresses and the AX voice initializer, 2026-09-08
 
