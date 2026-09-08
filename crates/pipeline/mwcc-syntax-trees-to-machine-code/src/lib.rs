@@ -68,6 +68,7 @@ mod generator;
 mod global_memory_schedule;
 mod constant_division_schedule;
 mod division_address_schedule;
+mod member_store_values;
 mod negated_update_schedule;
 mod inline_expansion;
 mod inline_sqrtf;
@@ -1106,6 +1107,9 @@ fn lower_function_body(
     generator.schedule_linkage_first_callback_state_arms();
     generator.schedule_linkage_first_callback_completion_arms();
     generator.retain_inlined_leading_store_guard_constant();
+    if function.return_type == mwcc_syntax_trees::Type::Void {
+        generator.retain_member_store_values();
+    }
     let allocated_float_saves = allocate_registers(&mut generator).map_err(|mut diagnostic| {
         let context = format!("function '{}'", function.name);
         if !diagnostic.message.contains(&context) {

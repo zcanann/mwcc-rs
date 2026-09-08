@@ -50,6 +50,18 @@ window, including addresses used by later callbacks. It keeps the serialized
 sequence when a live outgoing scratch value or insufficient free registers
 prevents safe recoloring.
 
+## Retained member-store values, 2026-09-08
+
+`member_store_values` builds a small value/store graph for complete void leaf
+initializations containing repeated literals and an interior pointer. Store
+order stays fixed; the selected version schedule moves only independent value
+materializations. Each unique value receives a fresh virtual register with a
+scratch preference. Reverse consumer groups let later values take the first
+legal homes, while liveness keeps the member base and overlapping constants
+separate. No post-allocation physical recoloring is needed. The owner currently
+covers the old interleaved schedule with two or three unique values; control
+flow, loads, calls, indexed metadata, and non-void returns decline the owner.
+
 ## Original problem statement
 
 Today, instruction selection chooses registers **inline** as it walks the AST.

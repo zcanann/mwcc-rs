@@ -608,6 +608,44 @@ impl Generator {
         right: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
+        // Inline member arrays retain their element stride when they decay.
+        // Fold both the member displacement and the scaled literal into the
+        // address; treating a nonzero-offset member as an integer loses scaling.
+        let member_offset = |array: &Expression, index: &Expression, subtract: bool| {
+            let Expression::MemberAddress {
+                offset,
+                element,
+                index_stride,
+                ..
+            } = array
+            else {
+                return None;
+            };
+            let stride = index_stride.unwrap_or(u32::from(element.size()));
+            let scaled = constant_value(index)?.checked_mul(i64::from(stride))?;
+            let total = if subtract {
+                i64::from(*offset).checked_sub(scaled)?
+            } else {
+                i64::from(*offset).checked_add(scaled)?
+            };
+            i16::try_from(total).ok()
+        };
+        let folded = member_offset(left, right, operator == BinaryOperator::Subtract)
+            .map(|offset| (left, offset))
+            .or_else(|| {
+                (operator == BinaryOperator::Add)
+                    .then(|| member_offset(right, left, false).map(|offset| (right, offset)))
+                    .flatten()
+            });
+        if let Some((Expression::MemberAddress { base, .. }, immediate)) = folded {
+            let address = self.member_base_register(base)?;
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: destination,
+                a: address,
+                immediate,
+            });
+            return Ok(true);
+        }
         // A zero offset needs no pointer materialization temporary. Preserve
         // the ordinary identity fold, including global pointer snapshots.
         if constant_value(right) == Some(0)

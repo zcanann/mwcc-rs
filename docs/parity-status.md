@@ -4,13 +4,80 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, patched address scheduling and live constant-store homes (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, member initialization values and array displacements (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `23c009e1263139e590463ee938c806c57f78ca8c8a96bbdb388a9a85ed0e9b21:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `4466b6cfba87ce673927b7e0157c86210647377042e9fad164b2c5b342ef4a1d:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Member initialization values and array displacements, 2026-09-08
+
+The complete BfBB `AXVPB.c` now produces an exact **64-byte
+`__AXSetPBDefault`** for GC/1.1, GC/1.2.5, and GC/1.2.5n, improving from
+**92 bytes** and **0 → 3/15 exact version outputs**. GC/1.2.5n also matches
+all **16 original-DOL instruction words** with no unresolved relocations.
+The pinned layout is `docs/reference-layouts/bfbb-axvpb-default.json`.
+GC/1.1p1 reaches 64 bytes but still differs in scheduling: its reference
+materializes the interior pointer before the first store. The eleven later
+builds shrink to 80 bytes and remain unmatched against their 64-byte references.
+All **30,720 native cases** agree across baseline, candidate, fresh references,
+and the original executable. Checks include every byte of the randomized
+1,024-byte object region and saved registers, SP, LR, and return PC.
+
+A new pre-allocation member-store owner retains repeated immediate values and
+an interior pointer across a complete void leaf initialization. It recognizes
+one common base, word/halfword/byte stores, and two or three distinct values,
+including exactly one interior pointer. Source store order is preserved,
+including assignment chains and volatile writes. The old constant-store
+schedule issues the first store immediately and then the remaining value
+materializations. Reverse consumer allocation order and scratch preferences
+produce the observed overlapping homes through ordinary liveness, without
+prescribing physical r4/r5. The owner requires O2 or higher, an enabled scheduler,
+and the InterleavedPairs version policy. Calls, branches, loads, frames, other
+bases, non-void returns, and instruction-indexed output metadata exclude it.
+The patched and newer schedules remain follow-up work.
+
+Literal member-array indices now use ordinary displacement stores when the
+combined byte offset fits signed 16 bits. Larger offsets retain the indexed
+address path. This also removes three instructions from the inlined zero-store
+chain in `__AXSyncPBs`; its other instructions and relocation targets are
+unchanged after accounting for shifted branch targets. Complete execution or
+matching of `__AXSyncPBs` is not claimed here.
+
+The corpus exposed a separate pointer-arithmetic bug: a nonzero-offset inline
+halfword array's `p->data + 2` advanced two bytes instead of four. Add/subtract
+and commuted literal additions now fold the member offset together with the
+scaled element offset when the result fits an address displacement. Explicit
+array strides are respected. This fixes **30,720 baseline execution failures**
+in the reduced pointer and initialization forms.
+
+Canaries **2068–2071** cover twelve forms at O4, O2, explicit schedule-off, and
+O0 across fifteen builds; the three optimized files also cover stores at byte
+offsets 32,766, 32,768, and 33,998. All sides compile **60/60 objects**. Exact
+function text plus symbolic relocations improves **82 → 328/765**, while whole
+objects remain **0/60**. All **97,920 candidate and reference native cases**
+pass the independent model, including volatile write order, parameter-base
+placement, neighboring bytes, large-offset writes, and ABI state. The large
+literal-store form remains unsupported at O0 in both baseline and candidate,
+so it is confined to the three optimized canaries.
+
+The focused regression panels retain **990/990 identical objects** from
+2002–2067, **1,114 identical compiled objects / 972 known exact matches** in
+the indexed panel, and **2,626 identical objects / 89 unchanged failures**
+from 1821–2001. All fourteen GX objects and nine of ten AX objects remain
+identical; all ten AX units compile. Only `__AXSyncPBs` and `__AXSetPBDefault`
+change within AXVPB. The fifteen-build full-source panel uses the existing
+supplemental flags with `-W err` removed on all sides; the GC/1.2.5n AX/GX
+library check retains the project flags. Backend tests pass **1,633**, with
+the single known embedded-assembly test excluded.
+
+Artifacts are under `target/member-init-{canaries,versions,index,recent,previous,library,ax-library}`.
+`target/member-init-final-verification.json` binds **225 execution-tested
+object hashes** and the focused regression checks to the final compiler and
+harness. Full-project compilation, linking, and cross-version matching remain
+unfinished; these counts describe targeted samples, not corpus-wide parity.
 
 ## Patched address scheduling and live constant-store homes, 2026-09-08
 

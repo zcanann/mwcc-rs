@@ -51,6 +51,15 @@ impl Generator {
         let Some(store) = classify(target, value) else {
             return Ok(false);
         };
+        // Fold representable literal indices through the ordinary displacement
+        // owner. Large offsets still need this path's indexed address.
+        if constant_value(store.index).is_some_and(|index| {
+            index.checked_mul(i64::from(store.element.size()))
+                .and_then(|scaled| scaled.checked_add(i64::from(store.member_offset)))
+                .is_some_and(|offset| i16::try_from(offset).is_ok())
+        }) {
+            return Ok(false);
+        }
         if matches!(
             store.element,
             Pointee::Float | Pointee::Double | Pointee::LongLong | Pointee::UnsignedLongLong
