@@ -156,6 +156,7 @@ mod global_aggregate_constant_initialization;
 mod global_struct_binary_search_schedule;
 mod hierarchy_push_pop_schedule;
 mod loop_step_prefetch_schedule;
+mod loop_latch_schedule;
 mod recorded_boolean_zero_test;
 mod guards_ifs;
 mod global_struct_member_search;

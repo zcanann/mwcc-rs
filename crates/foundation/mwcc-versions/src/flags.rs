@@ -76,6 +76,18 @@ pub enum SchedulingModel {
     PowerPc7400,
 }
 
+/// Processor selected by `-proc`, distinct from an explicit scheduling pragma.
+/// Keep the omitted option visible: its loop schedule differs from `gekko`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Processor {
+    Default,
+    PowerPc603e,
+    PowerPc604,
+    PowerPc750,
+    PowerPc7400,
+    Gekko,
+}
+
 /// The codegen-affecting flags of one invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Flags {
@@ -129,6 +141,8 @@ pub struct Flags {
     pub scheduler_enabled: bool,
     /// Processor latency model selected by `-pragma "scheduling 7400"`.
     pub scheduling_model: SchedulingModel,
+    /// Target selected by `-proc`; currently consumed by loop-latch scheduling.
+    pub processor: Processor,
     /// `-fp_contract on` allows multiply-add/subtract contraction. `off`
     /// preserves the source-level multiply and add/subtract instructions.
     pub fp_contract: bool,
@@ -168,6 +182,7 @@ impl Default for Flags {
             use_lmw_stmw_explicit: false,
             scheduler_enabled: true,
             scheduling_model: SchedulingModel::Default,
+            processor: Processor::Default,
             fp_contract: true,
             debug_info: false,
             ipa_file: false,

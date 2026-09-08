@@ -198,6 +198,17 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     _ => invocation.flags.rtti,
                 };
             }
+            "-proc" => {
+                index += 1;
+                invocation.flags.processor = match arguments.get(index).map(String::as_str) {
+                    Some("603e") => mwcc_versions::Processor::PowerPc603e,
+                    Some("604") => mwcc_versions::Processor::PowerPc604,
+                    Some("750") => mwcc_versions::Processor::PowerPc750,
+                    Some("7400") => mwcc_versions::Processor::PowerPc7400,
+                    Some("gekko") => mwcc_versions::Processor::Gekko,
+                    _ => invocation.flags.processor,
+                };
+            }
             // Code-address-table and processor-scheduling pragmas are
             // independent invocation policies.
             "-pragma" => {
@@ -5325,6 +5336,17 @@ mod tests {
             Some(&String::from("1"))
         );
         assert!(!parsed.preprocessor_definitions.contains_key("REMOVED"));
+    }
+
+    #[test]
+    fn command_line_processor_is_last_wins_and_distinct_from_scheduling_pragma() {
+        let invocation = parse_invocation(&[
+            "-proc".into(), "gekko".into(), "-proc".into(), "750".into(),
+            "-pragma".into(), "scheduling 7400".into(),
+        ]);
+        assert_eq!(invocation.flags.processor, mwcc_versions::Processor::PowerPc750);
+        assert_eq!(invocation.flags.scheduling_model, mwcc_versions::SchedulingModel::PowerPc7400);
+        assert_eq!(parse_invocation(&[]).flags.processor, mwcc_versions::Processor::Default);
     }
 
     #[test]

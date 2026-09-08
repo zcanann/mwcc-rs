@@ -1019,6 +1019,8 @@ pub struct Behavior {
     pub scheduler_enabled: bool,
     /// Whether this invocation may reverse volatile loads while placing call inputs.
     pub reorder_volatile_call_inputs: bool,
+    /// Issue an independent step before a counted loop latch comparison.
+    pub interleave_loop_latch_steps: bool,
     /// Whether floating multiply/add and multiply/subtract expressions may
     /// contract into fused instructions.
     pub contract_floating_point: bool,
@@ -1657,6 +1659,9 @@ impl Behavior {
                 || (!config.flags.use_lmw_stmw_explicit
                     && config.build.profile.frame_convention() == FrameConvention::LinkageFirst),
             scheduler_enabled: config.flags.scheduler_enabled,
+            interleave_loop_latch_steps: config.flags.optimization == Optimization::O4
+                && config.flags.scheduler_enabled
+                && config.build.profile.interleave_loop_latch_steps(config.flags.processor),
             reorder_volatile_call_inputs: config.flags.scheduler_enabled
                 && config.flags.optimization != Optimization::O0
                 && config.build.profile.reorder_volatile_call_inputs(),
@@ -1996,6 +2001,50 @@ impl Behavior {
 mod tests {
     use super::*;
     use crate::{build, flags::CharDefault};
+
+    #[test]
+    fn loop_latch_issue_policy_preserves_the_early_patch_boundary() {
+        for (compiler_build, interleaved) in [
+            (build::GC_1_1, false),
+            (build::GC_1_1P1, true),
+            (build::GC_1_2_5, false),
+            (build::GC_1_2_5N, false),
+            (build::GC_1_3, true),
+            (build::GC_2_7, true),
+            (build::GC_3_0A3, true),
+            (build::WII_1_0, true),
+        ] {
+            for optimization in [Optimization::O0, Optimization::O2, Optimization::O3, Optimization::O4] {
+                for scheduler in [false, true] {
+                    let mut config = CompilerConfig::new(compiler_build);
+                    config.flags.optimization = optimization;
+                    config.flags.scheduler_enabled = scheduler;
+                    config.flags.processor = crate::Processor::Gekko;
+                    assert_eq!(Behavior::resolve(&config).interleave_loop_latch_steps,
+                        interleaved && scheduler && optimization == Optimization::O4);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn loop_latch_processor_selection_is_distinct_from_the_latency_pragma() {
+        use crate::Processor;
+        for build in [build::GC_1_1, build::GC_1_1P1, build::GC_2_7, build::WII_1_0] {
+            let mut config = CompilerConfig::new(build);
+            for processor in [Processor::Default, Processor::PowerPc603e,
+                Processor::PowerPc604, Processor::PowerPc750, Processor::PowerPc7400, Processor::Gekko] {
+                config.flags.processor = processor;
+                for model in [SchedulingModel::Default, SchedulingModel::PowerPc7400] {
+                    config.flags.scheduling_model = model;
+                    let expected = if build.label == "GC/1.1p1" { true }
+                        else if build.label == "GC/1.1" { matches!(processor, Processor::PowerPc603e | Processor::PowerPc604 | Processor::PowerPc750) }
+                        else { processor != Processor::Default };
+                    assert_eq!(Behavior::resolve(&config).interleave_loop_latch_steps, expected);
+                }
+            }
+        }
+    }
 
     #[test]
     fn volatile_call_input_order_tracks_the_profile_and_scheduler() {

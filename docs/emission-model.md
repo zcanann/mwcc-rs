@@ -362,3 +362,31 @@ resulting wrong callback values and indexed-load faults, using the same frame
 and expression emitters as loops. Canaries 2164–2169 cover these bugs alongside
 register cycles, arithmetic/member/indexed loads, source-order memory, narrow
 promotion, and explicit save modes across fifteen builds.
+
+
+## Counted-loop latch issue order
+
+For an O4 call-bearing loop, keep post-call induction updates and the latch
+comparison in a separate scheduling plan. Require a backward conditional edge,
+a constant-bound comparison, and a contiguous packet of distinct in-place
+integer additions immediately after a call. The tested update must be positive;
+recorded descending updates and register bounds have other owners. Prove the
+updates commute and reject every alternate entry, relocation, deferred address,
+or jump-table entry within the packet. Apply the plan through the shared
+instruction permutation API, retaining branch and symbolic ownership.
+
+Move the tested update first. Immediate-comparison profiles place the comparison
+next and retain the remaining update order. Interleaved profiles rotate the
+remaining updates left, issue one before the comparison, and emit the rest
+afterward. Allocation remains responsible for the homes and for the source order
+of synthesized cursors; this pass does not rename registers or manufacture
+addresses to match one project.
+
+Resolve the issue policy from the invocation and version profile. `-proc` is an
+explicit fact, including its omission, independent of `-pragma scheduling 7400`.
+With Gekko/7400 targets, GC/1.1 and GC/1.2.5[n] compare immediately; GC/1.1p1 and
+later profiles interleave. The measured 603e/604/750 targets interleave across
+builds. Omitted processor selection compares immediately except in GC/1.1p1.
+Disabled scheduling uses immediate comparison. Canaries 2170–2175 and the
+processor panel distinguish these policies from unoptimized source order,
+dynamic bounds, pointer termination, and the original O0 shared-slot bugs.

@@ -4,13 +4,75 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, dependent word call inputs (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, counted-loop latch scheduling (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `bd26f37ff3346d517e952c5bc58857a96feb7401bcdb028f4941edc484182418:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `67d90aa260006f82c78df959dfe09149d5111b8923564ecdcb5d8b62e0640a76:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Counted-loop latch scheduling, 2026-09-08
+
+The AXVPB initializer exposed a shared scheduling gap: the induction comparison
+followed all pointer steps instead of issuing near the induction update. A
+separate late scheduler now canonicalizes independent post-call updates and
+places the constant-bound comparison according to the version and processor.
+It requires a backward conditional edge, distinct in-place integer updates,
+and a positive induction step. It rejects alternate packet entries, dependent
+updates, and symbolic instruction owners, and uses the shared permutation API
+for durable instruction metadata. O0/O2/O3, descending loops, and register-bound
+comparisons retain their existing owners.
+
+For `-proc gekko` or `7400`, GC/1.1 and GC/1.2.5[n] compare immediately after the
+induction update. GC/1.1p1 and later builds issue one independent step first,
+rotating the first remaining step to the end. Disabling scheduling selects the
+immediate comparison. Processor selection is now an explicit invocation fact,
+separate from the existing scheduling pragma: `603e`, `604`, and `750` select the
+interleaved order across the measured builds. Omitting `-proc` selects immediate
+comparison except in GC/1.1p1. An explicit `scheduling 7400` pragma does not
+replace this processor selection in the measured loop packets. Profile tests
+and a driver last-wins test preserve these boundaries.
+
+Canaries **2170–2175** contain ten functions in six modes across fifteen builds:
+**90 objects / 900 functions** compile on baseline, candidate, and reference.
+They cover signed/unsigned indices, equality and dynamic bounds, descending
+loops, pointer termination, one through three cursors, unequal strides, global
+arrays, aliases, and callbacks. **315 functions** change. Comparing loop-tail
+opcodes and immediates while ignoring physical register numbers gives
+**0 → 300 matching tails** among them. The fifteen size-mode global-array cases
+still differ because the reference uses one shared array offset. Whole-function
+exact matches stay **2 → 2**, with no losses; normalized tail matches are not
+byte-exact function matches.
+
+All **14,400 new native cases** pass on all three sides. The model checks
+callback arguments and memory, callback clobbers/mutation, aliasing, guarded
+memory, SP/LR, and callee-saved registers. It preserves **16** GC/1.1p1 O0 cases
+where a single-use end pointer overwrites the saved r30 slot. A separate panel
+covers six processor/pragma configurations across fifteen builds: all **90**
+normalized three-cursor tails match, and **14,400** additional candidate/reference
+execution cases pass.
+
+Of **1,410** preceding objects, **1,170** remain identical. The **240 changed
+objects / 1,503 changed functions** retain all exact matches. Every changed
+function preserves its instruction multiset and relocations; all **27,840**
+affected earlier execution cases pass. The older **1,110** and recent **2,626**
+objects remain identical, with **89** unchanged recent failures. All **1,674**
+indexed outcomes remain unchanged (1,114 compiled, 972 known exact).
+
+Full AXVPB objects change only `__AXVPBInit` across fifteen builds. Its normalized
+loop-tail order now matches **12/15**, up from zero; the three newest builds
+still use a different order of synthesized offsets. All **240** initializer
+cases pass against both reference compilers and the original game binary.
+Instruction counts are unchanged and the initializer remains **0/15 byte-exact**.
+All ten AX and fourteen GX translation units compile; the other 23 objects are
+identical. Total native coverage for this checkpoint is **56,880 cases**.
+
+Backend tests pass **1,667** with the existing nested-asm inline exclusion;
+version tests pass **59**, plus the focused processor-option driver test.
+The full corpus was not rerun. `target/loop-latch-final-verification.json` binds
+the final compiler/harness fingerprint to **1,215 native-tested object entries**,
+the preceding-object hashes, and the instruction-permutation checks.
 
 ## Dependent word call inputs, 2026-09-08
 

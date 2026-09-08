@@ -1764,6 +1764,11 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    /// Later schedulers issue one independent loop step between the induction
+    /// update and its comparison, rotating the first remaining step to the end.
+    fn interleave_loop_latch_steps(&self, processor: crate::Processor) -> bool {
+        processor != crate::Processor::Default
+    }
     /// Early 2.3.3 schedulers may reverse volatile argument loads to resolve
     /// ABI dependencies. Later profiles retain their source order.
     fn reorder_volatile_call_inputs(&self) -> bool {
@@ -2810,6 +2815,7 @@ pub struct Gc233Build163 {
     saved_float_epilogue_style: SavedFloatEpilogueStyle,
     structured_saved_gpr_stack_first: bool,
     unoptimized_shared_parameter_spills: bool,
+    interleave_loop_latch_steps: bool,
     dvd_fst_loader_early_epilogue: bool,
 }
 
@@ -2826,6 +2832,7 @@ pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
     saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeResult,
     structured_saved_gpr_stack_first: false,
     unoptimized_shared_parameter_spills: false,
+    interleave_loop_latch_steps: false,
     dvd_fst_loader_early_epilogue: false,
 };
 
@@ -2842,6 +2849,7 @@ pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
     saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeResult,
     structured_saved_gpr_stack_first: false,
     unoptimized_shared_parameter_spills: false,
+    interleave_loop_latch_steps: false,
     dvd_fst_loader_early_epilogue: true,
 };
 
@@ -2858,6 +2866,7 @@ pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
     saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeFinalRestore,
     structured_saved_gpr_stack_first: true,
     unoptimized_shared_parameter_spills: false,
+    interleave_loop_latch_steps: false,
     dvd_fst_loader_early_epilogue: false,
 };
 
@@ -2874,6 +2883,7 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
     saved_float_epilogue_style: SavedFloatEpilogueStyle::LinkReloadBeforeResult,
     structured_saved_gpr_stack_first: true,
     unoptimized_shared_parameter_spills: true,
+    interleave_loop_latch_steps: true,
     dvd_fst_loader_early_epilogue: false,
 };
 
@@ -3298,6 +3308,10 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn trig_dispatcher_style(&self) -> TrigDispatcherStyle {
         TrigDispatcherStyle::LegacyReloading
+    }
+    fn interleave_loop_latch_steps(&self, processor: crate::Processor) -> bool {
+        self.interleave_loop_latch_steps
+            || matches!(processor, crate::Processor::PowerPc603e | crate::Processor::PowerPc604 | crate::Processor::PowerPc750)
     }
     fn reorder_volatile_call_inputs(&self) -> bool {
         true
