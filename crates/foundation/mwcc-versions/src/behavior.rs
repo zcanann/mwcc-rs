@@ -14,6 +14,7 @@
 use crate::config::CompilerConfig;
 use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal, SchedulingModel};
 use crate::profile::{
+    AccumulatorIssueStyle,
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CallDispatcherStyle, ClearedLowBitPowerSelectStyle, CoefficientTableRelocationStyle,
     CommaValuePlacementStyle, ComputedByteIndexedRmwStyle,
@@ -149,6 +150,7 @@ pub enum Quirk {
     LegacyFrexpPhysicalFrame,
     LegacyRaiseStagedLinkRegister,
     LegacyPortAwareIntegerDag,
+    SingleIssueAccumulators,
     LegacyDependencyFirstIntegerLoops,
     LegacyBalancedSharedFloatDag,
     LegacyIntCallResultConversion,
@@ -241,6 +243,7 @@ impl Quirk {
             Quirk::LegacyFrexpPhysicalFrame => QuirkKind::Intentional,
             Quirk::LegacyRaiseStagedLinkRegister => QuirkKind::Intentional,
             Quirk::LegacyPortAwareIntegerDag => QuirkKind::Intentional,
+            Quirk::SingleIssueAccumulators => QuirkKind::Intentional,
             Quirk::LegacyDependencyFirstIntegerLoops => QuirkKind::Intentional,
             Quirk::LegacyBalancedSharedFloatDag => QuirkKind::Intentional,
             Quirk::LegacyIntCallResultConversion => QuirkKind::Intentional,
@@ -358,6 +361,9 @@ impl Quirk {
             }
             Quirk::LegacyPortAwareIntegerDag => {
                 "integer DAGs use build 163's port-aware scheduler and serial r0 lane"
+            }
+            Quirk::SingleIssueAccumulators => {
+                "Wii accumulator updates use single issue and a two-step staging handoff"
             }
             Quirk::LegacyDependencyFirstIntegerLoops => {
                 "integer loops use build 163's compare-first entry, high temporary homes, and dependency-first schedule"
@@ -701,6 +707,8 @@ pub struct Behavior {
     pub raise_family_style: RaiseFamilyStyle,
     /// Scheduler, register allocation, and symbol creation for integer DAGs.
     pub integer_dag_style: IntegerDagStyle,
+    /// Issue width and staging handoff for independent word accumulators.
+    pub accumulator_issue_style: AccumulatorIssueStyle,
     /// Entry, allocation, and scheduling policy for specialized integer loops.
     pub integer_loop_style: IntegerLoopStyle,
     /// Measured packet and frame layout for unrolled byte/word transfers.
@@ -1211,6 +1219,7 @@ impl Behavior {
             },
             raise_family_style: config.build.profile.raise_family_style(),
             integer_dag_style: config.build.profile.integer_dag_style(),
+            accumulator_issue_style: config.build.profile.accumulator_issue_style(),
             integer_loop_style: config.build.profile.integer_loop_style(),
             byte_word_transfer_style: config.build.profile.byte_word_transfer_style(),
             fixed_bank_stream_style: config.build.profile.fixed_bank_stream_style(),
@@ -1655,6 +1664,11 @@ impl Behavior {
         if self.raise_family_style == RaiseFamilyStyle::StagedLoadLinkRegister {
             quirks.push(ActiveQuirk::of(Quirk::LegacyRaiseStagedLinkRegister));
         }
+        if self.schedule_latency_slots && self.scheduler_enabled
+            && self.accumulator_issue_style == AccumulatorIssueStyle::Single
+        {
+            quirks.push(ActiveQuirk::of(Quirk::SingleIssueAccumulators));
+        }
         if self.integer_dag_style == IntegerDagStyle::PortAwareSerialR0 {
             quirks.push(ActiveQuirk::of(Quirk::LegacyPortAwareIntegerDag));
         }
@@ -1933,6 +1947,34 @@ impl Behavior {
 mod tests {
     use super::*;
     use crate::{build, flags::CharDefault};
+
+    #[test]
+    fn accumulator_issue_policy_tracks_the_measured_generation() {
+        for (label, expected) in [
+            ("GC/1.1", AccumulatorIssueStyle::Paired),
+            ("GC/1.2.5n", AccumulatorIssueStyle::Paired),
+            ("GC/3.0a3p1", AccumulatorIssueStyle::Paired),
+            ("Wii/1.0", AccumulatorIssueStyle::Single),
+        ] {
+            let compiler_build = build::by_label_experimental(label).unwrap();
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build)).accumulator_issue_style,
+                expected
+            );
+        }
+        let mut config = CompilerConfig::new(build::by_label_experimental("Wii/1.0").unwrap());
+        config.flags.optimization = Optimization::O4;
+        for enabled in [true, false] {
+            config.flags.scheduler_enabled = enabled;
+            assert_eq!(
+                Behavior::resolve(&config)
+                    .active_quirks()
+                    .iter()
+                    .any(|quirk| quirk.quirk == Quirk::SingleIssueAccumulators),
+                enabled
+            );
+        }
+    }
 
     #[test]
     fn cleared_low_bit_power_select_tracks_optimizer_generation() {

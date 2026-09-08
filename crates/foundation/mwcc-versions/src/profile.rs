@@ -7,6 +7,15 @@
 //! existing one is "add a profile struct, override one method", never a fork of
 //! the whole code generator.
 
+/// Issue windows for independent global accumulators using a shared r0 lane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccumulatorIssueStyle {
+    /// GameCube: pair a pending global load with arithmetic or a store.
+    Paired,
+    /// Wii 4.3: single issue, with a two-step store-to-next-load handoff.
+    Single,
+}
+
 /// Optimized materialization of a computed value's equality with a small constant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ComputedConstantEqualityStyle {
@@ -1320,6 +1329,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         RaiseFamilyStyle::DirectLoadCountRegister
     }
 
+    fn accumulator_issue_style(&self) -> AccumulatorIssueStyle {
+        AccumulatorIssueStyle::Paired
+    }
+
     fn integer_dag_style(&self) -> IntegerDagStyle {
         IntegerDagStyle::WideIssueClosedIntervals
     }
@@ -2289,6 +2302,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn accumulator_issue_style(&self) -> AccumulatorIssueStyle {
+        AccumulatorIssueStyle::Single
+    }
+
     fn computed_constant_equality_style(&self) -> ComputedConstantEqualityStyle {
         ComputedConstantEqualityStyle::AddImmediate
     }

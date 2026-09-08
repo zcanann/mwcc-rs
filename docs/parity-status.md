@@ -4,13 +4,64 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete AXSPB translation unit and AX library compilation (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, matching accumulator schedules across GameCube and Wii (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `581b5d8e47874862329741971874b1c1ed1ba6ab8b1c8fad44bf40e19da85465:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `5366439c358013cd415802f52064c199160c428051ac82164af526870861cc88:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Matching accumulator schedules across GameCube and Wii, 2026-09-07
+
+The complete BfBB `__AXDepopVoice` function now matches both fresh GC/1.2.5n
+output and the original DOL exactly. AXSPB improves **3/5 to 4/5 exact
+functions**, with **5/5 fresh reference functions exact** and no unresolved
+relocations. `__AXPrintStudio` remains 1,520 versus 1,016 bytes; full-project
+build and matching work remains unfinished.
+
+The shared DAG scheduler now separates physical staging order from value
+critical-path dependencies. Ready stores and arithmetic lead pending loads in
+the accumulator policy, letting independent loads fill the remaining issue
+slots. A checked reverse interval allocator reserves explicit physical homes
+and colors other values in reverse emission order. It allows genuine
+producer/consumer handoffs and rejects overlapping fixed values or an
+exhausted register pool, rather than assigning an arbitrary occupied register.
+The existing general DAG policies continue through the same scheduler with no
+additional ordering edges.
+
+GameCube uses paired issue and a one-step r0 handoff; Wii uses single issue and
+a two-step handoff. This difference is a named profile policy and an observable
+active quirk. Unoptimized or explicitly disabled scheduling retains source
+order. These are measured compiler issue models, not hardware cycle claims.
+
+New canaries **2026–2028** exercise two through nine accumulators, alternating
+signed/unsigned halfwords at nonzero member offsets, reversed field order,
+O0/O4, and `-schedule off`. Together with canaries 2024–2025, the focused panel
+improves **0/75 to 75/75 whole objects exact** and produces **420/420 exact
+function text plus symbolic relocation comparisons** across all fifteen
+measured builds. Both compilers emit **75/75 objects** with no unknown outcomes.
+The O0 samples carry explicit optimization flags in their corpus metadata.
+
+All **215,040 paired PowerPC execution comparisons** pass independent models,
+checking every accumulator, neighboring memory, unchanged packets, saved
+GPR/FPR images, and SP/LR/PC. The complete AXSPB unit also retains **5,120
+three-way comparisons** against fresh MWCC and the original DOL, including fade
+boundaries and flush events. This remains bounded native integration evidence.
+
+Focused regression checks preserve all **1,114 compiled indexed objects** and
+**972 known exact matches** among 1,674 rows. Canaries 1821–2001 retain **2,626
+identical objects** and **89 unchanged failures**; all **330 objects** from
+2002–2023, all fourteen complete GX objects, and the other nine complete AX
+objects remain identical. All ten configured AX sources still compile.
+Backend tests pass **1,601** with the previously confirmed embedded-assembly
+failure excluded; register/scheduler tests pass **107** with eight existing
+ignored tests; version-policy tests pass **49**.
+
+Artifacts are under `target/accumulator-schedule-{canaries,real,index,recent,previous,library,ax-library}`.
+`target/accumulator-schedule-final-verification.json` records the compiler,
+harness, and execution-tested object hashes. These targeted measurements do
+not establish full-corpus or full-project parity.
 
 ## Complete AXSPB translation unit and AX library compilation, 2026-09-07
 

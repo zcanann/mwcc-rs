@@ -14,10 +14,11 @@
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, RelocationKind, RelocationTarget};
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Pointee, Statement, Type};
-use mwcc_versions::{GlobalAddressing, IntegerDagStyle};
+use mwcc_versions::{AccumulatorIssueStyle, GlobalAddressing, IntegerDagStyle};
 use mwcc_vreg::{
-    assign_registers_legacy, assign_registers_v3, linearize, linearize_with, DagNode, OpKind,
-    HAZARD_MUL, HAZARD_XER, LEGACY_PORT_AWARE,
+    assign_registers_legacy, assign_registers_reverse_with_fixed, assign_registers_v3, linearize,
+    linearize_with, linearize_with_ordering, DagNode, OpKind, HAZARD_MUL, HAZARD_XER,
+    LEGACY_PORT_AWARE, STAGED_INTEGER,
 };
 
 use crate::analysis::{constant_value, count_name_occurrences, function_makes_call};
@@ -940,17 +941,22 @@ impl Generator {
                 }
             }
         }
+        let (accumulator_issue_width, staging_delay) = match self.behavior.accumulator_issue_style {
+            AccumulatorIssueStyle::Paired => (2, 1),
+            AccumulatorIssueStyle::Single => (1, 2),
+        };
+        let mut staging_edges = Vec::new();
         if builder.global_accumulations {
             // MWCC stages each field update through the completed preceding
             // store, while hoisting independent accumulator loads into its
-            // latency slots. Without this edge every sum remains live until
-            // the tail, exceeding the leaf register pool on long runs.
+            // latency slots. These physical ordering edges do not contribute
+            // to value-chain priority; fixed homes are colored separately.
             let mut previous_store = None;
             for index in 0..builder.nodes.len() {
                 match builder.templates[index] {
                     Template::LoadHalfMember { .. } => {
                         if let Some(store) = previous_store {
-                            builder.nodes[index].extra_deps.push(store);
+                            staging_edges.push((store, index, staging_delay));
                         }
                     }
                     // The halfword staging lane is r0, so a hoisted word
@@ -962,7 +968,20 @@ impl Generator {
             }
         }
         // -- the models take over --
-        let order = if self.behavior.integer_dag_style == IntegerDagStyle::PortAwareSerialR0 {
+        let order = if builder.global_accumulations {
+            if self.behavior.schedule_latency_slots && self.behavior.scheduler_enabled {
+                linearize_with_ordering(
+                    &builder.nodes,
+                    mwcc_vreg::Model {
+                        issue_width: accumulator_issue_width,
+                        ..STAGED_INTEGER
+                    },
+                    &staging_edges,
+                )
+            } else {
+                (0..builder.nodes.len()).collect()
+            }
+        } else if self.behavior.integer_dag_style == IntegerDagStyle::PortAwareSerialR0 {
             linearize_with(&builder.nodes, LEGACY_PORT_AWARE)
         } else {
             linearize(&builder.nodes)
@@ -976,7 +995,27 @@ impl Generator {
             }
             eprintln!("order: {order:?}");
         }
-        let registers = if self.behavior.integer_dag_style == IntegerDagStyle::PortAwareSerialR0 {
+        let registers = if builder.global_accumulations {
+            let fixed = builder
+                .templates
+                .iter()
+                .enumerate()
+                .filter_map(|(node, template)| {
+                    matches!(template, Template::LoadHalfMember { .. } | Template::Add)
+                        .then_some((node, 0))
+                })
+                .collect::<Vec<_>>();
+            let Some(registers) = assign_registers_reverse_with_fixed(
+                &builder.nodes,
+                &order,
+                &params,
+                &fixed,
+                &(3..=12).collect::<Vec<_>>(),
+            ) else {
+                return Ok(false);
+            };
+            registers
+        } else if self.behavior.integer_dag_style == IntegerDagStyle::PortAwareSerialR0 {
             assign_registers_legacy(&builder.nodes, &order, &params)
         } else {
             assign_registers_v3(&builder.nodes, &order, &params)

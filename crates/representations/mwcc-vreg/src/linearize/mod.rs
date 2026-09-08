@@ -16,10 +16,13 @@
 //! - register-staging conflicts (two values through r0) are extra dependence
 //!   edges, supplied by the caller — the allocation coupling, not yet derived.
 //!
-//! This module is UNWIRED: it exists to be A/B'd against the dataset before
-//! any emitter consumes it.
+//! The integer DAG emitter consumes this model. Candidate policies share the
+//! dependence analysis and issue machinery while keeping their measured
+//! priority and physical staging constraints explicit.
 
 mod legacy;
+mod staged;
+pub use staged::assign_registers_reverse_with_fixed;
 
 pub use legacy::assign_registers_legacy;
 
@@ -209,6 +212,14 @@ pub const FROZEN: Model = Model {
     port_aware: false,
 };
 
+/// Independent accumulators sharing a physical update lane prefer ready
+/// stores and arithmetic over pending loads. The latter fill remaining issue
+/// slots (canaries 2024–2027 and the complete AXSPB translation unit).
+pub const STAGED_INTEGER: Model = Model {
+    weight_before_kind: false,
+    ..FROZEN
+};
+
 /// Build 163 uses the same dependence/priority model but will not place two
 /// operations targeting the same execution port in one issue window.
 pub const LEGACY_PORT_AWARE: Model = Model {
@@ -224,7 +235,21 @@ pub fn linearize(nodes: &[DagNode]) -> Vec<usize> {
 /// Linearize the DAG under a candidate model: the returned indices are the
 /// emission order.
 pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
+    linearize_with_ordering(nodes, model, &[])
+}
+
+/// Physical staging edges constrain issue order without making an independent
+/// value chain appear longer. Each tuple is (predecessor, consumer, issue delay).
+/// Edges must point forward in the DAG and have a positive delay.
+pub fn linearize_with_ordering(
+    nodes: &[DagNode],
+    model: Model,
+    ordering: &[(usize, usize, u32)],
+) -> Vec<usize> {
     let count = nodes.len();
+    debug_assert!(ordering
+        .iter()
+        .all(|&(before, after, delay)| { before < after && after < count && delay > 0 }));
     // Dependence edges: RAW (a read of a value written earlier in the list),
     // same-alias-group program order, and the explicit extras.
     let mut deps: Vec<Vec<usize>> = vec![Vec::new(); count];
@@ -401,7 +426,9 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
         let mut ready: Vec<usize> = (0..count)
             .filter(|&candidate| issued_at[candidate].is_none())
             .filter(|&candidate| {
-                deps[candidate].iter().all(|&dependency| {
+                ordering.iter().all(|&(before, after, delay)| {
+                    after != candidate || issued_at[before].is_some_and(|at| at + delay <= time)
+                }) && deps[candidate].iter().all(|&dependency| {
                     issued_at[dependency].is_some_and(|at| {
                         if model.gate_on_complete {
                             at + edge_gate(dependency, candidate) <= time
