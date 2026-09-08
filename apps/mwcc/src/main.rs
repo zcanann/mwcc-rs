@@ -1053,6 +1053,7 @@ fn compile(
                 nonvolatile_pointer_bindings: &unit.function_nonvolatile_pointer_bindings,
                 parameter_fundamentals: &unit.function_parameter_fundamentals,
                 local_fundamentals: &unit.function_local_fundamentals,
+                variable_reference_counts: &unit.function_variable_reference_counts,
             },
             function_config,
         ) {

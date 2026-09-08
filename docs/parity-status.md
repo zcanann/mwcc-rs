@@ -4,13 +4,79 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, shared parameter images in GC/1.1p1 O0 loops (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, source reference counts and mutable loop homes (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `f80ce679efe06852ba1fd946a4b07461b381dd0f9d2af2efd9978d591c6944fb:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `013bcd80bd0a0949b254f8a3ec2cc45613a079004ea0bb41161be24373da2696:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Source reference counts and mutable loop homes, 2026-09-08
+
+GC/1.1p1 O0 register-home priority depends on source occurrences that executable
+AST desugaring previously erased. `sum += i` contains one occurrence of `sum`;
+`sum = sum + i` contains two. They have identical executable assignments but
+can receive different reference registers. The parser now records bound
+variable token sites, including initializer destinations and excluding
+uninitialized declarations and member/type names. Sites deduplicate parser
+replays, and block-shadow bindings remain distinct. These facts pass through
+the translation unit and the existing source-facts API, leaving executable
+expression shapes unchanged.
+
+The shared-spill loop planner ranks locals and retained parameters together by
+descending source count. Ties use local first-definition order, then reverse
+parameter declaration order. This refines the preceding checkpoint's simpler
+local-first rule. Counts are unweighted by runtime loop frequency. C++,
+parse-time inline substitutions, and incompletely tracked local bindings omit
+the facts. Backend inline candidates also omit them: expansion can change
+multiplicity without changing variable names. Missing facts retain the earlier
+AST-home policy. An older inline-macro regression caught and verified this
+boundary during development.
+
+Mutable loop values also keep their planned homes through postfix updates.
+Previously `*p++` could put the updated pointer in a new lane while the back
+edge continued reading the old physical home, repeatedly writing one address.
+The shared postfix emitter now respects the existing loop-carried-home state,
+for both consumed-address updates and value-producing steps. Postfix snapshots
+retain the original `mr` copy spelling through final scratch-copy normalization.
+
+Canaries **2154–2158** contain fifteen functions in five modes across fifteen
+builds. All **75 objects** compile on all three sides. Canaries **2159–2163**
+isolate a reversed-pointer call-marshalling gap: each reference compiles, but
+baseline and candidate compile only the four GC/1.1p1 O0 cases. The other
+**71 failures** remain explicit work items, where the first argument would
+overwrite a register needed by a later dereference. Across the **79 compiled
+objects / 1,129 functions**, exact matches rise **4 → 64**, with no losses.
+Only **60 GC/1.1p1 O0 functions** change. Eight preceding `odd_frame` and
+`even_frame` cases also become exact, for **68 new exact matches** overall.
+
+All **18,064 new native cases** pass against the reference and an independent
+memory/callback model. Baseline fails **704** cases due to its loop-home bugs.
+The panel varies pointer aliasing, accumulator and counter use counts,
+assignment/step spellings, declaration order, frame parity, and save modes.
+It checks callback arguments, callback clobbers/mutation, guarded memory,
+callee-saved GPRs/FPRs, SP, and LR, including **192** original shared-slot
+corruption cases. All **12,000** preceding loop cases pass on all three sides,
+retaining their **512** verified original-bug cases, including fault behavior.
+
+Regression checks retain **1,110** older compiled objects, **2,626** recent
+objects plus **89** unchanged failures, and all **1,674** indexed outcomes
+(1,114 compiled, 972 known exact). Of **1,170** preceding objects, **1,166**
+are identical; the four changed objects contain only the eight new exact
+frame functions and are covered by execution above. All ten AX and fourteen GX
+translation units compile unchanged. Full AXVPB objects are identical across
+fifteen builds and retain the preceding **240** initializer execution checks;
+the initializer remains **0/15 byte-exact**.
+
+Backend tests pass **1,663**, retaining the existing nested-asm inline exclusion.
+Parser tests pass **411** with two preexisting failures excluded; an independent
+checkout of `2556f55d` reproduces both failures (409 pass there). They are
+`retains_brace_initialized_aggregate_image_from_discarded_inline` and
+`recovers_friend_bearing_layouts_and_expression_template_arguments`.
+The full corpus was not rerun. `target/home-rank-final-verification.json` binds
+the final compiler/harness fingerprint to **462 native-tested object entries**,
+the preceding-object hashes, and the fifteen unchanged full AXVPB objects.
 
 ## Shared parameter images in GC/1.1p1 O0 loops, 2026-09-08
 

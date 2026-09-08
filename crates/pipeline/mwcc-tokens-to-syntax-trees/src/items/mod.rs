@@ -1381,6 +1381,7 @@ impl Parser {
                 &mut self.function_parameter_pointee_const,
             ),
             function_local_fundamentals: std::mem::take(&mut self.function_local_fundamentals),
+            function_variable_reference_counts: std::mem::take(&mut self.function_variable_reference_counts),
             function_local_pointee_const: std::mem::take(&mut self.function_local_pointee_const),
             prototypes,
             static_function_prototype_positions: std::mem::take(
@@ -4930,6 +4931,7 @@ impl Parser {
     ) -> Compilation<Function> {
         let debug_function_name = name.clone();
         self.current_debug_function_name = Some(debug_function_name.clone());
+        self.current_variable_reference_sites.clear();
         self.inline_substitution_count = 0;
         self.current_inline_string_symbols.clear();
         self.current_leaf_statement_lines.clear();
@@ -5422,6 +5424,7 @@ impl Parser {
                 let initializer = if direct_static_constructor.is_some() {
                     direct_static_constructor
                 } else if array_length.is_none() && self.eat_keyword(Token::Equals) {
+                    self.record_variable_reference(&name, self.position - 1);
                     if is_static
                         && matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. })
                     {
@@ -5866,6 +5869,7 @@ impl Parser {
                 std::mem::take(&mut self.current_inline_string_symbols),
             );
         }
+        self.finish_variable_reference_counts(&name, &parameters, &locals);
         self.current_debug_function_name = None;
         self.asm_parameters.clear();
         Ok(Function {

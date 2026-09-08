@@ -986,6 +986,7 @@ impl Parser {
                     // assignment (block locals are hoisted in the AST); later
                     // lowering can either claim the aggregate shape or defer
                     // without losing the rest of the function.
+                    self.record_variable_reference(&name, self.position - 1);
                     let value = if *self.peek() == Token::BraceOpen {
                         self.aggregate_literal()?
                     } else {

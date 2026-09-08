@@ -1018,6 +1018,10 @@ impl Parser {
                 }
                 // `name(args)` is a call; a bare `name` is a variable.
                 Token::Identifier(name) if *self.peek() == Token::ParenOpen => {
+                    let resolved = self.resolve_block_rename(name.clone());
+                    if self.variable_types.contains_key(&resolved) {
+                        self.record_variable_reference(&resolved, self.position - 1);
+                    }
                     self.advance();
                     let mut arguments = Vec::new();
                     if *self.peek() != Token::ParenClose {
@@ -1223,6 +1227,7 @@ impl Parser {
                 Token::Identifier(name) => {
                     let resolved = self.resolve_block_rename(name.clone());
                     if self.variable_types.contains_key(&resolved) || resolved != name {
+                        self.record_variable_reference(&resolved, self.position - 1);
                         self.named_object_value(resolved)
                     } else if let Some(member) = self.resolve_implicit_data_member(&name) {
                         // An unqualified data member is rooted at `this`, but its

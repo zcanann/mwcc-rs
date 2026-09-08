@@ -118,7 +118,19 @@ impl Generator {
         if uses.unsupported || !uses.has_loop {
             return Ok(false);
         }
-        let count = |name: &str| uses.counts.get(name).copied().unwrap_or(0);
+        let source_counts = self
+            .source_variable_reference_counts
+            .as_ref()
+            .filter(|counts| {
+                counts.len() == function.locals.len() + function.parameters.len()
+                    && function.locals.iter().all(|l| counts.contains_key(&l.name))
+                    && function
+                        .parameters
+                        .iter()
+                        .all(|p| counts.contains_key(&p.name))
+            });
+        let counts = source_counts.unwrap_or(&uses.counts);
+        let count = |name: &str| counts.get(name).copied().unwrap_or(0);
         let locals: Vec<_> = uses
             .definitions
             .iter()
@@ -153,6 +165,19 @@ impl Generator {
             return Ok(false);
         };
         let saved: Vec<_> = (0..homes).map(|i| 31 - i as u8).collect();
+        let mut ranked_names: Vec<_> = locals.iter().map(|l| l.name.as_str()).collect();
+        if source_counts.is_some() {
+            // Stable ties retain local first-definition order, followed by
+            // parameters in reverse declaration order. All compete by source
+            // frequency, including parameters with more uses than the locals.
+            ranked_names.extend(retained.iter().rev().map(|p| p.name.as_str()));
+            ranked_names.sort_by_key(|name| std::cmp::Reverse(count(name)));
+        } else {
+            ranked_names.extend(retained.iter().map(|p| p.name.as_str()));
+        }
+        self.structured_loop_carried_names
+            .extend(ranked_names.iter().map(|n| (*n).to_owned()));
+        let home_of = |name: &str| saved[ranked_names.iter().position(|n| *n == name).unwrap()];
         let first = *saved.last().unwrap();
         let helpers = homes >= 3 && !self.behavior.use_lmw_stmw;
         let multiple = homes >= 2 && self.behavior.use_lmw_stmw;
@@ -176,13 +201,13 @@ impl Generator {
                     });
             }
         }
-        for (index, local) in locals.iter().enumerate() {
+        for local in &locals {
             let ty = local.declared_type;
             self.locations.insert(
                 local.name.clone(),
                 Location {
                     class: ValueClass::General,
-                    register: saved[index],
+                    register: home_of(&local.name),
                     signed: self.signed_of(ty),
                     width: ty.width(),
                     pointee: match ty {
@@ -199,13 +224,13 @@ impl Generator {
                 .get(&parameter.name)
                 .expect("incoming parameter")
                 .register;
-            if let Some(index) = retained.iter().position(|p| p.name == parameter.name) {
-                let home = saved[locals.len() + index];
+            if retained.iter().any(|p| p.name == parameter.name) {
+                let home = home_of(&parameter.name);
                 self.output
                     .instructions
                     .push(Instruction::move_register(home, incoming));
                 self.locations.get_mut(&parameter.name).unwrap().register = home;
-            } else if count(&parameter.name) == 1 {
+            } else if spilled.iter().any(|p| p.name == parameter.name) {
                 self.output.instructions.push(Instruction::StoreWord {
                     s: incoming,
                     a: 1,

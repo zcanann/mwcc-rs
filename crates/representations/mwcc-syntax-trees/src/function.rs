@@ -465,6 +465,11 @@ pub struct TranslationUnit {
     /// Local names include block shadow renames. Absence is unknown, not permission
     /// to share memory reads.
     pub function_nonvolatile_pointer_bindings: std::collections::HashSet<(String, String)>,
+    /// Bound source occurrences before compound assignments and steps are desugared.
+    /// Includes initializer destinations, excludes uninitialized declarations.
+    /// Missing functions have no proven counts (for example, expanded inline bodies).
+    pub function_variable_reference_counts:
+        std::collections::HashMap<String, std::collections::HashMap<String, usize>>,
     /// Source scalar identity for function locals whose executable storage
     /// collapses typedef distinctions such as `s32` versus plain `int`.
     pub function_local_fundamentals:

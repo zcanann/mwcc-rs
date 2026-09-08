@@ -22,6 +22,7 @@ mod items;
 mod iterator_semantics;
 mod lvalues;
 mod parameter_names;
+mod variable_reference_counts;
 mod parser;
 
 use parser::Parser;
@@ -371,6 +372,8 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         function_nonvolatile_pointer_bindings: HashSet::new(),
         function_local_fundamentals: HashMap::new(),
         function_local_pointee_const: HashSet::new(),
+        current_variable_reference_sites: HashMap::new(),
+        function_variable_reference_counts: HashMap::new(),
         current_debug_function_name: None,
         fixed_address_globals: HashMap::new(),
         fixed_address_arrays: HashMap::new(),

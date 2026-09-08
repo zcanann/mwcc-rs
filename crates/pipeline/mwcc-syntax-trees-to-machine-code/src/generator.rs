@@ -501,6 +501,8 @@ pub(crate) struct Generator {
     /// storage types, such as an int induction variable versus a long bound.
     pub(crate) parameter_source_fundamentals:
         HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
+    /// Bound source occurrences retained before assignment/step desugaring.
+    pub(crate) source_variable_reference_counts: Option<HashMap<String, usize>>,
     pub(crate) local_source_fundamentals:
         HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
     /// The target's register-allocation rules — the allocatable pools and scratch.

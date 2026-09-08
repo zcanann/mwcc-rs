@@ -94,7 +94,12 @@ impl Generator {
             .or_else(|| pointee.map(|pointee| i16::from(pointee.size())))
             .unwrap_or(1);
         let amount = signed_step_amount(operator, amount)?;
-        let stepped = if source < mwcc_vreg::VIRTUAL_BASE {
+        // A loop-carried source has one home at both edges. Splitting its
+        // update into a fresh lane would leave the next iteration reading
+        // the old physical home.
+        let stepped = if source < mwcc_vreg::VIRTUAL_BASE
+            && !self.structured_loop_carried_names.contains(name)
+        {
             self.fresh_virtual_general()
         } else {
             source
@@ -252,9 +257,17 @@ impl Generator {
                 return Ok(());
             }
             if source != destination {
-                self.emit_integer_materialization_copy(destination, source);
+                if self.structured_loop_carried_names.contains(name) {
+                    // This is the old half of a mutable source home, not a
+                    // newly materialized arithmetic value (also `mr` on 163).
+                    self.output.instructions.push(Instruction::move_register(destination, source));
+                } else {
+                    self.emit_integer_materialization_copy(destination, source);
+                }
             }
-            let stepped = if source < mwcc_vreg::VIRTUAL_BASE {
+            let stepped = if source < mwcc_vreg::VIRTUAL_BASE
+                && !self.structured_loop_carried_names.contains(name)
+            {
                 self.fresh_virtual_general()
             } else {
                 source

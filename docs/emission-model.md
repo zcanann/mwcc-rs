@@ -277,8 +277,9 @@ writes, aliasing, remainder packets, returned cursors, and barriers.
 GC/1.1p1 O0 can assign every single-use word parameter to SP+8, including
 parameters whose lifetimes overlap and slots occupied by saved GPRs. Preserve
 this under the existing version policy. Count syntactic source uses, without
-loop-frequency weighting. Assign retained locals in first-definition order,
-then retained parameters in declaration order, to descending saved registers.
+loop-frequency weighting. With source occurrence facts, rank retained locals and parameters together by
+descending count. Ties retain local first-definition order, then reverse
+parameter declaration order. Missing facts retain the earlier local-first plan.
 Write parameter images before evaluating local initializers: an initializer
 can therefore reload a later parameter's overwritten image.
 
@@ -296,3 +297,31 @@ slots/data anchors, and unsupported statements. Other profiles retain their
 existing owners. Canaries 2149–2153 exercise parameter aliases, copied cursors,
 source-use counts, local ordering, scalar images, odd/even frames, and explicit
 save modes; original corruption and faults are part of their reference model.
+
+## Source occurrences before executable desugaring
+
+Keep source-variable reference counts in the translation-unit fact graph,
+separate from executable expressions. A bound identifier contributes one token
+site; an initializer contributes its destination. An uninitialized declaration
+contributes none. Resolve block-shadow identity before recording a site and
+exclude member/type identifiers. Deduplicate positions so parser lookahead does
+not multiply source occurrences. This preserves distinctions such as `x += y`
+versus `x = x + y`, and `i--` versus `i = i - 1`, without changing expression
+semantics or adding operator variants merely for allocation.
+
+Only consume counts while their source bindings remain valid. C++, parse-time
+inline substitution, and incomplete local tracking currently omit them. Backend
+inline candidates also omit them until expansion can propagate occurrences;
+checking names alone is insufficient because an inline body can repeat a caller
+variable without introducing locals. GC/1.1p1 O0 shared-spill loops currently
+consume these facts. Other version policies can use the same fact boundary as
+their allocation behavior is measured.
+
+A mutable loop-carried value retains one home at entry and back edges. Both
+postfix expression evaluation and post-use pointer mutation must update that
+home rather than assigning the next value a new virtual lane. Keep a snapshot
+of the old value when the expression needs it. A snapshot immediately followed
+by the same home's in-place step retains the measured logical-copy spelling
+through final copy normalization. Canaries 2154–2158 exercise source counts,
+ties, initialized and later-defined locals, postfix stores and values, and save modes;
+2159–2163 retain the separate reversed-pointer argument-marshalling frontier.

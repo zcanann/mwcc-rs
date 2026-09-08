@@ -147,6 +147,18 @@ impl Generator {
                 Instruction::Or { a: 0, s, b } if s == b && s != 0 => s,
                 _ => continue,
             };
+            // A postfix snapshot preserves the old half of a mutable loop
+            // home. Its adjacent in-place update is a source assignment, so
+            // this copy retains `mr` just like control-flow staging.
+            let loop_home = self.structured_loop_carried_names.iter().any(|name| {
+                self.locations.get(name).is_some_and(|location| location.register == source)
+            });
+            if loop_home && matches!(self.output.instructions.get(index + 1),
+                Some(Instruction::AddImmediate { d, a, immediate })
+                    if *d == source && *a == source && *immediate != 0)
+            {
+                continue;
+            }
             self.output.instructions[index] = Instruction::AddImmediate {
                 d: 0,
                 a: source,

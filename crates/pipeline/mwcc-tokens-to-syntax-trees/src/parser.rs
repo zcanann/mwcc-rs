@@ -548,6 +548,8 @@ pub(crate) struct Parser {
     pub(crate) function_local_fundamentals:
         HashMap<(String, String), SourceFundamentalType>,
     pub(crate) function_local_pointee_const: HashSet<(String, String)>,
+    pub(crate) current_variable_reference_sites: HashMap<String, HashSet<usize>>,
+    pub(crate) function_variable_reference_counts: HashMap<String, HashMap<String, usize>>,
     pub(crate) current_debug_function_name: Option<String>,
     /// Fixed-address globals declared with `AT_ADDRESS` (`Type Name : addr;` — mwcc's `: (addr)`
     /// placement): name -> (address, cast-target POINTER type, struct/union tag). A reference to one

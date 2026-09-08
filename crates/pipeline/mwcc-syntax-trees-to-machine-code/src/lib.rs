@@ -173,16 +173,18 @@ pub fn lower_function(
             nonvolatile_pointer_bindings: &HashSet::new(),
             parameter_fundamentals: &HashMap::new(),
             local_fundamentals: &HashMap::new(),
+            variable_reference_counts: &HashMap::new(),
         },
         config,
     )
 }
 
-/// Declaration facts whose source identities are finer than executable storage.
+/// Source facts whose identities are finer than the executable syntax tree.
 /// Keeping them together lets lowering consume new facts without widening its
 /// call boundary each time. Keys use emitted function names and source locals.
 #[derive(Clone, Copy)]
 pub struct SourceFunctionFacts<'a> {
+    pub variable_reference_counts: &'a HashMap<String, HashMap<String, usize>>,
     /// Source language, independent of C++ name mangling or extern-C linkage.
     pub is_cxx: bool,
     pub nonvolatile_pointer_bindings: &'a HashSet<(String, String)>,
@@ -778,6 +780,12 @@ fn lower_function_body(
             .filter(|((owner, _), _)| owner == &function.name)
             .map(|((_, name), kind)| (name.clone(), *kind))
             .collect(),
+        // Backend inline expansion changes source multiplicity even when it
+        // introduces no new names. Counts require explicit propagation through
+        // that expansion; until then, retain the existing AST-home policy.
+        source_variable_reference_counts: (!inline_bodies.calls_any(function))
+            .then(|| source_facts.variable_reference_counts.get(&function.name).cloned())
+            .flatten(),
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
         artificial_structured_leaf_frame: false,
