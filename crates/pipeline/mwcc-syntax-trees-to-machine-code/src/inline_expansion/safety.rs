@@ -1058,6 +1058,12 @@ fn loop_step_updates(expression: &Expression, counter: &str) -> bool {
 pub(super) fn stable_argument(expression: &Expression, stable_variables: &HashSet<String>) -> bool {
     match expression {
         Expression::Variable(name) => stable_variables.contains(name),
+        Expression::Cast {
+            target_type: Type::Pointer(_) | Type::StructPointer { .. },
+            operand,
+        } if matches!(operand.as_ref(), Expression::Variable(_) | Expression::Cast { .. }) => {
+            stable_argument(operand, stable_variables)
+        }
         Expression::IntegerLiteral(_)
         | Expression::FloatLiteral(_)
         | Expression::StringLiteral(_) => true,
@@ -1212,7 +1218,7 @@ fn integer_argument_arithmetic(expression: &Expression) -> bool {
 /// address provenance; calls and mutations still use their own admission path.
 fn materializable_address_argument(expression: &Expression) -> bool {
     match expression {
-        Expression::AddressOf { .. } | Expression::MemberAddress { .. } => {
+        Expression::Variable(_) | Expression::AddressOf { .. } | Expression::MemberAddress { .. } => {
             !crate::analysis::expression_has_side_effect(expression)
         }
         Expression::Cast {
@@ -1251,6 +1257,10 @@ pub(super) fn materializable_arguments(
             .zip(arguments)
             .all(|(parameter, argument)| {
                 stable_argument(argument, stable_variables)
+                    // A reassigned pointer still has one concrete value at
+                    // this call site. Capture it in the existing hygienic
+                    // parameter lane instead of requiring function-wide
+                    // stability or substituting repeated volatile reads.
                     || (matches!(parameter.parameter_type, Type::Pointer(_) | Type::StructPointer { .. })
                         && materializable_address_argument(argument))
                     || (retained_scalar_loop_value_function(function)
@@ -1437,80 +1447,110 @@ pub(super) fn stable_local_values(function: &Function) -> HashSet<String> {
         .collect()
 }
 
+/// A private pointer can be substituted inside one inline instance even when
+/// the caller advances it between calls. Globals and escaped locals need a
+/// snapshot because the callee can rebind them. The measured MWCC inline bodies also
+/// substitutes volatile pointer locals, repeating their reads in the inline
+/// body; preserve that measured behavior instead of imposing C semantics.
+pub(super) fn inline_pointer_variables(function: &Function) -> HashSet<String> {
+    if function.asm_body.is_some() || !function.inline_asm_blocks.is_empty() {
+        return HashSet::new();
+    }
+    function
+        .parameters
+        .iter()
+        .map(|p| (&p.name, p.parameter_type))
+        .chain(
+            function.locals.iter()
+                .filter(|l| !l.is_static && l.array_length.is_none())
+                .map(|l| (&l.name, l.declared_type)),
+        )
+        .filter(|(name, ty)| {
+            matches!(ty, Type::Pointer(_) | Type::StructPointer { .. })
+                && !variable_has_effect::<false>(function, name)
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
 fn variable_is_modified_or_escaped(function: &Function, name: &str) -> bool {
+    variable_has_effect::<true>(function, name)
+}
+
+fn variable_has_effect<const MODIFIED: bool>(function: &Function, name: &str) -> bool {
     function
         .locals
         .iter()
         .filter_map(|local| local.initializer.as_ref())
-        .any(|expression| expression_modifies_or_escapes(expression, name))
+        .any(|expression| expression_modifies_or_escapes::<MODIFIED>(expression, name))
         || function.guards.iter().any(|guard| {
-            expression_modifies_or_escapes(&guard.condition, name)
-                || expression_modifies_or_escapes(&guard.value, name)
+            expression_modifies_or_escapes::<MODIFIED>(&guard.condition, name)
+                || expression_modifies_or_escapes::<MODIFIED>(&guard.value, name)
         })
         || function
             .return_expression
             .as_ref()
-            .is_some_and(|expression| expression_modifies_or_escapes(expression, name))
+            .is_some_and(|expression| expression_modifies_or_escapes::<MODIFIED>(expression, name))
         || function
             .statements
             .iter()
-            .any(|statement| statement_modifies_or_escapes(statement, name))
+            .any(|statement| statement_modifies_or_escapes::<MODIFIED>(statement, name))
 }
 
 pub(super) fn parameter_requires_materialization(function: &Function, name: &str) -> bool {
     variable_is_modified_or_escaped(function, name)
 }
 
-fn statement_modifies_or_escapes(statement: &Statement, name: &str) -> bool {
+fn statement_modifies_or_escapes<const MODIFIED: bool>(statement: &Statement, name: &str) -> bool {
     match statement {
         Statement::InlineAsm(_) => false,
         Statement::Store { target, value } => {
-            matches!(target, Expression::Variable(target_name) if target_name == name)
-                || expression_modifies_or_escapes(target, name)
-                || expression_modifies_or_escapes(value, name)
+            (MODIFIED && matches!(target, Expression::Variable(target_name) if target_name == name))
+                || expression_modifies_or_escapes::<MODIFIED>(target, name)
+                || expression_modifies_or_escapes::<MODIFIED>(value, name)
         }
         Statement::Assign {
             name: target_name,
             value,
-        } => target_name == name || expression_modifies_or_escapes(value, name),
-        Statement::Expression(expression) => expression_modifies_or_escapes(expression, name),
+        } => (MODIFIED && target_name == name) || expression_modifies_or_escapes::<MODIFIED>(value, name),
+        Statement::Expression(expression) => expression_modifies_or_escapes::<MODIFIED>(expression, name),
         Statement::If {
             condition,
             then_body,
             else_body,
         } => {
-            expression_modifies_or_escapes(condition, name)
+            expression_modifies_or_escapes::<MODIFIED>(condition, name)
                 || then_body
                     .iter()
-                    .any(|statement| statement_modifies_or_escapes(statement, name))
+                    .any(|statement| statement_modifies_or_escapes::<MODIFIED>(statement, name))
                 || else_body
                     .iter()
-                    .any(|statement| statement_modifies_or_escapes(statement, name))
+                    .any(|statement| statement_modifies_or_escapes::<MODIFIED>(statement, name))
         }
         Statement::Return(expression) => expression
             .as_ref()
-            .is_some_and(|expression| expression_modifies_or_escapes(expression, name)),
+            .is_some_and(|expression| expression_modifies_or_escapes::<MODIFIED>(expression, name)),
         Statement::Switch {
             scrutinee,
             arms,
             default,
         } => {
-            expression_modifies_or_escapes(scrutinee, name)
+            expression_modifies_or_escapes::<MODIFIED>(scrutinee, name)
                 || arms.iter().any(|arm| match &arm.body {
                     mwcc_syntax_trees::ArmBody::Return(expression) => {
-                        expression_modifies_or_escapes(expression, name)
+                        expression_modifies_or_escapes::<MODIFIED>(expression, name)
                     }
                     mwcc_syntax_trees::ArmBody::Statements(statements) => statements
                         .iter()
-                        .any(|statement| statement_modifies_or_escapes(statement, name)),
+                        .any(|statement| statement_modifies_or_escapes::<MODIFIED>(statement, name)),
                 })
                 || default.as_ref().is_some_and(|body| match body {
                     mwcc_syntax_trees::ArmBody::Return(expression) => {
-                        expression_modifies_or_escapes(expression, name)
+                        expression_modifies_or_escapes::<MODIFIED>(expression, name)
                     }
                     mwcc_syntax_trees::ArmBody::Statements(statements) => statements
                         .iter()
-                        .any(|statement| statement_modifies_or_escapes(statement, name)),
+                        .any(|statement| statement_modifies_or_escapes::<MODIFIED>(statement, name)),
                 })
         }
         Statement::Loop {
@@ -1522,43 +1562,45 @@ fn statement_modifies_or_escapes(statement: &Statement, name: &str) -> bool {
         } => {
             initializer
                 .as_ref()
-                .is_some_and(|expression| expression_modifies_or_escapes(expression, name))
+                .is_some_and(|expression| expression_modifies_or_escapes::<MODIFIED>(expression, name))
                 || condition
                     .as_ref()
-                    .is_some_and(|expression| expression_modifies_or_escapes(expression, name))
+                    .is_some_and(|expression| expression_modifies_or_escapes::<MODIFIED>(expression, name))
                 || step
                     .as_ref()
-                    .is_some_and(|expression| expression_modifies_or_escapes(expression, name))
+                    .is_some_and(|expression| expression_modifies_or_escapes::<MODIFIED>(expression, name))
                 || body
                     .iter()
-                    .any(|statement| statement_modifies_or_escapes(statement, name))
+                    .any(|statement| statement_modifies_or_escapes::<MODIFIED>(statement, name))
         }
         Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => false,
     }
 }
 
-fn expression_modifies_or_escapes(expression: &Expression, name: &str) -> bool {
+fn expression_modifies_or_escapes<const MODIFIED: bool>(expression: &Expression, name: &str) -> bool {
     match expression {
         // `&local` exposes the local object's storage. `&pointer->member` only
         // exposes the pointee; it cannot change the pointer value substituted
         // into a retained inline body.
         Expression::AddressOf { operand } => {
             matches!(operand.as_ref(), Expression::Variable(variable) if variable == name)
+                || expression_modifies_or_escapes::<MODIFIED>(operand, name)
         }
         Expression::PostStep {
             target: operand, ..
-        } => matches!(operand.as_ref(), Expression::Variable(variable) if variable == name),
+        } => (MODIFIED && matches!(operand.as_ref(), Expression::Variable(variable) if variable == name))
+            || expression_modifies_or_escapes::<MODIFIED>(operand, name),
         Expression::Assign { target, value } => {
-            matches!(target.as_ref(), Expression::Variable(variable) if variable == name)
-                || expression_modifies_or_escapes(target, name)
-                || expression_modifies_or_escapes(value, name)
+            (MODIFIED && matches!(target.as_ref(), Expression::Variable(variable) if variable == name))
+                || expression_modifies_or_escapes::<MODIFIED>(target, name)
+                || expression_modifies_or_escapes::<MODIFIED>(value, name)
         }
         Expression::AggregateLiteral(elements) => elements
             .iter()
-            .any(|element| expression_modifies_or_escapes(element, name)),
+            .any(|element| expression_modifies_or_escapes::<MODIFIED>(element, name)),
         Expression::Binary { left, right, .. } | Expression::Comma { left, right } => {
-            expression_modifies_or_escapes(left, name)
-                || expression_modifies_or_escapes(right, name)
+            expression_modifies_or_escapes::<MODIFIED>(left, name)
+                || expression_modifies_or_escapes::<MODIFIED>(right, name)
         }
         Expression::Conditional {
             condition,
@@ -1566,9 +1608,9 @@ fn expression_modifies_or_escapes(expression: &Expression, name: &str) -> bool {
             when_false,
             ..
         } => {
-            expression_modifies_or_escapes(condition, name)
-                || expression_modifies_or_escapes(when_true, name)
-                || expression_modifies_or_escapes(when_false, name)
+            expression_modifies_or_escapes::<MODIFIED>(condition, name)
+                || expression_modifies_or_escapes::<MODIFIED>(when_true, name)
+                || expression_modifies_or_escapes::<MODIFIED>(when_false, name)
         }
         Expression::Unary { operand, .. }
         | Expression::Cast { operand, .. }
@@ -1577,41 +1619,41 @@ fn expression_modifies_or_escapes(expression: &Expression, name: &str) -> bool {
         }
         | Expression::IndexedUpdateValue { value: operand }
         | Expression::Dereference { pointer: operand } => {
-            expression_modifies_or_escapes(operand, name)
+            expression_modifies_or_escapes::<MODIFIED>(operand, name)
         }
         Expression::Index { base, index } => {
-            expression_modifies_or_escapes(base, name)
-                || expression_modifies_or_escapes(index, name)
+            expression_modifies_or_escapes::<MODIFIED>(base, name)
+                || expression_modifies_or_escapes::<MODIFIED>(index, name)
         }
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
-            expression_modifies_or_escapes(base, name)
+            expression_modifies_or_escapes::<MODIFIED>(base, name)
         }
         Expression::Call { arguments, .. } => arguments
             .iter()
-            .any(|argument| expression_modifies_or_escapes(argument, name)),
+            .any(|argument| expression_modifies_or_escapes::<MODIFIED>(argument, name)),
         Expression::ConstructedNew {
             allocation,
             arguments,
             ..
         } => {
-            expression_modifies_or_escapes(allocation, name)
+            expression_modifies_or_escapes::<MODIFIED>(allocation, name)
                 || arguments
                     .iter()
-                    .any(|argument| expression_modifies_or_escapes(argument, name))
+                    .any(|argument| expression_modifies_or_escapes::<MODIFIED>(argument, name))
         }
         Expression::CallThrough { target, arguments } => {
-            expression_modifies_or_escapes(target, name)
+            expression_modifies_or_escapes::<MODIFIED>(target, name)
                 || arguments
                     .iter()
-                    .any(|argument| expression_modifies_or_escapes(argument, name))
+                    .any(|argument| expression_modifies_or_escapes::<MODIFIED>(argument, name))
         }
         Expression::VirtualCall {
             object, arguments, ..
         } => {
-            expression_modifies_or_escapes(object, name)
+            expression_modifies_or_escapes::<MODIFIED>(object, name)
                 || arguments
                     .iter()
-                    .any(|argument| expression_modifies_or_escapes(argument, name))
+                    .any(|argument| expression_modifies_or_escapes::<MODIFIED>(argument, name))
         }
         Expression::IntegerLiteral(_)
         | Expression::FloatLiteral(_)

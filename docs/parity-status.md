@@ -4,13 +4,92 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, global-array pointer induction and loop-entry scheduling (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, pointer-call composition and interior member-value reuse (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `4c17ba863add28a5212de35ccdc803ab5fefdc8588d24108743965ed4ea5ed2e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `27965de483024b56163e50e6e89cf98a3e573431902dae37e5ead5db4617d772:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Pointer-call composition and interior member-value reuse, 2026-09-08
+
+Automatic statement inlining now accepts pointer variables that change between
+calls. Private pointer locals and parameters can be substituted within one
+inline instance; globals and address-escaped locals use a hygienic call-time
+snapshot. Pointer casts retain the same identity. Callee parameter writes still
+require materialization. The existing recursive effect analysis now supports
+both write-or-escape checks and escape-only checks, including nested effects
+under address-of and postfix expressions.
+
+This preserves an observed MWCC bug: when the reduced volatile-pointer helper
+is inlined, its argument is reread at each use. The references perform **704
+pointer reads** across 64 iterations, versus the baseline's 128. All tested
+profiles do this except **Wii/1.0 O0**, which keeps the call. The candidate now
+reproduces those 704 reads; Wii O0 still needs its different inline threshold.
+Do not replace this behavior with C's normal single argument evaluation.
+
+The member-value owner also composes within straight-line instruction regions,
+sharing immediate constants and one interior pointer across stores before
+allocation. It preserves every store and its order, including volatile and
+chained writes. Live outgoing r0, interior branch entries, symbolic fixups,
+opaque assembly, and unsupported value/base shapes reject the region. Existing
+version policies continue to choose value issue order. Guarded initializers in
+canaries 2068–2071 gain **45 exact matches: 521 → 566 / 765**; their native
+panel passes **97,920 comparisons** without mismatches.
+
+Two supporting fixes came from pointer-rebinding probes. Constant global-array
+addresses can now be materialized into a virtual address register before being
+copied to r0. The linkage-first callback-publication scheduler now proves that
+both renamed producers die at the rewritten consumers and that no incoming
+branch enters the moved region. Previously it could rename a captured global
+pointer's first store while leaving a later store attached to the old register.
+
+Canaries **2104–2113** cover changing and returned pointers, volatile pointer
+reads, ordered stores, callbacks that clobber registers and memory, scalar
+pointers, overlapping pointer arguments, and rebinding through globals and
+escaped locals. They span O4, O2, schedule-off, O0, and debug on all 15 builds.
+Compilation improves **75 → 150 / 150 objects**. Exact function counts remain
+**350 / 1,350**; the newly compiled rebinding functions are not exact yet.
+The **10,800 native comparisons** have no unexpected failures. They separately
+record 16 remaining candidate Wii O0 volatile-read differences and 16 reference
+GC/1.1p1 O0 cases where the second parameter overwrites saved r30 at 8(sp).
+The latter reference ABI bug remains unimplemented. The baseline has **1,184**
+volatile-read mismatches on the previously compilable sources.
+
+In full BfBB source, `__AXVPBInit` now inlines `__AXSetPBDefault` and shares its
+member values within the loop. All **240 comparisons** pass across baseline,
+candidate, fresh references, the original GQPE78 executable, and the memory
+model. Inlining increases the initializer from **512 → 564 bytes** on the
+oldest four builds and **520 → 572** on the other eleven. Reference sizes are
+512/520/548, so this is composition progress, not a size or exactness win:
+`__AXVPBInit` remains **0/15 exact**, while the standalone default helper stays
+**15/15 exact**. Frame policy and value reuse across the caller/helper boundary
+remain matching work. `AXSetVoiceSrcRatio` changes only an anonymous float
+symbol's ordinal (`@194` to `@197`), retaining identical instructions and value.
+
+Removing redundant inline pointer snapshots also shrinks the GC/1.2.5n full
+`__AXSyncPBs` **780 → 764 bytes**, `AXAcquireVoice` **628 → 624**, and
+`GXSetVtxAttrFmtv` **848 → 812**. Original-executable comparisons pass for all
+**256** full sync cases, **10,240** AX allocation cases across ten functions,
+and **3,072** GX cases across three functions. All ten AX and fourteen GX
+library sources compile; eight AX objects and thirteen GX objects are unchanged.
+These targeted results do not establish whole-library exactness.
+
+Regression checks: **1,065 / 1,110** older objects are identical; the other 45
+are the improved guarded member initializers. All **2,626** compiled recent
+objects are identical, with the same 89 compilation failures. The indexed
+panel preserves all **1,674** statuses and object comparisons, including 1,114
+compiled and 972 previously exact cases. **420** preceding BSS, fill-loop,
+split-address, and array-cursor objects are byte-identical to their validated
+predecessors. Backend tests: **1,652 passed**, with the existing nested-assembly
+inline test excluded. The full corpus was not rerun.
+
+Local evidence: `target/member-inline-final-verification.json` binds the final
+compiler fingerprint, 602 execution-tested object hashes, and 420 preserved
+objects. Measurements and native results are under `target/member-inline-*`;
+`target/verify_member_inline_final.py` checks those bindings. Supplemental full
+AXVPB reference flags continue to remove `-W err` on every side.
 
 ## Global-array pointer induction and loop-entry scheduling, 2026-09-08
 

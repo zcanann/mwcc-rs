@@ -163,3 +163,29 @@ definitions require materializing zero inside the loop. Canaries 2099–2103
 exercise both source-derived and explicitly written cursors. The complete AX
 initializer now carries its four pointers, while modern reference offset
 induction and the remaining allocation/inlining schedules are still pending.
+
+## Pointer arguments within an inline instance
+
+A pointer may change between calls while remaining private during each call.
+Statement composition distinguishes that property from function-wide scalar
+stability: unescaped automatic pointer locals and pointer parameters can be
+substituted, while globals and escaped locals are captured in hygienic parameter
+lanes at the call site. Writes to the callee parameter itself still require a
+lane. Pointer-variable casts preserve identity; other materialized address
+expressions retain their established admission path. Opaque assembly prevents
+private-pointer substitution.
+
+Measured automatic inlining also substitutes volatile pointer variables at each
+use, repeating their reads. Canaries 2104–2108 establish 11 reads per iteration
+for the inlined reset plus callback. This is an original compiler quirk to
+preserve. Wii/1.0 O0 retains the helper call and is a remaining threshold gap.
+
+The existing member-value graph can own an interior straight-line run as well
+as a complete leaf. Only r0 value definitions and stores through one unchanged
+member base qualify; r0 must be dead on exit. Interior entries, relocations,
+deferred fixups, and opaque instructions reject the region. Sharing reduces
+value definitions while preserving the order and multiplicity of stores.
+Version-specific schedules select when each value becomes ready, and ordinary
+virtual-register liveness controls placement within the surrounding function.
+Canaries 2068–2071 cover guarded regions; 2104–2113 exercise inline composition,
+volatile stores, callbacks, and pointer rebinding.

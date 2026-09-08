@@ -1,4 +1,4 @@
-//! Retain values across a leaf member-initialization run before allocation.
+//! Retain values across member-initialization runs before allocation.
 //!
 //! Constants and interior pointers share one store-value graph; version policies
 //! select the value issue order. Stores retain their original order, including
@@ -27,16 +27,21 @@ impl Generator {
         if !matches!(
             self.behavior.optimization,
             Optimization::O2 | Optimization::O3 | Optimization::O4
-        ) || !self.output.relocations.is_empty()
-            || !self.output.entry_points.is_empty()
-            || !self.output.jump_tables.is_empty()
-            || !self.output.deferred_displacements.is_empty()
-        {
+        ) {
             return;
         }
-        let Some(plan) = plan(&self.output.instructions) else {
-            return;
-        };
+        let leaf = self.output.relocations.is_empty()
+            && self.output.entry_points.is_empty()
+            && self.output.jump_tables.is_empty()
+            && self.output.deferred_displacements.is_empty();
+        if let Some(plan) = leaf.then(|| plan(&self.output.instructions)).flatten() {
+            self.output.instructions = self.emit_member_values(&plan);
+        } else {
+            self.retain_member_store_regions();
+        }
+    }
+
+    fn emit_member_values(&mut self, plan: &Plan) -> Vec<Instruction> {
         let registers: Vec<_> = plan
             .values
             .iter()
@@ -66,7 +71,71 @@ impl Generator {
             self.behavior.scheduler_enabled,
             ordinary,
         );
-        self.output.instructions = emit(&plan, &registers, &events);
+        emit(plan, &registers, &events)
+    }
+
+    fn retain_member_store_regions(&mut self) {
+        if self.output.is_asm
+            || !self.output.entry_points.is_empty()
+            || !self.output.jump_tables.is_empty()
+            || self
+                .output
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::VerbatimWord(_)))
+        {
+            return;
+        }
+        let live = mwcc_vreg::analyze(&self.output.instructions);
+        let entries: std::collections::HashSet<_> = self
+            .output
+            .instructions
+            .iter()
+            .filter_map(|i| match i {
+                Instruction::Branch { target }
+                | Instruction::BranchConditionalForward { target, .. } => Some(*target),
+                _ => None,
+            })
+            .collect();
+        let mut regions = Vec::new();
+        let mut start = 0;
+        while start < self.output.instructions.len() {
+            if !matches!(
+                self.output.instructions[start],
+                Instruction::AddImmediate { d: 0, .. }
+            ) {
+                start += 1;
+                continue;
+            }
+            let mut end = start + 1;
+            while end < self.output.instructions.len()
+                && !entries.contains(&end)
+                && matches!(
+                    self.output.instructions[end],
+                    Instruction::AddImmediate { d: 0, .. }
+                        | Instruction::StoreWord { s: 0, .. }
+                        | Instruction::StoreHalfword { s: 0, .. }
+                        | Instruction::StoreByte { s: 0, .. }
+                )
+            {
+                end += 1;
+            }
+            if let Some(plan) = region_plan(&self.output, start, end, &live) {
+                regions.push((start, end, plan));
+            }
+            start = end;
+        }
+        for (start, end, plan) in regions.into_iter().rev() {
+            let mut code = self.emit_member_values(&plan);
+            code.pop(); // The original region's successor owns control flow.
+            self.output.instructions[start] = code[0].clone();
+            for _ in start + 1..end {
+                crate::remove_instruction_retargeting_to_next(self, start + 1);
+            }
+            for (index, instruction) in code.into_iter().enumerate().skip(1) {
+                crate::insert_instruction_retargeting(self, start + index, instruction);
+            }
+        }
     }
 }
 
@@ -84,6 +153,10 @@ fn plan(instructions: &[Instruction]) -> Option<Plan> {
     if *last != Instruction::BranchToLinkRegister {
         return None;
     }
+    plan_body(body)
+}
+
+fn plan_body(body: &[Instruction]) -> Option<Plan> {
     let base = body.iter().find_map(store_parts)?.1;
     if base <= 2 {
         return None;
@@ -144,6 +217,41 @@ fn plan(instructions: &[Instruction]) -> Option<Plan> {
         values,
         stores,
     })
+}
+
+// Only r0 is replaced by the shared values. The member base is never
+// defined in a recognized run, and r0 must be dead on every outgoing edge.
+// Metadata outside the region is retained by the common instruction editors.
+fn region_plan(
+    function: &mwcc_machine_code::MachineFunction,
+    start: usize,
+    end: usize,
+    live: &mwcc_vreg::Liveness,
+) -> Option<Plan> {
+    if function.instructions.iter().any(|i| {
+        matches!(i,
+        Instruction::Branch { target } | Instruction::BranchConditionalForward { target, .. }
+            if (start + 1..end).contains(target))
+    }) || function
+        .relocations
+        .iter()
+        .any(|r| (start..end).contains(&r.instruction_index))
+        || function
+            .deferred_displacements
+            .iter()
+            .any(|r| (start..end).contains(&r.instruction_index))
+        || live.pinned.iter().any(|p| {
+            p.class == Class::General
+                && p.register == 0
+                && p.live_slots
+                    .as_ref()
+                    .is_some_and(|slots| slots.binary_search(&(2 * end)).is_ok())
+        })
+    {
+        return None;
+    }
+    let plan = plan_body(function.instructions.get(start..end)?)?;
+    (plan.values.len() + plan.stores.len() < end - start).then_some(plan)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -459,5 +567,62 @@ mod tests {
             instructions.insert(instructions.len() - 1, extra);
             assert!(plan(&instructions).is_none());
         }
+    }
+    #[test]
+    fn recognizes_an_interior_run_but_preserves_live_scratch() {
+        let mut function = mwcc_machine_code::MachineFunction::new("initialize");
+        function.instructions.push(Instruction::BranchAndLink {
+            target: "before".into(),
+        });
+        function.instructions.extend(input());
+        let end = function.instructions.len() - 1;
+        assert!(region_plan(
+            &function,
+            1,
+            end,
+            &mwcc_vreg::analyze(&function.instructions)
+        )
+        .is_some());
+        function
+            .instructions
+            .insert(end, Instruction::move_register(3, 0));
+        assert!(region_plan(
+            &function,
+            1,
+            end,
+            &mwcc_vreg::analyze(&function.instructions)
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn rejects_interior_entries_and_symbolic_value_ownership() {
+        let mut function = mwcc_machine_code::MachineFunction::new("initialize");
+        function.instructions = input();
+        let end = function.instructions.len() - 1;
+        function
+            .instructions
+            .push(Instruction::Branch { target: 1 });
+        assert!(region_plan(
+            &function,
+            0,
+            end,
+            &mwcc_vreg::analyze(&function.instructions)
+        )
+        .is_none());
+        function.instructions.pop();
+        function
+            .deferred_displacements
+            .push(mwcc_machine_code::DeferredDisplacement {
+                instruction_index: 0,
+                target: mwcc_machine_code::DeferredDisplacementTarget::Symbol("global".into()),
+            });
+        assert!(region_plan(
+            &function,
+            0,
+            end,
+            &mwcc_vreg::analyze(&function.instructions)
+        )
+        .is_none());
     }
 }

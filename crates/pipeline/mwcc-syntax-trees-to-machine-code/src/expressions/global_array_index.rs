@@ -344,9 +344,18 @@ impl Generator {
         index: &Expression,
     ) -> Compilation<()> {
         if constant_value(index).is_some() {
-            return Err(Diagnostic::error(
-                "a constant global-array element address into the scratch register is not supported yet (roadmap)",
-            ));
+            // Use the ordinary constant-address owner with a real register
+            // base; r0 cannot be the base of its own low-half add. Allocation
+            // owns the temporary and its interference with live store inputs.
+            let address = self.fresh_virtual_general_preferring(4);
+            self.evaluate_general(&Expression::AddressOf {
+                operand: Box::new(Expression::Index {
+                    base: Box::new(Expression::Variable(name.to_owned())),
+                    index: Box::new(index.clone()),
+                }),
+            }, address)?;
+            self.output.instructions.push(Instruction::move_register(GENERAL_SCRATCH, address));
+            return Ok(());
         }
 
         let index_register = match self.general_register_of_leaf(index) {

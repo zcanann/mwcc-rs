@@ -1418,9 +1418,11 @@ impl InlineBodySet {
             .cloned()
             .collect();
         let mut next_local_id = 0usize;
+        let mut statement_argument_variables = stable_variables.clone();
+        statement_argument_variables.extend(safety::inline_pointer_variables(function));
         let statements = self.expand_statements(
             &function.statements,
-            &stable_variables,
+            &statement_argument_variables,
             &mut active,
             &mut changed,
             &mut locals,
@@ -2953,6 +2955,32 @@ mod tests {
     }
 
     #[test]
+    fn private_inline_pointer_identity_survives_caller_reassignment() {
+        let pointer = Type::Pointer(mwcc_syntax_trees::Pointee::UnsignedInt);
+        let mut caller = function("caller", vec![], vec![]);
+        for name in ["private", "volatile", "escaped", "static"] {
+            let mut declaration = local(name, pointer, Expression::IntegerLiteral(0));
+            declaration.is_volatile = name == "volatile";
+            declaration.is_static = name == "static";
+            caller.locals.push(declaration);
+            caller.statements.push(Statement::Assign {
+                name: name.into(),
+                value: Expression::IntegerLiteral(0),
+            });
+        }
+        caller.statements.push(Statement::Expression(Expression::AddressOf {
+            operand: Box::new(Expression::Variable("escaped".into())),
+        }));
+        let private = safety::inline_pointer_variables(&caller);
+        assert_eq!(private, HashSet::from(["private".into(), "volatile".into()]));
+        assert!(safety::stable_argument(&Expression::Cast {
+            target_type: Type::StructPointer { element_size: 48 },
+            operand: Box::new(Expression::Variable("volatile".into())),
+        }, &private));
+        assert!(!safety::stable_argument(&Expression::Variable("global".into()), &private));
+    }
+
+    #[test]
     fn substituted_memory_objects_keep_their_store_identity() {
         let mut caller = function("caller", vec![], vec![]);
         for name in ["automatic", "volatile", "static", "array", "aggregate"] {
@@ -4277,6 +4305,51 @@ mod tests {
             .expand_calls(&caller)
             .expect("retained inline arguments can capture a changing cursor");
         let [Statement::Loop { body, .. }] = expanded.statements.as_slice() else {
+            panic!("the caller loop must remain")
+        };
+        let [Statement::Assign { name: captured, value: Expression::Variable(source) },
+            Statement::Expression(Expression::Call { name: first, arguments: first_args }),
+            Statement::Expression(Expression::Call { name: second, arguments: second_args }),
+            Statement::Assign { name: cursor, .. }] = body.as_slice() else {
+            panic!("capture must execute inside the loop before both calls")
+        };
+        assert_eq!(source, "cursor");
+        assert_eq!(cursor, "cursor");
+        assert_ne!(captured, cursor);
+        assert_eq!((first.as_str(), second.as_str()), ("first", "second"));
+        for arguments in [first_args, second_args] {
+            assert!(matches!(arguments.as_slice(), [Expression::Variable(name)] if name == captured));
+        }
+    }
+
+    #[test]
+    fn captures_a_changing_pointer_at_each_automatic_inline_call() {
+        let parameter = Parameter {
+            parameter_type: Type::StructPointer { element_size: 48 },
+            name: "cursor".into(),
+        };
+        let call = |name: &str| Statement::Expression(Expression::Call {
+            name: name.into(),
+            arguments: vec![Expression::Variable("cursor".into())],
+        });
+        let callee = function("visit", vec![parameter.clone()], vec![call("first"), call("second")]);
+        let mut caller = function("walk", vec![parameter], vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::Variable("cursor".into())),
+            step: None,
+            body: vec![call("visit"), Statement::Assign {
+                name: "cursor".into(),
+                value: Expression::IntegerLiteral(0),
+            }],
+        }]);
+        caller.statements.insert(0, Statement::Expression(Expression::AddressOf {
+            operand: Box::new(Expression::Variable("cursor".into())),
+        }));
+        let expanded = InlineBodySet::analyze_with_definitions(&[callee, caller.clone()], &[])
+            .expand_calls(&caller)
+            .expect("automatic inline captures the call-time pointer");
+        let Some(Statement::Loop { body, .. }) = expanded.statements.last() else {
             panic!("the caller loop must remain")
         };
         let [Statement::Assign { name: captured, value: Expression::Variable(source) },

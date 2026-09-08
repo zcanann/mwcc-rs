@@ -100,6 +100,21 @@ fn recognize_at(
         return None;
     }
 
+    // This owner gives the object and address-high producer fresh identities.
+    // Both old identities must end at the consumers that it rewrites.
+    let live = mwcc_vreg::analyze(instructions);
+    if live_after(&live, *object, start + 2)
+        || (callback_argument != callback_high_base
+            && live_after(&live, *callback_high_base, low_relocation.instruction_index))
+        || instructions.iter().any(|instruction| {
+            matches!(instruction,
+            Instruction::Branch { target } | Instruction::BranchConditionalForward { target, .. }
+                if (start + 1..=low_relocation.instruction_index).contains(target))
+        })
+    {
+        return None;
+    }
+
     Some(Arm {
         start,
         object: *object,
@@ -109,6 +124,29 @@ fn recognize_at(
         callback_high_base: *callback_high_base,
         callback_argument: *callback_argument,
     })
+}
+
+fn live_after(live: &mwcc_vreg::Liveness, register: u8, index: usize) -> bool {
+    let slot = 2 * index + 1;
+    let reg = mwcc_vreg::Reg::from_field(register, mwcc_vreg::Class::General);
+    if let Some(vreg) = reg.virtual_register() {
+        live.intervals.iter().any(|range| {
+            range.vreg == vreg
+                && range
+                    .live_slots
+                    .as_ref()
+                    .is_some_and(|slots| slots.binary_search(&slot).is_ok())
+        })
+    } else {
+        live.pinned.iter().any(|range| {
+            range.register == register
+                && range.class == mwcc_vreg::Class::General
+                && range
+                    .live_slots
+                    .as_ref()
+                    .is_some_and(|slots| slots.binary_search(&slot).is_ok())
+        })
+    }
 }
 
 fn rewrite_registers(
@@ -263,6 +301,43 @@ mod tests {
             relocation(5, RelocationKind::Addr16Lo, "callback"),
         ];
 
+        assert_eq!(recognize_at(&instructions, &relocations, 0), None);
+    }
+    #[test]
+    fn rejects_a_state_pointer_used_again_after_publication() {
+        let instructions = vec![
+            Instruction::LoadWord {
+                d: 32,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::load_immediate(0, 11),
+            Instruction::StoreWord {
+                s: 0,
+                a: 32,
+                offset: 0,
+            },
+            Instruction::load_immediate_shifted(33, 0),
+            Instruction::AddImmediate {
+                d: 34,
+                a: 33,
+                immediate: 0,
+            },
+            Instruction::load_immediate(0, 22),
+            Instruction::StoreWord {
+                s: 0,
+                a: 32,
+                offset: 8,
+            },
+            Instruction::BranchAndLink {
+                target: "observe".into(),
+            },
+        ];
+        let relocations = vec![
+            relocation(0, RelocationKind::EmbSda21, "cursor"),
+            relocation(3, RelocationKind::Addr16Ha, "objects"),
+            relocation(4, RelocationKind::Addr16Lo, "objects"),
+        ];
         assert_eq!(recognize_at(&instructions, &relocations, 0), None);
     }
 }
