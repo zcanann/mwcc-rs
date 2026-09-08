@@ -4396,7 +4396,7 @@ impl Generator {
 
         // Nested leaf diamonds use the same structured CFG emitter as framed
         // call-bearing bodies, but own no prologue or saved-register policy.
-        if self.try_leaf_structured_body(function)? {
+        if self.try_leaf_snapshot_guard_body(function)? || self.try_leaf_structured_body(function)? {
             return Ok(());
         }
 

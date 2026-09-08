@@ -173,6 +173,9 @@ impl Generator {
         if self.try_emit_bit_field_assign(target, value, destination)? {
             return Ok(());
         }
+        if self.try_emit_global_array_assignment(target, value, Some(destination))? {
+            return Ok(());
+        }
         if let Expression::Variable(name) = target {
             if let Some(&global_type) = self.globals.get(name.as_str()) {
                 let pointee = pointee_of_type(global_type).ok_or_else(|| {

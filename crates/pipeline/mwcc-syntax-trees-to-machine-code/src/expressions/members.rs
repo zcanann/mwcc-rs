@@ -1311,6 +1311,11 @@ impl Generator {
         pointee: Pointee,
         value: &Expression,
     ) -> Compilation<()> {
+        if self.try_emit_global_pointer_array_member_store(
+            name, total_size, index, offset, pointee, value,
+        )? {
+            return Ok(());
+        }
         if let Some(constant) = constant_value(index) {
             // A constant store value interleaves its `li` between the base's `lis` and
             // `addi` (`lis; li; addi; stw`) — that schedule is not modeled, so defer;
@@ -1660,6 +1665,16 @@ impl Generator {
                 let total_size = self
                     .global_array_address_extent(name)
                     .expect("the guard resolved the array extent");
+                // Pointer arrays contain addresses, not embedded aggregates.
+                // Their element must be loaded before adding a member offset.
+                if matches!(
+                    self.globals.get(name),
+                    Some(Type::Pointer(_) | Type::StructPointer { .. })
+                ) {
+                    let register = self.fresh_virtual_general();
+                    self.emit_global_array_subscript(name, total_size, index, register)?;
+                    return Ok(register);
+                }
                 if let Expression::Variable(index_name) = index.as_ref() {
                     let cached_stride = self
                         .structured_global_index_cache
@@ -2672,7 +2687,8 @@ impl Generator {
     /// array's base high half goes to a register that avoids both the index and the
     /// value. A float/double element stores from its FPR through the same GPR base
     /// (`stfs`/`stfd`); the base register comes from the general pool regardless.
-    /// Register-valued stores only — byte arrays and computed/constant values are follow-ups.
+    /// Measured leaf/literal schedules retain first refusal. Computed integer
+    /// values use an explicit live range through element-address formation.
     pub(crate) fn emit_global_array_store(
         &mut self,
         name: &str,
@@ -2792,6 +2808,15 @@ impl Generator {
             value,
         )? {
             return Ok(());
+        }
+        if !matches!(value, Expression::Variable(_)) && constant_value(value).is_none() {
+            let target = Expression::Index {
+                base: Box::new(Expression::Variable(name.into())),
+                index: Box::new(index.clone()),
+            };
+            if self.try_emit_global_array_assignment(&target, value, None)? {
+                return Ok(());
+            }
         }
         // A CONSTANT value over a VARIABLE index on a large (ADDR16) array is handled in
         // the variable-index path below: the constant materializes into the freed

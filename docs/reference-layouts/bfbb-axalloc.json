@@ -1,0 +1,35 @@
+{
+  "dol_sha256": "865f446cf8efd52230dac506d6334a357b4c738cd6eb6e3a68c827efac51c3e0",
+  "symbols_sha256": "92f658ac1a6f91ec64d851dcfdf92a0907f3c06f5c68a97096052e99b5f3dfa4",
+  "functions": [
+    "__AXGetStackHead",
+    "__AXServiceCallbackStack",
+    "__AXPopCallbackStack",
+    "__AXRemoveFromStack",
+    "__AXPushFreeStack",
+    "__AXAllocInit",
+    "__AXAllocQuit",
+    "__AXPushCallbackStack",
+    "AXFreeVoice",
+    "AXAcquireVoice"
+  ],
+  "sda_bases": {
+    "2": 2151500160,
+    "13": 2151491840
+  },
+  "data_symbols": {
+    "__AXStackHead": 2151038344,
+    "__AXStackTail": 2151038472,
+    "__AXCallbackStack": 2151465648
+  },
+  "literals": [],
+  "data_images": [],
+  "external_functions": [
+    "OSDisableInterrupts",
+    "OSRestoreInterrupts",
+    "__AXSetPBDefault"
+  ],
+  "bss_anchor_objects": {
+    "...bss.0": "__AXStackHead"
+  }
+}

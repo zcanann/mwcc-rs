@@ -2639,12 +2639,12 @@ impl Generator {
         if let Expression::Dereference { pointer } = operand {
             return self.evaluate_general(pointer, destination);
         }
-        // Embedded arrays already have address-valued MemberAddress nodes;
-        // taking their address uses the same storage base and byte offset.
+        // Embedded arrays already have address-valued MemberAddress nodes.
+        // Indexed member bases derive their address from the array declaration;
+        // the retained struct stride must not scale a table of pointers.
         if let Expression::Member {
             base,
             offset,
-            index_stride: None,
             ..
         }
         | Expression::MemberAddress {

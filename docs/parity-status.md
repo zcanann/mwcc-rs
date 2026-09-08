@@ -4,13 +4,78 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, GC/1.1p1 O0 polling register scopes and spill overlap (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete AXAlloc translation unit and array value lifetimes (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `59c366316815856c856aa886e93bcb656ec748c822fe5d27a8de5ae46e4ea008:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `00e10d0b113573c71db1817752bdc9c4e65765d18544caf1ec3d51501385269e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete AXAlloc translation unit and array value lifetimes, 2026-09-07
+
+BfBB's unchanged, fully configured **AXAlloc.c now compiles**, increasing
+complete AX translation-unit coverage from **6/10 to 7/10**. All ten allocator
+functions pass **10,240 three-way PowerPC execution comparisons** against a
+fresh GC/1.2.5n reference object and the original DOL. This includes callback
+stack draining, all doubly linked removal positions, free-list allocation,
+lower-priority tail stealing, exhausted acquisition, and interrupt-state
+restoration. Calls among allocator functions execute their actual compiled
+bodies. Three external SDK helpers and the user callback are modeled with
+ordered events, volatile-register clobbers, and memory effects. Comparisons
+cover return values, 4,608 bytes of voice storage, all three allocator globals,
+saved GPR/FPR images, and SP/LR/PC; this is bounded integration evidence.
+
+Global-array assignment expressions now retain their converted value in an
+explicit virtual register through element-address formation. This supports
+chained assignments and computed integer stores without assuming that a store
+leaves its result in r0. Narrow assignment results preserve their conversion
+before an outer word store or return. Leaf functions with local assignments
+and a small conditional memory update can use the existing structured CFG
+lowerer. Member-address and member-store lowering distinguish a pointer table
+from an array of embedded structs: they load the selected pointer before
+applying the member offset. Existing member-load schedules remain intact.
+Finally, integer branch comparisons preserve a scratch-held first operand
+before evaluating a second nonconstant, non-register operand. This prevents
+two table reads from degenerating into `cmplw r0,r0`.
+
+Canaries **2002–2009** cover assigned values, signed-byte/halfword narrowing,
+call and member results, computed stores, conditional pointer snapshots,
+member addresses, member writes after replacing a table entry, and comparisons
+of loaded operands. Candidate compilation improves **30/120 to 120/120
+objects** across fifteen builds at O0/O4; fresh reference compilation is
+**120/120**. Reference output filenames are kept short because several older
+compilers fail with the longer harness output paths. There are **48/600 exact
+function text plus symbolic relocation comparisons**, with **0/120 whole
+objects exact**. All **153,600 paired execution comparisons** pass against
+independent expected models. On the 30 already-compiling comparison objects,
+the frozen baseline has **9,420 execution mismatches** in 23,040 cases; the
+new compiler has none.
+
+The pinned [AXAlloc layout](reference-layouts/bfbb-axalloc.json) verifies
+**10/10 fresh-reference functions** against the original DOL, including the
+BSS section anchor validated through `__AXStackHead`. Candidate linked text is
+exact for **2/10** functions (`__AXGetStackHead`, `__AXPushCallbackStack`). The
+candidate object is **3,464 bytes** with **1,360 bytes of text**, versus the
+reference's **3,024 bytes** and **1,224 bytes of text**. Instruction scheduling
+and loop unrolling still differ despite the execution agreement.
+
+Regression checks retain **1,114** compiling indexed objects byte-for-byte,
+including all **972** known exact matches. All **2,626** compiling recent
+source/build pairs remain byte-identical; **89** keep their compilation
+failures. All fourteen full GX objects, AXVPB, and the six previously compiling
+AX units remain unchanged. Compiler library tests pass **1,601**, excluding
+the previously confirmed embedded-assembly failure; DOL tooling tests pass
+**26**. Final recompilation verifies **143** execution-panel and full-unit
+object hashes after the final source changes.
+
+Artifacts are under `target/array-assignment-{canaries,real,index,recent,library,full-ax,ax-library}`;
+`target/array-assignment-final-verification.json` records the final compiler
+and verified object hashes. The three remaining AX compile failures are
+`AXCL.c` (global initialization scheduling), `AXOut.c` (a global value reused
+across a conditional), and `AXSPB.c` (retained `__AXDepopFade` inline expansion).
+Full-project compilation and matching remain unfinished; these focused counts
+are not a corpus-wide parity estimate.
 
 ## GC/1.1p1 O0 polling register scopes and spill overlap, 2026-09-07
 

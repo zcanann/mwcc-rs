@@ -38,6 +38,28 @@ impl Generator {
         self.try_leaf_value_body(function, true)
     }
 
+    /// A local snapshot remains live through a conditional memory update even
+    /// when the branch contains only one store. It still needs named-value
+    /// planning; the plain trailing-if emitter cannot assign its local home.
+    pub(crate) fn try_leaf_snapshot_guard_body(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if function.locals.is_empty()
+            || !function
+                .statements
+                .iter()
+                .any(|statement| matches!(statement, Statement::Assign { .. }))
+            || !function
+                .statements
+                .iter()
+                .any(|statement| matches!(statement, Statement::If { .. }))
+        {
+            return Ok(false);
+        }
+        self.try_leaf_value_body(function, true)
+    }
+
     fn try_leaf_value_body(
         &mut self,
         function: &Function,

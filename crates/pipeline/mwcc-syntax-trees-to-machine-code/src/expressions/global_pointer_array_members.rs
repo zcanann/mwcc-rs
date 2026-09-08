@@ -1,9 +1,42 @@
-//! Member loads through elements of file-scope pointer arrays.
+//! Member accesses through elements of file-scope pointer arrays.
 
 #[allow(unused_imports)]
 use super::*;
 
 impl Generator {
+    /// Store through the selected pointer, rather than into the pointer table's
+    /// own storage. The value and selected address have independent live ranges.
+    pub(crate) fn try_emit_global_pointer_array_member_store(
+        &mut self,
+        name: &str,
+        total_size: u32,
+        index: &Expression,
+        member_offset: u32,
+        pointee: Pointee,
+        value: &Expression,
+    ) -> Compilation<bool> {
+        if !matches!(
+            self.globals.get(name),
+            Some(Type::Pointer(_) | Type::StructPointer { .. })
+        ) {
+            return Ok(false);
+        }
+        let pointer = self.fresh_virtual_general();
+        self.with_reserved_inputs(value, |generator| {
+            generator.emit_global_array_subscript(name, total_size, index, pointer)
+        })?;
+        let offset = self.emit_member_base_adjustment(pointer, member_offset);
+        let reserved = self.reserved.insert(pointer);
+        let source = self.place_store_value(value, pointee);
+        if reserved {
+            self.reserved.remove(&pointer);
+        }
+        self.output
+            .instructions
+            .push(displacement_store(pointee, source?, pointer, offset)?);
+        Ok(true)
+    }
+
     /// Emit `global[index]->member`. The parser retains the pointed-to struct
     /// size on the member expression, but the global array itself is an array
     /// of four-byte pointers: index by four, load the pointer, then load its

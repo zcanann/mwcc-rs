@@ -1995,12 +1995,12 @@ impl Generator {
                                     return Err(Diagnostic::error("a mixed narrow comparison needs both operands extended (roadmap)"));
                                 }
                                 if left_register == GENERAL_SCRATCH
-                                    && matches!(
-                                        right.as_ref(),
-                                        Expression::AddressOf { .. }
-                                            | Expression::MemberAddress { .. }
-                                    )
+                                    && constant_value(right).is_none()
+                                    && self.leaf_info(right).is_err()
                                 {
+                                    // A second loaded/computed operand can reuse
+                                    // r0. Retain the first value before placing
+                                    // it, just as for address-valued operands.
                                     let preserved = self.fresh_virtual_general();
                                     self.output.instructions.push(Instruction::move_register(
                                         preserved,
