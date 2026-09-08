@@ -4,13 +4,66 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, retained prefix values in fixed fills (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, shared parameter images in GC/1.1p1 O0 loops (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `c095e8255cd809c50b3c7afe3d86eda09d710ea5d83ebcc180993bcbf4e312e1:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `f80ce679efe06852ba1fd946a4b07461b381dd0f9d2af2efd9978d591c6944fb:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Shared parameter images in GC/1.1p1 O0 loops, 2026-09-08
+
+The existing GC/1.1p1 unoptimized shared-parameter-spill policy now covers
+call-bearing word/pointer loops through the shared CFG and statement emitter.
+A separate source-home planner assigns multiply used values to descending saved
+registers and single-use parameters to the original shared SP+8 slot. Uses are
+syntactic: reading a parameter once inside a loop does not promote it merely
+because that read executes repeatedly. Local homes follow first-definition
+order; all parameter images precede local initializer evaluation. Frame saves
+follow the measured individual/helper/multiple-register modes. The O0 lowering
+retains the initial condition edge even for known trip counts.
+
+Canaries **2149–2153** cover ten functions in five modes across fifteen builds
+(O0, scheduling disabled, both explicit save modes, and O2). All **75 objects**
+compile on baseline, candidate, and reference. Only GC/1.1p1 O0 changes:
+**36 functions**, with exact matches rising **0 → 24 / 750** and no losses.
+Seven more functions become exact in preceding canaries 2088 and 2146, for
+**31 new exact matches** overall. The older inline `dual_pointer` case now
+reproduces the original saved-r30 overwrite but is not yet byte-exact.
+
+All **12,000 new native cases** pass against the reference behavior. These
+include **512 original-bug cases**: 480 returning cases with overwritten saved
+registers, and 32 faults where aliased pointer/condition images make the original
+store through address 1. Fault checks verify the faulting store, relevant GPRs,
+SP/LR, unchanged memory, and absence of a callback. Copied-pointer initializers
+also observe the already-overwritten parameter image. Baseline disagrees with
+these 512 bug cases. Literal scheduling preserves the original value at the
+fault, as well as ordinary store results.
+
+Earlier affected panels pass **14,400** prefix-fill, **1,728** unrolled-fill,
+and **112** inline-pointer cases. This reproduces their previously recorded
+**160 original-bug cases** (80 prefix, 64 conditional fill, 16 inline pointer).
+These historical gaps are closed for the measured families; unrelated shared
+spill and volatile-pointer gaps remain. The new loop planner deliberately
+rejects address-taking, arrays, unsupported control flow/types, preexisting
+frame slots or data anchors, and assembly bodies.
+
+Regression checks preserve **1,110** older objects, **2,626** recent objects
+with **89** unchanged failures, and all **1,674** indexed outcomes (1,114
+compiled, 972 known exact). Of **1,095** preceding objects, **1,092** are
+identical; the three changed GC/1.1p1 O0 objects are covered by the native panels
+above and lose no matches. All ten AX and fourteen GX translation units compile
+unchanged. Full AXVPB objects remain identical across all fifteen builds,
+retaining their preceding **240** initializer execution checks. Backend tests
+pass **1,663** with the existing nested-asm inline exclusion; version tests pass
+**56**. The full corpus was not rerun.
+
+`target/spill-loop-final-verification.json` binds the final compiler/harness
+fingerprints to **501 native-tested object entries**, the preceding-object
+hashes, and the fifteen unchanged full AXVPB objects. Final compilation
+reproduces the tested candidate objects. Broader parity remains incomplete;
+indexed and canary counts are targeted diagnostics.
 
 ## Retained prefix values in fixed fills, 2026-09-08
 

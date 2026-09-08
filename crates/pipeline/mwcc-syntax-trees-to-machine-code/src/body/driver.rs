@@ -1257,6 +1257,11 @@ impl Generator {
                 *self = trial;
                 return Ok(());
             }
+            let mut trial = self.clone();
+            if trial.try_shared_spill_loops(function)? {
+                *self = trial;
+                return Ok(());
+            }
             if let Some(lowered) = self.materialize_shared_spill_context(function) {
                 return self.evaluate_body(&lowered);
             }

@@ -271,3 +271,28 @@ initialization. This removes the loop's repeated literal without moving prefix
 memory operations. Existing version-dependent expansion factors and exit-value
 rules still apply. Canaries 2143–2148 cover scalar/global prefixes, ordered
 writes, aliasing, remainder packets, returned cursors, and barriers.
+
+## Shared parameter images in unoptimized loops
+
+GC/1.1p1 O0 can assign every single-use word parameter to SP+8, including
+parameters whose lifetimes overlap and slots occupied by saved GPRs. Preserve
+this under the existing version policy. Count syntactic source uses, without
+loop-frequency weighting. Assign retained locals in first-definition order,
+then retained parameters in declaration order, to descending saved registers.
+Write parameter images before evaluating local initializers: an initializer
+can therefore reload a later parameter's overwritten image.
+
+Keep this source-home plan separate from CFG emission. The shared loop lowerer
+has an O0 entry-test policy; ordinary optimized callers retain their existing
+first-iteration proof. Frame helpers and individual/multiple saves use the
+existing frame emitters. Shared statement lowering handles the loops and
+callbacks. A narrowly checked literal-before-spilled-pointer-load reorder
+preserves the reference's register state even when the next store faults.
+Instruction edits retain branch and symbolic metadata ownership.
+
+This owner accepts call-bearing void loops with word/pointer parameters and
+locals, and rejects address-taking, local arrays, assembly, existing frame
+slots/data anchors, and unsupported statements. Other profiles retain their
+existing owners. Canaries 2149–2153 exercise parameter aliases, copied cursors,
+source-use counts, local ordering, scalar images, odd/even frames, and explicit
+save modes; original corruption and faults are part of their reference model.

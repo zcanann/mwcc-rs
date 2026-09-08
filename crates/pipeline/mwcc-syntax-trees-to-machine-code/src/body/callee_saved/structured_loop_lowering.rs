@@ -28,6 +28,17 @@ pub(super) fn lower_structured_loops(
     })
 }
 
+/// O0 source-home emission retains the first test even for a known trip count.
+pub(super) fn lower_unoptimized_structured_loops(
+    function: &Function,
+    global_array_sizes: &std::collections::HashMap<String, u32>,
+) -> Option<Function> {
+    let mut lowering = LoopLowering::new(&function.statements, global_array_sizes, false);
+    lowering.preserve_entry_test = true;
+    let statements = lowering.lower_statements(&function.statements, None)?;
+    lowering.changed.then(|| Function { statements, ..function.clone() })
+}
+
 /// Remove switches that only evaluate an inert scrutinee and immediately break
 /// from every arm. Keep this separate from loop lowering because liveness and
 /// frame planning must see the same semantic body as the emission view.
@@ -97,6 +108,7 @@ struct LoopTargets<'a> {
 struct LoopLowering<'a> {
     global_array_sizes: &'a std::collections::HashMap<String, u32>,
     preserve_asm_tainted_for_entries: bool,
+    preserve_entry_test: bool,
     used_labels: std::collections::HashSet<String>,
     next_loop: usize,
     changed: bool,
@@ -113,6 +125,7 @@ impl<'a> LoopLowering<'a> {
         Self {
             global_array_sizes,
             preserve_asm_tainted_for_entries,
+            preserve_entry_test: false,
             used_labels,
             next_loop: 0,
             changed: false,
@@ -267,7 +280,7 @@ impl<'a> LoopLowering<'a> {
             // An always-true pre-test loop enters its body directly. Retaining the
             // generic jump-to-condition creates an otherwise dead entry trampoline
             // before polling loops such as `while (1) { if (done) break; }`.
-        } else if needs_entry_test && !first_iteration_is_proven(initializer, condition)
+        } else if needs_entry_test && (self.preserve_entry_test || !first_iteration_is_proven(initializer, condition))
             && !(body.is_empty() && step.is_none())
         {
             // With no body or step, fallthrough already reaches the condition.
@@ -451,6 +464,30 @@ mod tests {
             }),
             body,
         }
+    }
+
+    #[test]
+    fn unoptimized_known_trip_loops_retain_the_initial_condition_edge() {
+        let source = function(vec![Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(Expression::Assign {
+                target: Box::new(Expression::Variable("count".into())),
+                value: Box::new(Expression::IntegerLiteral(4)),
+            }),
+            condition: Some(Expression::Binary {
+                operator: BinaryOperator::NotEqual,
+                left: Box::new(Expression::Variable("count".into())),
+                right: Box::new(Expression::IntegerLiteral(0)),
+            }),
+            step: None,
+            body: vec![Statement::Expression(Expression::Call {
+                name: "observe".into(), arguments: Vec::new(),
+            })],
+        }]);
+        let lowered = lower_unoptimized_structured_loops(&source, &Default::default()).unwrap();
+        assert!(matches!(&lowered.statements[1], Statement::Goto(label) if label.ends_with("condition")));
+        let ordinary = lower_structured_loops(&source, &Default::default(), false).unwrap();
+        assert!(matches!(&ordinary.statements[1], Statement::Label(label) if label.ends_with("body")));
     }
 
     #[test]
