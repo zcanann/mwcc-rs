@@ -45,7 +45,7 @@ fn aggregate_member_copy_shape<'a>(
 }
 
 impl Generator {
-    /// Copy a one- or two-word aggregate member whose concrete offset proves
+    /// Copy an aggregate member of up to three words whose concrete offset proves
     /// word alignment. Compact parser layouts retain aggregate type identity
     /// even when MWCC scalarizes the assignment to `lwz`/`stw` pairs.
     pub(crate) fn try_emit_small_aggregate_member_copy(
@@ -53,32 +53,47 @@ impl Generator {
         target: &Expression,
         value: &Expression,
     ) -> Compilation<bool> {
-        let (
-            Expression::Member {
-                base: destination,
-                offset: destination_offset,
-                member_type:
-                    Type::Struct {
-                        size: destination_size,
-                        ..
-                    },
-                index_stride: None,
-            },
-            Expression::Member {
-                base: source,
-                offset: source_offset,
-                member_type:
-                    Type::Struct {
-                        size: source_size, ..
-                    },
-                index_stride: None,
-            },
-        ) = (target, value)
+        let Expression::Member {
+            base: destination,
+            offset: destination_offset,
+            member_type:
+                Type::Struct {
+                    size: destination_size,
+                    align: destination_align,
+                },
+            index_stride: None,
+        } = target
         else {
             return Ok(false);
         };
-        if destination_size != source_size
-            || !matches!(*source_size, 4 | 8)
+        let (source, source_offset, source_size) = match value {
+            Expression::Member {
+                base,
+                offset,
+                member_type: Type::Struct { size, .. },
+                index_stride: None,
+            } => (base.as_ref(), *offset, *size),
+            Expression::Dereference { pointer } => {
+                if *destination_align < 4 {
+                    return Ok(false);
+                }
+                let Expression::Variable(name) = pointer.as_ref() else {
+                    return Ok(false);
+                };
+                let Some(size) = self
+                    .locations
+                    .get(name)
+                    .and_then(|location| location.stride)
+                else {
+                    return Ok(false);
+                };
+                (pointer.as_ref(), 0, size)
+            }
+            _ => return Ok(false),
+        };
+        if *destination_size != source_size
+            || (source_size == 12 && *destination_align < 4)
+            || !matches!(source_size, 4 | 8 | 12)
             || destination_offset % 4 != 0
             || source_offset % 4 != 0
         {
@@ -86,21 +101,21 @@ impl Generator {
         }
         let destination_base = self.general_register_of_leaf(destination)?;
         let source_base = self.general_register_of_leaf(source)?;
-        let first_word = self.fresh_virtual_general_preferring(if *source_size == 8 {
+        let first_word = self.fresh_virtual_general_preferring(if source_size >= 8 {
             Eabi::FIRST_GENERAL_ARGUMENT
         } else {
             GENERAL_SCRATCH
         });
         let destination_offset = i16::try_from(*destination_offset)
             .map_err(|_| Diagnostic::error("aggregate destination member is out of range"))?;
-        let source_offset = i16::try_from(*source_offset)
+        let source_offset = i16::try_from(source_offset)
             .map_err(|_| Diagnostic::error("aggregate source member is out of range"))?;
         self.output.instructions.push(Instruction::LoadWord {
             d: first_word,
             a: source_base,
             offset: source_offset,
         });
-        let second_offsets = if *source_size == 8 {
+        let second_offsets = if source_size >= 8 {
             Some((
                 source_offset
                     .checked_add(4)
@@ -133,6 +148,27 @@ impl Generator {
                 s: second_word,
                 a: destination_base,
                 offset: second_destination_offset,
+            });
+        }
+        // MWCC copies the first pair together, then the trailing word. This
+        // also preserves the final padding bytes of a twelve-byte structure.
+        if source_size == 12 {
+            let source_offset = source_offset
+                .checked_add(8)
+                .ok_or_else(|| Diagnostic::error("aggregate source member is out of range"))?;
+            let destination_offset = destination_offset
+                .checked_add(8)
+                .ok_or_else(|| Diagnostic::error("aggregate destination member is out of range"))?;
+            let word = self.fresh_virtual_general_preferring(GENERAL_SCRATCH);
+            self.output.instructions.push(Instruction::LoadWord {
+                d: word,
+                a: source_base,
+                offset: source_offset,
+            });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: word,
+                a: destination_base,
+                offset: destination_offset,
             });
         }
         Ok(true)

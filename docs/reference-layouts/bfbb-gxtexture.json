@@ -1,0 +1,120 @@
+{
+  "dol_sha256": "865f446cf8efd52230dac506d6334a357b4c738cd6eb6e3a68c827efac51c3e0",
+  "symbols_sha256": "92f658ac1a6f91ec64d851dcfdf92a0907f3c06f5c68a97096052e99b5f3dfa4",
+  "functions": [
+    "__SetSURegs",
+    "GXGetTexBufferSize",
+    "__GetImageTileCount",
+    "GXInitTexObj",
+    "GXInitTexObjCI",
+    "GXInitTexObjLOD",
+    "GXGetTexObjFmt",
+    "GXGetTexObjMipMap",
+    "GXGetTexObjLODBias",
+    "GXGetTexObjBiasClamp",
+    "GXGetTexObjEdgeLOD",
+    "GXGetTexObjMaxAniso",
+    "GXGetTexObjTlut",
+    "GXLoadTexObjPreLoaded",
+    "GXLoadTexObj",
+    "GXInitTlutObj",
+    "GXLoadTlut",
+    "GXInitTexCacheRegion",
+    "GXInitTlutRegion",
+    "GXInvalidateTexRegion",
+    "GXInvalidateTexAll",
+    "GXSetTexRegionCallback",
+    "GXSetTlutRegionCallback",
+    "GXSetTexCoordScaleManually",
+    "__GXSetSUTexRegs",
+    "__GXSetTmemConfig"
+  ],
+  "sda_bases": {
+    "2": 2151500160,
+    "13": 2151491840
+  },
+  "data_symbols": {
+    "__GXData": 2151480440,
+    "GX2HWFiltConv": 2151460640,
+    "GXTexMode0Ids": 2151460584,
+    "GXTexMode1Ids": 2151460592,
+    "GXTexImage0Ids": 2151460600,
+    "GXTexImage1Ids": 2151460608,
+    "GXTexImage2Ids": 2151460616,
+    "GXTexImage3Ids": 2151460624,
+    "GXTexTlutIds": 2151460632
+  },
+  "literals": [
+    {
+      "address": 2151480544,
+      "hex": "41800000",
+      "reference_symbol": "@220"
+    },
+    {
+      "address": 2151480552,
+      "hex": "4330000000000000",
+      "reference_symbol": "@222"
+    },
+    {
+      "address": 2151480560,
+      "hex": "c0800000",
+      "reference_symbol": "@288"
+    },
+    {
+      "address": 2151480564,
+      "hex": "40800000",
+      "reference_symbol": "@289"
+    },
+    {
+      "address": 2151480568,
+      "hex": "407f5c29",
+      "reference_symbol": "@290"
+    },
+    {
+      "address": 2151480572,
+      "hex": "42000000",
+      "reference_symbol": "@291"
+    },
+    {
+      "address": 2151480576,
+      "hex": "00000000",
+      "reference_symbol": "@292"
+    },
+    {
+      "address": 2151480580,
+      "hex": "41200000",
+      "reference_symbol": "@293"
+    },
+    {
+      "address": 2151480584,
+      "hex": "3d000000",
+      "reference_symbol": "@385"
+    },
+    {
+      "address": 2151480592,
+      "hex": "4330000080000000",
+      "reference_symbol": "@389"
+    }
+  ],
+  "data_images": [
+    {
+      "address": 2150321200,
+      "hex": "801cd6f0801cd6fc801cd6fc801cd708801cd708801cd708801cd708801cd714801cd6f0801cd6fc801cd708801cd714801cd714801cd714801cd6f0801cd714801cd714801cd6fc801cd714801cd708801cd714801cd714801cd708801cd714801cd714801cd714801cd714801cd714801cd714801cd714801cd714801cd714801cd6f0801cd714801cd6fc801cd708801cd714801cd714801cd714801cd6fc801cd6fc801cd6fc801cd6fc801cd708801cd708801cd714801cd714801cd714801cd6f0801cd714801cd714801cd714801cd714801cd714801cd714801cd714801cd714801cd6fc801cd6fc801cd714801cd708",
+      "reference_symbol": "@104"
+    },
+    {
+      "address": 2150321444,
+      "hex": "801cd844801cd850801cd850801cd85c801cd85c801cd85c801cd85c801cd868801cd844801cd850801cd85c801cd868801cd868801cd868801cd844801cd868801cd868801cd850801cd868801cd85c801cd868801cd868801cd85c801cd868801cd868801cd868801cd868801cd868801cd868801cd868801cd868801cd868801cd844801cd868801cd850801cd85c801cd868801cd868801cd868801cd850801cd850801cd850801cd850801cd85c801cd85c801cd868801cd868801cd868801cd844801cd868801cd868801cd868801cd868801cd868801cd868801cd868801cd868801cd850801cd850801cd868801cd85c",
+      "reference_symbol": "@145"
+    },
+    {
+      "address": 2150321688,
+      "hex": "801cda6c801cda80801cda80801cda94801cda94801cda94801cdaa8801cdad0801cda6c801cda80801cda94801cdad0801cdad0801cdad0801cdabc",
+      "reference_symbol": "@224"
+    }
+  ],
+  "external_functions": [
+    "memset",
+    "__GXFlushTextureState"
+  ]
+}

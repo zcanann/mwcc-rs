@@ -21,13 +21,16 @@ impl Generator {
             return Ok(false);
         };
         if (!self.addressable_globals.contains_key(global) && !self.globals.contains_key(global))
+            || matches!(self.addressable_globals.get(global), Some(Type::Pointer(_) | Type::StructPointer { .. }))
             || arguments.len() > 8
         {
             return Ok(false);
         }
 
         for (index, argument) in arguments.iter().enumerate() {
-            let (source, width, _) = self.leaf_info(argument)?;
+            let Ok((source, width, _)) = self.leaf_info(argument) else {
+                return Ok(false);
+            };
             if width != 32 || source != Eabi::FIRST_GENERAL_ARGUMENT + index as u8 {
                 return Ok(false);
             }

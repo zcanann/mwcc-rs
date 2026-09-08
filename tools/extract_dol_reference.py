@@ -36,7 +36,7 @@ def read_dol_range(data: bytes, address: int, size: int) -> bytes:
 def function_range(symbols: str, name: str) -> tuple[int, int]:
     pattern = re.compile(
         r"^\s*" + re.escape(name)
-        + r"\s*=\s*\.text:(0x[0-9a-fA-F]+);\s*//([^\n]*)$", re.MULTILINE
+        + r"\s*=\s*\.(?:text|init):(0x[0-9a-fA-F]+);\s*//([^\n]*)$", re.MULTILINE
     )
     matches = []
     for match in pattern.finditer(symbols):
@@ -44,7 +44,7 @@ def function_range(symbols: str, name: str) -> tuple[int, int]:
         if attributes.get("type") == "function" and "size" in attributes:
             matches.append((int(match[1], 16), int(attributes["size"], 0)))
     if len(matches) != 1:
-        raise ValueError("symbol must identify exactly one sized text function")
+        raise ValueError("symbol must identify exactly one sized text or init function")
     return matches[0]
 
 

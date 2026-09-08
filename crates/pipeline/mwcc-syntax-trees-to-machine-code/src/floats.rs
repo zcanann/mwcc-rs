@@ -566,16 +566,21 @@ impl Generator {
             (left, right)
         };
         let computed_integer =
-            is_complex(integer_operand) && fits_single_scratch(integer_operand, false);
+            (is_complex(integer_operand) && fits_single_scratch(integer_operand, false))
+                || matches!(integer_operand, Expression::Cast { target_type, operand }
+                    if target_type.width() < 32
+                        && !self.is_float_value(operand)
+                        && !expression_has_call(operand)
+                        && fits_single_scratch(operand, false));
         if destination != FLOAT_SCRATCH && !computed_integer {
             return Ok(false);
         }
-        if self
-            .cast_operand_width(integer_operand)
-            .is_some_and(|width| width < 32)
-            || !(self.is_word_load(integer_operand)
-                || self.general_register_of_leaf(integer_operand).is_ok()
-                || computed_integer)
+        // evaluate_general performs the integral promotion of a byte/halfword
+        // value (including an explicit narrowing cast) before the bias packet.
+        // Its temporary is a full word regardless of the source storage width.
+        if !(self.is_word_load(integer_operand)
+            || self.general_register_of_leaf(integer_operand).is_ok()
+            || computed_integer)
             || !self.is_float_value(float_operand)
         {
             return Ok(false);

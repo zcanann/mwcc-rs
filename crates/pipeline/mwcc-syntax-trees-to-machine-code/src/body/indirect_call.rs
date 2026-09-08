@@ -309,12 +309,11 @@ impl Generator {
 
     /// Emit a bare indirect-call statement such as `actor->proc(actor)`.
     ///
-    /// The callee is staged in r12 before the call. Arguments are currently accepted only when
-    /// every one is a word-sized general-register leaf and the left-to-right moves are acyclic:
-    /// no destination may still hold a later argument. This covers both pure pass-through calls
-    /// and the common `saved_actor->proc(saved_actor)` tail while ensuring argument marshaling
-    /// cannot destroy either the callee or a later argument. Cyclic moves and computed arguments
-    /// keep deferring until their schedules can be modeled explicitly.
+    /// The callee is staged before the call. Register leaves, frame values,
+    /// constants and addresses use acyclic left-to-right argument moves. A
+    /// single scalar member argument can use the general evaluator while a
+    /// virtual home protects the callee. More involved computed argument lists
+    /// and cyclic moves still need dependency-aware marshaling.
     pub(crate) fn emit_bare_indirect_call_statement(
         &mut self,
         target: &Expression,
@@ -348,6 +347,26 @@ impl Generator {
             return Err(Diagnostic::error(
                 "this bare indirect-call target is not supported yet (roadmap)",
             ));
+        }
+        // One scalar member argument has no argument-to-argument move cycle.
+        // Keep the evaluated callee in a virtual home while loading the member
+        // into r3; either object base may itself arrive in r3. The allocator
+        // then protects the callee across argument evaluation.
+        if let [argument @ Expression::Member { member_type, .. }] = arguments {
+            if matches!(
+                member_type,
+                Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. }
+            ) && !expression_has_call(argument)
+                && !expression_has_call(target)
+            {
+                let callee = self.fresh_virtual_general_preferring(12);
+                self.with_reserved_inputs(argument, |generator| {
+                    generator.evaluate_general(target, callee)
+                })?;
+                self.evaluate_general(argument, Eabi::FIRST_GENERAL_ARGUMENT)?;
+                self.emit_indirect_branch_and_link(callee);
+                return Ok(());
+            }
         }
         let placements = self.indirect_argument_placements(arguments)?;
 

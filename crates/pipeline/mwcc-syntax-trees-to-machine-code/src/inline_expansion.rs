@@ -1512,6 +1512,7 @@ impl InlineBodySet {
         } else {
             statements
         };
+        substitution::normalize_local_stores(&mut expanded);
         let constant_memory_callees: Vec<String> = self
             .statement_value_bodies
             .iter()
@@ -2875,6 +2876,116 @@ mod tests {
         )];
         helper.return_expression = Some(Expression::Variable("cursor".into()));
         helper
+    }
+
+    #[test]
+    fn indirect_call_arguments_substitute_without_reloading_the_target_snapshot() {
+        let expression = Expression::Cast {
+            target_type: Type::StructPointer { element_size: 4 },
+            operand: Box::new(Expression::CallThrough {
+                target: Box::new(Expression::Variable("saved_callback".into())),
+                arguments: vec![Expression::Variable("alias".into())],
+            }),
+        };
+        let values = HashMap::from([
+            (
+                "saved_callback".into(),
+                Expression::Variable("global_callback".into()),
+            ),
+            ("alias".into(), Expression::Variable("object".into())),
+        ]);
+        let replaced = crate::value_tracking::substitute(&expression, &values);
+        assert!(matches!(replaced, Expression::Cast { operand, .. }
+            if matches!(operand.as_ref(), Expression::CallThrough { target, arguments }
+                if matches!(target.as_ref(), Expression::Variable(name) if name == "saved_callback")
+                    && matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "object"))));
+    }
+
+    #[test]
+    fn inlined_output_switch_defines_the_callers_scalar_local() {
+        let store = Statement::Store {
+            target: Expression::Dereference {
+                pointer: Box::new(Expression::Variable("output".into())),
+            },
+            value: Expression::IntegerLiteral(3),
+        };
+        let helper = function(
+            "shifts",
+            vec![Parameter {
+                parameter_type: Type::Pointer(Pointee::UnsignedInt),
+                name: "output".into(),
+            }],
+            vec![Statement::Switch {
+                scrutinee: Expression::Variable("format".into()),
+                arms: vec![SwitchArm {
+                    value: 8,
+                    body: ArmBody::Statements(vec![store.clone()]),
+                    falls_through: false,
+                }],
+                default: Some(ArmBody::Statements(vec![store])),
+            }],
+        );
+        let mut caller = function(
+            "caller",
+            vec![],
+            vec![Statement::Expression(Expression::Call {
+                name: "shifts".into(),
+                arguments: vec![Expression::AddressOf {
+                    operand: Box::new(Expression::Variable("shift".into())),
+                }],
+            })],
+        );
+        let mut shift = local("shift", Type::UnsignedInt, Expression::IntegerLiteral(0));
+        shift.initializer = None;
+        caller.locals.push(shift);
+        caller.return_type = Type::UnsignedInt;
+        caller.return_expression = Some(Expression::Variable("shift".into()));
+        let expanded = InlineBodySet::analyze(&[helper])
+            .expand_calls(&caller)
+            .unwrap();
+        let Statement::Switch { arms, default, .. } = &expanded.statements[0] else {
+            panic!("output helper must retain its source switch");
+        };
+        for body in [&arms[0].body, default.as_ref().unwrap()] {
+            assert!(matches!(body, ArmBody::Statements(statements)
+                if matches!(statements.as_slice(), [Statement::Assign { name, .. }] if name == "shift")));
+        }
+    }
+
+    #[test]
+    fn substituted_memory_objects_keep_their_store_identity() {
+        let mut caller = function("caller", vec![], vec![]);
+        for name in ["automatic", "volatile", "static", "array", "aggregate"] {
+            let mut declaration = local(name, Type::Int, Expression::IntegerLiteral(0));
+            declaration.is_volatile = name == "volatile";
+            declaration.is_static = name == "static";
+            declaration.array_length = (name == "array").then_some(4);
+            if name == "aggregate" {
+                declaration.declared_type = Type::Struct { size: 4, align: 4 };
+            }
+            caller.locals.push(declaration);
+        }
+        caller.statements = [
+            "automatic",
+            "volatile",
+            "static",
+            "array",
+            "aggregate",
+            "global",
+        ]
+        .into_iter()
+        .map(|name| Statement::Store {
+            target: Expression::Variable(name.into()),
+            value: Expression::IntegerLiteral(1),
+        })
+        .collect();
+        substitution::normalize_local_stores(&mut caller);
+        assert!(
+            matches!(&caller.statements[0], Statement::Assign { name, .. } if name == "automatic")
+        );
+        assert!(caller.statements[1..]
+            .iter()
+            .all(|statement| matches!(statement, Statement::Store { .. })));
     }
 
     #[test]

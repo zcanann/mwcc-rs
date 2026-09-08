@@ -2370,6 +2370,21 @@ impl Generator {
             self.emit_comma_side_effect(left)?;
             return self.evaluate_register_store_value(right, value_type, destination);
         }
+        // A narrow register local retains its declared width in its location;
+        // subsequent reads promote it, and narrow stores/field inserts discard
+        // the upper bits. Like a byte/halfword memory destination, it can keep
+        // the raw signed fctiwz result until that consumer performs truncation.
+        let floating_value = self.is_float_value(value)
+            || self.is_float_operand(value)
+            || matches!(value, Expression::Call { name, .. }
+                if matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)));
+        if value_type.width() < 32 && floating_value {
+            let saved = self.narrow_truncation_context;
+            self.narrow_truncation_context = true;
+            let result = self.evaluate(value, value_type, destination);
+            self.narrow_truncation_context = saved;
+            return result;
+        }
         // Assigning a narrow call result to a word-sized register local performs
         // the integral promotion at the definition. Emit that conversion
         // directly from the ABI result register so `s32 saved = short_call()` is

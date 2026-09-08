@@ -3,6 +3,71 @@
 use mwcc_syntax_trees::{ArmBody, Expression, Statement, SwitchArm};
 use std::collections::HashMap;
 
+/// Substituting `&local` for an output pointer turns `*output = value` into a
+/// direct local write. Restore its value-tracked statement form before definite
+/// assignment and lifetime analysis. Globals, volatile objects and aggregate
+/// storage still require memory stores.
+pub(super) fn normalize_local_stores(function: &mut mwcc_syntax_trees::Function) {
+    use mwcc_syntax_trees::Type;
+    let scalar = |ty| !matches!(ty, Type::Void | Type::Struct { .. });
+    let names = function
+        .locals
+        .iter()
+        .filter(|local| {
+            !local.is_static
+                && !local.is_volatile
+                && local.array_length.is_none()
+                && scalar(local.declared_type)
+        })
+        .map(|local| local.name.as_str())
+        .chain(
+            function
+                .parameters
+                .iter()
+                .filter(|parameter| scalar(parameter.parameter_type))
+                .map(|parameter| parameter.name.as_str()),
+        )
+        .collect::<std::collections::HashSet<_>>();
+    normalize_statements(&mut function.statements, &names);
+}
+
+fn normalize_statements(statements: &mut [Statement], names: &std::collections::HashSet<&str>) {
+    for statement in statements {
+        match statement {
+            Statement::Store {
+                target: Expression::Variable(name),
+                value,
+            } if names.contains(name.as_str()) => {
+                *statement = Statement::Assign {
+                    name: name.clone(),
+                    value: value.clone(),
+                };
+            }
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                normalize_statements(then_body, names);
+                normalize_statements(else_body, names);
+            }
+            Statement::Loop { body, .. } => normalize_statements(body, names),
+            Statement::Switch { arms, default, .. } => {
+                for body in arms
+                    .iter_mut()
+                    .map(|arm| &mut arm.body)
+                    .chain(default.iter_mut())
+                {
+                    if let ArmBody::Statements(statements) = body {
+                        normalize_statements(statements, names);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub(super) fn substitute_statement(
     statement: &Statement,
     replacements: &HashMap<String, Expression>,
@@ -425,8 +490,7 @@ mod tests {
                 operand: Box::new(Expression::Variable("value".into())),
             }),
         };
-        let replacements =
-            HashMap::from([("value".into(), Expression::FloatLiteral(1.0))]);
+        let replacements = HashMap::from([("value".into(), Expression::FloatLiteral(1.0))]);
 
         assert!(matches!(
             substitute_expression(&expression, &replacements),
@@ -536,7 +600,10 @@ mod tests {
                 "saved".into(),
                 Expression::Variable("__mwcc_inline_saved".into()),
             ),
-            ("command".into(), Expression::Variable("active_command".into())),
+            (
+                "command".into(),
+                Expression::Variable("active_command".into()),
+            ),
         ]);
 
         let substituted = substitute_statement(&statement, &replacements);

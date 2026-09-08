@@ -4,13 +4,97 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete GXMisc translation unit and inline polling loops (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete GXTexture translation unit and all fourteen GX units compiling (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `3e67cc1c337ab70f211f7c819bfaafaeef803eba7579384cd3927f7e42958f50:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `66d1427b807295eee2ea703cbe8bfa082bac2891915091fb5c5befcf4defc107:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete GXTexture translation unit and fourteen-unit GX coverage, 2026-09-07
+
+BfBB's unchanged, fully configured `GXTexture.c` now compiles, advancing the
+survey from **13/14 to 14/14 complete GX translation units**. Nine full texture
+functions pass **9,216 three-way PowerPC execution comparisons** against a
+fresh GC/1.2.5n object and the original DOL: `GXGetTexBufferSize`,
+`__GetImageTileCount`, `GXInitTexObj`, `GXInitTexObjLOD`, `GXGetTexObjLODBias`,
+`GXLoadTexObjPreLoaded`, `GXLoadTexObj`, `GXLoadTlut`, and
+`GXInitTexCacheRegion`.
+
+Inline output-pointer substitution now restores direct scalar writes to the
+AST's assignment form. Definite-assignment and lifetime analysis can therefore
+see the definitions made by grouped switch arms. Automatic scalar locals and
+parameters qualify; static, volatile, array, aggregate, and global objects
+retain memory stores. Narrow floating assignments to register locals use the
+existing signed conversion packet and retain their declared width for later
+promotion or truncation. Mixed arithmetic can promote an explicitly narrowed
+integer through the shared integer-to-float conversion path.
+
+Indirect-call arguments now participate in value substitution even when the
+call is nested under a cast or assignment; the function-pointer target keeps
+its snapshot identity. The global-record forwarding owner declines pointer
+variables and non-leaf arguments. A single word-sized member argument can use
+the shared indirect-call emitter with an allocator-owned callee temporary.
+Small aggregate copies accept pointer sources and twelve-byte objects, copying
+the first pair of words before the trailing word, including padding. New
+pointer-source copies require word alignment and a matching retained element
+size. These changes extend existing lowering owners rather than introducing
+texture-specific implementations.
+
+The full-function execution panel checks return bits, 1,024 bytes containing
+texture objects and regions, the complete 1,456-byte GX context, ordered FIFO
+writes, callback arguments, saved GPR/FPR images, and SP/LR/PC. Inputs include
+all tile-format groups and defaults, zero and boundary dimensions, mipmap
+termination, floating clamp boundaries, filter choices, and cache-region
+sizes. The harness controls `memset`, `__GXFlushTextureState`, and texture/TLUT
+region callbacks; these calls clobber volatile registers. `GXLoadTexObj`
+executes the actual compiled `GXLoadTexObjPreLoaded` body. This is bounded
+execution evidence, not a hardware or whole-project validation.
+
+The pinned [GXTexture layout](reference-layouts/bfbb-gxtexture.json) verifies
+**26/26 fresh-reference functions** byte-for-byte against the original DOL.
+The candidate matches **2/26**, `GXGetTexObjFmt` and `GXGetTexObjTlut`, and has
+**6,540 text bytes** versus **4,612** for the reference. Its `GXInitTexObj` jump
+table differs from the pinned original image, leaving two address relocations
+unresolved; all other measured relocations resolve. The DOL symbol reader now
+accepts uniquely sized `.init` functions so the layout can verify `memset` as
+an external runtime function. Register allocation, scheduling, frame layout,
+and broader instruction matching remain open.
+
+Canaries **1988–1997** cover output switches and mipmap loops, narrow floating
+locals, mixed narrow arithmetic, callback member arguments, and pointer-based
+aggregate copies. Candidate compilation improves **0/150 to 150/150 objects**
+across fifteen builds at O0/O4; fresh reference compilation is **150/150**.
+There are **22/150 whole-object matches** and **82/450 exact function text plus
+symbolic relocation comparisons**. Of **230,400 paired execution comparisons**,
+**229,888 agree**. The remaining **512 differences** are confined to
+GC/1.1p1 O0 `member_callback` in canary 1995: the reference stores both pointer
+parameters at SP+8, then uses the object's key as both the callee address and
+its argument. These test inputs fault on that unmapped address. A separate
+reference-specific model verifies the fault PC, link register, active frame,
+register images, and absence of callback effects; the candidate does **not yet
+reproduce** the overlapping spills. The differences remain an open parity gap,
+not passing paired comparisons. The earlier **1,024** polling-spill differences
+from the GXMisc checkpoint also remain open.
+
+Regression checks retain **1,114** byte-identical compiling indexed objects,
+including **972** known exact results. Of **2,505** recent source/build pairs,
+**2,416** retain identical objects and **89** retain their compilation failures.
+The thirteen previously compiling GX units and the AX voice-parameter unit
+retain identical objects. Compiler-library tests pass **1,598**, excluding the
+previously confirmed embedded-assembly failure; the DOL tool tests pass **26**.
+Final recompilation verifies **166** execution-panel and full-unit object
+hashes after the last code and test changes.
+
+Artifacts are under `target/gx-texture-{canaries,real,index,recent,library,full-ax}`.
+The canary directory records compilation, fresh-reference, exactness, and
+execution results, retaining the **512** expected-but-unimplemented differences.
+The real directory contains both objects, linked comparisons, and the nine
+function execution report. `target/gx-texture-final-verification.json` records
+the final compiler and object hash bridge. Complete GX compilation is a
+milestone; full-project compilation and compiler parity remain open. These
+focused counts are not a corpus parity estimate.
 
 ## Complete GXMisc translation unit and inline polling loops, 2026-09-07
 

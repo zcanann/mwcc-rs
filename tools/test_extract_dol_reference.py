@@ -39,6 +39,13 @@ class DolReferenceTests(unittest.TestCase):
             with self.subTest(symbols=invalid), self.assertRaises(ValueError):
                 function_range(invalid, "f__Fv")
 
+    def test_init_runtime_function_uses_the_same_unique_range_check(self):
+        row = "memset = .init:0x80003458; // type:function size:0x30 scope:global\n"
+        self.assertEqual(function_range(row, "memset"), (0x80003458, 0x30))
+        for invalid in [row + row.replace(".init:", ".text:"), row.replace(".init:", ".data:")]:
+            with self.subTest(symbols=invalid), self.assertRaises(ValueError):
+                function_range(invalid, "memset")
+
 
 if __name__ == "__main__":
     unittest.main()
