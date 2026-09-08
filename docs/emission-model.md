@@ -182,13 +182,19 @@ preserve. Wii/1.0 O0 retains the helper call and is a remaining threshold gap.
 
 The existing member-value graph can own an interior straight-line run as well
 as a complete leaf. Only r0 value definitions and stores through one unchanged
-member base qualify; r0 must be dead on exit. Interior entries, relocations,
+member base qualify; r0 must be dead on exit. Stores from other registers
+through that same base can remain in the graph as independent stores. Their
+source registers stay live through allocation, and their position among all
+stores is preserved. A different member base ends the run without consuming
+the next run's leading value definition. Interior entries, relocations,
 deferred fixups, and opaque instructions reject the region. Sharing reduces
 value definitions while preserving the order and multiplicity of stores.
 Version-specific schedules select when each value becomes ready, and ordinary
 virtual-register liveness controls placement within the surrounding function.
 Canaries 2068–2071 cover guarded regions; 2104–2113 exercise inline composition,
-volatile stores, callbacks, and pointer rebinding.
+volatile stores, callbacks, and pointer rebinding. Canaries 2128–2132 extend
+that boundary to independent stores between repeated interior addresses,
+including ordered writes, aliasing, rebinding, and scheduling disabled.
 
 ## Dense saves for normalized array cursors
 

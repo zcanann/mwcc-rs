@@ -19,7 +19,8 @@ enum Value {
 struct Plan {
     base: u8,
     values: Vec<Value>,
-    stores: Vec<(Instruction, usize)>,
+    // None keeps an independent store's existing register source.
+    stores: Vec<(Instruction, Option<usize>)>,
 }
 
 impl Generator {
@@ -107,19 +108,7 @@ impl Generator {
                 start += 1;
                 continue;
             }
-            let mut end = start + 1;
-            while end < self.output.instructions.len()
-                && !entries.contains(&end)
-                && matches!(
-                    self.output.instructions[end],
-                    Instruction::AddImmediate { d: 0, .. }
-                        | Instruction::StoreWord { s: 0, .. }
-                        | Instruction::StoreHalfword { s: 0, .. }
-                        | Instruction::StoreByte { s: 0, .. }
-                )
-            {
-                end += 1;
-            }
+            let end = member_run_end(&self.output.instructions, start, &entries);
             if let Some(plan) = region_plan(&self.output, start, end, &live) {
                 regions.push((start, end, plan));
             }
@@ -146,6 +135,41 @@ fn store_parts(instruction: &Instruction) -> Option<(u8, u8)> {
         | Instruction::StoreByte { s, a, .. } => Some((s, a)),
         _ => None,
     }
+}
+
+fn member_run_end(
+    instructions: &[Instruction],
+    start: usize,
+    entries: &std::collections::HashSet<usize>,
+) -> usize {
+    let base = instructions[start + 1..]
+        .iter()
+        .take_while(|i| {
+            matches!(i, Instruction::AddImmediate { d: 0, .. }) || store_parts(i).is_some()
+        })
+        .find_map(store_parts)
+        .map(|(_, base)| base);
+    let mut end = start + 1;
+    while end < instructions.len()
+        && !entries.contains(&end)
+        && (matches!(instructions[end],
+            Instruction::AddImmediate { d: 0, a, .. }
+                if a == 0 || Some(a) == base)
+            || store_parts(&instructions[end]).is_some_and(|(_, a)| Some(a) == base))
+    {
+        end += 1;
+    }
+    // A literal immediately before a different-base store belongs to
+    // that next run. Do not swallow its definition with this prefix.
+    if end > start + 1
+        && matches!(
+            instructions[end - 1],
+            Instruction::AddImmediate { d: 0, .. }
+        )
+    {
+        end -= 1;
+    }
+    end
 }
 
 fn plan(instructions: &[Instruction]) -> Option<Plan> {
@@ -184,8 +208,16 @@ fn plan_body(body: &[Instruction]) -> Option<Plan> {
                 used = false;
             }
             _ => {
-                if store_parts(instruction) != Some((0, base)) {
+                let (source, store_base) = store_parts(instruction)?;
+                if store_base != base {
                     return None;
+                }
+                if source != 0 {
+                    // Independent stores neither define the member base nor
+                    // consume the scratch value. Preserve their exact position
+                    // among the stores while sharing surrounding values.
+                    stores.push((instruction.clone(), None));
+                    continue;
                 }
                 let value = current?;
                 // Interior pointers use complete word stores.
@@ -194,7 +226,7 @@ fn plan_body(body: &[Instruction]) -> Option<Plan> {
                 {
                     return None;
                 }
-                stores.push((instruction.clone(), value));
+                stores.push((instruction.clone(), Some(value)));
                 used = true;
             }
         }
@@ -219,7 +251,8 @@ fn plan_body(body: &[Instruction]) -> Option<Plan> {
     })
 }
 
-// Only r0 is replaced by the shared values. The member base is never
+// Only r0 is replaced by the shared values. Independent store sources remain
+// live through allocation and keep their original store order. The member base is never
 // defined in a recognized run, and r0 must be dead on every outgoing edge.
 // Metadata outside the region is retained by the common instruction editors.
 fn region_plan(
@@ -263,15 +296,22 @@ enum Event {
 fn schedule(plan: &Plan, style: MemberValueSchedule, enabled: bool, ordinary: bool) -> Vec<Event> {
     let count = plan.values.len();
     let mut order: Vec<_> = (0..count).collect();
-    let uses = |value| plan.stores.iter().filter(|(_, v)| *v == value).count();
+    let uses = |value| {
+        plan.stores
+            .iter()
+            .filter(|(_, v)| *v == Some(value))
+            .count()
+    };
     let address = |value| matches!(plan.values[value], Value::Address(_));
     if !enabled {
         let mut seen = vec![false; count];
         let mut events = Vec::new();
         for (store, (_, value)) in plan.stores.iter().enumerate() {
-            if !seen[*value] {
-                events.push(Event::Value(*value));
-                seen[*value] = true;
+            if let Some(value) = value {
+                if !seen[*value] {
+                    events.push(Event::Value(*value));
+                    seen[*value] = true;
+                }
             }
             events.push(Event::Store(store));
         }
@@ -351,6 +391,9 @@ fn emit(plan: &Plan, registers: &[u8], events: &[Event]) -> Vec<Instruction> {
     };
     let store = |index: usize| {
         let (mut instruction, value) = plan.stores[index].clone();
+        let Some(value) = value else {
+            return instruction;
+        };
         match &mut instruction {
             Instruction::StoreWord { s, .. }
             | Instruction::StoreHalfword { s, .. }
@@ -466,7 +509,7 @@ mod tests {
                                     a: 4,
                                     offset: 4 * at as i16,
                                 },
-                                *v,
+                                Some(*v),
                             )
                         })
                         .collect(),
@@ -545,6 +588,94 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(offsets(&original), offsets(&result));
+    }
+
+    #[test]
+    fn shares_a_prefix_address_across_independent_member_stores() {
+        let mut instructions = vec![
+            Instruction::AddImmediate {
+                d: 0,
+                a: 4,
+                immediate: 20,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 4,
+                offset: 16,
+            },
+            Instruction::StoreWord {
+                s: 5,
+                a: 4,
+                offset: 12,
+            },
+        ];
+        instructions.extend(input());
+        let plan = plan(&instructions).unwrap();
+        assert_eq!(
+            plan.values
+                .iter()
+                .filter(|v| **v == Value::Address(20))
+                .count(),
+            1
+        );
+        for enabled in [false, true] {
+            let events = schedule(&plan, MemberValueSchedule::FirstStore, enabled, true);
+            let result = emit(&plan, &[35, 34, 33], &events);
+            let stores: Vec<_> = result.iter().filter(|i| store_parts(i).is_some()).collect();
+            assert_eq!(stores.len(), 8);
+            assert_eq!(
+                *stores[1],
+                Instruction::StoreWord {
+                    s: 5,
+                    a: 4,
+                    offset: 12
+                }
+            );
+            // Both writes remain observable and share the single interior value.
+            assert_eq!(store_parts(stores[0]), Some((35, 4)));
+            assert_eq!(store_parts(stores[5]), Some((35, 4)));
+            assert_eq!(
+                result
+                    .iter()
+                    .filter(|i| matches!(
+                        i,
+                        Instruction::AddImmediate {
+                            a: 4,
+                            immediate: 20,
+                            ..
+                        }
+                    ))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_member_base_keeps_its_leading_literal() {
+        let mut instructions = vec![
+            Instruction::AddImmediate {
+                d: 0,
+                a: 3,
+                immediate: 20,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 3,
+                offset: 16,
+            },
+            Instruction::StoreWord {
+                s: 5,
+                a: 3,
+                offset: 12,
+            },
+        ];
+        instructions.extend(input());
+        let entries = std::collections::HashSet::new();
+        assert_eq!(member_run_end(&instructions, 0, &entries), 3);
+        let end = member_run_end(&instructions, 3, &entries);
+        assert_eq!(end, instructions.len() - 1);
+        assert!(plan_body(&instructions[3..end]).is_some());
     }
 
     #[test]

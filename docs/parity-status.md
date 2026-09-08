@@ -4,13 +4,58 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, modern cursor-loop BSS anchors and deferred-address ownership (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, member values across independent stores (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `6995ef1801136ffe4aacfb6f3e5dd90186d9478bf244475c320f2af8f30df73a:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `04334c29d5fbde4ea5052c6c0bb5563aaa921713b7f620638cb76bb5f554c648:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Member values across independent stores, 2026-09-08
+
+The existing member-value graph now shares constants and interior pointers
+across intervening stores whose source already lives in another register.
+Those stores retain their source, position, and multiplicity. Allocation sees
+their complete live ranges alongside the shared virtual values. A changed
+member base ends the run, leaving the next run's leading literal available to
+its own planner. Calls, reads, control flow, symbolic fixups, and live r0 exits
+retain the existing region boundaries.
+
+This composes the caller's interior-pointer store with the inlined reset in
+BfBB `__AXVPBInit`. Both observable stores remain, but their address is computed
+once. The oldest four builds shrink **524 → 520 bytes**; the other eleven shrink
+**532 → 528 bytes**. Only that initializer changes in each full AXVPB object.
+All **240 full-initializer comparisons** pass against baseline, fresh references,
+the original GQPE78 executable, and the complete memory/callback model. Exact
+initializer matching remains **0/15**; `__AXSetPBDefault` stays **15/15 exact**.
+The older/middle references still have two fewer instructions and different
+allocation/scheduling. GC 3/Wii still use a different offset-loop layout.
+
+Canaries **2128–2132** add eight functions across five modes (default, O2,
+scheduling disabled, O0, debug) and all fifteen compiler builds. All 75 objects
+compile on baseline, candidate, and reference. Exact function matches rise
+**74 → 278 / 600**, with no lost exact matches. Four families change in 240
+functions: leading address reuse, volatile stores, alternating independent
+stores, and storing the member base itself. Other-base aliases, pointer
+rebinding, callback barriers, and guarded runs retain baseline output. All
+**9,600 native comparisons** pass on every side, including aliased inputs,
+full memory guards, ordered volatile writes, callback mutation/clobbers, and
+saved-register/stack/link-register checks.
+
+Focused regression checks preserve **1,110/1,110** older compiled objects,
+**2,626** recent objects plus **89** unchanged failures, **1,674** indexed
+outcomes (1,114 compiled and 972 known exact), and **780** preceding objects
+from canaries 2076–2127. All ten AX and fourteen GX translation units compile
+with the existing GC/1.2.5n library flags; only AXVPB changes, and only its
+initializer. Backend tests pass **1,655**, retaining the existing nested-asm
+inline-test exclusion. The full corpus was not rerun.
+
+`target/member-prefix-final-verification.json` binds the final compiler and
+harness fingerprints to 270 native-tested objects and the preserved-object
+hashes. The final binary reproduces the native-tested candidate objects.
+Reproduction scripts and detailed results are under `target/member-prefix-*`
+and `target/*member_prefix*.py`.
 
 ## Modern cursor-loop BSS anchors and deferred-address ownership, 2026-09-08
 
