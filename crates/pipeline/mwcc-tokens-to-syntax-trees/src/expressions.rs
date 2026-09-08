@@ -239,6 +239,11 @@ impl Parser {
     /// this small type query to follow pointer provenance through members and
     /// array decay, where a variable-only lookup loses the pointee type.
     pub(crate) fn sizeof_expression_bytes(&self, expression: &Expression) -> Option<u32> {
+        if let Some((array, extent)) = &self.last_global_array_extent {
+            if same_array_extent_expression(array, expression) {
+                return Some(*extent);
+            }
+        }
         match expression {
             // A local shadows a same-named global. Arrays report their complete
             // storage here; subscripting is handled by pointed_element_bytes.
@@ -859,6 +864,7 @@ impl Parser {
             // (`li r3,N`), like `sizeof(type)`: a known variable, a struct member (`s->f`), a cast,
             // or a pointer deref/subscript (`*p`, `a[i]` -> the pointee size). Other shapes defer.
             self.last_member_array_bytes = None;
+            self.last_global_array_extent = None;
             let operand = if parenthesized {
                 let inner = self.expression()?;
                 self.expect(Token::ParenClose)?;
@@ -1599,6 +1605,66 @@ impl Parser {
                             };
                             continue;
                         }
+                    }
+                    // Global array storage is flattened, but each subscript must
+                    // still advance by the remaining row extent. Normalize a
+                    // complete access to one scalar index; a partial access
+                    // yields the address of its first scalar element.
+                    let inner_dimensions = match &expression {
+                        Expression::Variable(name) if !self.variable_types.contains_key(name) => {
+                            self.global_array_inner_dimensions.get(name).cloned()
+                        }
+                        _ => None,
+                    };
+                    if let Some(inner) = inner_dimensions {
+                        let element_bytes = self.pointed_element_bytes(&expression);
+                        let mut linear = Expression::IntegerLiteral(0);
+                        let mut consumed = 0;
+                        while *self.peek() == Token::BracketOpen && consumed <= inner.len() {
+                            self.advance();
+                            let index = self.expression()?;
+                            self.expect(Token::BracketClose)?;
+                            let stride = inner[consumed..]
+                                .iter()
+                                .map(|&n| i64::from(n))
+                                .product::<i64>();
+                            let term = if stride == 1 {
+                                index
+                            } else {
+                                Expression::Binary {
+                                    operator: BinaryOperator::Multiply,
+                                    left: Box::new(index),
+                                    right: Box::new(Expression::IntegerLiteral(stride)),
+                                }
+                            };
+                            linear = if consumed == 0 {
+                                term
+                            } else {
+                                Expression::Binary {
+                                    operator: BinaryOperator::Add,
+                                    left: Box::new(linear),
+                                    right: Box::new(term),
+                                }
+                            };
+                            consumed += 1;
+                        }
+                        expression = Expression::Index {
+                            base: Box::new(expression),
+                            index: Box::new(linear),
+                        };
+                        if consumed <= inner.len() {
+                            expression = Expression::AddressOf {
+                                operand: Box::new(expression),
+                            };
+                            if let Some(bytes) = element_bytes {
+                                let extent = inner[consumed - 1..].iter().try_fold(bytes, |n, &dimension| {
+                                    n.checked_mul(u32::from(dimension))
+                                });
+                                self.last_global_array_extent =
+                                    extent.map(|n| (expression.clone(), n));
+                            }
+                        }
+                        continue;
                     }
                     let nested_pointer_pointee = match &expression {
                         Expression::Variable(name) => {
@@ -2515,5 +2581,33 @@ fn unconditional_use_count(expression: &Expression, name: &str) -> Option<usize>
         // kinds whose value can carry hidden storage are not parser-level inline
         // substitution candidates.
         _ => None,
+    }
+}
+
+// Compare only the pure forms used by retained row extents. Unknown forms
+// decline the sizeof query instead of confusing an address with an array.
+fn same_array_extent_expression(left: &Expression, right: &Expression) -> bool {
+    match (left, right) {
+        (Expression::IntegerLiteral(a), Expression::IntegerLiteral(b)) => a == b,
+        (Expression::Variable(a), Expression::Variable(b)) => a == b,
+        (Expression::AddressOf { operand: a }, Expression::AddressOf { operand: b }) => {
+            same_array_extent_expression(a, b)
+        }
+        (Expression::Index { base: a, index: i }, Expression::Index { base: b, index: j }) => {
+            same_array_extent_expression(a, b) && same_array_extent_expression(i, j)
+        }
+        (
+            Expression::Binary {
+                operator: a,
+                left: al,
+                right: ar,
+            },
+            Expression::Binary {
+                operator: b,
+                left: bl,
+                right: br,
+            },
+        ) => a == b && same_array_extent_expression(al, bl) && same_array_extent_expression(ar, br),
+        _ => false,
     }
 }

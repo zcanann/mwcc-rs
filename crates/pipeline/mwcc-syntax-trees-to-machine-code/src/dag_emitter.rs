@@ -7,7 +7,8 @@
 //! [`mwcc_vreg::assign_registers_v3`] (10/10 on the register fixtures) chooses
 //! every register. This module only recognizes shapes INSIDE the models'
 //! validated envelope — int expression trees over parameters, loads through
-//! pointer parameters, stores to distinct small-data scalar globals — and
+//! pointer parameters, static symbol-address initialization runs, and stores
+//! to distinct small-data scalar globals — and
 //! defers the rest honestly.
 
 use mwcc_core::{Compilation, Diagnostic};
@@ -25,6 +26,9 @@ use crate::generator::Generator;
 /// The instruction each DAG node emits once its registers are known.
 enum Template {
     LoadImmediate(i16),
+    AddressHigh(String),
+    AddressLow(String),
+    AddressSmallData(String),
     AddImmediate(i16),
     Add,
     /// `a - b` with both operands in registers: `subf d,b,a`.
@@ -77,6 +81,37 @@ struct Builder {
     /// Registers of parameters the body reads EXACTLY once — the only regime
     /// where the zero-extension+shift rlwinm fold is measured.
     read_once: Vec<u8>,
+    /// Pure address/constant initialization runs share repeated constants.
+    static_initializers: bool,
+    constants: Vec<(i16, u32)>,
+}
+
+fn static_address<'a>(expression: &'a Expression, generator: &Generator) -> Option<&'a str> {
+    match expression {
+        Expression::Cast {
+            target_type,
+            operand,
+        } if matches!(
+            target_type,
+            Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. }
+        ) =>
+        {
+            static_address(operand, generator)
+        }
+        Expression::AddressOf { operand } => {
+            let Expression::Variable(name) = operand.as_ref() else {
+                return None;
+            };
+            generator
+                .addressable_globals
+                .contains_key(name)
+                .then_some(name)
+        }
+        Expression::Variable(name) if generator.global_array_address_extent(name).is_some() => {
+            Some(name)
+        }
+        _ => None,
+    }
 }
 
 impl Builder {
@@ -123,12 +158,54 @@ impl Builder {
         // A bare small constant is an `li` node (no reads).
         if let Some(constant) = constant_value(expression) {
             let immediate = i16::try_from(constant).ok()?;
-            return Some(self.push(
+            if self.static_initializers {
+                if let Some((_, value)) = self.constants.iter().find(|(key, _)| *key == immediate) {
+                    return Some(*value);
+                }
+            }
+            let value = self.push(
                 OpKind::Alu,
                 1,
                 1,
                 vec![],
                 Template::LoadImmediate(immediate),
+            );
+            if self.static_initializers {
+                self.constants.push((immediate, value));
+            }
+            return Some(value);
+        }
+        if self.static_initializers {
+            let name = static_address(expression, generator)?;
+            let ty = *generator.addressable_globals.get(name)?;
+            let size = generator
+                .global_array_address_extent(name)
+                .unwrap_or_else(|| match ty {
+                    Type::Struct { size, .. } => u32::from(size),
+                    _ => u32::from(ty.width()).div_ceil(8),
+                });
+            if size <= 8 {
+                return Some(self.push(
+                    OpKind::Alu,
+                    1,
+                    1,
+                    vec![],
+                    Template::AddressSmallData(name.into()),
+                ));
+            }
+            let high = self.push(
+                OpKind::Alu,
+                1,
+                1,
+                vec![],
+                Template::AddressHigh(name.into()),
+            );
+            return Some(self.push(
+                OpKind::Alu,
+                1,
+                1,
+                vec![high],
+                Template::AddressLow(name.into()),
             ));
         }
         match expression {
@@ -566,6 +643,16 @@ impl Generator {
             next_value: 0,
             extended: Vec::new(),
             read_once: Vec::new(),
+            static_initializers: function.parameters.is_empty()
+                && function.return_type == Type::Void
+                && function.return_expression.is_none()
+                && function.statements.iter().all(|statement| matches!(statement,
+                    Statement::Store { target: Expression::Variable(name), value }
+                        if !self.volatile_globals.contains(name)
+                            && (constant_value(value).is_some() || static_address(value, self).is_some())))
+                && function.statements.iter().any(|statement| matches!(statement,
+                    Statement::Store { value, .. } if static_address(value, self).is_some())),
+            constants: Vec::new(),
         };
         let mut params: Vec<(u32, u8)> = Vec::new();
         for parameter in &function.parameters {
@@ -633,7 +720,12 @@ impl Generator {
             if !matches!(
                 self.globals.get(global.as_str()),
                 Some(Type::Int | Type::UnsignedInt)
-            ) {
+            ) && !(builder.static_initializers
+                && matches!(
+                    self.globals.get(global.as_str()),
+                    Some(Type::Pointer(_) | Type::StructPointer { .. })
+                ))
+            {
                 return Ok(false);
             }
             if self.global_array_sizes.contains_key(global.as_str())
@@ -708,7 +800,9 @@ impl Generator {
         // model excludes it.
         for index in 0..builder.nodes.len() {
             let unsafe_reads: Vec<u32> = match &builder.templates[index] {
-                Template::AddImmediate(_) => builder.nodes[index].reads.clone(),
+                Template::AddImmediate(_) | Template::AddressLow(_) => {
+                    builder.nodes[index].reads.clone()
+                }
                 Template::LoadWord => builder.nodes[index].reads.clone(),
                 _ => Vec::new(),
             };
@@ -807,6 +901,26 @@ impl Generator {
             let instruction = match &builder.templates[node] {
                 Template::LoadImmediate(immediate) => {
                     Instruction::load_immediate(destination.expect("value node"), *immediate)
+                }
+                Template::AddressHigh(name) => {
+                    self.record_relocation(RelocationKind::Addr16Ha, name);
+                    Instruction::load_immediate_shifted(destination.expect("value node"), 0)
+                }
+                Template::AddressLow(name) => {
+                    self.record_relocation(RelocationKind::Addr16Lo, name);
+                    Instruction::AddImmediate {
+                        d: destination.expect("value node"),
+                        a: operand(0)?,
+                        immediate: 0,
+                    }
+                }
+                Template::AddressSmallData(name) => {
+                    self.record_relocation(RelocationKind::EmbSda21, name);
+                    Instruction::AddImmediate {
+                        d: destination.expect("value node"),
+                        a: 0,
+                        immediate: 0,
+                    }
                 }
                 Template::AddImmediate(immediate) => Instruction::AddImmediate {
                     d: destination.expect("value node"),

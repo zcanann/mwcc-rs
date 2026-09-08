@@ -4,13 +4,86 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete AXAlloc translation unit and array value lifetimes (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete AXCL translation unit and global array addressing (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `00e10d0b113573c71db1817752bdc9c4e65765d18544caf1ec3d51501385269e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `c2a77cd048fc1e3f9ec58ed15e31d0f1b0abcd44ef6557c0a18824901d0395dc:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete AXCL translation unit and global array addressing, 2026-09-07
+
+BfBB's unchanged, fully configured **AXCL.c now compiles**, increasing complete
+AX translation-unit coverage from **7/10 to 8/10**. All five command-list
+functions pass **5,120 three-way PowerPC execution comparisons** against a
+fresh GC/1.2.5n reference object and the original DOL, also checked against an
+independent command-stream model. Cases cover both command buffers, mono,
+stereo, DPL2 and default modes, enabled/disabled auxiliary inputs, compressor
+settings, and split high/low address words. Comparisons include all 1,536
+command-buffer bytes, cursor and cycle globals, ordered helper calls, saved
+GPR/FPR images, and SP/LR/PC. External SDK helpers are modeled with their
+return/output values and volatile-register clobbers; this is bounded
+integration evidence.
+
+The existing dependency-DAG scheduler now accepts pure runs of word constants
+and static symbol addresses. HA/LO and small-data address nodes use the same
+version-selected scheduling and register allocation as integer expressions;
+repeated constants share a live value within these initialization runs.
+Pointer-address high halves exclude r0 when consumed by `addi`. This produces
+an exact **36-byte `__AXClInit`** without a function-specific instruction packet.
+
+Execution testing exposed two additional correctness defects. Global pointer
+arithmetic now loads the pointer object and scales constant or loaded offsets
+by its pointee size; a halfword cursor advances two bytes. Zero-offset global
+snapshots retain their existing lowering. The parser retains global arrays'
+inner dimensions and normalizes successive subscripts into a scalar storage
+index, preserving address-valued partial rows and their extent for bounded
+`sizeof` queries. This fixes row selection without introducing pointer loads
+from embedded array storage.
+
+Canaries **2010–2015** cover address/constant initialization, cursor increments
+and decrements, word and struct strides, loaded offsets, matrix reads/writes,
+row addresses and sizes, and double-buffer exchange. Candidate compilation
+improves **30/90 to 90/90 objects** across fifteen builds at O0/O4; fresh
+reference compilation is **90/90**, with no unknown outcomes. There are
+**194/450 exact function text plus symbolic relocation comparisons** and
+**0/90 whole objects exact**. All **115,200 paired execution comparisons**
+pass against independent expected results.
+
+The same array fix repairs buffer addresses in the already-compiling
+**AXAux.c**: all thirteen functions pass **6,656 three-way execution
+comparisons**, including auxiliary callbacks, buffer mutation, cache-operation
+order, and ring-position updates. The reference's BSS anchor is mapped only
+after checking both buffer placements and their 5,760-byte separation.
+**AXProf.c** passes **2,048 three-way comparisons** against its independent
+profile-ring model; the frozen baseline has **1,160 mismatches** on those
+cases because it fails to scale the profile index by the 56-byte record size.
+
+The pinned [AXCL layout](reference-layouts/bfbb-axcl.json) verifies **5/5
+fresh-reference functions** against the original DOL with no unresolved
+relocations. Candidate linked text is exact for **3/5** functions:
+`__AXGetCommandListCycles`, `__AXClInit`, and `__AXClQuit`. Its object is
+**6,200 bytes**, including **1,884 bytes of text**, versus the reference's
+**6,072 bytes** and **1,820 bytes of text**. The command builder and buffer
+exchange still differ in scheduling and register allocation.
+
+Regression checks retain all **1,114** compiling indexed objects byte-for-byte,
+including **972** known exact matches. All **2,626/2,715** compiling recent
+source/build pairs remain unchanged; the other **89** keep their failures.
+All **120** preceding milestone canaries, fourteen full GX objects, and five
+unaffected AX objects remain unchanged. Parser tests pass **409**, excluding
+two failures reproduced on the frozen baseline; backend tests pass **1,601**,
+excluding the previously confirmed embedded-assembly failure. DOL tooling
+tests pass **26**. Final recompilation verifies **93** execution-panel object
+hashes after the final source changes.
+
+Artifacts are under `target/ax-command-{canaries,real,aux,prof,index,recent,previous,library,ax-library}`;
+`target/ax-command-final-verification.json` records the final compiler and
+verified object hashes. The remaining AX compile failures are `AXOut.c`
+(global value reuse across a conditional) and `AXSPB.c` (retained
+`__AXDepopFade` inline expansion). Full-project compilation and matching
+remain unfinished; these focused counts are not a corpus-wide parity estimate.
 
 ## Complete AXAlloc translation unit and array value lifetimes, 2026-09-07
 

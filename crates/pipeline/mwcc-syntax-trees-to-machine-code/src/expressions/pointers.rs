@@ -562,6 +562,24 @@ impl Generator {
             self.evaluate_general(operand, register)?;
             return Ok(Some((register, size)));
         }
+        // File-scope pointer objects need a load before arithmetic, while
+        // file-scope arrays use their storage address in the array lowerer.
+        if let Expression::Variable(name) = operand {
+            if !self.locations.contains_key(name.as_str())
+                && !self.frame_slots.contains_key(name.as_str())
+                && self.global_array_address_extent(name).is_none()
+            {
+                if let Some(size) = self
+                    .globals
+                    .get(name.as_str())
+                    .and_then(|ty| pointer_cast_arithmetic_stride(*ty))
+                {
+                    let register = self.fresh_virtual_general_preferring(3);
+                    self.evaluate_general(operand, register)?;
+                    return Ok(Some((register, size)));
+                }
+            }
+        }
         if let Some(size) = self.scaled_pointer(operand) {
             return Ok(Some((self.general_register_of_leaf(operand)?, size)));
         }
@@ -590,6 +608,16 @@ impl Generator {
         right: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
+        // A zero offset needs no pointer materialization temporary. Preserve
+        // the ordinary identity fold, including global pointer snapshots.
+        if constant_value(right) == Some(0)
+            && matches!(left, Expression::Variable(name)
+                if self.globals.contains_key(name.as_str())
+                    && !self.locations.contains_key(name.as_str())
+                    && !self.frame_slots.contains_key(name.as_str()))
+        {
+            return Ok(false);
+        }
         // `ptr - ptr` (same pointee) is the element-count difference: the byte
         // difference (`subf`) divided by the element size — a signed power-of-two
         // divide (`srawi; addze`) for sizes above one byte, just the difference for
@@ -726,10 +754,15 @@ impl Generator {
             });
             return Ok(true);
         }
-        let integer_register = if leaf_name(integer).is_some() {
-            self.general_register_of_leaf(integer)?
+        let integer_register = if let Ok(register) = self.general_register_of_leaf(integer) {
+            register
         } else {
-            self.evaluate_general(integer, GENERAL_SCRATCH)?;
+            let reserved = self.reserved.insert(pointer_register);
+            let emitted = self.evaluate_general(integer, GENERAL_SCRATCH);
+            if reserved {
+                self.reserved.remove(&pointer_register);
+            }
+            emitted?;
             GENERAL_SCRATCH
         };
         // Scale the index by the element size: a power-of-two element shifts (`slwi`),

@@ -3140,6 +3140,17 @@ impl Parser {
                         other => other.width() as u32 / 8,
                     };
                     let total_bytes = element_bytes * array_length.map_or(1, u32::from);
+                    if dimensions.len() > 1 {
+                        let inner = dimensions[1..]
+                            .iter()
+                            .copied()
+                            .collect::<Option<Vec<u16>>>()
+                            .ok_or_else(|| Diagnostic::error("an inner array dimension must be specified"))?;
+                        self.global_array_inner_dimensions
+                            .insert(declarator_name.clone(), inner.clone());
+                        self.global_array_inner_dimensions
+                            .insert(emitted_declarator_name.clone(), inner);
+                    }
                     let array_element = array_length.map(|_| element_bytes);
                     self.global_sizes
                         .insert(declarator_name.clone(), (total_bytes, array_element));

@@ -1,0 +1,41 @@
+{
+  "dol_sha256": "865f446cf8efd52230dac506d6334a357b4c738cd6eb6e3a68c827efac51c3e0",
+  "symbols_sha256": "92f658ac1a6f91ec64d851dcfdf92a0907f3c06f5c68a97096052e99b5f3dfa4",
+  "functions": [
+    "__AXGetCommandListCycles",
+    "__AXGetCommandListAddress",
+    "__AXNextFrame",
+    "__AXClInit",
+    "__AXClQuit"
+  ],
+  "sda_bases": {
+    "2": 2151500160,
+    "13": 2151491840
+  },
+  "data_symbols": {
+    "__AXCompressorTable": 2150303168,
+    "__AXCommandList": 2151050144,
+    "__AXCommandListPosition": 2151465712,
+    "__AXClWrite": 2151465716,
+    "__AXCommandListCycles": 2151465720,
+    "__AXCompressor": 2151465724,
+    "__AXClMode": 2151465728
+  },
+  "literals": [],
+  "data_images": [],
+  "external_functions": [
+    "__AXGetStudio",
+    "__AXGetPBs",
+    "__AXGetAuxAInput",
+    "__AXGetAuxAInputDpl2",
+    "__AXGetAuxAOutput",
+    "__AXGetAuxAOutputDpl2R",
+    "__AXGetAuxAOutputDpl2Ls",
+    "__AXGetAuxAOutputDpl2Rs",
+    "__AXGetAuxBForDPL2",
+    "__AXGetAuxBOutputDPL2",
+    "__AXGetAuxBInput",
+    "__AXGetAuxBOutput",
+    "DCFlushRange"
+  ]
+}

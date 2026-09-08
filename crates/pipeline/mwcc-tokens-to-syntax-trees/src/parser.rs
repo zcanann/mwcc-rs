@@ -583,6 +583,8 @@ pub(crate) struct Parser {
     /// not the 4-byte pointer, so a non-array keeps element `None` and those forms defer. NOT
     /// cleared per function — globals stay in scope for every function's body.
     pub(crate) global_sizes: HashMap<String, (u32, Option<u32>)>,
+    /// Inner dimension lengths retained while global storage stays flattened.
+    pub(crate) global_array_inner_dimensions: HashMap<String, Vec<u16>>,
     /// File-scope variables mapped to their declared type. Size alone cannot
     /// distinguish a four-byte scalar from `struct S*`; retaining the type lets
     /// unevaluated expressions such as `sizeof(*global_pointer)` recover the
@@ -677,6 +679,8 @@ pub(crate) struct Parser {
     /// (`Expression::MemberAddress`): the array's total byte size. Consumed by
     /// the `sizeof(s.arr)` fold, which resets it before parsing its operand.
     pub(crate) last_member_array_bytes: Option<u32>,
+    /// Undecayed extent for a normalized global array row in a sizeof operand.
+    pub(crate) last_global_array_extent: Option<(mwcc_syntax_trees::Expression, u32)>,
     /// Active block-scope shadow renames, innermost last: (source name,
     /// internal hoisted name like `i@2`). Pushed when a block declaration
     /// shadows an existing local; truncated at the block's close brace.
