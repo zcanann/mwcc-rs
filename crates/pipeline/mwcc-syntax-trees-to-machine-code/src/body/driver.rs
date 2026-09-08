@@ -2683,7 +2683,7 @@ impl Generator {
                 ..
             } = statement
             {
-                if self.is_guarded_indexed_indirect_call(condition, then_body) {
+                if self.is_guarded_global_entry_call(condition, then_body) {
                     continue;
                 }
                 let condition_globals: Vec<&str> = self
@@ -5591,6 +5591,11 @@ impl Generator {
             },
         ) = (value_type, expression)
         {
+            // A cast after wide arithmetic is not an identity: it selects
+            // the low word of the EABI pair before the scalar return path.
+            if self.try_emit_truncated_wide_call_difference(operand, destination)? {
+                return Ok(());
+            }
             let element = match operand.as_ref() {
                 Expression::Index { base, .. } => match base.as_ref() {
                     Expression::Variable(name) => self.globals.get(name.as_str()).copied(),

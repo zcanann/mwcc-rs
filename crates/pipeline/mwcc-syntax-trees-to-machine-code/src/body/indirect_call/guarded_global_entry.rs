@@ -1,4 +1,4 @@
-//! Guarded indirect calls through repeated indexed global-table entries.
+//! Guarded indirect calls through global pointers or indexed table entries.
 //!
 //! The condition and call name the same source expression, but MWCC evaluates
 //! the entry once and carries it down the true edge in r12.
@@ -6,20 +6,33 @@
 use super::*;
 
 impl Generator {
-    pub(crate) fn is_guarded_indexed_indirect_call(
+    pub(crate) fn is_guarded_global_entry_call(
         &self,
         condition: &Expression,
         then_body: &[Statement],
     ) -> bool {
-        recognize(condition, then_body, &self.globals).is_some()
+        recognize(
+            condition,
+            then_body,
+            &self.globals,
+            &self.volatile_globals,
+            &self.variadic_callees,
+        )
+        .is_some()
     }
 
-    pub(crate) fn try_emit_guarded_indexed_indirect_call(
+    pub(crate) fn try_emit_guarded_global_entry_call(
         &mut self,
         condition: &Expression,
         then_body: &[Statement],
     ) -> Compilation<bool> {
-        let Some((entry, arguments)) = recognize(condition, then_body, &self.globals) else {
+        let Some((entry, arguments)) = recognize(
+            condition,
+            then_body,
+            &self.globals,
+            &self.volatile_globals,
+            &self.variadic_callees,
+        ) else {
             return Ok(false);
         };
         let placements = self.indirect_argument_placements(arguments)?;
@@ -81,23 +94,40 @@ fn recognize<'a>(
     condition: &'a Expression,
     then_body: &'a [Statement],
     globals: &std::collections::HashMap<String, Type>,
+    volatile: &std::collections::HashSet<String>,
+    variadic: &std::collections::HashSet<String>,
 ) -> Option<(&'a Expression, &'a [Expression])> {
-    let Expression::Binary {
-        operator: BinaryOperator::NotEqual,
-        left,
-        right,
-    } = condition
-    else {
-        return None;
+    let entry = match condition {
+        Expression::Binary {
+            operator: BinaryOperator::NotEqual,
+            left,
+            right,
+        } if matches!(right.as_ref(), Expression::IntegerLiteral(0)) => left.as_ref(),
+        Expression::Variable(_) => condition,
+        _ => return None,
     };
-    if !matches!(right.as_ref(), Expression::IntegerLiteral(0)) {
-        return None;
+    // A bare callback object has the same guarded callee lifetime. Restrict
+    // this extension to a nonvolatile, nonvariadic zero-argument call: there
+    // is no intervening argument evaluation that could replace the pointer.
+    if let Expression::Variable(global) = entry {
+        if let [Statement::Expression(Expression::Call { name, arguments })] = then_body {
+            if global == name
+                && arguments.is_empty()
+                && !volatile.contains(global)
+                && !variadic.contains(global)
+                && matches!(
+                    globals.get(global),
+                    Some(Type::Pointer(_) | Type::StructPointer { element_size: 0 })
+                )
+            {
+                return Some((entry, arguments.as_slice()));
+            }
+        }
     }
     let [Statement::Expression(Expression::CallThrough { target, arguments })] = then_body else {
         return None;
     };
-    same_indexed_global_entry(left, target, globals)
-        .then_some((left.as_ref(), arguments.as_slice()))
+    same_indexed_global_entry(entry, target, globals).then_some((entry, arguments.as_slice()))
 }
 
 fn same_indexed_global_entry(
@@ -187,7 +217,14 @@ mod tests {
             Type::Pointer(Pointee::UnsignedInt),
         )]);
 
-        assert!(recognize(&condition, &body, &globals).is_some());
+        assert!(recognize(
+            &condition,
+            &body,
+            &globals,
+            &Default::default(),
+            &Default::default()
+        )
+        .is_some());
     }
 
     #[test]
@@ -206,6 +243,13 @@ mod tests {
             Type::Pointer(Pointee::UnsignedInt),
         )]);
 
-        assert!(recognize(&condition, &body, &globals).is_none());
+        assert!(recognize(
+            &condition,
+            &body,
+            &globals,
+            &Default::default(),
+            &Default::default()
+        )
+        .is_none());
     }
 }

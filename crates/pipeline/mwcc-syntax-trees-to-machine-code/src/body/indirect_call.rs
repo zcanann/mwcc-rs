@@ -7,7 +7,7 @@
 #[allow(unused_imports)]
 use super::*;
 
-mod guarded_indexed;
+mod guarded_global_entry;
 mod guarded_shared_global;
 mod global_member_callback;
 mod global_member_forward;

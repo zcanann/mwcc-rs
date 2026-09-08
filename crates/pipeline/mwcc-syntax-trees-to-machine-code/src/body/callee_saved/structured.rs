@@ -3304,6 +3304,29 @@ impl Generator {
             // label before either arm creates its first string literal.
             self.output.anonymous_label_bump += 1;
         }
+        // A cache derived from a section-relative address consumes the anchor
+        // register immediately. Initialize that dependency before either cache;
+        // unrelated prologue schedules keep their established ordering.
+        let cache_needs_data_anchor = data_section_anchor_home.is_some()
+            && self.data_section_anchor.as_ref().is_some_and(|anchor| {
+                global_base_cache_plan
+                    .as_ref()
+                    .is_some_and(|cache| anchor.symbols.contains(&cache.global))
+                    || global_member_address_cache_plans.iter().any(|cache| {
+                        !cache.defer_until_first_use && anchor.symbols.contains(&cache.global)
+                    })
+            });
+        if cache_needs_data_anchor {
+            if let Some(register) = data_section_anchor_home {
+                self.emit_structured_data_anchor_initializer(
+                    register,
+                    reused_data_anchor_slot.unwrap_or(0),
+                    plan.frame_size,
+                    dense_saved_range,
+                    entry_call_forwarding.is_some(),
+                );
+            }
+        }
         if let Some(cache) = global_base_cache_plan {
             let register = standalone_global_base_home
                 .unwrap_or_else(|| self.fresh_virtual_general_preferring(4));
@@ -3386,35 +3409,16 @@ impl Generator {
                 );
             }
         }
-        if let Some(register) = data_section_anchor_home {
-            if !dense_saved_range {
-                let save_slot = reused_data_anchor_slot.unwrap_or(0);
-                self.emit_structured_saved_home_store(register, save_slot, plan.frame_size);
+        if !cache_needs_data_anchor {
+            if let Some(register) = data_section_anchor_home {
+                self.emit_structured_data_anchor_initializer(
+                    register,
+                    reused_data_anchor_slot.unwrap_or(0),
+                    plan.frame_size,
+                    dense_saved_range,
+                    entry_call_forwarding.is_some(),
+                );
             }
-            let high = self.fresh_virtual_general_preferring(if entry_call_forwarding.is_some() {
-                4
-            } else {
-                5
-            });
-            let anchor_symbol = self
-                .data_section_anchor
-                .as_ref()
-                .map(|anchor| anchor.anchor_symbol.clone())
-                .expect("a data-section anchor home requires an anchor plan");
-            self.record_relocation(RelocationKind::Addr16Ha, &anchor_symbol);
-            self.output
-                .instructions
-                .push(Instruction::AddImmediateShifted {
-                    d: high,
-                    a: 0,
-                    immediate: 0,
-                });
-            self.record_relocation(RelocationKind::Addr16Lo, &anchor_symbol);
-            self.output.instructions.push(Instruction::AddImmediate {
-                d: register,
-                a: high,
-                immediate: 0,
-            });
         }
         if dense_save_helper {
             self.output.instructions.push(Instruction::AddImmediate {
@@ -5324,7 +5328,7 @@ impl Generator {
                         }
                         continue;
                     }
-                    if self.try_emit_guarded_indexed_indirect_call(
+                    if self.try_emit_guarded_global_entry_call(
                         condition,
                         then_body,
                     )? {

@@ -4,13 +4,80 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete AXCL translation unit and global array addressing (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete AXOut translation unit and embedded callback lifetimes (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `c2a77cd048fc1e3f9ec58ed15e31d0f1b0abcd44ef6557c0a18824901d0395dc:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `db7d82cc04e6c181dd03f4135e7093d572c54718420b65b83a9c1ddc58214cfc:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete AXOut translation unit and embedded callback lifetimes, 2026-09-07
+
+BfBB's unchanged, fully configured **AXOut.c now compiles**, increasing complete
+AX translation-unit coverage from **8/10 to 9/10**. All nine functions pass
+**2,304 three-way PowerPC execution comparisons** against a fresh GC/1.2.5n
+reference object and the original DOL. This covers frame construction, mailbox
+polling, profile recording/copying, DMA callbacks, DSP resume, initialization,
+shutdown, and callback registration. Internal calls execute the actual compiled
+bodies, including their inline expansions. External SDK helpers model polling
+progress, clock values, initialization flags, interrupt tokens, callback effects,
+and volatile-register clobbers. Comparisons cover ordered helper calls, every
+unit-owned global and buffer, copied profiles, saved GPR/FPR images, SP/LR/PC,
+and the observed registration return register. DSP callback addresses are
+normalized by function identity. This is bounded integration evidence.
+
+The existing guarded table-entry emitter now also handles a nonvolatile global
+callback with no arguments inside a larger structured body. It loads the callee
+once, tests it in r12, and carries it across the true edge using the existing
+version-specific indirect-call convention. It does not retain the callback
+after the call; replacement or clearing is observed by the next guard.
+
+The existing wide call-result store path now accepts a member of a global
+aggregate. Both EABI result words remain reserved while the destination address
+is formed. A word-sized cast of a wide call-result difference uses the low
+subtraction; volatile timestamp globals still receive both ordered word reads.
+The typed return path preserves that cast instead of stripping it as an integer
+identity.
+
+Full-unit execution also found a prologue dependency defect: a cached task
+address was formed from the incoming r31 before the BSS anchor initialized it.
+Structured prologue emission now initializes an anchor before caches that
+consume it, while retaining the ordering of independent initialization paths.
+This closes all **256** initial `__AXOutInitDSP` execution mismatches, where
+`DSPAddTask` received an address derived from the caller's saved register.
+
+Canaries **2016–2021** cover embedded callbacks, callback replacement between
+guards, global timestamp members, and truncated volatile/nonvolatile timestamp
+differences. Candidate compilation improves **0/90 to 90/90 objects** across
+fifteen builds at O0/O4; fresh reference compilation is **90/90**, with no unknown
+outcomes. There are **61/240 exact function text plus symbolic relocation
+comparisons** and **10/90 whole objects exact**. All **122,880 paired execution
+comparisons** pass against independent expected results, including volatile
+read order and globals modified by the clock call before subtraction.
+
+The pinned [AXOut layout](reference-layouts/bfbb-axout.json) verifies **9/9
+fresh-reference functions** against the original DOL with no unresolved
+relocations. Candidate linked text is exact for **3/9** functions:
+`__AXDSPInitCallback`, `__AXDSPDoneCallback`, and `AXRegisterCallback`. The
+candidate object is **6,096 bytes**, including **1,624 bytes of text**, versus
+the reference's **6,184 bytes** and **2,000 bytes of text**. Initialization-loop
+unrolling and several instruction schedules still differ.
+
+Regression checks retain all **1,114** compiling indexed objects byte-for-byte,
+including **972** known exact matches. All **2,626/2,715** compiling recent
+source/build pairs remain unchanged; **89** keep their failures. All **210**
+canaries from the preceding two milestones, fourteen full GX objects, and all
+eight previously compiling AX objects remain unchanged. Backend tests pass
+**1,601**, excluding the previously confirmed embedded-assembly failure; DOL
+tooling tests pass **26**.
+
+Artifacts are under `target/frame-callback-{canaries,real,index,recent,previous,library,ax-library}`;
+`target/frame-callback-final-verification.json` records the final compiler and
+execution-tested object hashes. The remaining AX compile failure is
+`AXSPB.c`, which needs retained `__AXDepopFade` inline expansion. Full-project
+compilation and matching remain unfinished; these focused counts are not a
+corpus-wide parity estimate.
 
 ## Complete AXCL translation unit and global array addressing, 2026-09-07
 

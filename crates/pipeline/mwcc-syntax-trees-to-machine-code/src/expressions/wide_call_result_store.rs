@@ -43,7 +43,17 @@ impl Generator {
             }
             _ => None,
         };
-        if global.is_none() && pointer.is_none() {
+        // A field of a global aggregate has a stable address across the call.
+        // Form that address only after preserving both result registers; a
+        // pointer-valued member base would need a separate lifetime proof.
+        let global_member = matches!(target,
+            Expression::Member {
+                base, member_type: Type::LongLong | Type::UnsignedLongLong, ..
+            } if matches!(base.as_ref(), Expression::Variable(name)
+                if !self.known_locals.contains(name)
+                    && !self.locations.contains_key(name)
+                    && matches!(self.addressable_globals.get(name), Some(Type::Struct { .. }))));
+        if global.is_none() && pointer.is_none() && !global_member {
             return Ok(false);
         }
         self.emit_call(name, arguments, None, false)?;

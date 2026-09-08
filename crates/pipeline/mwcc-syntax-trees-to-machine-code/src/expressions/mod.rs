@@ -92,6 +92,7 @@ mod strings;
 mod wide_call_arguments;
 mod wide_pointer_mask_store;
 mod wide_call_result_store;
+mod truncated_wide_call_difference;
 mod word_cast_leaf;
 mod xnor_feedback_update;
 

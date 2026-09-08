@@ -1302,6 +1302,11 @@ impl Generator {
             self.emit_float_to_signed_integer(operand, destination)?;
             return Ok(());
         }
+        if matches!(target_type, Type::Int | Type::UnsignedInt)
+            && self.try_emit_truncated_wide_call_difference(operand, destination)?
+        {
+            return Ok(());
+        }
         // A same-type cast around a resolved member is an optimizer identity:
         // the width-correct load already produces exactly the declared value.
         // In particular, `(u16)member` is a bare `lhz`, not `lhz; clrlwi`.

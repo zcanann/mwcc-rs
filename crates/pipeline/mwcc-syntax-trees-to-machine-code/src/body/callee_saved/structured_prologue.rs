@@ -840,3 +840,39 @@ mod tests {
         assert!(is_saved_member_entry(&instructions));
     }
 }
+
+impl Generator {
+    pub(super) fn emit_structured_data_anchor_initializer(
+        &mut self,
+        register: u8,
+        save_slot: usize,
+        frame_size: i16,
+        dense_saved_range: bool,
+        entry_call_forwarding: bool,
+    ) {
+        if !dense_saved_range {
+            self.emit_structured_saved_home_store(register, save_slot, frame_size);
+        }
+        let high = self.fresh_virtual_general_preferring(if entry_call_forwarding { 4 } else { 5 });
+        let anchor_symbol = self
+            .data_section_anchor
+            .as_ref()
+            .expect("a data-section anchor home requires an anchor plan")
+            .anchor_symbol
+            .clone();
+        self.record_relocation(RelocationKind::Addr16Ha, &anchor_symbol);
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: high,
+                a: 0,
+                immediate: 0,
+            });
+        self.record_relocation(RelocationKind::Addr16Lo, &anchor_symbol);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: register,
+            a: high,
+            immediate: 0,
+        });
+    }
+}

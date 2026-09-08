@@ -1,0 +1,71 @@
+{
+  "dol_sha256": "865f446cf8efd52230dac506d6334a357b4c738cd6eb6e3a68c827efac51c3e0",
+  "symbols_sha256": "92f658ac1a6f91ec64d851dcfdf92a0907f3c06f5c68a97096052e99b5f3dfa4",
+  "functions": [
+    "__AXDSPInitCallback",
+    "__AXDSPResumeCallback",
+    "__AXDSPDoneCallback",
+    "__AXOutNewFrame",
+    "__AXOutAiCallback",
+    "__AXOutInitDSP",
+    "__AXOutInit",
+    "__AXOutQuit",
+    "AXRegisterCallback"
+  ],
+  "sda_bases": {
+    "2": 2151500160,
+    "13": 2151491840
+  },
+  "data_symbols": {
+    "axDspSlave": 2150309888,
+    "axDspSlaveLength": 2151460456,
+    "__AXOutBuffer": 2151051680,
+    "__AXOutSBuffer": 2151053600,
+    "__AXDramImage": 2151054240,
+    "__AXDSPTask": 2151070624,
+    "__AXOutFrame": 2151465736,
+    "__AXAiDmaFrame": 2151465740,
+    "__AXOutDspReady": 2151465744,
+    "__AXOsTime": 2151465752,
+    "__AXUserFrameCallback": 2151465760,
+    "__AXDSPInitFlag": 2151465764,
+    "__AXDSPDoneFlag": 2151465768,
+    "__AXDebugSteppingMode": 2151465772,
+    "__AXOutThreadQueue": 2151465776,
+    "__AXOutputBufferMode": 2151465784,
+    "__AXLocalProfile": 2151070704
+  },
+  "literals": [],
+  "data_images": [],
+  "external_functions": [
+    "OSGetTime",
+    "__AXSyncPBs",
+    "__AXPrintStudio",
+    "__AXGetCommandListAddress",
+    "DSPSendMailToDSP",
+    "DSPCheckMailToDSP",
+    "__AXServiceCallbackStack",
+    "__AXProcessAux",
+    "__AXNextFrame",
+    "AIInitDMA",
+    "__AXGetNumVoices",
+    "__AXGetCurrentProfile",
+    "DSPAssertTask",
+    "OSWakeupThread",
+    "OSInitThreadQueue",
+    "DSPCheckInit",
+    "DSPInit",
+    "DSPAddTask",
+    "DCFlushRange",
+    "AIRegisterDMACallback",
+    "AIStartDMA",
+    "OSDisableInterrupts",
+    "DSPCancelTask",
+    "OSSleepThread",
+    "AIStopDMA",
+    "OSRestoreInterrupts"
+  ],
+  "bss_anchor_objects": {
+    "...bss.0": "__AXOutBuffer"
+  }
+}
