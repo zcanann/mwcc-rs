@@ -1474,6 +1474,13 @@ impl Generator {
             ) {
                 return self.evaluate_body(&rewritten);
             }
+            if let Some(rewritten) = super::retained_global_inputs::reuse(
+                function,
+                &self.globals,
+                &self.volatile_globals,
+            ) {
+                return self.evaluate_body(&rewritten);
+            }
         }
         // Drop never-referenced, side-effect-free locals (an unused `int s = 0;`) — mwcc
         // emits nothing for them — then recompile the cleaned function.

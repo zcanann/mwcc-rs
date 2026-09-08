@@ -4,13 +4,62 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, constant multiplication before narrow stores (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, retained global input values (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `0caf2c871c207bcd5e4b45bc0f14344e6c6ee7e2cb47b26171cd55bfe23f101e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `f882491d96cf55a6661299c1612e38f29eb9176fa3b46267a21c28e38f8218e9:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Retained global input values, 2026-09-08
+
+The complete BfBB `__AXPrintStudio` drops **1,052 → 1,016 bytes** by retaining
+all nine initial input values through their local-only clamp branches and
+volume stores. It now matches the reference size while retaining the nine
+required narrow conversions from the preceding milestone. Register choices and
+instruction scheduling still differ: AXSPB remains **4/5 exact candidate
+functions**, **5/5 exact fresh reference functions**, and zero unresolved
+relocations against the pinned original DOL. All five functions pass **5,120
+three-way native comparisons** against fresh GC/1.2.5n, the original executable,
+and the independent fade/accumulation model.
+
+A separate structured-tree pass captures repeated nonvolatile word-global
+operands at an existing unconditional read. The capture uses an ordinary typed
+local, so register placement and lifetime remain allocator decisions. Reuse
+follows branches that only change unescaped locals; both arms must preserve
+memory for reuse after a join. The first store can consume the saved value,
+then invalidates it. Calls, other memory writes, labels, and unmodeled control
+flow also end reuse. Volatile inputs and short-circuit seed expressions are
+excluded. The pass runs from O2, after existing whole-expression reuse, and
+leaves compiler-version policy outside the transformation.
+
+Canaries **2044–2047** cover clamping, local-only joins, pointer stores and global
+writes in one branch, calls, volatile reads, and straight-line uses at O0, O1,
+O2, and O4. Baseline, candidate, and references compile **60/60 objects** across
+fifteen builds. Global input load/store symbol-reference counts match in all
+**420 functions**. Exact output remains **0/60 whole objects** and **0/420
+function text plus symbolic relocation comparisons** in these samples.
+All **107,520 paired native comparisons** pass; baseline and references also
+have no failures. The checks include aliased and distinct output pointers,
+signed boundaries, branch flags, callbacks that change input and clobber
+volatile registers, changing volatile reads, all neighboring bytes, saved
+GPR/FPR images, and SP/LR/PC.
+
+The sixty changed older objects from canaries 2022, 2029, 2032, and 2033 pass
+another **153,600 paired native comparisons**. The other **570/630 objects** in
+the 2002–2043 panel remain identical. The indexed panel retains **1,114 identical
+compiled objects** and **972 known exact matches** among 1,674 rows. Canaries
+1821–2001 retain **2,626 identical objects** and **89 unchanged failures**. All
+fourteen configured GX objects and the other nine AX objects remain identical;
+all ten AX units compile. Backend tests pass **1,616**, with the previously
+confirmed embedded-assembly failure excluded.
+
+Artifacts are under `target/retained-input-{canaries,old-guards,old-inline,real,index,recent,previous,library,ax-library}`.
+`target/retained-input-final-verification.json` pins the compiler/harness and
+verifies **347 execution-tested object hashes** after the final rebuild.
+Full-project compilation, linking, and matching across versions remain
+unfinished; these focused counts are not a corpus parity estimate.
 
 ## Constant multiplication before narrow stores, 2026-09-07
 
