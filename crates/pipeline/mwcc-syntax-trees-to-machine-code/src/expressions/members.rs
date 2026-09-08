@@ -1718,6 +1718,15 @@ impl Generator {
                     "struct member base must be a supported indexed pointer (roadmap): {base:?}[{index:?}]"
                 )))
             }
+            // An explicitly typed indirect-call result is an address in the
+            // general result lane. Materialize it through the shared call
+            // evaluator so a following member access owns one pointer value,
+            // including when its destination or another operand is live.
+            Expression::CallThrough { .. } if self.non_leaf => {
+                let register = self.fresh_virtual_general_preferring(Eabi::general_result().number);
+                self.evaluate_general(base, register)?;
+                Ok(register)
+            }
             // A bare `get()->field` is handled in emit_member_load (single-load, byte-exact); any
             // OTHER call context reaching here (a nested `get()->b->c`, an indexed `get()->a[i]`, a
             // member store) has a post-call schedule mwcc places differently — defer.

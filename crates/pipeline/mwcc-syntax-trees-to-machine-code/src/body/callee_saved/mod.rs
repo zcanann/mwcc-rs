@@ -6,6 +6,7 @@ mod structured_runtime_conversions;
 mod shared_parameter_spills;
 mod shared_spill_transactions;
 mod shared_spill_switch;
+mod shared_spill_indirect;
 mod allocated_float_frame;
 mod allocated_float_frame_linkage_first;
 mod allocated_float_helper_epilogue;

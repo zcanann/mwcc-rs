@@ -4,13 +4,72 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete GXTexture translation unit and all fourteen GX units compiling (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, GC/1.1p1 O0 indirect-call parameter spills (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `66d1427b807295eee2ea703cbe8bfa082bac2891915091fb5c5befcf4defc107:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `ed2e432c9048494522971f38c6b0908bab04d7f5fabc6c1e57f4b6c0d15872cd:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GC/1.1p1 O0 indirect-call parameter spills, 2026-09-07
+
+The **512 callback execution differences** exposed by the GXTexture canaries
+below are now closed. GC/1.1p1 O0 `member_callback` matches its reference's
+complete **76-byte** function body and symbolic relocations, including loading
+the wrong callback address after both parameters are spilled at SP+8.
+
+The existing version-specific source-spill policy now admits a single indirect
+call through one pointer parameter, passing a word member from the other.
+Both source images are stored in declaration order and reloaded independently;
+the later pointer therefore supplies both the argument and callee loads. A
+pointer result local retains r31, while a directly consumed call result stays
+in r3. The latter form has an eight-byte frame, so its SP+8 parameter store
+also overwrites the caller's backchain. These are intentional reproductions of
+observed compiler behavior. Recognition excludes additional calls, post-call
+parameter reads, floating results, and unsupported local/control-flow shapes.
+Emission reuses the existing linkage-first prologue, indirect branch emitter,
+expression lowerer, and epilogue. Ordinary lowering also accepts an explicitly
+typed indirect-call result as a member-access base, allowing the direct-result
+canary to compile on the other versions.
+
+Canaries **1998–1999** vary declaration order, member offsets, initialized and
+assigned pointer locals, post-call arithmetic, and direct result consumption.
+Candidate compilation improves **0/30 to 30/30 objects** across fifteen builds
+at O0/O4; fresh reference compilation is **30/30**. The entire GC/1.1p1 O0
+object matches, for **1/30 whole-object matches** and **18/150 exact function
+text plus symbolic relocation comparisons**. All five functions in that O0
+object are exact. The preceding 150-object texture panel retains **22/150
+whole-object matches**, with exact function comparisons increasing **82/450
+to 83/450**.
+
+All **384,000 paired PowerPC execution comparisons** agree: **153,600** in the
+new panel and **230,400** in the preceding panel. Independent expected models
+include the erroneous callback target and argument, return bits, callback
+memory effects, saved GPR/FPR images, caller linkage words, and SP/LR/PC. The
+new panel exercises both successful wrong callbacks and **1,024** expected
+unmapped-target faults. The preceding panel includes the original **512**
+fault cases. Its exact, relocation-free `member_callback` body is placed at
+one common link address on both sides so the fault LR is comparable despite
+the preceding function's different size; each absolute fault state is also
+checked against its model. Callback helpers clobber volatile registers.
+
+Regression checks preserve **1,114** compiling indexed objects byte-for-byte,
+including all **972** known exact results. Of **2,655** recent source/build
+pairs, **2,565** retain identical objects, **89** retain their compilation
+failures, and the one changed object contains the newly exact callback body.
+All fourteen complete GX objects and the AX voice-parameter object remain
+byte-identical. Compiler-library tests pass **1,600**, excluding the previously
+confirmed embedded-assembly failure. Final recompilation verifies **195**
+execution-panel and full-unit object hashes after the last test changes.
+
+Artifacts are under `target/callback-spill-{canaries,previous-canaries,index,recent,library,full-ax}`.
+Both canary directories contain fresh-reference, exactness, and execution
+reports; `target/callback-spill-final-verification.json` records the final
+compiler and object hashes. The earlier **1,024** GXMisc polling-spill
+differences remain open, as do broader register allocation, instruction
+matching, and full-project parity. These focused counts are not a corpus
+parity estimate.
 
 ## Complete GXTexture translation unit and fourteen-unit GX coverage, 2026-09-07
 
