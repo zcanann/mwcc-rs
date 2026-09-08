@@ -162,26 +162,78 @@ pub(crate) fn materialize(
     Some(rewritten)
 }
 
+/// Nested loops own their continues; switches and conditionals do not.
+fn continues_current_loop(statements: &[S]) -> bool {
+    statements.iter().any(|statement| match statement {
+        S::Continue => true,
+        S::If {
+            then_body,
+            else_body,
+            ..
+        } => continues_current_loop(then_body) || continues_current_loop(else_body),
+        S::Switch { arms, default, .. } => {
+            arms.iter().map(|arm| &arm.body).chain(default.iter()).any(
+                |body| matches!(body, ArmBody::Statements(body) if continues_current_loop(body)),
+            )
+        }
+        _ => false,
+    })
+}
+
 impl Lowering<'_> {
     fn ty(&self, e: &E) -> Option<Type> {
         match e {
+            E::IntegerLiteral(value) => Some(if i32::try_from(*value).is_ok() {
+                Type::Int
+            } else if u32::try_from(*value).is_ok() {
+                Type::UnsignedInt
+            } else {
+                Type::LongLong
+            }),
             E::Variable(name) => self.types.get(name).copied(),
             E::Call { name, .. } => self.calls.get(name).copied(),
             E::Cast { target_type, .. } => Some(*target_type),
             E::Binary {
-                operator: B::Add | B::Subtract,
+                operator:
+                    B::Add
+                    | B::Subtract
+                    | B::Multiply
+                    | B::Divide
+                    | B::Modulo
+                    | B::BitAnd
+                    | B::BitOr
+                    | B::BitXor,
                 left,
                 right,
             } => {
-                let a = self.ty(left);
-                let b = self.ty(right);
-                if a == Some(Type::UnsignedLongLong) || b == Some(Type::UnsignedLongLong) {
-                    Some(Type::UnsignedLongLong)
-                } else if a == Some(Type::LongLong) || b == Some(Type::LongLong) {
-                    Some(Type::LongLong)
-                } else {
-                    None
+                let a = self.ty(left)?;
+                let b = self.ty(right)?;
+                if ![a, b].into_iter().all(|ty| {
+                    matches!(
+                        ty,
+                        Type::Int
+                            | Type::UnsignedInt
+                            | Type::Char
+                            | Type::UnsignedChar
+                            | Type::Short
+                            | Type::UnsignedShort
+                            | Type::LongLong
+                            | Type::UnsignedLongLong
+                    )
+                }) {
+                    return None;
                 }
+                Some(
+                    if a == Type::UnsignedLongLong || b == Type::UnsignedLongLong {
+                        Type::UnsignedLongLong
+                    } else if a == Type::LongLong || b == Type::LongLong {
+                        Type::LongLong
+                    } else if a == Type::UnsignedInt || b == Type::UnsignedInt {
+                        Type::UnsignedInt
+                    } else {
+                        Type::Int
+                    },
+                )
             }
             E::Dereference { pointer } => match self.ty(pointer)? {
                 Type::Pointer(p) => Some(p.element()),
@@ -199,6 +251,36 @@ impl Lowering<'_> {
         result
     }
     fn pair(&mut self, e: &E) -> Option<(E, E)> {
+        if !matches!(e, E::IntegerLiteral(_)) && !self.mentions_wide(e) {
+            let ty = self.ty(e)?;
+            if !matches!(
+                ty,
+                Type::Int
+                    | Type::UnsignedInt
+                    | Type::Char
+                    | Type::UnsignedChar
+                    | Type::Short
+                    | Type::UnsignedShort
+            ) || crate::analysis::expression_has_side_effect(e)
+            {
+                return None;
+            }
+            // Apply the word operation before widening: 32-bit arithmetic
+            // still wraps at its own width when compared with a wide value.
+            let low = self.capture(cast(Type::UnsignedInt, e.clone()));
+            let high = if matches!(
+                ty,
+                Type::UnsignedInt | Type::UnsignedChar | Type::UnsignedShort
+            ) {
+                word(0)
+            } else {
+                self.capture(cast(
+                    Type::UnsignedInt,
+                    bin(B::ShiftRight, cast(Type::Int, low.clone()), word(31)),
+                ))
+            };
+            return Some((high, low));
+        }
         match e {
             E::IntegerLiteral(v) => Some((word((*v as u64 >> 32) as u32), word(*v as u32))),
             E::Variable(name) if self.ty(e).is_some_and(wide) && !self.volatile.contains(name) => {
@@ -441,22 +523,37 @@ impl Lowering<'_> {
                     step,
                     body,
                 } => {
-                    // Pair condition preludes must execute at every test; that
-                    // loop normalization is separate from this first frame lane.
                     if initializer
                         .iter()
-                        .chain(condition)
                         .chain(step)
                         .any(|e| self.mentions_wide(e))
                     {
                         return None;
                     }
+                    let mut lowered_body = self.statements(body)?;
+                    let condition = if condition.as_ref().is_some_and(|e| self.mentions_wide(e)) {
+                        // Every post-test iteration computes both words after
+                        // its body. A continue targeting this test would need
+                        // its own prelude; retain that diagnostic until modeled.
+                        if *kind != mwcc_syntax_trees::LoopKind::DoWhile
+                            || initializer.is_some()
+                            || step.is_some()
+                            || continues_current_loop(body)
+                        {
+                            return None;
+                        }
+                        let condition = self.scalar(condition.as_ref().unwrap())?;
+                        lowered_body.append(&mut self.pending);
+                        Some(condition)
+                    } else {
+                        condition.clone()
+                    };
                     S::Loop {
                         kind: *kind,
                         initializer: initializer.clone(),
-                        condition: condition.clone(),
+                        condition,
                         step: step.clone(),
-                        body: self.statements(body)?,
+                        body: lowered_body,
                     }
                 }
                 S::Switch {
@@ -495,6 +592,101 @@ impl Lowering<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_lowering<'a>(
+        calls: &'a HashMap<String, Type>,
+        volatile: &'a HashSet<String>,
+    ) -> Lowering<'a> {
+        Lowering {
+            types: HashMap::from([
+                ("stamp".into(), Type::LongLong),
+                ("limit".into(), Type::UnsignedInt),
+                ("real".into(), Type::Float),
+            ]),
+            calls,
+            volatile,
+            frames: HashSet::from(["stamp".into()]),
+            bindings: HashSet::from(["stamp".into(), "limit".into()]),
+            occupied: HashSet::from(["stamp".into(), "limit".into()]),
+            temporaries: Vec::new(),
+            pending: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pair_test_preludes_stay_after_each_posttest_body() {
+        let calls = HashMap::from([("tick".into(), Type::LongLong)]);
+        let volatile = HashSet::new();
+        let mut lowering = test_lowering(&calls, &volatile);
+        let source = S::Loop {
+            kind: mwcc_syntax_trees::LoopKind::DoWhile,
+            initializer: None,
+            condition: Some(bin(
+                B::Less,
+                var("stamp"),
+                bin(B::Divide, var("limit"), word(4)),
+            )),
+            step: None,
+            body: vec![S::Assign {
+                name: "stamp".into(),
+                value: E::Call {
+                    name: "tick".into(),
+                    arguments: Vec::new(),
+                },
+            }],
+        };
+        let lowered = lowering.statements(&[source.clone()]).unwrap();
+        let [S::Loop {
+            body,
+            condition: Some(condition),
+            ..
+        }] = lowered.as_slice()
+        else {
+            panic!("one retained loop");
+        };
+        assert!(
+            matches!(body.first(), Some(S::Store { value: E::Call { name, .. }, .. }) if name == "tick")
+        );
+        assert!(body.len() > 1);
+        assert!(!lowering.mentions_wide(condition));
+        assert!(lowering.pending.is_empty());
+        let mut continued = source;
+        let S::Loop { body, .. } = &mut continued else {
+            unreachable!()
+        };
+        body.push(S::Continue);
+        assert!(test_lowering(&calls, &volatile)
+            .statements(&[continued])
+            .is_none());
+        assert!(!continues_current_loop(&[S::Loop {
+            kind: mwcc_syntax_trees::LoopKind::While,
+            initializer: None,
+            condition: Some(word(1)),
+            step: None,
+            body: vec![S::Continue],
+        }]));
+    }
+
+    #[test]
+    fn word_arithmetic_wraps_before_its_wide_promotion() {
+        let calls = HashMap::new();
+        let volatile = HashSet::new();
+        let mut lowering = test_lowering(&calls, &volatile);
+        let value = bin(B::Add, var("limit"), word(1));
+        let (high, low) = lowering.pair(&value).unwrap();
+        assert!(crate::analysis::structurally_equal(&high, &word(0)));
+        let [S::Assign { name, value: saved }] = lowering.pending.as_slice() else {
+            panic!("one word evaluation");
+        };
+        assert!(crate::analysis::structurally_equal(
+            saved,
+            &cast(Type::UnsignedInt, value)
+        ));
+        assert!(crate::analysis::structurally_equal(&low, &var(name)));
+        assert!(lowering
+            .pair(&bin(B::Add, var("limit"), var("real")))
+            .is_none());
+    }
 
     #[test]
     fn does_not_hoist_pair_reads_out_of_short_circuit_or_call_expressions() {

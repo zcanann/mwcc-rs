@@ -4,13 +4,90 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, GC/1.1p1 O0 switch parameter spills (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, complete GXMisc translation unit and inline polling loops (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `1d479686514612de64a269b09abf3d482d47d8ba3b347c46f6019792993e807b:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `3e67cc1c337ab70f211f7c819bfaafaeef803eba7579384cd3927f7e42958f50:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete GXMisc translation unit and inline polling loops, 2026-09-07
+
+BfBB's unchanged, fully configured `GXMisc.c` now compiles, advancing the GX
+survey from **12/14 to 13/14 complete translation units**. `GXSetMisc`,
+`__GXAbort`, and `GXDrawDone` pass **3,072 three-way PowerPC execution
+comparisons** against a fresh GC/1.2.5n object and the original DOL. Checks
+cover the complete 1,456-byte GX context, FIFO and PI writes, MEM-counter read
+order, timer calls, interrupt tokens, queue/wakeup effects, saved GPR/FPR
+images, and SP/LR/PC. Timer inputs exercise low-word wrap, signed 64-bit wrap,
+negative elapsed values, exact timeout boundaries, and repeated polling.
+
+Compound terminal switch arms now reach the shared structured CFG lowerer
+before the older single-statement terminal owner rejects them. This includes
+empty arms, guarded stores, and compound defaults. Inline composition admits
+pre- and post-test polling loops, retaining its existing dominance and
+argument-substitution checks. A post-test assignment's deferred interval now
+extends through the condition after the body; recording that condition before
+the body had incorrectly rejected locals first defined within a polling loop.
+
+Retained wide frame values can place their comparison prelude at the end of
+each post-test iteration. Arithmetic and frame allocation remain in the shared
+backend. Narrow integer expressions execute at their original width before
+sign- or zero-extension to a pair. Wide conditions with a continue targeting
+the current loop, pre-test wide conditions, and wide initializer/step
+expressions still decline; their prelude placement needs separate control-flow
+support. These changes let the actual nested abort waits and draw-completion
+waits compile without substituting host implementations for their loop bodies.
+
+The native harness controls external services: `GXGetGPFifo`, `OSGetTime`,
+`OSDisableInterrupts`, `OSRestoreInterrupts`, `OSSleepThread`,
+`__GXSetDirtyState`, and `PPCSync`. Timer and counter sequences are identical
+across the three objects; sleep calls update the queue and eventually set the
+actual `DrawDone` global. `GXFlush` and the inline MEM-counter reader execute
+their compiled bodies. Service calls clobber volatile registers so saved values
+must survive actual calls. This is bounded execution evidence, not a hardware
+or full-project validation.
+
+The pinned [GXMisc layout](reference-layouts/bfbb-gxmisc.json) verifies **20/20
+fresh-reference functions** byte-for-byte against the original DOL. The
+candidate matches **1/20**, `GXReadDrawSync`, with every measured relocation
+resolved. Its full object contains **2,176 text bytes**, versus **1,768** for
+the reference. Register allocation, frame layout, scheduling, and broader
+instruction matching remain open.
+
+Canaries **1980–1987** add token-store switches, guarded/default/empty arms,
+inline wide timer loops, nested counter-stabilization loops, and global
+completion waits. Candidate compilation improves **0/120 to 120/120 objects**
+across fifteen builds at O0/O4; fresh reference compilation is **120/120**.
+There are **0/120 whole-object matches** and **28/240 exact function text plus
+symbolic relocation comparisons**. Of **122,880 paired execution comparisons**,
+**121,856 agree**. The remaining **1,024 differences** are confined to
+GC/1.1p1 O0 canary 1985: its reference spills the input over saved r24 in
+`wait_twice` and saved r26 in `guarded_settle` (**512 cases each**). Separate
+reference-specific expected register images explain every discrepancy; the
+candidate does **not yet reproduce** these two spill overlaps. They remain
+open parity gaps, not passing paired comparisons.
+
+Regression checks preserve **1,114** compiling indexed objects byte-for-byte,
+including **972** known exact results. Of **2,385** recent source/build pairs,
+**2,296** retain identical objects and **89** retain their compilation failures.
+The twelve previously compiling GX units and the AX voice-parameter unit
+retain identical objects. Compiler-library tests pass **1,595**, excluding the
+previously confirmed embedded-assembly failure. Final recompilation verifies
+all execution-tested canary and full-unit object hashes after formatting and
+test additions.
+
+Artifacts are under `target/gx-misc-{canaries,real,index,recent,library,full-ax}`.
+The canary directory contains compilation/reference comparison results plus
+`execution-results.json`, `polling-execution-results.json`, and
+`global-polling-execution-results.json`; the polling report preserves the
+**1,024** expected-but-unimplemented paired differences explicitly. The real
+unit directory contains fresh objects, linked comparisons, and
+`execution-results.json`. `target/gx-misc-verified-objects.json` records the
+final compiler/object hash bridge. Full-project parity remains open, with
+`GXTexture.c` the remaining GX compilation blocker. These focused counts are
+not a corpus parity estimate.
 
 ## GC/1.1p1 O0 switch parameter spills, 2026-09-07
 

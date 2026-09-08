@@ -1,0 +1,55 @@
+{
+  "dol_sha256": "865f446cf8efd52230dac506d6334a357b4c738cd6eb6e3a68c827efac51c3e0",
+  "symbols_sha256": "92f658ac1a6f91ec64d851dcfdf92a0907f3c06f5c68a97096052e99b5f3dfa4",
+  "functions": [
+    "GXTokenInterruptHandler",
+    "GXFinishInterruptHandler",
+    "GXSetMisc",
+    "GXFlush",
+    "__GXAbort",
+    "GXSetDrawSync",
+    "GXReadDrawSync",
+    "GXDrawDone",
+    "GXPixModeSync",
+    "GXPokeAlphaMode",
+    "GXPokeAlphaRead",
+    "GXPokeAlphaUpdate",
+    "GXPokeBlendMode",
+    "GXPokeColorUpdate",
+    "GXPokeDstAlpha",
+    "GXPokeDither",
+    "GXPokeZMode",
+    "GXSetDrawSyncCallback",
+    "GXSetDrawDoneCallback",
+    "__GXPEInit"
+  ],
+  "sda_bases": {
+    "2": 2151500160,
+    "13": 2151491840
+  },
+  "data_symbols": {
+    "__GXData": 2151480440,
+    "__memReg": 2151466156,
+    "__peReg": 2151466152,
+    "TokenCB": 2151466216,
+    "DrawDoneCB": 2151466220,
+    "DrawDone": 2151466224,
+    "FinishQueue": 2151466228
+  },
+  "literals": [],
+  "external_functions": [
+    "__GXSetDirtyState",
+    "PPCSync",
+    "GXGetGPFifo",
+    "OSGetTime",
+    "OSDisableInterrupts",
+    "OSRestoreInterrupts",
+    "OSSleepThread",
+    "OSClearContext",
+    "OSSetCurrentContext",
+    "OSWakeupThread",
+    "__OSSetInterruptHandler",
+    "OSInitThreadQueue",
+    "__OSUnmaskInterrupts"
+  ]
+}

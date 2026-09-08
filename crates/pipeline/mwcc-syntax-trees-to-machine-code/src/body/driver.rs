@@ -3337,9 +3337,9 @@ impl Generator {
         if let Some(inlined) = inline_switch_scrutinee_locals(function) {
             return self.evaluate_body(&inlined);
         }
-        // A retained local scrutinee needs a home before its switch arms.
-        if !function.locals.is_empty()
-            && matches!(function.statements.as_slice(), [Statement::Switch { .. }])
+        // Retained locals and compound switch arms need the structured CFG
+        // before the terminal single-statement switch owner gets control.
+        if matches!(function.statements.as_slice(), [Statement::Switch { .. }])
             && self.try_leaf_structured_body(function)?
         {
             return Ok(());

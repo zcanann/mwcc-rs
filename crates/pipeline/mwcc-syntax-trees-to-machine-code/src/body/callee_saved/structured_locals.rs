@@ -416,6 +416,7 @@ fn collect_deferred_interval(
             | Statement::Goto(_)
             | Statement::Label(_) => false,
             Statement::Loop {
+                kind,
                 initializer,
                 condition,
                 ..
@@ -428,9 +429,9 @@ fn collect_deferred_interval(
                     }
                     _ => expression_reads_name(expression, name),
                 }
-            }) || condition
+            }) || (*kind != LoopKind::DoWhile && condition
                 .iter()
-                .any(|expression| expression_reads_name(expression, name)),
+                .any(|expression| expression_reads_name(expression, name))),
             Statement::Switch { .. } => {
                 if body_uses_local(std::slice::from_ref(statement), name) {
                     return None;
@@ -446,10 +447,11 @@ fn collect_deferred_interval(
             interval.first_assignment.get_or_insert(position);
         }
         if let Statement::Loop {
+            kind,
             initializer,
+            condition,
             body,
             step,
-            ..
         } = statement
         {
             if let Some(expression) = initializer {
@@ -459,6 +461,14 @@ fn collect_deferred_interval(
             if let Some(step) = step {
                 *cursor += 1;
                 collect_expression_interval(step, name, *cursor, interval);
+            }
+            if *kind == LoopKind::DoWhile {
+                if let Some(condition) = condition {
+                    // A value first assigned in the body remains live through
+                    // the post-test, even when this is its only source read.
+                    *cursor += 1;
+                    collect_expression_interval(condition, name, *cursor, interval);
+                }
             }
         }
         if let Statement::If {
@@ -1528,6 +1538,24 @@ mod tests {
                 arguments: vec![Expression::Variable(name.into())],
             })],
         }
+    }
+
+    #[test]
+    fn posttest_condition_extends_a_deferred_body_definition() {
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::DoWhile,
+            initializer: None,
+            condition: Some(Expression::Variable("snapshot".into())),
+            step: None,
+            body: vec![Statement::Assign {
+                name: "snapshot".into(),
+                value: Expression::Variable("current".into()),
+            }],
+        }];
+        let mut interval = DeferredInterval::default();
+        collect_deferred_interval(&statements, "snapshot", &mut 0, &mut interval).unwrap();
+        assert_eq!(interval.assignment_count, 1);
+        assert!(interval.last_read.unwrap() > interval.first_assignment.unwrap());
     }
 
     #[test]

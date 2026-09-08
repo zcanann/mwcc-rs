@@ -240,11 +240,15 @@ fn leaf_structured_statements(function: &Function) -> Vec<Statement> {
 
 fn requires_structured_branch_graph(statements: &[Statement]) -> bool {
     statements.iter().any(|statement| match statement {
-        Statement::Switch { arms, .. } => arms.iter().any(|arm| {
-            arm.falls_through || matches!(&arm.body,
+        Statement::Switch { arms, default, .. } => {
+            let compound = |body: &mwcc_syntax_trees::ArmBody| matches!(body,
                 mwcc_syntax_trees::ArmBody::Statements(body)
-                    if body.iter().any(|statement| matches!(statement, Statement::Assign { .. })))
-        }),
+                    if body.len() != 1 || body.iter().any(|statement|
+                        matches!(statement, Statement::Assign { .. } | Statement::If { .. }))
+                        || requires_structured_branch_graph(body));
+            arms.iter().any(|arm| arm.falls_through || compound(&arm.body))
+                || default.as_ref().is_some_and(compound)
+        },
         Statement::If {
             then_body,
             else_body,

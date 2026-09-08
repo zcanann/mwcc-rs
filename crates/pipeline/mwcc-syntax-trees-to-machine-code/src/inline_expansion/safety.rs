@@ -1007,10 +1007,13 @@ fn composable_statements(statements: &[Statement], local_names: &HashSet<&str>) 
                 && loop_step_updates(step, counter)
                 && composable_statements(body, local_names)
         }
+        // The dominance pass distinguishes pre- and post-test conditions.
+        // Alpha-renaming preserves loop-carried locals for polling loops as
+        // well as single-iteration macro blocks.
         Statement::Loop {
-            kind: mwcc_syntax_trees::LoopKind::DoWhile,
+            kind: mwcc_syntax_trees::LoopKind::DoWhile | mwcc_syntax_trees::LoopKind::While,
             initializer: None,
-            condition: Some(Expression::IntegerLiteral(0)),
+            condition: Some(_),
             step: None,
             body,
         } => composable_statements(body, local_names),
@@ -2037,6 +2040,7 @@ mod tests {
                 value: Expression::IntegerLiteral(0),
             }],
         }];
+        assert!(composable_statements(&body, &tracked));
         let mut assigned = HashSet::new();
         assert!(reads_are_dominated(&body, &tracked, &mut assigned));
         assert!(assigned.contains("sample"));
@@ -2044,6 +2048,7 @@ mod tests {
             unreachable!();
         };
         *kind = LoopKind::While;
+        assert!(composable_statements(&body, &tracked));
         assert!(!reads_are_dominated(&body, &tracked, &mut HashSet::new()));
     }
 }
