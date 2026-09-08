@@ -4,13 +4,66 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, source reference counts and mutable loop homes (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, dependent word call inputs (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `013bcd80bd0a0949b254f8a3ec2cc45613a079004ea0bb41161be24373da2696:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `bd26f37ff3346d517e952c5bc58857a96feb7401bcdb028f4941edc484182418:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Dependent word call inputs, 2026-09-08
+
+Calls such as `observe(p, *q)` now preserve incoming register values before
+placing overlapping ABI arguments. A separate dependency planner schedules
+pure word expressions and breaks register-leaf cycles with virtual snapshots.
+O0, disabled scheduling, and modern volatile calls instead snapshot endangered
+inputs and evaluate in source order. The four early 2.3.3 profiles reproduce
+their measured optimized volatile-load reversal through a version policy.
+Existing ABI classification and expression evaluation remain shared; C++
+reference address recovery and other argument families retain their owners.
+Typed argument evaluation also preserves signed-byte promotion, including
+pointers whose type identity survives only in a frame slot.
+
+GC/1.1p1 O0's source-home planner now also covers direct pure word calls. This
+preserves the original single-use parameter alias at SP+8. With no retained
+registers, the eight-byte frame places that image over the caller's backchain.
+All-single-use indexed inputs can consequently load through an integer index
+as a pointer. These are modeled reference bugs, including the fault address,
+faulting load, argument register state, and caller-stack overwrite.
+
+Canaries **2164–2169** contain sixteen functions across six modes and fifteen
+builds. All **90 candidate and reference objects** compile. The baseline fails
+every whole source; isolating its functions yields **180/1,440** compilations.
+The candidate recovers the other **1,260 function cases**. Exact function
+matches rise **44 → 158**, with no losses: **114 new exact matches**. Of the
+180 previously compiling cases, 174 remain identical and six GC/1.1p1 O0
+functions become exact. The preceding reversed-pointer loop canaries
+**2159–2163** also recover all **71** failures; their loop allocation and
+scheduling still differ from the reference.
+
+All **23,040 new native cases** match the reference and the independent model,
+including volatile read counts/order, aliases, signed-byte and halfword loads,
+callback mutation/clobbers, callee-saved state, and guarded memory. They include
+**576 caller-stack corruption cases** and **48 indexed-load faults**. All
+**19,200** preceding source-home execution cases pass, including the recovered
+loops and the previously verified original bugs: **42,240 native cases** total.
+
+Regression checks preserve all **1,249** previously compiling objects in the
+preceding panel; its 71 recovered objects bring compilation to **1,320/1,320**.
+The older **1,110** and recent **2,626** objects remain identical, alongside
+**89** unchanged recent failures. All **1,674** indexed outcomes remain unchanged
+(1,114 compiled, 972 known exact). Ten AX and fourteen GX translation units
+compile unchanged. Full AXVPB objects remain identical across fifteen builds,
+retaining the preceding **240** initializer execution checks. The initializer
+is still **0/15 byte-exact**; register allocation and instruction scheduling
+remain the project frontier.
+
+Backend tests pass **1,665**, with the existing nested-asm inline exclusion;
+version tests pass **57**. The full corpus was not rerun.
+`target/call-input-final-verification.json` binds the compiler/harness fingerprint
+to **559 native-tested object entries**, preceding-object hashes, and the fifteen
+unchanged full AXVPB objects.
 
 ## Source reference counts and mutable loop homes, 2026-09-08
 

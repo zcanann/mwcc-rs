@@ -1572,6 +1572,14 @@ impl Generator {
         {
             return Ok(pointee);
         }
+        // A spilled pointer keeps its pointee identity even after its register
+        // location is removed. Width and promotion queries must agree with the
+        // frame load emitter (notably signed-byte call arguments).
+        if let Some(slot) = self.frame_slots.get(name).filter(|slot| !slot.is_array) {
+            if let Type::Pointer(pointee) = slot.value_type {
+                return Ok(pointee);
+            }
+        }
         // A scalar global pointer is an address VALUE loaded from global
         // storage before dereference/subscript. It is not a global array (whose
         // symbol itself is the address), but type classification still comes

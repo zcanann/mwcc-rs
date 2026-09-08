@@ -1764,6 +1764,11 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    /// Early 2.3.3 schedulers may reverse volatile argument loads to resolve
+    /// ABI dependencies. Later profiles retain their source order.
+    fn reorder_volatile_call_inputs(&self) -> bool {
+        false
+    }
     fn materialization_copy_style(&self) -> MaterializationCopyStyle {
         MaterializationCopyStyle::LogicalOr
     }
@@ -3293,6 +3298,9 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn trig_dispatcher_style(&self) -> TrigDispatcherStyle {
         TrigDispatcherStyle::LegacyReloading
+    }
+    fn reorder_volatile_call_inputs(&self) -> bool {
+        true
     }
     fn materialization_copy_style(&self) -> MaterializationCopyStyle {
         MaterializationCopyStyle::AddImmediateZero

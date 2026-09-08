@@ -1,4 +1,4 @@
-//! Source value homes for GC/1.1p1 O0 loops with aliased parameter images.
+//! Source value homes for GC/1.1p1 O0 loops and direct word calls.
 //!
 //! Values with multiple source uses occupy descending saved registers. Single-use parameters share
 //! SP+8, including overlaps with saved registers; unused parameters have no
@@ -88,7 +88,10 @@ fn word(ty: Type) -> bool {
 }
 
 impl Generator {
-    pub(crate) fn try_shared_spill_loops(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_shared_spill_source_homes(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         if !self.behavior.unoptimized_shared_parameter_spills
             || function.return_type != Type::Void
             || function.return_expression.is_some()
@@ -115,7 +118,12 @@ impl Generator {
             }
         }
         uses.statements(&function.statements);
-        if uses.unsupported || !uses.has_loop {
+        let direct_word_call = function.locals.is_empty()
+            && matches!(function.statements.as_slice(), [Statement::Expression(Expression::Call { name, arguments })]
+                if arguments.len() <= 8
+                    && self.call_parameter_types.get(name).is_some_and(|types| types.len() == arguments.len()
+                    && arguments.iter().zip(types).all(|(arg, ty)| self.call_input_is_word_argument(arg, Some(*ty)))));
+        if uses.unsupported || (!uses.has_loop && !direct_word_call) {
             return Ok(false);
         }
         let source_counts = self
@@ -155,14 +163,22 @@ impl Generator {
             .filter(|p| count(&p.name) == 1)
             .collect();
         let homes = locals.len() + retained.len();
-        if spilled.is_empty() || homes == 0 || homes > 18 {
+        if ((!direct_word_call && (spilled.is_empty() || homes == 0))
+            || (spilled.is_empty() && homes == 0))
+            || homes > 18
+        {
             return Ok(false);
         }
-        let Some(lowered) = super::structured_loop_lowering::lower_unoptimized_structured_loops(
-            function,
-            &self.global_array_sizes,
-        ) else {
-            return Ok(false);
+        let lowered = if uses.has_loop {
+            let Some(lowered) = super::structured_loop_lowering::lower_unoptimized_structured_loops(
+                function,
+                &self.global_array_sizes,
+            ) else {
+                return Ok(false);
+            };
+            lowered
+        } else {
+            function.clone()
         };
         let saved: Vec<_> = (0..homes).map(|i| 31 - i as u8).collect();
         let mut ranked_names: Vec<_> = locals.iter().map(|l| l.name.as_str()).collect();
@@ -178,7 +194,7 @@ impl Generator {
         self.structured_loop_carried_names
             .extend(ranked_names.iter().map(|n| (*n).to_owned()));
         let home_of = |name: &str| saved[ranked_names.iter().position(|n| *n == name).unwrap()];
-        let first = *saved.last().unwrap();
+        let first = saved.last().copied().unwrap_or(32);
         let helpers = homes >= 3 && !self.behavior.use_lmw_stmw;
         let multiple = homes >= 2 && self.behavior.use_lmw_stmw;
         if helpers {

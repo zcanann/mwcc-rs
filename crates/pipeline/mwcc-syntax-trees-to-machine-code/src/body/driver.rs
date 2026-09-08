@@ -1258,7 +1258,7 @@ impl Generator {
                 return Ok(());
             }
             let mut trial = self.clone();
-            if trial.try_shared_spill_loops(function)? {
+            if trial.try_shared_spill_source_homes(function)? {
                 *self = trial;
                 return Ok(());
             }

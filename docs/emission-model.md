@@ -324,4 +324,41 @@ of the old value when the expression needs it. A snapshot immediately followed
 by the same home's in-place step retains the measured logical-copy spelling
 through final copy normalization. Canaries 2154–2158 exercise source counts,
 ties, initialized and later-defined locals, postfix stores and values, and save modes;
-2159–2163 retain the separate reversed-pointer argument-marshalling frontier.
+2159–2163 exercise reversed-pointer argument dependencies alongside loop homes.
+
+
+## Dependencies between word call inputs
+
+Model ABI placement as parallel assignments. A register destination cannot be
+written while another pending expression still reads its incoming value.
+Schedule a ready consumer first; break cycles by snapshotting a register-leaf
+argument into a virtual value. Reserve completed ABI destinations and remaining
+physical inputs while using the ordinary typed evaluator. Keep this planner
+separate from expression selection, frame construction, and register allocation.
+It runs after existing schedules and claims only unresolved non-leaf dependencies
+among two through eight pure word arguments. Floating, wide, aggregate, nested
+call, and side-effecting expressions retain their existing handlers. A compact
+struct-pointer formal can encode a C++ reference; dereferenced sources retain
+the generic address-recovery owner.
+
+When memory evaluation order must stay fixed, snapshot endangered input
+registers and temporarily remap their source bindings, then evaluate arguments
+in source order. Restore the bindings after emission. O0 and disabled scheduling
+always select this path. Unknown pointer volatility is conservative. The four
+early 2.3.3 profiles permit the measured optimized volatile-call reversal;
+later profiles preserve source order. The policy belongs to the version profile
+and resolves against invocation flags, rather than branching on build names in
+the dependency planner.
+
+Argument evaluation must use the formal ABI type so narrow signed loads receive
+the required promotion. A pointer moved to a scalar frame slot retains its
+pointee identity for width and signedness queries; pointer arrays remain arrays.
+
+The GC/1.1p1 O0 shared source-home owner also accepts direct pure word calls with
+no locals. A zero-home call needs no saved-register range; its eight-byte frame
+still writes single-use parameter images to SP+8, overwriting the caller's
+backchain. Multiple parameters deliberately share that image. Preserve the
+resulting wrong callback values and indexed-load faults, using the same frame
+and expression emitters as loops. Canaries 2164–2169 cover these bugs alongside
+register cycles, arithmetic/member/indexed loads, source-order memory, narrow
+promotion, and explicit save modes across fifteen builds.

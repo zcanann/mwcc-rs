@@ -1742,6 +1742,9 @@ impl Generator {
                 }
             }
         }
+        if self.try_emit_dependent_word_arguments(arguments, name)? {
+            return Ok(());
+        }
         let by_value_aggregate_call =
             self.prepare_structured_by_value_aggregate_call(arguments, name)?;
         let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
@@ -2251,6 +2254,9 @@ impl Generator {
                     let evaluated = match reference_argument {
                         Some(ReferenceArgumentSource::Lvalue(lvalue)) => {
                             self.emit_address_of(lvalue, next_general)
+                        }
+                        _ if matches!(parameter_type, Some(Type::Int | Type::UnsignedInt)) => {
+                            self.evaluate(general_argument, parameter_type.unwrap(), next_general)
                         }
                         _ => self.evaluate_general(general_argument, next_general),
                     };

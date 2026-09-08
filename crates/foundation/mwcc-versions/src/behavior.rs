@@ -1017,6 +1017,8 @@ pub struct Behavior {
     pub cursor_frame_inline_saves: bool,
     /// Whether independent instructions may fill one another's latency slots.
     pub scheduler_enabled: bool,
+    /// Whether this invocation may reverse volatile loads while placing call inputs.
+    pub reorder_volatile_call_inputs: bool,
     /// Whether floating multiply/add and multiply/subtract expressions may
     /// contract into fused instructions.
     pub contract_floating_point: bool,
@@ -1655,6 +1657,9 @@ impl Behavior {
                 || (!config.flags.use_lmw_stmw_explicit
                     && config.build.profile.frame_convention() == FrameConvention::LinkageFirst),
             scheduler_enabled: config.flags.scheduler_enabled,
+            reorder_volatile_call_inputs: config.flags.scheduler_enabled
+                && config.flags.optimization != Optimization::O0
+                && config.build.profile.reorder_volatile_call_inputs(),
             contract_floating_point: config.flags.fp_contract,
             simplify_negated_float_arithmetic: config.flags.optimization != Optimization::O0
                 && config.build.profile.simplify_negated_float_arithmetic(),
@@ -1991,6 +1996,32 @@ impl Behavior {
 mod tests {
     use super::*;
     use crate::{build, flags::CharDefault};
+
+    #[test]
+    fn volatile_call_input_order_tracks_the_profile_and_scheduler() {
+        for (compiler_build, legacy) in [
+            (build::GC_1_1, true),
+            (build::GC_1_1P1, true),
+            (build::GC_1_2_5, true),
+            (build::GC_1_2_5N, true),
+            (build::GC_1_3, false),
+            (build::GC_2_7, false),
+            (build::GC_3_0A3, false),
+            (build::WII_1_0, false),
+        ] {
+            for optimization in [Optimization::O0, Optimization::O2, Optimization::O4] {
+                for scheduler in [false, true] {
+                    let mut config = CompilerConfig::new(compiler_build);
+                    config.flags.optimization = optimization;
+                    config.flags.scheduler_enabled = scheduler;
+                    assert_eq!(
+                        Behavior::resolve(&config).reorder_volatile_call_inputs,
+                        legacy && optimization != Optimization::O0 && scheduler
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn fixed_fill_loop_styles_follow_the_measured_build_families() {
