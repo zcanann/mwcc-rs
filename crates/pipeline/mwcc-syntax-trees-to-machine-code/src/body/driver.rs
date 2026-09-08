@@ -1256,6 +1256,11 @@ impl Generator {
                 return self.evaluate_body(&lowered);
             }
             let mut trial = self.clone();
+            if trial.try_shared_spill_switch(function)? {
+                *self = trial;
+                return Ok(());
+            }
+            let mut trial = self.clone();
             if trial.try_shared_spill_transaction(function)? {
                 *self = trial;
                 return Ok(());

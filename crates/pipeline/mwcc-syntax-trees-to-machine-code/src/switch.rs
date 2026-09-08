@@ -123,6 +123,18 @@ impl Generator {
         arms: &[SwitchArm],
         default: Option<&ArmBody>,
     ) -> Compilation<()> {
+        self.emit_joined_statement_switch_with(scrutinee, arms, default, Self::emit_statement)
+    }
+
+    /// Share dispatch and join topology with owners that already established
+    /// local register homes and can emit their assignments directly.
+    pub(crate) fn emit_joined_statement_switch_with(
+        &mut self,
+        scrutinee: &Expression,
+        arms: &[SwitchArm],
+        default: Option<&ArmBody>,
+        mut emit_arm_statement: impl FnMut(&mut Self, &Statement) -> Compilation<()>,
+    ) -> Compilation<()> {
         for arm in arms {
             let ArmBody::Statements(_) = &arm.body else {
                 return Err(Diagnostic::error(
@@ -199,7 +211,7 @@ impl Generator {
                 unreachable!()
             };
             for statement in statements {
-                self.emit_statement(statement)?;
+                emit_arm_statement(self, statement)?;
             }
             join_branches.push(self.output.instructions.len());
             self.output
@@ -211,7 +223,7 @@ impl Generator {
         self.reset_switch_edge_caches();
         if let Some(statements) = default_statements {
             for statement in statements {
-                self.emit_statement(statement)?;
+                emit_arm_statement(self, statement)?;
             }
         }
         self.reset_switch_edge_caches();

@@ -4,13 +4,71 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, complete GXAttr translation unit and switch-table liveness (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, GC/1.1p1 O0 switch parameter spills (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `a61358dc7a54f4b87caa66ef23ce4631ca37b1f78d42a62d9c48a7eb83e6a709:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `1d479686514612de64a269b09abf3d482d47d8ba3b347c46f6019792993e807b:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GC/1.1p1 O0 switch parameter spills, 2026-09-07
+
+The **716 execution differences** exposed by the GXAttr canaries below are now
+closed. GC/1.1p1 O0 `hinted` and `assigned` match their reference's complete
+**120-byte** and **88-byte** function bodies and symbolic relocations,
+including the wrong switch selector and corrupted saved r30.
+
+The existing version-specific source-spill policy now admits a scalar switch
+followed by a joined observer call. Parameters read once share SP+8 in source
+order; an input read repeatedly instead occupies r30, whose saved image is
+also SP+8. Emission uses the existing linkage-first prologue, typed expression
+lowering, call emitter, and epilogue. The shared switch emitter accepts an arm
+statement callback so this owner can assign already established local homes
+without duplicating comparison trees or join patching. Recognition checks word
+types, call signatures, supported expressions, and initialization on every
+exit. Address-taken/effectful values, volatile locals, fallthrough, and other
+control-flow shapes retain their existing owners. This is a measured family
+within the spill bug, not a complete model of the original register allocator.
+
+Canaries **1978–1979** add constant-valued and input-valued switches, initialized
+results, signed selectors, different constants, and no discarded-value hints.
+Candidate and fresh reference compile **30/30 objects** across fifteen builds
+at O0/O4. **10/120 function text plus symbolic relocation comparisons** match,
+including the new GC/1.1p1 O0 `assigned_choices` and `signed_choices`; **0/30
+whole objects** match. The earlier 120-object panel retains full compilation
+and **0/120 whole-object matches**, with exact functions increasing **4/450 to
+6/450**. The two panels add four exact function comparisons over the previous
+compiler.
+
+All **291,840 paired PowerPC execution comparisons** agree: **230,400** in
+canaries 1970–1977 and **61,440** in the new panel. Independent expected models
+include the reference spill bugs in **1,991 cases**. Checks cover observer
+arguments, ordinary memory effects, saved GPR/FPR images, and SP/LR/PC; helper
+calls clobber volatile registers. The new panel also verifies 60 bytes of the
+caller frame and permits the ABI linkage word to remain unchanged or hold LR.
+Three newer reference builds tail-call the observer at O4, whereas the
+candidate saves LR and calls it normally; those linkage writes and instruction
+schedules remain different. These are behavior matches under the stated
+observations, not whole-object matches or ABI-correctness claims for the buggy
+reference cases.
+
+Regression checks retain **1,114** byte-identical compiling indexed objects,
+including **972** known exact results. All **2,146** compiling recent objects
+remain identical and **89** retain their compilation failures. The **12**
+compiling full GX units and the AX voice-parameter unit retain identical
+objects. Compiler-library tests pass **1,592**, excluding the previously
+confirmed embedded-assembly failure. Final recompilation verifies the hashes
+of all **150** execution-tested canary objects and **13** complete library
+objects after the last refactor.
+
+Artifacts are under `target/switch-spill-{canaries,prior-canaries,index,recent,library,full-ax}`,
+including `reference-results.json`, `reference-comparison.json`, and
+`execution-results.json` for both canary panels. The final compiler/object
+bridge is `target/switch-spill-verified-objects.json`. Full-project parity
+remains open; the GX compilation frontier remains **12/14**, with `GXMisc.c`
+and `GXTexture.c` still blocked. These focused counts are not a corpus parity
+estimate.
 
 ## Complete GXAttr translation unit and switch-table liveness, 2026-09-07
 
