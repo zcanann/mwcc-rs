@@ -5,7 +5,7 @@ use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::Expression;
-use mwcc_versions::SignedPowerOfTwoDivisionStyle;
+use mwcc_versions::{Optimization, SignedPowerOfTwoDivisionStyle};
 
 impl Generator {
     /// Emit a division, choosing signed/unsigned and handling power-of-two
@@ -352,6 +352,29 @@ impl Generator {
                 });
             (quotient, GENERAL_SCRATCH)
         };
+        // Color the completed division before its retained input. The short
+        // sign/quotient values may share the result home when their CFG lives
+        // permit it; the original dividend must survive any later source use.
+        if preserve_dividend
+            && mwcc_vreg::Reg::is_virtual_field(temp)
+            && self.behavior.scheduler_enabled
+            && matches!(
+                self.behavior.optimization,
+                Optimization::O2 | Optimization::O3 | Optimization::O4
+            )
+        {
+            let mut group = Vec::new();
+            for field in [destination, sign_temp, quotient, dividend_register] {
+                if let Some(register) = mwcc_vreg::Reg::from_field(field, mwcc_vreg::Class::General)
+                    .virtual_register()
+                {
+                    if !group.contains(&register) {
+                        group.push(register);
+                    }
+                }
+            }
+            self.consumer_allocation_groups.push(group);
+        }
         // Round toward zero: add the quotient's sign bit.
         self.output
             .instructions

@@ -27,7 +27,13 @@ Negated global-update scheduling supplies groups ordered as subtraction result,
 host reload, multiply result. These are distinct virtual values; dead inputs
 can naturally share the result's home. A physical multiply temporary migrates
 only when CFG liveness proves it dead after the subtraction, including implicit
-call-argument uses. Other selection policies remain independently replaceable.
+call-argument uses. Constant division with a retained object base also nominates
+its result, rounding temporaries, and dividend in consumer-first order. Moving
+an independent reciprocal constant before the object address lets their short
+high halves reuse a home; the division group preserves the result/input order
+when that earlier constant no longer overlaps the dividend load. These division
+groups require O2 or higher and an enabled scheduler. Other selection policies
+remain independently replaceable.
 
 ## Original problem statement
 

@@ -4,13 +4,73 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, consumer-first allocation (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, complete AXSPB function matching (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `1c7eb6659e3a254d5cc907faf02398f168ba884aa6de8ecd179cf2825279344c:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `0a05281ed71690572b26dcdde936165cb12c6445cf9e0c209f522f1826a1b659:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete AXSPB function matching, 2026-09-08
+
+All **five functions** compiled from the complete BfBB `AXSPB.c` now match the
+pinned original DOL exactly after relocation. `__AXPrintStudio` improves
+**249 → 254 of 254 linked instruction words**, remaining **1,016 bytes**.
+Fresh GC/1.2.5n also matches **5/5**, with zero unresolved relocations on either
+side. The project flags are unchanged. All **5,120 three-way native comparisons**
+pass against the fresh reference, original executable, and independent model,
+including cache-flush callbacks, all studio and input bytes, and saved-register,
+stack, and return-state checks. This is complete function matching for this
+translation unit, not full-project linking or matching.
+
+The pre-allocation constant-division scheduler can now form a complete
+reciprocal constant before an independent retained object address and dividend
+load. Both address halves must refer to the same symbol; register dependencies,
+internal branch entries, relocated constants, volatile inputs, and opaque
+control flow prevent the move. Branch entries execute the complete reordered
+packet while relocations and other metadata follow their instruction owners.
+The division emitter supplies consumer-first allocation groups for its result,
+rounding temporaries, and retained dividend. The ordinary allocator handles
+interference and register reuse. Both changes require an enabled scheduler and
+O2 or higher; no function names or physical result registers are prescribed.
+
+A supplemental complete-source comparison covers **fifteen compiler builds**.
+Exact function text plus symbolic relocations improve **60 → 63 of 75**:
+GC/1.1, GC/1.2.5, and GC/1.2.5n now match **5/5**; the other twelve builds remain
+**4/5**, with `__AXPrintStudio` still different. The reference's BSS anchor is
+normalized to `__AXStudio` for this comparison. All **76,800 native cases**
+agree across baseline, candidate, fresh reference, and the original executable.
+The strict project flags compile **15/15 candidate and baseline objects** but
+only **12/15 references**: GC/3.0a3, GC/3.0a3p1, and Wii/1.0 promote an existing
+`vi.h` parameter-scope type warning to an error. The supplemental fifteen-build
+comparison removes `-W err` on all sides; all **15/15** then compile. This flag
+adjustment does not establish strict diagnostic parity for the newer builds.
+
+Canaries **2060–2063** cover nine forms at O4, O2, explicit schedule-off, and O0:
+signed divisors 3, 7, and 160; unsigned division; volatile input; preceding stores
+and callbacks; a second-position terminal address argument; and two inline fade
+updates. All sides compile **60/60 objects** and pass **138,240 paired native
+cases** with arithmetic boundaries, changing volatile reads, callback arguments,
+callback memory effects and clobbers, neighboring bytes, and ABI checks. The
+first reciprocal-constant/address order matches **30 → 180 of 270 optimized
+function samples**. Whole-object and complete function matching remain **0/60**
+and **0/540** respectively; other address placement and code-generation gaps
+remain. All thirty schedule-off/O0 objects are identical to baseline.
+
+All **870 objects** in the 2002–2059 panel remain identical. The indexed panel
+retains **1,114 identical compiled objects** and **972 known exact matches**;
+canaries 1821–2001 retain **2,626 identical objects** and **89 unchanged failures**.
+All fourteen configured GX objects and the other nine AX objects remain
+identical; all ten AX units compile. Backend tests pass **1,626**, with the
+previously confirmed embedded-assembly failure excluded.
+
+Artifacts are under `target/entry-magic-{canaries,real,versions,index,recent,previous,library,ax-library}`.
+The versions directory retains both strict and supplemental compilation results.
+`target/entry-magic-final-verification.json` pins the final compiler/harness and
+**227 execution-tested object hashes**, including the full fifteen-build panel.
+Full-project compilation, linking, and matching across versions remain
+unfinished; these focused counts are not a corpus parity estimate.
 
 ## Consumer-first allocation, 2026-09-08
 
