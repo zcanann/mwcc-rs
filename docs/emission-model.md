@@ -231,3 +231,19 @@ deferred displacements as well as relocations and branch targets. Use the
 shared machine-function remapper; relocating only ELF fixups is insufficient.
 Canaries 2121–2127 cover post-loop lifetimes, leading callbacks, mixed sections,
 and 32-KiB/64-KiB displacement boundaries across optimization and save modes.
+
+## Member-value lifetimes through guarded stores
+
+A retained member constant may extend into the fallthrough arm of an immediately
+following comparison and branch. Recognize one repeated literal followed only
+by ordinary byte/halfword/word stores, ending at the join or at the branch around
+an else arm. Every entry into the condition and store arm must pass through the
+preceding member-value graph. A live scratch on exit, metadata-owned instructions,
+calls, reads, and different literals prevent this extension.
+
+The same virtual value feeds the original member stores and the guarded stores.
+Ordinary allocation handles its lifetime across the condition, including
+interference with arguments and values used in the other arm. Remove only the
+repeated literal, using the shared instruction editor to preserve branch and
+fixup ownership. Canaries 2133–2137 cover both arm layouts, nonzero constants,
+volatile store order, aliasing, bypass entries, and barriers.

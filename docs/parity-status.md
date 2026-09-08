@@ -4,13 +4,59 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, member values across independent stores (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, member constants in dominated store arms (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `04334c29d5fbde4ea5052c6c0bb5563aaa921713b7f620638cb76bb5f554c648:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `251116eddc52347140e8dd7db5aff893e7f40a49ea18118b1223a367420f0f12:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Member constants in dominated store arms, 2026-09-08
+
+The member-value graph can now extend an existing constant into an immediately
+following guarded store arm. The arm must have one literal definition followed
+only by stores, with no entry bypassing the graph's value definition. Reads,
+calls, symbolic ownership, and a live outgoing r0 prevent reuse. The graph's
+virtual value acquires the longer lifetime before allocation; no fixed physical
+register is reserved, and all stores retain their order and multiplicity.
+
+BfBB `__AXVPBInit` now reuses its reset zero for the final-voice pointer stores.
+All fifteen builds lose one instruction: the oldest four shrink **520 → 516
+bytes**, and the other eleven shrink **528 → 524 bytes**. Only the initializer
+changes in each full-source AXVPB object. All **240 full-initializer comparisons**
+pass against baseline, fresh references, the original GQPE78 executable, and
+the complete memory/callback model. The initializer remains **0/15 exact**;
+`__AXSetPBDefault` stays **15/15 exact**. The older/middle references still have
+one fewer instruction, as well as different allocation and scheduling. The
+remaining redundant zero is in first clear-loop setup. GC 3/Wii retain a
+separate offset-loop layout in the reference.
+
+Canaries **2133–2137** add eight functions in five modes across fifteen builds.
+All **75 objects** compile on baseline, candidate, and reference. Four families
+change in **240 functions**, each removing one instruction: a simple guarded
+tail, an if/else tail, a nonzero retained constant, and volatile stores. Calls
+before the condition, a branch bypassing initialization, an intervening load,
+and a different literal retain baseline output. Exact matches remain **8/600**
+with no losses. All **9,600 native comparisons** pass on all sides, including
+both branch outcomes, aliased objects, volatile store order, complete memory
+guards, callback mutation/clobbers, and saved registers/SP/LR.
+
+The preceding **855 objects** (2076–2132) are byte-identical. Older/recent panels
+retain **1,110** and **2,626** compiled objects plus **89** unchanged failures;
+all **1,674** indexed outcomes remain unchanged (1,114 compiled, 972 known
+exact). All ten AX and fourteen GX translation units compile under the existing
+GC/1.2.5n library flags; only the AXVPB initializer changes. Backend tests pass
+**1,658**, with the existing nested-asm inline test excluded. The full corpus
+was not rerun. `target/member-guard-final-verification.json` binds the compiler
+and harness fingerprints to **270 native-tested object hashes** and the
+preserved-object hashes. Final compilation reproduces the tested objects.
+
+Reducing the examples also exposed an existing leaf-lowering limitation:
+removing the final callback from the simple guarded sample yields the
+`leading store before a trailing if` diagnostic in `body/driver.rs`. These
+canaries retain a post-guard callback to exercise the real initializer's
+structure; supporting the callback-free form remains pending.
 
 ## Member values across independent stores, 2026-09-08
 

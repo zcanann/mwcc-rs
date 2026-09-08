@@ -36,13 +36,13 @@ impl Generator {
             && self.output.jump_tables.is_empty()
             && self.output.deferred_displacements.is_empty();
         if let Some(plan) = leaf.then(|| plan(&self.output.instructions)).flatten() {
-            self.output.instructions = self.emit_member_values(&plan);
+            self.output.instructions = self.emit_member_values(&plan).0;
         } else {
             self.retain_member_store_regions();
         }
     }
 
-    fn emit_member_values(&mut self, plan: &Plan) -> Vec<Instruction> {
+    fn emit_member_values(&mut self, plan: &Plan) -> (Vec<Instruction>, Vec<u8>) {
         let registers: Vec<_> = plan
             .values
             .iter()
@@ -72,7 +72,7 @@ impl Generator {
             self.behavior.scheduler_enabled,
             ordinary,
         );
-        emit(plan, &registers, &events)
+        (emit(plan, &registers, &events), registers)
     }
 
     fn retain_member_store_regions(&mut self) {
@@ -110,12 +110,24 @@ impl Generator {
             }
             let end = member_run_end(&self.output.instructions, start, &entries);
             if let Some(plan) = region_plan(&self.output, start, end, &live) {
-                regions.push((start, end, plan));
+                let guarded = guarded_stores(&self.output, end, &plan, &live);
+                regions.push((start, end, plan, guarded));
             }
             start = end;
         }
-        for (start, end, plan) in regions.into_iter().rev() {
-            let mut code = self.emit_member_values(&plan);
+        for (start, end, plan, guarded) in regions.into_iter().rev() {
+            let (mut code, registers) = self.emit_member_values(&plan);
+            if let Some(guarded) = guarded {
+                for index in guarded.stores {
+                    match &mut self.output.instructions[index] {
+                        Instruction::StoreWord { s, .. }
+                        | Instruction::StoreHalfword { s, .. }
+                        | Instruction::StoreByte { s, .. } => *s = registers[guarded.value],
+                        _ => unreachable!("the guarded plan owns its stores"),
+                    }
+                }
+                crate::remove_instruction_retargeting_to_next(self, guarded.load);
+            }
             code.pop(); // The original region's successor owns control flow.
             self.output.instructions[start] = code[0].clone();
             for _ in start + 1..end {
@@ -285,6 +297,92 @@ fn region_plan(
     }
     let plan = plan_body(function.instructions.get(start..end)?)?;
     (plan.values.len() + plan.stores.len() < end - start).then_some(plan)
+}
+
+/// A fallthrough store arm dominated by the preceding member-value graph.
+/// Its only scratch definition may reuse a value already present in the graph;
+/// allocation then owns the extended lifetime across the condition.
+#[derive(Debug)]
+struct GuardedStores {
+    load: usize,
+    stores: std::ops::Range<usize>,
+    value: usize,
+}
+
+fn guarded_stores(
+    function: &mwcc_machine_code::MachineFunction,
+    end: usize,
+    plan: &Plan,
+    live: &mwcc_vreg::Liveness,
+) -> Option<GuardedStores> {
+    let instructions = &function.instructions;
+    if !matches!(
+        instructions.get(end),
+        Some(
+            Instruction::CompareWordImmediate { .. }
+                | Instruction::CompareLogicalWordImmediate { .. }
+        )
+    ) {
+        return None;
+    }
+    let Instruction::BranchConditionalForward { target, .. } = *instructions.get(end + 1)? else {
+        return None;
+    };
+    let load = end + 2;
+    let Instruction::AddImmediate {
+        d: 0,
+        a: 0,
+        immediate,
+    } = *instructions.get(load)?
+    else {
+        return None;
+    };
+    let value = plan
+        .values
+        .iter()
+        .position(|v| *v == Value::Constant(immediate))?;
+    let mut arm_end = load + 1;
+    while arm_end < target
+        && instructions
+            .get(arm_end)
+            .and_then(store_parts)
+            .is_some_and(|(s, a)| s == 0 && a > 2)
+    {
+        arm_end += 1;
+    }
+    if arm_end == load + 1
+        || target > instructions.len()
+        || !(arm_end == target
+            || matches!(instructions.get(arm_end),
+            Some(Instruction::Branch { target: join }) if *join >= target))
+        || instructions.iter().any(|i| {
+            matches!(i,
+            Instruction::Branch { target } | Instruction::BranchConditionalForward { target, .. }
+                if (end..arm_end).contains(target))
+        })
+        || function
+            .relocations
+            .iter()
+            .any(|r| (end..arm_end).contains(&r.instruction_index))
+        || function
+            .deferred_displacements
+            .iter()
+            .any(|r| (end..arm_end).contains(&r.instruction_index))
+        || live.pinned.iter().any(|p| {
+            p.class == Class::General
+                && p.register == 0
+                && p.live_slots
+                    .as_ref()
+                    .is_some_and(|slots| slots.binary_search(&(2 * arm_end)).is_ok())
+        })
+    {
+        return None;
+    }
+    Some(GuardedStores {
+        load,
+        stores: load + 1..arm_end,
+        value,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -676,6 +774,118 @@ mod tests {
         let end = member_run_end(&instructions, 3, &entries);
         assert_eq!(end, instructions.len() - 1);
         assert!(plan_body(&instructions[3..end]).is_some());
+    }
+
+    fn guarded_input() -> (mwcc_machine_code::MachineFunction, usize, Plan) {
+        let mut instructions = input();
+        instructions.pop();
+        let end = instructions.len();
+        let plan = plan_body(&instructions).unwrap();
+        instructions.extend([
+            Instruction::CompareWordImmediate { a: 6, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: end + 5,
+            },
+            Instruction::load_immediate(0, 0),
+            Instruction::StoreWord {
+                s: 0,
+                a: 5,
+                offset: 0,
+            },
+            Instruction::StoreHalfword {
+                s: 0,
+                a: 4,
+                offset: 2,
+            },
+            Instruction::BranchToLinkRegister,
+        ]);
+        (
+            mwcc_machine_code::MachineFunction {
+                instructions,
+                ..Default::default()
+            },
+            end,
+            plan,
+        )
+    }
+
+    #[test]
+    fn extends_a_member_constant_into_a_dominated_store_arm() {
+        let (function, end, plan) = guarded_input();
+        let reuse = guarded_stores(
+            &function,
+            end,
+            &plan,
+            &mwcc_vreg::analyze(&function.instructions),
+        )
+        .unwrap();
+        assert_eq!(reuse.load, end + 2);
+        assert_eq!(reuse.stores, end + 3..end + 5);
+        assert_eq!(plan.values[reuse.value], Value::Constant(0));
+    }
+
+    #[test]
+    fn guarded_reuse_rejects_bypassed_definitions_and_live_scratch() {
+        for at in 0..5 {
+            let (mut function, end, plan) = guarded_input();
+            function
+                .instructions
+                .push(Instruction::Branch { target: end + at });
+            assert!(guarded_stores(
+                &function,
+                end,
+                &plan,
+                &mwcc_vreg::analyze(&function.instructions)
+            )
+            .is_none());
+        }
+        let (mut function, end, plan) = guarded_input();
+        function
+            .instructions
+            .insert(end + 5, Instruction::move_register(3, 0));
+        assert!(guarded_stores(
+            &function,
+            end,
+            &plan,
+            &mwcc_vreg::analyze(&function.instructions)
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn guarded_reuse_rejects_new_values_calls_and_symbolic_fixups() {
+        for replacement in [
+            Instruction::load_immediate(0, 7),
+            Instruction::BranchAndLink {
+                target: "observe".into(),
+            },
+        ] {
+            let (mut function, end, plan) = guarded_input();
+            function.instructions[end + 2] = replacement;
+            assert!(guarded_stores(
+                &function,
+                end,
+                &plan,
+                &mwcc_vreg::analyze(&function.instructions)
+            )
+            .is_none());
+        }
+        let (mut function, end, plan) = guarded_input();
+        function
+            .deferred_displacements
+            .push(mwcc_machine_code::DeferredDisplacement {
+                instruction_index: end + 3,
+                target: mwcc_machine_code::DeferredDisplacementTarget::Symbol("global".into()),
+            });
+        assert!(guarded_stores(
+            &function,
+            end,
+            &plan,
+            &mwcc_vreg::analyze(&function.instructions)
+        )
+        .is_none());
     }
 
     #[test]
