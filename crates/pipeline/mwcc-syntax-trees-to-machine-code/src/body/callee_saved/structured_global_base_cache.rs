@@ -253,12 +253,53 @@ pub(super) fn plan(
     } else {
         linear_total.get(&global).copied().unwrap_or(leading_count)
     };
+    // Passing the complete object to the terminal call is a final use of its
+    // address before the call clobbers volatile registers. Keep the established
+    // base alive through argument placement without inventing a saved live range.
+    let use_count = use_count + terminal_object_address_arguments(function, &global);
     Some(StructuredGlobalBasePlan {
         total_size: global_size(&global)?,
         use_count,
         global,
         crosses_call: count > leading_count,
     })
+}
+
+fn terminal_object_address_arguments(function: &Function, global: &str) -> usize {
+    let Some((Statement::Expression(Expression::Call { arguments, .. }), preceding)) =
+        function.statements.split_last()
+    else {
+        return 0;
+    };
+    if !function.guards.is_empty()
+        || !function.inline_asm_blocks.is_empty()
+        || function.return_expression.is_some()
+        || function
+            .locals
+            .iter()
+            .filter_map(|local| local.initializer.as_ref())
+            .any(crate::analysis::expression_has_call)
+        || preceding.iter().any(crate::analysis::statement_has_call)
+        || arguments.iter().any(crate::analysis::expression_has_call)
+    {
+        return 0;
+    }
+    fn is_object_address(expression: &Expression, global: &str) -> bool {
+        match expression {
+            Expression::AddressOf { operand } => {
+                matches!(operand.as_ref(), Expression::Variable(name) if name == global)
+            }
+            Expression::Cast {
+                target_type: Type::Pointer(_) | Type::StructPointer { .. },
+                operand,
+            } => is_object_address(operand, global),
+            _ => false,
+        }
+    }
+    arguments
+        .iter()
+        .filter(|argument| is_object_address(argument, global))
+        .count()
 }
 
 /// A loop body is one address live range even though branch arms outside loops
@@ -686,5 +727,86 @@ mod tests {
                 use_count: 3,
             })
         );
+    }
+
+    #[test]
+    fn retains_the_base_for_terminal_address_arguments_without_crossing_a_call() {
+        let address = Expression::AddressOf {
+            operand: Box::new(Expression::Variable("pads".into())),
+        };
+        let mut function = function(vec![
+            Statement::Assign {
+                name: "a".into(),
+                value: member(None, 0),
+            },
+            Statement::Assign {
+                name: "b".into(),
+                value: member(None, 4),
+            },
+            Statement::Assign {
+                name: "c".into(),
+                value: member(None, 8),
+            },
+            Statement::Expression(Expression::Call {
+                name: "sink".into(),
+                arguments: vec![
+                    address.clone(),
+                    Expression::Cast {
+                        target_type: Type::Pointer(mwcc_syntax_trees::Pointee::UnsignedChar),
+                        operand: Box::new(address),
+                    },
+                ],
+            }),
+        ]);
+        let globals = std::collections::HashMap::from([(
+            "pads".into(),
+            Type::Struct {
+                size: 272,
+                align: 4,
+            },
+        )]);
+        assert_eq!(
+            plan(&function, &globals, &std::collections::HashMap::new()),
+            Some(StructuredGlobalBasePlan {
+                global: "pads".into(),
+                total_size: 272,
+                crosses_call: false,
+                use_count: 5,
+            })
+        );
+        function.statements.insert(
+            3,
+            Statement::Expression(Expression::Call {
+                name: "intervening".into(),
+                arguments: Vec::new(),
+            }),
+        );
+        assert_eq!(terminal_object_address_arguments(&function, "pads"), 0);
+    }
+
+    #[test]
+    fn excludes_nested_argument_calls_and_return_values_from_terminal_address_reuse() {
+        let mut function = function(vec![Statement::Expression(Expression::Call {
+            name: "sink".into(),
+            arguments: vec![
+                Expression::AddressOf {
+                    operand: Box::new(Expression::Variable("pads".into())),
+                },
+                Expression::Call {
+                    name: "source".into(),
+                    arguments: Vec::new(),
+                },
+            ],
+        })]);
+        assert_eq!(terminal_object_address_arguments(&function, "pads"), 0);
+        if let Statement::Expression(Expression::Call { arguments, .. }) =
+            &mut function.statements[0]
+        {
+            arguments.pop();
+        }
+        assert_eq!(terminal_object_address_arguments(&function, "pads"), 1);
+        assert_eq!(terminal_object_address_arguments(&function, "other"), 0);
+        function.return_expression = Some(Expression::IntegerLiteral(1));
+        assert_eq!(terminal_object_address_arguments(&function, "pads"), 0);
     }
 }

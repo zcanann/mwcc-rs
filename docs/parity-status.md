@@ -4,13 +4,66 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-07, folding retained member pointer displacements (fingerprint below)
+Latest targeted checkpoint: 2026-09-07, terminal object arguments and preserved signed dividends (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `8de277ec81e7bada487e372a9aada274c3f834072775785a02264b9b9d1cd488:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `4c7776d1bd77fce465ff878f93e773544be1abc16aacd0e5986362fa187d921a:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Terminal object arguments and preserved signed dividends, 2026-09-07
+
+The complete BfBB `__AXPrintStudio` function now has the reference's **1,016-byte
+size**, down from 1,024 bytes. Its retained studio address survives through
+placement of the final flush argument, and the allocator can use r3 for that
+address. This is **not an exact-output match**: input reloads, narrow conversions,
+and instruction scheduling still differ. AXSPB retains **4/5 exact candidate
+functions**, **5/5 exact fresh reference functions**, and no unresolved
+relocations against the pinned original DOL. All five functions pass **5,120
+three-way native comparisons** against fresh GC/1.2.5n, the original executable,
+and the independent fade/accumulation model.
+
+The existing global-base planner counts complete-object address arguments at a
+terminal call when there is no preceding or nested call. Those arguments use
+the address before the call's clobbers; they do not introduce a saved live range.
+Address emission gives the virtual base a preference for its actual argument
+register. Signed division's constant high half receives a virtual home while
+such an object base is live, removing an artificial fixed-register conflict.
+The allocator still decides whether an argument-register preference is legal.
+
+The new parameter probes also expose and fix an existing runtime bug: constant
+signed division overwrote a named dividend with its quotient or sign bit, so
+later source reads observed the intermediate value. A named source now keeps
+its value while a separate virtual temporary holds the quotient/sign correction,
+unless the requested destination is that source's own home. Dead input homes
+can still be reused by normal allocation.
+
+Canaries **2038–2039** cover O4 and explicit O0, terminal argument positions,
+duplicate pointers, live input parameters, nested callback arguments, and
+signed divisors **3, 7, and 160**. Baseline, candidate, and references compile
+**30/30 objects** across fifteen builds. All **53,760 paired native comparisons**
+pass independent models; the baseline has **22,080 failing cases** in the same
+panel, while the candidate and references have none. Checks include signed
+boundaries, repeated dividend reads, every packet and neighboring byte,
+callback order, argument values and writes, volatile register clobbers, saved
+GPR/FPR images, and SP/LR/PC. Exact matching remains **0/30 whole objects** and
+**0/210 function text plus symbolic relocation comparisons** in the new samples.
+
+The sixty changed objects from canaries 2034–2037 pass another **38,400 paired
+native comparisons**. The other **480/540** objects in the 2002–2037 panel remain
+identical. The indexed panel retains **1,114 identical compiled objects** and
+**972 known exact matches** among 1,674 rows. Canaries 1821–2001 retain **2,626
+identical objects** and **89 unchanged failures**. All fourteen configured GX
+objects and the other nine configured AX objects remain identical; all ten AX
+units compile. Backend tests pass **1,610**, with the previously confirmed
+embedded-assembly failure excluded.
+
+Artifacts are under `target/terminal-base-{canaries,old-address-canaries,old-index-canaries,real,index,recent,previous,library,ax-library}`.
+`target/terminal-base-final-verification.json` pins the compiler and harness
+fingerprints and verifies **272 execution-tested object hashes** after the final
+rebuild. Full-project compilation, linking, and compiler-version matching remain
+unfinished; these focused counts are not a corpus parity estimate.
 
 ## Folding captured member pointers into displacements, 2026-09-07
 

@@ -258,6 +258,10 @@ impl Generator {
     ) -> Compilation<()> {
         let (magic, shift) = signed_magic(divisor);
         let dividend_register = self.place_retained_division_operand(dividend)?;
+        let named_dividend = leaf_name(dividend)
+            .and_then(|name| self.lookup_general(name))
+            .is_some();
+        let preserve_dividend = named_dividend && destination != dividend_register;
         // The lowest free general register holds the materialized magic's high
         // half. The destination counts as free here — its incoming value is dead
         // and the divide writes its result there only at the very end — but the
@@ -267,6 +271,16 @@ impl Generator {
             return Err(Diagnostic::error(
                 "out of registers for magic-number division",
             ));
+        };
+        // A retained object base has not been assigned a physical register yet.
+        // Give the short-lived constant high half its own virtual home so it
+        // cannot pin the register needed by that address's terminal consumer.
+        let temp = if self.structured_global_base_cache.as_ref().is_some_and(|cache| {
+            cache.remaining_uses != 0 && mwcc_vreg::Reg::is_virtual_field(cache.register)
+        }) {
+            self.fresh_virtual_general_preferring(temp)
+        } else {
+            temp
         };
         // Materialize the 32-bit magic with lis + addi (the addi's low half is
         // sign-extended, so the high half is adjusted to compensate).
@@ -287,11 +301,10 @@ impl Generator {
 
         let correction = magic < 0;
         let (quotient, sign_temp) = if correction || shift > 0 {
-            // The dividend is consumed by the multiply (and the correction add), so the
-            // quotient accumulates in r0 and the now-free dividend register carries the
-            // sign bit. mwcc reuses the dividend register, not the result register —
-            // which matters when the result *is* r0 (a store): `srwi r3,r0,31; add
-            // r0,r0,r3`, not `srwi r0,r0,31` (that would clobber the quotient).
+            // The quotient accumulates in r0. A disposable dividend home can
+            // carry its sign bit; a named source owns a separate sign temporary
+            // so later source reads retain the original value. Allocation may
+            // still reuse the source's physical register after its last read.
             self.output
                 .instructions
                 .push(Instruction::MultiplyHighWord {
@@ -315,19 +328,29 @@ impl Generator {
                         shift,
                     });
             }
-            (GENERAL_SCRATCH, dividend_register)
+            let sign = if preserve_dividend {
+                self.fresh_virtual_general()
+            } else {
+                dividend_register
+            };
+            (GENERAL_SCRATCH, sign)
         } else {
-            // No correction or shift: the quotient lands in the (now-free) dividend
-            // register and the sign in r0 — `mulhw r3,r0,r3; srwi r0,r3,31; add d,r3,r0`.
-            // Targeting the result register would clobber the scratch when it is r0 (a store).
+            // No correction or shift: keep the quotient separate from a live
+            // named dividend. Its sign goes in r0; targeting r0 for both values
+            // would destroy the quotient before the final correction add.
+            let quotient = if preserve_dividend {
+                self.fresh_virtual_general()
+            } else {
+                dividend_register
+            };
             self.output
                 .instructions
                 .push(Instruction::MultiplyHighWord {
-                    d: dividend_register,
+                    d: quotient,
                     a: GENERAL_SCRATCH,
                     b: dividend_register,
                 });
-            (dividend_register, GENERAL_SCRATCH)
+            (quotient, GENERAL_SCRATCH)
         };
         // Round toward zero: add the quotient's sign bit.
         self.output

@@ -2564,6 +2564,11 @@ impl Generator {
             // ADDR16_HA/LO pair even when small-data addressing is enabled.
             if !self.locations.contains_key(name) {
                 if let Some(register) = self.structured_global_base_register(name) {
+                    // A retained address passed in a physical argument slot
+                    // can share that slot when its complete live range permits.
+                    if (3..=10).contains(&destination) {
+                        self.prefer_virtual_general(register, destination);
+                    }
                     if register != destination {
                         self.output
                             .instructions
