@@ -13,7 +13,7 @@
 //! lowest free register at each definition, which reproduces the spirit of the
 //! current inline model (favor the lowest free register, avoid live ones).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::constraints::RegisterConstraints;
 use crate::register::{Class, VirtualRegister};
@@ -227,80 +227,146 @@ impl Allocator for LinearScan {
         // Stable lowest-first: by definition point, then by id for determinism.
         order.sort_by_key(|interval| (interval.start, interval.vreg.id));
 
-        let mut allocation = Allocation::default();
-        // Currently-live assigned intervals: (last-use index, physical register, class).
-        let mut active: Vec<(&LiveInterval, u8)> = Vec::new();
+        allocate_in_order(order, pinned, calls, constraints)
+    }
+}
 
-        for interval in order {
-            let class = interval.vreg.class;
-            // Expire intervals whose last use is at or before this definition (a
-            // register freed exactly here may be reused — half-open, see `interferes`).
-            active.retain(|(active_interval, _)| active_interval.end > interval.start);
+/// Allocate each nominated expression group from its consumer toward its inputs.
+/// Groups are visited at their earliest definition in the ordinary scan. Only
+/// allocation order changes: full CFG live slots, pinned homes, call survival,
+/// register preferences, and legal pools retain the same meaning as LinearScan.
+/// Missing members are ignored, and the first group owns overlapping members.
+pub struct ConsumerFirstScan<'a> {
+    pub groups: &'a [Vec<VirtualRegister>],
+}
 
-            let mut busy: Vec<u8> = active
-                .iter()
-                .filter(|(active_interval, _)| {
-                    active_interval.vreg.class == class
-                        && intervals_interfere(active_interval, interval)
-                })
-                .map(|(_, register)| *register)
-                .collect();
-            for occupancy in pinned {
-                if occupancy.class == class && pinned_interferes(occupancy, interval) {
-                    busy.push(occupancy.register);
+impl Allocator for ConsumerFirstScan<'_> {
+    fn allocate(
+        &self,
+        intervals: &[LiveInterval],
+        pinned: &[PinnedOccupancy],
+        calls: &[usize],
+        constraints: &RegisterConstraints,
+    ) -> Result<Allocation, AllocationError> {
+        let mut linear: Vec<_> = intervals.iter().collect();
+        linear.sort_by_key(|interval| (interval.start, interval.vreg.id));
+        let by_register: HashMap<_, _> = intervals.iter().map(|i| (i.vreg, i)).collect();
+        let mut owner = HashMap::new();
+        for (index, group) in self.groups.iter().enumerate() {
+            for register in group {
+                if by_register.contains_key(register) {
+                    owner.entry(*register).or_insert(index);
                 }
             }
+        }
+        let mut order = Vec::with_capacity(intervals.len());
+        let mut seen = HashSet::new();
+        for interval in linear {
+            if seen.contains(&interval.vreg) {
+                continue;
+            }
+            if let Some(&index) = owner.get(&interval.vreg) {
+                for register in &self.groups[index] {
+                    if owner.get(register) == Some(&index) && seen.insert(*register) {
+                        order.push(by_register[register]);
+                    }
+                }
+            } else {
+                seen.insert(interval.vreg);
+                order.push(interval);
+            }
+        }
+        allocate_in_order(order, pinned, calls, constraints)
+    }
+}
 
-            // A value live ACROSS a call (strictly inside its range — a result defined
-            // at the call or an argument last used at it needs no saving) must survive
-            // the callee, so it draws only from the callee-saved pool. Other values
-            // prefer the volatile pool but may spill into callee-saved registers when
-            // pressure exceeds it; the frame reconciler adds the required saves.
-            let crosses_call = crosses_call(interval, calls);
-            let pool: Vec<u8> = match (crosses_call, class) {
-                (true, Class::General) => constraints.general_callee_saved.clone(),
-                (true, Class::Float) => constraints.float_callee_saved.clone(),
-                (false, Class::General) => constraints
-                    .general_pool
-                    .iter()
-                    .chain(&constraints.general_callee_saved)
-                    .copied()
-                    .collect(),
-                (false, Class::Float) => constraints
-                    .float_pool
-                    .iter()
-                    .chain(&constraints.float_callee_saved)
-                    .copied()
-                    .collect(),
-            };
-            // The consumer-tree preference wins when free (policy #1); the pool
-            // order is the fallback. The class SCRATCH (r0) is a legal preference —
-            // the measured double-duty home (policy #3) — though it is outside the
-            // default pool; it is never honored across a call (the scratch dies
-            // there). Any other out-of-pool wish is ignored — correctness first.
-            let preferred = interval
-                .prefer
-                .filter(|register| {
-                    let scratch_home = *register == constraints.scratch(class) && !crosses_call;
-                    (pool.contains(register) || scratch_home)
-                        && !busy.contains(register)
-                        && !interval.avoid.contains(register)
-                });
-            let choice = match preferred {
-                Some(register) => register,
-                None => pool
-                    .iter()
-                    .copied()
-                    .find(|register| !busy.contains(register) && !interval.avoid.contains(register))
-                    .ok_or(AllocationError::OutOfRegisters { class, at: interval.start })?,
-            };
+fn allocate_in_order(
+    order: Vec<&LiveInterval>,
+    pinned: &[PinnedOccupancy],
+    calls: &[usize],
+    constraints: &RegisterConstraints,
+) -> Result<Allocation, AllocationError> {
+    let mut allocation = Allocation::default();
+    // Currently-live assigned intervals: (last-use index, physical register, class).
+    let mut active: Vec<(&LiveInterval, u8)> = Vec::new();
 
-            allocation.assignments.insert(interval.vreg, choice);
-            active.push((interval, choice));
+    // A group can visit a later definition before an earlier one. Expire only
+    // values that end before *every* remaining definition, not this visit.
+    let mut remaining_start = vec![usize::MAX; order.len()];
+    let mut earliest = usize::MAX;
+    for (index, interval) in order.iter().enumerate().rev() {
+        earliest = earliest.min(interval.start);
+        remaining_start[index] = earliest;
+    }
+    for (index, interval) in order.into_iter().enumerate() {
+        let class = interval.vreg.class;
+        // Keep all assignments that can interfere with any future visit.
+        active.retain(|(active_interval, _)| active_interval.end > remaining_start[index]);
+
+        let mut busy: Vec<u8> = active
+            .iter()
+            .filter(|(active_interval, _)| {
+                active_interval.vreg.class == class
+                    && intervals_interfere(active_interval, interval)
+            })
+            .map(|(_, register)| *register)
+            .collect();
+        for occupancy in pinned {
+            if occupancy.class == class && pinned_interferes(occupancy, interval) {
+                busy.push(occupancy.register);
+            }
         }
 
-        Ok(allocation)
+        // A value live ACROSS a call (strictly inside its range — a result defined
+        // at the call or an argument last used at it needs no saving) must survive
+        // the callee, so it draws only from the callee-saved pool. Other values
+        // prefer the volatile pool but may spill into callee-saved registers when
+        // pressure exceeds it; the frame reconciler adds the required saves.
+        let crosses_call = crosses_call(interval, calls);
+        let pool: Vec<u8> = match (crosses_call, class) {
+            (true, Class::General) => constraints.general_callee_saved.clone(),
+            (true, Class::Float) => constraints.float_callee_saved.clone(),
+            (false, Class::General) => constraints
+                .general_pool
+                .iter()
+                .chain(&constraints.general_callee_saved)
+                .copied()
+                .collect(),
+            (false, Class::Float) => constraints
+                .float_pool
+                .iter()
+                .chain(&constraints.float_callee_saved)
+                .copied()
+                .collect(),
+        };
+        // The consumer-tree preference wins when free (policy #1); the pool
+        // order is the fallback. The class SCRATCH (r0) is a legal preference —
+        // the measured double-duty home (policy #3) — though it is outside the
+        // default pool; it is never honored across a call (the scratch dies
+        // there). Any other out-of-pool wish is ignored — correctness first.
+        let preferred = interval.prefer.filter(|register| {
+            let scratch_home = *register == constraints.scratch(class) && !crosses_call;
+            (pool.contains(register) || scratch_home)
+                && !busy.contains(register)
+                && !interval.avoid.contains(register)
+        });
+        let choice = match preferred {
+            Some(register) => register,
+            None => pool
+                .iter()
+                .copied()
+                .find(|register| !busy.contains(register) && !interval.avoid.contains(register))
+                .ok_or(AllocationError::OutOfRegisters {
+                    class,
+                    at: interval.start,
+                })?,
+        };
+
+        allocation.assignments.insert(interval.vreg, choice);
+        active.push((interval, choice));
     }
+
+    Ok(allocation)
 }
 
 /// The DESCENDING store-fill policy (measured, fires 851-856): mwcc allocates a
@@ -387,6 +453,72 @@ mod tests {
 
     fn gpr(id: u32, start: usize, end: usize) -> LiveInterval {
         LiveInterval::new(Reg::general(id).virtual_register().unwrap(), start, end)
+    }
+
+    #[test]
+    fn consumer_groups_reuse_dead_inputs_without_inventing_interference() {
+        let intervals = [gpr(0, 2, 5), gpr(1, 3, 5), gpr(2, 5, 6)];
+        let groups = vec![vec![
+            intervals[2].vreg,
+            intervals[1].vreg,
+            intervals[0].vreg,
+        ]];
+        let constraints = RegisterConstraints::gekko();
+        for (delta_end, expected) in [(2, [5, 4, 4]), (4, [6, 5, 4])] {
+            let pinned = [
+                PinnedOccupancy {
+                    register: 3,
+                    class: Class::General,
+                    start: 0,
+                    end: 7,
+                    live_slots: None,
+                },
+                PinnedOccupancy {
+                    register: 4,
+                    class: Class::General,
+                    start: 0,
+                    end: delta_end,
+                    live_slots: None,
+                },
+            ];
+            let allocation = ConsumerFirstScan { groups: &groups }
+                .allocate(&intervals, &pinned, &[], &constraints)
+                .unwrap();
+            for (interval, expected) in intervals.iter().zip(expected) {
+                assert_eq!(allocation.physical(interval.vreg), Some(expected));
+            }
+        }
+    }
+
+    #[test]
+    fn a_later_visit_cannot_expire_values_needed_by_an_earlier_definition() {
+        let intervals = [gpr(0, 0, 3), gpr(1, 10, 11).preferring(4), gpr(2, 1, 2)];
+        let groups = vec![vec![intervals[1].vreg, intervals[2].vreg]];
+        let allocation = ConsumerFirstScan { groups: &groups }
+            .allocate(&intervals, &[], &[], &RegisterConstraints::gekko())
+            .unwrap();
+        assert_eq!(allocation.physical(intervals[0].vreg), Some(3));
+        assert_eq!(allocation.physical(intervals[1].vreg), Some(4));
+        // v0 is still live at v2 despite the intervening visit to position 10.
+        assert_eq!(allocation.physical(intervals[2].vreg), Some(4));
+    }
+
+    #[test]
+    fn consumer_order_keeps_cfg_slots_and_call_survival_authoritative() {
+        let mut intervals = [gpr(0, 0, 5), gpr(1, 0, 5), gpr(2, 2, 5).preferring(0)];
+        intervals[0].live_slots = Some(vec![0, 1]);
+        intervals[1].live_slots = Some(vec![8, 9]);
+        let groups = vec![vec![
+            intervals[2].vreg,
+            intervals[1].vreg,
+            intervals[0].vreg,
+        ]];
+        let allocation = ConsumerFirstScan { groups: &groups }
+            .allocate(&intervals, &[], &[3], &RegisterConstraints::gekko())
+            .unwrap();
+        assert_eq!(allocation.physical(intervals[0].vreg), Some(3));
+        assert_eq!(allocation.physical(intervals[1].vreg), Some(3));
+        assert_eq!(allocation.physical(intervals[2].vreg), Some(31));
     }
 
     #[test]

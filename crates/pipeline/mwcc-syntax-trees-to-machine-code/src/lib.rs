@@ -786,6 +786,7 @@ fn lower_function_body(
         virtual_cursors: generator::VirtualCursors::default(),
         register_avoid: HashMap::new(),
         register_prefer: HashMap::new(),
+        consumer_allocation_groups: Vec::new(),
         stored_globals: HashMap::new(),
         condition_global_values: HashMap::new(),
         condition_float_cache: Default::default(),
@@ -1605,6 +1606,15 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
     let allocation = match generator.descending_allocation_top {
         Some(top) => mwcc_vreg::Allocator::allocate(
             &mwcc_vreg::DescendingScan { top },
+            &liveness.intervals,
+            &liveness.pinned,
+            &liveness.calls,
+            &generator.constraints,
+        ),
+        None if !generator.consumer_allocation_groups.is_empty() => mwcc_vreg::Allocator::allocate(
+            &mwcc_vreg::ConsumerFirstScan {
+                groups: &generator.consumer_allocation_groups,
+            },
             &liveness.intervals,
             &liveness.pinned,
             &liveness.calls,

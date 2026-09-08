@@ -8,7 +8,28 @@ learned about that allocator empirically (every rule is backed by oracle diffs),
 the IR we will introduce to give those decisions a home, and a migration that
 keeps all builds byte-exact at every step.
 
-## The problem we are solving
+## Current implementation: consumer-first groups, 2026-09-08
+
+The backend now has a separate virtual-register allocator. The original design
+below records the starting point; `mwcc-vreg` contains the current policies.
+`ConsumerFirstScan` lets instruction selection nominate small expression groups
+in consumer-to-input order. At the earliest member's definition, the allocator
+colors the whole group in that order, then resumes the ordinary definition
+scan. Missing members are ignored and the first group owns overlapping members.
+
+The policy shares register selection with `LinearScan`: CFG live slots, pinned
+physical occupancy, preferences, exclusions, scratch legality, and call survival
+remain authoritative. Reordering visits does not add interference. Expiration
+uses the earliest remaining definition, so visiting a late consumer cannot
+discard an assignment that still interferes with an earlier input.
+
+Negated global-update scheduling supplies groups ordered as subtraction result,
+host reload, multiply result. These are distinct virtual values; dead inputs
+can naturally share the result's home. A physical multiply temporary migrates
+only when CFG liveness proves it dead after the subtraction, including implicit
+call-argument uses. Other selection policies remain independently replaceable.
+
+## Original problem statement
 
 Today, instruction selection chooses registers **inline** as it walks the AST.
 There is no separate allocation pass, so there is nowhere for an allocator to

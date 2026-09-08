@@ -4,13 +4,66 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, negated delta scheduling (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, consumer-first allocation (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `18f05b5f754fd12e2d1d89fcd24b351fee87b7176fff41d8a527576f030b3641:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `1c7eb6659e3a254d5cc907faf02398f168ba884aa6de8ecd179cf2825279344c:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Consumer-first allocation, 2026-09-08
+
+The complete BfBB `__AXPrintStudio` now matches **249/254 linked instruction
+words at their reference offsets**, up from **213/254**, at **1,016 bytes**.
+All nine fade bodies match; five entry instruction words still differ. AXSPB
+retains **4/5 exact candidate functions**, **5/5 exact fresh reference functions**,
+zero unresolved relocations, and **5,120 passing three-way native comparisons**
+against fresh GC/1.2.5n, the original DOL, and the independent model.
+
+A pluggable consumer-first allocation policy visits each nominated expression's
+result before its inputs. Global updates now expose distinct multiply, reload,
+and subtraction values instead of forcing them into a single temporary home.
+The policy shares LinearScan's register selection and preserves CFG interference,
+pinned homes, preferences, exclusions, and call survival. Expiration accounts
+for every remaining definition when visits run out of source order. Physical
+multiply temporaries migrate only when CFG liveness proves no later consumer.
+See [the allocator notes](register-allocator.md) for the policy boundary.
+
+Canaries **2056–2059** cover six forms across fifteen builds at O4, O2, explicit
+schedule-off, and O0: retained arguments, a later delta use, byte stores,
+consecutive updates, a callback frame, and a preceding volume store. All sides
+compile **60/60 objects**. Exact function text plus symbolic relocation matches
+increase **140 → 162 of 360**; whole-object matching remains **12/60**. Native
+checks exercise **92,160 paired cases** with arithmetic boundaries, aliased
+outputs, callback effects and clobbers, neighboring bytes, and saved-register,
+stack, and return-state checks.
+
+Those executions expose an **unimplemented reference bug** in GC/1.1p1 O0
+`framed` (canary 2059): MWCC spills the output pointer and callback argument to
+`8(r1)`, then writes the negated halfword through the callback argument. All
+**256 affected cases** reproduce that corrupted destination using a mapped
+callback argument and a separate bug model. Baseline and candidate instead
+match the C model; this is a parity gap, not a passing behavior match. The
+remaining **91,904 cases** agree with the ordinary model on all sides, with no
+unexpected mismatches.
+
+The changed O4/O2 objects from canaries 2052–2053 improve **64 → 212 of 390**
+exact functions and pass **99,840 paired native comparisons**. The fifteen
+changed objects from canary 2022 pass another **15,360**. The other **765/810
+objects** in the 2002–2055 panel remain identical. The indexed panel retains
+**1,114 identical compiled objects** and **972 known exact matches**; canaries
+1821–2001 retain **2,626 identical objects** and **89 unchanged failures**.
+All fourteen configured GX objects and the other nine AX objects remain
+identical; all ten AX units compile. Backend tests pass **1,623**, with the
+previously confirmed embedded-assembly failure excluded. Allocator tests pass
+**110**, with eight existing ignored tests.
+
+Artifacts are under `target/consumer-order-{canaries,old-negates,old-inline,real,index,recent,previous,library,ax-library}`.
+`target/consumer-order-final-verification.json` pins the compiler/harness and
+verifies **302 execution-tested object hashes** after the final rebuild.
+Full-project compilation, linking, and matching across versions remain
+unfinished; these focused counts are not a corpus parity estimate.
 
 ## Negated delta scheduling, 2026-09-08
 

@@ -7,6 +7,7 @@
 use crate::generator::Generator;
 use mwcc_machine_code::{Instruction, Relocation, RelocationKind, RelocationTarget};
 use mwcc_versions::{NegatedUpdateScheduleStyle, Optimization};
+use mwcc_vreg::{Class, Reg};
 use std::collections::HashSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +34,7 @@ impl Generator {
         {
             return;
         }
+        let original_liveness = mwcc_vreg::analyze(&self.output.instructions);
         let mut permutation: Vec<_> = (0..self.output.instructions.len()).collect();
         for start in 0..self.output.instructions.len().saturating_sub(5) {
             let Some(placement) = plan(
@@ -43,21 +45,67 @@ impl Generator {
             ) else {
                 continue;
             };
-            let temporary = self.fresh_virtual_general();
+            let Instruction::MultiplyImmediate {
+                d: original_product,
+                ..
+            } = self.output.instructions[start]
+            else {
+                unreachable!()
+            };
+            let product_owned =
+                dead_after_subtraction(&original_liveness, original_product, start + 2);
+            let result = self.fresh_virtual_general();
+            // A load and the subtraction result are distinct values, even when
+            // allocation eventually gives them the same physical home.
+            let loaded = if placement != Placement::AfterSubtract && product_owned {
+                self.fresh_virtual_general()
+            } else {
+                result
+            };
+            let product = if product_owned && !Reg::is_virtual_field(original_product) {
+                let register = self.fresh_virtual_general();
+                if let Instruction::MultiplyImmediate { d, .. } =
+                    &mut self.output.instructions[start]
+                {
+                    *d = register;
+                }
+                register
+            } else {
+                original_product
+            };
             if placement != Placement::AfterSubtract {
                 if let Instruction::LoadWord { d, .. } = &mut self.output.instructions[start + 1] {
-                    *d = temporary;
+                    *d = loaded;
                 }
             }
-            if let Instruction::SubtractFrom { d, b, .. } = &mut self.output.instructions[start + 2]
+            if let Instruction::SubtractFrom { d, a, b } = &mut self.output.instructions[start + 2]
             {
-                *d = temporary;
+                *d = result;
+                *a = product;
                 if placement != Placement::AfterSubtract {
-                    *b = temporary;
+                    *b = loaded;
                 }
             }
             if let Instruction::StoreWord { s, .. } = &mut self.output.instructions[start + 3] {
-                *s = temporary;
+                *s = result;
+            }
+            if product_owned {
+                let mut group = vec![Reg::from_field(result, Class::General)
+                    .virtual_register()
+                    .unwrap()];
+                if placement != Placement::AfterSubtract {
+                    group.push(
+                        Reg::from_field(loaded, Class::General)
+                            .virtual_register()
+                            .unwrap(),
+                    );
+                }
+                group.push(
+                    Reg::from_field(product, Class::General)
+                        .virtual_register()
+                        .unwrap(),
+                );
+                self.consumer_allocation_groups.push(group);
             }
             let destination = start
                 + match placement {
@@ -87,6 +135,28 @@ impl Generator {
         }
         crate::remap_instruction_indices(self, &permutation);
     }
+}
+
+/// A physical temporary may become virtual only if its value has no later
+/// consumer. CFG occupancy includes uses reached through branches and calls.
+fn dead_after_subtraction(
+    liveness: &mwcc_vreg::Liveness,
+    register: u8,
+    subtraction: usize,
+) -> bool {
+    let slots = match Reg::from_field(register, Class::General) {
+        Reg::Virtual(register) => liveness
+            .intervals
+            .iter()
+            .find(|i| i.vreg == register)
+            .and_then(|i| i.live_slots.as_ref()),
+        Reg::Physical(register) => liveness
+            .pinned
+            .iter()
+            .find(|p| p.class == Class::General && p.register == register)
+            .and_then(|p| p.live_slots.as_ref()),
+    };
+    slots.is_some_and(|slots| slots.binary_search(&(2 * subtraction + 1)).is_err())
 }
 
 fn sda_target(relocations: &[Relocation], index: usize) -> Option<&str> {
@@ -228,6 +298,30 @@ mod tests {
                 target: RelocationTarget::External("input".into()),
             })
             .collect()
+    }
+
+    #[test]
+    fn physical_temporaries_must_be_dead_on_all_paths_before_migration() {
+        let instructions = sequence();
+        assert!(dead_after_subtraction(
+            &mwcc_vreg::analyze(&instructions),
+            5,
+            2
+        ));
+        for consumer in [
+            Instruction::Or { a: 3, s: 5, b: 5 },
+            Instruction::BranchAndLink {
+                target: "consume".into(),
+            },
+        ] {
+            let mut instructions = sequence();
+            instructions.push(consumer);
+            assert!(!dead_after_subtraction(
+                &mwcc_vreg::analyze(&instructions),
+                5,
+                2
+            ));
+        }
     }
 
     #[test]
