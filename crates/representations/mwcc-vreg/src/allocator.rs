@@ -34,6 +34,9 @@ pub struct LiveInterval {
     /// a prefers r3, b prefers r0), taken when free at allocation, else the pool
     /// order proceeds. `None` (the default) is the plain lowest-free behavior.
     pub prefer: Option<u8>,
+    /// Prefer an already allocated value's home when legal. Explicit physical
+    /// preferences take precedence; missing or cross-class sources are ignored.
+    pub prefer_virtual: Option<VirtualRegister>,
     /// Control-flow-aware live slots (`2*i` before instruction `i`, `2*i+1`
     /// after it). `None` preserves the interval-only behavior for hand-authored
     /// allocator inputs; liveness analysis always supplies these slots.
@@ -49,6 +52,7 @@ impl LiveInterval {
             end,
             avoid: Vec::new(),
             prefer: None,
+            prefer_virtual: None,
             live_slots: None,
         }
     }
@@ -344,12 +348,20 @@ fn allocate_in_order(
         // the measured double-duty home (policy #3) — though it is outside the
         // default pool; it is never honored across a call (the scratch dies
         // there). Any other out-of-pool wish is ignored — correctness first.
-        let preferred = interval.prefer.filter(|register| {
-            let scratch_home = *register == constraints.scratch(class) && !crosses_call;
-            (pool.contains(register) || scratch_home)
-                && !busy.contains(register)
-                && !interval.avoid.contains(register)
-        });
+        let preferred = interval
+            .prefer
+            .or_else(|| {
+                interval
+                    .prefer_virtual
+                    .filter(|source| source.class == class)
+                    .and_then(|source| allocation.physical(source))
+            })
+            .filter(|register| {
+                let scratch_home = *register == constraints.scratch(class) && !crosses_call;
+                (pool.contains(register) || scratch_home)
+                    && !busy.contains(register)
+                    && !interval.avoid.contains(register)
+            });
         let choice = match preferred {
             Some(register) => register,
             None => pool
@@ -453,6 +465,59 @@ mod tests {
 
     fn gpr(id: u32, start: usize, end: usize) -> LiveInterval {
         LiveInterval::new(Reg::general(id).virtual_register().unwrap(), start, end)
+    }
+
+    #[test]
+    fn copy_affinity_reuses_a_dead_source_home_when_legal() {
+        let source = gpr(0, 0, 2).preferring(6);
+        let mut copy = gpr(1, 2, 4);
+        copy.prefer_virtual = Some(source.vreg);
+        let constraints = RegisterConstraints::gekko();
+        let allocation = LinearScan
+            .allocate(&[source.clone(), copy.clone()], &[], &[], &constraints)
+            .unwrap();
+        assert_eq!(allocation.physical(copy.vreg), Some(6));
+        copy.avoid.push(6);
+        let allocation = LinearScan
+            .allocate(&[source, copy.clone()], &[], &[], &constraints)
+            .unwrap();
+        assert_eq!(allocation.physical(copy.vreg), Some(3));
+    }
+
+    #[test]
+    fn copy_affinity_never_overrides_interference_or_call_survival() {
+        let source = gpr(0, 0, 4).preferring(6);
+        let mut copy = gpr(1, 2, 5);
+        copy.prefer_virtual = Some(source.vreg);
+        let constraints = RegisterConstraints::gekko();
+        let allocation = LinearScan
+            .allocate(&[source.clone(), copy.clone()], &[], &[], &constraints)
+            .unwrap();
+        assert_eq!(allocation.physical(copy.vreg), Some(3));
+        let source = gpr(0, 0, 2).preferring(6);
+        let allocation = LinearScan
+            .allocate(&[source, copy.clone()], &[], &[3], &constraints)
+            .unwrap();
+        assert_eq!(allocation.physical(copy.vreg), Some(31));
+    }
+
+    #[test]
+    fn unknown_copy_sources_fall_back_and_explicit_homes_take_precedence() {
+        let mut copy = gpr(1, 0, 2);
+        copy.prefer_virtual = Some(gpr(0, 0, 1).vreg);
+        let constraints = RegisterConstraints::gekko();
+        let allocation = LinearScan
+            .allocate(&[copy.clone()], &[], &[], &constraints)
+            .unwrap();
+        assert_eq!(allocation.physical(copy.vreg), Some(3));
+        let source = gpr(0, 0, 2).preferring(6);
+        copy.start = 2;
+        copy.end = 4;
+        copy.prefer = Some(7);
+        let allocation = LinearScan
+            .allocate(&[source, copy.clone()], &[], &[], &constraints)
+            .unwrap();
+        assert_eq!(allocation.physical(copy.vreg), Some(7));
     }
 
     #[test]

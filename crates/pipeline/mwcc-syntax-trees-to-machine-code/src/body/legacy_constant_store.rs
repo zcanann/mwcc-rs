@@ -181,7 +181,7 @@ fn color_member_constants(
     value_for_store: &[usize],
     unique_count: usize,
     forbidden: &[u8],
-) -> Vec<u8> {
+) -> Option<Vec<u8>> {
     let mut loads = vec![0usize; unique_count];
     let mut last_stores = vec![0usize; unique_count];
     for (position, event) in events.iter().enumerate() {
@@ -197,19 +197,15 @@ fn color_member_constants(
         .collect();
     let mut registers = vec![GENERAL_SCRATCH; unique_count];
     for value in (0..unique_count).rev() {
-        registers[value] = colors
-            .iter()
-            .copied()
-            .find(|candidate| {
-                ((value + 1)..unique_count).all(|later| {
-                    let overlaps = loads[later] < last_stores[value]
-                        && loads[value] < last_stores[later];
-                    !overlaps || registers[later] != *candidate
-                })
+        registers[value] = colors.iter().copied().find(|candidate| {
+            ((value + 1)..unique_count).all(|later| {
+                let overlaps =
+                    loads[later] < last_stores[value] && loads[value] < last_stores[later];
+                !overlaps || registers[later] != *candidate
             })
-            .expect("constant-store run exceeds the planned register set");
+        })?;
     }
-    registers
+    Some(registers)
 }
 
 fn serialized_member_pair(instructions: &[Instruction], at: usize) -> Option<(i16, u8)> {
@@ -247,6 +243,14 @@ fn schedule_serialized_member_constants(
     instructions: &mut Vec<Instruction>,
     relocation_owners: &[usize],
 ) -> Option<Vec<usize>> {
+    if instructions.iter().any(|i| {
+        matches!(
+            i,
+            Instruction::VerbatimWord { .. } | Instruction::BranchToCountRegister
+        )
+    }) {
+        return None;
+    }
     let old_len = instructions.len();
     for start in 0..instructions.len() {
         let Some((_, base)) = serialized_member_pair(instructions, start) else {
@@ -291,12 +295,33 @@ fn schedule_serialized_member_constants(
             value_for_store.push(value);
         }
         let events = member_interleaved_events(unique_constants.len(), stores.len());
-        let registers = color_member_constants(
+        // This is a physical post-allocation pass. Preserve every incoming
+        // home that the surrounding CFG still needs, not only the store base.
+        let liveness = mwcc_vreg::analyze(instructions);
+        let live_at = |register, slot| {
+            liveness.pinned.iter().any(|p| {
+                p.class == mwcc_vreg::Class::General
+                    && p.register == register
+                    && p.live_slots
+                        .as_ref()
+                        .is_some_and(|slots| slots.binary_search(&slot).is_ok())
+            })
+        };
+        if live_at(GENERAL_SCRATCH, 2 * (at - 1) + 1) {
+            // Repeated constants can leave a different final scratch value.
+            continue;
+        }
+        let forbidden: Vec<_> = (3..=12)
+            .filter(|r| *r == base || live_at(*r, 2 * start))
+            .collect();
+        let Some(registers) = color_member_constants(
             &events,
             &value_for_store,
             unique_constants.len(),
-            &[base],
-        );
+            &forbidden,
+        ) else {
+            continue;
+        };
         let mut replacement = Vec::with_capacity(unique_constants.len() + stores.len());
         for event in events {
             match event {
@@ -336,6 +361,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn physical_store_windows_preserve_addresses_used_after_the_run() {
+        let mut instructions = Vec::new();
+        for (constant, offset) in [(3, 0), (4, 4), (5, 8)] {
+            instructions.push(Instruction::load_immediate(0, constant));
+            instructions.push(Instruction::StoreWord { s: 0, a: 3, offset });
+        }
+        instructions.push(Instruction::Or { a: 3, s: 4, b: 4 });
+        instructions.push(Instruction::BranchAndLink {
+            target: "sink".into(),
+        });
+        assert!(schedule_serialized_member_constants(&mut instructions, &[]).is_some());
+        assert!(!instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::AddImmediate { d: 4, a: 0, .. })));
+    }
+
+    #[test]
+    fn live_scratch_and_register_pressure_keep_the_original_store_window() {
+        let mut instructions = Vec::new();
+        for (constant, offset) in [(3, 0), (4, 4), (3, 8)] {
+            instructions.push(Instruction::load_immediate(0, constant));
+            instructions.push(Instruction::StoreWord { s: 0, a: 3, offset });
+        }
+        instructions.push(Instruction::Or { a: 3, s: 0, b: 0 });
+        assert!(schedule_serialized_member_constants(&mut instructions, &[]).is_none());
+        let events = member_interleaved_events(3, 3);
+        assert_eq!(
+            color_member_constants(&events, &[0, 1, 2], 3, &(3..=12).collect::<Vec<_>>()),
+            None
+        );
+    }
+
+    #[test]
     fn reverse_coloring_matches_observed_two_through_seven_value_runs() {
         let expected = [
             vec![3, 0],
@@ -354,7 +412,7 @@ mod tests {
     #[test]
     fn member_window_reuses_scratch_without_clobbering_its_base() {
         let events = member_interleaved_events(4, 4);
-        assert_eq!(color_member_constants(&events, &[0, 1, 2, 3], 4, &[3]), [0, 0, 4, 0]);
+        assert_eq!(color_member_constants(&events, &[0, 1, 2, 3], 4, &[3]), Some(vec![0, 0, 4, 0]));
 
         let mut instructions = Vec::new();
         for (constant, offset) in [(0, 0), (8, 1), (1, 2), (10, 3)] {

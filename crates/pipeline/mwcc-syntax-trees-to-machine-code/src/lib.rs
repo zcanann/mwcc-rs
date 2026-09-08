@@ -67,6 +67,7 @@ mod frexp_family;
 mod generator;
 mod global_memory_schedule;
 mod constant_division_schedule;
+mod division_address_schedule;
 mod negated_update_schedule;
 mod inline_expansion;
 mod inline_sqrtf;
@@ -786,6 +787,7 @@ fn lower_function_body(
         virtual_cursors: generator::VirtualCursors::default(),
         register_avoid: HashMap::new(),
         register_prefer: HashMap::new(),
+        register_affinity: HashMap::new(),
         consumer_allocation_groups: Vec::new(),
         stored_globals: HashMap::new(),
         condition_global_values: HashMap::new(),
@@ -1080,6 +1082,7 @@ fn lower_function_body(
     generator.materialize_incoming_stack_parameters()?;
     generator.fold_retained_member_displacements();
     generator.schedule_constant_division_loads();
+    generator.schedule_division_address_lows();
     generator.schedule_negated_global_updates();
     // Schedule on the virtual-register stream, then allocate. Ordering matters:
     // scheduling first means physical-register reuse cannot create false
@@ -1599,6 +1602,7 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
         if let Some(&prefer) = generator.register_prefer.get(&interval.vreg) {
             interval.prefer = Some(prefer);
         }
+        interval.prefer_virtual = generator.register_affinity.get(&interval.vreg).copied();
     }
     // PASS-ARC STEP 2: a whole-body fill that emitted its values as virtuals
     // selects the DESCENDING policy (the measured store-fill assignment);

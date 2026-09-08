@@ -546,6 +546,8 @@ pub(crate) struct Generator {
     /// Consumer-tree PREFERENCES: virtual id -> the register its consumer wants
     /// (Phase D policy #1); honored by LinearScan when free, pool order otherwise.
     pub(crate) register_prefer: HashMap<VirtualRegister, u8>,
+    /// Optional copy-source homes, resolved only after the source is allocated.
+    pub(crate) register_affinity: HashMap<VirtualRegister, VirtualRegister>,
     /// Small expression groups to color from their final value toward inputs.
     pub(crate) consumer_allocation_groups: Vec<Vec<VirtualRegister>>,
     /// Return type of each callable name (prototypes + definitions), so a call's

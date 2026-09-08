@@ -4,13 +4,81 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, complete AXSPB function matching (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, patched address scheduling and live constant-store homes (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `0a05281ed71690572b26dcdde936165cb12c6445cf9e0c209f522f1826a1b659:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `23c009e1263139e590463ee938c806c57f78ca8c8a96bbdb388a9a85ed0e9b21:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Patched address scheduling and live constant-store homes, 2026-09-08
+
+GC/1.1p1 now matches **all five AXSPB functions**, including the complete
+**1,016-byte `__AXPrintStudio`**. The fifteen-build comparison improves
+**63 → 64 of 75 exact functions**: GC/1.1, GC/1.1p1, GC/1.2.5, and GC/1.2.5n
+match **5/5**, while the eleven later builds remain **4/5**. The complete-source
+panel retains the preceding checkpoint's supplemental flags (`-W err` removed
+on all sides) and normalizes the reference BSS anchor to `__AXStudio`.
+All **76,800 native cases** agree across baseline, candidate, fresh references,
+and the original executable. GC/1.2.5n's exact original-DOL output is unchanged.
+
+A version policy isolates the patched compiler's address completion schedule.
+The address high half survives quotient rounding; the low half follows the
+completed quotient. Separate virtual values and a joint consumer allocation
+group reproduce the register homes without prescribing physical registers.
+An optional copy-source preference lets the branch-local quotient copy reuse
+its source's allocated home. It is subordinate to explicit physical preferences
+and all ordinary interference, exclusion, pool, and call-survival checks.
+Incoming branches, dependencies on the unfinished address, unsupported division
+shapes, and unrelated relocations prevent deferral. The policy requires an
+enabled scheduler and O2 or higher.
+
+The new corpus also exposed two clobbers in the old physical constant-store
+scheduler. It now excludes incoming homes live through the surrounding CFG,
+retains the original sequence when its final scratch value is still needed,
+and declines coloring when no legal register is available. This fixes callback
+addresses overwritten by branch-local constants: **1,872 baseline execution
+failures become zero**. In the complete BfBB `AXVPB.c`, the same scratch-lifetime
+check fixes `__AXSetPBDefault`, which previously wrote **164 instead of zero**
+to `updateMS`. All **2,048 candidate executions** match fresh GC/1.2.5n, the
+original executable, and the independent field model; all baseline executions
+fail that field. The function grows **84 → 92 bytes** and still differs from
+the **64-byte reference**. Other AXVPB functions are unchanged.
+
+Canaries **2064–2067** cover eight forms across fifteen builds at O4, O2,
+explicit schedule-off, and O0: branch-local, linear, and mixed member stores;
+loops; values surviving callbacks; inline stores; retained-dividend division;
+and nested branches. All sides compile **60/60 objects**. Whole-object and
+complete function text plus symbolic relocation matching remain **0/60** and
+**0/480**. All **122,880 candidate native cases** match the ordinary model,
+including callback addresses and effects, neighboring memory, and ABI state.
+
+GC/1.1p1 O0 `looped` exposes another **unimplemented reference spill bug**:
+the count parameter overwrites saved r30 at `8(r1)`, so the epilogue restores
+the count into the caller's r30. All **256 affected reference cases** match
+that separate corruption model; baseline and candidate preserve the caller's
+r30 instead. The remaining **122,624 reference cases** match the ordinary
+model. These 256 cases are a parity gap, not successful behavior matches.
+Later compilers' branch-local address rematerialization also remains open:
+inline pointer bindings currently form addresses before their branch consumers,
+so changing only the global-base cache policy does not reproduce those outputs.
+
+The two changed older objects (GC/1.1p1 canaries 2060 and 2061) pass **4,608
+paired native cases**. The other **928/930 objects** in the 2002–2063 panel
+remain identical. The indexed panel retains **1,114 identical compiled objects**
+and **972 known exact matches**; canaries 1821–2001 retain **2,626 identical
+objects** and **89 unchanged failures**. All fourteen configured GX objects and
+nine of ten AX objects are identical; all ten AX units compile, with only
+AXVPB changing. Tests pass **1,631 backend**, **113 allocator**, and **53 version**
+tests, with the known embedded-assembly failure excluded and eight existing
+allocator tests ignored.
+
+Artifacts are under `target/branch-base-{canaries,old-entry,versions,index,recent,previous,library,ax-library}`.
+`target/branch-base-final-verification.json` pins the final compiler/harness and
+verifies **234 execution-tested object hashes** after the final rebuild.
+Full-project compilation, linking, and matching across versions remain
+unfinished; these focused counts are not a corpus parity estimate.
 
 ## Complete AXSPB function matching, 2026-09-08
 

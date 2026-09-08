@@ -15,7 +15,7 @@ use crate::config::CompilerConfig;
 use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal, SchedulingModel};
 use crate::profile::{
     SmallConstantMultiplyStyle,
-    NegatedUpdateScheduleStyle,
+    NegatedUpdateScheduleStyle, DivisionAddressSchedule,
     AccumulatorIssueStyle,
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CallDispatcherStyle, ClearedLowBitPowerSelectStyle, CoefficientTableRelocationStyle,
@@ -812,6 +812,8 @@ pub struct Behavior {
     pub small_constant_multiply_style: SmallConstantMultiplyStyle,
     /// Placement of a pending negation around a scalar update's subtraction.
     pub negated_update_schedule_style: NegatedUpdateScheduleStyle,
+    /// Completion point for a retained address beside a constant quotient.
+    pub division_address_schedule: DivisionAddressSchedule,
     /// Placement of the containing-unit load for source-level bit-field reads.
     pub bit_field_load_placement: BitFieldLoadPlacement,
     /// Scheduling of distinct constant values consumed by consecutive stores.
@@ -1346,6 +1348,7 @@ impl Behavior {
             },
             small_constant_multiply_style: config.build.profile.small_constant_multiply_style(),
             negated_update_schedule_style: config.build.profile.negated_update_schedule_style(),
+            division_address_schedule: config.build.profile.division_address_schedule(),
             constant_multiply_store_conversion_style: if config.flags.optimization == Optimization::O0
                 && config.build.profile.narrow_store_conversion_style()
                     == NarrowStoreConversionStyle::ElideRedundantConversion
@@ -1974,6 +1977,19 @@ impl Behavior {
 mod tests {
     use super::*;
     use crate::{build, flags::CharDefault};
+
+    #[test]
+    fn only_the_patched_233_build_delays_division_address_completion() {
+        for (build, expected) in [
+            (build::GC_1_1, DivisionAddressSchedule::CompleteBeforeDividend),
+            (build::GC_1_1P1, DivisionAddressSchedule::LowAfterQuotient),
+            (build::GC_1_2_5N, DivisionAddressSchedule::CompleteBeforeDividend),
+            (build::GC_1_3_2, DivisionAddressSchedule::CompleteBeforeDividend),
+            (build::WII_1_0, DivisionAddressSchedule::CompleteBeforeDividend),
+        ] {
+            assert_eq!(Behavior::resolve(&CompilerConfig::new(build)).division_address_schedule, expected);
+        }
+    }
 
     #[test]
     fn accumulator_issue_policy_tracks_the_measured_generation() {

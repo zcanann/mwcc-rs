@@ -35,6 +35,21 @@ when that earlier constant no longer overlaps the dividend load. These division
 groups require O2 or higher and an enabled scheduler. Other selection policies
 remain independently replaceable.
 
+## Copy-source preferences and physical schedules, 2026-09-08
+
+`LiveInterval::prefer_virtual` can request the home of an already allocated
+value. LinearScan and ConsumerFirstScan resolve it only when no explicit
+physical preference exists, then apply their ordinary legality checks. Missing
+sources and sources from another register class fall back to the pool. This is
+a placement preference, not an instruction rewrite or extra interference.
+The GC/1.1p1 delayed-address policy uses it for a quotient copied into a branch.
+
+Late physical schedules must also consult CFG liveness. The legacy member
+constant-store scheduler now protects incoming register homes live across its
+window, including addresses used by later callbacks. It keeps the serialized
+sequence when a live outgoing scratch value or insufficient free registers
+prevents safe recoloring.
+
 ## Original problem statement
 
 Today, instruction selection chooses registers **inline** as it walks the AST.
