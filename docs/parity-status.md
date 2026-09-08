@@ -4,13 +4,66 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, retained global input values (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, constant-division load scheduling (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `f882491d96cf55a6661299c1612e38f29eb9176fa3b46267a21c28e38f8218e9:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `5e72fc8868de5dd4f2fd6428b391701fe20915c9203ec62a43e3fcd1d4efbd2d:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Constant-division load scheduling, 2026-09-08
+
+The complete BfBB `__AXPrintStudio` now matches **204/254 linked instruction
+words at their reference offsets**, up from **107/254** in the preceding
+compiler. Its size remains **1,016 bytes**. Starting the division constant's
+high half before the dividend load also gives the allocator MWCC's definition
+order, fixing the dividend and quotient homes through the clamp branches.
+This is still **not an exact function match**: entry scheduling, negation
+placement, and host-subtraction registers remain different. AXSPB retains
+**4/5 exact candidate functions**, **5/5 exact fresh reference functions**, zero
+unresolved relocations, and **5,120 passing three-way native comparisons**
+against fresh GC/1.2.5n, the original DOL, and the independent model.
+
+A separate instruction-scheduling module recognizes a direct nonvolatile SDA
+word load followed by a constant high/low pair and the consuming signed or
+unsigned high-word multiply. It overlaps the independent high half with the
+load before register allocation, including in structured bodies that already
+own their schedules. The transformation requires O2 or higher and an enabled
+scheduler. Register dependencies, relocated constants, and internal branch
+entries prevent the swap. An entry at the original load is redirected to the
+whole reordered pair, while relocations and other instruction metadata follow
+their actual instruction owners. Volatile globals and opaque control flow are
+excluded.
+
+Canaries **2048–2051** cover signed/unsigned divisors 3, 7, and 160, changing
+volatile inputs, and a join immediately before division, at O4, O2, explicit
+schedule-off, and O0. Baseline, candidate, and references compile **60/60
+objects** across fifteen builds. The reciprocal-constant/load operation order
+matches in all **315 optimized nonvolatile function samples**, including the
+schedule-off controls. Exact output remains **0/60 whole objects** and
+**0/480 function text plus symbolic relocation comparisons**. All **122,880
+paired native comparisons** pass independent arithmetic, aliasing, neighboring
+memory, volatile-read, and ABI checks; baseline and references also have no
+execution failures.
+
+The ninety changed older objects from canaries 2022, 2029, 2032, 2033, 2044,
+and 2047 pass another **207,360 paired native comparisons**. The other
+**600/690 objects** in the 2002–2047 panel remain identical. The indexed panel
+retains **1,114 identical compiled objects** and **972 known exact matches**;
+canaries 1821–2001 retain **2,626 identical objects** and **89 unchanged failures**.
+All fourteen configured GX objects remain identical. All ten AX units compile;
+eight are identical, while AXSPB and AXAux change. Only `__AXProcessAux` changes
+inside AXAux, and all thirteen AXAux functions pass **6,656 three-way native
+comparisons** against a fresh reference and the original executable, including
+callback effects. Backend tests pass **1,619**, with the previously confirmed
+embedded-assembly failure excluded.
+
+Artifacts are under `target/magic-load-{canaries,old-guards,old-inline,old-inputs,real,aux,index,recent,previous,library,ax-library}`.
+`target/magic-load-final-verification.json` pins the compiler/harness and
+verifies **439 execution-tested object hashes**. Full-project compilation,
+linking, and matching across versions remain unfinished; these focused counts
+are not a corpus parity estimate.
 
 ## Retained global input values, 2026-09-08
 
