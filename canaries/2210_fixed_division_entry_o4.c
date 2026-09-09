@@ -1,4 +1,4 @@
-// flags: 
+// flags:
 typedef unsigned u32;
 u32 result,zero;u32 a[80],b[80],c[80],d[80];
 extern void consume(u32);extern void observe(u32*,u32*,u32*,u32);extern void observe4(u32*,u32*,u32*,u32*,u32);extern void flush(u32*,u32);
