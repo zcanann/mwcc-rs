@@ -4,13 +4,69 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, temporary BSS cursor bases (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, wide BSS cursor bases (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `7757eb5caa3a10ec7980ee0850e4d8f935e53b7242ae339e18190b39c859385d:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `1fd1df62a4b52dfd560c226288666885f0ed45f2f854ecab5beb8f7172c2f3d3:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Wide BSS cursor bases, 2026-09-08
+
+The temporary-address pass now has a separate full-width recipe. Measured
+profile capabilities select it for GC/1.1, 1.1p1, 1.2.5, 1.2.5n, and **1.3**;
+the transition is independent of frame convention. An offset-zero cursor can
+own the section base even when it is bound last. Other addresses split into a
+rounded high page and signed low displacement, omitting zero low additions.
+The four oldest builds reuse already completed page cursors. GC/1.3 also shares
+page expressions in volatile registers and can form a later page cursor before
+its dependents. Arbitrary nearby completed addresses do not count as shared
+page expressions.
+
+The existing packet validator and rewrite machinery remain shared between
+narrow and wide recipes. Full-width immediates require existing source-order
+symbol ownership so removing relocations cannot alter their proven layout.
+Growth remaps instruction owners and control-flow endpoints, declining any
+replacement that would exceed a branch encoding. A one-temporary fallback
+preserves correctness when GC/1.3 cannot retain a separate section base. New
+tests cover zero-cursor ownership, page reuse, wrapping address arithmetic,
+all binding permutations, temporary pressure, symbol discovery, and growing
+packets near the branch limit. The version boundary has a fifteen-build test.
+
+Canaries **2198–2203** add seven functions in six modes across fifteen builds:
+all **90 objects / 630 functions** compile on baseline, candidate, and reference.
+They cover binding order, three/four cursors, scalar inputs, aliasing,
+initialized data, scheduling, and optimization controls. **75 functions** in
+the five early builds change: 36 shrink by four bytes, 36 by eight, and three by
+twelve. All 75 use the reference's shared BSS relocation form and the same
+address instructions after normalizing the HA temporary register and ignoring
+interleaving. Keeping instruction order, normalized address-sequence matches
+improve **0 → 35**. Whole-function exact matches remain **6/630**. All **10,080**
+new native cases pass callback, mutation, guarded-memory, register, and stack
+models.
+
+Of **1,830** preceding objects, **1,775** remain identical. The other **55 objects /
+55 functions** adopt the reference's shared wide-address form without losing
+exact functions. All **3,040** affected preceding execution cases pass. Some
+biased-section functions grow by four or eight bytes, reproducing the older
+compiler's repeated high-half calculations. GC/1.3's schedule-off temporary
+placement and older high/low interleaving still need matching work.
+
+Fresh native coverage totals **13,120 cases**. All fifteen AXVPB objects and all
+24 AX/GX units compile unchanged. The initializer retains its 12/15 matching
+home maps and exact 28-byte loop tails, with 0/15 complete initializers exact;
+its prior 240 execution cases are reused after object-hash verification.
+Backend tests pass **1,669** with the existing nested-asm exclusion, object-stage
+tests pass **11**, and version tests pass **60**. Broader older/indexed panels
+and the full corpus were not rerun.
+
+`target/wide-bss-final-verification.json` binds the final compiler/harness,
+source hashes, **465 native-tested object entries**, and measured comparisons.
+The next real-project frontier is AXVPB prologue scheduling. Its GC/1.2.5n
+48-byte frame and `stmw` save range already match; constant/address placement
+and scratch-register choices differ. Reduced samples also retain frame-sizing
+and save-slot-order gaps. Address-form gains are not complete function matches.
 
 ## Temporary BSS cursor bases, 2026-09-08
 

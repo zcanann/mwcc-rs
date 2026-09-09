@@ -472,6 +472,8 @@ impl Generator {
                 .filter(|group| group.arrays.len() >= 3)
                 .map(|group| group.arrays.clone())
                 .collect();
+            self.output.share_wide_bss_cursor_bases = self.behavior.share_wide_bss_cursor_bases;
+            self.output.share_bss_page_expressions = self.behavior.share_bss_page_expressions;
         }
         let reduced_pointer_table_indices =
             super::structured_pointer_table_index_cursor::strength_reduce_pointer_table_indices(

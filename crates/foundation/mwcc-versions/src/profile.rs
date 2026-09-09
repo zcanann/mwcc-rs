@@ -1774,6 +1774,14 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn reorder_volatile_call_inputs(&self) -> bool {
         false
     }
+    /// Early builds share section-relative cursor bases beyond signed offsets.
+    fn share_wide_bss_cursor_bases(&self) -> bool {
+        false
+    }
+    /// Build 53 shares high-page expressions in temporaries or complete cursors.
+    fn share_bss_page_expressions(&self) -> bool {
+        false
+    }
     fn materialization_copy_style(&self) -> MaterializationCopyStyle {
         MaterializationCopyStyle::LogicalOr
     }
@@ -2700,6 +2708,12 @@ impl CodegenProfile for Wii43Build145 {
 #[derive(Debug)]
 pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
+    fn share_wide_bss_cursor_bases(&self) -> bool {
+        true
+    }
+    fn share_bss_page_expressions(&self) -> bool {
+        true
+    }
     fn computed_constant_equality_style(&self) -> ComputedConstantEqualityStyle {
         ComputedConstantEqualityStyle::LegacyMaskedAdd
     }
@@ -3314,6 +3328,9 @@ impl CodegenProfile for Gc233Build163 {
             || matches!(processor, crate::Processor::PowerPc603e | crate::Processor::PowerPc604 | crate::Processor::PowerPc750)
     }
     fn reorder_volatile_call_inputs(&self) -> bool {
+        true
+    }
+    fn share_wide_bss_cursor_bases(&self) -> bool {
         true
     }
     fn materialization_copy_style(&self) -> MaterializationCopyStyle {

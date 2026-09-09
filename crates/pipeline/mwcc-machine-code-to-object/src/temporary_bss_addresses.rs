@@ -2,8 +2,10 @@
 //!
 //! Source lowering supplies groups; this pass proves their selected address
 //! packet and a free physical temporary. It neither extends a base across a
-//! call nor changes the saved-register frame. Large offsets retain the original
-//! symbol addresses until their version-dependent sharing policy is modeled.
+//! call nor changes the saved-register frame. A separate wide-address recipe
+//! consumes version policy without duplicating packet validation or rewriting.
+
+mod wide;
 
 use std::collections::{HashMap, HashSet};
 
@@ -31,27 +33,58 @@ pub(super) fn share(function: &mut MachineFunction, offsets: &HashMap<String, u3
         if symbols.len() < 3
             || symbols.iter().collect::<HashSet<_>>().len() != symbols.len()
             || !seen.insert(symbols.clone())
-            || symbols.iter().any(|name| {
-                offsets
-                    .get(name)
-                    .is_none_or(|offset| i16::try_from(*offset).is_err())
-            })
+        {
+            continue;
+        }
+        let Some(displacements) = symbols
+            .iter()
+            .map(|name| offsets.get(name).copied())
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        let full_width = displacements
+            .iter()
+            .any(|offset| i16::try_from(*offset).is_err());
+        // Wide recipes contain final immediates, so each removed symbol reference
+        // must already be owned by the source-order discovery stream. Removing
+        // its relocation then cannot change the layout used to select those bits.
+        if full_width
+            && (!function.share_wide_bss_cursor_bases
+                || symbols
+                    .iter()
+                    .any(|name| !function.symbol_order.contains(name)))
         {
             continue;
         }
         let mut start = 0;
         while start + 2 * symbols.len() <= function.instructions.len() {
-            if let Some((destinations, temporary)) = packet(function, start, &symbols) {
-                replace(function, start, &symbols, &destinations, temporary);
-                start += 2 + symbols.len();
-            } else {
-                start += 1;
+            if let Some((destinations, temporaries)) = packet(function, start, &symbols) {
+                let replacement = if full_width {
+                    wide::plan(
+                        &displacements,
+                        &destinations,
+                        &temporaries,
+                        function.share_bss_page_expressions,
+                    )
+                } else {
+                    narrow_packet(&symbols, &destinations, temporaries[0])
+                };
+                if let Some(length) = replace(function, start, 2 * symbols.len(), replacement) {
+                    start += length;
+                    continue;
+                }
             }
+            start += 1;
         }
     }
 }
 
-fn packet(function: &MachineFunction, start: usize, symbols: &[String]) -> Option<(Vec<u8>, u8)> {
+fn packet(
+    function: &MachineFunction,
+    start: usize,
+    symbols: &[String],
+) -> Option<(Vec<u8>, Vec<u8>)> {
     let end = start + 2 * symbols.len();
     let interior = |at: usize| start < at && at < end;
     if function.entry_points.iter().any(|(_, at)| interior(*at))
@@ -104,45 +137,31 @@ fn packet(function: &MachineFunction, start: usize, symbols: &[String]) -> Optio
         destinations.push(d);
     }
     let liveness = mwcc_vreg::analyze(&function.instructions);
-    let temporary = (3..=12).find(|register| {
-        !liveness.pinned.iter().any(|p| {
-            p.class == mwcc_vreg::Class::General
-                && p.register == *register
-                && p.live_slots
-                    .as_ref()
-                    .map_or(p.start < end && p.end >= start, |slots| {
-                        let first = slots.partition_point(|slot| *slot < 2 * start);
-                        slots.get(first).is_some_and(|slot| *slot < 2 * end)
-                    })
+    let temporaries: Vec<_> = (3..=12)
+        .filter(|register| {
+            !liveness.pinned.iter().any(|p| {
+                p.class == mwcc_vreg::Class::General
+                    && p.register == *register
+                    && p.live_slots
+                        .as_ref()
+                        .map_or(p.start < end && p.end >= start, |slots| {
+                            let first = slots.partition_point(|slot| *slot < 2 * start);
+                            slots.get(first).is_some_and(|slot| *slot < 2 * end)
+                        })
+            })
         })
-    })?;
-    Some((destinations, temporary))
+        .collect();
+    (!temporaries.is_empty()).then_some((destinations, temporaries))
 }
 
-fn replace(
-    function: &mut MachineFunction,
-    start: usize,
-    symbols: &[String],
-    destinations: &[u8],
-    temporary: u8,
-) {
-    let end = start + 2 * symbols.len();
-    let removed = symbols.len() - 2;
-    // No interior instruction owns a surviving relocation, fixup, or entry.
-    // Control-flow targets at the packet start still enter its new definition.
-    let remap = |at: usize| if at >= end { at - removed } else { at };
-    function
-        .relocations
-        .retain(|r| !(start..end).contains(&r.instruction_index));
-    for r in &mut function.relocations {
-        r.instruction_index = remap(r.instruction_index);
-    }
-    for d in &mut function.deferred_displacements {
-        d.instruction_index = remap(d.instruction_index);
-    }
-    for (_, at) in &mut function.entry_points {
-        *at = remap(*at);
-    }
+/// A complete section-base definition followed by cursor address definitions.
+/// Narrow recipes retain layout fixups; full-width recipes use proven offsets.
+struct AddressPacket {
+    instructions: Vec<Instruction>,
+    displacements: Vec<(usize, String)>,
+}
+
+fn narrow_packet(symbols: &[String], destinations: &[u8], temporary: u8) -> AddressPacket {
     let mut instructions = vec![
         Instruction::AddImmediateShifted {
             d: temporary,
@@ -162,7 +181,58 @@ fn replace(
             immediate: 0,
         });
     }
-    function.instructions.splice(start..end, instructions);
+    AddressPacket {
+        instructions,
+        displacements: symbols
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (2 + i, name.clone()))
+            .collect(),
+    }
+}
+
+fn replace(
+    function: &mut MachineFunction,
+    start: usize,
+    old_length: usize,
+    packet: AddressPacket,
+) -> Option<usize> {
+    let end = start + old_length;
+    let length = packet.instructions.len();
+    let new_end = start + length;
+    // No interior instruction owns a surviving relocation, fixup, or entry.
+    // Control-flow targets at the packet start still enter its new definition.
+    let remap = |at: usize| if at >= end { at - end + new_end } else { at };
+    // A wide recipe can grow. Decline if moving either endpoint would exceed
+    // an existing branch encoding; shrinking packets automatically satisfy it.
+    if length > old_length
+        && function.instructions.iter().enumerate().any(|(at, i)| {
+            let (target, limit) = match i {
+                Instruction::BranchConditionalForward { target, .. } => (*target, 1i64 << 15),
+                Instruction::Branch { target } => (*target, 1i64 << 25),
+                _ => return false,
+            };
+            let displacement = (remap(target) as i64 - remap(at) as i64) * 4;
+            !(-limit..limit).contains(&displacement)
+        })
+    {
+        return None;
+    }
+    function
+        .relocations
+        .retain(|r| !(start..end).contains(&r.instruction_index));
+    for r in &mut function.relocations {
+        r.instruction_index = remap(r.instruction_index);
+    }
+    for d in &mut function.deferred_displacements {
+        d.instruction_index = remap(d.instruction_index);
+    }
+    for (_, at) in &mut function.entry_points {
+        *at = remap(*at);
+    }
+    function
+        .instructions
+        .splice(start..end, packet.instructions);
     for i in &mut function.instructions {
         match i {
             Instruction::Branch { target }
@@ -180,18 +250,17 @@ fn replace(
             target: RelocationTarget::External("...bss.0".into()),
         });
     }
-    // Keep symbol-discovery events and let the writer resolve the same layout.
-    // All offsets have been proved to fit a complete signed D-form address.
-    for (index, symbol) in symbols.iter().enumerate() {
+    for (at, symbol) in packet.displacements {
         function.deferred_displacements.push(DeferredDisplacement {
-            instruction_index: start + 2 + index,
-            target: DeferredDisplacementTarget::Symbol(symbol.clone()),
+            instruction_index: start + at,
+            target: DeferredDisplacementTarget::Symbol(symbol),
         });
     }
     function.relocations.sort_by_key(|r| r.instruction_index);
     function
         .deferred_displacements
         .sort_by_key(|d| d.instruction_index);
+    Some(length)
 }
 
 #[cfg(test)]
@@ -301,6 +370,58 @@ mod tests {
         let once = f.instructions.clone();
         share(&mut f, &offsets(640));
         assert_eq!(f.instructions, once);
+    }
+
+    #[test]
+    fn growing_wide_packets_remap_owners_and_preserve_branch_encoding_limits() {
+        let mut f = setup();
+        f.symbol_order = vec!["a".into(), "b".into(), "c".into()];
+        f.share_wide_bss_cursor_bases = true;
+        let offsets = [
+            ("a".into(), 32768),
+            ("b".into(), 33088),
+            ("c".into(), 33408),
+        ]
+        .into();
+        let mut boundary = f.clone();
+        share(&mut f, &offsets);
+        assert_eq!(f.instructions.len(), 12);
+        assert!(matches!(
+            f.instructions[0],
+            Instruction::BranchConditionalForward { target: 9, .. }
+        ));
+        assert_eq!(f.entry_points[0].1, 9);
+        assert_eq!(f.relocations.last().unwrap().instruction_index, 10);
+        assert!(matches!(
+            f.instructions[11],
+            Instruction::Branch { target: 1 }
+        ));
+        assert!(f.deferred_displacements.is_empty());
+        boundary.instructions.resize(
+            8192,
+            Instruction::AddImmediate {
+                d: 0,
+                a: 0,
+                immediate: 0,
+            },
+        );
+        boundary.instructions[0] = Instruction::BranchConditionalForward {
+            options: 12,
+            condition_bit: 2,
+            target: 8191,
+        };
+        let before = boundary.instructions.clone();
+        share(&mut boundary, &offsets);
+        assert_eq!(boundary.instructions, before);
+    }
+
+    #[test]
+    fn full_width_immediates_require_existing_symbol_discovery_ownership() {
+        let mut f = setup();
+        f.share_wide_bss_cursor_bases = true;
+        let before = f.instructions.clone();
+        share(&mut f, &offsets(65536));
+        assert_eq!(f.instructions, before);
     }
 
     #[test]

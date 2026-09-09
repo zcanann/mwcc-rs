@@ -1021,6 +1021,10 @@ pub struct Behavior {
     pub reorder_volatile_call_inputs: bool,
     /// Issue an independent step before a counted loop latch comparison.
     pub interleave_loop_latch_steps: bool,
+    /// Share full-width section offsets during temporary cursor setup.
+    pub share_wide_bss_cursor_bases: bool,
+    /// Reuse high-page expressions, including later complete page cursors.
+    pub share_bss_page_expressions: bool,
     /// Whether floating multiply/add and multiply/subtract expressions may
     /// contract into fused instructions.
     pub contract_floating_point: bool,
@@ -1665,6 +1669,8 @@ impl Behavior {
             reorder_volatile_call_inputs: config.flags.scheduler_enabled
                 && config.flags.optimization != Optimization::O0
                 && config.build.profile.reorder_volatile_call_inputs(),
+            share_wide_bss_cursor_bases: config.build.profile.share_wide_bss_cursor_bases(),
+            share_bss_page_expressions: config.build.profile.share_bss_page_expressions(),
             contract_floating_point: config.flags.fp_contract,
             simplify_negated_float_arithmetic: config.flags.optimization != Optimization::O0
                 && config.build.profile.simplify_negated_float_arithmetic(),
@@ -2001,6 +2007,15 @@ impl Behavior {
 mod tests {
     use super::*;
     use crate::{build, flags::CharDefault};
+
+    #[test]
+    fn wide_bss_cursor_policies_follow_the_address_optimizer_generation() {
+        for compiler in [build::GC_1_1, build::GC_1_1P1, build::GC_1_2_5, build::GC_1_2_5N, build::GC_1_3, build::GC_1_3_2, build::GC_1_3_2R, build::GC_2_0, build::GC_2_0P1, build::GC_2_5, build::GC_2_6, build::GC_2_7, build::GC_3_0A3, build::GC_3_0A3P1, build::WII_1_0] {
+            let behavior = Behavior::resolve(&CompilerConfig::new(compiler));
+            assert_eq!(behavior.share_wide_bss_cursor_bases, matches!(compiler.label, "GC/1.1" | "GC/1.1p1" | "GC/1.2.5" | "GC/1.2.5n" | "GC/1.3"));
+            assert_eq!(behavior.share_bss_page_expressions, compiler.label == "GC/1.3");
+        }
+    }
 
     #[test]
     fn loop_latch_issue_policy_preserves_the_early_patch_boundary() {
