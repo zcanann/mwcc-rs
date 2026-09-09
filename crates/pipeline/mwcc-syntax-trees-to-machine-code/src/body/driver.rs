@@ -2807,6 +2807,11 @@ impl Generator {
                 *self = native;
                 return native_result;
             }
+            let mut graph = self.clone();
+            if graph.try_wide_value_graph(function)? {
+                *self = graph;
+                return Ok(());
+            }
             if let Some(lowered) = super::wide_frame_values::materialize(
                 function,
                 &self.globals,

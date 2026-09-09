@@ -4,13 +4,71 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, native wide-call pair lifetimes (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, typed wide arithmetic and Dolphin time helpers (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `f979f9101176a985a6a2561967d1de4c4aaf7e9c05b84d30425def1b53da3db1:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `1ceff220a9d327f565ed3d2a0e170912865832ed338b1d9c7fb5a4a4a7bac39a:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Typed wide arithmetic and Dolphin time helpers, 2026-09-09
+
+The new `wide_value_graph` represents scalar words and 64-bit pairs together.
+It fixes definition identities and memory/call order before selecting explicit
+virtual-register words, allowing the existing allocator to preserve both halves
+across calls. The supported straight-line operations include incoming EABI
+pairs, mixed word/pair calls, loads/stores, addition/subtraction with carry,
+bitwise operations, sign/zero extension, narrowing and returns. Typed constant
+folding preserves the high word. Existing exact wide owners retain first
+refusal; unsupported control flow and operations keep their prior paths.
+
+Two frontend corrections were necessary: asm definitions now use the ordinary
+return-type parser, preserving typedef-based, wide, floating and pointer result
+types for callers; `LL`/`ULL` literal tokens retain their width, including small
+constants such as `1ULL`. The scalar constant folder recognizes wide literal
+casts but leaves their binary arithmetic to typed selection, avoiding a hidden
+32-bit truncation and preserving the existing timer-initialization recognizer.
+
+New samples **2280–2281** compile in **180/180** version/mode configurations,
+up from **0**. Their **1,080** functions include **90** exact byte/relocation
+matches, all for the folded constant carry case. The arithmetic transactions
+still differ in allocation and scheduling. The preceding forwarding panel keeps
+**721/1,260** exact functions; its mixed-argument case now uses the graph.
+The older wide panel keeps **54/240** exact functions, with only `update_sum`
+changing in 30 objects. Its 30 other objects remain identical.
+
+An unchanged prefix extracted from Battle for Bikini Bottom's `os/OSTime.c`
+now compiles on **15/15** candidate releases. It includes both
+`__OSGetSystemTime` and `__OSTimeToSystemTime`, whose arithmetic and interrupt
+restoration pass **3,840** candidate execution cases. **12/15** references accept
+the project headers and pass **3,072** corresponding cases; the two GC/3.0
+releases and Wii retain the previously observed header diagnostics. The two asm
+clock readers match in all 12 accepted configurations; the two newly lowered
+time-adjustment routines are not byte-exact yet. The complete `OSTime.c` now
+reaches the later `GetDates` CSE blocker on GC/1.2.5n and GC/1.3. This does not
+claim a newly compiled full project unit.
+
+All **230,400 candidate native scenarios** pass across the new samples,
+preceding forwarding samples, changed `update_sum` bodies and real time helpers.
+Reference execution covers **229,632** scenarios. **1,152** GC/1.1p1 O0 cases
+expose original overlapping source/save slots: nine functions each have 128
+source-result or ABI failures. These include `add_signed`/`add_unsigned` writing
+the incoming low word over saved LR, and `pair_store` reloading its pointer from
+the slot overwritten by delta. They remain candidate fidelity gaps, not passing
+reference-equivalence cases. The preceding forwarding harness separately retains
+its **192** explicitly modeled reference spill-alias cases.
+
+The established panel retains **2,589** identical objects and **276** identical
+diagnostics. The **302** Dolphin units keep **191** compiled units and identical
+objects; only the two `OSTime.c` diagnostics advance. **2,484 tests** pass
+(352 app, 14 lexer, 1,705 backend, 413 parser), with the established nine app and
+one backend exclusions. Two parser failures were independently reproduced at
+baseline `bc2288f3` and excluded: `recovers_friend_bearing_layouts_and_expression_template_arguments`
+and `retains_brace_initialized_aggregate_image_from_discarded_inline`.
+`target/wide-graph-final-verification.json` binds fingerprints and **987** native
+object entries. Measurements are under `target/wide-graph-*`; these are targeted
+checks, not a full-corpus or full-project parity claim.
 
 ## Native wide-call pair lifetimes, 2026-09-09
 

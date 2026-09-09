@@ -315,14 +315,10 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                 .expect("the hexadecimal scanner accepts only ASCII bytes");
             let value = u64::from_str_radix(text, 16)
                 .map_err(|_| Diagnostic::error("malformed hexadecimal literal"))? as i64;
-            let (suffix_end, unsigned) = consume_integer_suffix(bytes, position);
+            let (suffix_end, unsigned, long_long) = consume_integer_suffix(bytes, position);
             position = suffix_end;
             push_token!(
-                if unsigned {
-                    Token::UnsignedIntegerLiteral(value)
-                } else {
-                    Token::IntegerLiteral(value)
-                },
+                integer_token(value, unsigned, long_long),
                 token_start
             );
             continue;
@@ -343,14 +339,10 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                 .expect("the binary scanner accepts only ASCII bytes");
             let value = u64::from_str_radix(text, 2)
                 .map_err(|_| Diagnostic::error("malformed binary literal"))? as i64;
-            let (suffix_end, unsigned) = consume_integer_suffix(bytes, position);
+            let (suffix_end, unsigned, long_long) = consume_integer_suffix(bytes, position);
             position = suffix_end;
             push_token!(
-                if unsigned {
-                    Token::UnsignedIntegerLiteral(value)
-                } else {
-                    Token::IntegerLiteral(value)
-                },
+                integer_token(value, unsigned, long_long),
                 token_start
             );
             continue;
@@ -393,7 +385,7 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
             let text = std::str::from_utf8(&bytes[start..position])
                 .expect("the numeric scanner accepts only ASCII bytes")
                 .trim_end_matches(['f', 'F']);
-            let (suffix_end, unsigned) = consume_integer_suffix(bytes, position);
+            let (suffix_end, unsigned, long_long) = consume_integer_suffix(bytes, position);
             position = suffix_end;
             if is_float {
                 let value = text.parse().map_err(|_| Diagnostic::error("malformed float literal"))?;
@@ -403,13 +395,9 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                     push_token!(Token::DoubleLiteral(value), start);
                 }
             } else {
-                let value = text.parse().map_err(|_| Diagnostic::error("malformed integer literal"))?;
+                let value = text.parse::<u64>().map_err(|_| Diagnostic::error("malformed integer literal"))? as i64;
                 push_token!(
-                    if unsigned {
-                        Token::UnsignedIntegerLiteral(value)
-                    } else {
-                        Token::IntegerLiteral(value)
-                    },
+                    integer_token(value, unsigned, long_long),
                     start
                 );
             }
@@ -635,17 +623,29 @@ fn hex_digit_value(byte: u8) -> u8 {
     }
 }
 
-/// Advance past an integer literal's type-suffix letters and retain whether an
-/// explicit `u`/`U` occurred. Long-width typing remains future work;
-/// unsignedness already affects the usual arithmetic conversions on this
-/// 32-bit target.
-fn consume_integer_suffix(bytes: &[u8], mut position: usize) -> (usize, bool) {
+/// Preserve explicit width and signedness before expression typing. A wide
+/// unsigned value also needs 64 bits even when its suffix contains only `U`.
+fn integer_token(value: i64, unsigned: bool, long_long: bool) -> Token {
+    if unsigned && (long_long || value as u64 > u64::from(u32::MAX)) {
+        Token::UnsignedLongLongIntegerLiteral(value)
+    } else if long_long {
+        Token::LongLongIntegerLiteral(value)
+    } else if unsigned {
+        Token::UnsignedIntegerLiteral(value)
+    } else {
+        Token::IntegerLiteral(value)
+    }
+}
+
+fn consume_integer_suffix(bytes: &[u8], mut position: usize) -> (usize, bool, bool) {
     let mut unsigned = false;
+    let mut longs = 0;
     while let Some(suffix @ (b'u' | b'U' | b'l' | b'L')) = peek(bytes, position) {
         unsigned |= matches!(suffix, b'u' | b'U');
+        longs += usize::from(matches!(suffix, b'l' | b'L'));
         position += 1;
     }
-    (position, unsigned)
+    (position, unsigned, longs >= 2)
 }
 
 #[cfg(test)]
@@ -722,6 +722,19 @@ mod tests {
         assert!(tokens.contains(&Token::IntegerLiteral(15)));
         assert!(tokens.contains(&Token::UnsignedIntegerLiteral(10)));
         assert!(!tokens.contains(&Token::Identifier("b1111".to_string())));
+    }
+
+    #[test]
+    fn wide_integer_suffixes_and_full_width_values_are_retained() {
+        let tokens = tokenize_bytes(b"1LL 1ULL 0xffffffffffffffffULL 18446744073709551615ULL 0b1ll 0x100000000U").unwrap();
+        assert_eq!(&tokens[..6], &[
+            Token::LongLongIntegerLiteral(1),
+            Token::UnsignedLongLongIntegerLiteral(1),
+            Token::UnsignedLongLongIntegerLiteral(-1),
+            Token::UnsignedLongLongIntegerLiteral(-1),
+            Token::LongLongIntegerLiteral(1),
+            Token::UnsignedLongLongIntegerLiteral(0x100000000),
+        ]);
     }
 
     #[test]

@@ -1725,6 +1725,33 @@ mod tests {
     }
 
     #[test]
+    fn retains_asm_return_types_for_callers() {
+        let source = r#"
+            typedef long long Time;
+            asm Time clock(void) { nofralloc; blr; }
+            asm unsigned long long counter(void) { nofralloc; blr; }
+            asm static double fraction(void) { nofralloc; blr; }
+            asm int* pointer(void) { nofralloc; blr; }
+            Time asm other(void) { nofralloc; blr; }
+        "#;
+        let unit = parse_translation_unit(mwcc_source_to_tokens::tokenize(source).unwrap(), false, true, 1, 3).unwrap();
+        assert_eq!(unit.functions.iter().map(|f| f.return_type).collect::<Vec<_>>(), [
+            Type::LongLong, Type::UnsignedLongLong, Type::Double,
+            Type::Pointer(mwcc_syntax_trees::Pointee::Int), Type::LongLong,
+        ]);
+        assert!(unit.functions[2].is_static);
+    }
+
+    #[test]
+    fn long_long_suffix_controls_the_expression_width() {
+        let source = "unsigned signed_size(void) { return sizeof(1LL); } unsigned unsigned_size(void) { return sizeof(1ULL); }";
+        let unit = parse_translation_unit(mwcc_source_to_tokens::tokenize(source).unwrap(), false, true, 1, 3).unwrap();
+        for function in unit.functions {
+            assert!(matches!(function.return_expression, Some(Expression::IntegerLiteral(8))));
+        }
+    }
+
+    #[test]
     fn parses_asm_qualifier_after_return_type() {
         let source = r#"
             static void asm reset(register int code) {

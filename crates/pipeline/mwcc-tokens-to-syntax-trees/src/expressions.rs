@@ -893,6 +893,14 @@ impl Parser {
                     target_type: Type::UnsignedInt,
                     operand: Box::new(Expression::IntegerLiteral(value)),
                 },
+                Token::LongLongIntegerLiteral(value) => Expression::Cast {
+                    target_type: Type::LongLong,
+                    operand: Box::new(Expression::IntegerLiteral(value)),
+                },
+                Token::UnsignedLongLongIntegerLiteral(value) => Expression::Cast {
+                    target_type: Type::UnsignedLongLong,
+                    operand: Box::new(Expression::IntegerLiteral(value)),
+                },
                 Token::FloatLiteral(value) => Expression::FloatLiteral(value),
                 Token::DoubleLiteral(value) => Expression::Cast {
                     target_type: Type::Double,

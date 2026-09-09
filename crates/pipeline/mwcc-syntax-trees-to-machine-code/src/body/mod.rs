@@ -111,6 +111,7 @@ mod extended_register_access;
 mod support_file_request;
 mod driver;
 mod wide_call_sequence;
+mod wide_value_graph;
 mod enum_remap_member_update;
 mod endian_probe;
 mod endian_stack_pack;

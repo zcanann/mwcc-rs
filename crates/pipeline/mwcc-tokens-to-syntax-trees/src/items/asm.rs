@@ -57,54 +57,23 @@ impl Parser {
         is_weak: bool,
         asm_after_return_type: bool,
     ) -> Compilation<(String, Option<Function>)> {
-        let mut return_type = if asm_after_return_type {
+        let mut is_static = is_static;
+        let return_type = if asm_after_return_type {
             let return_type = self.parse_type()?;
             self.expect(Token::Asm)?;
             return_type
         } else {
             self.expect(Token::Asm)?;
-            Type::Void
-        };
-        // The return type and name precede `(`; the last identifier is the name. A
-        // `static`/`extern` qualifier may follow `asm` (mwcc allows `asm static void
-        // f()`), so recognize it here too rather than only in the pre-`asm` loop.
-        let mut name = String::new();
-        let mut is_static = is_static;
-        loop {
-            match self.peek() {
-                Token::ParenOpen => break,
-                Token::Identifier(word) if word == "static" => {
-                    is_static = true;
-                    self.advance();
-                }
-                Token::Identifier(word) if word == "extern" => {
-                    self.advance();
-                }
-                Token::Identifier(word) => {
-                    name = word.clone();
-                    self.advance();
-                }
-                Token::EndOfFile => {
-                    return Err(Diagnostic::error("unterminated asm function signature"))
-                }
-                other => {
-                    // A non-`void` scalar return keeps the default `Void` type — it
-                    // does not affect the emitted object for a bare asm function.
-                    if *other == Token::KeywordInt
-                        || matches!(
-                            other,
-                            Token::KeywordChar
-                                | Token::KeywordShort
-                                | Token::KeywordUnsigned
-                                | Token::KeywordFloat
-                        )
-                    {
-                        return_type = Type::Int;
-                    }
-                    self.advance();
-                }
+            // Storage qualifiers may also follow `asm`. The return type must
+            // use ordinary parsing: typedefs, pointer indirection and wide/FP
+            // results determine the ABI at callers even for a verbatim body.
+            while matches!(self.peek(), Token::Identifier(word) if word == "static" || word == "extern") {
+                if matches!(self.peek(), Token::Identifier(word) if word == "static") { is_static = true; }
+                self.advance();
             }
-        }
+            self.parse_type()?
+        };
+        let name = self.parse_identifier()?;
         // Use the ordinary type parser: typedef identity and qualifiers matter
         // to debug information even though the body uses fixed registers.
         let source_parameters = self.parse_asm_parameters(&name)?;

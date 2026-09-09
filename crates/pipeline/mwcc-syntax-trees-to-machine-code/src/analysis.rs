@@ -1367,6 +1367,13 @@ pub(crate) fn constant_value(expression: &Expression) -> Option<i64> {
             if matches!(operator, Subtract | BitXor) && same_operand(left, right) {
                 return Some(0);
             }
+            // This folder's binary arithmetic is explicitly word-sized. Wide
+            // literal casts retain their bits for recognition, but pair
+            // arithmetic belongs to typed wide selection rather than this
+            // truncating scalar fold.
+            if constant_has_wide_type(left) || constant_has_wide_type(right) {
+                return None;
+            }
             // Otherwise fold arithmetic of two compile-time constants (`2 + 3`,
             // `FLAG_A | FLAG_B`, `1 << 3`), matching mwcc's `li`/`lis;ori`. The
             // result is truncated to 32 bits (C `int` arithmetic) so e.g. `1 << 31`
@@ -1389,12 +1396,22 @@ pub(crate) fn constant_value(expression: &Expression) -> Option<i64> {
     }
 }
 
+fn constant_has_wide_type(expression: &Expression) -> bool {
+    match expression {
+        Expression::Cast { target_type, .. } => matches!(target_type, Type::LongLong | Type::UnsignedLongLong),
+        Expression::Unary { operand, .. } => constant_has_wide_type(operand),
+        Expression::Binary { left, right, .. } => constant_has_wide_type(left) || constant_has_wide_type(right),
+        _ => false,
+    }
+}
+
 /// MWCC's integer conversion, shared by explicit casts and implicit prototype
 /// conversions. Signed narrowing retains the low bits and sign-extends them.
 pub(crate) fn convert_integer_constant(value: i64, target: Type) -> Option<i64> {
     match target {
         Type::Int => Some(value as i32 as i64),
         Type::UnsignedInt => Some(value as u32 as i64),
+        Type::LongLong | Type::UnsignedLongLong => Some(value),
         Type::Short => Some(value as i16 as i64),
         Type::UnsignedShort => Some(value as u16 as i64),
         Type::Char => Some(value as i8 as i64),
@@ -2148,6 +2165,21 @@ mod tests {
             Some(0xffff)
         );
         assert_eq!(constant_value(&cast(Type::Char, 0xff)), Some(-1));
+    }
+
+    #[test]
+    fn wide_literals_do_not_enter_the_truncating_word_folder() {
+        let value = Expression::Cast {
+            target_type: Type::UnsignedLongLong,
+            operand: Box::new(Expression::IntegerLiteral(0xffff_ffff)),
+        };
+        assert_eq!(constant_value(&value), Some(0xffff_ffff));
+        let sum = Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: Box::new(value),
+            right: Box::new(Expression::IntegerLiteral(1)),
+        };
+        assert_eq!(constant_value(&sum), None, "typed pair selection owns the carry");
     }
 
     #[test]

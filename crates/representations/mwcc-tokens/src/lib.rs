@@ -40,6 +40,10 @@ pub enum Token {
     IntegerLiteral(i64),
     /// An integer literal carrying an explicit `u`/`U` suffix.
     UnsignedIntegerLiteral(i64),
+    /// Explicit `ll`/`LL` suffix; the value retains all 64 bits.
+    LongLongIntegerLiteral(i64),
+    /// Unsigned 64-bit integer literal (`ull`/`ULL` or a wide `U` value).
+    UnsignedLongLongIntegerLiteral(i64),
     /// A decimal floating literal with an explicit `f`/`F` suffix.
     FloatLiteral(f64),
     /// An unsuffixed decimal floating literal, whose C type is `double`.
