@@ -20,6 +20,10 @@ mod control;
 mod demand;
 #[path = "wide_value_graph/subtrahend.rs"]
 mod subtrahend;
+#[path = "wide_value_graph/promotion.rs"]
+mod promotion;
+#[path = "wide_value_graph/addend.rs"]
+mod addend;
 use condition::Condition;
 #[path = "wide_value_graph/address.rs"]
 mod address;
@@ -135,9 +139,11 @@ struct Graph<'a> {
     values: usize,
     signed_word_promotions: HashMap<usize, usize>,
     word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension,
+    computed_unsigned_addend_zero_extends: bool,
     optimization: mwcc_versions::Optimization,
     wide_word_demand_starts_at_o2: bool,
     materialized_word_promotions: std::collections::HashSet<usize>,
+    named_wide_values: std::collections::HashSet<usize>,
     bindings: HashMap<String, Value>,
     types: HashMap<String, Type>,
     globals: &'a HashMap<String, Type>,
@@ -712,6 +718,7 @@ impl<'a> Graph<'a> {
         indirects: &'a HashMap<String, mwcc_syntax_trees::SourceFunctionType>,
         allow_implicit_calls: bool,
         word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension,
+        computed_unsigned_addend_zero_extends: bool,
         optimization: mwcc_versions::Optimization,
         wide_word_demand_starts_at_o2: bool,
     ) -> Option<Self> {
@@ -750,9 +757,11 @@ impl<'a> Graph<'a> {
             values: 0,
             signed_word_promotions: Default::default(),
             word_subtrahend_extension,
+            computed_unsigned_addend_zero_extends,
             optimization,
             wide_word_demand_starts_at_o2,
             materialized_word_promotions: Default::default(),
+            named_wide_values: Default::default(),
             bindings: HashMap::new(),
             types: function
                 .locals
@@ -829,7 +838,7 @@ impl<'a> Graph<'a> {
         } else if control::falls_through(statements) {
             return None;
         }
-        graph.lower_word_subtrahends();
+        graph.lower_word_promotions();
         graph.narrow_unobserved_high_words();
         graph.fold_memory_addresses();
         Some(graph)
@@ -856,6 +865,7 @@ impl Generator {
             &self.indirect_call_types,
             !self.source_is_cxx,
             self.behavior.word_subtrahend_extension,
+            self.behavior.computed_unsigned_addend_zero_extends,
             self.behavior.optimization,
             self.behavior.wide_word_demand_starts_at_o2,
         ) else {
@@ -1281,9 +1291,11 @@ mod tests {
             values: 0,
             signed_word_promotions: Default::default(),
             word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension::FullWidth,
+            computed_unsigned_addend_zero_extends: false,
             optimization: mwcc_versions::Optimization::O4,
             wide_word_demand_starts_at_o2: false,
             materialized_word_promotions: Default::default(),
+            named_wide_values: Default::default(),
             bindings: HashMap::new(),
             types: HashMap::new(),
             globals: &globals,

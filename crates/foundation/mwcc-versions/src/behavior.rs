@@ -824,6 +824,7 @@ pub struct Behavior {
     pub member_value_schedule: MemberValueSchedule,
     pub retain_disjoint_member_reads: bool,
     pub word_subtrahend_extension: WordSubtrahendExtension,
+    pub computed_unsigned_addend_zero_extends: bool,
     pub wide_word_demand_starts_at_o2: bool,
     pub narrowed_pair_keeps_left_home: bool,
     /// Constant-trip pointer-fill expansion policy.
@@ -1398,6 +1399,10 @@ impl Behavior {
             member_value_schedule: config.build.profile.member_value_schedule(),
             retain_disjoint_member_reads: config.build.profile.retain_disjoint_member_reads(),
             word_subtrahend_extension: config.build.profile.word_subtrahend_extension(),
+            computed_unsigned_addend_zero_extends: config
+                .build
+                .profile
+                .computed_unsigned_addend_zero_extends(),
             wide_word_demand_starts_at_o2: config.build.profile.wide_word_demand_starts_at_o2(),
             narrowed_pair_keeps_left_home: config.build.profile.narrowed_pair_keeps_left_home(),
             fixed_fill_loop_style: config.build.profile.fixed_fill_loop_style(),

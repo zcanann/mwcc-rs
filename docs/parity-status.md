@@ -4,13 +4,81 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, graph address folding in audio/alarm/calendar code (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, GC/1.3 unsigned-wide addend promotions (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `172ac486a6a237f8a8cdc6e3ac62a26344b380fa6c9ce3dbb70f2daa596b68da:6a678e40a916446ca168105e21184d847366545605e38acfc039bd7f856e138a`
+Latest measured compiler + harness fingerprint: `db505e7f9974ec7b695225d3749d2db70eac123a9656f9fb632d0d8927b78f8d:5eabb62939bc079858b21f21c69ce7594d0c4f7f5ba4e305d34b843215efa9f1`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GC/1.3 unsigned-wide addend promotions, 2026-09-09
+
+The graph now reproduces GC/1.3's lost sign word when a single promoted signed
+word is added to a pending unsigned-wide arithmetic or call expression. The
+previous address corpus improves **1,239 → 175 execution mismatches** against
+the version-aware reference model. The four corrected functions are
+`member_sum`, `big_displacements`, `frame_members`, and `branch_base` in all
+seven modes. Their remaining differences in instruction selection and register
+allocation mean this is a behavior improvement, not an exact-byte match gain.
+
+A separate profile flag selects the addition quirk only for GC/1.3. The new
+addend pass runs before word-demand pruning and address folding. It retains
+named-wide-value provenance and follows pending expression evaluation through
+simple loads and constant address displacements. Dynamic address evaluation,
+word products, calls and control-flow boundaries can materialize that pending
+value; word-valued calls retain their full sign extension. Signed computations,
+wide loads, shifts and named wide bases also retain full-width behavior.
+Addition and subtraction share promotion-use accounting, computed once on the
+original graph so rewriting one use cannot change another use's sharing policy.
+
+The new **48-function** `2314_unsigned_wide_add_promotions.c` covers arithmetic
+and call bases, commuted operands, indexed and constant-offset loads, signed
+casts, narrow words, named and shared promotions, mixed add/subtract uses, and
+repeated updates through local variables and loops. All **105 configurations**
+compile in the reference, previous compiler, and candidate: 15 builds × O4,
+O3, O2, O1, schedule-off, size, and O0. Exact function matches remain
+**105/5,040**; all 14 non-GC/1.3 builds produce unchanged candidate objects.
+
+Native execution checks return values, memory, call arguments, stack restoration
+and callee-saved registers, using edge cases and seeded random inputs. Both
+panels use the same version-aware expected behavior for all three compilers:
+
+| Panel | Cases per compiler | Previous mismatches | Candidate mismatches | Reference mismatches |
+| --- | ---: | ---: | ---: | ---: |
+| New addend corpus | 322,560 | 4,647 | 800 | 384 |
+| Previous address corpus | 67,200 | 1,239 | 175 | 128 |
+| Total | 389,760 | 5,886 | 975 | 512 |
+
+The **975 remaining candidate mismatches** are explicitly retained as parity
+work, not counted as passes: 175 for immediate word addition, 125 for mixed
+add/subtract sharing, 500 for repeated local/parameter additions, and 175 for
+the previously observed `saved_base` preheader addition. Except immediate word
+addition, these arise at O2 and later. GC/1.3 reference execution agrees with
+the version-aware model throughout both panels. The **512 reference failures**
+are GC/1.1p1 O0 frame/callee-save corruption: six call/shift functions in the new
+corpus and the two previously recorded address functions. Volatile read order
+remains unchanged from the previous compiler and still differs from the
+reference in all 6,720 address-trace cases.
+
+Focused regressions retain **2,589 objects and 276 diagnostics** unchanged.
+Of **3,525 recent configurations**, 3,518 objects are unchanged; only the seven
+GC/1.3 address objects change, with no exact-function losses. All **90 full THP
+audio objects** remain byte-identical to the previous compiler, retaining
+**142/270 exact functions**. The Dolphin frontier remains **201/302**, with all
+compiling objects unchanged. **2,703 Rust tests pass**, using the same 12
+previously documented exclusions and eight ignored allocator tests. No full
+corpus run was needed, and reference project sources remain unchanged.
+
+Evidence: `target/add-promotion-{canaries,recent,regressions,project,frontier}/results.json`,
+`target/add-promotion-native.json`, `target/add-promotion-address-native.json`,
+`target/add-promotion-policy.json`, `target/add-promotion-verified-tests.log`,
+and `target/add-promotion-final-verification.json`. The final verifier binds
+all native objects to the measured compiler output and checks every remaining
+failure against the recorded function/version/mode boundary.
+
+Compiler/harness fingerprint: `db505e7f9974ec7b695225d3749d2db70eac123a9656f9fb632d0d8927b78f8d:5eabb62939bc079858b21f21c69ce7594d0c4f7f5ba4e305d34b843215efa9f1`.
+The final manifest binds **13,433 object artifacts**.
 
 ## Graph address folding in audio/alarm/calendar code, 2026-09-09
 

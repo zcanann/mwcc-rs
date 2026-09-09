@@ -1601,6 +1601,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         WordSubtrahendExtension::FullWidth
     }
 
+    /// GC/1.3 loses a signed addend's high word beside an unsigned-wide
+    /// arithmetic or call expression. Independent of subtraction policy.
+    fn computed_unsigned_addend_zero_extends(&self) -> bool {
+        false
+    }
+
     /// Keep a narrowed pair add/subtract in the left operand's low home.
     fn narrowed_pair_keeps_left_home(&self) -> bool {
         false
@@ -2825,6 +2831,10 @@ impl CodegenProfile for Wii43Build145 {
 #[derive(Debug)]
 pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
+    fn computed_unsigned_addend_zero_extends(&self) -> bool {
+        true
+    }
+
     fn narrowed_pair_keeps_left_home(&self) -> bool {
         true
     }
