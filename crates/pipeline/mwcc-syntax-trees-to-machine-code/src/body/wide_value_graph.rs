@@ -1030,6 +1030,15 @@ impl Generator {
                 }
                 Operation::Parameter { result, high } => {
                     let destination = self.wide_graph_destination(result, registers);
+                    if self.behavior.optimization != mwcc_versions::Optimization::O0 {
+                        self.prefer_virtual_general(
+                            destination.low,
+                            high + u32::from(destination.high.is_some()),
+                        );
+                        if let Some(destination_high) = destination.high {
+                            self.prefer_virtual_general(destination_high, high);
+                        }
+                    }
                     if let Some(d) = destination.high {
                         self.output
                             .instructions

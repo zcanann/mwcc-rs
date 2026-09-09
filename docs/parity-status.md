@@ -4,13 +4,57 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, high-word demand and reference load-width pruning (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, incoming argument homes in the word/pair graph (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `6437836f31a8c18683eed49f7e8b4135ba273d5c20045139e04b4a2dd78aaad3:ae34613b54d3a893e7edf34ecd83acde5f4f53389d46e30dba3b98cc8ab26190`
+Latest measured compiler + harness fingerprint: `532b20df06572423f283a113fd302d32ccb09f320a90e03f85d9c9937ced1ab7:1c371159a5cd6eea189b4722994f322f554d54a54c9f8ecd811f644a65e36fcd`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Incoming argument homes in the word/pair graph, 2026-09-09
+
+Optimized graph parameters now prefer their incoming ABI registers through the
+existing allocator preference interface. Full pairs prefer both incoming words;
+a narrowed pair prefers its original low-word slot. These are preferences,
+not pinned registers: interference and call-crossing lifetimes still determine
+the legal allocation. O0 retains its previous output.
+
+Sample **2312** improves **0 → 89/1,365** exact function instruction/relocation
+matches across its 105 configurations: **82 low_mul** and **seven low_mask**
+outputs. The low multiply now directly consumes incoming r4/r6 and writes r3,
+removing two parameter moves. All baseline/candidate/reference configurations
+compile. The 540 changed recent objects retain their 150 previous exact
+functions and gain these 89, reaching **239**; no measured exact match is lost.
+
+Every compiling Dolphin frontier object is unchanged, keeping **201/302**
+compilation. All 90 complete audio objects are unchanged, retaining the
+2,140-byte O4 decoder and **142/270** exact functions. Audio native evidence is
+reused only after verifying every candidate/reference object hash.
+
+Validation binds **13,658** object artifacts to the measured compiler:
+
+- **752,910 candidate executions pass**, including 174,720 sample-2312 cases,
+  566,400 cases covering all affected prior samples, and the 11,790 unchanged
+  full audio cases. Coverage includes nested merges, comparisons, shifts,
+  loop-carried parameters, narrow stores, direct/indirect callback declarations,
+  signed promotion quirks, memory effects and ABI preservation.
+- All **174,720 baseline** sample executions pass. The reference total is
+  **186,510**, with the same 256 explicitly recorded GC/1.1p1 O0 failures in
+  low_shift/call_pair from shared-parameter-spill corruption. No new reference
+  failure or candidate mismatch appears.
+- The **2,865-row** regression panel preserves 2,589 objects and 276 diagnostics.
+  The **3,420-row** recent panel preserves 2,880 objects; its 540 changes are
+  confined to samples 2281, 2285, 2300, 2303, 2304, 2310 and 2312, all with
+  native coverage. O0 objects retain their baseline output.
+- **2,703 Rust tests pass**, with the same 12 documented pre-existing exclusions
+  and eight ignored tests. Original project sources and DOL are unchanged.
+
+Evidence: `target/argument-home-{canaries,project,frontier,regressions,recent}/results.json`,
+the corresponding native JSON files, `target/argument-home-verified-tests.log`,
+and `target/argument-home-final-verification.json`. Recheck with
+`python3 target/verify_argument_home_final.py`. Carry-form instruction selection,
+remaining graph copies and the main decoder's addressing remain open.
 
 ## High-word demand and reference load-width pruning, 2026-09-09
 
