@@ -2778,6 +2778,9 @@ impl Generator {
         if self.try_wide_call_result_mask_chain(function)? {
             return Ok(());
         }
+        if self.try_wide_call_sequence(function)? {
+            return Ok(());
+        }
         if let Some(scalarized) = self.lower_wide_mask_local_for_version(function) {
             return self.evaluate_body(&scalarized);
         }

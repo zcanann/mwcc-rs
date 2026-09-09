@@ -4,13 +4,57 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, forwarding retained wide frame values (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, native wide-call pair lifetimes (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `a3e42323575c9489bfb2bf674b78d4dc2f6ee80010805c5ea8fe99e271fc19b8:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `f979f9101176a985a6a2561967d1de4c4aaf7e9c05b84d30425def1b53da3db1:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Native wide-call pair lifetimes, 2026-09-09
+
+`wide_call_sequence` recognizes straight-line calls carrying opaque 64-bit local
+values. It builds definition identities, computes last uses, and colors retained
+values into saved register pairs. Immediate consumers can use the original
+r3:r4 result. Pair arguments are transferred without overwriting fresh results;
+reassignments acquire new identities, and wide returns preserve both words.
+Recognition is independent of source names. Mixed-width arguments, control flow,
+escaping addresses and arithmetic remain with existing owners. The current
+native lane bounds saved pair pressure to two pairs.
+
+The frame schedule follows the existing generation policies, with explicit O0
+source homes, legacy size-mode multiple saves, and scheduler-dependent teardown.
+A separate provenance flag now limits the member-bound-call epilogue rewrite to
+its own transaction; its former generic ownership check also rewrote unrelated
+owners' lower-optimization epilogues.
+
+New sample **2279** covers wide returns, transforming/reassigning values,
+argument permutations, duplicate arguments, overlapping lifetimes, and local
+reuse. Together with **2277–2278**, across fifteen versions and six modes,
+complete sample compilation improves **180 → 270/270**. Byte/relocation-exact
+functions improve **0 → 721/1,260**. `across_call`, `repeated`, and
+`signed_argument` each match **90/90** configurations. Remaining differences
+include two-pair helper frames, O0 home assignment, and return scheduling;
+mixed/conditional forwarding still uses the frame fallback.
+
+All **80,640 candidate scenarios** pass native execution checks for call order,
+argument words, wide returns, memory guards, saved GPRs, stack restoration and
+completion. References pass the same scenarios with the preceding **192**
+GC/1.1p1 O0 spill-alias cases explicitly modeled. Those original compiler bugs
+remain candidate fidelity gaps in the unchanged fallback shapes.
+
+The preceding **60** wide-store/frame objects remain identical. The existing
+panel retains **2,589** identical objects and **276** identical diagnostics.
+The **302** Dolphin units retain **191** compiled units, with all objects and
+diagnostics unchanged. This checkpoint does not newly compile a complete real
+project unit; wide parameters and arithmetic still block the larger routines.
+
+Validation passes **2,054 tests** (352 app, 1,702 backend), retaining the nine
+known app exclusions and one backend exclusion. The final manifest is
+`target/wide-pair-final-verification.json`, including **540 native object
+bindings**; measurements are under `target/wide-pair-{canaries,prior,regressions,
+frontier}/`. These targeted counts are not a full-corpus parity estimate.
 
 ## Forwarding retained wide frame values, 2026-09-09
 

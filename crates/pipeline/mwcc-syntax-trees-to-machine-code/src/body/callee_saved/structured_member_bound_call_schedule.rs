@@ -30,10 +30,11 @@ impl Generator {
         // order intact; the physical epilogue order is finalized after all
         // other allocation-sensitive normalizers.
         self.owns_link_register_schedule = true;
+        self.member_bound_call_epilogue = true;
     }
 
     pub(crate) fn finalize_structured_member_bound_call_epilogue(&mut self) {
-        if !self.owns_link_register_schedule {
+        if !self.member_bound_call_epilogue {
             return;
         }
         for epilogue in 0..self.output.instructions.len().saturating_sub(5) {

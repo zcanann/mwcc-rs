@@ -867,6 +867,7 @@ fn lower_function_body(
         epilogue_lr_first: false,
         epilogue_lr_before_gprs: false,
         owns_link_register_schedule: false,
+        member_bound_call_epilogue: false,
         narrow_truncation_context: false,
         known_locals: std::collections::HashSet::new(),
         one_word_aggregate_locals: std::collections::HashSet::new(),

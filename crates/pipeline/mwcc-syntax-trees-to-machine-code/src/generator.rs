@@ -822,6 +822,8 @@ pub(crate) struct Generator {
     /// A whole-body owner emitted the measured LR save/reload placement itself.
     /// The generic latency passes must leave both ends of its frame untouched.
     pub(crate) owns_link_register_schedule: bool,
+    /// The member-bound call transaction selected its paired-object epilogue.
+    pub(crate) member_bound_call_epilogue: bool,
     /// Set while evaluating a narrow-return expression whose result is truncated, so a
     /// narrow leaf operand is read raw (no leading sign/zero extension) — the final
     /// truncation makes the extension redundant. Only enabled for truncation-safe
