@@ -1743,6 +1743,43 @@ mod tests {
     }
 
     #[test]
+    fn asm_literals_use_word_bits_and_finish_parenthesized_displacements() {
+        use mwcc_syntax_trees::{AsmItem, AsmOperand};
+        let source = r#"asm void values(void) { nofralloc;
+            li r3, 0x100000000ULL;
+            li r4, ~0U;
+            lwz r5, (4U + 4U)(r6);
+            blr;
+        }"#;
+        let unit = parse_translation_unit(mwcc_source_to_tokens::tokenize(source).unwrap(), false, true, 1, 3).unwrap();
+        let lines: Vec<_> = unit.functions[0].asm_body.as_ref().unwrap().iter().filter_map(|item| match item {
+            AsmItem::Instruction(line) if line.mnemonic != "nofralloc" => Some(line), _ => None,
+        }).collect();
+        assert!(matches!(lines[0].operands[1], AsmOperand::Immediate(0)));
+        assert!(matches!(lines[1].operands[1], AsmOperand::Immediate(-1)));
+        assert!(matches!(lines[2].operands[1], AsmOperand::Memory { displacement: 8, base: 6 }));
+    }
+
+    #[test]
+    fn asm_bare_memory_is_distinct_from_a_branch_label() {
+        use mwcc_syntax_trees::{AsmItem, AsmOperand};
+        let source = r#"extern double data;
+            asm void probe(void) { nofralloc;
+                lfd f0, data;
+                lwz r3, 0xD4U;
+                b done;
+            done: blr;
+            }"#;
+        let unit = parse_translation_unit(mwcc_source_to_tokens::tokenize(source).unwrap(), false, true, 1, 3).unwrap();
+        let lines: Vec<_> = unit.functions[0].asm_body.as_ref().unwrap().iter().filter_map(|item| match item {
+            AsmItem::Instruction(line) if line.mnemonic != "nofralloc" => Some(line), _ => None,
+        }).collect();
+        assert!(matches!(&lines[0].operands[1], AsmOperand::SmallDataSymbolMemory { name, base: 0 } if name == "data"));
+        assert!(matches!(lines[1].operands[1], AsmOperand::Memory { displacement: 0xD4, base: 0 }));
+        assert!(matches!(&lines[2].operands[0], AsmOperand::Label(name) if name == "done"));
+    }
+
+    #[test]
     fn long_long_suffix_controls_the_expression_width() {
         let source = "unsigned signed_size(void) { return sizeof(1LL); } unsigned unsigned_size(void) { return sizeof(1ULL); }";
         let unit = parse_translation_unit(mwcc_source_to_tokens::tokenize(source).unwrap(), false, true, 1, 3).unwrap();

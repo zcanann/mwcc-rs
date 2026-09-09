@@ -4,13 +4,50 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, complete Dolphin time conversion and conditional wide values (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, assembler integer expressions and Dolphin FPR initialization (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `70e10a37547244f3b576d0121aa11149bb6d15390c18c2afbd142462e262b22d:2d92205037fa15cb551aa42c519bc20daf8ab9e519907dbab69653647ed5f64b`
+Latest measured compiler + harness fingerprint: `a9357c2ee927b4640cce1b0d184eaca92e43e91235f27af99558e3eadba95e60:8bbfa46b60a2ed607c0df120c5e927e4376bc65450fc9442df35b26e4fe87dc7`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Assembler integer expressions and Dolphin FPR initialization, 2026-09-09
+
+Assembler constants now have a dedicated evaluator that preserves MWCC's signed
+32-bit arithmetic independently of C literal suffixes. It accepts `U`, `LL` and
+`ULL`, truncates wide literals before arithmetic and instruction range checks,
+wraps arithmetic, and reproduces oversized shifts and the original behavior of
+retaining the dividend on division/remainder by zero. The latter currently
+matches generated code only: reference division-by-zero warnings are not yet
+reproduced. Parenthesized expressions retain following arithmetic and memory
+suffixes. Bare D-form load/store symbols produce SDA21 relocations with base
+zero, allowing the linker to choose the small-data register; bare numeric
+addresses become absolute displacements. Branch labels keep their existing role.
+
+New samples **2286–2287** compile in **180/180** configurations (15 releases ×
+six optimization/scheduling modes), up from **0/180**. All **1,890/1,890**
+function instruction streams and relocation lists match references, including
+suffix-bearing immediates/displacements, wide truncation, signed word shifts,
+zero divisors and integer/floating-point bare memory operands.
+
+The unchanged prefix and original `__OSFPRInit` function extracted from Battle
+for Bikini Bottom's `os/OS.c` now compile on **15/15** candidate releases, up
+from **0/15**. Its instructions and relocations match all **12/12** references
+accepting the original headers. The two GC/3.0 releases and Wii retain existing
+header diagnostics. This is an exact extracted-function result, not a newly
+compiled full `OS.c`: both frontier configurations now reach `ClearArena`'s
+unsupported reuse of a global across a condition and its body.
+
+The **900** existing asm cases retain **858** identical objects and **42**
+identical diagnostics. The established **2,865**-case panel retains **2,589**
+identical objects and **276** identical diagnostics. The Dolphin frontier remains
+**193/302** compiled units, with all 193 output objects unchanged. **2,492 tests**
+pass (352 app, 14 lexer, 1,710 backend, 416 parser), retaining the 12 verified
+baseline exclusions. Validation uses instruction/relocation equality; no new
+native execution result is claimed. `target/asm-literals-final-verification.json`
+binds the compiler and harness fingerprints, result artifacts, source extraction
+and **387** candidate/reference objects.
 
 ## Complete Dolphin time conversion and conditional wide values, 2026-09-09
 

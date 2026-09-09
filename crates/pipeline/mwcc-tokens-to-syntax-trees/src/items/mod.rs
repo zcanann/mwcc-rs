@@ -6,6 +6,7 @@
 
 mod aggregate_assignments;
 mod asm;
+mod asm_constants;
 mod bit_fields;
 mod constant_addresses;
 mod cxx_destructors;

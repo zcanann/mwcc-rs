@@ -294,6 +294,31 @@ impl Parser {
                     _ => operands.push(self.parse_asm_operand()?),
                 }
             }
+            // D-form loads/stores also accept a bare symbol or absolute
+            // displacement. The symbol carries SDA21 with an unspecified base;
+            // the linker chooses r2/r13 from the destination section.
+            if matches!(
+                mnemonic.as_str(),
+                "lwz" | "lbz" | "lhz" | "lha" | "stw" | "stb" | "sth" | "lmw" | "stmw"
+                    | "lfs" | "lfd" | "stfs" | "stfd"
+            ) && operands.len() == 2
+            {
+                operands[1] = match &operands[1] {
+                    AsmOperand::Label(name) => AsmOperand::SmallDataSymbolMemory {
+                        name: name.clone(),
+                        base: 0,
+                    },
+                    AsmOperand::Immediate(value) => AsmOperand::Memory {
+                        displacement: i16::try_from(*value).map_err(|_| {
+                            Diagnostic::error(format!(
+                                "asm absolute displacement {value} does not fit in 16 bits"
+                            ))
+                        })?,
+                        base: 0,
+                    },
+                    other => other.clone(),
+                };
+            }
             items.push(AsmItem::Instruction(AsmInstruction {
                 mnemonic,
                 operands,
@@ -308,40 +333,11 @@ impl Parser {
     /// unit DEFERS rather than emitting wrong bytes.
     fn parse_asm_operand(&mut self) -> Compilation<AsmOperand> {
         let operand_start = self.position;
-        // SDK asm uses bitwise-complemented immediates (`lis r5, ~0`; `ori
-        // r5,r5,~14`).  Parse the complete constant expression before consuming
-        // its first token so the ordinary C constant folder owns unary syntax.
-        if *self.peek() == Token::Tilde {
-            let value = self.parse_integer_constant()?;
-            return self.finish_asm_integer_operand(value);
-        }
-        let negate = *self.peek() == Token::Minus;
-        if negate {
-            self.advance();
+        if *self.peek() != Token::ParenOpen && super::asm_constants::starts_constant(self.peek()) {
+            let value = self.parse_asm_constant(0)?;
+            return self.finish_asm_integer_operand(i64::from(value));
         }
         match self.advance() {
-            Token::IntegerLiteral(value) => {
-                let mut value = if negate { -value } else { value };
-                // Immediate operands may be unparenthesized constant expressions
-                // (`ori r11,r11,FLAG_A | FLAG_B`). Reparse from the operand start
-                // through the shared integer-constant grammar when an operator
-                // follows the first literal; commas/newlines delimit the operand.
-                if matches!(
-                    self.peek(),
-                    Token::Plus
-                        | Token::Minus
-                        | Token::Star
-                        | Token::Ampersand
-                        | Token::Pipe
-                        | Token::Caret
-                        | Token::ShiftLeft
-                        | Token::ShiftRight
-                ) {
-                    self.position = operand_start;
-                    value = self.parse_enum_value()?;
-                }
-                self.finish_asm_integer_operand(value)
-            }
             // A register name; a register PARAMETER (`mr r3,val`) or its member
             // (`stw r5,env->pc` — a displacement off the parameter's register); a
             // `symbol@suffix` relocation reference; or (a bare identifier) a
@@ -416,12 +412,12 @@ impl Parser {
             // `(ProcessorState_PPC.Extended1.exceptionID + 2)(r2)`.
             Token::ParenOpen => {
                 // The same surface syntax also wraps ordinary constant expressions in asm
-                // immediates (`ori r3,r4,(1 << (31 - 16))`). Reuse the C constant folder; the
-                // closing parenthesis naturally terminates its expression grammar.
-                if matches!(self.peek(), Token::IntegerLiteral(_) | Token::Minus) {
-                    let value = self.parse_integer_constant()?;
-                    self.expect(Token::ParenClose)?;
-                    return Ok(AsmOperand::Immediate(value));
+                // immediates (`ori r3,r4,(1 << (31 - 16))`). Reparse the opening
+                // parenthesis so following operators and memory suffixes are retained.
+                if super::asm_constants::starts_constant(self.peek()) {
+                    self.position = operand_start;
+                    let value = self.parse_asm_constant(0)?;
+                    return self.finish_asm_integer_operand(i64::from(value));
                 }
                 // Zero-displacement memory syntax: `(rN)` (or `(parameter)`).
                 if *self.peek_at(1) == Token::ParenClose {
@@ -458,7 +454,10 @@ impl Parser {
                     let subtract = *self.peek() == Token::Minus;
                     self.advance();
                     let addend = match self.advance() {
-                        Token::IntegerLiteral(value) => value,
+                        Token::IntegerLiteral(value)
+                        | Token::UnsignedIntegerLiteral(value)
+                        | Token::LongLongIntegerLiteral(value)
+                        | Token::UnsignedLongLongIntegerLiteral(value) => value,
                         other => {
                             return Err(Diagnostic::error(format!(
                                 "expected an integer asm displacement addend, found {other}"
@@ -486,6 +485,9 @@ impl Parser {
 
     /// Finish the suffix shared by literal and folded-unary integer operands.
     fn finish_asm_integer_operand(&mut self, value: i64) -> Compilation<AsmOperand> {
+        // MWCC's assembler truncates the C constant to a signed word before
+        // checking an instruction field, including explicitly wide literals.
+        let value = i64::from(value as i32);
         // A `@`-suffix on a NUMERIC operand selects a 16-bit part of the value,
         // computed at assembly time (`lis r3, 0x7FFFFFFF@h`) — no relocation.
         if *self.peek() == Token::At {
