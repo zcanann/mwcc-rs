@@ -4,13 +4,82 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, GC/1.3 shared word promotions (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, GC/1.3 nested word addends (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `7b8e3a4426b019565a127388ed0638567503b7a63880033cb87e21e9ec03aced:45bd6a7ae346982d484e293705afbc2a62cce569c4726db4c5f68cb0bb60d4a1`
+Latest measured compiler + harness fingerprint: `221db5297633ebac26ab34814e46c2f75e97a496f6e949c78d22c83b7107d1b5:fa4412895f30010a0e3217f1d044effcbb22341249b7c1a330d3677364612992`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GC/1.3 nested word addends, 2026-09-09
+
+The prior **33 GC/1.3 O1 `nested_twice` mismatches are closed**. With unsigned
+wide `u` and signed word `n`, GC/1.3 drops both sign words in `u+n+n` at O1,
+only the second at O0, and neither at O2 and later. Distinct operands,
+explicit word casts, signed-wide casts, and intervening operations change
+this behavior. The new nested-promotion analysis retains source operand
+structure separately from cross-statement sharing. It recognizes adjacent
+uses before lowering, preserves cast distinctions, and respects named values
+and control-flow boundaries. `n-(u+n)` remains distinct from `(u+n)-n`.
+
+The addend pass also handles operand order and wide constants. A word-first
+addition can lose its sign word even beside a plain unsigned-wide parameter.
+A wide constant can materialize an expression, while a constant inserted
+after a pending arithmetic expression retains that expression's behavior.
+Signed views retain their original wide operand's provenance; an explicit
+cast from signed wide back to unsigned preserves a materialization boundary.
+Operand-origin facts are collected once and shared across branches. Genuine
+signed arithmetic, explicit signed-wide promotions, and right operands that
+were widened from words retain their measured behavior.
+
+The new **126-function** `2317_wide_nested_word_addends.c` compiles in all
+**105 configurations** for the baseline, candidate, and reference: 15 builds
+across seven optimization/scheduling modes. It covers operand orders,
+repeated and distinct words, arithmetic and bit operations, constant placement,
+casts, named values, branch uses, and signed-arithmetic controls. Exact matches
+remain **105/13,230 functions**, all from the `signed_pair_right` control;
+this milestone improves behavior without increasing full-function byte parity.
+
+Fresh execution covers **397,888 cases per compiler**. The new corpus uses
+all 15 builds at O0/O1/O4 plus the other four GC/1.3 modes, with edge values
+and seeded random inputs. The harness compares return values directly with
+the reference and checks termination, stack restoration, and callee-saved
+registers. The prior sharing corpus retains its independent version-aware
+model and full memory checks.
+
+| Fresh native panel | Comparable cases | Baseline mismatches | Candidate mismatches |
+| --- | ---: | ---: | ---: |
+| New nested-addend corpus | 394,944 | 10,395 | 0 |
+| Prior sharing corpus, GC/1.3 O1 | 2,752 | 33 | 0 |
+| Total | 397,696 | 10,428 | 0 |
+
+The other **192 executions** are GC/1.1p1 O0 reference failures in
+`wide_shift`, `commuted_shift`, and `constant_shift`. Their reference prologues
+overlap parameter homes with the saved return address, and execution fails to
+return. These are retained as parity work and excluded from return-value
+comparisons. Candidate and baseline restore their frames in these cases;
+neither is counted as matching the failing reference. The previously recorded
+512 reference frame failures in older corpora also remain outside this fix.
+
+Of **3,840 recent configurations**, 3,839 candidate objects are unchanged;
+only GC/1.3 O1 `nested_twice` changes. Focused regressions retain **2,589
+objects and 276 diagnostics** unchanged. All **90 THP audio objects** remain
+unchanged, preserving **142/270 exact functions**. The Dolphin frontier stays
+at **201/302**, with all compiling objects unchanged. **2,707 Rust tests pass**,
+using the same 12 documented exclusions and eight ignored allocator tests.
+Prior native evidence for **653,568 candidate cases** is reused only after
+checking exact object identities. Reference project files remain unchanged;
+no full corpus run was performed.
+
+Evidence: `target/nested-addend-{canaries,recent,regressions,project,frontier}/results.json`,
+`target/nested-addend-native.json`, `target/nested-addend-sharing-native.json`,
+`target/nested-addend-verified-tests.log`, `target/nested-addend-final-runs.json`,
+and `target/nested-addend-final-verification.json`. The manifest verifies
+**13,958 object bindings**, fresh and reused execution evidence, unchanged
+reference-project hashes, and the explicit reference-failure boundary.
+
+Compiler/harness fingerprint: `221db5297633ebac26ab34814e46c2f75e97a496f6e949c78d22c83b7107d1b5:fa4412895f30010a0e3217f1d044effcbb22341249b7c1a330d3677364612992`.
 
 ## GC/1.3 shared word promotions, 2026-09-09
 

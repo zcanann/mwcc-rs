@@ -24,6 +24,8 @@ mod subtrahend;
 mod promotion;
 #[path = "wide_value_graph/sharing.rs"]
 mod sharing;
+#[path = "wide_value_graph/nested.rs"]
+mod nested;
 #[path = "wide_value_graph/addend.rs"]
 mod addend;
 use condition::Condition;
@@ -141,6 +143,7 @@ struct Graph<'a> {
     values: usize,
     signed_word_promotions: HashMap<usize, usize>,
     promotion_sites: sharing::Sites,
+    promotion_shapes: HashMap<usize, nested::Shape>,
     shared_promotions: sharing::Sharing,
     nonvolatile_pointer_values: std::collections::HashSet<usize>,
     word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension,
@@ -284,7 +287,15 @@ impl<'a> Graph<'a> {
                 operand,
             } => {
                 let value = self.expression(operand)?;
-                let value = self.convert(value, *target_type)?;
+                // GC/1.3 materializes a signed pair explicitly cast back to
+                // unsigned. Preserve that boundary even though the bits agree.
+                let value = if self.computed_unsigned_addend_zero_extends
+                    && value.ty == Type::LongLong && *target_type == Type::UnsignedLongLong
+                    && matches!(value.source, Source::Register(_)) {
+                    let result = self.fresh(*target_type);
+                    self.operations.push(Operation::Copy { result, value });
+                    result
+                } else { self.convert(value, *target_type)? };
                 self.mark_word_cast_promotion(value, sharing::word_cast(operand));
                 Some(value)
             }
@@ -390,6 +401,8 @@ impl<'a> Graph<'a> {
                     | BinaryOperator::GreaterEqual
             ) =>
             {
+                let left_shape = self.promotion_shape(left);
+                let right_shape = self.promotion_shape(right);
                 let left_cast = sharing::word_cast(left);
                 let right_cast = sharing::word_cast(right);
                 // Call-bearing RHS first matches the time-adjust transaction:
@@ -431,6 +444,8 @@ impl<'a> Graph<'a> {
                 };
                 let left = self.convert(left, ty)?;
                 let right = self.convert(right, if shift { Type::UnsignedInt } else { ty })?;
+                self.record_promotion_shape(left, left_shape);
+                self.record_promotion_shape(right, right_shape);
                 self.mark_word_cast_promotion(left, left_cast);
                 self.mark_word_cast_promotion(right, right_cast);
                 if let (Source::Constant(left), Source::Constant(right)) =
@@ -776,6 +791,7 @@ impl<'a> Graph<'a> {
             values: 0,
             signed_word_promotions: Default::default(),
             promotion_sites: Default::default(),
+            promotion_shapes: Default::default(),
             shared_promotions: Default::default(),
             nonvolatile_pointer_values: Default::default(),
             word_subtrahend_extension,
@@ -1321,6 +1337,7 @@ mod tests {
             values: 0,
             signed_word_promotions: Default::default(),
             promotion_sites: Default::default(),
+            promotion_shapes: Default::default(),
             shared_promotions: Default::default(),
             nonvolatile_pointer_values: Default::default(),
             word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension::FullWidth,

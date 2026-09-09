@@ -62,6 +62,7 @@ impl Graph<'_> {
             return;
         }
         self.shared_promotions = self.find_shared_word_promotions();
+        self.find_nested_word_promotions();
         // Count the original graph once: rewriting one use must not make a
         // promotion shared by addition and subtraction appear single-use.
         let mut uses = HashMap::<usize, usize>::new();

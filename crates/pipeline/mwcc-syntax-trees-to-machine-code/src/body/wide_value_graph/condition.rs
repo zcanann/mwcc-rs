@@ -208,6 +208,7 @@ mod tests {
             values: 0,
             signed_word_promotions: Default::default(),
             promotion_sites: Default::default(),
+            promotion_shapes: Default::default(),
             shared_promotions: Default::default(),
             nonvolatile_pointer_values: Default::default(),
             word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension::FullWidth,
