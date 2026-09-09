@@ -997,6 +997,26 @@ impl Generator {
         );
     }
 
+    /// Convention-aware dense owners already have their final frame and skip
+    /// frame conversion. Their lmw tail still follows the selected LR policy.
+    pub(crate) fn normalize_restored_stack_lmw_epilogue(&mut self) {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst
+            || self.behavior.saved_gpr_epilogue_style
+                != mwcc_versions::SavedGprEpilogueStyle::StackRestoreBeforeLinkRegisterReload
+            || self.output.is_asm || self.preceded_by_asm || self.frame_size <= 0
+        { return; }
+        let Some(reload) = self.output.instructions.iter().rposition(|i| matches!(i,
+            Instruction::LoadWord { d: 0, a: 1, offset } if *offset == self.frame_size + 4))
+        else { return; };
+        let Some(Instruction::LoadMultipleWord { d: first @ 14..=31, .. }) =
+            reload.checked_sub(1).and_then(|at| self.output.instructions.get(at))
+        else { return; };
+        let saved = (*first..=31).collect::<Vec<_>>();
+        if saved_lmw_precedes_link_reload(&self.output, reload, &saved, self.frame_size) {
+            self.normalize_restored_stack_saved_gpr_epilogue(&saved, self.frame_size);
+        }
+    }
+
     fn normalize_restored_stack_saved_gpr_epilogue(
         &mut self,
         physical_saved: &[u8],
@@ -1010,19 +1030,23 @@ impl Generator {
             return;
         };
         let first_restore = link_reload;
-        for register in physical_saved {
-            let Some(restore) = self.output.instructions[link_reload + 1..]
-                .iter()
-                .position(|instruction| {
-                    matches!(instruction,
-                        Instruction::LoadWord { d, a: 1, .. } if d == register)
-                })
-                .map(|offset| link_reload + 1 + offset)
-            else {
-                return;
-            };
-            crate::move_instruction_before_retargeting(self, restore, link_reload);
-            link_reload += 1;
+        // Dense cursor frames restore their entire saved range with an lmw
+        // before the LR load. That already satisfies the saved-home phase.
+        if !saved_lmw_precedes_link_reload(&self.output, link_reload, physical_saved, frame_size) {
+            for register in physical_saved {
+                let Some(restore) = self.output.instructions[link_reload + 1..]
+                    .iter()
+                    .position(|instruction| {
+                        matches!(instruction,
+                            Instruction::LoadWord { d, a: 1, .. } if d == register)
+                    })
+                    .map(|offset| link_reload + 1 + offset)
+                else {
+                    return;
+                };
+                crate::move_instruction_before_retargeting(self, restore, link_reload);
+                link_reload += 1;
+            }
         }
         let Some(stack_restore) = self.output.instructions[link_reload + 1..]
             .iter()
@@ -2460,9 +2484,77 @@ fn plain_linkage_entry_clear(instructions: &[Instruction], start: usize, end: us
     })
 }
 
+fn saved_lmw_precedes_link_reload(
+    output: &mwcc_machine_code::MachineFunction,
+    reload: usize,
+    saved: &[u8],
+    frame_size: i16,
+) -> bool {
+    let Some(Instruction::LoadMultipleWord { d: first @ 14..=31, a: 1, offset }) =
+        reload.checked_sub(1).and_then(|at| output.instructions.get(at))
+    else { return false; };
+    if saved.len() != usize::from(32 - first)
+        || !(*first..=31).all(|r| saved.contains(&r))
+        || *offset < 0 || i32::from(*offset) + 4 * i32::from(32 - first) > i32::from(frame_size)
+        || !output.instructions[..reload - 1].iter().any(|i| matches!(i,
+            Instruction::StoreMultipleWord { s, a: 1, offset: slot } if s == first && slot == offset))
+        || !matches!(output.instructions.get(reload + 1..), Some([
+            Instruction::AddImmediate { d: 1, a: 1, immediate },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::BranchToLinkRegister,
+        ]) if *immediate == frame_size)
+    { return false; }
+    // An entry at the old stack release deliberately bypasses the LR load.
+    // Such a split epilogue needs its own control-flow owner.
+    let stack = reload + 1;
+    !output.instructions.iter().any(|i| matches!(i,
+        Instruction::Branch { target } | Instruction::BranchConditionalForward { target, .. } if *target == stack))
+        && !output.entry_points.iter().any(|(_, at)| *at == stack)
+        && !output.jump_tables.iter().any(|t| t.entries.contains(&(4 * stack as u32)))
+        && !output.relocations.iter().any(|r| (reload..=stack).contains(&r.instruction_index))
+        && !output.deferred_displacements.iter().any(|d| (reload..=stack).contains(&d.instruction_index))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lmw_tail_fixture() -> mwcc_machine_code::MachineFunction {
+        let mut f = mwcc_machine_code::MachineFunction::new("lmw_tail");
+        f.instructions = vec![
+            Instruction::StoreMultipleWord { s: 26, a: 1, offset: 24 },
+            Instruction::LoadMultipleWord { d: 26, a: 1, offset: 24 },
+            Instruction::LoadWord { d: 0, a: 1, offset: 52 },
+            Instruction::AddImmediate { d: 1, a: 1, immediate: 48 },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::BranchToLinkRegister,
+        ];
+        f
+    }
+
+    #[test]
+    fn preceding_lmw_satisfies_the_complete_saved_home_restore_phase() {
+        let f = lmw_tail_fixture();
+        assert!(saved_lmw_precedes_link_reload(&f, 2, &[26, 27, 28, 29, 30, 31], 48));
+        assert!(!saved_lmw_precedes_link_reload(&f, 2, &[27, 28, 29, 30, 31], 48));
+        assert!(!saved_lmw_precedes_link_reload(&f, 2, &[25, 26, 27, 28, 29, 30, 31], 48));
+    }
+
+    #[test]
+    fn lmw_restore_requires_the_owned_frame_slot_and_unsplit_tail() {
+        for variant in 0..5 {
+            let mut f = lmw_tail_fixture();
+            match variant {
+                0 => f.instructions[0] = Instruction::StoreMultipleWord { s: 26, a: 1, offset: 20 },
+                1 => f.instructions[1] = Instruction::LoadMultipleWord { d: 26, a: 1, offset: 28 },
+                2 => f.instructions[5] = Instruction::Branch { target: 0 },
+                3 => f.instructions.insert(0, Instruction::Branch { target: 4 }),
+                _ => f.entry_points.push(("release_only".into(), 3)),
+            }
+            let reload = if variant == 3 { 3 } else { 2 };
+            assert!(!saved_lmw_precedes_link_reload(&f, reload, &[26, 27, 28, 29, 30, 31], 48));
+        }
+    }
 
     #[test]
     fn build163_direct_call_left_shift_uses_add_immediate_zero() {

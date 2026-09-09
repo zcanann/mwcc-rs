@@ -45,6 +45,7 @@ mod division;
 mod fixed_address_division;
 mod fixed_address_division_entry;
 mod fixed_fill_entry_schedule;
+mod reset_call_schedule;
 mod expressions;
 mod float;
 mod float_abs_pair_condition;
@@ -1487,6 +1488,8 @@ fn lower_function_body(
     generator.schedule_loop_step_prefetch();
     generator.schedule_loop_latch_steps();
     generator.schedule_saved_call_token(function);
+    generator.schedule_reset_loop_callback();
+    generator.normalize_restored_stack_lmw_epilogue();
     // Allocation can coalesce the terminal result move that previously kept a
     // conditional exit from targeting the final `blr`. Canonicalize again on
     // the finished physical stream so returned loop accumulators use MWCC's

@@ -4,13 +4,79 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, anchored cursor setup scheduling (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, complete early AX voice initializer matching (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `1422d568ee558fe843f460251200dd643e48d4fd997bb00abab3b901380e0153:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `11132d43ecdf60caa2bb9aed72f105b73afeaf08f544644ab6a85bf91b8fc170:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete early AX voice initializer matching, 2026-09-08
+
+The real `__AXVPBInit` now matches all **512 bytes and relocations** on GC/1.1,
+1.1p1, 1.2.5, and 1.2.5n. Complete initializer matches improve **0 → 4/15**,
+building on the earlier 256-byte prefix. The eleven later-version objects
+remain unchanged, and `__AXSetPBDefault` remains **15/15** exact. All **240**
+initializer execution cases pass against baseline, reference, and original
+GQPE78 game models, including every voice's callback-visible contents, clear
+ranges, flush arguments, saved registers, stack, and return state.
+
+The new machine-stage reset scheduler keeps a stable callback pointer in r3
+while issuing member stores. It requires a known nonvariadic void callback,
+scalar register arguments copied from saved homes, one terminal call, and a
+forward body whose scratch inputs are defined on every incoming path. It moves
+only the first argument copy earlier and shifts the body scratch lanes; later
+argument copies retain their ABI registers. The reset owner can differ from the
+callback pointer. A separate `early_reset_comparison` profile policy captures
+GC/1.1p1's comparison issue slot. A terminal tag literal can move into the join
+after its last dependency, without crossing incoming branch targets. Shared
+instruction permutation preserves branch and relocation ownership. Unknown
+calls, additional callbacks, incoming scratch values, r12 conflicts, pointer
+redefinitions, side entries, fixups, and opaque instructions reject the plan.
+The pass is restricted to linkage-first O3/O4 performance builds with scheduling
+on; measured O2 references use a different indexed loop shape.
+
+GC/1.1p1's existing stack-before-LR epilogue policy now also applies when a dense
+`lmw` already restored the saved range. Convention-aware frame owners previously
+skipped this normalization. The proof requires matching save/load slots, a full
+saved range inside the frame, and the canonical unsplit return tail. The stack
+release moves before the LR reload, whose offset becomes 4 from the restored
+stack. Split entries and displacement/relocation owners prevent this rewrite.
+
+Canaries **2234–2239** add eight callback/reset variations in six modes across
+fifteen builds. All **90 objects / 720 shared case functions** compile on
+baseline, candidate, and reference. **58 functions** change at identical sizes:
+40 gain reset-prefix scheduling and volatile-register matches after normalizing
+already-different saved homes; 18 change only their epilogue. Across those 58,
+**28** gain reference epilogue order. Whole case-function matches remain **0/720**;
+reference-only static reset helpers also remain in three later size-mode objects.
+All **5,760** native cases pass guarded memory, callback mutations and argument
+checks, saved registers, stack, and return-state checks. Final O2 gating changed
+only four objects; their 256 cases were rerun and merged with hash-identical
+results for the remaining objects.
+
+Of **2,370** preceding objects, **2,329** remain identical. The other **41 objects /
+198 functions** change only their final epilogue instructions, with identical
+preceding bytes, function sizes, and relocations. These gain **0 → 198** reference
+epilogue orders. Whole matches across their 446 shared functions remain **62/446**,
+with no exact losses. All **3,008** affected earlier execution cases pass;
+unaffected functions were not re-executed. This checkpoint covers **9,008**
+distinct native cases in total.
+
+All **24 AX/GX units** compile, with AXVPB alone changed. Backend tests pass
+**1,689** with the existing nested-asm exclusion; version tests pass **63**.
+Seven new scheduler tests cover profile order, argument registers, pointer
+ownership, scratch dataflow across joins, dependency and entry barriers,
+metadata remapping, and idempotence. Two frame tests cover complete dense
+restores and rejected malformed/split tails, and one version test covers policy
+selection across all fifteen builds.
+
+`target/reset-call-final-verification.json` binds the final compiler/harness,
+438 native object entries, sample sources, execution harnesses, preceding objects,
+and original DOL fingerprint. These are targeted measurements, not a full-corpus
+parity estimate. Later-version initializer code generation and the new samples'
+saved-home differences remain open.
 
 ## Anchored cursor setup scheduling, 2026-09-08
 
