@@ -4,13 +4,68 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, cursor section-base lifetimes (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, temporary BSS cursor bases (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `f99526f0b5837740bd7097b0c1d78906c5d22bee2dd9a3103ffc5e7f867b2be9:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `7757eb5caa3a10ec7980ee0850e4d8f935e53b7242ae339e18190b39c859385d:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Temporary BSS cursor bases, 2026-09-08
+
+Cursor strength reduction now preserves each binding's array identity alongside
+its local role. O3/O4 performance lowering carries candidate address groups to
+the machine representation when no retained section anchor owns the function.
+A separate object-stage pass consumes them after final BSS ordering/alignment,
+before debug lowering. It shares three or more distinct bases when their
+complete section offsets fit signed D-form immediates.
+
+The pass proves a contiguous packet of absolute address pairs, checks relocation
+ownership and interior control-flow entries, and uses CFG liveness to find a
+free volatile GPR. It replaces the packet with one section address plus one
+addition per cursor, retaining symbol-discovery fixups and remapping later
+instruction owners and branch targets. Saved-register allocation and frames
+remain unchanged. Unknown/initialized data, duplicate bases, wide offsets,
+interfering fixups, and unavailable temporaries decline the transformation.
+Three new unit tests exercise live incoming registers, branch/entry remapping,
+fixup ownership, signed boundaries, register pressure, and idempotence.
+
+Canaries **2188–2193** add six functions in six modes across fifteen builds:
+**90 objects / 540 functions**, all compiling on baseline, candidate, and
+reference. They vary cursor count and binding order, scalar parameters,
+aliasing, initialized data, scheduling, and optimization mode. **180 functions**
+change: 135 shrink by four bytes and 45 by eight. Every changed function now
+uses the reference's one shared BSS HA/LO relocation pair instead of separate
+symbol pairs. This measures address-form agreement; complete functions remain
+**0/540 byte-exact**. All **8,640** native cases pass independent callback,
+mutation, guarded-memory, register, and stack models.
+
+Canaries **2194–2197** add **60 objects / 75 functions** around layout boundaries
+and biased/wide sections. Twelve older-layout boundary cases shrink by four
+bytes and adopt the reference's shared address form. The three newest builds
+align the third base from `0x7ffc` to `0x8000`, correctly declining this form.
+All **600** native cases pass; the 15 existing exact padding-accessor matches
+remain exact. Earlier builds can also share wide addresses through an initial
+cursor home; that distinct form remains future work.
+
+Of **1,680** preceding objects, **1,560** stay identical and **120 objects /
+690 functions** change. All 690 adopt the reference's shared relocation form,
+shrinking by four through twenty-four bytes, without exact-function gains or
+losses. All **17,040** affected preceding native cases pass. Fresh execution
+coverage totals **26,280 cases**. Full AXVPB remains byte-identical in all fifteen
+builds, preserving its 12/15 matching home maps and exact 28-byte loop tails;
+complete initializer parity remains 0/15. Its prior 240 executions are reused
+only after object-hash verification. All 24 AX/GX units compile unchanged.
+
+Backend tests pass **1,669** with the existing nested-asm exclusion; object-stage
+tests pass **6**. All **1,869** candidate objects were recompiled with the final
+compiler image and matched their tested hashes. The final compiler/harness,
+source hashes, comparisons, and **840 native-tested object entries** are bound
+by `target/temporary-bss-final-verification.json`. Broader older/indexed panels
+and the full corpus were not rerun. Prologue placement of temporary bases,
+wide-address sharing, and modern two-array retained-anchor profitability remain
+separate matching gaps.
 
 ## Cursor section-base lifetimes, 2026-09-08
 

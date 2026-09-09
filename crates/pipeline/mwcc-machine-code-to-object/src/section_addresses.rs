@@ -17,7 +17,7 @@ pub fn finalize_bss_addresses(
     small_data: bool,
 ) -> Compilation<()> {
     if !functions.iter().any(|f| {
-        f.deferred_displacements
+        !f.temporary_bss_address_groups.is_empty() || f.deferred_displacements
             .iter()
             .any(|d| matches!(d.target, Target::SymbolAddress(_)))
     }) {
@@ -88,6 +88,7 @@ pub fn finalize_bss_addresses(
             .ok_or_else(|| Diagnostic::error("BSS layout exceeds the target address space"))?;
     }
     for (index, function) in functions.iter_mut().enumerate() {
+        super::temporary_bss_addresses::share(function, &offsets);
         let resolved: Vec<_> = function
             .deferred_displacements
             .iter()

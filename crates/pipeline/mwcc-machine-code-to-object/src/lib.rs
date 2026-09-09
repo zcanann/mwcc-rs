@@ -5,6 +5,7 @@
 //! relocations, and the Metrowerks metadata records).
 
 mod section_addresses;
+mod temporary_bss_addresses;
 pub use section_addresses::finalize_bss_addresses;
 
 use mwcc_machine_code::{

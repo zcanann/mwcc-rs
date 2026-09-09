@@ -462,6 +462,17 @@ impl Generator {
             .then(|| super::structured_global_array_cursors::reduce(function, &self.global_arrays, &self.globals))
             .flatten();
         let function = global_array_cursors.as_ref().map_or(function, |r| &r.function);
+        if self.data_section_anchor.is_none()
+            && self.behavior.optimization >= mwcc_versions::Optimization::O3
+            && self.behavior.optimization_goal == mwcc_versions::OptimizationGoal::Performance
+        {
+            self.output.temporary_bss_address_groups = global_array_cursors
+                .iter()
+                .flat_map(|reduction| &reduction.groups)
+                .filter(|group| group.arrays.len() >= 3)
+                .map(|group| group.arrays.clone())
+                .collect();
+        }
         let reduced_pointer_table_indices =
             super::structured_pointer_table_index_cursor::strength_reduce_pointer_table_indices(
                 function,

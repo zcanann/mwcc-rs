@@ -122,6 +122,10 @@ pub struct MachineFunction {
     pub relocations: Vec<Relocation>,
     /// D-form immediates awaiting final frame or data-section placement.
     pub deferred_displacements: Vec<DeferredDisplacement>,
+    /// Array bases initialized together by cursor strength reduction. Unit
+    /// layout may share their address materialization using a dead volatile
+    /// register; these are candidates, not retained section-anchor lifetimes.
+    pub temporary_bss_address_groups: Vec<Vec<String>>,
     /// Optimized source-variable homes retained for exact debug information.
     /// Debug lowering decides which declarations receive DIEs for a measured
     /// compiler generation; this list only reports physical allocation.
@@ -360,6 +364,7 @@ impl MachineFunction {
             instructions: Vec::new(),
             relocations: Vec::new(),
             deferred_displacements: Vec::new(),
+            temporary_bss_address_groups: Vec::new(),
             debug_variables: Vec::new(),
             constants: Vec::new(),
             string_literals: Vec::new(),

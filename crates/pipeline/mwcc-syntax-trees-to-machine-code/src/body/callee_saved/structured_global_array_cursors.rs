@@ -14,6 +14,7 @@ use super::*;
 pub(super) struct CursorGroup {
     pub(super) index: String,
     pub(super) cursors: Vec<String>,
+    pub(super) arrays: Vec<String>,
 }
 
 pub(super) struct Reduction {
@@ -75,6 +76,7 @@ pub(super) fn reduce(
             continue;
         }
         let mut cursors = Vec::new();
+        let mut cursor_arrays = Vec::new();
         for statement in body {
             let Statement::Assign {
                 name,
@@ -122,6 +124,7 @@ pub(super) fn reduce(
                     }),
                 },
             ));
+            cursor_arrays.push(global.clone());
         }
         if cursors.is_empty() {
             continue;
@@ -165,6 +168,7 @@ pub(super) fn reduce(
         groups.push(CursorGroup {
             index: index.clone(),
             cursors: cursors.into_iter().map(|(name, _)| name).collect(),
+            arrays: cursor_arrays,
         });
     }
     (!groups.is_empty()).then_some(Reduction { function: result, groups })
