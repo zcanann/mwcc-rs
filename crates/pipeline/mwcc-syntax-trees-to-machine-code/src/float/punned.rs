@@ -615,7 +615,7 @@ impl Generator {
             load_register
         };
         self.output.instructions.push(Instruction::LoadWord {
-            d: load_register,
+            d: u32::from(load_register),
             a: 1,
             offset: 8,
         });
@@ -623,21 +623,21 @@ impl Generator {
             self.output
                 .instructions
                 .push(Instruction::ClearLeftImmediate {
-                    a: target_register,
-                    s: load_register,
+                    a: u32::from(target_register),
+                    s: u32::from(load_register),
                     clear: 1,
                 });
         }
         if lis_high.is_some() {
             self.output.instructions.push(Instruction::CompareWord {
-                a: target_register,
+                a: u32::from(target_register),
                 b: 0,
             });
         } else {
             self.output
                 .instructions
                 .push(Instruction::CompareWordImmediate {
-                    a: target_register,
+                    a: u32::from(target_register),
                     immediate: small_compare.expect("checked above"),
                 });
         }
@@ -816,16 +816,16 @@ impl Generator {
         // The preserved ix resolves in the dual's condition test through a
         // temporary location at the prefix's compare register.
         if let Some((high, low)) = ix_dual_big {
-            self.float.dual_compare = Some((high, low, target_register));
+            self.float.dual_compare = Some((high, low, target_register.into()));
         }
         if let Some(mut payload) = composition {
-            payload.ix_register = target_register;
+            payload.ix_register = u32::from(target_register);
             if legacy_composed_frame {
                 payload.addis_target = 0;
                 payload.store_high_before_zero = true;
                 payload.qx_offset = 24;
             } else {
-                payload.addis_target = load_register;
+                payload.addis_target = u32::from(load_register);
             }
             self.float.else_composition = Some(payload);
         }
@@ -834,7 +834,7 @@ impl Generator {
                 ix.to_string(),
                 crate::generator::Location {
                     class: ValueClass::General,
-                    register: target_register,
+                    register: u32::from(target_register),
                     signed: true,
                     width: 32,
                     pointee: None,

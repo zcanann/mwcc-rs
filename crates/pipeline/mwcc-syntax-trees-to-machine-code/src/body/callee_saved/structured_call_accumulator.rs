@@ -346,7 +346,7 @@ impl Generator {
         &mut self,
         name: &str,
         value: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Expression::Binary {
             operator,
@@ -371,20 +371,20 @@ impl Generator {
             return Ok(false);
         }
 
-        self.evaluate(right, Type::Int, Eabi::general_result().number)?;
+        self.evaluate(right, Type::Int, u32::from(Eabi::general_result().number))?;
         self.output
             .instructions
             .push(if *operator == BinaryOperator::Add {
                 Instruction::Add {
                     d: destination,
                     a: destination,
-                    b: Eabi::general_result().number,
+                    b: u32::from(Eabi::general_result().number),
                 }
             } else {
                 Instruction::Or {
                     a: destination,
                     s: destination,
-                    b: Eabi::general_result().number,
+                    b: u32::from(Eabi::general_result().number),
                 }
             });
         Ok(true)
@@ -394,11 +394,11 @@ impl Generator {
         &mut self,
         name: &str,
         value: &Expression,
-        previous: Option<u8>,
-        preference: Option<u8>,
+        previous: Option<u32>,
+        preference: Option<u32>,
         optimizer_owned_lane: bool,
         shared_home: bool,
-    ) -> Compilation<Option<u8>> {
+    ) -> Compilation<Option<u32>> {
         let (call, include_previous) = match value {
             Expression::Unary {
                 operator: UnaryOperator::LogicalNot,
@@ -460,12 +460,12 @@ impl Generator {
                 .unwrap_or_else(|| self.fresh_virtual_general())
         };
 
-        self.evaluate(call, Type::Int, Eabi::general_result().number)?;
+        self.evaluate(call, Type::Int, u32::from(Eabi::general_result().number))?;
         self.output
             .instructions
             .push(Instruction::CountLeadingZeros {
                 a: GENERAL_SCRATCH,
-                s: Eabi::general_result().number,
+                s: u32::from(Eabi::general_result().number),
             });
         let normalized = if previous.is_some() {
             GENERAL_SCRATCH

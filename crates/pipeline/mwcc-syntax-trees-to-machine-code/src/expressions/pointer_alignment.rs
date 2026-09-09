@@ -66,7 +66,7 @@ fn round_up_parts(expression: &Expression) -> Option<(&Expression, i16, u8)> {
         return None;
     }
 
-    Some((source, bias, cleared_bits as u8))
+    Some((source, bias, (cleared_bits as u8).into()))
 }
 
 impl Generator {
@@ -76,7 +76,7 @@ impl Generator {
     pub(crate) fn try_emit_pointer_round_up(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some((source, bias, cleared_bits)) = round_up_parts(expression) else {
             return Ok(false);

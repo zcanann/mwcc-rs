@@ -12,7 +12,7 @@ impl Generator {
     fn legacy_short_circuit_accumulator(
         &self,
         condition: &Expression,
-    ) -> Compilation<Option<u8>> {
+    ) -> Compilation<Option<u32>> {
         let Expression::Binary { left, right, .. } = condition else {
             return Ok(None);
         };
@@ -92,7 +92,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        result: u8,
+        result: u32,
     ) -> Compilation<()> {
         // If evaluating the RIGHT operand reads the RESULT register — as a value or through a load
         // base (`a && a`; `p && p[0]` where p is in `result`) — the accumulator (`li result,…`)
@@ -214,7 +214,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        result: u8,
+        result: u32,
     ) -> Compilation<()> {
         self.emit_short_circuit_with_accumulator(operator, left, right, result, GENERAL_SCRATCH)
     }
@@ -225,8 +225,8 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        result: u8,
-        scratch: u8,
+        result: u32,
+        scratch: u32,
     ) -> Compilation<()> {
         // `(a == c1) || (a == c2)` for CONSECUTIVE constants is, as a VALUE, mwcc's unsigned
         // range check `(unsigned)(a - min) <= 1` — a branchless idiom (`addi; subfic; orc;
@@ -267,7 +267,7 @@ impl Generator {
                         .legacy_short_circuit_accumulator(left)?
                         .unwrap_or(scratch);
                     let (left_skip, left_bit) = self.emit_condition_test(left)?;
-                    let preload = Instruction::load_immediate(accumulator, 1);
+                    let preload = Instruction::load_immediate(accumulator.into(), 1);
                     if accumulator == scratch
                         || !self.insert_before_terminal_compare(preload.clone())
                     {
@@ -275,7 +275,7 @@ impl Generator {
                     }
                     let exit = self.fresh_label();
                     self.emit_branch_conditional_to(left_skip ^ 8, left_bit, exit);
-                    let restore = accumulator != scratch && self.reserved.insert(accumulator);
+                    let restore = accumulator != scratch && self.reserved.insert(accumulator.into());
                     let right_test = self.emit_condition_test(right);
                     if restore {
                         self.reserved.remove(&accumulator);
@@ -284,12 +284,12 @@ impl Generator {
                     self.emit_branch_conditional_to(right_skip ^ 8, right_bit, exit);
                     self.output
                         .instructions
-                        .push(Instruction::load_immediate(accumulator, 0));
+                        .push(Instruction::load_immediate(accumulator.into(), 0));
                     self.bind_label(exit);
-                    if result != accumulator {
+                    if result != accumulator.into() {
                         self.output
                             .instructions
-                            .push(Instruction::move_register(result, accumulator));
+                            .push(Instruction::move_register(result, accumulator.into()));
                     }
                     return Ok(());
                 }
@@ -333,7 +333,7 @@ impl Generator {
         condition: &Expression,
         value: &Expression,
         complement: bool,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         // The condition is a leaf in its register, or — in a tail context with a
         // leaf value that does not occupy the destination — a full-word load brought
@@ -359,18 +359,18 @@ impl Generator {
         } else {
             return Ok(false);
         };
-        let combine = |destination: u8, source: u8, mask: u8| {
+        let combine = |destination: u32, source: u32, mask: u32| {
             if complement {
                 Instruction::AndComplement {
                     a: destination,
                     s: source,
-                    b: mask,
+                    b: u32::from(mask),
                 }
             } else {
                 Instruction::And {
                     a: destination,
                     s: source,
-                    b: mask,
+                    b: u32::from(mask),
                 }
             }
         };
@@ -421,7 +421,7 @@ impl Generator {
             // Constant value: it occupies r0, so the mask computes through a free
             // register (`neg`) and the destination (`or`/`srawi`).
             let Some(temp) =
-                (3u8..=12).find(|r| *r != condition_register && !self.reserved.contains(r))
+                (3u32..=12).find(|r| *r != condition_register && !self.reserved.contains(r))
             else {
                 return Ok(false);
             };
@@ -490,7 +490,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(power) = constant_value(when_true)
             .and_then(|value| u32::try_from(value).ok())
@@ -604,7 +604,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Expression::Binary {
             operator,
@@ -674,7 +674,7 @@ impl Generator {
             // x >= 0: `(x >>> 31) - 1` (0/1 then minus one) — needs a free register.
             BinaryOperator::GreaterEqual => {
                 let Some(free) =
-                    (3u8..=12).find(|r| *r != x && *r != destination && !self.reserved.contains(r))
+                    (3u32..=12).find(|r| *r != x && *r != destination && !self.reserved.contains(r))
                 else {
                     return Ok(false);
                 };
@@ -748,7 +748,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if destination == GENERAL_SCRATCH {
             return Ok(false);
@@ -884,7 +884,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         // The truth value comes from a leaf in its register, or — in a tail context
         // — a full-word memory load brought into the destination (`*q ? 1 : 2` is
@@ -984,7 +984,7 @@ impl Generator {
     pub(crate) fn place_select_value(
         &mut self,
         value: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if let Some(constant) = constant_value(value) {
             self.load_integer_constant(destination, constant);
@@ -1015,7 +1015,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        result: u8,
+        result: u32,
     ) -> Compilation<bool> {
         let operator = match condition {
             Expression::Binary {

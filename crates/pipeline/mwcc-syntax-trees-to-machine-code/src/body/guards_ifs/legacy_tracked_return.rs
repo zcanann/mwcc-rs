@@ -13,7 +13,7 @@ impl Generator {
         &mut self,
         function: &Function,
         tail: &Expression,
-        result: u8,
+        result: u32,
     ) -> Compilation<bool> {
         if self.behavior.integer_select_style != mwcc_versions::IntegerSelectStyle::BranchPreserving
             || !matches!(function.return_type, Type::Int | Type::UnsignedInt)

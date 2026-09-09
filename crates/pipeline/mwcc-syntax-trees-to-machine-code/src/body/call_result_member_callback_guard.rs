@@ -95,7 +95,7 @@ impl Generator {
 
         self.emit_plain_nonleaf_prologue();
         self.output.anonymous_label_bump += 2;
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.emit_call(initializer, initializer_arguments, Some(result), false)?;
         self.output
             .instructions

@@ -109,7 +109,7 @@ impl Generator {
             enabled.name.clone(),
             Location {
                 class: ValueClass::General,
-                register: Eabi::general_result().number,
+                register: u32::from(Eabi::general_result().number),
                 signed: enabled.declared_type.is_signed(),
                 width: 32,
                 pointee: None,
@@ -118,7 +118,7 @@ impl Generator {
         );
         self.emit_call(restore, restore_arguments, None, false)?;
         self.output.instructions.push(Instruction::Or {
-            a: Eabi::general_result().number,
+            a: u32::from(Eabi::general_result().number),
             s: old_home,
             b: old_home,
         });

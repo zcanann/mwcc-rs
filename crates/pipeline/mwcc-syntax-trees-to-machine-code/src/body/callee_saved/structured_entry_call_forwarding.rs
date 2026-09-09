@@ -12,8 +12,8 @@ use super::*;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct EntryCallForward {
     pub(super) name: String,
-    pub(super) incoming: u8,
-    pub(super) target: u8,
+    pub(super) incoming: u32,
+    pub(super) target: u32,
     pub(super) records_guard: bool,
 }
 
@@ -427,7 +427,7 @@ fn forward(
     Some(EntryCallForward {
         name: name.into(),
         incoming: locations.get(name)?.register,
-        target: Eabi::FIRST_GENERAL_ARGUMENT.checked_add(argument_index as u8)?,
+        target: Eabi::FIRST_GENERAL_ARGUMENT.checked_add(argument_index as u8)?.into(),
         records_guard,
     })
 }
@@ -451,7 +451,7 @@ mod tests {
     use super::*;
     use mwcc_syntax_trees::{LocalDeclaration, Parameter};
 
-    fn location(register: u8) -> Location {
+    fn location(register: u32) -> Location {
         Location {
             class: ValueClass::General,
             register,

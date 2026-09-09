@@ -87,7 +87,7 @@ impl Generator {
         if let Some(global) = branch_entry_global {
             if !self.materialize_pending_condition_global_value_fixed(
                 &global,
-                Eabi::FIRST_GENERAL_ARGUMENT,
+                Eabi::FIRST_GENERAL_ARGUMENT.into(),
             )? {
                 branch_entry_cache = None;
             }
@@ -387,7 +387,7 @@ impl Generator {
             std::mem::replace(&mut self.condition_float_cache, else_float_cache);
         let else_result = (|| {
             let reused_member = member_else_reuse.is_some_and(|(plan, source)| {
-                self.emit_member_else_reuse(plan, source)
+                self.emit_member_else_reuse(plan, source.into())
             });
             if !reused_member
                 && !self.try_emit_shared_float_zero_assignments(else_body)?

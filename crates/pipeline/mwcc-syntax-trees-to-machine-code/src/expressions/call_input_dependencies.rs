@@ -13,7 +13,7 @@ struct PlacementPlan {
     order: Vec<usize>,
 }
 
-fn plan_placements(mut reads: Vec<HashSet<u8>>, leaves: &[Option<u8>]) -> Option<PlacementPlan> {
+fn plan_placements(mut reads: Vec<HashSet<u32>>, leaves: &[Option<u32>]) -> Option<PlacementPlan> {
     let mut pending = vec![true; reads.len()];
     let mut plan = PlacementPlan {
         snapshots: Vec::new(),
@@ -22,8 +22,8 @@ fn plan_placements(mut reads: Vec<HashSet<u8>>, leaves: &[Option<u8>]) -> Option
     while plan.order.len() < reads.len() {
         let ready = (0..reads.len()).find(|&index| {
             pending[index] && {
-                let target = 3 + index as u8;
-                leaves[index] == Some(target)
+                let target = 3 + index as u32;
+                leaves[index] == Some(u32::from(target))
                     || (0..reads.len()).all(|other| {
                         other == index || !pending[other] || !reads[other].contains(&target)
                     })
@@ -82,9 +82,9 @@ impl Generator {
         // Existing schedules own leaf-only shuffles and already safe packets.
         // This owner closes the generic guard's unresolved non-leaf dependency.
         if !(0..arguments.len()).any(|index| {
-            leaves[index] != Some(3 + index as u8)
+            leaves[index] != Some((3 + index as u32).into())
                 && (index + 1..arguments.len()).any(|later| {
-                    leaves[later].is_none() && reads[later].contains(&(3 + index as u8))
+                    leaves[later].is_none() && reads[later].contains(&(3 + index as u32))
                 })
         }) {
             return Ok(false);
@@ -113,10 +113,10 @@ impl Generator {
         }
         let mut completed = Vec::new();
         for &index in &plan.order {
-            let target = 3 + index as u8;
+            let target = 3 + index as u32;
             let mut protect: HashSet<_> = completed.iter().copied().collect();
             for other in 0..arguments.len() {
-                if !completed.contains(&(3 + other as u8))
+                if !completed.contains(&(3 + other as u32))
                     && other != index
                     && !snapshots.contains_key(&other)
                 {
@@ -126,13 +126,13 @@ impl Generator {
             protect.remove(&target);
             let inserted: Vec<_> = protect
                 .into_iter()
-                .filter(|reg| trial.reserved.insert(*reg))
+                .filter(|reg| trial.reserved.insert((*reg).into()))
                 .collect();
             let result = if let Some(&register) = snapshots.get(&index) {
                 trial
                     .output
                     .instructions
-                    .push(Instruction::move_register(target, register));
+                    .push(Instruction::move_register(target.into(), register));
                 Ok(())
             } else {
                 let ty = super::call_argument_types::source_parameter_type(
@@ -145,7 +145,7 @@ impl Generator {
                     index,
                 )
                 .expect("word-argument eligibility checked the ABI slot");
-                trial.evaluate(&arguments[index], ty, target)
+                trial.evaluate(&arguments[index], ty, target.into())
             };
             for register in inserted {
                 trial.reserved.remove(&register);
@@ -161,12 +161,12 @@ impl Generator {
         &mut self,
         arguments: &[Expression],
         callee: &str,
-        reads: &[HashSet<u8>],
+        reads: &[HashSet<u32>],
     ) -> Compilation<bool> {
         let mut trial = self.clone();
         let endangered: Vec<_> = (0..arguments.len())
             .filter_map(|index| {
-                let target = 3 + index as u8;
+                let target = 3 + index as u32;
                 reads[index + 1..]
                     .iter()
                     .any(|set| set.contains(&target))
@@ -175,22 +175,22 @@ impl Generator {
             .collect();
         let mut restored = Vec::new();
         for source in endangered {
-            let register = trial.fresh_virtual_general_preferring(3 + arguments.len() as u8);
+            let register = trial.fresh_virtual_general_preferring((3 + arguments.len() as u32).into());
             trial
                 .output
                 .instructions
-                .push(Instruction::move_register(register, source));
+                .push(Instruction::move_register(register, source.into()));
             for (name, location) in &mut trial.locations {
-                if location.class == ValueClass::General && location.register == source {
+                if location.class == ValueClass::General && location.register == source.into() {
                     restored.push((name.clone(), source));
                     location.register = register;
                 }
             }
         }
         for (index, argument) in arguments.iter().enumerate() {
-            let target = 3 + index as u8;
+            let target = 3 + index as u32;
             let inserted: Vec<_> = (3..target)
-                .filter(|reg| trial.reserved.insert(*reg))
+                .filter(|reg| trial.reserved.insert((*reg).into()))
                 .collect();
             let ty = super::call_argument_types::source_parameter_type(
                 trial.call_parameter_types.get(callee).map(Vec::as_slice),
@@ -202,14 +202,14 @@ impl Generator {
                 index,
             )
             .expect("word-argument eligibility checked the ABI slot");
-            let result = trial.evaluate(argument, ty, target);
+            let result = trial.evaluate(argument, ty, target.into());
             for register in inserted {
                 trial.reserved.remove(&register);
             }
             result?;
         }
         for (name, register) in restored {
-            trial.locations.get_mut(&name).unwrap().register = register;
+            trial.locations.get_mut(&name).unwrap().register = u32::from(register);
         }
         *self = trial;
         Ok(true)
@@ -298,7 +298,7 @@ impl Generator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn reads(values: &[&[u8]]) -> Vec<HashSet<u8>> {
+    fn reads(values: &[&[u32]]) -> Vec<HashSet<u32>> {
         values.iter().map(|v| v.iter().copied().collect()).collect()
     }
     #[test]

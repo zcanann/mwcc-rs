@@ -28,8 +28,8 @@ impl Generator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Plan {
     assignment: usize,
-    value: u8,
-    literal: u8,
+    value: u32,
+    literal: u32,
 }
 
 fn plans(output: &MachineFunction) -> Vec<Plan> {

@@ -3,10 +3,10 @@
 #[derive(Clone, Copy)]
 pub(super) struct ModfLadderPlan {
     pub(super) frame_size: i16,
-    pub(super) i0: u8,
-    pub(super) i1: u8,
-    pub(super) j0: u8,
-    pub(super) temp: u8,
+    pub(super) i0: u32,
+    pub(super) i1: u32,
+    pub(super) j0: u32,
+    pub(super) temp: u32,
     pub(super) reload_spill: bool,
 }
 

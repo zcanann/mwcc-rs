@@ -67,10 +67,10 @@ impl Generator {
         enum BlockValue {
             Small(i16),
             High(i16),
-            LeafAdd(u8, i16),
+            LeafAdd(u32, i16),
             Mask(u8, u8),
         }
-        let mut assigns: Vec<(u8, BlockValue)> = Vec::new();
+        let mut assigns: Vec<(u32, BlockValue)> = Vec::new();
         for statement in body {
             let Statement::Assign { name, value } = statement else {
                 return Ok(false);
@@ -198,7 +198,7 @@ impl Generator {
             self.emit_branch_conditional_to(options, condition_bit, join);
         }
         if let Some((condition, value)) = early_return {
-            let result = Eabi::general_result().number;
+            let result = u32::from(Eabi::general_result().number);
             // A bare return of the value already in r3 FOLDS to a
             // conditional return (measured: or.; beqlr).
             if let Expression::Variable(name) = value {
@@ -215,17 +215,17 @@ impl Generator {
                             BlockValue::Small(constant) => {
                                 self.output
                                     .instructions
-                                    .push(Instruction::load_immediate(*register, *constant));
+                                    .push(Instruction::load_immediate((*register).into(), *constant));
                             }
                             BlockValue::High(high) => {
                                 self.output
                                     .instructions
-                                    .push(Instruction::load_immediate_shifted(*register, *high));
+                                    .push(Instruction::load_immediate_shifted((*register).into(), *high));
                             }
                             BlockValue::LeafAdd(source, offset) => {
                                 self.output.instructions.push(Instruction::AddImmediate {
                                     d: *register,
-                                    a: *source,
+                                    a: u32::from(*source),
                                     immediate: *offset,
                                 });
                             }
@@ -274,17 +274,17 @@ impl Generator {
                 BlockValue::Small(constant) => {
                     self.output
                         .instructions
-                        .push(Instruction::load_immediate(*register, *constant));
+                        .push(Instruction::load_immediate((*register).into(), *constant));
                 }
                 BlockValue::High(high) => {
                     self.output
                         .instructions
-                        .push(Instruction::load_immediate_shifted(*register, *high));
+                        .push(Instruction::load_immediate_shifted((*register).into(), *high));
                 }
                 BlockValue::LeafAdd(source, offset) => {
                     self.output.instructions.push(Instruction::AddImmediate {
                         d: *register,
-                        a: *source,
+                        a: u32::from(*source),
                         immediate: *offset,
                     });
                 }
@@ -300,7 +300,7 @@ impl Generator {
             }
         }
         self.bind_label(join);
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.evaluate_tail(return_expression, function.return_type, result)?;
         self.emit_epilogue_and_return();
         Ok(true)

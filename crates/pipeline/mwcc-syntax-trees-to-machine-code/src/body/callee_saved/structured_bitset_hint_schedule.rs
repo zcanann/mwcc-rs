@@ -110,9 +110,9 @@ impl Generator {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct VolatileBitsetHintTail {
     start: usize,
-    one: u8,
-    queue: u8,
-    global: u8,
+    one: u32,
+    queue: u32,
+    global: u32,
 }
 
 fn volatile_bitset_hint_tail(instructions: &[Instruction]) -> Option<VolatileBitsetHintTail> {

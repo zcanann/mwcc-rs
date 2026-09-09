@@ -111,7 +111,7 @@ impl Generator {
         self.output.instructions.push(indexed_store(
             store.element,
             source,
-            aggregate,
+            aggregate.into(),
             GENERAL_SCRATCH,
         )?);
         Ok(true)
@@ -125,7 +125,7 @@ impl Generator {
         let index = if matches!(store.index, Expression::Variable(_)) {
             self.general_register_of_leaf(store.index)?
         } else {
-            let index = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+            let index = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT.into());
             self.evaluate_general(store.index, index)?;
             index
         };
@@ -135,7 +135,7 @@ impl Generator {
         let scaled = if store.element.size() == 1 {
             index
         } else {
-            let scaled = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT + 1);
+            let scaled = self.fresh_virtual_general_preferring((Eabi::FIRST_GENERAL_ARGUMENT + 1).into());
             let size = store.element.size();
             if size.is_power_of_two() {
                 self.output
@@ -161,12 +161,12 @@ impl Generator {
             self.output.instructions.push(indexed_store(
                 store.element,
                 GENERAL_SCRATCH,
-                aggregate,
+                aggregate.into(),
                 scaled,
             )?);
         } else {
             let indexed_base =
-                self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT + 1);
+                self.fresh_virtual_general_preferring((Eabi::FIRST_GENERAL_ARGUMENT + 1).into());
             self.output.instructions.push(Instruction::Add {
                 d: indexed_base,
                 a: aggregate,

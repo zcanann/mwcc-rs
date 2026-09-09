@@ -145,7 +145,7 @@
 
     /// Register fixtures: (name, DAG, params (value,reg), expected register per
     /// NON-STORE node in NODE order) — from the dataset captures.
-    fn register_fixtures() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
+    fn register_fixtures() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u32)>, Vec<Option<u32>>)> {
         use OpKind::Store as St;
         vec![
             (
@@ -233,7 +233,7 @@
 
     /// The newer capture shapes, register-hardening round (fire 289). MUL ops
     /// gate at 2 while weighing 3 (the split the store orders demand).
-    fn register_fixtures_round2() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
+    fn register_fixtures_round2() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u32)>, Vec<Option<u32>>)> {
         use OpKind::Store as St;
         vec![
             (
@@ -502,7 +502,7 @@
     /// FLOAT REGISTER fixtures (fires 331-335 captures): per-NODE expected
     /// FPR. Params are (value, register). Node construction mirrors
     /// float_order_fixtures so linearize reproduces the real emission.
-    fn float_register_fixtures() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
+    fn float_register_fixtures() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u32)>, Vec<Option<u32>>)> {
         use OpKind::Store as St;
         const FARITH: u32 = 3;
         const FMUL_D: u32 = 4;
@@ -1064,7 +1064,7 @@
             DagNode::new("chain5", FARITH).hazard(HAZARD_FPU).reads(&[40, 51, 47]).writes(&[52]),
             DagNode::new("sink", 1).kind(OpKind::Store).reads(&[40, 41, 52, 9, 2]),
         ];
-        let expected: Vec<Option<u8>> = vec![
+        let expected: Vec<Option<u32>> = vec![
             Some(6),
             Some(7),
             Some(8),
@@ -1131,7 +1131,7 @@
         let mut model = FROZEN_FLOAT_REG;
         model.emission_over_tier = true;
         let registers = assign_float_registers(&nodes, &order, &[(1, 7), (2, 4), (3, 2)], model);
-        let expected: Vec<Option<u8>> = vec![
+        let expected: Vec<Option<u32>> = vec![
             Some(0),
             Some(3),
             Some(1),
@@ -1184,7 +1184,7 @@
         let expected_order: Vec<usize> = vec![0, 2, 3, 1, 4, 5, 6, 7, 8, 9, 10, 11];
         eprintln!("t5 order: got {order:?} want {expected_order:?}");
         let registers = assign_float_registers(&nodes, &order, &[(1, 1)], FROZEN_FLOAT_REG);
-        let expected: Vec<Option<u8>> = vec![
+        let expected: Vec<Option<u32>> = vec![
             Some(5),
             Some(6),
             Some(4),
@@ -1229,7 +1229,7 @@
         let expected_order: Vec<usize> = vec![0, 2, 3, 1, 4, 5, 6, 7];
         eprintln!("v2 order: got {order:?} want {expected_order:?}");
         let registers = assign_float_registers(&nodes, &order, &[(1, 1)], FROZEN_FLOAT_REG);
-        let expected: Vec<Option<u8>> = vec![
+        let expected: Vec<Option<u32>> = vec![
             Some(3),
             Some(4),
             Some(2),
@@ -1592,7 +1592,7 @@
         println!("return-tail orders: {passed}/{}", shapes.len());
     }
 
-    fn register_fixtures_round4() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
+    fn register_fixtures_round4() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u32)>, Vec<Option<u32>>)> {
         use OpKind::Store as St;
         vec![
             (
@@ -1627,7 +1627,7 @@
     /// Round 5: r0 tenancy arbitration (fire 304). The store-chain multiply
     /// final yields r0 to a shorter-tenancy return intermediate; a forbidden
     /// intermediate (feeding the return addi) never contends.
-    fn register_fixtures_round5() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
+    fn register_fixtures_round5() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u32)>, Vec<Option<u32>>)> {
         use OpKind::Store as St;
         vec![
             (
@@ -1682,7 +1682,7 @@
         ]
     }
 
-    fn register_fixtures_round3() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
+    fn register_fixtures_round3() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u32)>, Vec<Option<u32>>)> {
         use OpKind::Store as St;
         vec![
             (
@@ -2178,13 +2178,13 @@
             pub class: Class,
             pub def: u32,
             pub last: u32,
-            pub expected: u8,
+            pub expected: u32,
         }
         pub struct Fixture {
             pub name: &'static str,
             pub values: &'static [Value],
         }
-        const fn v(class: Class, def: u32, last: u32, expected: u8) -> Value {
+        const fn v(class: Class, def: u32, last: u32, expected: u32) -> Value {
             Value { class, def, last, expected }
         }
         use Class::*;
@@ -2297,11 +2297,11 @@
 
         /// Lowest register in r3..r10 free over [def,last] (inclusive
         /// overlap), given prior assignments.
-        pub fn assign(order: &[usize], values: &[Value]) -> Vec<u8> {
-            let mut chosen = vec![0u8; values.len()];
+        pub fn assign(order: &[usize], values: &[Value]) -> Vec<u32> {
+            let mut chosen = vec![0u32; values.len()];
             for &index in order {
                 let value = &values[index];
-                'reg: for register in 3u8..=10 {
+                'reg: for register in 3u32..=10 {
                     for &previous in order.iter().take_while(|&&p| p != index) {
                         if chosen[previous] == register {
                             let other = &values[previous];

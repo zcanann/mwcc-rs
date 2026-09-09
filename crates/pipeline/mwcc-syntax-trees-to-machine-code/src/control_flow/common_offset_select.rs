@@ -12,7 +12,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
         offset: i64,
         origin: ConditionalOrigin,
     ) -> Compilation<bool> {

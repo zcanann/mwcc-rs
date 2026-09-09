@@ -3,7 +3,7 @@ use super::*;
 impl Generator {
     fn emit_ascii_range_flag(
         &mut self,
-        byte: u8,
+        byte: u32,
         zero_before_compare: bool,
         done: mwcc_vreg::Label,
     ) {
@@ -30,7 +30,7 @@ impl Generator {
         self.load_integer_constant(0, 1);
     }
 
-    fn emit_flagged_pointer_adjust(&mut self, pointer: u8, done: mwcc_vreg::Label) {
+    fn emit_flagged_pointer_adjust(&mut self, pointer: u32, done: mwcc_vreg::Label) {
         self.output
             .instructions
             .push(Instruction::ExtendSignByteRecord { a: 0, s: 0 });

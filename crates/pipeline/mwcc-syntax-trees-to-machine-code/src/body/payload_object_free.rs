@@ -27,8 +27,8 @@ impl Generator {
     }
 
     fn emit_payload_object_free(&mut self, shape: &PayloadObjectFree) {
-        const OUTPUT: u8 = 30;
-        const PAYLOAD: u8 = 31;
+        const OUTPUT: u32 = 30;
+        const PAYLOAD: u32 = 31;
         let failure = self.fresh_label();
         let removed = self.fresh_label();
         let epilogue = self.fresh_label();

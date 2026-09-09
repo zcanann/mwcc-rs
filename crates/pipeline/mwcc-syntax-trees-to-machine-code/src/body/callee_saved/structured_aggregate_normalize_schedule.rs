@@ -207,15 +207,15 @@ fn uses_r26(instruction: &Instruction) -> bool {
     })
 }
 
-fn defines_general(instruction: &Instruction, expected: u8) -> bool {
+fn defines_general(instruction: &Instruction, expected: u32) -> bool {
     mwcc_vreg::register_operands(instruction).iter().any(|operand| {
         operand.class == mwcc_vreg::Class::General
             && operand.role == mwcc_vreg::RegisterRole::Define
-            && operand.register == expected
+            && operand.register == expected.into()
     })
 }
 
-fn repaint_saved_role(register: u8) -> u8 {
+fn repaint_saved_role(register: u32) -> u32 {
     match register {
         31 | 30 => 29,
         29 => 28,

@@ -18,7 +18,7 @@ impl Generator {
         &mut self,
         value: &Expression,
         value_type: Type,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if !self.unoptimized_inline_float_transaction_homes || expression_has_call(value) {
             return Ok(false);

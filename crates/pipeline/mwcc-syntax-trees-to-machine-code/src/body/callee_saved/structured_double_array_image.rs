@@ -78,11 +78,11 @@ impl Generator {
         let image = self.output.anonymous_rodata.len() - 1;
 
         let base = self.fresh_virtual_general_preferring(4);
-        let floating_values: Vec<u8> = (0..plan.element_count)
+        let floating_values: Vec<u32> = (0..plan.element_count)
             .map(|index| {
                 self.fresh_virtual_float_preferring(
                     u8::try_from(plan.element_count - index - 1)
-                        .expect("direct double-array register is bounded"),
+                        .expect("direct double-array register is bounded").into(),
                 )
             })
             .collect();

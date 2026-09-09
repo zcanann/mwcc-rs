@@ -5,7 +5,7 @@ use super::*;
 
 enum FrameAggregateSource<'a> {
     Memory {
-        register: u8,
+        register: u32,
         offset: i16,
         size: u32,
         is_frame: bool,
@@ -18,8 +18,8 @@ enum FrameAggregateSource<'a> {
 
 fn emit_pipelined_vec3_copy(
     instructions: &mut Vec<Instruction>,
-    first_word: u8,
-    source_register: u8,
+    first_word: u32,
+    source_register: u32,
     source_offset: i16,
     target_offset: i16,
 ) -> Compilation<()> {
@@ -62,9 +62,9 @@ fn emit_pipelined_vec3_copy(
 
 fn emit_paired_vec3_copy(
     instructions: &mut Vec<Instruction>,
-    xy: u8,
-    z: u8,
-    source_register: u8,
+    xy: u32,
+    z: u32,
+    source_register: u32,
     source_offset: i16,
     target_offset: i16,
 ) -> Compilation<()> {

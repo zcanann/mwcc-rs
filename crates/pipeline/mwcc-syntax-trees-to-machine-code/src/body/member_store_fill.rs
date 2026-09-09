@@ -5,7 +5,7 @@ use super::*;
 
 #[derive(Clone, Copy)]
 enum GuardedMemberStoreSource {
-    General(u8),
+    General(u32),
     IntegerZero,
     FloatZero,
 }

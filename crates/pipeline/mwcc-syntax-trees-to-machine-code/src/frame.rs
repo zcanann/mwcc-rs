@@ -23,7 +23,7 @@ impl Generator {
     fn try_emit_unoptimized_multidimensional_member_address(
         &mut self,
         operand: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if self.behavior.optimization != Optimization::O0 {
             return Ok(false);
@@ -266,8 +266,8 @@ impl Generator {
             // r6/r5/r4/r0 off base r7; base = r3+words, r4 reused as a copy reg),
             // the `&v` argument's addi threaded after the base addi (measured).
             let words = image.len() / 4;
-            let base = 3 + words as u8;
-            let mut copy_registers: Vec<u8> = (4..3 + words as u8).rev().collect();
+            let base = 3 + words as u32;
+            let mut copy_registers: Vec<u32> = (4..3 + words as u32).rev().collect();
             copy_registers.push(0);
             self.frame_size = 32;
             // The blob numbers at counter-1, like a static local (@4 with the pool
@@ -423,7 +423,7 @@ impl Generator {
             }
             planned.push((8 + *offset as i16, member_type.width(), *value as i16));
         }
-        let store_of = |width: u8, source: u8, offset: i16| -> Compilation<Instruction> {
+        let store_of = |width: u8, source: u32, offset: i16| -> Compilation<Instruction> {
             Ok(match width {
                 8 => Instruction::StoreByte {
                     s: source,
@@ -819,8 +819,8 @@ impl Generator {
         // Lay out a slot for each address-taken parameter (in argument order),
         // then each address-taken local, above the 8-byte linkage area.
         let mut offset: i16 = 8;
-        let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
-        let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
+        let mut next_general: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
+        let mut next_float: u32 = (Eabi::FIRST_FLOAT_ARGUMENT) as u32;
         for parameter in &function.parameters {
             let class = class_of(parameter.parameter_type)?;
             let register = match class {
@@ -847,7 +847,7 @@ impl Generator {
                         class,
                         size,
                         value_type: parameter.parameter_type,
-                        parameter_register: Some(register),
+                        parameter_register: Some(register.into()),
                         is_array: false,
                     },
                 );
@@ -980,7 +980,7 @@ impl Generator {
         // virtual for its li'd value. Both generations materialize it in the
         // prologue; the frame-guard store policy chooses its later issue point.
         // Requires the first test to be the probed lis-compare shape.
-        let store_plan: Option<(u8, u8, i16)> =
+        let store_plan: Option<(u32, u32, i16)> =
             match (guard_plan.is_some(), function.statements.as_slice()) {
                 (
                     true,
@@ -1145,13 +1145,13 @@ impl Generator {
             if let Some((value_home, _, constant)) = store_plan {
                 self.output
                     .instructions
-                    .push(Instruction::load_immediate(value_home, constant));
+                    .push(Instruction::load_immediate(value_home.into(), constant));
             }
         } else {
             if let Some((value_home, _, constant)) = store_plan {
                 self.output
                     .instructions
-                    .push(Instruction::load_immediate(value_home, constant));
+                    .push(Instruction::load_immediate(value_home.into(), constant));
             }
             if let Some(GuardTest::LisCompare { high, .. }) = first_test {
                 self.output
@@ -1188,7 +1188,7 @@ impl Generator {
                 let epilogue = self.fresh_label();
                 let fallthrough = self.fresh_label();
                 let count = tests.len();
-                let mut loaded: Option<(i16, u8)> = None;
+                let mut loaded: Option<(i16, u32)> = None;
                 for (index, (disjuncts, outcome)) in tests.into_iter().enumerate() {
                     let FrameOutcome::Literal(guard_value) = outcome else {
                         unreachable!("gated: literal guards over parameter fall-through")
@@ -1205,7 +1205,7 @@ impl Generator {
                         self.evaluate(
                             &Expression::FloatLiteral(guard_value),
                             Type::Double,
-                            Eabi::float_result().number,
+                            u32::from(Eabi::float_result().number),
                         )?;
                         self.emit_branch_to(epilogue);
                         // Build 163 counts the disjunction's shared epilogue in
@@ -1222,7 +1222,7 @@ impl Generator {
                         self.evaluate(
                             &Expression::FloatLiteral(guard_value),
                             Type::Double,
-                            Eabi::float_result().number,
+                            u32::from(Eabi::float_result().number),
                         )?;
                         self.emit_branch_to(epilogue);
                         self.output.anonymous_label_bump += 2;
@@ -1247,7 +1247,7 @@ impl Generator {
                     .and_then(|parameter| self.frame_slots.get(&parameter.name))
                     .expect("gated: spilled floating parameter");
                 self.output.instructions.push(Instruction::LoadFloatDouble {
-                    d: Eabi::float_result().number,
+                    d: u32::from(Eabi::float_result().number),
                     a: 1,
                     offset: slot.offset,
                 });
@@ -1277,7 +1277,7 @@ impl Generator {
                         .and_then(|parameter| self.frame_slots.get(&parameter.name))
                         .expect("gated: spilled double parameter");
                     self.output.instructions.push(Instruction::LoadFloatDouble {
-                        d: Eabi::float_result().number,
+                        d: u32::from(Eabi::float_result().number),
                         a: 1,
                         offset: slot.offset,
                     });
@@ -1286,11 +1286,11 @@ impl Generator {
                     self.evaluate(
                         &Expression::FloatLiteral(fall_value),
                         Type::Double,
-                        Eabi::float_result().number,
+                        u32::from(Eabi::float_result().number),
                     )?;
                     self.output.anonymous_label_bump += 3;
                 } else {
-                    let mut loaded: Option<(i16, u8)> = None;
+                    let mut loaded: Option<(i16, u32)> = None;
                     let test = disjuncts.into_iter().next().expect("one disjunct");
                     let (options, condition_bit) =
                         self.emit_frame_guard_test(test, 0, &mut loaded, store_plan)?;
@@ -1306,7 +1306,7 @@ impl Generator {
                             .and_then(|parameter| self.frame_slots.get(&parameter.name))
                             .expect("gated: spilled floating parameter");
                         self.output.instructions.push(Instruction::LoadFloatDouble {
-                            d: Eabi::float_result().number,
+                            d: u32::from(Eabi::float_result().number),
                             a: 1,
                             offset: slot.offset,
                         });
@@ -1316,7 +1316,7 @@ impl Generator {
                     self.evaluate(
                         &Expression::FloatLiteral(fall_value),
                         Type::Double,
-                        Eabi::float_result().number,
+                        u32::from(Eabi::float_result().number),
                     )?;
                     self.output.anonymous_label_bump += 2;
                 }
@@ -1329,7 +1329,7 @@ impl Generator {
             // The shared loaded word, as (offset, VIRTUAL register): the words are
             // virtuals now — the allocator reproduces r3/r4 from liveness here and
             // scales to frexp's r4/r5/r6 as more values go live (the convergence).
-            let mut loaded: Option<(i16, u8)> = None;
+            let mut loaded: Option<(i16, u32)> = None;
             for (index, (disjuncts, outcome)) in tests.into_iter().enumerate() {
                 let FrameOutcome::Literal(guard_value) = outcome else {
                     unreachable!("gated: literal guards")
@@ -1341,7 +1341,7 @@ impl Generator {
                     self.evaluate(
                         &Expression::FloatLiteral(guard_value),
                         Type::Double,
-                        Eabi::float_result().number,
+                        u32::from(Eabi::float_result().number),
                     )?;
                     // A disjunction advances the label counter 3 — two tests sharing
                     // one value block (measured @N: real @8 vs @9 at +4).
@@ -1359,7 +1359,7 @@ impl Generator {
                     self.evaluate(
                         &Expression::FloatLiteral(guard_value),
                         Type::Double,
-                        Eabi::float_result().number,
+                        u32::from(Eabi::float_result().number),
                     )?;
                 } else {
                     let next = self.fresh_label();
@@ -1367,7 +1367,7 @@ impl Generator {
                     self.evaluate(
                         &Expression::FloatLiteral(guard_value),
                         Type::Double,
-                        Eabi::float_result().number,
+                        u32::from(Eabi::float_result().number),
                     )?;
                     self.emit_branch_to(epilogue);
                     self.bind_label(next);
@@ -1382,7 +1382,7 @@ impl Generator {
         // The writeback block: guard-style skip over `x *= C` stored to the slot;
         // the merge falls into the return, which reloads (the slot is written).
         if let Some((test, slot_offset, constant)) = writeback_plan {
-            let mut loaded: Option<(i16, u8)> = None;
+            let mut loaded: Option<(i16, u32)> = None;
             let (options, condition_bit) =
                 self.emit_frame_guard_test(test, 0, &mut loaded, None)?;
             let merge = self.fresh_label();
@@ -1435,8 +1435,8 @@ impl Generator {
         }
         if function.return_type != Type::Void {
             let result = match function.return_type {
-                Type::Float | Type::Double => Eabi::float_result().number,
-                _ => Eabi::general_result().number,
+                Type::Float | Type::Double => u32::from(Eabi::float_result().number),
+                _ => u32::from(Eabi::general_result().number),
             };
             // A non-void function may FALL OFF THE END (C89; strikers alloc's
             // FORCE_DONT_INLINE stubs) — mwcc emits a bare blr, r3 undefined.
@@ -1487,8 +1487,8 @@ impl Generator {
         &mut self,
         test: GuardTest,
         index: usize,
-        loaded: &mut Option<(i16, u8)>,
-        store_plan: Option<(u8, u8, i16)>,
+        loaded: &mut Option<(i16, u32)>,
+        store_plan: Option<(u32, u32, i16)>,
     ) -> Compilation<(u8, u8)> {
         let result = match test {
             GuardTest::General(condition) => self.emit_condition_test(condition)?,
@@ -2155,13 +2155,13 @@ impl Generator {
                 class: ValueClass::Float,
                 size: 8,
                 value_type: Type::Double,
-                parameter_register: Some(Eabi::FIRST_FLOAT_ARGUMENT),
+                parameter_register: Some(Eabi::FIRST_FLOAT_ARGUMENT.into()),
                 is_array: false,
             },
         );
         self.frame_size = 16;
         self.non_leaf = false;
-        let float_result = Eabi::float_result().number;
+        let float_result = u32::from(Eabi::float_result().number);
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
@@ -2182,7 +2182,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::StoreFloatDouble {
-                s: Eabi::FIRST_FLOAT_ARGUMENT,
+                s: u32::from(Eabi::FIRST_FLOAT_ARGUMENT),
                 a: 1,
                 offset: SLOT,
             });
@@ -2258,7 +2258,7 @@ impl Generator {
         };
         let scale = Instruction::FloatMultiplyDouble {
             d: FLOAT_SCRATCH,
-            a: Eabi::FIRST_FLOAT_ARGUMENT,
+            a: u32::from(Eabi::FIRST_FLOAT_ARGUMENT),
             c: FLOAT_SCRATCH,
         };
         if self.behavior.frexp_scale_before_eptr_store {
@@ -2544,7 +2544,7 @@ impl Generator {
     pub(crate) fn emit_address_of(
         &mut self,
         operand: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if self.try_emit_unoptimized_multidimensional_member_address(operand, destination)? {
             return Ok(());
@@ -2841,7 +2841,7 @@ pub(crate) fn checked_frame_member_offset(
 }
 
 /// The store that spills a parameter register to its frame slot.
-pub(crate) fn spill_instruction(register: u8, slot: FrameSlot) -> Instruction {
+pub(crate) fn spill_instruction(register: u32, slot: FrameSlot) -> Instruction {
     match (slot.class, slot.size) {
         (ValueClass::Float, 8) => Instruction::StoreFloatDouble {
             s: register,

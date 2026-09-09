@@ -5,8 +5,8 @@ use super::super::*;
 use super::recognize::EndianStackUnpack;
 
 pub(super) fn emit(generator: &mut Generator, plan: &EndianStackUnpack<'_>) {
-    const SELECTED: u8 = 31;
-    const OUTPUT: u8 = 30;
+    const SELECTED: u32 = 31;
+    const OUTPUT: u32 = 30;
     let temporary = generator.fresh_label();
     let selected = generator.fresh_label();
     let epilogue = generator.fresh_label();

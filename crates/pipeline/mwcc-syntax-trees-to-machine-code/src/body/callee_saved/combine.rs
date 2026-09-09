@@ -32,13 +32,13 @@ impl Generator {
         match argument {
             Expression::IntegerLiteral(value) => {
                 self.output.instructions.push(Instruction::AddImmediate {
-                    d: 3 + slot as u8,
+                    d: u32::from(3 + slot as u8),
                     a: 0,
                     immediate: *value as i16,
                 });
                 Ok(())
             }
-            Expression::Variable(name) => self.emit_global_load_value(name, 3 + slot as u8),
+            Expression::Variable(name) => self.emit_global_load_value(name, (3 + slot as u8).into()),
             _ => unreachable!("materialize_slot on an unvetted argument"),
         }
     }
@@ -121,11 +121,11 @@ impl Generator {
         self.frame_size = frame_size;
         // Phase D: virtual homes, highest-rank first; the interleaved save+move
         // prologue comes from the FRAME BUILDER.
-        let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
+        let homes: Vec<u32> = (0..count).map(|_| self.fresh_virtual_general()).collect();
         self.callee_saved = homes.clone();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
-        let incoming_ordered: Vec<u8> = incoming
+        let incoming_ordered: Vec<u32> = incoming
             .iter()
             .rev()
             .map(|(_, register)| *register)
@@ -152,7 +152,7 @@ impl Generator {
         // A non-void return reads the parameters from their callee-saved registers; the
         // epilogue scheduler hoists the LR reload ahead of this move, matching mwcc.
         if returns_value {
-            let result = Eabi::general_result().number;
+            let result = u32::from(Eabi::general_result().number);
             let return_expression = function.return_expression.as_ref().unwrap();
             self.evaluate_tail(return_expression, function.return_type, result)?;
         }
@@ -260,7 +260,7 @@ impl Generator {
         });
         self.emit_call(call_name, call_arguments, None, false)?;
         // Combine the saved parameter with the call result (r3) — the saved value first.
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.output.instructions.push(match operator {
             BinaryOperator::Add => Instruction::Add {
                 d: result,
@@ -682,7 +682,7 @@ impl Generator {
             }
             if let Some(x_slot) = x_slot {
                 self.output.instructions.push(Instruction::Or {
-                    a: 3 + x_slot as u8,
+                    a: u32::from(3 + x_slot as u8),
                     s: saved,
                     b: saved,
                 });
@@ -703,7 +703,7 @@ impl Generator {
             }
             if let Some(x_slot) = x_slot {
                 self.output.instructions.push(Instruction::Or {
-                    a: 3 + x_slot as u8,
+                    a: u32::from(3 + x_slot as u8),
                     s: saved,
                     b: saved,
                 });
@@ -730,7 +730,7 @@ impl Generator {
             }
             if let Some(x_slot) = x_slot {
                 self.output.instructions.push(Instruction::Or {
-                    a: 3 + x_slot as u8,
+                    a: u32::from(3 + x_slot as u8),
                     s: saved,
                     b: saved,
                 });
@@ -902,7 +902,7 @@ impl Generator {
                 self.materialize_slot(argument, slot)?;
                 if !x_move_emitted {
                     self.output.instructions.push(Instruction::Or {
-                        a: 3 + x_slot as u8,
+                        a: u32::from(3 + x_slot as u8),
                         s: 0,
                         b: 0,
                     });
@@ -1076,13 +1076,13 @@ impl Generator {
         self.frame_size = frame_size;
         // Phase D: virtual homes, highest-rank first (id order -> r31, r30); the
         // interleaved save+move prologue comes from the FRAME BUILDER.
-        let homes: Vec<u8> = (0..incoming.len())
+        let homes: Vec<u32> = (0..incoming.len())
             .map(|_| self.fresh_virtual_general())
             .collect();
         self.callee_saved = homes.clone();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
-        let incoming_ordered: Vec<u8> = incoming
+        let incoming_ordered: Vec<u32> = incoming
             .iter()
             .rev()
             .map(|(_, register)| *register)
@@ -1102,7 +1102,7 @@ impl Generator {
         if let Some(location) = self.locations.get_mut(&function.parameters[0].name) {
             location.register = homes[1];
         }
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.evaluate_tail(
             function.return_expression.as_ref().unwrap(),
             function.return_type,
@@ -1194,11 +1194,11 @@ impl Generator {
         self.non_leaf = true;
         self.frame_size = frame_size;
         // Phase D: virtual homes, highest-rank first (id order -> r31, r30).
-        let homes: Vec<u8> = (0..2).map(|_| self.fresh_virtual_general()).collect();
+        let homes: Vec<u32> = (0..2).map(|_| self.fresh_virtual_general()).collect();
         self.callee_saved = homes.clone();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
-        let incoming_ordered: Vec<u8> = incoming.iter().rev().copied().collect();
+        let incoming_ordered: Vec<u32> = incoming.iter().rev().copied().collect();
         self.output
             .instructions
             .extend(plan.prologue_interleaved(&incoming_ordered));
@@ -1213,7 +1213,7 @@ impl Generator {
             location.register = homes[1];
         }
         self.emit_call(name1, args1, None, false)?;
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.evaluate_tail(
             function.return_expression.as_ref().unwrap(),
             function.return_type,
@@ -1280,8 +1280,8 @@ impl Generator {
         }
         // One argument slot: a parameter (by index, in argument register `reg`) or a small constant.
         enum Slot {
-            Parameter { index: usize, register: u8 },
-            Constant { register: u8, value: i16 },
+            Parameter { index: usize, register: u32 },
+            Constant { register: u32, value: i16 },
         }
         // Decode one trailing call's arguments. A parameter may appear at most once; anything else
         // (a non-parameter variable, a global, an out-of-range literal, over eight args) yields None.
@@ -1300,13 +1300,13 @@ impl Generator {
                             return None; // the same parameter passed twice is a duplicating shape
                         }
                         seen[index] = true;
-                        slots.push(Slot::Parameter { index, register });
+                        slots.push(Slot::Parameter { index, register: register.into() });
                     }
                     Expression::IntegerLiteral(value)
                         if (i16::MIN as i64..=i16::MAX as i64).contains(value) =>
                     {
                         slots.push(Slot::Constant {
-                            register,
+                            register: register.into(),
                             value: *value as i16,
                         });
                     }
@@ -1357,13 +1357,13 @@ impl Generator {
         // A 16-byte frame saving the link register and the callee-saved homes; the `mr home,param`
         // stashes interleave into the prologue in REVERSE parameter order (last param -> r31).
         self.non_leaf = true;
-        let homes: Vec<u8> = (0..function.parameters.len())
+        let homes: Vec<u32> = (0..function.parameters.len())
             .map(|_| self.fresh_virtual_general())
             .collect();
         self.callee_saved = homes.clone();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         self.frame_size = plan.frame_size;
-        let incoming_reversed: Vec<u8> = incoming.iter().rev().copied().collect();
+        let incoming_reversed: Vec<u32> = incoming.iter().rev().copied().collect();
         self.output
             .instructions
             .extend(plan.prologue_interleaved(&incoming_reversed));
@@ -1550,7 +1550,7 @@ impl Generator {
         let frame_size = 16i16;
         self.non_leaf = true;
         self.frame_size = frame_size;
-        let homes: Vec<u8> = vec![self.fresh_virtual_general()];
+        let homes: Vec<u32> = vec![self.fresh_virtual_general()];
         self.callee_saved = homes.clone();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
@@ -1576,7 +1576,7 @@ impl Generator {
                 stride: None,
             },
         );
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.evaluate_tail(
             function.return_expression.as_ref().unwrap(),
             function.return_type,
@@ -1670,12 +1670,12 @@ impl Generator {
                 self.non_leaf = true;
                 self.frame_size = 16;
                 // Reverse creation order: the LAST-created saved value takes r31.
-                let homes: Vec<u8> = (0..2).map(|_| self.fresh_virtual_general()).collect();
+                let homes: Vec<u32> = (0..2).map(|_| self.fresh_virtual_general()).collect();
                 self.callee_saved = homes.clone();
                 let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
                 debug_assert_eq!(plan.frame_size, 16);
                 // Interleaved save+fill pairs, r31 (param 1) first.
-                let incoming_ordered: Vec<u8> = incoming.iter().rev().copied().collect();
+                let incoming_ordered: Vec<u32> = incoming.iter().rev().copied().collect();
                 self.output
                     .instructions
                     .extend(plan.prologue_interleaved(&incoming_ordered));
@@ -1729,7 +1729,7 @@ impl Generator {
                 };
                 self.non_leaf = true;
                 self.frame_size = 16;
-                let homes: Vec<u8> = (0..2).map(|_| self.fresh_virtual_general()).collect();
+                let homes: Vec<u32> = (0..2).map(|_| self.fresh_virtual_general()).collect();
                 self.callee_saved = homes.clone();
                 let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
                 debug_assert_eq!(plan.frame_size, 16);
@@ -1940,7 +1940,7 @@ impl Generator {
                 stride: None,
             },
         );
-        let destination = Eabi::general_result().number;
+        let destination = u32::from(Eabi::general_result().number);
         self.evaluate_tail(
             function.return_expression.as_ref().unwrap(),
             function.return_type,
@@ -1953,7 +1953,7 @@ impl Generator {
     /// The measured reassociation tail: park the fresh call result in r0,
     /// combine the two callee-saved homes (creation order: lower home first),
     /// then add the parked value into the return register.
-    pub(crate) fn emit_park_and_combine(&mut self, home_low: u8, home_high: u8) {
+    pub(crate) fn emit_park_and_combine(&mut self, home_low: u32, home_high: u32) {
         self.output
             .instructions
             .push(Instruction::Or { a: 0, s: 3, b: 3 });
@@ -2124,7 +2124,7 @@ impl Generator {
         }
         // Phase D: virtual homes, created highest-rank first (id order -> r31, r30, …),
         // framed by the FRAME BUILDER (all saves consecutive — the canonical schedule).
-        let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
+        let homes: Vec<u32> = (0..count).map(|_| self.fresh_virtual_general()).collect();
         self.callee_saved = homes.clone();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
@@ -2182,7 +2182,7 @@ impl Generator {
         for statement in &function.statements {
             self.emit_statement(statement)?;
         }
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.evaluate_tail(return_expr, function.return_type, result)?;
         self.emit_epilogue_and_return();
         Ok(true)
@@ -2249,7 +2249,7 @@ impl Generator {
         }
         // `x OP y` from x in the saved register and y in r3. `subf d,a,b` = b - a, so
         // `subf r3,r3,saved` = saved - r3 = x - y (order-preserving).
-        let combine = |saved: u8| match operator {
+        let combine = |saved: u32| match operator {
             BinaryOperator::Add => Some(Instruction::Add {
                 d: 3,
                 a: saved,
@@ -2406,7 +2406,7 @@ impl Generator {
         for statement in &function.statements[1..] {
             self.emit_statement(statement)?;
         }
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.evaluate_tail(return_expr, function.return_type, result)?;
         self.emit_epilogue_and_return();
         Ok(true)

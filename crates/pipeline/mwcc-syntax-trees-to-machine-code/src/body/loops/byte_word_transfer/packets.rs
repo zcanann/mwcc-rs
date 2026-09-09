@@ -2,31 +2,31 @@
 //! Register lifetimes are packet-local except the buffer, index, and word homes.
 use mwcc_machine_code::Instruction;
 
-pub(super) fn addi(d: u8, a: u8, immediate: i16) -> Instruction {
+pub(super) fn addi(d: u32, a: u32, immediate: i16) -> Instruction {
     Instruction::AddImmediate { d, a, immediate }
 }
-pub(super) fn complement(d: u8, a: u8) -> Instruction {
+pub(super) fn complement(d: u32, a: u32) -> Instruction {
     Instruction::SubtractFromImmediate { d, a, immediate: 3 }
 }
-pub(super) fn scale(a: u8, s: u8) -> Instruction {
+pub(super) fn scale(a: u32, s: u32) -> Instruction {
     Instruction::ShiftLeftImmediate { a, s, shift: 3 }
 }
-pub(super) fn byte(d: u8, a: u8, offset: i16) -> Instruction {
+pub(super) fn byte(d: u32, a: u32, offset: i16) -> Instruction {
     Instruction::LoadByteZero { d, a, offset }
 }
-pub(super) fn left(a: u8, s: u8, b: u8) -> Instruction {
+pub(super) fn left(a: u32, s: u32, b: u32) -> Instruction {
     Instruction::ShiftLeftWord { a, s, b }
 }
-pub(super) fn right(a: u8, s: u8, b: u8) -> Instruction {
+pub(super) fn right(a: u32, s: u32, b: u32) -> Instruction {
     Instruction::ShiftRightWord { a, s, b }
 }
-pub(super) fn merge(a: u8, b: u8) -> Instruction {
+pub(super) fn merge(a: u32, b: u32) -> Instruction {
     Instruction::Or { a, s: a, b }
 }
-pub(super) fn negative(d: u8, a: u8) -> Instruction {
+pub(super) fn negative(d: u32, a: u32) -> Instruction {
     Instruction::Negate { d, a }
 }
-pub(super) fn store(s: u8, offset: i16) -> Instruction {
+pub(super) fn store(s: u32, offset: i16) -> Instruction {
     Instruction::StoreByte { s, a: 3, offset }
 }
 

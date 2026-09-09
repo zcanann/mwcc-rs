@@ -19,7 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use mwcc_machine_code::Instruction;
+use mwcc_machine_code::{Instruction, RegisterField};
 
 use crate::allocator::{Allocation, LiveInterval, PinnedOccupancy};
 use crate::description::{for_each_register, register_operands, RegisterRole};
@@ -58,8 +58,8 @@ pub fn analyze_with_indirect_successors(
         .filter_map(crate::description::nonzero_base)
         .collect();
     // The currently-open range per register key, as (start, last-touched).
-    let mut open: HashMap<(Class, u8), (usize, usize)> = HashMap::new();
-    let mut ranges: Vec<((Class, u8), usize, usize)> = Vec::new();
+    let mut open: HashMap<(Class, RegisterField), (usize, usize)> = HashMap::new();
+    let mut ranges: Vec<((Class, RegisterField), usize, usize)> = Vec::new();
     let mut uses_by_instruction = Vec::with_capacity(instructions.len());
     let mut definitions_by_instruction = Vec::with_capacity(instructions.len());
     let mut defined_physical_ranges = HashSet::new();
@@ -87,7 +87,7 @@ pub fn analyze_with_indirect_successors(
             // register operands. This prevents an incoming r3 occupancy from
             // being fused with a later r3 call result in the allocator's view.
             definitions.extend(
-                [0_u8]
+                [0_u32]
                     .into_iter()
                     .chain(3..=12)
                     .map(|register| (Class::General, register)),
@@ -212,7 +212,7 @@ pub fn analyze_with_indirect_successors(
                 .cloned()
                 .unwrap_or_default();
             liveness.pinned.push(PinnedOccupancy {
-                register: value,
+                register: value.try_into().expect("physical register field"),
                 class,
                 start: slots.first().map_or(start, |slot| slot / 2),
                 end: slots.last().map_or(end, |slot| slot / 2),
@@ -223,7 +223,7 @@ pub fn analyze_with_indirect_successors(
     liveness
 }
 
-type RegisterKey = (Class, u8);
+type RegisterKey = (Class, RegisterField);
 
 /// Classic backwards liveness over the selected instruction CFG. Slots split
 /// each instruction into a read side and a write side, preserving the existing
@@ -311,7 +311,7 @@ pub fn apply(instructions: &mut [Instruction], allocation: &Allocation) {
             if Reg::is_virtual_field(*field) {
                 let vreg = VirtualRegister::new((*field - VIRTUAL_BASE) as u32, class);
                 if let Some(physical) = allocation.physical(vreg) {
-                    *field = physical;
+                    *field = RegisterField::from(physical);
                 }
             }
         });
@@ -326,8 +326,28 @@ mod tests {
     use crate::register::Reg;
 
     /// A virtual register's field value (id 0 -> VIRTUAL_BASE).
-    fn v(id: u32) -> u8 {
+    fn v(id: u32) -> RegisterField {
         Reg::general(id).to_field()
+    }
+
+    #[test]
+    fn thousands_of_sequential_virtuals_reuse_physical_homes_without_aliasing_ids() {
+        let mut stream = vec![Instruction::load_immediate(v(0), 7)];
+        for id in 1..1024 {
+            stream.push(Instruction::AddImmediate { d: v(id), a: v(id - 1), immediate: 1 });
+        }
+        stream.push(Instruction::move_register(3, v(1023)));
+        let liveness = analyze(&stream);
+        assert_eq!(liveness.intervals.len(), 1024);
+        let allocation = LinearScan.allocate(
+            &liveness.intervals, &liveness.pinned, &liveness.calls,
+            &RegisterConstraints::gekko(),
+        ).unwrap();
+        apply(&mut stream, &allocation);
+        for instruction in &stream {
+            instruction.encode();
+        }
+        assert!(analyze(&stream).intervals.is_empty());
     }
 
     #[test]

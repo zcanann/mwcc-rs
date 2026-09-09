@@ -827,9 +827,9 @@ impl Generator {
         }
         // Resolve every scaffold register before any emission.
         enum ResolvedScaffold {
-            Mask { register: u8, clear: u8 },
-            Extract { source_register: u8 },
-            Xor { register: u8 },
+            Mask { register: u32, clear: u8 },
+            Extract { source_register: u32 },
+            Xor { register: u32 },
         }
         let mut resolved_scaffold = Vec::new();
         for op in &scaffold_ops {
@@ -1139,7 +1139,7 @@ impl Generator {
             }
         }
         // Homes: params in their registers.
-        let mut homes: Vec<(String, u8)> = Vec::new();
+        let mut homes: Vec<(String, u32)> = Vec::new();
         let mut char_pointers: Vec<(String, bool)> = Vec::new();
         for parameter in &function.parameters {
             match parameter.parameter_type {
@@ -1156,19 +1156,19 @@ impl Generator {
             };
             homes.push((parameter.name.clone(), register));
         }
-        let home_of = |homes: &[(String, u8)], name: &str| {
+        let home_of = |homes: &[(String, u32)], name: &str| {
             homes.iter().find(|(n, _)| n == name).map(|&(_, r)| r)
         };
         // The init list: `a = C`, `a = param`, or `a = param << K` — a
         // param read by its LAST init use frees its home.
         enum Init {
             Constant {
-                register: u8,
+                register: u32,
                 value: i16,
             },
             ShiftOfParam {
-                register: u8,
-                source: u8,
+                register: u32,
+                source: u32,
                 amount: u8,
             },
         }
@@ -1206,7 +1206,7 @@ impl Generator {
             elements.reverse();
             // First pass: aliases (i = param) rename in place; param-reads
             // mark freed homes.
-            let mut freed: Vec<u8> = Vec::new();
+            let mut freed: Vec<u32> = Vec::new();
             let mut pending: Vec<(&str, &Expression)> = Vec::new();
             for element in &elements {
                 let Expression::Assign { target, value } = element else {
@@ -1221,7 +1221,7 @@ impl Generator {
                         let Some(register) = home_of(&homes, source) else {
                             return Ok(false);
                         };
-                        homes.push((name.clone(), register));
+                        homes.push((name.clone(), register.into()));
                     }
                     Expression::Binary {
                         operator: BinaryOperator::ShiftLeft,
@@ -1242,11 +1242,11 @@ impl Generator {
                         // A condition-only computed value lives in r0.
                         init_plan.push(Init::ShiftOfParam {
                             register: 0,
-                            source: source_register,
+                            source: u32::from(source_register),
                             amount,
                         });
                         homes.push((name.clone(), 0));
-                        freed.push(source_register);
+                        freed.push(source_register.into());
                     }
                     other if crate::analysis::constant_value(other).is_some() => {
                         pending.push((name.as_str(), other));
@@ -1283,16 +1283,16 @@ impl Generator {
         // truthiness `*p` (lbz + extsb. record test).
         enum LoopTest {
             Constant {
-                register: u8,
+                register: u32,
                 constant: i64,
                 big: bool,
             },
             Register {
-                left: u8,
-                right: u8,
+                left: u32,
+                right: u32,
             },
             CharLoad {
-                pointer: u8,
+                pointer: u32,
                 signed: bool,
             },
         }
@@ -1320,7 +1320,7 @@ impl Generator {
                     }
                     (
                         LoopTest::Constant {
-                            register: cond_register,
+                            register: u32::from(cond_register),
                             constant,
                             big,
                         },
@@ -1332,8 +1332,8 @@ impl Generator {
                     };
                     (
                         LoopTest::Register {
-                            left: cond_register,
-                            right: right_register,
+                            left: u32::from(cond_register),
+                            right: u32::from(right_register),
                         },
                         back,
                     )
@@ -1353,7 +1353,7 @@ impl Generator {
                 };
                 (
                     LoopTest::CharLoad {
-                        pointer: register,
+                        pointer: u32::from(register),
                         signed: *signed,
                     },
                     (4u8, 2u8),
@@ -1365,21 +1365,21 @@ impl Generator {
         // Body + step ops: compound self-ops on homed locals.
         enum LoopOp {
             AddImmediate {
-                register: u8,
+                register: u32,
                 value: i16,
             },
             SelfAdd {
-                register: u8,
+                register: u32,
             },
             ShiftLeft {
-                register: u8,
+                register: u32,
                 amount: u8,
             },
             /// `*dst = *src` where src is the walk's condition pointer —
             /// the char loaded by the TEST carries across the back edge
             /// into this store (measured S2).
             CarriedStore {
-                destination: u8,
+                destination: u32,
             },
         }
         let condition_pointer: Option<&str> = match condition {
@@ -1389,7 +1389,7 @@ impl Generator {
             },
             _ => None,
         };
-        let parse_op = |homes: &[(String, u8)], statement: &Statement| -> Option<LoopOp> {
+        let parse_op = |homes: &[(String, u32)], statement: &Statement| -> Option<LoopOp> {
             if let Statement::Store { target, value } = statement {
                 // `*dst = *src` with src the condition pointer.
                 let Expression::Dereference { pointer: dst } = target else {
@@ -1408,7 +1408,7 @@ impl Generator {
                 if condition_pointer != Some(src_name.as_str()) {
                     return None;
                 }
-                return Some(LoopOp::CarriedStore { destination });
+                return Some(LoopOp::CarriedStore { destination: destination.into() });
             }
             let Statement::Assign { name, value } = statement else {
                 return None;
@@ -1427,19 +1427,19 @@ impl Generator {
             }
             match operator {
                 BinaryOperator::Add if matches!(right.as_ref(), Expression::Variable(v) if v == name) => {
-                    Some(LoopOp::SelfAdd { register })
+                    Some(LoopOp::SelfAdd { register: register.into() })
                 }
                 BinaryOperator::Add => {
                     let value = i16::try_from(crate::analysis::constant_value(right)?).ok()?;
-                    Some(LoopOp::AddImmediate { register, value })
+                    Some(LoopOp::AddImmediate { register: register.into(), value })
                 }
                 BinaryOperator::Subtract => {
                     let value = i16::try_from(-crate::analysis::constant_value(right)?).ok()?;
-                    Some(LoopOp::AddImmediate { register, value })
+                    Some(LoopOp::AddImmediate { register: register.into(), value })
                 }
                 BinaryOperator::ShiftLeft => {
                     let amount = u8::try_from(crate::analysis::constant_value(right)?).ok()?;
-                    Some(LoopOp::ShiftLeft { register, amount })
+                    Some(LoopOp::ShiftLeft { register: register.into(), amount })
                 }
                 _ => None,
             }
@@ -1665,7 +1665,7 @@ impl Generator {
         if function.return_type != Type::Void && return_register != 3 {
             self.output
                 .instructions
-                .push(Instruction::move_register(3, return_register));
+                .push(Instruction::move_register(3, return_register.into()));
         }
         self.output
             .instructions

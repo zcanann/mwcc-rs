@@ -75,7 +75,7 @@ impl Generator {
     pub(crate) fn emit_load_from_pointer(
         &mut self,
         pointer: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         // `*pointer++` consumes the old address, then advances the tracked
         // pointer. Keep the load and mutation adjacent here so integer and
@@ -90,7 +90,7 @@ impl Generator {
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
-                address,
+                address.into(),
                 0,
             )?);
             if !self.emit_post_step_update_after_use(target, *operator, *pointer_link)? {
@@ -119,7 +119,7 @@ impl Generator {
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
-                address,
+                address.into(),
                 displacement,
             )?);
             return Ok(());
@@ -143,7 +143,7 @@ impl Generator {
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
-                address,
+                address.into(),
                 offset,
             )?);
             return Ok(());
@@ -228,7 +228,7 @@ impl Generator {
         let (pointee, address) = self.resolve_pointer(pointer)?;
         self.output
             .instructions
-            .push(displacement_load(pointee, destination, address, 0)?);
+            .push(displacement_load(pointee, destination, address.into(), 0)?);
         Ok(())
     }
 
@@ -245,7 +245,7 @@ impl Generator {
         pointee: Pointee,
         address: u32,
         offset: u32,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let (high, low) = split_address(address);
         let Some(displacement) = i64::from(low)
@@ -268,12 +268,12 @@ impl Generator {
             if materialize {
                 self.output
                     .instructions
-                    .push(Instruction::load_immediate_shifted(base, high));
+                    .push(Instruction::load_immediate_shifted(base.into(), high));
             }
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
-                base,
+                base.into(),
                 displacement,
             )?);
         }
@@ -291,7 +291,7 @@ impl Generator {
         pointee: Pointee,
         address: u32,
         offset: u32,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let (high, low) = split_address(address);
         if high == 0 {
@@ -323,7 +323,7 @@ impl Generator {
     /// Return the retained base for `high`, creating it when this is the first
     /// nonzero fixed-address family in the function. The boolean tells the
     /// caller to emit the defining `lis`.
-    fn claim_const_address_base(&mut self, high: i16) -> Option<(u8, bool)> {
+    fn claim_const_address_base(&mut self, high: i16) -> Option<(u32, bool)> {
         self.claim_const_address_base_avoiding(high, Vec::new())
     }
 
@@ -332,8 +332,8 @@ impl Generator {
     pub(crate) fn claim_const_address_base_avoiding(
         &mut self,
         high: i16,
-        mut avoid: Vec<u8>,
-    ) -> Option<(u8, bool)> {
+        mut avoid: Vec<u32>,
+    ) -> Option<(u32, bool)> {
         // Incoming argument homes can remain live through an identity call
         // argument that emits no move. Preserve those explicit reservations
         // even when the virtual stream has no intervening read of the home.
@@ -361,7 +361,7 @@ impl Generator {
     /// base field it denotes constant zero. A scratch-destination load therefore
     /// needs the lowest free GPR; callers expose live siblings through `reserved`,
     /// so this yields r3 normally, r4 while r3 is live, and so on.
-    pub(crate) fn address_base_for_load_destination(&self, destination: u8) -> Compilation<u8> {
+    pub(crate) fn address_base_for_load_destination(&self, destination: u32) -> Compilation<u32> {
         if destination == GENERAL_SCRATCH {
             self.lowest_free_general()
         } else {
@@ -420,7 +420,7 @@ impl Generator {
                     high,
                     vec![
                         GENERAL_SCRATCH,
-                        mwcc_target::Eabi::general_result().number,
+                        u32::from(mwcc_target::Eabi::general_result().number),
                     ],
                 ) else {
                     return Ok(false);
@@ -429,7 +429,7 @@ impl Generator {
                 if materialize {
                     self.output
                         .instructions
-                        .push(Instruction::load_immediate_shifted(base, high));
+                        .push(Instruction::load_immediate_shifted(base.into(), high));
                 }
                 self.output.instructions.push(displacement_store(
                     pointee,
@@ -442,13 +442,13 @@ impl Generator {
                 let source = self.place_store_value(value, pointee)?;
                 let mut avoid = vec![GENERAL_SCRATCH];
                 if !matches!(pointee, Pointee::Float | Pointee::Double) {
-                    avoid.push(source);
+                    avoid.push(source.into());
                 }
                 let Some((base, materialize)) = self.claim_const_address_base_avoiding(high, avoid) else {
                     return Ok(false);
                 };
                 if materialize {
-                    self.output.instructions.push(Instruction::load_immediate_shifted(base, high));
+                    self.output.instructions.push(Instruction::load_immediate_shifted(base.into(), high));
                 }
                 self.output.instructions.push(displacement_store(pointee, source, base, displacement)?);
                 return Ok(true);
@@ -460,14 +460,14 @@ impl Generator {
             }
             self.output
                 .instructions
-                .push(displacement_store(pointee, source, base, displacement)?);
+                .push(displacement_store(pointee, source.into(), base, displacement)?);
             return Ok(true);
         }
         if high == 0 {
             let source = self.place_store_value(value, pointee)?;
             self.output
                 .instructions
-                .push(displacement_store(pointee, source, 0, displacement)?);
+                .push(displacement_store(pointee, source.into(), 0, displacement)?);
             return Ok(true);
         }
         let Some((base, materialize)) = self.claim_const_address_base(high) else {
@@ -477,22 +477,22 @@ impl Generator {
         // definition and use picks PHYSICAL registers; the reserve marker keeps the
         // legacy chooser away from the virtual's field value, and the allocator sees
         // any physical it picks as pinned inside the base's range.
-        let restore = self.reserved.insert(base);
+        let restore = self.reserved.insert(base.into());
         if materialize {
             self.output
                 .instructions
-                .push(Instruction::load_immediate_shifted(base, high));
+                .push(Instruction::load_immediate_shifted(base.into(), high));
         }
         let source = match address_identity_source {
             Some(source) => source,
-            None => self.place_store_value(value, pointee)?,
+            None => self.place_store_value(value, pointee)?.into(),
         };
         if restore {
             self.reserved.remove(&base);
         }
         self.output
             .instructions
-            .push(displacement_store(pointee, source, base, displacement)?);
+            .push(displacement_store(pointee, source, base.into(), displacement)?);
         Ok(true)
     }
 
@@ -524,7 +524,7 @@ impl Generator {
     pub(crate) fn pointer_arithmetic_base(
         &mut self,
         operand: &Expression,
-    ) -> Compilation<Option<(u8, u32)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         if let Expression::MemberAddress {
             base,
             offset: 0,
@@ -593,7 +593,7 @@ impl Generator {
 
     /// The register and pointee size of a leaf pointer variable, with no side
     /// effects (just the home register). Used to recognize `ptr - ptr`.
-    pub(crate) fn pointer_leaf_register_size(&self, operand: &Expression) -> Option<(u8, u32)> {
+    pub(crate) fn pointer_leaf_register_size(&self, operand: &Expression) -> Option<(u32, u32)> {
         if let Expression::Variable(name) = operand {
             let location = self.locations.get(name)?;
             if let Some(stride) = location.stride {
@@ -611,7 +611,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         // Inline member arrays retain their element stride when they decay.
         // Fold both the member displacement and the scaled literal into the
@@ -800,7 +800,7 @@ impl Generator {
         let integer_register = if let Ok(register) = self.general_register_of_leaf(integer) {
             register
         } else {
-            let reserved = self.reserved.insert(pointer_register);
+            let reserved = self.reserved.insert(pointer_register.into());
             let emitted = self.evaluate_general(integer, GENERAL_SCRATCH);
             if reserved {
                 self.reserved.remove(&pointer_register);
@@ -853,7 +853,7 @@ impl Generator {
     }
 
     /// `(pointee, address register)` for a pointer leaf variable.
-    pub(crate) fn pointer_leaf(&self, base: &Expression) -> Compilation<(Pointee, u8)> {
+    pub(crate) fn pointer_leaf(&self, base: &Expression) -> Compilation<(Pointee, u32)> {
         let name = leaf_name(base).ok_or_else(|| {
             Diagnostic::error(format!(
                 "pointer leaf access needs a pointer variable (roadmap): {base:?}"
@@ -873,7 +873,7 @@ impl Generator {
     /// any load needed to materialize the address. A leaf pointer variable needs
     /// nothing; a pointer-typed struct member (`*p->q`) loads the pointer value
     /// into the base's register first, reusing it as mwcc does.
-    pub(crate) fn resolve_pointer(&mut self, base: &Expression) -> Compilation<(Pointee, u8)> {
+    pub(crate) fn resolve_pointer(&mut self, base: &Expression) -> Compilation<(Pointee, u32)> {
         if let Some(pointer) = self.try_resolve_nested_pointer_table_entry(base)? {
             return Ok(pointer);
         }
@@ -1039,7 +1039,7 @@ impl Generator {
 
 fn const_address_region_ended(
     instructions: &[Instruction],
-    bases: impl Iterator<Item = u8>,
+    bases: impl Iterator<Item = u32>,
 ) -> bool {
     let bases: Vec<_> = bases.collect();
     let Some(last_use) = instructions.iter().rposition(|instruction| {

@@ -172,7 +172,7 @@ pub(super) fn classify<'a>(
 }
 
 impl Generator {
-    fn emit_nested_store_global_address(&mut self, global: &str, register: u8) {
+    fn emit_nested_store_global_address(&mut self, global: &str, register: u32) {
         self.emit_address_high(register, global);
         self.emit_address_low(register, global);
     }

@@ -230,18 +230,18 @@ impl Generator {
             .instructions
             .push(Instruction::load_immediate(GENERAL_SCRATCH, 0));
         self.output.instructions.push(Instruction::load_immediate(
-            Eabi::FIRST_GENERAL_ARGUMENT,
+            Eabi::FIRST_GENERAL_ARGUMENT.into(),
             words,
         ));
         self.output.instructions.push(Instruction::AddImmediate {
-            d: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+            d: 4,
             a: 1,
             immediate: slot.offset - 4,
         });
         self.output
             .instructions
             .push(Instruction::MoveToCountRegister {
-                s: Eabi::FIRST_GENERAL_ARGUMENT,
+                s: 3,
             });
         let loop_head = self.fresh_label();
         self.bind_label(loop_head);
@@ -249,7 +249,7 @@ impl Generator {
             .instructions
             .push(Instruction::StoreWordWithUpdate {
                 s: GENERAL_SCRATCH,
-                a: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                a: 4,
                 offset: 4,
             });
         self.emit_branch_conditional_to(16, 0, loop_head);

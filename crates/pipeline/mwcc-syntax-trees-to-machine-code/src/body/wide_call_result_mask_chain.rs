@@ -72,14 +72,14 @@ impl Generator {
             target: plan.callee.clone(),
         });
 
-        const HIGH_ZERO: u8 = 6;
-        const HIGH_MASKED: u8 = 5;
+        const HIGH_ZERO: u32 = 6;
+        const HIGH_MASKED: u32 = 5;
         self.output
             .instructions
             .push(Instruction::load_immediate(HIGH_ZERO, 0));
         self.record_relocation_with_addend(RelocationKind::EmbSda21, &plan.global, 4);
         self.output.instructions.push(Instruction::StoreWord {
-            s: Eabi::general_result().number,
+            s: u32::from(Eabi::general_result().number),
             a: 0,
             offset: 0,
         });
@@ -88,7 +88,7 @@ impl Generator {
             .push(Instruction::load_immediate(0, plan.masks[0]));
         self.output.instructions.push(Instruction::And {
             a: 0,
-            s: Eabi::general_result().number,
+            s: u32::from(Eabi::general_result().number),
             b: 0,
         });
         self.record_relocation(RelocationKind::EmbSda21, &plan.global);
@@ -130,11 +130,11 @@ impl Generator {
             .push(Instruction::load_immediate(0, plan.masks[1]));
         self.output.instructions.push(Instruction::And {
             a: 0,
-            s: Eabi::general_result().number,
+            s: u32::from(Eabi::general_result().number),
             b: 0,
         });
         self.output.instructions.push(Instruction::Xor {
-            a: Eabi::general_result().number,
+            a: u32::from(Eabi::general_result().number),
             s: 0,
             b: HIGH_ZERO,
         });
@@ -145,7 +145,7 @@ impl Generator {
         });
         self.output.instructions.push(Instruction::OrRecord {
             a: 0,
-            s: Eabi::general_result().number,
+            s: u32::from(Eabi::general_result().number),
             b: 0,
         });
         let default_result = self.fresh_label();
@@ -204,13 +204,13 @@ impl Generator {
         });
         self.output.instructions.push(Instruction::AndMaskRecord {
             a: 0,
-            s: Eabi::general_result().number,
+            s: u32::from(Eabi::general_result().number),
             begin: masks[0].0,
             end: masks[0].1,
         });
         self.record_relocation_with_addend(RelocationKind::EmbSda21, &plan.global, 4);
         self.output.instructions.push(Instruction::StoreWord {
-            s: Eabi::general_result().number,
+            s: u32::from(Eabi::general_result().number),
             a: 0,
             offset: 0,
         });
@@ -236,7 +236,7 @@ impl Generator {
         self.bind_label(second_guard);
         self.output.instructions.push(Instruction::AndMaskRecord {
             a: 0,
-            s: Eabi::general_result().number,
+            s: u32::from(Eabi::general_result().number),
             begin: masks[1].0,
             end: masks[1].1,
         });

@@ -19,15 +19,15 @@ const TAIL_ORDER: [usize; TAIL_LEN] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TailPlan {
     start: usize,
-    index: u8,
-    n_dl: u8,
-    n_l3: u8,
-    n_l2: u8,
-    n_l1: u8,
-    n_l0: u8,
-    parity: u8,
-    scale_l2: u8,
-    table_index: u8,
+    index: u32,
+    n_dl: u32,
+    n_l3: u32,
+    n_l2: u32,
+    n_l1: u32,
+    n_l0: u32,
+    parity: u32,
+    scale_l2: u32,
+    table_index: u32,
 }
 
 impl Generator {

@@ -49,7 +49,7 @@ impl Generator {
     }
 }
 
-fn schedule_spawn_arm(generator: &mut Generator, start: usize, entry: u8) {
+fn schedule_spawn_arm(generator: &mut Generator, start: usize, entry: u32) {
     // parts; index; object; entry; joint; member; crclr; frame; constants; call
     generator.move_instruction_before(start + 5, start);
     generator.move_instruction_before(start + 6, start + 1);
@@ -114,7 +114,7 @@ fn lower_range_switch(generator: &mut Generator, call: usize) {
     generator.output.instructions[call + 18] = Instruction::Branch { target: default };
 }
 
-fn schedule_first_bone_lookup(generator: &mut Generator, call: usize, receiver: u8) {
+fn schedule_first_bone_lookup(generator: &mut Generator, call: usize, receiver: u32) {
     let start = call - 4;
     generator.move_instruction_before(start + 2, start + 1);
     generator.move_instruction_before(start + 3, start + 2);
@@ -253,8 +253,8 @@ fn schedule_mutating_boolean_entry(generator: &mut Generator, plan: GuardedEffec
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GuardedEffectSpawnPlan {
     entry_packet: usize,
-    entry: u8,
-    receiver: u8,
+    entry: u32,
+    receiver: u32,
     first_bone: usize,
     second_motion_load: usize,
     second_bone: usize,

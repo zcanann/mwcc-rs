@@ -207,8 +207,8 @@ impl Generator {
         self.schedule_leaf_global_store_compare();
         if let Some(return_expression) = &function.return_expression {
             let result = match function.return_type {
-                Type::Float | Type::Double => Eabi::float_result().number,
-                _ => Eabi::general_result().number,
+                Type::Float | Type::Double => u32::from(Eabi::float_result().number),
+                _ => u32::from(Eabi::general_result().number),
             };
             self.evaluate(return_expression, function.return_type, result)?;
         }

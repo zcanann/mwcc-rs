@@ -713,7 +713,7 @@ impl Generator {
                 ),
             ));
         }
-        let mut bindings: Vec<(String, u8)> = locals
+        let mut bindings: Vec<(String, u32)> = locals
             .iter()
             .enumerate()
             .map(|(index, &(name, _))| (name.to_string(), registers[index]))

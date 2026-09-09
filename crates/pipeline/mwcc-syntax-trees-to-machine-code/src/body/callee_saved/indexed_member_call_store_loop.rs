@@ -160,8 +160,8 @@ impl Generator {
             return Ok(false);
         }
 
-        const CURSOR: u8 = 31;
-        const COUNTER: u8 = 30;
+        const CURSOR: u32 = 31;
+        const COUNTER: u32 = 30;
         self.non_leaf = true;
         self.frame_size = 16;
         self.callee_saved = vec![CURSOR, COUNTER];

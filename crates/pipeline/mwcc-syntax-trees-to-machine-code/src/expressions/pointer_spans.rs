@@ -91,7 +91,7 @@ impl Generator {
     pub(crate) fn try_emit_pointer_span_scale(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(parts) = pointer_span_scale_parts(expression) else {
             return Ok(false);

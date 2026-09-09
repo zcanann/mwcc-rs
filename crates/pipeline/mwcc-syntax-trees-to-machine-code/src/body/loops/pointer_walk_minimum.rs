@@ -201,11 +201,11 @@ impl Generator {
             return Ok(false);
         }
         let root = self.general_register_of(&function.parameters[0].name)?;
-        if root != Eabi::FIRST_GENERAL_ARGUMENT {
+        if root != Eabi::FIRST_GENERAL_ARGUMENT.into() {
             return Ok(false);
         }
 
-        const MINIMUM: u8 = 4;
+        const MINIMUM: u32 = 4;
         let (cursor, candidate) = if self.behavior.legacy_pointer_value_register_order {
             (5, 3)
         } else {
@@ -276,7 +276,7 @@ impl Generator {
                 target: 3,
             },
             Instruction::Or {
-                a: Eabi::general_result().number,
+                a: u32::from(Eabi::general_result().number),
                 s: MINIMUM,
                 b: MINIMUM,
             },

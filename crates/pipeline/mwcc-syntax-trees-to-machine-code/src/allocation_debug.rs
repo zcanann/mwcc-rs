@@ -21,7 +21,7 @@ pub(crate) fn reconcile_variable_locations(
             continue;
         };
         if let Some(physical) = allocation.physical(register) {
-            location.register = physical;
+            location.register = u32::from(physical);
         }
     }
 }

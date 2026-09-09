@@ -15,7 +15,7 @@ use mwcc_syntax_trees::{ArmBody, Parameter, Pointee};
 use mwcc_versions::FrameConvention;
 
 pub(super) struct StructuredMultiPhaseVariadicHomeLayout {
-    preference_by_home: [u8; 6],
+    preference_by_home: [u32; 6],
 }
 
 impl StructuredMultiPhaseVariadicHomeLayout {
@@ -99,7 +99,7 @@ impl StructuredMultiPhaseVariadicHomeLayout {
 
         let mut preference_by_home = [0; 6];
         let mut occupied = [false; 6];
-        let mut set = |home: usize, preference: u8| {
+        let mut set = |home: usize, preference: u32| {
             if home >= preference_by_home.len() || occupied[home] {
                 return false;
             }
@@ -121,8 +121,8 @@ impl StructuredMultiPhaseVariadicHomeLayout {
         Some(Self { preference_by_home })
     }
 
-    pub(super) fn preference(&self, home_index: usize) -> Option<u8> {
-        self.preference_by_home.get(home_index).copied()
+    pub(super) fn preference(&self, home_index: usize) -> Option<u32> {
+        (self.preference_by_home.get(home_index).copied()).map(u32::from)
     }
 }
 

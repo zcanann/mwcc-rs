@@ -20,8 +20,8 @@ impl Generator {
         &mut self,
         name: &str,
         pointee: Pointee,
-        destination: u8,
-        base_preference: u8,
+        destination: u32,
+        base_preference: u32,
     ) -> Compilation<()> {
         let base = self.fresh_virtual_general_preferring(base_preference);
         self.emit_address_high(base, name);
@@ -44,7 +44,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         let (name, indexed, indexed_is_right) = if let Some(name) = zero_subscript_base(right) {
             (name, left, false)
         } else if let Some(name) = zero_subscript_base(left) {

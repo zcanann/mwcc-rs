@@ -11,24 +11,24 @@ use std::collections::{HashMap, HashSet};
 enum Operation<'a> {
     Call {
         name: &'a str,
-        home: u8,
+        home: u32,
     },
     Copy {
-        source: u8,
-        home: u8,
+        source: u32,
+        home: u32,
     },
     Wait {
         start_call: &'a str,
         now_call: &'a str,
-        start: u8,
-        now: u8,
+        start: u32,
+        now: u32,
         limit: i16,
     },
     Guard(Vec<Operation<'a>>),
     Repeat {
         body: Vec<Operation<'a>>,
-        left: u8,
-        right: u8,
+        left: u32,
+        right: u32,
         signed: bool,
     },
 }
@@ -64,8 +64,8 @@ fn call<'a>(generator: &Generator, value: &'a Expression, ty: Type) -> Option<&'
 struct Planner<'g, 'a> {
     generator: &'g Generator,
     function: &'a Function,
-    homes: HashMap<&'a str, u8>,
-    next: u8,
+    homes: HashMap<&'a str, u32>,
+    next: u32,
     guards: usize,
     waits: usize,
 }
@@ -79,7 +79,7 @@ impl<'a> Planner<'_, 'a> {
             .map(|local| local.declared_type)
     }
 
-    fn word_home(&mut self, name: &'a str) -> Option<u8> {
+    fn word_home(&mut self, name: &'a str) -> Option<u32> {
         if !word(self.local_type(name)?) {
             return None;
         }
@@ -198,7 +198,7 @@ impl<'a> Planner<'_, 'a> {
                     let operation = if let Some(callee) = call(self.generator, value, ty) {
                         Operation::Call {
                             name: callee,
-                            home: self.word_home(name)?,
+                            home: self.word_home(name)?.into(),
                         }
                     } else {
                         let source = variable(value)?;
@@ -207,7 +207,7 @@ impl<'a> Planner<'_, 'a> {
                         }
                         Operation::Copy {
                             source: *self.homes.get(source)?,
-                            home: self.word_home(name)?,
+                            home: self.word_home(name)?.into(),
                         }
                     };
                     defined.insert(name);
@@ -307,7 +307,7 @@ impl Generator {
         }
         let first = planner.next;
         // The plan owns only references to source expressions, not generator state.
-        let frame_size = 8 + 4 * i16::from(32 - first);
+        let frame_size = 8 + 4 * i16::try_from(32 - first).expect("saved register count");
         self.emit_savegpr_frame_prologue_with_convention(
             first,
             frame_size,

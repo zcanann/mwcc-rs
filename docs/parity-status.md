@@ -4,13 +4,67 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, broader Dolphin probe and shifted expressions (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, wide virtual IDs and full Dolphin MD5 (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `4ca846102a2d34a93364a8ad2a17c528502019308a2e8a2a3a66841cc01e16bb:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `f551c24bb192f0cc729229028dd49ccdda1e7496fd9f6265debbd841aa199e3e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Wide virtual IDs and full Dolphin MD5, 2026-09-08
+
+Selected GPR/FPR fields now retain 32-bit virtual IDs through instruction
+selection, frame planning, liveness, and scheduling. Physical allocator homes
+remain byte-sized numbers in 0–31. The encoder rejects unresolved register
+fields, and checked field conversion prevents IDs from wrapping into physical
+registers. This removes the former 224-temporary limit per register class.
+Unit tests cover 1,024 sequential virtuals, both register classes, field-capacity
+boundaries, and unresolved operands at encoding.
+
+The complete Battle for Bikini Bottom Dolphin `eth/md5.c` now compiles on
+**15/15** versions, up from **0/15**. Progress past `MD5Transform` exposed two
+more issues: a guard rejected the shift/OR load tree in `Decode`, and indexed
+loads/stores with constant offsets modified their original pointer bases.
+Load-packing trees now use ordinary virtual operand placement. Indexed addresses
+receive separate virtual homes, preserving pointers across subsequent accesses,
+loop iterations, and implicit ABI returns.
+
+Native execution verifies **960 MD5 digest scenarios** across all fifteen
+candidate versions against Python's independent digest implementation, including
+empty messages, padding/block boundaries, and fragmented updates. The fourteen
+GC references pass the same cases. The Wii/1.0 reference rejects this project's
+headers for a redeclared `s8`; its candidate is checked against the independent
+model only. The RSA Data Security, Inc. MD5 Message-Digest Algorithm source in
+the reference project is used unchanged. None of the **84** functions emitted
+by the fourteen accepted reference units is byte-exact yet.
+
+Canaries **2270–2272** cover byte packing, 64 unrolled arithmetic rounds, and
+retained bases in indexed stores. Across O4/O0 and fifteen builds, complete
+sample compilation improves **30 → 90/90**; exact function matches improve
+**30 → 54/210**. The native panel passes **6,720 scenarios**, including the 960
+full MD5 cases. The former compiler fails **945** retained-store scenarios;
+all corresponding candidate and reference executions pass. This panel checks
+results, affected memory, saved GPRs, stack restoration, and return completion.
+
+The fresh 151-source Dolphin panel improves **189 → 191/302** compiled units;
+reference-supported compilation improves **187 → 189/293**. Both gains are
+`eth/md5.c` (GC/1.2.5n and GC/1.3). All **189** previously compiling project
+objects remain identical. The focused existing canary panel retains **2,589**
+identical objects and **276** identical failure diagnostics (2,865 combinations).
+
+Validation passes **2,278 unit/integration tests**: 348 app, 1,697 backend, 116
+allocator, 74 debug-info, 33 object-writer, and 10 encoding tests. Nine app tests
+were independently confirmed failing at baseline `b63945f6` and excluded from
+the final pass, alongside the known nested-inline-assembly backend test. Eight
+allocator search tests retain their existing ignored status. No full corpus or
+holdout claim is made by this checkpoint.
+
+The compiler fingerprint above binds the final objects. The local manifest
+`target/vreg-wide-final-verification.json` verifies all comparison hashes and
+**239 native object bindings**, with source, native-harness, and original helper
+DOL hashes. Measurements are in `target/vreg-wide-parity/`,
+`target/vreg-wide-regressions/`, and `target/vreg-wide-frontier/`.
 
 ## Broader Dolphin probe and shifted expressions, 2026-09-08
 

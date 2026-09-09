@@ -26,7 +26,7 @@ impl Generator {
 
         self.prefer_virtual_general(plan.entry, 29);
         self.prefer_virtual_general(plan.receiver, 30);
-        self.prefer_virtual_general(plan.attributes, 31);
+        self.prefer_virtual_general(plan.attributes.into(), 31);
         self.legacy_callee_saved_frame_layout =
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable;
 
@@ -97,9 +97,9 @@ fn rank_scheduled_save_slots(saves: &mut [Instruction]) {
 struct ExclusiveInlineArmPlan {
     first_arm: usize,
     second_arm: usize,
-    entry: u8,
-    receiver: u8,
-    attributes: u8,
+    entry: u32,
+    receiver: u32,
+    attributes: u32,
 }
 
 fn exclusive_inline_arm_plan(instructions: &[Instruction]) -> Option<ExclusiveInlineArmPlan> {
@@ -125,14 +125,14 @@ fn exclusive_inline_arm_plan(instructions: &[Instruction]) -> Option<ExclusiveIn
         Some(ExclusiveInlineArmPlan {
             first_arm,
             second_arm,
-            entry,
-            receiver,
+            entry: entry.into(),
+            receiver: receiver.into(),
             attributes,
         })
     })
 }
 
-fn first_inline_arm(window: &[Instruction]) -> Option<(u8, u8, u8, &str)> {
+fn first_inline_arm(window: &[Instruction]) -> Option<(u32, u32, u32, &str)> {
     let [
         Instruction::LoadWord {
             d: receiver,
@@ -203,7 +203,7 @@ fn first_inline_arm(window: &[Instruction]) -> Option<(u8, u8, u8, &str)> {
     Some((*entry, *receiver, *attributes, final_call))
 }
 
-fn second_inline_arm(window: &[Instruction]) -> Option<(u8, u8, &str)> {
+fn second_inline_arm(window: &[Instruction]) -> Option<(u32, u32, &str)> {
     let [
         Instruction::LoadWord {
             d: receiver,
@@ -279,9 +279,9 @@ fn second_inline_arm(window: &[Instruction]) -> Option<(u8, u8, &str)> {
 
 fn recognizes_inline_entry_prefix(
     window: &[Instruction],
-    entry: u8,
-    receiver: u8,
-    attributes: u8,
+    entry: u32,
+    receiver: u32,
+    attributes: u32,
     second_arm: usize,
 ) -> bool {
     matches!(
@@ -321,7 +321,7 @@ fn recognizes_inline_entry_prefix(
             && *loaded_receiver == receiver
             && *saved_entry == entry
             && copies_from_entry(copied_entry, entry)
-            && *saved_attributes == attributes
+            && *saved_attributes == attributes.into()
             && *guarded_receiver == receiver
             && *target == second_arm
     )
@@ -338,7 +338,7 @@ fn is_zero(instruction: &Instruction) -> bool {
     )
 }
 
-fn stores_zero_in(stores: [&Instruction; 4], receiver: u8) -> bool {
+fn stores_zero_in(stores: [&Instruction; 4], receiver: u32) -> bool {
     stores.into_iter().all(|instruction| {
         matches!(
             instruction,
@@ -347,28 +347,28 @@ fn stores_zero_in(stores: [&Instruction; 4], receiver: u8) -> bool {
     })
 }
 
-fn copies_to_argument(instruction: &Instruction, source: u8) -> bool {
+fn copies_to_argument(instruction: &Instruction, source: u32) -> bool {
     matches!(
         instruction,
         Instruction::Or { a: 3, s, b } if *s == source && *b == source
     )
 }
 
-fn copies_from_entry(instruction: &Instruction, destination: u8) -> bool {
+fn copies_from_entry(instruction: &Instruction, destination: u32) -> bool {
     matches!(
         instruction,
         Instruction::Or { a, s: 3, b: 3 } if *a == destination
     )
 }
 
-fn loads_argument(instruction: &Instruction, register: u8) -> bool {
+fn loads_argument(instruction: &Instruction, register: u32) -> bool {
     matches!(
         instruction,
         Instruction::AddImmediate { d, a: 0, .. } if *d == register
     )
 }
 
-fn callback_pair(callbacks: [&Instruction; 6], receiver: u8) -> bool {
+fn callback_pair(callbacks: [&Instruction; 6], receiver: u32) -> bool {
     let [
         Instruction::AddImmediateShifted {
             d: first_high,

@@ -56,8 +56,8 @@ struct PreloopPacketRegion {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DivisorLanes {
-    width: u8,
-    quotient: u8,
+    width: u32,
+    quotient: u32,
 }
 
 fn serial_preloop_packet_lanes(window: &[Instruction]) -> Option<DivisorLanes> {
@@ -362,13 +362,13 @@ fn assign_packet_lanes(window: &mut [Instruction], lanes: DivisorLanes) {
         offset: 4,
     };
     window[25] = Instruction::LoadHalfwordZero {
-        d: lanes.width,
+        d: u32::from(lanes.width),
         a: 26,
         offset: 4,
     };
     window[26] = Instruction::RotateAndMask {
         a: 0,
-        s: lanes.width,
+        s: u32::from(lanes.width),
         shift: 1,
         begin: 15,
         end: 30,

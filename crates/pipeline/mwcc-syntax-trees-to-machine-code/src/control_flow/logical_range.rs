@@ -278,7 +278,7 @@ impl Generator {
         for branch in taken_branches {
             self.patch_forward(branch, taken);
         }
-        self.load_integer_constant(mwcc_target::Eabi::general_result().number, return_value);
+        self.load_integer_constant(u32::from(mwcc_target::Eabi::general_result().number), return_value);
         self.emit_epilogue_and_return();
         let continuation = self.output.instructions.len();
         self.patch_forward(

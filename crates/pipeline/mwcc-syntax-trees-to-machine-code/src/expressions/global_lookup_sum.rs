@@ -30,8 +30,8 @@ impl Generator {
     fn prepare_sum_lookup<'a>(
         &mut self,
         lookup: &GlobalMaskedLoad<'a>,
-        bases: &mut HashMap<String, u8>,
-        indices: &mut Vec<(&'a Expression, u8)>,
+        bases: &mut HashMap<String, u32>,
+        indices: &mut Vec<(&'a Expression, u32)>,
     ) -> Compilation<PreparedLookup<'a>> {
         let anchor = self
             .data_section_anchor
@@ -93,7 +93,7 @@ impl Generator {
         &mut self,
         prepared: PreparedLookup<'_>,
         pointee: Pointee,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if let Some(symbol) = prepared.section_symbol {
             self.record_data_section_symbol_displacement(symbol);
@@ -104,7 +104,7 @@ impl Generator {
         Ok(())
     }
 
-    fn add_lookup_sum_constant(&mut self, accumulator: u8, constant: u32) {
+    fn add_lookup_sum_constant(&mut self, accumulator: u32, constant: u32) {
         if constant == 0 {
             return;
         }
@@ -128,7 +128,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let nested = |expr: &Expression| {
             matches!(

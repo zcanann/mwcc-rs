@@ -107,10 +107,10 @@ impl Generator {
                 }
                 self.emit_split_callback_address(
                     callback,
-                    Eabi::FIRST_GENERAL_ARGUMENT,
-                    Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                    u32::from(Eabi::FIRST_GENERAL_ARGUMENT),
+                    u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 1),
                 );
-                self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT, i64::from(first));
+                self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT.into(), i64::from(first));
             }
             CallbackTail::GlobalMember {
                 first,
@@ -144,23 +144,23 @@ impl Generator {
                     return Ok(false);
                 }
 
-                let borrowed = Eabi::FIRST_GENERAL_ARGUMENT;
+                let borrowed: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
                 self.emit_split_callback_address(
                     callback,
                     borrowed,
-                    Eabi::FIRST_GENERAL_ARGUMENT + 2,
+                    u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 2),
                 );
                 // The callback high half leaves r4 live until the low half
                 // publishes r5. Reuse that now-dead register for the global
                 // pointer rather than overwriting the value argument in r3.
-                self.emit_global_load_value(base, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+                self.emit_global_load_value(base, (Eabi::FIRST_GENERAL_ARGUMENT + 1).into())?;
                 self.output.instructions.push(displacement_load(
                     pointee,
-                    Eabi::FIRST_GENERAL_ARGUMENT,
-                    Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                    u32::from(Eabi::FIRST_GENERAL_ARGUMENT),
+                    u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 1),
                     offset,
                 )?);
-                self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT + 1, i64::from(middle));
+                self.load_integer_constant((Eabi::FIRST_GENERAL_ARGUMENT + 1).into(), i64::from(middle));
             }
             CallbackTail::LargeObject {
                 addressed,
@@ -184,26 +184,26 @@ impl Generator {
                     return Ok(false);
                 }
 
-                self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT, addressed);
+                self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT.into(), addressed);
                 self.emit_split_callback_address(
                     callback,
-                    Eabi::FIRST_GENERAL_ARGUMENT + 1,
-                    Eabi::FIRST_GENERAL_ARGUMENT + 3,
+                    u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 1),
+                    u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 3),
                 );
                 self.record_relocation(RelocationKind::Addr16Lo, addressed);
                 self.output.instructions.push(Instruction::AddImmediate {
-                    d: Eabi::FIRST_GENERAL_ARGUMENT,
-                    a: Eabi::FIRST_GENERAL_ARGUMENT,
+                    d: 3,
+                    a: 3,
                     immediate: 0,
                 });
-                self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT + 1, i64::from(middle));
-                self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT + 2, i64::from(third));
+                self.load_integer_constant((Eabi::FIRST_GENERAL_ARGUMENT + 1).into(), i64::from(middle));
+                self.load_integer_constant((Eabi::FIRST_GENERAL_ARGUMENT + 2).into(), i64::from(third));
             }
         }
         Ok(true)
     }
 
-    fn emit_split_callback_address(&mut self, name: &str, high: u8, destination: u8) {
+    fn emit_split_callback_address(&mut self, name: &str, high: u32, destination: u32) {
         self.emit_address_high(high, name);
         self.record_relocation(RelocationKind::Addr16Lo, name);
         self.output.instructions.push(Instruction::AddImmediate {

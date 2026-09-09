@@ -2,6 +2,8 @@
 //! reference that is either virtual (the allocator assigns it) or already pinned
 //! to a physical register (an ABI slot or the scratch).
 
+use mwcc_machine_code::RegisterField;
+
 /// Which register file a value lives in. PowerPC keeps integers/pointers in the
 /// general-purpose registers and floating-point in a separate file; a value never
 /// crosses, so the allocator draws each class from its own pool.
@@ -39,15 +41,10 @@ pub enum Reg {
     Physical(u8),
 }
 
-/// Register-field values below this are physical registers (0..=31, in either
-/// file); from here up, a value encodes a virtual register (`id = value -
-/// VIRTUAL_BASE`) directly in the u8 instruction field that selection emits,
-/// before allocation resolves it. This is the transitional bridge that lets the
-/// existing `Instruction` (with `u8` fields) carry virtuals without being
-/// parameterized over its register type; it bounds a function to 224 virtuals
-/// per class — ample for the migration's slices, widened later if a real
-/// function needs more (by moving to `Instruction<Reg>` or wider fields).
-pub const VIRTUAL_BASE: u8 = 32;
+/// Fields below this value name physical registers. Larger fields carry
+/// virtual IDs until allocation; the selected representation keeps the full
+/// ID instead of limiting a function to one byte's worth of temporaries.
+pub const VIRTUAL_BASE: RegisterField = 32;
 
 impl Reg {
     pub fn general(id: u32) -> Self {
@@ -76,29 +73,28 @@ impl Reg {
 
     /// Decode a register-field value of a known [`Class`]: physical below
     /// [`VIRTUAL_BASE`], virtual at or above it.
-    pub fn from_field(value: u8, class: Class) -> Reg {
+    pub fn from_field(value: RegisterField, class: Class) -> Reg {
         if value >= VIRTUAL_BASE {
-            Reg::Virtual(VirtualRegister::new((value - VIRTUAL_BASE) as u32, class))
+            Reg::Virtual(VirtualRegister::new(value - VIRTUAL_BASE, class))
         } else {
-            Reg::Physical(value)
+            Reg::Physical(value as u8)
         }
     }
 
-    /// Encode back into a u8 instruction field. Panics if a virtual id exceeds
+    /// Encode back into a selected instruction field. Panics if a virtual ID exceeds
     /// the field's capacity — an honest ceiling, not silent truncation.
-    pub fn to_field(self) -> u8 {
+    pub fn to_field(self) -> RegisterField {
         match self {
-            Reg::Physical(number) => number,
+            Reg::Physical(number) => RegisterField::from(number),
             Reg::Virtual(register) => {
-                let encoded = VIRTUAL_BASE as u32 + register.id;
-                assert!(encoded <= u8::MAX as u32, "virtual register id {} exceeds the u8 field ceiling", register.id);
-                encoded as u8
+                VIRTUAL_BASE.checked_add(register.id)
+                    .expect("virtual register ID exceeds selected register field capacity")
             }
         }
     }
 
     /// Whether a register-field value denotes a virtual register.
-    pub fn is_virtual_field(value: u8) -> bool {
+    pub fn is_virtual_field(value: RegisterField) -> bool {
         value >= VIRTUAL_BASE
     }
 }
@@ -106,6 +102,27 @@ impl Reg {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_fields_preserve_ids_beyond_one_byte_in_both_register_files() {
+        for class in [Class::General, Class::Float] {
+            for id in [0, 223, 224, 255, 256, 65_536, u32::MAX - VIRTUAL_BASE] {
+                let register = Reg::Virtual(VirtualRegister::new(id, class));
+                assert_eq!(Reg::from_field(register.to_field(), class), register);
+                assert!(Reg::is_virtual_field(register.to_field()));
+            }
+            for number in 0..32 {
+                let register = Reg::Physical(number);
+                assert_eq!(Reg::from_field(register.to_field(), class), register);
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "virtual register ID exceeds selected register field capacity")]
+    fn an_unrepresentable_id_cannot_alias_a_physical_register() {
+        Reg::general(u32::MAX).to_field();
+    }
 
     #[test]
     fn a_virtual_reference_exposes_its_register_not_a_physical_one() {

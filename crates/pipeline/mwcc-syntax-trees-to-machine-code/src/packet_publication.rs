@@ -21,7 +21,7 @@ pub(crate) struct Publication<'a> {
     pub whole: &'a str,
     pub field: &'a str,
     pub flag: &'a str,
-    pub flag_value: u8,
+    pub flag_value: u32,
 }
 
 impl Publication<'_> {
@@ -236,7 +236,7 @@ fn body<'a>(statements: &'a [S], array: &'a str) -> Option<Publication<'a>> {
         whole,
         field,
         flag,
-        flag_value: u8::try_from(integer(flag_value)?).ok()?,
+        flag_value: u32::try_from(integer(flag_value)?).ok()?,
     })
 }
 

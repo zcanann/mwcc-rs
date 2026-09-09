@@ -34,7 +34,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if operator != BinaryOperator::Less || self.signedness_of(left)? {
             return Ok(false);
@@ -83,7 +83,7 @@ impl Generator {
     /// value: a full-width leaf stays in its home register (`neg r0,r3; ... r0,r0,r3`).
     /// A sub-expression evaluates into the destination — unless that *is* the scratch
     /// (a store, d=r0), where the scratch op would clobber it, which defers.
-    fn sign_idiom_source(&mut self, value: &Expression, destination: u8) -> Compilation<u8> {
+    fn sign_idiom_source(&mut self, value: &Expression, destination: u32) -> Compilation<u32> {
         if let Some(register) = self
             .leaf_info(value)
             .ok()
@@ -140,7 +140,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         // A comparison whose operands are floating-point materializes a boolean
         // from cr0 rather than using the integer branchless idioms below.
@@ -298,7 +298,7 @@ impl Generator {
                         self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
                         GENERAL_SCRATCH
                     } else {
-                        self.place_operand_or_scratch(value, d)?
+                        self.place_operand_or_scratch(value, d)?.into()
                     };
                     let source = if self.behavior.negate_before_zero_equality {
                         self.output.instructions.push(Instruction::Negate {
@@ -413,7 +413,7 @@ impl Generator {
                     self.emit_widen(d, GENERAL_SCRATCH, 8, true);
                     d
                 } else {
-                    self.sign_idiom_source(left, d)?
+                    self.sign_idiom_source(left, d)?.into()
                 };
                 self.output.instructions.push(Instruction::Negate {
                     d: GENERAL_SCRATCH,
@@ -447,7 +447,7 @@ impl Generator {
                 let constant = constant_value(right).unwrap() as i16;
                 let x = self.general_register_of_leaf(left)?;
                 let Some(temp) =
-                    (3u8..=12).find(|register| *register != x && !self.reserved.contains(register))
+                    (3u32..=12).find(|register| *register != x && !self.reserved.contains(register))
                 else {
                     return Err(Diagnostic::error("out of registers for the != idiom"));
                 };
@@ -487,7 +487,7 @@ impl Generator {
                     self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
                     GENERAL_SCRATCH
                 } else {
-                    self.place_operand_or_scratch(left, d)?
+                    self.place_operand_or_scratch(left, d)?.into()
                 };
                 self.output
                     .instructions
@@ -527,7 +527,7 @@ impl Generator {
                     self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
                     GENERAL_SCRATCH
                 } else {
-                    self.place_operand_or_scratch(left, d)?
+                    self.place_operand_or_scratch(left, d)?.into()
                 };
                 self.output
                     .instructions
@@ -749,7 +749,7 @@ impl Generator {
                     && load_base_name(left).is_some()
                     && load_base_name(right).is_some() =>
             {
-                let avoid: Vec<u8> = [&*left, &*right]
+                let avoid: Vec<u32> = [&*left, &*right]
                     .iter()
                     .filter_map(|operand| {
                         load_base_name(operand).and_then(|name| self.lookup_general(name))
@@ -1027,7 +1027,7 @@ impl Generator {
                         self.load_integer_constant(register, constant);
                         register
                     }
-                    _ => self.compare_right_operand(right)?,
+                    _ => self.compare_right_operand(right)?.into(),
                 };
                 // a < b uses b as the high side; a > b is b < a.
                 let high = if matches!(operator, BinaryOperator::Less) {
@@ -1126,7 +1126,7 @@ impl Generator {
                     && d != GENERAL_SCRATCH =>
             {
                 let base = load_base_name(left).and_then(|name| self.lookup_general(name));
-                let mut free = (3u8..=12).filter(|r| {
+                let mut free = (3u32..=12).filter(|r| {
                     *r != GENERAL_SCRATCH
                         && *r != d
                         && Some(*r) != base
@@ -1147,10 +1147,10 @@ impl Generator {
                 // for `>=` in the free register (and the low operand vice versa).
                 let (high_reg, low_reg) = if matches!(operator, BinaryOperator::LessEqual) {
                     self.evaluate_general(high, scratch)?;
-                    self.evaluate_general(low, operand_reg)?;
+                    self.evaluate_general(low, operand_reg.into())?;
                     (scratch, operand_reg)
                 } else {
-                    self.evaluate_general(high, operand_reg)?;
+                    self.evaluate_general(high, operand_reg.into())?;
                     self.evaluate_general(low, scratch)?;
                     (operand_reg, scratch)
                 };
@@ -1196,8 +1196,8 @@ impl Generator {
             {
                 let left_register = self.general_register_of_leaf(left)?;
                 let right_register = self.compare_right_operand(right)?;
-                let mut free = (3u8..=12)
-                    .filter(|r| ![left_register, right_register, GENERAL_SCRATCH].contains(r));
+                let mut free = (3u32..=12)
+                    .filter(|r| ![left_register, right_register.into(), GENERAL_SCRATCH].contains(r));
                 let (Some(lower), Some(higher)) = (free.next(), free.next()) else {
                     return Err(Diagnostic::error("out of registers for comparison"));
                 };
@@ -1258,7 +1258,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         // Operand placement and CR production are identical whether the result
         // feeds a branch or becomes a 0/1 value. Keep that schedule in one owner:
@@ -1325,7 +1325,7 @@ impl Generator {
         const LT: u8 = 0;
         const GT: u8 = 1;
         const EQ: u8 = 2;
-        const FLOAT_FIRST: u8 = 1; // f1
+        const FLOAT_FIRST: u32 = 1; // f1
         let double = self.is_double_value(left) || self.is_double_value(right);
         let eq = matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual);
         let left_literal = matches!(
@@ -1511,7 +1511,7 @@ impl Generator {
                 // global/member base. Keep every register used to address the
                 // left value reserved: that base remains live in the guarded
                 // body even though its FP load has already issued.
-                let newly_reserved: Vec<u8> = self
+                let newly_reserved: Vec<u32> = self
                     .registers_used_by(left)
                     .into_iter()
                     .filter(|register| self.reserved.insert(*register))
@@ -1659,7 +1659,7 @@ impl Generator {
     /// written `a > 0`.
     pub(crate) fn load_float_literal_into(
         &mut self,
-        dest: u8,
+        dest: u32,
         operand: &Expression,
         double: bool,
     ) -> Compilation<()> {
@@ -1707,8 +1707,8 @@ impl Generator {
         &mut self,
         operand: &Expression,
         double: bool,
-        required_register: Option<u8>,
-    ) -> Option<u8> {
+        required_register: Option<u32>,
+    ) -> Option<u32> {
         let key = float_compare_literal_key(operand, double)?;
         let index = self
             .preloaded_float_compare_literals
@@ -1747,14 +1747,14 @@ impl Generator {
         &mut self,
         operand: &Expression,
         double: bool,
-    ) -> Compilation<u8> {
+    ) -> Compilation<u32> {
         if matches!(
             operand,
             Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
         ) {
             if let Some(register) = self.take_preloaded_float_compare_literal(operand, double, None)
             {
-                self.record_condition_float_literal(operand, double, register);
+                self.record_condition_float_literal(operand, double, register.into());
                 return Ok(register);
             }
             self.load_float_literal_into(FLOAT_SCRATCH, operand, double)?;
@@ -1768,8 +1768,8 @@ impl Generator {
     /// via evaluate_float (`lfs f1,(addr)`), the register mwcc uses for the compared
     /// value. Deferred when `f1` already holds a float argument — mwcc would pick a
     /// higher FPR there, which needs the register allocator.
-    fn place_float_compare_value(&mut self, operand: &Expression) -> Compilation<u8> {
-        const FLOAT_FIRST: u8 = 1;
+    fn place_float_compare_value(&mut self, operand: &Expression) -> Compilation<u32> {
+        const FLOAT_FIRST: u32 = 1;
         if self.is_float_leaf(operand) {
             return self.float_register_of_leaf(operand);
         }
@@ -1777,7 +1777,7 @@ impl Generator {
         // overwrite an incoming f1 argument only after whole-body allocation
         // has given every still-live argument a callee-saved home.
         if self.is_float_call_value(operand) {
-            let result = mwcc_target::Eabi::float_result().number;
+            let result = u32::from(mwcc_target::Eabi::float_result().number);
             self.evaluate_float(operand, result)?;
             return Ok(result);
         }
@@ -1795,7 +1795,7 @@ impl Generator {
                 | Expression::Assign { .. }
         ) {
             if let Some(register) = self.try_place_cached_condition_arithmetic(operand) {
-                return Ok(register);
+                return Ok(register.into());
             }
             let destination = self.fresh_virtual_float_preferring(FLOAT_FIRST);
             self.evaluate_float(operand, destination)?;
@@ -1804,8 +1804,8 @@ impl Generator {
         }
         if crate::condition_float_cache::is_direct_float_memory_load(operand) {
             if let Some(register) = self.condition_float_register(operand) {
-                self.record_condition_float_value(operand, register);
-                return Ok(register);
+                self.record_condition_float_value(operand, register.into());
+                return Ok(register.into());
             }
         }
         if let Some(register) = self.retained_float_compare_register(operand) {
@@ -1835,11 +1835,11 @@ impl Generator {
     pub(crate) fn place_condition_float_load(
         &mut self,
         operand: &Expression,
-        destination: u8,
-    ) -> Compilation<u8> {
+        destination: u32,
+    ) -> Compilation<u32> {
         if let Some(register) = self.condition_float_register(operand) {
-            self.record_condition_float_value(operand, register);
-            return Ok(register);
+            self.record_condition_float_value(operand, register.into());
+            return Ok(register.into());
         }
         self.invalidate_condition_float_register(destination);
         self.evaluate_float(operand, destination)?;
@@ -1976,7 +1976,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-    ) -> Compilation<(u8, u8)> {
+    ) -> Compilation<(u32, u32)> {
         // Two single-instruction full-word loads: mwcc loads the left operand into
         // a fresh register (the allocator colors it at the lowest free GPR) and the
         // right into the scratch, in source order — `lwz r4,…; lwz r0,…`. The
@@ -2033,7 +2033,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let (value, constant) = if let Some(constant) = as_small_integer(right) {
             (left, constant)
@@ -2162,7 +2162,7 @@ impl Generator {
     fn evaluate_computed_equality_operand(
         &mut self,
         value: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         self.evaluate_general(value, destination)?;
         if let Expression::Call { name, .. } = value {
@@ -2202,7 +2202,7 @@ impl Generator {
     /// The register holding a comparison's right operand: a leaf in its home
     /// register, or a constant materialized into the scratch (`li r0, C`). The
     /// caller's idiom must read the right operand before overwriting r0.
-    fn compare_right_operand(&mut self, right: &Expression) -> Compilation<u8> {
+    fn compare_right_operand(&mut self, right: &Expression) -> Compilation<u32> {
         if let Some(constant) = constant_value(right) {
             self.load_integer_constant(GENERAL_SCRATCH, constant);
             Ok(GENERAL_SCRATCH)
@@ -2216,8 +2216,8 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
-    ) -> Compilation<(u8, u8)> {
+        destination: u32,
+    ) -> Compilation<(u32, u32)> {
         let left_leaf = leaf_name(left).is_some();
         let right_leaf = leaf_name(right).is_some();
         if left_leaf && right_leaf {

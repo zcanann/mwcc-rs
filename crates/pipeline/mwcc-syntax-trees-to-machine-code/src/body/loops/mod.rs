@@ -51,7 +51,7 @@ fn byte_pointer_signedness(value_type: Type) -> Option<bool> {
 /// Test a byte loaded by a pointer-walk loop for zero. A signed byte uses
 /// mwcc's `extsb.` fusion; an unsigned byte is already promoted by `lbz` and
 /// uses the unsigned compare-immediate form.
-fn byte_truth_test(register: u8, signed: bool) -> Instruction {
+fn byte_truth_test(register: u32, signed: bool) -> Instruction {
     if signed {
         Instruction::ExtendSignByteRecord { a: 0, s: register }
     } else {

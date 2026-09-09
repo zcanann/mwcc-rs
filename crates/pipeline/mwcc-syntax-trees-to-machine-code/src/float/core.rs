@@ -121,7 +121,7 @@ impl Generator {
         // Double parameters join the float DAG with their FPRs; int
         // (general-class) parameters are allowed alongside — they exist for
         // the guard conditions and never enter the DAG.
-        let mut params: Vec<(u32, u8)> = Vec::new();
+        let mut params: Vec<(u32, u32)> = Vec::new();
         let mut param_ids: Vec<(String, u32)> = Vec::new();
         let reload_mode = self.float.reload_x.is_some();
         for (name, register) in &self.float.pseudo_params {
@@ -900,7 +900,7 @@ impl Generator {
         };
         let registers = assign_float_registers(&nodes, &order, &params, model);
         if let Some(index) = phantom_index {
-            self.float.phantom_register = registers[index];
+            self.float.phantom_register = (registers[index]).map(u32::from);
         }
         if registers.iter().any(|register| register.is_none()) {
             {}
@@ -916,7 +916,7 @@ impl Generator {
         for &bits in &source_literals {
             self.output.intern_constant(bits, 8);
         }
-        let register_of = |operand: Operand| -> u8 {
+        let register_of = |operand: Operand| -> u32 {
             match operand {
                 Operand::Param(value) => params
                     .iter()
@@ -1005,17 +1005,17 @@ impl Generator {
             emitted += 1;
             let d = registers[node].expect("checked above");
             match &ops[node] {
-                FloatOp::Const(bits) => self.load_double_constant(d, *bits),
+                FloatOp::Const(bits) => self.load_double_constant(d.into(), *bits),
                 FloatOp::FrameLoad(offset) => {
                     self.output.instructions.push(Instruction::LoadFloatDouble {
-                        d,
+                        d: d.into(),
                         a: 1,
                         offset: *offset,
                     })
                 }
                 FloatOp::TableLoad(offset) => {
                     self.output.instructions.push(Instruction::LoadFloatDouble {
-                        d,
+                        d: d.into(),
                         a: 3,
                         offset: *offset,
                     })
@@ -1025,28 +1025,28 @@ impl Generator {
                     self.output
                         .instructions
                         .push(Instruction::FloatMultiplyAddDouble {
-                            d,
-                            a: register_of(*a),
-                            c: register_of(*c),
-                            b: register_of(*b),
+                            d: d.into(),
+                            a: u32::from(register_of(*a)),
+                            c: u32::from(register_of(*c)),
+                            b: u32::from(register_of(*b)),
                         })
                 }
                 FloatOp::Fnmsub { a, c, b } => self.output.instructions.push(
                     Instruction::FloatNegativeMultiplySubtractDouble {
-                        d,
-                        a: register_of(*a),
-                        c: register_of(*c),
-                        b: register_of(*b),
+                        d: d.into(),
+                        a: u32::from(register_of(*a)),
+                        c: u32::from(register_of(*c)),
+                        b: u32::from(register_of(*b)),
                     },
                 ),
                 FloatOp::Fmsub { a, c, b } => {
                     self.output
                         .instructions
                         .push(Instruction::FloatMultiplySubtractDouble {
-                            d,
-                            a: register_of(*a),
-                            c: register_of(*c),
-                            b: register_of(*b),
+                            d: d.into(),
+                            a: u32::from(register_of(*a)),
+                            c: u32::from(register_of(*c)),
+                            b: u32::from(register_of(*b)),
                         })
                 }
                 FloatOp::Mul { a, c } => {
@@ -1069,22 +1069,22 @@ impl Generator {
                     }
                     self.output
                         .instructions
-                        .push(Instruction::FloatMultiplyDouble { d, a: ra, c: rc });
+                        .push(Instruction::FloatMultiplyDouble { d: d.into(), a: u32::from(ra), c: u32::from(rc) });
                 }
                 FloatOp::Add { a, b } => {
                     self.output.instructions.push(Instruction::FloatAddDouble {
-                        d,
-                        a: register_of(*a),
-                        b: register_of(*b),
+                        d: d.into(),
+                        a: u32::from(register_of(*a)),
+                        b: u32::from(register_of(*b)),
                     })
                 }
                 FloatOp::Sub { a, b } => {
                     self.output
                         .instructions
                         .push(Instruction::FloatSubtractDouble {
-                            d,
-                            a: register_of(*a),
-                            b: register_of(*b),
+                            d: d.into(),
+                            a: u32::from(register_of(*a)),
+                            b: u32::from(register_of(*b)),
                         })
                 }
                 FloatOp::Sink => {}

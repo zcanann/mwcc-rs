@@ -122,7 +122,7 @@ impl Generator {
         if self.general_register_of(shape.object)? != 3
             || shape.stores.len() >= 8
             || shape.stores.iter().enumerate().any(|(index, store)| {
-                self.general_register_of(store.value).ok() != u8::try_from(index + 4).ok()
+                self.general_register_of(store.value).ok() != (u8::try_from(index + 4).ok()).map(u32::from)
             })
             || !self.globals.contains_key(shape.callback_table)
         {
@@ -148,14 +148,14 @@ impl Generator {
         ]);
         let store_base = 4 + u8::try_from(shape.stores.len()).unwrap();
         self.output.instructions.push(Instruction::LoadWord {
-            d: store_base,
+            d: u32::from(store_base),
             a: 3,
             offset: shape.store_alias_offset,
         });
         for (index, store) in shape.stores.iter().enumerate() {
             self.output.instructions.push(Instruction::StoreWord {
-                s: 4 + u8::try_from(index).unwrap(),
-                a: store_base,
+                s: u32::from(4 + u8::try_from(index).unwrap()),
+                a: u32::from(store_base),
                 offset: store.offset,
             });
         }

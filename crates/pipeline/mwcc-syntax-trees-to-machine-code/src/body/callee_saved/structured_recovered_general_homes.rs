@@ -4,17 +4,17 @@ use super::*;
 
 pub(super) struct StructuredRecoveredGeneralHomes {
     names: Vec<String>,
-    preferences: Vec<u8>,
+    preferences: Vec<u32>,
     parameter_count: usize,
     save_order: Option<Vec<usize>>,
     preferences_follow_groups: bool,
     restores_fprs_before_gpr_helper_setup: bool,
 }
 
-fn recovered_register(name: &str) -> Option<u8> {
+fn recovered_register(name: &str) -> Option<u32> {
     let (_, suffix) = name.rsplit_once("_r")?;
-    let register = suffix.parse::<u8>().ok()?;
-    (14..=31).contains(&register).then_some(register)
+    let register = suffix.parse::<u32>().ok()?;
+    (14..=31).contains(&register).then_some(register.into())
 }
 
 impl StructuredRecoveredGeneralHomes {
@@ -77,10 +77,10 @@ impl StructuredRecoveredGeneralHomes {
                             (&names[*index] == name).then_some(*register)
                         })
                         .or_else(|| {
-                            inline_global_result_homes
+                            (inline_global_result_homes
                                 .iter()
                                 .position(|candidate| candidate == name)
-                                .map(|index| 28u8.saturating_sub(index as u8))
+                                .map(|index| 28u32.saturating_sub(index as u32))).map(u32::from)
                         })
                 })
                 .collect::<Option<Vec<_>>>()?;
@@ -106,10 +106,10 @@ impl StructuredRecoveredGeneralHomes {
         if straight_assignments
             && recovered
                 .iter()
-                .all(|(index, register)| *register == 31u8.saturating_sub(*index as u8))
+                .all(|(index, register)| *register == 31u32.saturating_sub(*index as u32).into())
         {
             let preferences = (0..names.len())
-                .map(|index| 31u8.saturating_sub(index as u8))
+                .map(|index| 31u32.saturating_sub(index as u32))
                 .collect();
             return Some(Self {
                 names,
@@ -287,7 +287,7 @@ impl StructuredRecoveredGeneralHomes {
         parameter_count: usize,
         total_count: usize,
         deferred: &super::structured_locals::DeferredSavedHomePlan,
-    ) -> Option<u8> {
+    ) -> Option<u32> {
         if eager_count != 0
             || parameter_count != self.parameter_count
             || total_count != self.preferences.len()
@@ -374,7 +374,7 @@ fn recovered_parameter_copy_run(instructions: &[Instruction]) -> Option<std::ops
     start.and_then(|first| (instructions.len() - first >= 2).then_some(first..instructions.len()))
 }
 
-fn recovered_parameter_copy(instruction: &Instruction) -> Option<(u8, u8)> {
+fn recovered_parameter_copy(instruction: &Instruction) -> Option<(u32, u32)> {
     match instruction {
         Instruction::Or { a, s, b }
             if a != s && s == b && (14..=31).contains(a) && (3..=10).contains(s) =>
@@ -414,7 +414,7 @@ fn body_assigns_local(statements: &[Statement], local: &str) -> bool {
 fn recovered_global_transaction_loop(
     function: &Function,
     names: &[String],
-    recovered: &[(usize, u8)],
+    recovered: &[(usize, u32)],
     inline_global_result_homes: &[String],
 ) -> bool {
     if function.return_type != Type::Void
@@ -478,7 +478,7 @@ fn collect_scalar_global_stores(
     }
 }
 
-fn single_missing_register(registers: &[u8]) -> Option<u8> {
+fn single_missing_register(registers: &[u32]) -> Option<u32> {
     let first = *registers.iter().min()?;
     let last = *registers.iter().max()?;
     let mut missing = (first..=last).filter(|register| !registers.contains(register));
@@ -487,11 +487,11 @@ fn single_missing_register(registers: &[u8]) -> Option<u8> {
 }
 
 fn sparse_window_parameter_homes(
-    recovered_registers: &[u8],
+    recovered_registers: &[u32],
     parameter_count: usize,
-) -> Option<Vec<u8>> {
+) -> Option<Vec<u32>> {
     let window_size = recovered_registers.len().checked_add(parameter_count)?;
-    let first = 32u8.checked_sub(u8::try_from(window_size).ok()?)?;
+    let first = 32u32.checked_sub(u32::try_from(window_size).ok()?)?;
     let window: Vec<_> = (first..=31).collect();
     if recovered_registers
         .iter()

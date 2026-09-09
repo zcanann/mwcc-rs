@@ -10,11 +10,11 @@ pub(super) fn emit(
     flag: &str,
     callee: &str,
 ) {
-    const BUFFER: u8 = 27;
-    const COUNT: u8 = 28;
-    const INDEX: u8 = 29;
-    const DATA: u8 = 30;
-    const FLAG: u8 = 31;
+    const BUFFER: u32 = 27;
+    const COUNT: u32 = 28;
+    const INDEX: u32 = 29;
+    const DATA: u32 = 30;
+    const FLAG: u32 = 31;
     let body = generator.fresh_label();
     let swapped = generator.fresh_label();
     let selected = generator.fresh_label();

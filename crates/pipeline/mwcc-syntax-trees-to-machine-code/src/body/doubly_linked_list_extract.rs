@@ -183,7 +183,7 @@ impl Generator {
         let cell = self
             .lookup_general(plan.cell)
             .ok_or_else(|| Diagnostic::error("linked-list cell is not in a general register"))?;
-        if list != Eabi::general_result().number || cell != 4 {
+        if list != u32::from(Eabi::general_result().number) || cell != 4 {
             return Ok(false);
         }
 
@@ -223,7 +223,7 @@ impl Generator {
         self.emit_branch_conditional_to(4, 2, repair_previous);
         self.output.instructions.extend([
             Instruction::LoadWord {
-                d: Eabi::general_result().number,
+                d: u32::from(Eabi::general_result().number),
                 a: cell,
                 offset: plan.next_offset,
             },

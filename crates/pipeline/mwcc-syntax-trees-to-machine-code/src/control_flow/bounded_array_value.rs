@@ -18,7 +18,7 @@ impl Generator {
     pub(crate) fn try_emit_bounded_array_alternative_value(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(alternatives) = self.bounded_array_alternatives(expression) else {
             return Ok(false);

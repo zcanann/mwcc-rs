@@ -31,7 +31,7 @@ fn owns_index(
 fn general_value_dies_before_use_on_all_paths(
     instructions: &[Instruction],
     start: usize,
-    register: u8,
+    register: u32,
 ) -> bool {
     let mut pending = vec![start];
     let mut visited = vec![false; instructions.len()];

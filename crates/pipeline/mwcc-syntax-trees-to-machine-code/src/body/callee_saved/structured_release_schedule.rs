@@ -5,7 +5,7 @@ use super::*;
 
 fn schedule_saved_receiver_array_release(
     instructions: &mut [Instruction],
-    callee_saved: &[u8],
+    callee_saved: &[u32],
 ) -> bool {
     if callee_saved.len() != 2 || instructions.len() < 15 {
         return false;

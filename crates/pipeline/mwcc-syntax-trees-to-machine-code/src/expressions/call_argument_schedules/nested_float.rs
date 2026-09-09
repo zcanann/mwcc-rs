@@ -68,17 +68,17 @@ impl Generator {
 
         let call_bearing = &arguments[first_float];
         let call_bearing_type = parameter_types[first_float];
-        let call_bearing_result = Eabi::FIRST_FLOAT_ARGUMENT;
+        let call_bearing_result: u32 = (Eabi::FIRST_FLOAT_ARGUMENT) as u32;
         let call_bearing_evaluation =
             if call_bearing_type == Type::Float && self.is_double_value(call_bearing) {
                 self.evaluate_float(call_bearing, FLOAT_SCRATCH).map(|()| {
                     self.output.instructions.push(Instruction::RoundToSingle {
-                        d: call_bearing_result,
+                        d: u32::from(call_bearing_result),
                         b: FLOAT_SCRATCH,
                     });
                 })
             } else {
-                self.evaluate(call_bearing, call_bearing_type, call_bearing_result)
+                self.evaluate(call_bearing, call_bearing_type, call_bearing_result.into())
             };
         call_bearing_evaluation.map_err(|mut diagnostic| {
             diagnostic.message.push_str(&format!(
@@ -91,7 +91,7 @@ impl Generator {
             self.evaluate(
                 argument,
                 parameter_types[index],
-                Eabi::FIRST_GENERAL_ARGUMENT + index as u8,
+                (Eabi::FIRST_GENERAL_ARGUMENT + index as u8).into(),
             )?;
         }
         for (index, argument) in arguments[first_float + 1..].iter().enumerate() {
@@ -99,7 +99,7 @@ impl Generator {
             self.evaluate(
                 argument,
                 parameter_types[source_index],
-                Eabi::FIRST_FLOAT_ARGUMENT + 1 + index as u8,
+                (Eabi::FIRST_FLOAT_ARGUMENT + 1 + index as u8).into(),
             )?;
         }
         Ok(true)

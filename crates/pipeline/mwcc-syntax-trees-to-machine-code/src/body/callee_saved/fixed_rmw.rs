@@ -289,7 +289,7 @@ impl Generator {
             state.name.clone(),
             Location {
                 class: ValueClass::General,
-                register: Eabi::general_result().number,
+                register: u32::from(Eabi::general_result().number),
                 signed: state.declared_type.is_signed(),
                 width: 32,
                 pointee: None,
@@ -413,7 +413,7 @@ impl Generator {
             };
             incoming.push(register);
         }
-        let homes: Vec<u8> = (0..4).map(|_| self.fresh_virtual_general()).collect();
+        let homes: Vec<u32> = (0..4).map(|_| self.fresh_virtual_general()).collect();
         let length_home = homes[0];
         let aram_home = homes[1];
         let (main_home, direction_home) = if legacy {
@@ -697,7 +697,7 @@ impl Generator {
             state.name.clone(),
             Location {
                 class: ValueClass::General,
-                register: Eabi::general_result().number,
+                register: u32::from(Eabi::general_result().number),
                 signed: state.declared_type.is_signed(),
                 width: 32,
                 pointee: None,

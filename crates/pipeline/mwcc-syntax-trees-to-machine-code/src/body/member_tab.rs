@@ -500,7 +500,7 @@ fn emit_call(output: &mut MachineFunction, target: &str) {
     });
 }
 
-fn emit_bias_load(output: &mut MachineFunction, constant: usize, destination: u8) {
+fn emit_bias_load(output: &mut MachineFunction, constant: usize, destination: u32) {
     output.relocations.push(Relocation {
         instruction_index: output.instructions.len(),
         kind: RelocationKind::EmbSda21,

@@ -173,11 +173,11 @@ impl Generator {
             .enumerate()
             .all(|(index, argument)| {
                 self.leaf_info(argument)
-                    .map(|(register, _, _)| register == Eabi::FIRST_GENERAL_ARGUMENT + index as u8)
+                    .map(|(register, _, _)| register == (Eabi::FIRST_GENERAL_ARGUMENT + index as u8).into())
                     .unwrap_or(false)
             });
-        let selected_register = Eabi::FIRST_GENERAL_ARGUMENT + 3;
-        if actor_register != Some(selected_register)
+        let selected_register: u32 = (Eabi::FIRST_GENERAL_ARGUMENT + 3) as u32;
+        if actor_register != Some(selected_register.into())
             || !passthrough
             || self.locations.contains_key(plan.selected.as_str())
             || self.call_return_types.get(plan.callee.as_str()) != Some(&Type::Void)
@@ -192,7 +192,7 @@ impl Generator {
             plan.selected.clone(),
             Location {
                 class: ValueClass::General,
-                register: selected_register,
+                register: u32::from(selected_register),
                 signed: false,
                 width: 32,
                 pointee: None,
@@ -206,22 +206,22 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::CompareWordImmediate {
-                a: selected_register,
+                a: u32::from(selected_register),
                 immediate: 0,
             });
         self.emit_branch_conditional_to(12, 2, outer_false); // beq
         self.emit_branch_conditional_to(12, 2, inner_false); // redundant ternary reuses CR0
         self.output.instructions.push(Instruction::LoadWord {
-            d: selected_register,
-            a: selected_register,
+            d: u32::from(selected_register),
+            a: u32::from(selected_register),
             offset: plan.member_offset,
         });
         self.emit_branch_to(join);
         self.bind_label(inner_false);
-        self.load_integer_constant(selected_register, plan.fallback);
+        self.load_integer_constant(selected_register.into(), plan.fallback);
         self.emit_branch_to(join);
         self.bind_label(outer_false);
-        self.load_integer_constant(selected_register, plan.fallback);
+        self.load_integer_constant(selected_register.into(), plan.fallback);
         self.bind_label(join);
 
         self.emit_arguments(&plan.arguments, &plan.callee)?;

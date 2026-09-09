@@ -14,7 +14,7 @@ impl Generator {
         &mut self,
         target: &Expression,
         value: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Expression::BitFieldRead {
             storage,
@@ -53,7 +53,7 @@ impl Generator {
         self.output.instructions.push(displacement_load(
             storage_pointee,
             GENERAL_SCRATCH,
-            address,
+            address.into(),
             *offset as i16,
         )?);
         self.evaluate_general(value, destination)?;
@@ -71,7 +71,7 @@ impl Generator {
         self.output.instructions.push(displacement_store(
             storage_pointee,
             GENERAL_SCRATCH,
-            address,
+            address.into(),
             *offset as i16,
         )?);
         self.output.instructions.push(Instruction::RotateAndMask {
@@ -141,7 +141,7 @@ impl Generator {
                     self.output.instructions.push(displacement_load(
                         storage_pointee,
                         storage_value,
-                        address,
+                        address.into(),
                         *offset as i16,
                     )?);
                     let begin = 32 - *shift - *width;
@@ -158,7 +158,7 @@ impl Generator {
                     self.output.instructions.push(displacement_store(
                         storage_pointee,
                         storage_value,
-                        address,
+                        address.into(),
                         *offset as i16,
                     )?);
                     return Ok(true);
@@ -194,14 +194,14 @@ impl Generator {
                         self.output.instructions.push(displacement_load(
                             source_pointee,
                             source,
-                            source_address,
+                            source_address.into(),
                             *source_offset as i16,
                         )?);
                         let address = self.member_base_register(base)?;
                         self.output.instructions.push(displacement_load(
                             storage_pointee,
                             GENERAL_SCRATCH,
-                            address,
+                            address.into(),
                             *offset as i16,
                         )?);
                         let begin = 32 - *shift - *width;
@@ -218,7 +218,7 @@ impl Generator {
                         self.output.instructions.push(displacement_store(
                             storage_pointee,
                             GENERAL_SCRATCH,
-                            address,
+                            address.into(),
                             *offset as i16,
                         )?);
                         return Ok(true);
@@ -240,14 +240,14 @@ impl Generator {
             self.output.instructions.push(displacement_load(
                 storage_pointee,
                 GENERAL_SCRATCH,
-                address,
+                address.into(),
                 *offset as i16,
             )?);
         } else {
             self.output.instructions.push(displacement_load(
                 storage_pointee,
                 GENERAL_SCRATCH,
-                address,
+                address.into(),
                 *offset as i16,
             )?);
             // In an ordinary store MWCC starts the memory dependency before an
@@ -268,7 +268,7 @@ impl Generator {
         self.output.instructions.push(displacement_store(
             storage_pointee,
             GENERAL_SCRATCH,
-            address,
+            address.into(),
             *offset as i16,
         )?);
         Ok(true)

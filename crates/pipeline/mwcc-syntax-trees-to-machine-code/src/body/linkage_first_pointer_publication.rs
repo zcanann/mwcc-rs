@@ -75,7 +75,7 @@ fn recognize(
                 || *pointer != GENERAL_SCRATCH
                 || pointer != published
                 || pointer != copied
-                || *argument != Eabi::FIRST_GENERAL_ARGUMENT
+                || *argument != Eabi::FIRST_GENERAL_ARGUMENT.into()
                 || callback_high != callback
                 || callback_high != callback_source
             {
@@ -130,7 +130,7 @@ impl Generator {
             unreachable!("the pointer publication callback high half was recognized");
         };
         self.output.instructions[start + 3] = Instruction::AddImmediateShifted {
-            d: Eabi::FIRST_GENERAL_ARGUMENT,
+            d: 3,
             a: 0,
             immediate,
         };
@@ -139,8 +139,8 @@ impl Generator {
             unreachable!("the pointer publication callback low half was recognized");
         };
         self.output.instructions[start + 4] = Instruction::AddImmediate {
-            d: Eabi::FIRST_GENERAL_ARGUMENT + 1,
-            a: Eabi::FIRST_GENERAL_ARGUMENT,
+            d: 4,
+            a: 3,
             immediate,
         };
     }

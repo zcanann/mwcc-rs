@@ -21,13 +21,13 @@ impl Generator {
             else {
                 unreachable!("the call-result member store was matched")
             };
-            *s = Eabi::FIRST_GENERAL_ARGUMENT;
+            *s = 3;
             let Instruction::CompareWordImmediate { a, .. } =
                 &mut self.output.instructions[copy + 2]
             else {
                 unreachable!("the call-result zero comparison was matched")
             };
-            *a = Eabi::FIRST_GENERAL_ARGUMENT;
+            *a = 3;
             crate::remove_instruction_retargeting_to_next(self, copy);
         }
         while let Some((copy, compare)) =
@@ -40,8 +40,8 @@ impl Generator {
             };
             self.output.instructions[copy] = Instruction::OrRecord {
                 a: saved,
-                s: Eabi::FIRST_GENERAL_ARGUMENT,
-                b: Eabi::FIRST_GENERAL_ARGUMENT,
+                s: 3,
+                b: 3,
             };
             self.remove_structured_condition_instruction(compare);
         }
@@ -58,13 +58,13 @@ fn find_saved_call_result_zero_test(
         let saved = match copy {
             Instruction::AddImmediate {
                 d,
-                a: Eabi::FIRST_GENERAL_ARGUMENT,
+                a: 3,
                 immediate: 0,
             } => *d,
             Instruction::Or {
                 a,
-                s: Eabi::FIRST_GENERAL_ARGUMENT,
-                b: Eabi::FIRST_GENERAL_ARGUMENT,
+                s: 3,
+                b: 3,
             } => *a,
             _ => return None,
         };
@@ -81,7 +81,7 @@ fn find_call_result_assignment_zero_test(instructions: &[Instruction]) -> Option
             Instruction::BranchAndLink { .. },
             Instruction::AddImmediate {
                 d: 0,
-                a: Eabi::FIRST_GENERAL_ARGUMENT,
+                a: 3,
                 immediate: 0,
             },
             Instruction::StoreWord { s: 0, .. },

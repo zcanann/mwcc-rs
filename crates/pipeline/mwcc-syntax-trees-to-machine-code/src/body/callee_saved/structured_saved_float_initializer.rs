@@ -32,12 +32,12 @@ fn inlined_member_alias_root(expression: &Expression) -> Option<&str> {
     root_variable(operand)
 }
 
-fn entry_general_register(function: &Function, name: &str) -> Option<u8> {
-    let mut next = Eabi::FIRST_GENERAL_ARGUMENT;
+fn entry_general_register(function: &Function, name: &str) -> Option<u32> {
+    let mut next: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
     for parameter in &function.parameters {
         if class_of(parameter.parameter_type).ok()? == ValueClass::General {
             if parameter.name == name {
-                return Some(next);
+                return Some(next.into());
             }
             next = next.checked_add(1)?;
         }
@@ -82,7 +82,7 @@ impl Generator {
         let Some(entry) = entry_general_register(function, root) else {
             return;
         };
-        let Some(saved) = self.lookup_general(root).filter(|saved| *saved >= 14 && *saved != entry)
+        let Some(saved) = self.lookup_general(root).filter(|saved| *saved >= 14 && *saved != entry.into())
         else {
             return;
         };
@@ -102,7 +102,7 @@ impl Generator {
                 | (
                     Instruction::LoadFloatDouble { d: 1, a: first_base, .. },
                     Instruction::LoadFloatDouble { d: 2, a: second_base, .. },
-                ) => *first_base == entry && *second_base == entry,
+                ) => *first_base == entry.into() && *second_base == entry.into(),
                 _ => false,
             };
             if matching_pair {

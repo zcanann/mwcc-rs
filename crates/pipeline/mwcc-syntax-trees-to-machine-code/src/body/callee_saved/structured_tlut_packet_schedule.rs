@@ -38,10 +38,10 @@ impl Generator {
         else {
             unreachable!("the count decrement was matched")
         };
-        *d = Eabi::FIRST_GENERAL_ARGUMENT;
+        *d = 3;
         self.output.instructions[mask.clear] = Instruction::RotateAndMask {
-            a: Eabi::FIRST_GENERAL_ARGUMENT,
-            s: Eabi::FIRST_GENERAL_ARGUMENT,
+            a: 3,
+            s: 3,
             shift: 14,
             begin: 8,
             end: 17,
@@ -51,12 +51,12 @@ impl Generator {
         else {
             unreachable!("the count command merge was matched")
         };
-        *a = Eabi::FIRST_GENERAL_ARGUMENT;
-        *s = Eabi::FIRST_GENERAL_ARGUMENT;
+        *a = 3;
+        *s = 3;
         let Instruction::StoreWord { s, .. } = &mut self.output.instructions[mask.store] else {
             unreachable!("the packed count store was matched")
         };
-        *s = Eabi::FIRST_GENERAL_ARGUMENT;
+        *s = 3;
         self.remove_tlut_instruction(mask.shift);
         self.schedule_tlut_packet_order();
         self.schedule_tlut_alternate_packet();
@@ -103,7 +103,7 @@ impl Generator {
         else {
             unreachable!("the alternate command was scheduled first")
         };
-        *d = Eabi::FIRST_GENERAL_ARGUMENT;
+        *d = 3;
         let Instruction::AddImmediate { d, .. } = &mut self.output.instructions[start + 1] else {
             unreachable!("the alternate zero was scheduled second")
         };
@@ -111,7 +111,7 @@ impl Generator {
         let Instruction::StoreWord { s, a, .. } = &mut self.output.instructions[start + 2] else {
             unreachable!("the alternate command store was scheduled third")
         };
-        *s = Eabi::FIRST_GENERAL_ARGUMENT;
+        *s = 3;
         *a = region.cursor;
         let Instruction::StoreWord { s, a, .. } = &mut self.output.instructions[start + 3] else {
             unreachable!("the alternate zero store was scheduled fourth")
@@ -125,8 +125,8 @@ impl Generator {
 #[derive(Clone, Copy)]
 struct TlutPacketRegion {
     start: usize,
-    cursor: u8,
-    object: u8,
+    cursor: u32,
+    object: u32,
 }
 
 fn tlut_packet_region(instructions: &[Instruction]) -> Option<TlutPacketRegion> {
@@ -175,7 +175,7 @@ fn tlut_packet_region(instructions: &[Instruction]) -> Option<TlutPacketRegion> 
         })
 }
 
-fn assign_tlut_packet_registers(instructions: &mut [Instruction], cursor: u8, object: u8) {
+fn assign_tlut_packet_registers(instructions: &mut [Instruction], cursor: u32, object: u32) {
     instructions[0] = Instruction::load_immediate_shifted(0, -752);
     instructions[1] = Instruction::load_immediate_shifted(3, -2816);
     instructions[2] = Instruction::StoreWord {
@@ -245,7 +245,7 @@ fn assign_tlut_packet_registers(instructions: &mut [Instruction], cursor: u8, ob
 #[derive(Clone, Copy)]
 struct TlutAlternatePacket {
     start: usize,
-    cursor: u8,
+    cursor: u32,
 }
 
 fn tlut_alternate_packet(instructions: &[Instruction]) -> Option<TlutAlternatePacket> {
@@ -339,7 +339,7 @@ fn tlut_zero_stores(instructions: &[Instruction]) -> Option<TlutZeroStores> {
     })
 }
 
-fn zero_word_store(window: &[Instruction], offset: i16) -> Option<u8> {
+fn zero_word_store(window: &[Instruction], offset: i16) -> Option<u32> {
     match window {
         [Instruction::AddImmediate {
             d: zero,

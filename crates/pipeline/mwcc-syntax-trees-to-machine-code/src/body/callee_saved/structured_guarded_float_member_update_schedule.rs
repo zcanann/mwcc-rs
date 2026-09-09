@@ -17,10 +17,10 @@ const LATER_COMPARISON_SCHEDULE: [usize; 4] = [1, 0, 2, 3];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ConversionPacket {
     start: usize,
-    member_base: u8,
+    member_base: u32,
     member_offset: i16,
-    value: u8,
-    boolean: u8,
+    value: u32,
+    boolean: u32,
     input_high: i16,
     output_high: i16,
 }
@@ -86,7 +86,7 @@ impl Generator {
         }
     }
 
-    fn schedule_guarded_float_member_update_return(&mut self, boolean: u8, after: usize) {
+    fn schedule_guarded_float_member_update_return(&mut self, boolean: u32, after: usize) {
         let Some(call) = self.output.instructions[after..]
             .iter()
             .rposition(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
@@ -110,7 +110,7 @@ impl Generator {
 fn direction_state_comparisons(
     output: &mwcc_machine_code::MachineFunction,
     first: usize,
-    member_base: u8,
+    member_base: u32,
 ) -> Option<[usize; 4]> {
     let second = first + 10;
     let third = second + 7;

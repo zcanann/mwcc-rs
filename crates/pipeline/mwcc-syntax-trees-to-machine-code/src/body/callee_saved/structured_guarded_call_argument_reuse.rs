@@ -31,7 +31,7 @@ impl Generator {
 struct Plan {
     guard: usize,
     reload: usize,
-    argument: u8,
+    argument: u32,
 }
 
 fn plan(instructions: &[Instruction]) -> Option<Plan> {

@@ -16,7 +16,7 @@ pub(super) fn plan(
     reuse: &StructuredParameterHomeReuse,
     count: usize,
     prefix_count: usize,
-) -> Option<Vec<u8>> {
+) -> Option<Vec<u32>> {
     let [group] = reduction.groups.as_slice() else {
         return None;
     };
@@ -55,7 +55,7 @@ fn rank(
     parameter_count: usize,
     count: usize,
     prefix_count: usize,
-) -> Option<Vec<u8>> {
+) -> Option<Vec<u32>> {
     order.extend(0..eager_count);
     order.push(index_home);
     order.extend(eager_count..eager_count + parameter_count);
@@ -66,7 +66,7 @@ fn rank(
     }
     let mut preferences = vec![0; count];
     for (priority, home) in order.into_iter().enumerate() {
-        preferences[home] = (31 - prefix_count - priority) as u8;
+        preferences[home] = (31 - prefix_count - priority) as u32;
     }
     Some(preferences)
 }

@@ -47,11 +47,11 @@ pub(super) fn schedule_object_collision_loop_entry(
     let Instruction::LoadWord { d, .. } = &mut generator.output.instructions[start + 3] else {
         unreachable!("the global cursor load was matched")
     };
-    *d = Eabi::FIRST_GENERAL_ARGUMENT;
+    *d = 3;
     let Instruction::LoadWord { a, .. } = &mut generator.output.instructions[start + 5] else {
         unreachable!("the cursor member load was matched")
     };
-    *a = Eabi::FIRST_GENERAL_ARGUMENT;
+    *a = 3;
     true
 }
 

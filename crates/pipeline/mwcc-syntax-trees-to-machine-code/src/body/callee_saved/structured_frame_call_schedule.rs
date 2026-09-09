@@ -47,7 +47,7 @@ impl Generator {
 
         let store_instruction = self.output.instructions[store].clone();
         let mut scheduled = Vec::with_capacity(7);
-        let order: &[u8] = match self.behavior.frame_convention {
+        let order: &[u32] = match self.behavior.frame_convention {
             FrameConvention::Predecrement => {
                 scheduled.push(by_destination.remove(&3).expect("gated"));
                 scheduled.push(store_instruction);
@@ -71,9 +71,9 @@ impl Generator {
     /// rather than straight-line materialization, and retains the `mr` form.
     pub(super) fn normalize_structured_frame_argument_copies(
         &mut self,
-        first_saved: u8,
-        logical_call_result_homes: &[u8],
-        recycled_call_result_homes: &[u8],
+        first_saved: u32,
+        logical_call_result_homes: &[u32],
+        recycled_call_result_homes: &[u32],
     ) {
         for index in 0..self.output.instructions.len() {
             if index > 0
@@ -178,7 +178,7 @@ impl Generator {
     /// recycled value first, after its defining call-result copy, to extend the
     /// useful latency window. Move it only across dependency-free, relocation-
     /// free argument materializations.
-    fn schedule_recycled_call_result_argument(&mut self, recycled_homes: &[u8]) {
+    fn schedule_recycled_call_result_argument(&mut self, recycled_homes: &[u32]) {
         if recycled_homes.is_empty() {
             return;
         }
@@ -313,7 +313,7 @@ impl Generator {
     /// load and argument forward behind it. Legacy MWCC fills the result-copy
     /// latency with that load, forwards the result, then consumes the load in
     /// the XOR/mask chain.
-    fn schedule_call_result_member_mask_call(&mut self, first_saved: u8) {
+    fn schedule_call_result_member_mask_call(&mut self, first_saved: u32) {
         let mut start = 0;
         while start + 10 < self.output.instructions.len() {
             if !is_call_result_member_mask_window(
@@ -433,7 +433,7 @@ impl Generator {
     /// in r3 while that call's first argument is formed. On the 7400 MWCC
     /// stages the result through r0, fills the latency slot with the argument,
     /// then commits r0 to the saved home.
-    pub(super) fn schedule_power_pc_7400_call_result_handoff(&mut self, first_saved: u8) {
+    pub(super) fn schedule_power_pc_7400_call_result_handoff(&mut self, first_saved: u32) {
         let mut start = 0;
         while start + 2 < self.output.instructions.len() {
             let saved = match &self.output.instructions[start..start + 2] {
@@ -621,14 +621,14 @@ fn shared_member_xor_call_loads(
 fn recycled_result_argument_move(
     instructions: &[Instruction],
     call: usize,
-    recycled_homes: &[u8],
+    recycled_homes: &[u32],
     relocations: &[mwcc_machine_code::Relocation],
 ) -> Option<(usize, usize)> {
     let start = instructions[..call]
         .iter()
         .rposition(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
         .map_or(0, |previous_call| previous_call + 1);
-    let candidates: Vec<(usize, u8, u8)> = instructions[start..call]
+    let candidates: Vec<(usize, u32, u32)> = instructions[start..call]
         .iter()
         .enumerate()
         .filter_map(|(offset, instruction)| match instruction {
@@ -655,7 +655,7 @@ fn recycled_result_argument_move(
         let operands = mwcc_vreg::register_operands(&instructions[previous]);
         if operands.iter().any(|operand| {
             operand.class == mwcc_vreg::Class::General
-                && (operand.register == *source || operand.register == *destination)
+                && (operand.register == (*source).into() || operand.register == (*destination).into())
         }) {
             break;
         }
@@ -667,7 +667,7 @@ fn recycled_result_argument_move(
     (to < *from).then_some((*from, to))
 }
 
-fn is_call_result_member_mask_window(instructions: &[Instruction], first_saved: u8) -> bool {
+fn is_call_result_member_mask_window(instructions: &[Instruction], first_saved: u32) -> bool {
     let [
         Instruction::BranchAndLink { .. },
         Instruction::AddImmediate {
@@ -724,7 +724,7 @@ fn is_call_result_member_mask_window(instructions: &[Instruction], first_saved: 
         && *first_argument >= first_saved
 }
 
-fn defined_general(instruction: &Instruction) -> Option<u8> {
+fn defined_general(instruction: &Instruction) -> Option<u32> {
     mwcc_vreg::register_operands(instruction)
         .into_iter()
         .find(|operand| {

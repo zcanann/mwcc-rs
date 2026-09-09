@@ -8,8 +8,8 @@ use super::{AddressPacket, Instruction};
 
 pub(super) fn plan(
     offsets: &[u32],
-    destinations: &[u8],
-    temporaries: &[u8],
+    destinations: &[u32],
+    temporaries: &[u32],
     share_pages: bool,
 ) -> AddressPacket {
     let zero = offsets.iter().position(|offset| *offset == 0);
@@ -81,15 +81,15 @@ fn high_page(offset: u32) -> u32 {
 }
 
 struct Recipe {
-    section_base: u8,
-    temporary: u8,
+    section_base: u32,
+    temporary: u32,
     share_pages: bool,
     instructions: Vec<Instruction>,
-    pages: Vec<(u32, u8)>,
+    pages: Vec<(u32, u32)>,
 }
 
 impl Recipe {
-    fn emit(&mut self, offset: u32, destination: u8) {
+    fn emit(&mut self, offset: u32, destination: u32) {
         let page = high_page(offset);
         let low = offset as i16;
         let high = if let Some((_, register)) = self.pages.iter().find(|(value, _)| *value == page)

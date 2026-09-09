@@ -373,7 +373,7 @@ fn schedule_float_packet(
 
 /// Replace reads of one physical GPR until its next definition. The return
 /// value proves the discarded definition was actually consumed.
-fn replace_general_uses(instructions: &mut [Instruction], old: u8, new: u8) -> bool {
+fn replace_general_uses(instructions: &mut [Instruction], old: u32, new: u32) -> bool {
     let mut replaced = false;
     for instruction in instructions {
         let redefined = register_operands(instruction).iter().any(|operand| {

@@ -16,7 +16,7 @@ impl Generator {
         let Instruction::LoadWord { a, .. } = &mut self.output.instructions[start + 5] else {
             unreachable!("the cursor load was matched")
         };
-        *a = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+        *a = 4;
 
         // Original identities: A B C D E F G H I J
         // Measured order:      A C F B H I G D E J
@@ -36,7 +36,7 @@ fn allocator_cursor_entry(instructions: &[Instruction]) -> Option<usize> {
             [
                 Instruction::LoadWord {
                     d: flags,
-                    a: Eabi::FIRST_GENERAL_ARGUMENT,
+                    a: 3,
                     ..
                 },
                 Instruction::Or {
@@ -46,8 +46,8 @@ fn allocator_cursor_entry(instructions: &[Instruction]) -> Option<usize> {
                 },
                 Instruction::Or {
                     a: object_parameter,
-                    s: Eabi::FIRST_GENERAL_ARGUMENT,
-                    b: Eabi::FIRST_GENERAL_ARGUMENT,
+                    s: 3,
+                    b: 3,
                 },
                 Instruction::RotateAndMask {
                     a: first_flag,
@@ -70,7 +70,7 @@ fn allocator_cursor_entry(instructions: &[Instruction]) -> Option<usize> {
                     offset: frame_offset,
                 },
                 Instruction::AddImmediate {
-                    d: Eabi::FIRST_GENERAL_ARGUMENT,
+                    d: 3,
                     a: 1,
                     immediate: address_offset,
                 },

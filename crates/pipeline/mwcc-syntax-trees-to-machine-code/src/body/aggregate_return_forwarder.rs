@@ -90,7 +90,7 @@ impl Generator {
         let first = general_register(plan.first)?;
         let second = general_register(plan.second)?;
         let member_base = general_register(plan.member_base)?;
-        let hidden_result = Eabi::FIRST_GENERAL_ARGUMENT;
+        let hidden_result: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         if (first, second, member_base) != (5, 6, 4) {
             return Ok(false);
         }
@@ -152,7 +152,7 @@ impl Generator {
         // call even though the callee also returns that address in r3.
         self.output
             .instructions
-            .push(Instruction::move_register(31, hidden_result));
+            .push(Instruction::move_register(31, hidden_result.into()));
         self.output
             .instructions
             .push(Instruction::move_register(5, 0));

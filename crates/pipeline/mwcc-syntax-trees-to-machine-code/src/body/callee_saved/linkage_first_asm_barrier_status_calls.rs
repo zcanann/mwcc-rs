@@ -69,8 +69,8 @@ impl Generator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DerivedStatusEntryPacket {
     start: usize,
-    global_home: u8,
-    buffer_home: u8,
+    global_home: u32,
+    buffer_home: u32,
     global_offset: i16,
 }
 
@@ -139,8 +139,8 @@ fn rewrite_derived_status_entry_packet(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StatusEntryPacket {
     start: usize,
-    global_home: u8,
-    buffer_home: u8,
+    global_home: u32,
+    buffer_home: u32,
 }
 
 fn status_entry_packet(
@@ -199,14 +199,14 @@ fn rewrite_status_entry_packet(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StatusTailPacket {
     start: usize,
-    buffer_home: u8,
+    buffer_home: u32,
     member_offset: i16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NarrowedWordStatusTailPacket {
     start: usize,
-    buffer_home: u8,
+    buffer_home: u32,
     member_offset: i16,
 }
 
@@ -234,7 +234,7 @@ fn narrowed_word_status_tail_packet(
             && relocated_external_pair(relocations, start + 1, start + 2))
             .then_some(NarrowedWordStatusTailPacket {
                 start,
-                buffer_home,
+                buffer_home: buffer_home.into(),
                 member_offset: *offset,
             })
     })
@@ -296,13 +296,13 @@ fn status_tail_packet(
             && relocated_external_pair(relocations, start + 1, start + 2))
             .then_some(StatusTailPacket {
                 start,
-                buffer_home,
+                buffer_home: buffer_home.into(),
                 member_offset: *offset,
             })
     })
 }
 
-fn saved_buffer_copy(instruction: &Instruction) -> Option<u8> {
+fn saved_buffer_copy(instruction: &Instruction) -> Option<u32> {
     match *instruction {
         Instruction::Or { a: 3, s, b } if s == b && s >= 14 => Some(s),
         Instruction::AddImmediate {

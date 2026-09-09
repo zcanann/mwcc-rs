@@ -72,7 +72,7 @@ fn find_saved_pointer_zero_test(instructions: &[Instruction]) -> Option<(usize, 
     None
 }
 
-fn preserves_saved_zero_record(instruction: &Instruction, saved: u8) -> bool {
+fn preserves_saved_zero_record(instruction: &Instruction, saved: u32) -> bool {
     let redefines_saved = mwcc_vreg::register_operands(instruction)
         .into_iter()
         .any(|operand| {

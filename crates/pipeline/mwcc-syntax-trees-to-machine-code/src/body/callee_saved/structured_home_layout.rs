@@ -21,7 +21,7 @@ pub(super) fn allocator_result_cursor_preferences(
     eager_count: usize,
     parameter_count: usize,
     total_count: usize,
-) -> std::collections::HashMap<usize, u8> {
+) -> std::collections::HashMap<usize, u32> {
     if eager_count != 0
         || parameter_count != 2
         || deferred.group_count != 4
@@ -85,7 +85,7 @@ pub(super) fn allocator_result_cursor_preferences(
         return std::collections::HashMap::new();
     }
 
-    let first_saved = 26u8;
+    let first_saved = 26u32;
     std::collections::HashMap::from([
         (0, first_saved + 1),
         (1, first_saved),
@@ -136,11 +136,11 @@ pub(super) fn saved_float_home_preference(
     group: usize,
     group_count: usize,
     ascending_pair: bool,
-) -> u8 {
+) -> u32 {
     if ascending_pair && group_count == 2 {
-        30u8.saturating_add(u8::try_from(group).unwrap_or(1).min(1))
+        30u32.saturating_add(u32::try_from(group).unwrap_or(1).min(1)).into()
     } else {
-        31u8.saturating_sub(u8::try_from(group).unwrap_or(17))
+        31u32.saturating_sub(u32::try_from(group).unwrap_or(17)).into()
     }
 }
 
@@ -154,7 +154,7 @@ pub(super) fn paired_eager_deferred_preference(
     deferred_count: usize,
     retained_inline_lane: bool,
     home_index: usize,
-) -> Option<u8> {
+) -> Option<u32> {
     (!with_frame_array
         && eager_count == 1
         && parameter_count == 0
@@ -176,7 +176,7 @@ pub(super) fn returned_deferred_pair_preference(
     total_count: usize,
     returned_home: Option<usize>,
     home_index: usize,
-) -> Option<u8> {
+) -> Option<u32> {
     let returned_fresh_deferred = eager_count == 0
         && parameter_count == 1
         && deferred_count == 1
@@ -200,7 +200,7 @@ pub(super) fn dense_eager_deferred_preferences(
     reuse: &StructuredParameterHomeReuse,
     rounded_pointer_layout: bool,
     lifetime_order: bool,
-) -> std::collections::HashMap<usize, u8> {
+) -> std::collections::HashMap<usize, u32> {
     let fresh_home_base = eager_count + parameter_count;
     let Some(first_saved) = 32usize.checked_sub(total_count) else {
         return std::collections::HashMap::new();
@@ -220,7 +220,7 @@ pub(super) fn dense_eager_deferred_preferences(
         })
         .collect();
     let available: Vec<_> = (first_saved..32)
-        .filter_map(|register| u8::try_from(register).ok())
+        .filter_map(|register| u32::try_from(register).ok())
         .filter(|register| !occupied.contains(register))
         .collect();
     let mut groups: Vec<_> = (0..deferred.group_count)
@@ -248,10 +248,10 @@ struct DenseDeferredGroup {
 }
 
 fn rank_dense_deferred_groups(
-    mut available: Vec<u8>,
+    mut available: Vec<u32>,
     mut groups: Vec<DenseDeferredGroup>,
     lifetime_order: bool,
-) -> std::collections::HashMap<usize, u8> {
+) -> std::collections::HashMap<usize, u32> {
     let mut preferences = std::collections::HashMap::new();
     available.sort_unstable();
     if available.len() != groups.len() || groups.is_empty() {
@@ -323,7 +323,7 @@ pub(super) fn rounded_pointer_dense_home_preference(
     parameter_count: usize,
     total_count: usize,
     home_index: usize,
-) -> Option<u8> {
+) -> Option<u32> {
     uses_rounded_pointer_dense_layout(eager_count, parameter_count, total_count)
         .then(|| [31, 30, 29, 25, 27, 20].get(home_index).copied())
         .flatten()
@@ -334,7 +334,7 @@ pub(super) fn dense_eager_home_preference(
     parameter_count: usize,
     total_count: usize,
     home_index: usize,
-) -> Option<u8> {
+) -> Option<u32> {
     if eager_count == 0 || parameter_count == 0 || total_count > 18 || home_index >= total_count {
         return None;
     }
@@ -360,9 +360,9 @@ pub(super) fn dense_eager_home_preference(
             first_saved + parameter_count + deferred - 2
         }
     };
-    (preferred >= first_saved && preferred < 32)
-        .then(|| u8::try_from(preferred).ok())
-        .flatten()
+    ((preferred >= first_saved && preferred < 32)
+        .then(|| u32::try_from(preferred).ok())
+        .flatten()).map(u32::from)
 }
 
 #[cfg(test)]

@@ -33,10 +33,10 @@ struct VectorLoop<'a> {
 
 #[derive(Clone, Copy)]
 struct RegisterSchedule {
-    counter: u8,
+    counter: u32,
     offsets: u8,
-    destination: u8,
-    state: u8,
+    destination: u32,
+    state: u32,
     mask: u8,
 }
 
@@ -593,13 +593,13 @@ impl Generator {
             .instructions
             .push(Instruction::load_immediate_shifted(3, 0));
         self.output.instructions.push(Instruction::LoadWord {
-            d: registers.mask,
+            d: u32::from(registers.mask),
             a: 5,
             offset: 0,
         });
         self.record_relocation(RelocationKind::Addr16Lo, shape.offsets);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: registers.offsets,
+            d: u32::from(registers.offsets),
             a: 4,
             immediate: 0,
         });
@@ -624,7 +624,7 @@ impl Generator {
         });
         self.output.instructions.push(Instruction::AndRecord {
             a: 0,
-            s: registers.mask,
+            s: u32::from(registers.mask),
             b: 0,
         });
         self.emit_branch_conditional_to(12, 2, skip_copy); // beq
@@ -635,7 +635,7 @@ impl Generator {
             .push(Instruction::load_immediate_shifted(3, 0));
         self.output.instructions.push(Instruction::LoadWord {
             d: 6,
-            a: registers.offsets,
+            a: u32::from(registers.offsets),
             offset: 0,
         });
         self.record_relocation(RelocationKind::Addr16Lo, shape.translation.base);
@@ -737,8 +737,8 @@ impl Generator {
             immediate: 1,
         });
         self.output.instructions.push(Instruction::AddImmediate {
-            d: registers.offsets,
-            a: registers.offsets,
+            d: u32::from(registers.offsets),
+            a: u32::from(registers.offsets),
             immediate: 4,
         });
         self.output

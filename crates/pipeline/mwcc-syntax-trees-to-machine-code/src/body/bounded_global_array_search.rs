@@ -88,7 +88,7 @@ impl Generator {
         Ok(true)
     }
 
-    fn emit_bounded_search_comparison(&mut self, needle: u8, return_value: i64, loaded: u8) {
+    fn emit_bounded_search_comparison(&mut self, needle: u32, return_value: i64, loaded: u32) {
         self.output
             .instructions
             .push(Instruction::CompareLogicalWord {
@@ -103,7 +103,7 @@ impl Generator {
                 condition_bit: 2,
                 target: 0,
             });
-        self.load_integer_constant(mwcc_target::Eabi::general_result().number, return_value);
+        self.load_integer_constant(u32::from(mwcc_target::Eabi::general_result().number), return_value);
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);

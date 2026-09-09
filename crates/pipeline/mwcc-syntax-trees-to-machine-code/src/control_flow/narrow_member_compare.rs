@@ -64,7 +64,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        left_register: u8,
+        left_register: u32,
         signed_compare: bool,
     ) -> Compilation<bool> {
         let narrow_memory = |generator: &Self, expression: &Expression| {
@@ -115,7 +115,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        left_register: u8,
+        left_register: u32,
         signed_compare: bool,
     ) -> Compilation<bool> {
         let Ok((leaf_register, leaf_width, leaf_signed)) = self.leaf_info(left) else {

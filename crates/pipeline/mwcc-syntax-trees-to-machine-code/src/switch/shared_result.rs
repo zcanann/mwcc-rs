@@ -98,7 +98,7 @@ impl Generator {
             patches.retain(|&(index, _)| index != dispatch_end - 1);
         }
 
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         let default_start = self.output.instructions.len();
         self.evaluate_tail(default_result, function.return_type, result)?;
         self.output

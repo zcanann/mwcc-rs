@@ -341,7 +341,7 @@ impl Generator {
     }
 }
 
-fn rounded_defined_general(instruction: &Instruction) -> Option<u8> {
+fn rounded_defined_general(instruction: &Instruction) -> Option<u32> {
     mwcc_vreg::register_operands(instruction)
         .into_iter()
         .find(|operand| {

@@ -33,7 +33,7 @@ impl SavedCallTokenLayout {
         Some(Self)
     }
 
-    pub(super) fn preference(&self, home: usize) -> Option<u8> {
+    pub(super) fn preference(&self, home: usize) -> Option<u32> {
         // Parameters arrive in reverse source order, followed by the deferred token.
         [30, 29, 31].get(home).copied()
     }

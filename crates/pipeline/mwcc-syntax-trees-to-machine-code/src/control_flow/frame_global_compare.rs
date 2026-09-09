@@ -48,7 +48,7 @@ impl Generator {
                         if materialize {
                             self.output
                                 .instructions
-                                .push(Instruction::load_immediate_shifted(base, high));
+                                .push(Instruction::load_immediate_shifted(base.into(), high));
                         }
                         base
                     };
@@ -63,7 +63,7 @@ impl Generator {
                     self.output.instructions.push(crate::expressions::displacement_load(
                         pointee,
                         GENERAL_SCRATCH,
-                        fixed_base,
+                        fixed_base.into(),
                         low,
                     )?);
                     self.output

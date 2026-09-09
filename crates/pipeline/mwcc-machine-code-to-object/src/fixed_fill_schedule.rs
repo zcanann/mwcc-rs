@@ -58,7 +58,7 @@ pub(super) fn schedule(function: &mut MachineFunction, address_owners: &[usize])
 struct Plan {
     start: usize,
     end: usize,
-    pointer: u8,
+    pointer: u32,
     order: &'static [usize],
 }
 
@@ -142,7 +142,7 @@ fn plan(f: &MachineFunction, address: usize, policy: FixedFillAddressSchedule) -
 /// Prove that every reachable path overwrites the old value before reading it.
 /// Calls and exits are barriers: implicit argument/result uses remain observable.
 /// Revisiting a loop is safe once its instructions have been checked for uses.
-fn dead_until_definition(code: &[I], start: usize, register: u8) -> bool {
+fn dead_until_definition(code: &[I], start: usize, register: u32) -> bool {
     let mut pending = vec![start];
     let mut visited = vec![false; code.len()];
     while let Some(at) = pending.pop() {

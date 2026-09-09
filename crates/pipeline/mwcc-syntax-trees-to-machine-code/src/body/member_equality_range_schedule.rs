@@ -103,7 +103,7 @@ impl Generator {
 struct MemberEqualityBranchRun {
     start: usize,
     body: usize,
-    member_base: u8,
+    member_base: u32,
     range_minimum: u16,
     range_span: u16,
 }

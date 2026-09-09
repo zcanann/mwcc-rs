@@ -34,12 +34,12 @@ impl Generator {
             .locations
             .get(&call_parameter.name)
             .map(|location| (location.class, location.register))
-            != Some((ValueClass::General, Eabi::FIRST_GENERAL_ARGUMENT))
+            != Some((ValueClass::General, Eabi::FIRST_GENERAL_ARGUMENT.into()))
             || self
                 .locations
                 .get(&live_parameter.name)
                 .map(|location| (location.class, location.register))
-                != Some((ValueClass::General, Eabi::FIRST_GENERAL_ARGUMENT + 1))
+                != Some((ValueClass::General, (Eabi::FIRST_GENERAL_ARGUMENT + 1).into()))
         {
             return Ok(false);
         }
@@ -74,20 +74,20 @@ impl Generator {
             .extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
         self.output.instructions.push(Instruction::move_register(
             saved,
-            Eabi::FIRST_GENERAL_ARGUMENT + 1,
+            (Eabi::FIRST_GENERAL_ARGUMENT + 1).into(),
         ));
         self.record_relocation(RelocationKind::Rel24, callee);
         self.output.instructions.push(Instruction::BranchAndLink {
             target: callee.to_owned(),
         });
         self.output.instructions.push(Instruction::MultiplyLow {
-            d: Eabi::general_result().number,
+            d: u32::from(Eabi::general_result().number),
             a: saved,
-            b: Eabi::general_result().number,
+            b: u32::from(Eabi::general_result().number),
         });
         self.output.instructions.push(Instruction::AddImmediate {
-            d: Eabi::general_result().number,
-            a: Eabi::general_result().number,
+            d: u32::from(Eabi::general_result().number),
+            a: u32::from(Eabi::general_result().number),
             immediate: constant,
         });
         self.emit_epilogue_and_return();
@@ -109,17 +109,17 @@ impl Generator {
                 offset: 20,
             },
             Instruction::StoreWord {
-                s: Eabi::FIRST_GENERAL_ARGUMENT,
+                s: 3,
                 a: 1,
                 offset: 8,
             },
             Instruction::StoreWord {
-                s: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                s: 4,
                 a: 1,
                 offset: 12,
             },
             Instruction::LoadWord {
-                d: Eabi::FIRST_GENERAL_ARGUMENT,
+                d: 3,
                 a: 1,
                 offset: 8,
             },
@@ -135,13 +135,13 @@ impl Generator {
                 offset: 12,
             },
             Instruction::MultiplyLow {
-                d: Eabi::general_result().number,
+                d: u32::from(Eabi::general_result().number),
                 a: 0,
-                b: Eabi::general_result().number,
+                b: u32::from(Eabi::general_result().number),
             },
             Instruction::AddImmediate {
-                d: Eabi::general_result().number,
-                a: Eabi::general_result().number,
+                d: u32::from(Eabi::general_result().number),
+                a: u32::from(Eabi::general_result().number),
                 immediate: constant,
             },
             Instruction::LoadWord {

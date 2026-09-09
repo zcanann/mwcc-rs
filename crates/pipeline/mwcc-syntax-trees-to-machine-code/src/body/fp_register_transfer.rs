@@ -390,13 +390,13 @@ impl Generator {
     }
 
     fn emit_fp_register_transfer(&mut self, plan: &FpRegisterTransfer<'_>) {
-        const FIRST: u8 = 25;
-        const EXCEPTION_FLAG: u8 = 26;
-        const CURRENT: u8 = 27;
-        const LAST: u8 = 28;
-        const BUFFER: u8 = 29;
-        const LENGTH: u8 = 30;
-        const READ: u8 = 31;
+        const FIRST: u32 = 25;
+        const EXCEPTION_FLAG: u32 = 26;
+        const CURRENT: u32 = 27;
+        const LAST: u32 = 28;
+        const BUFFER: u32 = 29;
+        const LENGTH: u32 = 30;
+        const READ: u32 = 31;
 
         let valid = self.fresh_label();
         let setup_branch_one = self.fresh_label();

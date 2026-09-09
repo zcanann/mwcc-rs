@@ -99,13 +99,13 @@ impl Generator {
             else {
                 unreachable!("zero publication materialization was recognized")
             };
-            *d = Eabi::FIRST_GENERAL_ARGUMENT;
+            *d = 3;
             let Instruction::StoreWord { s, .. } =
                 &mut self.output.instructions[start + 2]
             else {
                 unreachable!("zero publication store was recognized")
             };
-            *s = Eabi::FIRST_GENERAL_ARGUMENT;
+            *s = 3;
         }
     }
 
@@ -126,7 +126,7 @@ impl Generator {
             return;
         }
         self.move_instruction_before(start + 8, start + 2);
-        let narrow = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+        let narrow = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT.into());
         let Instruction::LoadWord { d, .. } = &mut self.output.instructions[start + 7] else {
             unreachable!("jump-state reset load was recognized")
         };
@@ -153,7 +153,7 @@ impl Generator {
             _ => unreachable!("guarded saved receiver call shape was checked"),
         };
         self.output.instructions[start + 2] = Instruction::AddImmediate {
-            d: Eabi::FIRST_GENERAL_ARGUMENT,
+            d: 3,
             a: saved,
             immediate: 0,
         };
@@ -286,7 +286,7 @@ impl Generator {
                 "structured float-store schedule did not emit an adjacent guard test",
             ));
         };
-        let call_result = Eabi::float_result().number;
+        let call_result = u32::from(Eabi::float_result().number);
         let is_call_result_store = matches!(
             store,
             Instruction::StoreFloatSingle { s, .. }

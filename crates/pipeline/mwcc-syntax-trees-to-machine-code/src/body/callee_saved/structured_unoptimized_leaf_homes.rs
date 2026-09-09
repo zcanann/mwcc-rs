@@ -89,18 +89,18 @@ impl StructuredUnoptimizedLeafHomes {
         eager_count: usize,
         parameter_count: usize,
         total_count: usize,
-    ) -> Option<u8> {
-        (eager_count == 0
+    ) -> Option<u32> {
+        ((eager_count == 0
             && parameter_count == 0
             && total_count == self.general_names.len()
             && home_index < self.general_names.len())
-        .then(|| 31u8.saturating_sub(home_index as u8))
+        .then(|| 31u8.saturating_sub(home_index as u8))).map(u32::from)
     }
 
-    pub(super) fn float_preference(&self, name: &str) -> Option<u8> {
-        self.float_names
+    pub(super) fn float_preference(&self, name: &str) -> Option<u32> {
+        (self.float_names
             .iter()
             .position(|candidate| candidate == name)
-            .map(|index| 31u8.saturating_sub(index as u8))
+            .map(|index| 31u8.saturating_sub(index as u8))).map(u32::from)
     }
 }

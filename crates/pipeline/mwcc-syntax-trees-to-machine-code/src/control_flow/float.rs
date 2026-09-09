@@ -15,10 +15,10 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        reserved: &[u8],
-    ) -> Compilation<(u8, u8)> {
+        reserved: &[u32],
+    ) -> Compilation<(u32, u32)> {
         let left_register = if self.is_float_located(left) {
-            let newly: Vec<u8> = reserved
+            let newly: Vec<u32> = reserved
                 .iter()
                 .copied()
                 .filter(|register| self.reserved.insert(*register))
@@ -67,7 +67,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
         tail: bool,
     ) -> Compilation<()> {
         if !tail
@@ -186,7 +186,7 @@ impl Generator {
         // into a free register (avoiding the select values), the right into the
         // scratch; leaf operands stay in place.
         let (left_register, right_register) =
-            self.place_float_comparison_operands(left, right, &[true_register, false_register])?;
+            self.place_float_comparison_operands(left, right, &[true_register.into(), false_register])?;
 
         // Equality (`==`/`!=`) uses the QUIET compare `fcmpu` (IEEE equality does not signal on NaN);
         // the relational operators (`<`/`>`/`<=`/`>=`) use the signaling ordered compare `fcmpo`.
@@ -238,7 +238,7 @@ impl Generator {
                     options: positive_options,
                     condition_bit,
                 });
-            self.emit_float_select_tail(destination, false_register, false_negate);
+            self.emit_float_select_tail(destination, false_register.into(), false_negate);
             return Ok(());
         }
         if self.behavior.integer_select_style
@@ -279,7 +279,7 @@ impl Generator {
                     options: positive_options ^ 8,
                     condition_bit,
                 });
-            self.emit_float_select_tail(destination, true_register, true_negate);
+            self.emit_float_select_tail(destination, true_register.into(), true_negate);
             return Ok(());
         }
         if !tail {
@@ -290,10 +290,10 @@ impl Generator {
                 condition_bit,
                 false_arm,
             );
-            self.emit_float_select_tail(destination, true_register, true_negate);
+            self.emit_float_select_tail(destination, true_register.into(), true_negate);
             self.emit_branch_to(join);
             self.bind_label(false_arm);
-            self.emit_float_select_tail(destination, false_register, false_negate);
+            self.emit_float_select_tail(destination, false_register.into(), false_negate);
             self.bind_label(join);
             return Ok(());
         }
@@ -304,7 +304,7 @@ impl Generator {
 
     /// Classify a float select arm: a plain leaf (`(register, false)`) or the negation of a leaf
     /// (`(base_register, true)` — the fabs family `cond ? -x : x`).
-    fn float_select_arm(&self, arm: &Expression) -> Compilation<(u8, bool)> {
+    fn float_select_arm(&self, arm: &Expression) -> Compilation<(u32, bool)> {
         if let Expression::Unary {
             operator: UnaryOperator::Negate,
             operand,
@@ -325,7 +325,7 @@ impl Generator {
         condition_bit: u8,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let incoming_globals = self.condition_global_values.clone();
         let incoming_floats = self.condition_float_cache.clone();
@@ -346,7 +346,7 @@ impl Generator {
 
     /// Emit the fall-through arm of a tail float select: `fneg` a negated arm, else `fmr` a leaf that
     /// is not already in the destination.
-    fn emit_float_select_tail(&mut self, destination: u8, register: u8, negate: bool) {
+    fn emit_float_select_tail(&mut self, destination: u32, register: u32, negate: bool) {
         if negate {
             self.output.instructions.push(Instruction::FloatNegate {
                 d: destination,

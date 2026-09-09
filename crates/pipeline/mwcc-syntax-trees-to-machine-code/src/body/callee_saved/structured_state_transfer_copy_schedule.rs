@@ -86,7 +86,7 @@ fn allocated_state_transfer_copy_packet(instructions: &[Instruction]) -> Option<
         })
 }
 
-fn same_word_member_copy(load: &Instruction, store: &Instruction, register: u8) -> bool {
+fn same_word_member_copy(load: &Instruction, store: &Instruction, register: u32) -> bool {
     matches!(
         (load, store),
         (

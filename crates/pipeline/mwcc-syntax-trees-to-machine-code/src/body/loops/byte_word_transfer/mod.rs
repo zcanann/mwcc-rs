@@ -48,7 +48,7 @@ impl Generator {
             .parameters
             .iter()
             .enumerate()
-            .any(|(i, p)| self.lookup_general(&p.name) != Some(3 + i as u8))
+            .any(|(i, p)| self.lookup_general(&p.name) != Some((3 + i as u8).into()))
         {
             return Ok(false);
         }

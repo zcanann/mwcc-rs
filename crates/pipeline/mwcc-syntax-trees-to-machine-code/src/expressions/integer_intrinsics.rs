@@ -7,7 +7,7 @@ impl Generator {
         &mut self,
         name: &str,
         arguments: &[Expression],
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if !is_integer_intrinsic_call(name, arguments.len()) {
             return Ok(false);
@@ -73,7 +73,7 @@ impl Generator {
     fn emit_rotate_left_word_insert(
         &mut self,
         arguments: &[Expression],
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let operands = crate::intrinsics::rotate_insert(arguments).ok_or_else(|| {
             Diagnostic::error("__rlwimi requires constant shift and mask operands in 0..31")

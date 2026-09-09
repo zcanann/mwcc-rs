@@ -63,7 +63,7 @@ impl Generator {
     /// as a value materialization. The ordinary pointer argument path retains
     /// `mr`; rewrite only the fully proven `(saved owner, constant, switch
     /// result)` terminal call window owned by this lowering.
-    pub(super) fn schedule_sparse_switch_tail_argument_copy(&mut self, source: u8) {
+    pub(super) fn schedule_sparse_switch_tail_argument_copy(&mut self, source: u32) {
         if self.behavior.materialization_copy_style
             != mwcc_versions::MaterializationCopyStyle::AddImmediateZero
         {
@@ -75,7 +75,7 @@ impl Generator {
 
 fn rewrite_sparse_switch_tail_argument_copy(
     instructions: &mut [Instruction],
-    source: u8,
+    source: u32,
 ) -> bool {
     let Some(copy_index) = (0..instructions.len().saturating_sub(3)).rev().find(|index| {
         matches!(
@@ -266,8 +266,8 @@ impl Generator {
                 location.register
             }
             Expression::Call { .. } => {
-                self.evaluate_general(scrutinee, Eabi::FIRST_GENERAL_ARGUMENT)?;
-                Eabi::FIRST_GENERAL_ARGUMENT
+                self.evaluate_general(scrutinee, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
+                Eabi::FIRST_GENERAL_ARGUMENT.into()
             }
             _ => {
                 self.evaluate_general(scrutinee, GENERAL_SCRATCH)?;
@@ -319,8 +319,8 @@ impl Generator {
                 }
                 ArmBody::Return(value) => {
                     let result = match function.return_type {
-                        Type::Float | Type::Double => Eabi::float_result().number,
-                        _ => Eabi::general_result().number,
+                        Type::Float | Type::Double => u32::from(Eabi::float_result().number),
+                        _ => u32::from(Eabi::general_result().number),
                     };
                     self.evaluate(value, function.return_type, result)?;
                     return_branches.push(self.output.instructions.len());
@@ -359,8 +359,8 @@ impl Generator {
                 }
                 ArmBody::Return(value) => {
                     let result = match function.return_type {
-                        Type::Float | Type::Double => Eabi::float_result().number,
-                        _ => Eabi::general_result().number,
+                        Type::Float | Type::Double => u32::from(Eabi::float_result().number),
+                        _ => u32::from(Eabi::general_result().number),
                     };
                     self.evaluate(value, function.return_type, result)?;
                     return_branches.push(self.output.instructions.len());
@@ -400,7 +400,7 @@ impl Generator {
 
     fn lower_shared_case_range(
         &mut self,
-        register: u8,
+        register: u32,
         ranges: &[CaseRange],
         lo: usize,
         hi: usize,
@@ -515,7 +515,7 @@ impl Generator {
 
     fn emit_shared_case_leaf(
         &mut self,
-        register: u8,
+        register: u32,
         range: CaseRange,
         lower_bound: Option<i64>,
         upper_bound: Option<i64>,
@@ -555,7 +555,7 @@ impl Generator {
         }
     }
 
-    fn push_sparse_compare(&mut self, register: u8, immediate: i64) {
+    fn push_sparse_compare(&mut self, register: u32, immediate: i64) {
         self.output
             .instructions
             .push(Instruction::CompareWordImmediate {

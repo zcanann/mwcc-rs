@@ -13,11 +13,11 @@ pub(super) struct MaterializedLinkageFirstFrame {
 /// FPRs occupy the new high lanes below the caller linkage area.
 pub(super) fn materialize_linkage_first_frame(
     instructions: &mut Vec<Instruction>,
-    registers: &[u8],
+    registers: &[u32],
     use_helpers: bool,
 ) -> Result<MaterializedLinkageFirstFrame, &'static str> {
-    let expected: Vec<u8> = (0..registers.len())
-        .map(|index| 31u8.saturating_sub(index as u8))
+    let expected: Vec<u32> = (0..registers.len())
+        .map(|index| 31u32.saturating_sub(index as u32))
         .collect();
     if registers != expected {
         return Err("allocator-selected FPR saves are not a contiguous f31-down range");

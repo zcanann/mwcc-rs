@@ -121,10 +121,10 @@ impl Generator {
     pub(crate) fn emit_float_to_unsigned_integer(
         &mut self,
         operand: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if !self.try_emit_scaled_float_to_unsigned_argument(operand)? {
-            self.evaluate_float(operand, Eabi::float_result().number)?;
+            self.evaluate_float(operand, u32::from(Eabi::float_result().number))?;
         }
         if !self
             .compiler_generated_symbols
@@ -177,9 +177,9 @@ impl Generator {
             return Ok(false);
         }
 
-        const LOADED: u8 = 2;
-        const SCRATCH: u8 = 0;
-        let argument = Eabi::float_result().number;
+        const LOADED: u32 = 2;
+        const SCRATCH: u32 = 0;
+        let argument = u32::from(Eabi::float_result().number);
         if let Some((global, displacement, element)) = global_member_element(loaded) {
             let address = self.fresh_virtual_general_preferring(3);
             self.emit_address_of(global, address)?;

@@ -2,7 +2,7 @@
 use super::*;
 use mwcc_machine_code::Instruction::*;
 
-fn addi(d: u8, a: u8, immediate: i16) -> Instruction {
+fn addi(d: u32, a: u32, immediate: i16) -> Instruction {
     AddImmediate { d, a, immediate }
 }
 

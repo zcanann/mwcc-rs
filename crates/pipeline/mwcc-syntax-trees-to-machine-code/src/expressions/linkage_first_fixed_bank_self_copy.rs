@@ -11,8 +11,8 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Region {
     start: usize,
-    high_base: u8,
-    scratch: u8,
+    high_base: u32,
+    scratch: u32,
     high_adjusted: i16,
     low: i16,
     element_offset: i16,
@@ -22,8 +22,8 @@ struct Region {
 struct CallbackAddress {
     high: usize,
     low: usize,
-    high_base: u8,
-    argument: u8,
+    high_base: u32,
+    argument: u32,
 }
 
 fn recognize_at(instructions: &[Instruction], start: usize) -> Option<Region> {
@@ -146,7 +146,7 @@ fn has_interior_branch_target(instructions: &[Instruction], start: usize) -> boo
     })
 }
 
-fn rewrite(instructions: &mut [Instruction], region: Region, full_base: u8) {
+fn rewrite(instructions: &mut [Instruction], region: Region, full_base: u32) {
     let low_element = region
         .low
         .checked_add(region.element_offset)
@@ -188,7 +188,7 @@ fn scratch_store_fills_second_address_slot(instructions: &[Instruction], after: 
 fn rewrite_callback_high_base(
     instructions: &mut [Instruction],
     callback: CallbackAddress,
-    high_base: u8,
+    high_base: u32,
 ) {
     let Instruction::AddImmediateShifted { d, .. } = &mut instructions[callback.high] else {
         unreachable!("the recognized callback high remains a lis");

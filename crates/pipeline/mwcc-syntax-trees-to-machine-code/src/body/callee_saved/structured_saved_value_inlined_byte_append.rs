@@ -13,43 +13,43 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Transaction {
     append: usize,
-    command: u8,
-    status: u8,
+    command: u32,
+    status: u32,
 }
 
-fn copied_from_result(instruction: &Instruction) -> Option<u8> {
+fn copied_from_result(instruction: &Instruction) -> Option<u32> {
     match instruction {
         Instruction::AddImmediate {
             d,
-            a: Eabi::FIRST_GENERAL_ARGUMENT,
+            a: 3,
             immediate: 0,
         } => Some(*d),
         Instruction::Or {
             a,
-            s: Eabi::FIRST_GENERAL_ARGUMENT,
-            b: Eabi::FIRST_GENERAL_ARGUMENT,
+            s: 3,
+            b: 3,
         } => Some(*a),
         _ => None,
     }
 }
 
-fn copied_from_incoming(instruction: &Instruction) -> Option<u8> {
+fn copied_from_incoming(instruction: &Instruction) -> Option<u32> {
     match instruction {
         Instruction::AddImmediate {
             d,
-            a: Eabi::FIRST_GENERAL_ARGUMENT,
+            a: 3,
             immediate: 0,
         } => Some(*d),
         Instruction::Or {
             a,
-            s: Eabi::FIRST_GENERAL_ARGUMENT,
-            b: Eabi::FIRST_GENERAL_ARGUMENT,
+            s: 3,
+            b: 3,
         } => Some(*a),
         _ => None,
     }
 }
 
-fn copies_register(instruction: &Instruction, destination: u8, source: u8) -> bool {
+fn copies_register(instruction: &Instruction, destination: u32, source: u32) -> bool {
     match instruction {
         Instruction::AddImmediate {
             d,
@@ -63,7 +63,7 @@ fn copies_register(instruction: &Instruction, destination: u8, source: u8) -> bo
     }
 }
 
-fn recorded_result_packets(instructions: &[Instruction]) -> Vec<(usize, u8)> {
+fn recorded_result_packets(instructions: &[Instruction]) -> Vec<(usize, u32)> {
     instructions
         .windows(3)
         .enumerate()
@@ -72,8 +72,8 @@ fn recorded_result_packets(instructions: &[Instruction]) -> Vec<(usize, u8)> {
                 Instruction::BranchAndLink { .. },
                 Instruction::OrRecord {
                     a: saved,
-                    s: Eabi::FIRST_GENERAL_ARGUMENT,
-                    b: Eabi::FIRST_GENERAL_ARGUMENT,
+                    s: 3,
+                    b: 3,
                 },
                 branch,
             ] = window
@@ -153,8 +153,8 @@ fn recognize(instructions: &[Instruction]) -> Option<Transaction> {
         let (cursor_index_copy, cursor_source) = copied_cursor?;
         (*success == start + 6
             && *end == start + 16
-            && *error_result == Eabi::FIRST_GENERAL_ARGUMENT
-            && *success_result == Eabi::FIRST_GENERAL_ARGUMENT
+            && *error_result == Eabi::FIRST_GENERAL_ARGUMENT.into()
+            && *success_result == Eabi::FIRST_GENERAL_ARGUMENT.into()
             && copied_from_result(result_copy) == Some(status)
             && *tested_result == status
             && *guard == *compared
@@ -171,7 +171,7 @@ fn recognize(instructions: &[Instruction]) -> Option<Transaction> {
             && cursor_source == *cursor
             && cursor_index_copy == *cursor_index
             && *byte_address == *byte_base
-            && *stored_byte == command
+            && *stored_byte == command.into()
             && *old_length == *length
             && *stored_length == *incremented_length
             && *length_offset == *stored_length_offset)
@@ -194,15 +194,15 @@ fn recognize(instructions: &[Instruction]) -> Option<Transaction> {
     else {
         return None;
     };
-    if *command_load != command
+    if *command_load != command.into()
         || *status_load != status
-        || !copies_register(result_copy, Eabi::FIRST_GENERAL_ARGUMENT, status)
+        || !copies_register(result_copy, Eabi::FIRST_GENERAL_ARGUMENT.into(), status)
     {
         return None;
     }
     Some(Transaction {
         append,
-        command,
+        command: command.into(),
         status,
     })
 }
@@ -251,7 +251,7 @@ fn rewrite_append(generator: &mut Generator, start: usize) {
     *a = 4;
 }
 
-fn schedule_entry(generator: &mut Generator, command: u8, status: u8) {
+fn schedule_entry(generator: &mut Generator, command: u32, status: u32) {
     crate::move_instruction_before_retargeting(generator, 7, 3);
     crate::move_instruction_before_retargeting(generator, 6, 4);
     generator.output.instructions[4] = Instruction::StoreWord {
@@ -266,7 +266,7 @@ fn schedule_entry(generator: &mut Generator, command: u8, status: u8) {
     };
 }
 
-fn schedule_epilogue(generator: &mut Generator, command: u8, status: u8) {
+fn schedule_epilogue(generator: &mut Generator, command: u32, status: u32) {
     let end = generator.output.instructions.len();
     crate::move_instruction_before_retargeting(generator, end - 5, end - 7);
     crate::move_instruction_before_retargeting(generator, end - 4, end - 5);

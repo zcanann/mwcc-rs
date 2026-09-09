@@ -10,10 +10,10 @@ use super::DagNode;
 pub fn assign_registers_reverse_with_fixed(
     nodes: &[DagNode],
     order: &[usize],
-    params: &[(u32, u8)],
-    fixed: &[(usize, u8)],
-    pool: &[u8],
-) -> Option<Vec<Option<u8>>> {
+    params: &[(u32, u32)],
+    fixed: &[(usize, u32)],
+    pool: &[u32],
+) -> Option<Vec<Option<u32>>> {
     let mut position = vec![usize::MAX; nodes.len()];
     if order.len() != nodes.len() {
         return None;
@@ -33,7 +33,7 @@ pub fn assign_registers_reverse_with_fixed(
             .max()
             .unwrap_or(start)
     };
-    let mut occupied: Vec<(u8, usize, usize, Option<usize>)> = params
+    let mut occupied: Vec<(u32, usize, usize, Option<usize>)> = params
         .iter()
         .map(|&(value, register)| (register, 0, end_of(&[value], 0), None))
         .collect();
@@ -44,7 +44,7 @@ pub fn assign_registers_reverse_with_fixed(
             .iter()
             .any(|value| nodes[consumer].reads.contains(value))
     };
-    let available = |node: usize, register: u8, occupied: &[(u8, usize, usize, Option<usize>)]| {
+    let available = |node: usize, register: u32, occupied: &[(u32, usize, usize, Option<usize>)]| {
         let start = position[node];
         let end = end_of(&nodes[node].writes, start);
         !(register == 0 && nodes[node].forbid_r0)

@@ -1,9 +1,9 @@
 use super::*;
 
 pub(super) fn emit(generator: &mut Generator, plan: &IntrusiveListPop) {
-    const HEAD: u8 = 3;
-    const NEXT: u8 = 4;
-    const NODE: u8 = 5;
+    const HEAD: u32 = 3;
+    const NEXT: u32 = 4;
+    const NODE: u32 = 5;
 
     generator.output.pre_scheduled = true;
     generator.output.instructions.extend([

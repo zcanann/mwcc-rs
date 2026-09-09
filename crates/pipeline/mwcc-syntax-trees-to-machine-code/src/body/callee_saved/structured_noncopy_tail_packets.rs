@@ -100,7 +100,7 @@ impl Generator {
 #[derive(Clone, Copy)]
 struct CursorPacket {
     start: usize,
-    cursor: u8,
+    cursor: u32,
 }
 
 fn guarded_mode_packet(instructions: &[Instruction]) -> Option<CursorPacket> {
@@ -122,7 +122,7 @@ fn guarded_mode_packet(instructions: &[Instruction]) -> Option<CursorPacket> {
 #[derive(Clone, Copy)]
 struct ObjectPacket {
     start: usize,
-    saved: u8,
+    saved: u32,
 }
 
 fn terminal_object_packet(instructions: &[Instruction]) -> Option<ObjectPacket> {
@@ -210,20 +210,20 @@ fn final_terminal_object_packet(instructions: &[Instruction]) -> Option<usize> {
     })
 }
 
-fn set_shifted_destination(instruction: &mut Instruction, register: u8) {
+fn set_shifted_destination(instruction: &mut Instruction, register: u32) {
     let Instruction::AddImmediateShifted { d, .. } = instruction else {
         unreachable!()
     };
     *d = register;
 }
-fn set_add_low(instruction: &mut Instruction, destination: u8, base: u8) {
+fn set_add_low(instruction: &mut Instruction, destination: u32, base: u32) {
     let Instruction::AddImmediate { d, a, .. } = instruction else {
         unreachable!()
     };
     *d = destination;
     *a = base;
 }
-fn set_store_source(instruction: &mut Instruction, register: u8) {
+fn set_store_source(instruction: &mut Instruction, register: u32) {
     let Instruction::StoreWord { s, .. } = instruction else {
         unreachable!()
     };

@@ -1,11 +1,11 @@
 use super::*;
 
 pub(super) fn emit(generator: &mut Generator, plan: &ReleaseListBankToGlobal<'_>) {
-    const OBJECT: u8 = 27;
-    const PRIMARY_LIST: u8 = 28;
-    const LANE: u8 = 29;
-    const GLOBAL: u8 = 30;
-    const SOURCE: u8 = 31;
+    const OBJECT: u32 = 27;
+    const PRIMARY_LIST: u32 = 28;
+    const LANE: u32 = 29;
+    const GLOBAL: u32 = 30;
+    const SOURCE: u32 = 31;
     generator.non_leaf = true;
     generator.frame_size = 40;
     generator.callee_saved = vec![SOURCE, GLOBAL, LANE, PRIMARY_LIST, OBJECT];
@@ -98,7 +98,7 @@ fn emit_regular_lane(
     generator: &mut Generator,
     plan: &ReleaseListBankToGlobal<'_>,
     lane: usize,
-    destination: u8,
+    destination: u32,
     start: usize,
     next: usize,
 ) {

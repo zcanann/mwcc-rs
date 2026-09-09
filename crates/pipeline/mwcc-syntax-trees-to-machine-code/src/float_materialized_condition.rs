@@ -16,7 +16,7 @@ impl Generator {
         computed: &Expression,
         literal: &Expression,
         double: bool,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         if !self.unoptimized_inline_float_transaction_homes
             || !is_zero_literal(literal)
             || !is_three_component_squared_sum(computed)

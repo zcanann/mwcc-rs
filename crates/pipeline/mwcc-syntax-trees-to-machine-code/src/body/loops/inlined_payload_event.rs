@@ -39,12 +39,12 @@ impl Generator {
     }
 
     fn emit_inlined_payload_event(&mut self, shape: &InlinedPayloadEvent) {
-        const OBJECT: u8 = 26;
-        const EVENT: u8 = 27;
-        const ARGUMENT: u8 = 28;
-        const PAYLOAD: u8 = 29;
-        const REQUESTED_TYPE: u8 = 30;
-        const HEADER_ADDRESS: u8 = 31;
+        const OBJECT: u32 = 26;
+        const EVENT: u32 = 27;
+        const ARGUMENT: u32 = 28;
+        const PAYLOAD: u32 = 29;
+        const REQUESTED_TYPE: u32 = 30;
+        const HEADER_ADDRESS: u32 = 31;
         let failure = self.fresh_label();
         let predicate_failure = self.fresh_label();
         let predicate_done = self.fresh_label();

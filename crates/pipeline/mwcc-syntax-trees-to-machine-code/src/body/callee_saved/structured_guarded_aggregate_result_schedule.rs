@@ -58,7 +58,7 @@ impl Generator {
 struct GuardedAggregateResultPlan {
     start: usize,
     frame_offset: i16,
-    peer_base: u8,
+    peer_base: u32,
     peer_offset: i16,
 }
 

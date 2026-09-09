@@ -194,7 +194,7 @@ impl Generator {
     }
 
     fn emit_global_list_teardown(&mut self, shape: &GlobalListTeardown) {
-        const CURSOR: u8 = 31;
+        const CURSOR: u32 = 31;
         let loop_body = self.fresh_label();
         let loop_condition = self.fresh_label();
         let final_success = self.fresh_label();

@@ -11,12 +11,12 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Arm {
     start: usize,
-    object: u8,
-    scratch: u8,
+    object: u32,
+    scratch: u32,
     callback_high: usize,
     callback_low: usize,
-    callback_high_base: u8,
-    callback_argument: u8,
+    callback_high_base: u32,
+    callback_argument: u32,
 }
 
 fn external_target(relocation: &mwcc_machine_code::Relocation) -> Option<&str> {
@@ -126,7 +126,7 @@ fn recognize_at(
     })
 }
 
-fn live_after(live: &mwcc_vreg::Liveness, register: u8, index: usize) -> bool {
+fn live_after(live: &mwcc_vreg::Liveness, register: u32, index: usize) -> bool {
     let slot = 2 * index + 1;
     let reg = mwcc_vreg::Reg::from_field(register, mwcc_vreg::Class::General);
     if let Some(vreg) = reg.virtual_register() {
@@ -139,7 +139,7 @@ fn live_after(live: &mwcc_vreg::Liveness, register: u8, index: usize) -> bool {
         })
     } else {
         live.pinned.iter().any(|range| {
-            range.register == register
+            u32::from(range.register) == register
                 && range.class == mwcc_vreg::Class::General
                 && range
                     .live_slots
@@ -152,8 +152,8 @@ fn live_after(live: &mwcc_vreg::Liveness, register: u8, index: usize) -> bool {
 fn rewrite_registers(
     instructions: &mut [Instruction],
     arm: Arm,
-    object: u8,
-    callback_high_base: u8,
+    object: u32,
+    callback_high_base: u32,
 ) {
     let Instruction::LoadWord { d, .. } = &mut instructions[arm.start] else {
         unreachable!("the recognized state-object load remains present");

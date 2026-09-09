@@ -146,7 +146,7 @@ impl Generator {
         }
     }
 
-    fn schedule_async_callback_publication(&mut self, callback: u8) {
+    fn schedule_async_callback_publication(&mut self, callback: u32) {
         let swaps: Vec<_> = self
             .output
             .instructions

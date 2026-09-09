@@ -17,7 +17,7 @@ impl Generator {
     pub(crate) fn try_place_cached_condition_arithmetic(
         &mut self,
         expression: &Expression,
-    ) -> Option<u8> {
+    ) -> Option<u32> {
         let (operator, left, right) = cached_condition_arithmetic_parts(expression)?;
         let left_register = self.condition_float_register(left)?;
         let right_register = self.condition_float_register(right)?;
@@ -26,23 +26,23 @@ impl Generator {
         let instruction = match (operator, double) {
             (BinaryOperator::Add, false) => Instruction::FloatAddSingle {
                 d: destination,
-                a: left_register,
-                b: right_register,
+                a: u32::from(left_register),
+                b: u32::from(right_register),
             },
             (BinaryOperator::Add, true) => Instruction::FloatAddDouble {
                 d: destination,
-                a: left_register,
-                b: right_register,
+                a: u32::from(left_register),
+                b: u32::from(right_register),
             },
             (BinaryOperator::Subtract, false) => Instruction::FloatSubtractSingle {
                 d: destination,
-                a: left_register,
-                b: right_register,
+                a: u32::from(left_register),
+                b: u32::from(right_register),
             },
             (BinaryOperator::Subtract, true) => Instruction::FloatSubtractDouble {
                 d: destination,
-                a: left_register,
-                b: right_register,
+                a: u32::from(left_register),
+                b: u32::from(right_register),
             },
             _ => return None,
         };
@@ -57,7 +57,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         if !self.f1_holds_float_argument()
             || !self.is_float_located(left)
             || !self.is_float_located(right)
@@ -80,7 +80,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         let Expression::Unary {
             operator: UnaryOperator::Negate,
             operand,
@@ -112,7 +112,7 @@ impl Generator {
         loaded: &Expression,
         literal: &Expression,
         double: bool,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         if !self.behavior.float_compare_value_before_const
             || !self.f1_holds_float_argument()
             || !self.is_float_located(loaded)
@@ -134,7 +134,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         let Expression::Unary {
             operator: UnaryOperator::Negate,
             operand,
@@ -156,7 +156,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         if !matches!(
             left,
             Expression::Binary { .. }

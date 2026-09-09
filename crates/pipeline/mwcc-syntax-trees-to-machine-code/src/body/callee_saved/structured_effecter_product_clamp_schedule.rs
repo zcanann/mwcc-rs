@@ -22,10 +22,10 @@ impl Generator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Plan {
     start: usize,
-    owner: u8,
+    owner: u32,
     offsets: [i16; 3],
-    product: u8,
-    compared: u8,
+    product: u32,
+    compared: u32,
 }
 
 fn plan(output: &MachineFunction) -> Option<Plan> {

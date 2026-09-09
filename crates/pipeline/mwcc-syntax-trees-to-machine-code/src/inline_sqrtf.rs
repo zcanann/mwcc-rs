@@ -220,7 +220,7 @@ impl Generator {
     pub(crate) fn try_emit_retained_sqrtf(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if !self.is_retained_sqrtf_call(expression) {
             return Ok(false);

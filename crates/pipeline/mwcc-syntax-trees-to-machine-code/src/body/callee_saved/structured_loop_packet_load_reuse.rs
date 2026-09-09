@@ -73,7 +73,7 @@ pub(super) fn preserve_earlier_member_load(instructions: &mut [Instruction], set
 
 /// Register access for the straight-line integer subset allowed between the
 /// source load and packet setup. Unknown instructions reject the rewrite.
-fn general_access(instruction: &Instruction, register: u8) -> Option<(bool, bool)> {
+fn general_access(instruction: &Instruction, register: u32) -> Option<(bool, bool)> {
     use Instruction::*;
     let access = match instruction {
         AddImmediate { d, a, .. } | AddImmediateShifted { d, a, .. } => {

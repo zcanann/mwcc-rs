@@ -80,7 +80,7 @@ fn direct_global_callback(function: &Function) -> Option<Callback<'_>> {
 
 enum StoreAddress<'a> {
     SmallData(&'a str),
-    Fixed { high: i16, offset: i16, base: u8 },
+    Fixed { high: i16, offset: i16, base: u32 },
 }
 
 struct PrefixStore<'a> {
@@ -244,7 +244,7 @@ impl Generator {
                 || (location.width < 32
                     && location.width == parameter_type.width()
                     && location.signed != self.signed_of(parameter_type))
-                || location.register != index as u8 + 3
+                || location.register != (index as u8 + 3).into()
             {
                 return Ok(false);
             }
@@ -356,7 +356,7 @@ impl Generator {
             if tail && matches!(argument, Expression::Variable(_)) {
                 continue;
             }
-            self.evaluate(argument, Type::Int, index as u8 + 3)?;
+            self.evaluate(argument, Type::Int, (index as u8 + 3).into())?;
         }
         if linkage_first {
             self.output

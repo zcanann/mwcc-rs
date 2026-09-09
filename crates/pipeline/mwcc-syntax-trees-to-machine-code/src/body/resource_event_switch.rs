@@ -34,8 +34,8 @@ impl Generator {
     }
 
     fn emit_resource_event_switch(&mut self, shape: &ResourceEventSwitch) {
-        const OBJECT: u8 = 31;
-        const SELECTOR: u8 = 4;
+        const OBJECT: u32 = 31;
+        const SELECTOR: u32 = 4;
 
         let upper_dispatch = self.fresh_label();
         let initialize = self.fresh_label();

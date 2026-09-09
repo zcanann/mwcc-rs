@@ -307,7 +307,7 @@ fn initial_output_calls(instructions: &[Instruction]) -> Option<Vec<usize>> {
     (calls.len() == 4).then_some(calls)
 }
 
-pub(super) fn retain_initial_results(generator: &mut Generator, result: u8) -> bool {
+pub(super) fn retain_initial_results(generator: &mut Generator, result: u32) -> bool {
     let Some(initial_calls) = initial_output_calls(&generator.output.instructions) else {
         return false;
     };
@@ -429,7 +429,7 @@ fn schedule_target_access_packet(instructions: &mut [Instruction]) -> bool {
     true
 }
 
-pub(super) fn canonicalize_owner_copies(instructions: &mut [Instruction], owner: u8) {
+pub(super) fn canonicalize_owner_copies(instructions: &mut [Instruction], owner: u32) {
     let copies = instructions.iter().enumerate().filter_map(|(index, instruction)| {
         matches!(instruction, Instruction::Or { a: 3, s, b } if *s == owner && *b == owner)
             .then_some(index)
@@ -453,7 +453,7 @@ pub(super) fn canonicalize_owner_copies(instructions: &mut [Instruction], owner:
     }
 }
 
-fn schedule_append_buffer_packet(instructions: &mut [Instruction], owner: u8) -> bool {
+fn schedule_append_buffer_packet(instructions: &mut [Instruction], owner: u32) -> bool {
     let Some(start) = instructions.windows(5).position(|window| {
         matches!(window[0], Instruction::Or { a: 3, s, b } if s == owner && b == owner)
             && matches!(window[1], Instruction::AddImmediate { d: 4, a: 1, .. })

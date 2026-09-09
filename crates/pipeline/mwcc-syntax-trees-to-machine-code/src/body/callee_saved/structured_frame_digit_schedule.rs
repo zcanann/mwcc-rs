@@ -30,8 +30,8 @@ impl Generator {
         // The second digit must retain r4 while the earlier-issued range-test
         // byte occupies r5. These are preferences, not hard assignments:
         // overlapping live values and architectural constraints still win.
-        self.prefer_virtual_general(digit, 4);
-        self.prefer_virtual_general(most, 5);
+        self.prefer_virtual_general(digit.into(), 4);
+        self.prefer_virtual_general(most.into(), 5);
 
         // Source selection emits:
         //   digit0; bias0; digit1; scale; add; bias1; most; false; compare
@@ -63,7 +63,7 @@ impl Generator {
     }
 }
 
-fn frame_digit_pair_registers(window: &[Instruction]) -> Option<(u8, u8)> {
+fn frame_digit_pair_registers(window: &[Instruction]) -> Option<(u32, u32)> {
     let [Instruction::LoadByteZero {
         d: room,
         a: 1,

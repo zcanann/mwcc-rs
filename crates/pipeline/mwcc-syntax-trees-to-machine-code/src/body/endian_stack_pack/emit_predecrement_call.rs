@@ -125,7 +125,7 @@ fn emit_spill(generator: &mut Generator, width: u8) {
     }
 }
 
-fn swap_registers(width: u8) -> &'static [u8] {
+fn swap_registers(width: u8) -> &'static [u32] {
     match width {
         2 => &[5, 0],
         4 => &[7, 6, 5, 0],

@@ -25,7 +25,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<bool> {
         let Some((located, conditional)) = located_add_and_conditional(operator, left, right)
@@ -36,7 +36,7 @@ impl Generator {
             return Ok(false);
         }
 
-        let selected = self.fresh_virtual_float_preferring(Eabi::float_result().number);
+        let selected = self.fresh_virtual_float_preferring(u32::from(Eabi::float_result().number));
         self.evaluate_float(conditional, selected)?;
         self.emit_located_operand(located, destination)?;
         self.output.instructions.push(if double {

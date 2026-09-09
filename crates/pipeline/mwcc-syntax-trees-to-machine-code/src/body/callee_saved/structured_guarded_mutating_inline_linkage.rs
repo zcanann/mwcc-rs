@@ -159,6 +159,6 @@ fn same_saved_register_set(
     saved_registers == [29, 30, 31] && restored_registers == saved_registers
 }
 
-fn canonical_saved_offset(frame_bytes: i16, register: u8) -> i16 {
-    frame_bytes - 4 * i16::from(32 - register)
+fn canonical_saved_offset(frame_bytes: i16, register: u32) -> i16 {
+    frame_bytes - 4 * i16::try_from(32 - register).expect("register-derived offset")
 }

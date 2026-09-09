@@ -69,7 +69,7 @@ impl Generator {
         // intentionally conservative for straight-line bodies; this CFG owner
         // has enough liveness information to discharge that retained lane.
         self.legacy_inline_expansion_frame_bytes = 0;
-        let homes: Vec<u8> = survivors
+        let homes: Vec<u32> = survivors
             .iter()
             .map(|_| self.fresh_virtual_general())
             .collect();

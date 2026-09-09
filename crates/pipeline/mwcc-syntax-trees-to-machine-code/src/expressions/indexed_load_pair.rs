@@ -6,7 +6,7 @@ use super::*;
 
 struct ResidentMaskedSubscript<'a> {
     pointee: Pointee,
-    address: u8,
+    address: u32,
     index: masked_index::MaskedIndex<'a>,
 }
 
@@ -100,7 +100,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         let (first_expression, second_expression) = if operator == BinaryOperator::Subtract {
             (right, left)
         } else {
@@ -157,7 +157,7 @@ impl Generator {
         &mut self,
         first: &ResidentMaskedSubscript<'_>,
         second: &ResidentMaskedSubscript<'_>,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         let (biased, plain, biased_is_primary, immediate) =
             match (first.index.bias, second.index.bias) {
                 (Some(value), None) => (first, second, true, value),
@@ -227,7 +227,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         if let Some(registers) = self.place_two_global_loads(operator, left, right)? {
             return Ok(Some(registers));
         }

@@ -106,18 +106,18 @@ impl Generator {
         Ok(true)
     }
 
-    fn emit_condition_mask_and(&mut self, source: u8, mask: u8) {
+    fn emit_condition_mask_and(&mut self, source: u32, mask: u32) {
         let instruction = if self.preceded_by_asm {
             Instruction::And {
                 a: GENERAL_SCRATCH,
                 s: source,
-                b: mask,
+                b: u32::from(mask),
             }
         } else {
             Instruction::AndRecord {
                 a: GENERAL_SCRATCH,
                 s: source,
-                b: mask,
+                b: u32::from(mask),
             }
         };
         self.output.instructions.push(instruction);
@@ -127,7 +127,7 @@ impl Generator {
         &mut self,
         value: &Expression,
         mask: &Expression,
-        result: u8,
+        result: u32,
     ) -> Compilation<()> {
         if !self.preceded_by_asm {
             return Ok(());

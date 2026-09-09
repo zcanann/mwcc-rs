@@ -40,7 +40,7 @@ impl Generator {
     }
 }
 
-fn memory_displacement(instruction: &mut Instruction) -> Option<(&mut u8, &mut i16)> {
+fn memory_displacement(instruction: &mut Instruction) -> Option<(&mut u32, &mut i16)> {
     match instruction {
         Instruction::LoadWord { a, offset, .. }
         | Instruction::LoadByteZero { a, offset, .. }
@@ -56,7 +56,7 @@ fn memory_displacement(instruction: &mut Instruction) -> Option<(&mut u8, &mut i
 fn fold_plan(
     instructions: &[Instruction],
     relocated: &HashSet<usize>,
-    base: u8,
+    base: u32,
     definition: usize,
 ) -> Option<Vec<(usize, Instruction)>> {
     let (alias, displacement) = match instructions.get(definition)? {

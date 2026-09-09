@@ -26,7 +26,7 @@ struct Plan {
 impl Generator {
     pub(crate) fn hoist_structured_loop_jump_table_bases(
         &mut self,
-        retained_homes: &[u8],
+        retained_homes: &[u32],
     ) -> bool {
         let Some(plan) = plan(&self.output, retained_homes.len()) else {
             return false;

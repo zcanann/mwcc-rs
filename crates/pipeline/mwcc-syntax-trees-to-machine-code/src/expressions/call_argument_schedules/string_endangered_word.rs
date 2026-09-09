@@ -5,7 +5,7 @@ use super::*;
 fn representation_preserving_leaf(
     generator: &Generator,
     mut expression: &Expression,
-) -> Option<u8> {
+) -> Option<u32> {
     loop {
         match expression {
             Expression::Cast {
@@ -38,10 +38,10 @@ impl Generator {
         let [Expression::StringLiteral(bytes), second] = arguments else {
             return Ok(false);
         };
-        let second_register = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+        let second_register: u32 = (Eabi::FIRST_GENERAL_ARGUMENT + 1) as u32;
         if !direct_call
             || representation_preserving_leaf(self, second)
-                .is_none_or(|source| source != Eabi::FIRST_GENERAL_ARGUMENT)
+                .is_none_or(|source| source != Eabi::FIRST_GENERAL_ARGUMENT.into())
         {
             return Ok(false);
         }
@@ -52,9 +52,9 @@ impl Generator {
         if small_data_string {
             self.output.instructions.push(Instruction::move_register(
                 second_register,
-                Eabi::FIRST_GENERAL_ARGUMENT,
+                u32::from(Eabi::FIRST_GENERAL_ARGUMENT),
             ));
-            self.emit_string_literal(bytes, Eabi::FIRST_GENERAL_ARGUMENT)?;
+            self.emit_string_literal(bytes, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
             return Ok(true);
         }
 
@@ -63,12 +63,12 @@ impl Generator {
             self.output.packed_string_literals = true;
         }
         let high = second_register + 1;
-        self.emit_address_high(high, &placeholder);
+        self.emit_address_high(high.into(), &placeholder);
         self.output.instructions.push(Instruction::move_register(
             second_register,
-            Eabi::FIRST_GENERAL_ARGUMENT,
+            u32::from(Eabi::FIRST_GENERAL_ARGUMENT),
         ));
-        self.emit_string_address_low(&placeholder, high, Eabi::FIRST_GENERAL_ARGUMENT);
+        self.emit_string_address_low(&placeholder, high, u32::from(Eabi::FIRST_GENERAL_ARGUMENT));
         Ok(true)
     }
 }

@@ -44,8 +44,8 @@ pub(crate) fn address_identity_leaf(expression: &Expression) -> Option<&str> {
 /// The displacement load for a pointee type (`lwz`/`lbz`/`lha`/`lhz`/`lfs`).
 pub(crate) fn displacement_load(
     pointee: Pointee,
-    d: u8,
-    a: u8,
+    d: u32,
+    a: u32,
     offset: i16,
 ) -> Compilation<Instruction> {
     Ok(match pointee {
@@ -67,7 +67,7 @@ pub(crate) fn displacement_load(
 }
 
 /// The indexed load for a pointee type (`lwzx`/`lbzx`/`lhax`/`lhzx`/`lfsx`).
-pub(crate) fn indexed_load(pointee: Pointee, d: u8, a: u8, b: u8) -> Compilation<Instruction> {
+pub(crate) fn indexed_load(pointee: Pointee, d: u32, a: u32, b: u32) -> Compilation<Instruction> {
     Ok(match pointee {
         Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer | Pointee::WordPointer => {
             Instruction::LoadWordIndexed { d, a, b }
@@ -132,8 +132,8 @@ pub(crate) fn pointer_stride(value_type: Type) -> Option<u32> {
 /// The displacement store for a pointee type (`stw`/`stb`/`sth`/`stfs`).
 pub(crate) fn displacement_store(
     pointee: Pointee,
-    s: u8,
-    a: u8,
+    s: u32,
+    a: u32,
     offset: i16,
 ) -> Compilation<Instruction> {
     Ok(match pointee {
@@ -289,7 +289,7 @@ mod tests {
 }
 
 /// The indexed store for a pointee type (`stwx`/`stbx`/`sthx`/`stfsx`).
-pub(crate) fn indexed_store(pointee: Pointee, s: u8, a: u8, b: u8) -> Compilation<Instruction> {
+pub(crate) fn indexed_store(pointee: Pointee, s: u32, a: u32, b: u32) -> Compilation<Instruction> {
     Ok(match pointee {
         Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer | Pointee::WordPointer => {
             Instruction::StoreWordIndexed { s, a, b }

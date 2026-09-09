@@ -42,7 +42,7 @@ fn bounds(output: &MachineFunction, head: usize, backedge: usize) -> Option<Coun
     {
         return None;
     }
-    let step_registers: Vec<u8> = output.instructions[backedge.saturating_sub(8)..backedge]
+    let step_registers: Vec<u32> = output.instructions[backedge.saturating_sub(8)..backedge]
         .iter()
         .filter_map(|instruction| match instruction {
             Instruction::AddImmediate { d, a, immediate }

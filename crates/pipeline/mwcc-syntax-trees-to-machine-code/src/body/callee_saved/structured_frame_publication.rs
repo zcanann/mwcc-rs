@@ -14,7 +14,7 @@ use super::structured_loop_register_pressure::DENSE_SAVED_GPR_COUNT;
 pub(super) const OWNER_OFFSET: i16 = 16;
 pub(super) const CURSOR_OFFSET: i16 = 20;
 pub(super) const LOCAL_REGION_BYTES: i16 = 16;
-const OWNER_INCOMING: u8 = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+const OWNER_INCOMING: u32 = 4;
 
 #[derive(Clone)]
 pub(super) struct StructuredFramePublication {
@@ -90,7 +90,7 @@ impl StructuredFramePublication {
     /// The saturated frame's three retained parameters are discovered in
     /// reverse source order. MWCC assigns the two extents from r14 upward and
     /// keeps the primary aggregate base in r26.
-    pub(super) fn saved_parameter_preference(&self, home_index: usize) -> Option<u8> {
+    pub(super) fn saved_parameter_preference(&self, home_index: usize) -> Option<u32> {
         [14, 15, 26].get(home_index).copied()
     }
 }

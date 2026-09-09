@@ -548,10 +548,10 @@ impl Generator {
 
     fn emit_parameterized_rmw_reset(
         &mut self,
-        base: u8,
+        base: u32,
         offset: i16,
         mask: u16,
-        mask_register: Option<u8>,
+        mask_register: Option<u32>,
     ) {
         // Preserve the second volatile read even though its address and mask
         // are shared with the preceding update.

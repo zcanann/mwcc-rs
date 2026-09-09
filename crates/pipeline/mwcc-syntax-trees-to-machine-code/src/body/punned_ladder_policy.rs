@@ -6,9 +6,9 @@ use mwcc_versions::{ComputedStoreIssueStyle, PunnedFloatFrameConvention};
 pub(crate) struct PairLadderPlan {
     pub(crate) frame_size: i16,
     pub(crate) frame_delta: i16,
-    pub(crate) high_x: u8,
-    pub(crate) high_y: u8,
-    pub(crate) low_y: u8,
+    pub(crate) high_x: u32,
+    pub(crate) high_y: u32,
+    pub(crate) low_y: u32,
 }
 
 pub(crate) fn pair_ladder_plan(convention: PunnedFloatFrameConvention) -> PairLadderPlan {

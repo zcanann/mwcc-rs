@@ -20,7 +20,7 @@ impl Generator {
     pub(crate) fn reconcile_allocated_general_frame(
         &mut self,
         allocation: &Allocation,
-        allocated_callee_saved: &[u8],
+        allocated_callee_saved: &[u32],
     ) -> Compilation<()> {
         let declared = self.callee_saved.clone();
         let mut required = allocated_callee_saved.to_vec();
@@ -31,7 +31,7 @@ impl Generator {
             };
             if let Some(register) = physical {
                 if self.constraints.general_callee_saved.contains(&register) {
-                    required.push(register);
+                    required.push(register.into());
                 }
             }
         }
@@ -64,8 +64,8 @@ impl Generator {
         });
         let declared_covers_required = required.iter().all(|required| {
             declared.iter().any(|home| match Reg::from_field(*home, Class::General) {
-                Reg::Physical(register) => register == *required,
-                Reg::Virtual(register) => allocation.physical(register) == Some(*required),
+                Reg::Physical(register) => u32::from(register) == *required,
+                Reg::Virtual(register) => allocation.physical(register).map(u32::from) == Some(*required),
             })
         });
         // Equal slot counts do not prove coverage: a logical home may color
@@ -298,8 +298,8 @@ impl Generator {
     /// are supported: inline `stmw`/`lmw` and `_savegpr_N`/`_restgpr_N`.
     fn grow_dense_general_save_range(
         &mut self,
-        declared: &[u8],
-        required: &[u8],
+        declared: &[u32],
+        required: &[u32],
     ) -> Compilation<bool> {
         let Some(new_first) = dense_suffix_first(required) else {
             return Ok(false);
@@ -309,7 +309,7 @@ impl Generator {
                 Diagnostic::error("dense callee-saved range is too large")
             })?)
             .ok_or_else(|| Diagnostic::error("dense callee-saved range is too large"))?;
-        if new_first >= old_first {
+        if new_first >= old_first.into() {
             return Ok(false);
         }
 
@@ -321,7 +321,7 @@ impl Generator {
             .filter_map(|(index, instruction)| {
                 matches!(
                     instruction,
-                    Instruction::StoreMultipleWord { s, a: 1, .. } if *s == old_first
+                    Instruction::StoreMultipleWord { s, a: 1, .. } if *s == old_first.into()
                 )
                 .then_some(index)
             })
@@ -334,7 +334,7 @@ impl Generator {
             .filter_map(|(index, instruction)| {
                 matches!(
                     instruction,
-                    Instruction::LoadMultipleWord { d, a: 1, .. } if *d == old_first
+                    Instruction::LoadMultipleWord { d, a: 1, .. } if *d == old_first.into()
                 )
                 .then_some(index)
             })
@@ -423,7 +423,7 @@ impl Generator {
     }
 }
 
-fn dense_suffix_first(registers: &[u8]) -> Option<u8> {
+fn dense_suffix_first(registers: &[u32]) -> Option<u32> {
     let &first = registers.last()?;
     let expected: Vec<_> = (first..=31).rev().collect();
     (registers == expected).then_some(first)

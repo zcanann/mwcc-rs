@@ -220,7 +220,7 @@ fn convert_location(location: DebugVariableLocation) -> Compilation<VariableLoca
 }
 
 fn infer_selected_pointer_register(machine: &MachineFunction) -> Compilation<u8> {
-    let mut load_counts = HashMap::<u8, usize>::new();
+    let mut load_counts = HashMap::<u32, usize>::new();
     for instruction in &machine.instructions {
         if let Instruction::LoadWord { d, a: 0, offset: 0 } = instruction {
             *load_counts.entry(*d).or_default() += 1;
@@ -230,7 +230,7 @@ fn infer_selected_pointer_register(machine: &MachineFunction) -> Compilation<u8>
         .into_iter()
         .filter(|(register, count)| *register >= 3 && *count >= 2)
         .max_by_key(|(register, count)| (*count, *register))
-        .map(|(register, _)| register)
+        .and_then(|(register, _)| u8::try_from(register).ok())
         .ok_or_else(invalid_plan)
 }
 
@@ -239,8 +239,8 @@ fn infer_saved_parameter_register(machine: &MachineFunction, incoming: u8) -> Co
         .instructions
         .iter()
         .find_map(|instruction| match instruction {
-            Instruction::Or { a, s, b } if *s == incoming && *b == incoming && *a != incoming => {
-                Some(*a)
+            Instruction::Or { a, s, b } if *s == u32::from(incoming) && *b == u32::from(incoming) && *a != u32::from(incoming) => {
+                u8::try_from(*a).ok()
             }
             _ => None,
         })

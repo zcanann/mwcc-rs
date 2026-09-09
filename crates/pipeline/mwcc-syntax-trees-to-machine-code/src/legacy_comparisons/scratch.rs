@@ -162,7 +162,7 @@ impl Generator {
         }
     }
 
-    fn load_base_registers(&self, expression: &Expression) -> Vec<u8> {
+    fn load_base_registers(&self, expression: &Expression) -> Vec<u32> {
         crate::expressions::load_base_name(expression)
             .and_then(|name| self.lookup_general(name))
             .into_iter()

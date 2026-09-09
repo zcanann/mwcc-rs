@@ -23,7 +23,7 @@ impl Generator {
             return Ok(false);
         };
 
-        const OBJECT: u8 = 31;
+        const OBJECT: u32 = 31;
         self.non_leaf = true;
         self.frame_size = 16;
         self.callee_saved = vec![OBJECT];

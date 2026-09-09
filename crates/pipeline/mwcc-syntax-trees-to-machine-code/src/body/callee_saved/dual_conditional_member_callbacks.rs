@@ -27,8 +27,8 @@ impl Generator {
             return Ok(false);
         }
 
-        const ALIAS: u8 = 31;
-        const OBJECT: u8 = 30;
+        const ALIAS: u32 = 31;
+        const OBJECT: u32 = 30;
         self.non_leaf = true;
         self.frame_size = 24;
         self.callee_saved = vec![ALIAS, OBJECT];

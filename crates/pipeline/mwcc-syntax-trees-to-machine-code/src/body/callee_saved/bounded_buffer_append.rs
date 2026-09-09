@@ -250,9 +250,9 @@ impl Generator {
         {
             return Ok(false);
         }
-        const ERROR: u8 = 31;
-        const LENGTH: u8 = 30;
-        const BUFFER: u8 = 29;
+        const ERROR: u32 = 31;
+        const LENGTH: u32 = 30;
+        const BUFFER: u32 = 29;
         let nonempty = self.fresh_label();
         let unclamped = self.fresh_label();
         let bulk = self.fresh_label();

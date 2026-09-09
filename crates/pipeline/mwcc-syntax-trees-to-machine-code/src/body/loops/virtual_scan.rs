@@ -32,8 +32,8 @@ impl Generator {
     }
 
     fn emit_virtual_collection_scan(&mut self, scan: &VirtualCollectionScan<'_>) {
-        const INDEX: u8 = 31;
-        const OBJECT: u8 = 30;
+        const INDEX: u32 = 31;
+        const OBJECT: u32 = 30;
 
         self.output.pre_scheduled = true;
         self.non_leaf = true;
@@ -156,7 +156,7 @@ impl Generator {
             .push(Instruction::BranchToLinkRegister);
     }
 
-    fn emit_virtual_call_from_object(&mut self, object: u8, vptr_offset: i16, slot: i16) {
+    fn emit_virtual_call_from_object(&mut self, object: u32, vptr_offset: i16, slot: i16) {
         self.output.instructions.push(Instruction::LoadWord {
             d: 12,
             a: object,

@@ -30,8 +30,8 @@ fn pure_general_argument(expression: &Expression) -> bool {
 }
 
 fn dependency_order(
-    uses: &[std::collections::HashSet<u8>],
-    destinations: &[u8],
+    uses: &[std::collections::HashSet<u32>],
+    destinations: &[u32],
     passthrough: &[bool],
 ) -> Option<Vec<usize>> {
     let source_order_is_unsafe = destinations.iter().enumerate().any(|(index, destination)| {
@@ -95,12 +95,12 @@ impl Generator {
         let Ok((second_source, second_width, _)) = self.leaf_info(second) else {
             return Ok(false);
         };
-        let first_argument = Eabi::FIRST_GENERAL_ARGUMENT;
+        let first_argument: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         let second_argument = first_argument + 1;
         if first_width != 32
             || second_width != 32
-            || first_source != second_argument
-            || second_source != first_argument
+            || first_source != second_argument.into()
+            || second_source != first_argument.into()
         {
             return Ok(false);
         }
@@ -108,8 +108,8 @@ impl Generator {
         let scratch = second_argument + 1;
         self.output
             .instructions
-            .push(Instruction::move_register(scratch, second_source));
-        self.emit_integer_materialization_copy(first_argument, first_source);
+            .push(Instruction::move_register(scratch.into(), second_source));
+        self.emit_integer_materialization_copy(first_argument.into(), first_source);
         self.emit_integer_materialization_copy(second_argument, scratch);
         Ok(true)
     }
@@ -158,7 +158,7 @@ impl Generator {
                 return Ok(false);
             }
         }
-        let destinations: Vec<u8> = (0..arguments.len()).map(|i| 3 + i as u8).collect();
+        let destinations: Vec<u32> = (0..arguments.len()).map(|i| 3 + i as u32).collect();
         let unsafe_order = destinations.iter().enumerate().any(|(i, target)| {
             sources[i].is_none_or(|(source, width, _)|
                 source != *target || width < 32 || types[i].width() < 32)
@@ -245,8 +245,8 @@ impl Generator {
             return Ok(false);
         }
 
-        let destinations: Vec<u8> = (0..arguments.len())
-            .map(|index| Eabi::FIRST_GENERAL_ARGUMENT + index as u8)
+        let destinations: Vec<u32> = (0..arguments.len())
+             .map(|index| u32::from(Eabi::FIRST_GENERAL_ARGUMENT) + index as u32)
             .collect();
         let uses: Vec<_> = arguments
             .iter()
@@ -266,7 +266,7 @@ impl Generator {
 
         let mut completed = Vec::with_capacity(arguments.len());
         for index in order {
-            let newly_reserved: Vec<u8> = completed
+            let newly_reserved: Vec<u32> = completed
                 .iter()
                 .copied()
                 .filter(|register| self.reserved.insert(*register))

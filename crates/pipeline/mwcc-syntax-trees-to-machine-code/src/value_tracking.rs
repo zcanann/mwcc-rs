@@ -597,8 +597,8 @@ impl Generator {
             return Ok(false);
         }
         let result = match function.return_type {
-            Type::Float => Eabi::float_result().number,
-            _ => Eabi::general_result().number,
+            Type::Float => u32::from(Eabi::float_result().number),
+            _ => u32::from(Eabi::general_result().number),
         };
         // Guards emit ahead of the inlined return in one of two verified forms.
         //
@@ -870,7 +870,7 @@ impl Generator {
             return Ok(false);
         }
 
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         let mut first_assignment = 0;
         if matches!(initializer, Expression::Variable(_)) {
             // Do not materialize a pure alias: build 163 folds its source register
@@ -968,7 +968,7 @@ impl Generator {
         // folds in place ONLY in the init (`addi r3,r3,5` / `mulli r3,r3,5`); a constant
         // in a later STEP instead reassociates the chain (`t=t+5` -> `a+(b+5)`), which
         // the substitution path owns, so the step loop below admits register operands only.
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         let Some(Expression::Binary {
             operator: init_operator,
             left: init_left,
@@ -1171,7 +1171,7 @@ enum AccumulatorOp {
 /// Emit `dst = left OP right` for the in-place accumulator, matching mwcc's operand
 /// placement: `add`/`mullw` take `(dst, left, right)`; subtraction is `subf dst,
 /// right, left` because `subf` computes `b - a` (the subtrahend fills the `a` field).
-fn accumulate(operator: AccumulatorOp, dst: u8, left: u8, right: u8) -> Instruction {
+fn accumulate(operator: AccumulatorOp, dst: u32, left: u32, right: u32) -> Instruction {
     match operator {
         AccumulatorOp::Add => Instruction::Add {
             d: dst,
@@ -1198,8 +1198,8 @@ fn accumulate(operator: AccumulatorOp, dst: u8, left: u8, right: u8) -> Instruct
 /// with `addis`/`lis` there, a form left to defer.
 fn accumulate_immediate(
     operator: AccumulatorOp,
-    dst: u8,
-    left: u8,
+    dst: u32,
+    left: u32,
     constant: i64,
 ) -> Option<Instruction> {
     Some(match operator {

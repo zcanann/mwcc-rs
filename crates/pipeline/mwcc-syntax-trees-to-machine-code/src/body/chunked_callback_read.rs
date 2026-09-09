@@ -34,13 +34,13 @@ impl Generator {
     }
 
     fn emit_chunked_callback_read(&mut self, shape: &ChunkedCallbackRead) {
-        const OBJECT: u8 = 27;
-        const TARGET: u8 = 28;
-        const REMAINING: u8 = 29;
-        const USED: u8 = 30;
-        const EXTRA: u8 = 31;
-        const ALIGNED: u8 = 6;
-        const READ_SIZE: u8 = 5;
+        const OBJECT: u32 = 27;
+        const TARGET: u32 = 28;
+        const REMAINING: u32 = 29;
+        const USED: u32 = 30;
+        const EXTRA: u32 = 31;
+        const ALIGNED: u32 = 6;
+        const READ_SIZE: u32 = 5;
 
         let bounded = self.fresh_label();
         let loop_body = self.fresh_label();

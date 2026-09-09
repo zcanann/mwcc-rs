@@ -142,7 +142,7 @@ impl Generator {
     /// Emit the EABI helper-call frame used when a dense suffix of GPRs is
     /// cheaper to save through `_savegpr_N` than with individual stores. The
     /// matching epilogue is owned by [`Self::emit_restgpr_frame_epilogue`].
-    pub(crate) fn emit_savegpr_frame_prologue(&mut self, first: u8, frame_size: i16) {
+    pub(crate) fn emit_savegpr_frame_prologue(&mut self, first: u32, frame_size: i16) {
         self.emit_savegpr_frame_prologue_with_convention(
             first,
             frame_size,
@@ -152,7 +152,7 @@ impl Generator {
 
     pub(crate) fn emit_savegpr_frame_prologue_with_convention(
         &mut self,
-        first: u8,
+        first: u32,
         frame_size: i16,
         convention: FrameConvention,
     ) {
@@ -201,13 +201,13 @@ impl Generator {
 
     /// Close a frame opened by [`Self::emit_savegpr_frame_prologue`]. Register
     /// restoration happens before the LR reload, matching MWCC's helper ABI.
-    pub(crate) fn emit_restgpr_frame_epilogue(&mut self, first: u8) {
+    pub(crate) fn emit_restgpr_frame_epilogue(&mut self, first: u32) {
         self.emit_restgpr_frame_epilogue_with_convention(first, FrameConvention::Predecrement);
     }
 
     pub(crate) fn emit_restgpr_frame_epilogue_with_convention(
         &mut self,
-        first: u8,
+        first: u32,
         convention: FrameConvention,
     ) {
         debug_assert_eq!(self.callee_saved.first().copied(), Some(first));
@@ -256,7 +256,7 @@ impl Generator {
     /// callee-saved home with `addi d,s,0`. The semantic owner supplies the
     /// instruction range and source homes; ordinary forwarding copies remain
     /// untouched.
-    pub(crate) fn normalize_legacy_materialization_copies(&mut self, start: usize, sources: &[u8]) {
+    pub(crate) fn normalize_legacy_materialization_copies(&mut self, start: usize, sources: &[u32]) {
         if self.behavior.frame_convention != FrameConvention::LinkageFirst {
             return;
         }
@@ -409,7 +409,7 @@ impl Generator {
                         | Instruction::CompareLogicalWordImmediate { a, .. } => *a,
                         _ => return false,
                     };
-                    (3..3 + self.entry_parameter_words.min(8) as u8)
+                    (3..3 + self.entry_parameter_words.min(8) as u32)
                         .contains(&register)
                 });
         let preserve_logical_size = self.legacy_callee_saved_frame_layout
@@ -440,7 +440,7 @@ impl Generator {
                             Instruction::OrRecord { a, s, b }
                                 if s == b
                                     && physical_saved.contains(a)
-                                    && (3..3 + self.entry_parameter_words.min(8) as u8)
+                                    && (3..3 + self.entry_parameter_words.min(8) as u32)
                                         .contains(s)
                         )
                     });
@@ -1019,7 +1019,7 @@ impl Generator {
 
     fn normalize_restored_stack_saved_gpr_epilogue(
         &mut self,
-        physical_saved: &[u8],
+        physical_saved: &[u32],
         frame_size: i16,
     ) {
         let Some(mut link_reload) = self.output.instructions.iter().rposition(|instruction| {
@@ -1596,7 +1596,7 @@ impl Generator {
                 instruction,
                 Instruction::FloatSubtractDouble { d, .. }
                     | Instruction::FloatSubtractSingle { d, .. }
-                    if *d == Eabi::float_result().number
+                    if *d == u32::from(Eabi::float_result().number)
             )
         });
         let padding = if returned { 8 } else { 0 };
@@ -1658,7 +1658,7 @@ impl Generator {
 
     /// Copy a parameter or call result into its callee-saved home using the
     /// generation's allocator-selected idiom.
-    pub(crate) fn emit_callee_saved_home_copy(&mut self, destination: u8, source: u8) {
+    pub(crate) fn emit_callee_saved_home_copy(&mut self, destination: u32, source: u32) {
         match self.behavior.frame_convention {
             FrameConvention::Predecrement => {
                 self.output
@@ -1678,7 +1678,7 @@ impl Generator {
     /// Begin a linkage-first non-leaf function, optionally preserving GPRs at
     /// the top of an 8-byte-aligned frame. The incoming stack pointer remains
     /// addressable until LR has been stored in its caller linkage area.
-    pub(crate) fn emit_linkage_first_nonleaf_prologue(&mut self, callee_saved: &[u8]) {
+    pub(crate) fn emit_linkage_first_nonleaf_prologue(&mut self, callee_saved: &[u32]) {
         debug_assert_eq!(
             self.behavior.frame_convention,
             FrameConvention::LinkageFirst
@@ -1815,7 +1815,7 @@ fn normalize_build163_direct_call_left_shifts(
 
 fn linkage_first_saved_register_epilogue(
     frame_size: i16,
-    saved_registers: &[u8],
+    saved_registers: &[u32],
     style: mwcc_versions::SavedGprEpilogueStyle,
 ) -> Vec<Instruction> {
     let restored_stack_reload = style
@@ -2073,7 +2073,7 @@ fn schedule_interleaved_saved_register_copy(instructions: &mut [Instruction]) {
 /// different physical identity even though both represent one ABI slot.
 fn relayout_callee_saved_slots(
     instructions: &mut [Instruction],
-    saved_registers: &[u8],
+    saved_registers: &[u32],
     old_frame_size: i16,
     new_frame_size: i16,
 ) {
@@ -2347,7 +2347,7 @@ fn retained_lane_growth_after_conversion_slack(
 /// saved home.
 fn saved_home_loaded_from_entry_parameter(
     instructions: &[Instruction],
-    saved_registers: &[u8],
+    saved_registers: &[u32],
     entry_parameter_words: usize,
 ) -> bool {
     let mut live_entry_register = [false; 32];
@@ -2366,7 +2366,7 @@ fn saved_home_loaded_from_entry_parameter(
         if loaded.is_some_and(|(destination, base)| {
             saved_registers.contains(&destination)
                 && live_entry_register
-                    .get(usize::from(base))
+                    .get(usize::try_from(base).expect("register-derived offset"))
                     .copied()
                     .unwrap_or(false)
         }) {
@@ -2377,7 +2377,7 @@ fn saved_home_loaded_from_entry_parameter(
             if operand.role == mwcc_vreg::RegisterRole::Define
                 && operand.class == mwcc_vreg::Class::General
             {
-                live_entry_register[usize::from(operand.register)] = false;
+                live_entry_register[usize::try_from(operand.register).expect("register-derived offset")] = false;
             }
         }
     }
@@ -2487,15 +2487,15 @@ fn plain_linkage_entry_clear(instructions: &[Instruction], start: usize, end: us
 fn saved_lmw_precedes_link_reload(
     output: &mwcc_machine_code::MachineFunction,
     reload: usize,
-    saved: &[u8],
+    saved: &[u32],
     frame_size: i16,
 ) -> bool {
     let Some(Instruction::LoadMultipleWord { d: first @ 14..=31, a: 1, offset }) =
         reload.checked_sub(1).and_then(|at| output.instructions.get(at))
     else { return false; };
-    if saved.len() != usize::from(32 - first)
+    if saved.len() != usize::try_from(32 - first).expect("register-derived offset")
         || !(*first..=31).all(|r| saved.contains(&r))
-        || *offset < 0 || i32::from(*offset) + 4 * i32::from(32 - first) > i32::from(frame_size)
+        || *offset < 0 || i32::from(*offset) + 4 * i32::try_from(32 - first).expect("register-derived offset") > i32::from(frame_size)
         || !output.instructions[..reload - 1].iter().any(|i| matches!(i,
             Instruction::StoreMultipleWord { s, a: 1, offset: slot } if s == first && slot == offset))
         || !matches!(output.instructions.get(reload + 1..), Some([
@@ -3073,14 +3073,14 @@ mod tests {
                     let mut instructions = Vec::new();
                     for (index, &register) in saves.iter().enumerate() {
                         instructions.push(Instruction::StoreWord {
-                            s: register,
+                            s: u32::from(register),
                             a: 1,
                             offset: 28 - 4 * index as i16,
                         });
                         if copies & (1 << index) != 0 {
                             instructions.push(Instruction::AddImmediate {
-                                d: register,
-                                a: 3 + index as u8,
+                                d: u32::from(register),
+                                a: u32::from(3 + index as u8),
                                 immediate: 0,
                             });
                         }
@@ -3094,7 +3094,7 @@ mod tests {
                             let register = restores[if reverse { 3 - index } else { index }];
                             let slot = saves.iter().position(|&saved| saved == register).unwrap();
                             instructions.push(Instruction::LoadWord {
-                                d: register,
+                                d: u32::from(register),
                                 a: 1,
                                 offset: 28 - 4 * slot as i16,
                             });
@@ -3108,10 +3108,10 @@ mod tests {
                     for instruction in &instructions[..entry_end] {
                         match instruction {
                             Instruction::StoreWord { s, a: 1, offset } => {
-                                stack.insert(*offset, registers[usize::from(*s)]);
+                                stack.insert(*offset, registers[*s as usize]);
                             }
                             Instruction::AddImmediate { d, a, immediate: 0 } => {
-                                registers[usize::from(*d)] = registers[usize::from(*a)];
+                                registers[*d as usize] = registers[*a as usize];
                             }
                             other => panic!("unexpected entry instruction: {other:?}"),
                         }
@@ -3122,7 +3122,7 @@ mod tests {
                             let Instruction::LoadWord { d, a: 1, offset } = instruction else {
                                 panic!("expected a saved-register restore")
                             };
-                            registers[usize::from(*d)] = stack[offset];
+                            registers[*d as usize] = stack[offset];
                         }
                         assert_eq!(
                             registers[28..32],

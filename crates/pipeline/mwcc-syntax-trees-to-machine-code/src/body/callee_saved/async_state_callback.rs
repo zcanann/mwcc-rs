@@ -349,7 +349,7 @@ fn recognize(function: &Function) -> Option<AsyncStateCallback<'_>> {
 }
 
 impl Generator {
-    fn emit_async_callback_address(&mut self, callback: &str, destination: u8) {
+    fn emit_async_callback_address(&mut self, callback: &str, destination: u32) {
         self.emit_address_high(3, callback);
         self.record_relocation(RelocationKind::Addr16Lo, callback);
         self.output.instructions.push(Instruction::AddImmediate {
@@ -385,7 +385,7 @@ impl Generator {
             return Ok(false);
         }
 
-        const SAVED_REQUEST: u8 = 31;
+        const SAVED_REQUEST: u32 = 31;
         const FRAME_SIZE: i16 = 24;
         self.non_leaf = true;
         self.frame_size = FRAME_SIZE;

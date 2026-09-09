@@ -5,11 +5,11 @@ use super::super::*;
 use super::recognize::{EndianStackUnpack, InlineRead};
 
 struct Registers {
-    buffer: u8,
-    selected: u8,
+    buffer: u32,
+    selected: u32,
     length: u8,
-    error: u8,
-    output: u8,
+    error: u32,
+    output: u32,
 }
 
 pub(super) fn emit(
@@ -109,7 +109,7 @@ pub(super) fn emit(
             a: registers.buffer,
             offset: read.position_offset,
         },
-        Instruction::load_immediate(registers.length, i16::from(plan.width)),
+        Instruction::load_immediate(registers.length.into(), i16::from(plan.width)),
         Instruction::LoadWord {
             d: 0,
             a: registers.buffer,
@@ -118,14 +118,14 @@ pub(super) fn emit(
         Instruction::load_immediate(registers.error, 0),
         Instruction::SubtractFrom { d: 0, a: 3, b: 0 },
         Instruction::CompareLogicalWord {
-            a: registers.length,
+            a: u32::from(registers.length),
             b: 0,
         },
     ]);
     generator.emit_branch_conditional_to(4, 1, enough_bytes);
     generator.output.instructions.extend([
         Instruction::load_immediate(registers.error, read.error_code),
-        Instruction::move_register(registers.length, 0),
+        Instruction::move_register(registers.length.into(), 0),
     ]);
     generator.bind_label(enough_bytes);
     generator.output.instructions.extend([
@@ -135,7 +135,7 @@ pub(super) fn emit(
             immediate: read.data_offset,
         },
         Instruction::move_register(3, registers.selected),
-        Instruction::move_register(5, registers.length),
+        Instruction::move_register(5, registers.length.into()),
         Instruction::Add {
             d: 4,
             a: registers.buffer,
@@ -168,7 +168,7 @@ pub(super) fn emit(
         Instruction::Add {
             d: 0,
             a: 0,
-            b: registers.length,
+            b: u32::from(registers.length),
         },
         Instruction::StoreWord {
             s: 0,
@@ -227,7 +227,7 @@ pub(super) fn emit(
     ]);
 }
 
-fn emit_global_load(generator: &mut Generator, global: &str, absolute_base: u8) {
+fn emit_global_load(generator: &mut Generator, global: &str, absolute_base: u32) {
     match generator.behavior.global_addressing {
         GlobalAddressing::SmallData => {
             generator.record_relocation(RelocationKind::EmbSda21, global);

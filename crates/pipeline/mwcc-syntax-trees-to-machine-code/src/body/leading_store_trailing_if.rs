@@ -82,7 +82,7 @@ impl Generator {
 
         self.evaluate_general(
             &Expression::Variable(plan.cell_name.to_string()),
-            Eabi::general_result().number,
+            u32::from(Eabi::general_result().number),
         )?;
         self.emit_epilogue_and_return();
         Ok(true)

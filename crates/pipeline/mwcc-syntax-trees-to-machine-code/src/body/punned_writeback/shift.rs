@@ -883,9 +883,9 @@ impl Generator {
         let legacy_carry_roles = match &sign_block {
             Some(SignBlock::CarryDiamond { local, other, .. }) => {
                 policy::legacy_shift_carry_registers(style).map(|roles| {
-                    registers[mask_value_index.expect("carry mask allocated")] = roles.mask;
+                    registers[mask_value_index.expect("carry mask allocated")] = u32::from(roles.mask);
                     registers[computed_value_index] = roles.guard;
-                    registers[shift_value_index.expect("carry shift allocated")] = roles.shift;
+                    registers[shift_value_index.expect("carry shift allocated")] = u32::from(roles.shift);
                     registers[local_value_indices[*local].expect("carry source loaded")] =
                         roles.source;
                     registers[local_value_indices[*other].expect("carry other loaded")] =
@@ -1225,7 +1225,7 @@ impl Generator {
                              index: usize,
                              mutation: &Mutation,
                              result_in_scratch: bool|
-         -> u8 {
+         -> u32 {
             match mutation {
                 Mutation::Rewrite(constant) => {
                     // Conditional (guarded) rewrites write the HOME — the
@@ -1293,7 +1293,7 @@ impl Generator {
                     .map(|mutation| emit_mutation(self, index, mutation, final_shared_not))
                     .unwrap_or_else(|| home(index).unwrap_or(0));
                 self.output.instructions.push(Instruction::StoreWord {
-                    s: register,
+                    s: u32::from(register),
                     a: 1,
                     offset: 8 + offset,
                 });

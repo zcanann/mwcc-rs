@@ -95,9 +95,9 @@ impl Generator {
             return Ok(false);
         }
 
-        const LIST_POINTER: u8 = 29;
-        const LIST: u8 = 30;
-        const NEXT_NODE: u8 = 31;
+        const LIST_POINTER: u32 = 29;
+        const LIST: u32 = 30;
+        const NEXT_NODE: u32 = 31;
         const NODE_SLOT: i16 = 12;
         let loop_condition = self.fresh_label();
         let loop_body = self.fresh_label();

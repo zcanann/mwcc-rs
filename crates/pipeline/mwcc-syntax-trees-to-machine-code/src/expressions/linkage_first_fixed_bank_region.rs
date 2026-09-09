@@ -10,9 +10,9 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Region {
     start: usize,
-    high_base: u8,
-    full_base: u8,
-    scratch: u8,
+    high_base: u32,
+    full_base: u32,
+    scratch: u32,
     high_adjusted: i16,
     low: i16,
     value: i16,

@@ -3,9 +3,9 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct GuardedFramePointerUpdate {
     pub(super) start: usize,
-    pub(super) initial_pointer: u8,
-    pub(super) old_cursor: u8,
-    pub(super) scratch: u8,
+    pub(super) initial_pointer: u32,
+    pub(super) old_cursor: u32,
+    pub(super) scratch: u32,
 }
 
 pub(super) fn guarded_frame_pointer_update(
@@ -163,13 +163,13 @@ pub(super) fn guarded_frame_pointer_update(
     })
 }
 
-pub(super) fn direct_call_result_zero_test(instructions: &[Instruction]) -> Option<(usize, u8)> {
+pub(super) fn direct_call_result_zero_test(instructions: &[Instruction]) -> Option<(usize, u32)> {
     instructions.windows(4).enumerate().find_map(|(call, window)| {
         let [
             Instruction::BranchAndLink { .. },
             Instruction::AddImmediate {
                 d: saved,
-                a: Eabi::FIRST_GENERAL_ARGUMENT,
+                a: 3,
                 immediate: 0,
             },
             Instruction::CompareWordImmediate {

@@ -23,13 +23,13 @@ impl Generator {
             let Instruction::LoadWord { d, .. } = &mut self.output.instructions[load] else {
                 unreachable!("the guarded pointer load was matched")
             };
-            *d = Eabi::general_result().number;
+            *d = u32::from(Eabi::general_result().number);
             let Instruction::CompareLogicalWordImmediate { a, .. } =
                 &mut self.output.instructions[load + 1]
             else {
                 unreachable!("the guarded pointer comparison was matched")
             };
-            *a = Eabi::general_result().number;
+            *a = u32::from(Eabi::general_result().number);
             crate::remove_instruction_retargeting_to_next(self, reload);
         }
         if self.preserve_guarded_named_local_values {
@@ -76,7 +76,7 @@ impl Generator {
             crate::insert_instruction_retargeting(
                 self,
                 start + 2,
-                Instruction::move_register(Eabi::general_result().number, GENERAL_SCRATCH),
+                Instruction::move_register(u32::from(Eabi::general_result().number), GENERAL_SCRATCH),
             );
             start += 5;
         }
@@ -91,7 +91,7 @@ fn preserve_guarded_call_pointer_value(
     let Instruction::LoadWord { d: source, .. } = instructions[load] else {
         unreachable!("the guarded pointer load was matched")
     };
-    instructions[reload] = Instruction::move_register(Eabi::general_result().number, source);
+    instructions[reload] = Instruction::move_register(u32::from(Eabi::general_result().number), source);
 }
 
 fn guarded_call_pointer_reload(instructions: &[Instruction]) -> Option<(usize, usize)> {
@@ -325,7 +325,7 @@ fn normalize_two_argument_guarded_callback(generator: &mut Generator, mtlr: usiz
     }
 }
 
-fn callback_argument_destination(instruction: &Instruction) -> Option<u8> {
+fn callback_argument_destination(instruction: &Instruction) -> Option<u32> {
     match instruction {
         Instruction::AddImmediate { d, .. } => Some(*d),
         Instruction::Or { a, s, b } if s == b => Some(*a),

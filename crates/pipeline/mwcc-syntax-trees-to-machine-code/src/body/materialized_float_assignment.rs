@@ -145,8 +145,8 @@ fn is_float_assignment_statement(function: &Function, statement: &Statement) -> 
 }
 
 impl Generator {
-    fn next_general_parameter_home(&self) -> Option<u8> {
-        self.locations
+    fn next_general_parameter_home(&self) -> Option<u32> {
+        (self.locations
             .values()
             .filter(|location| location.class == ValueClass::General)
             .filter_map(|location| {
@@ -160,7 +160,7 @@ impl Generator {
             })
             .max()
             .and_then(|register| register.checked_add(1))
-            .filter(|register| *register <= 12)
+            .filter(|register| *register <= 12)).map(u32::from)
     }
 
     /// A loaded value paired with a computed subtree needs one reusable lane
@@ -189,7 +189,7 @@ impl Generator {
         }
     }
 
-    fn materialized_float_window_plan(&self, value: &Expression) -> Option<(u8, u8)> {
+    fn materialized_float_window_plan(&self, value: &Expression) -> Option<(u32, u32)> {
         let highest_input = self
             .locations
             .iter()
@@ -212,10 +212,10 @@ impl Generator {
             ));
         let demand = u8::try_from(demand).unwrap_or(14);
         let top = highest_input.saturating_add(demand);
-        (demand >= 2 && top <= 13).then_some((top, demand))
+        (demand >= 2 && top <= 13).then_some((top.into(), demand.into()))
     }
 
-    fn begin_materialized_float_window(&mut self, window: (u8, u8)) -> Option<(u8, u8)> {
+    fn begin_materialized_float_window(&mut self, window: (u32, u32)) -> Option<(u32, u32)> {
         if self.behavior.optimization == mwcc_versions::Optimization::O0
             && self.structured_constant_address_home.is_none()
         {
@@ -232,7 +232,7 @@ impl Generator {
         &mut self,
         value: &Expression,
         value_type: Type,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let Some(window) = self.materialized_float_window_plan(value) else {
             return self.evaluate_register_store_value(value, value_type, destination);
@@ -249,8 +249,8 @@ impl Generator {
         &mut self,
         value: &Expression,
         value_type: Type,
-        destination: u8,
-        window: (u8, u8),
+        destination: u32,
+        window: (u32, u32),
     ) -> Compilation<()> {
         let previous = self.begin_materialized_float_window(window);
         let previous_active = self.materialized_float_assignment_active;
@@ -294,7 +294,7 @@ impl Generator {
         self.materialized_float_window.is_some()
     }
 
-    pub(crate) fn fresh_materialized_float_temporary(&mut self) -> u8 {
+    pub(crate) fn fresh_materialized_float_temporary(&mut self) -> u32 {
         let Some((preferred, remaining)) = self.materialized_float_window else {
             return self.fresh_virtual_float();
         };

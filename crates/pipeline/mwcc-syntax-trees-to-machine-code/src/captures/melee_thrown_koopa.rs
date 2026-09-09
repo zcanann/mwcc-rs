@@ -32,7 +32,7 @@ impl Generator {
         Ok(true)
     }
 
-    fn prepare_thrown_koopa_frame(&mut self, saved_gprs: &[u8]) {
+    fn prepare_thrown_koopa_frame(&mut self, saved_gprs: &[u32]) {
         self.frame_size = 48;
         self.non_leaf = true;
         self.output.pre_scheduled = true;
@@ -261,7 +261,7 @@ impl Generator {
         });
     }
 
-    fn emit_thrown_koopa_epilogue(&mut self, saved_gprs: &[u8]) {
+    fn emit_thrown_koopa_epilogue(&mut self, saved_gprs: &[u32]) {
         self.output.instructions.push(Instruction::LoadWord {
             d: 0,
             a: 1,

@@ -190,7 +190,7 @@ impl Generator {
 
     fn emit_xnor_feedback_tail(
         &mut self,
-        data: u8,
+        data: u32,
         rotate: u8,
         bit: u8,
         data_shift: Instruction,

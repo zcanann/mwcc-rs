@@ -26,7 +26,7 @@ impl Generator {
     pub(crate) fn try_emit_constructor_initializer_run(
         &mut self,
         expression: &Expression,
-        object: u8,
+        object: u32,
     ) -> Compilation<bool> {
         let mut leaves = Vec::new();
         flatten_side_effects(expression, &mut leaves);
@@ -170,7 +170,7 @@ fn vtable_symbol(expression: &Expression) -> Option<&str> {
     name.starts_with("__vt__").then_some(name)
 }
 
-fn emit_word_store(generator: &mut Generator, source: u8, base: u8, offset: i16) {
+fn emit_word_store(generator: &mut Generator, source: u32, base: u32, offset: i16) {
     generator.output.instructions.push(Instruction::StoreWord {
         s: source,
         a: base,

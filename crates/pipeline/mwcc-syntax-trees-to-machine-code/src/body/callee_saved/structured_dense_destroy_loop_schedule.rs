@@ -47,7 +47,7 @@ impl Generator {
     }
 }
 
-fn repaint_saved_register(register: u8) -> u8 {
+fn repaint_saved_register(register: u32) -> u32 {
     match register {
         31 => 27,
         30 => 29,

@@ -124,17 +124,17 @@ impl Generator {
             _ => return Ok(false),
         };
         let first = if materialized_product_result
-            || self.reserved.contains(&Eabi::general_result().number)
+            || self.reserved.contains(&u32::from(Eabi::general_result().number))
         {
             4
         } else {
-            Eabi::general_result().number
+            u32::from(Eabi::general_result().number)
         };
         if materialized_product_result {
             // The inlined operator's return object copies through r4 while
             // its destination pointer occupies r5. Preserve r3 for the
             // enclosing method's `this` value or integer return.
-            self.avoid_virtual_general(target_register, &[3, first]);
+            self.avoid_virtual_general(target_register.into(), &[3, first]);
         }
         self.emit_vec3_word_copy(
             first,
@@ -153,7 +153,7 @@ impl Generator {
         &mut self,
         base: &Expression,
         offset: u32,
-    ) -> Compilation<(u8, i16)> {
+    ) -> Compilation<(u32, i16)> {
         if let Expression::Variable(name) = base {
             if let Some(slot) = self.frame_slots.get(name).copied() {
                 let Type::Struct { size, .. } = slot.value_type else {
@@ -251,7 +251,7 @@ impl Generator {
             return Ok(false);
         };
         self.emit_vec3_word_copy(
-            Eabi::general_result().number,
+            u32::from(Eabi::general_result().number),
             source_register,
             source_offset,
             target_register,
@@ -263,7 +263,7 @@ impl Generator {
         &mut self,
         base: &Expression,
         offset: u32,
-    ) -> Compilation<Option<(u8, i16)>> {
+    ) -> Compilation<Option<(u32, i16)>> {
         if let Some((aggregate, member_offset)) = vec3_aggregate_member(base) {
             let offset = member_offset
                 .checked_add(offset)
@@ -294,9 +294,9 @@ impl Generator {
 
     fn emit_vec3_float_copy(
         &mut self,
-        source_register: u8,
+        source_register: u32,
         source_offset: i16,
-        target_register: u8,
+        target_register: u32,
         target_offset: i16,
     ) -> Compilation<bool> {
         let offset = |base: i16, add: i16| -> Compilation<i16> {
@@ -320,10 +320,10 @@ impl Generator {
 
     fn emit_vec3_word_copy(
         &mut self,
-        first: u8,
-        source_register: u8,
+        first: u32,
+        source_register: u32,
         source_offset: i16,
-        target_register: u8,
+        target_register: u32,
         target_offset: i16,
     ) -> Compilation<bool> {
         if source_register == first || target_register == first {

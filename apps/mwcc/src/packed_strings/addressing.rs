@@ -198,7 +198,7 @@ fn schedule_zero_offset_base_lows(function: &mut MachineFunction, base: &str) {
 fn is_reloadable_nested_tail_packet(
     function: &MachineFunction,
     low: usize,
-    packed_base: u8,
+    packed_base: u32,
 ) -> bool {
     let Some(start) = low.checked_sub(2) else {
         return false;
@@ -255,7 +255,7 @@ fn swap_adjacent_instructions(function: &mut MachineFunction, left: usize) {
     }
 }
 
-fn ready_integer_argument_setup(instruction: &Instruction, packed_base: u8) -> bool {
+fn ready_integer_argument_setup(instruction: &Instruction, packed_base: u32) -> bool {
     match instruction {
         Instruction::AddImmediate { d, a, .. } => *d != packed_base && *a != packed_base,
         Instruction::Or { a, s, b } if s == b => *a != packed_base && *s != packed_base,
@@ -263,7 +263,7 @@ fn ready_integer_argument_setup(instruction: &Instruction, packed_base: u8) -> b
     }
 }
 
-fn ready_zero_offset_argument_setup(instruction: &Instruction, packed_base: u8) -> bool {
+fn ready_zero_offset_argument_setup(instruction: &Instruction, packed_base: u32) -> bool {
     match instruction {
         Instruction::AddImmediate { d, a, .. } => {
             *d != packed_base

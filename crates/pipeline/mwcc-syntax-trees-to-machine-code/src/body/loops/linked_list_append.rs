@@ -294,8 +294,8 @@ impl Generator {
     }
 
     fn emit_linked_list_append(&mut self, shape: &LinkedListAppend) {
-        const LIST: u8 = 30;
-        const ITEM_OUT: u8 = 31;
+        const LIST: u32 = 30;
+        const ITEM_OUT: u32 = 31;
         const NODE_SLOT: i16 = 16;
         let allocation_succeeded = self.fresh_label();
         let loop_body = self.fresh_label();

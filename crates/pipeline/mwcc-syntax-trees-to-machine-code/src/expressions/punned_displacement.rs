@@ -9,7 +9,7 @@ impl Generator {
     pub(crate) fn punned_displacement_address(
         &mut self,
         pointer: &Expression,
-    ) -> Compilation<Option<(Pointee, u8, i16)>> {
+    ) -> Compilation<Option<(Pointee, u32, i16)>> {
         let Some((pointee, base, displacement)) = cast_displacement(pointer) else {
             return Ok(None);
         };

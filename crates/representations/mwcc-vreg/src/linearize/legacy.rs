@@ -11,8 +11,8 @@ use super::{DagNode, OpKind};
 pub fn assign_registers_legacy(
     nodes: &[DagNode],
     order: &[usize],
-    params: &[(u32, u8)],
-) -> Vec<Option<u8>> {
+    params: &[(u32, u32)],
+) -> Vec<Option<u32>> {
     let count = nodes.len();
     let mut consumers = vec![Vec::new(); count];
     for (index, node) in nodes.iter().enumerate() {
@@ -73,7 +73,7 @@ pub fn assign_registers_legacy(
     };
 
     let mut result = vec![None; count];
-    let mut occupied: Vec<(u8, usize, usize)> = params
+    let mut occupied: Vec<(u32, usize, usize)> = params
         .iter()
         .map(|&(value, register)| (register, 0, param_end(value)))
         .collect();
@@ -119,7 +119,7 @@ pub fn assign_registers_legacy(
         }
         let start = position[node];
         let end = value_end(node);
-        let own_dying: Vec<u8> = nodes[node]
+        let own_dying: Vec<u32> = nodes[node]
             .reads
             .iter()
             .filter_map(|read| {
@@ -137,7 +137,7 @@ pub fn assign_registers_legacy(
                     })
             })
             .collect();
-        let free = |register: u8, open_start: bool| {
+        let free = |register: u32, open_start: bool| {
             occupied.iter().all(|&(taken, other_start, other_end)| {
                 taken != register
                     || other_end < start

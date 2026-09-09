@@ -1,9 +1,9 @@
 use super::*;
 
 pub(super) fn emit(generator: &mut Generator, plan: &WaitQueueDrain<'_>) {
-    const OBJECT: u8 = 29;
-    const TABLE: u8 = 30;
-    const STOP_AFTER_ONE: u8 = 31;
+    const OBJECT: u32 = 29;
+    const TABLE: u32 = 30;
+    const STOP_AFTER_ONE: u32 = 31;
     generator.non_leaf = true;
     generator.frame_size = 40;
     generator.callee_saved = vec![STOP_AFTER_ONE, TABLE, OBJECT];

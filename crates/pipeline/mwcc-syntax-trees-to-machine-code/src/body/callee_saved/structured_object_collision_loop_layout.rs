@@ -12,21 +12,21 @@ use super::*;
 use mwcc_syntax_trees::Parameter;
 
 pub(super) struct StructuredObjectCollisionLoopLayout {
-    preference_by_home: [u8; 9],
+    preference_by_home: [u32; 9],
     entry_home_indices: [usize; 6],
-    entry_incoming: [u8; 2],
+    entry_incoming: [u32; 2],
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct StructuredObjectCollisionEntryHomes {
-    pub(super) owner_parameter: u8,
-    pub(super) other_parameter: u8,
-    pub(super) owner: u8,
-    pub(super) flag: u8,
-    pub(super) cursor: u8,
-    pub(super) receiver: u8,
-    pub(super) owner_incoming: u8,
-    pub(super) other_incoming: u8,
+    pub(super) owner_parameter: u32,
+    pub(super) other_parameter: u32,
+    pub(super) owner: u32,
+    pub(super) flag: u32,
+    pub(super) cursor: u32,
+    pub(super) receiver: u32,
+    pub(super) owner_incoming: u32,
+    pub(super) other_incoming: u32,
 }
 
 impl StructuredObjectCollisionLoopLayout {
@@ -156,7 +156,7 @@ impl StructuredObjectCollisionLoopLayout {
 
         let mut preference_by_home = [0; 9];
         let mut occupied = [false; 9];
-        let mut set = |home: usize, preference: u8| {
+        let mut set = |home: usize, preference: u32| {
             if home >= preference_by_home.len() || occupied[home] {
                 return false;
             }
@@ -212,15 +212,15 @@ impl StructuredObjectCollisionLoopLayout {
                 cursor_home,
                 receiver_home,
             ],
-            entry_incoming: [owner_incoming, other_incoming],
+            entry_incoming: [u32::from(owner_incoming), u32::from(other_incoming)],
         })
     }
 
-    pub(super) fn preference(&self, home_index: usize) -> Option<u8> {
-        self.preference_by_home.get(home_index).copied()
+    pub(super) fn preference(&self, home_index: usize) -> Option<u32> {
+        (self.preference_by_home.get(home_index).copied()).map(u32::from)
     }
 
-    pub(super) fn entry_homes(&self, homes: &[u8]) -> StructuredObjectCollisionEntryHomes {
+    pub(super) fn entry_homes(&self, homes: &[u32]) -> StructuredObjectCollisionEntryHomes {
         let [
             owner_parameter,
             other_parameter,
@@ -236,8 +236,8 @@ impl StructuredObjectCollisionLoopLayout {
             flag,
             cursor,
             receiver,
-            owner_incoming: self.entry_incoming[0],
-            other_incoming: self.entry_incoming[1],
+            owner_incoming: u32::from(self.entry_incoming[0]),
+            other_incoming: u32::from(self.entry_incoming[1]),
         }
     }
 }

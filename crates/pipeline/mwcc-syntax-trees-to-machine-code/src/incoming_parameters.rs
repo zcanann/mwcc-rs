@@ -9,7 +9,7 @@ use mwcc_vreg::{Class, RegisterRole};
 
 #[derive(Clone, Debug)]
 pub(crate) struct StackParameter {
-    pub register: u8,
+    pub register: u32,
     pub offset: i16,
     pub width: u8,
     pub signed: bool,
@@ -96,7 +96,7 @@ impl Generator {
     }
 }
 
-fn entry_load_position(instructions: &[Instruction], register: u8) -> Option<usize> {
+fn entry_load_position(instructions: &[Instruction], register: u32) -> Option<usize> {
     let first_use = instructions.iter().position(|instruction| {
         mwcc_vreg::register_operands(instruction)
             .iter()

@@ -11,8 +11,8 @@ use super::*;
 
 pub(super) struct InitializerLiveIn {
     pub(super) name: String,
-    pub(super) incoming: u8,
-    pub(super) preferred: u8,
+    pub(super) incoming: u32,
+    pub(super) preferred: u32,
 }
 
 impl Generator {
@@ -58,12 +58,12 @@ impl Generator {
             let location = self.locations.get(&parameter.name)?;
             (location.class == ValueClass::General
                 && location.width == 32
-                && (Eabi::FIRST_GENERAL_ARGUMENT..=Eabi::LAST_GENERAL_ARGUMENT)
+                && (u32::from(Eabi::FIRST_GENERAL_ARGUMENT)..=u32::from(Eabi::LAST_GENERAL_ARGUMENT))
                     .contains(&location.register))
             .then(|| InitializerLiveIn {
                 name: parameter.name.clone(),
                 incoming: location.register,
-                preferred,
+                preferred: preferred.into(),
             })
         });
         let plan = candidates.next()?;

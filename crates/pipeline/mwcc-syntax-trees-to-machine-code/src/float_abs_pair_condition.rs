@@ -16,7 +16,7 @@ impl Generator {
         left: &Expression,
         right: &Expression,
         double: bool,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         let Some(left_value) = abs_select_value(left) else {
             return Ok(None);
         };
@@ -31,7 +31,7 @@ impl Generator {
         let right_source =
             self.place_condition_float_load(right_value, right_source_home)?;
         let right_result = self.fresh_virtual_float_preferring(2);
-        self.emit_float_abs_select(right_source, right_result, double)?;
+        self.emit_float_abs_select(right_source.into(), right_result, double)?;
 
         let left_source = self.float_register_of_leaf(left_value)?;
         self.emit_float_abs_select(left_source, FLOAT_SCRATCH, double)?;

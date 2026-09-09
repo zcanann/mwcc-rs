@@ -12,7 +12,7 @@ use super::*;
 struct NarrowConversionPacket {
     start: usize,
     condition: usize,
-    source: u8,
+    source: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,8 +20,8 @@ struct PrecomputedBooleanPacket {
     start: usize,
     conversion: usize,
     condition: usize,
-    source: u8,
-    reusable: u8,
+    source: u32,
+    reusable: u32,
 }
 
 impl Generator {
@@ -371,7 +371,7 @@ fn find_narrow_conversion_packet(instructions: &[Instruction]) -> Option<NarrowC
     None
 }
 
-fn physical_saved_registers_before(instructions: &[Instruction], before: usize) -> Vec<u8> {
+fn physical_saved_registers_before(instructions: &[Instruction], before: usize) -> Vec<u32> {
     instructions[..before]
         .iter()
         .filter_map(|instruction| match instruction {
@@ -385,9 +385,9 @@ fn reusable_saved_register(
     instructions: &[Instruction],
     start: usize,
     condition: usize,
-    source: u8,
-    callee_saved: &[u8],
-) -> Option<u8> {
+    source: u32,
+    callee_saved: &[u32],
+) -> Option<u32> {
     callee_saved.iter().copied().find(|candidate| {
         *candidate != source
             && !instructions[start..=condition]

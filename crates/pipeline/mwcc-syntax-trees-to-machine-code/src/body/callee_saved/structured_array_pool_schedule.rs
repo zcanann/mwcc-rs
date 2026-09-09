@@ -296,7 +296,7 @@ impl Generator {
     /// opposite order; keep that concern separate from entry scheduling.
     pub(super) fn emit_structured_array_pool_parameter_copies(
         &mut self,
-        saved_parameter_homes: &[(String, u8, u8)],
+        saved_parameter_homes: &[(String, u32, u32)],
     ) {
         for (_, home, incoming) in saved_parameter_homes.iter().rev() {
             self.output

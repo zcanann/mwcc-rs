@@ -43,9 +43,9 @@ impl Generator {
     pub(super) fn bank_select_word(
         &mut self,
         plan: &Transaction<'_>,
-        page: u8,
-        selected: u8,
-        value: u8,
+        page: u32,
+        selected: u32,
+        value: u32,
     ) {
         let (_, low) = crate::expressions::split_address(plan.address);
         self.output.instructions.extend([
@@ -72,7 +72,7 @@ impl Generator {
         ]);
     }
 
-    fn bank_select_store(&mut self, plan: &Transaction<'_>, page: u8, selected: u8, payload: i16) {
+    fn bank_select_store(&mut self, plan: &Transaction<'_>, page: u32, selected: u32, payload: i16) {
         let early_mode = self.behavior.plain_linkage_epilogue_style
             == PlainLinkageEpilogueStyle::StackRestoreBeforeReload;
         let value = if early_mode { 6 } else { 5 };
@@ -93,8 +93,8 @@ impl Generator {
     pub(super) fn bank_reset_and_result(
         &mut self,
         plan: &Transaction<'_>,
-        selected: u8,
-        error: u8,
+        selected: u32,
+        error: u32,
     ) {
         self.output.instructions.extend([
             Instruction::LoadWord {

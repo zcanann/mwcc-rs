@@ -35,7 +35,7 @@ struct Plan {
     start: usize,
     body: usize,
     stores: usize,
-    anchor: u8,
+    anchor: u32,
 }
 impl Plan {
     fn apply(self, f: &mut MachineFunction, copy: bool) {
@@ -225,7 +225,7 @@ fn plan(
         let mut proof = c.to_vec();
         if register <= 12 {
             for i in &mut proof {
-                if matches!(i,I::BranchAndLink { target } if scalar_void_calls.iter().any(|(name,count)| name==target && register>=3+count))
+                if matches!(i,I::BranchAndLink { target } if scalar_void_calls.iter().any(|(name,count)| name==target && register>=3+u32::from(*count)))
                 {
                     *i = I::load_immediate(register, 0);
                 }
@@ -234,7 +234,7 @@ fn plan(
         let live = mwcc_vreg::analyze(&proof);
         if live.pinned.iter().any(|r| {
             r.class == Class::General
-                && r.register == register
+                && u32::from(r.register) == register
                 && r.live_slots
                     .as_ref()
                     .is_some_and(|slots| slots.binary_search(&(2 * end)).is_ok())

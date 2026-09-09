@@ -9,7 +9,7 @@
 use super::*;
 
 pub(super) struct StructuredGlobalByteLoopLayout {
-    preferences: std::collections::HashMap<String, u8>,
+    preferences: std::collections::HashMap<String, u32>,
 }
 
 impl StructuredGlobalByteLoopLayout {
@@ -91,11 +91,11 @@ impl StructuredGlobalByteLoopLayout {
         Some(Self { preferences })
     }
 
-    pub(super) fn preference(&self, name: &str) -> Option<u8> {
+    pub(super) fn preference(&self, name: &str) -> Option<u32> {
         self.preferences.get(name).copied()
     }
 
-    pub(super) fn member_cache_preference(&self, index: usize) -> Option<u8> {
+    pub(super) fn member_cache_preference(&self, index: usize) -> Option<u32> {
         (index == 0).then_some(29)
     }
 }

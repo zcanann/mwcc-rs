@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 pub(super) const DENSE_SAVED_GPR_COUNT: usize = 18;
 const VOLATILE_GPR_COUNT: usize = 10;
 
-const DENSE_LOOP_CARRIED_REGISTERS: [u8; 4] = [30, 29, 28, 27];
+const DENSE_LOOP_CARRIED_REGISTERS: [u32; 4] = [30, 29, 28, 27];
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct DenseLoopCarriedPlan<'a> {
@@ -27,12 +27,12 @@ pub(super) struct DenseLoopCarriedPlan<'a> {
 
 #[derive(Debug, Default)]
 pub(super) struct DenseLoopSavedHomePreferences {
-    homes: HashMap<usize, u8>,
+    homes: HashMap<usize, u32>,
     forwarded_parameters: HashMap<String, String>,
 }
 
 impl DenseLoopSavedHomePreferences {
-    pub(super) fn preference(&self, home_index: usize) -> Option<u8> {
+    pub(super) fn preference(&self, home_index: usize) -> Option<u32> {
         self.homes.get(&home_index).copied()
     }
 
@@ -42,11 +42,11 @@ impl DenseLoopSavedHomePreferences {
 }
 
 impl DenseLoopCarriedPlan<'_> {
-    pub(super) fn preference_for(&self, local: &str) -> Option<u8> {
-        self.locals
+    pub(super) fn preference_for(&self, local: &str) -> Option<u32> {
+        (self.locals
             .iter()
             .position(|candidate| *candidate == Some(local))
-            .map(|rank| DENSE_LOOP_CARRIED_REGISTERS[rank])
+            .map(|rank| DENSE_LOOP_CARRIED_REGISTERS[rank])).map(u32::from)
     }
 }
 
@@ -203,7 +203,7 @@ pub(super) fn plan_dense_loop_saved_home_preferences(
     long_parameters.sort_unstable_by(|left, right| right.0.cmp(&left.0));
 
     let mut homes = HashMap::new();
-    let mut high = 31u8;
+    let mut high = 31u32;
     for (_, home_index) in long_parameters {
         homes.insert(home_index, high);
         high = high.saturating_sub(1);
@@ -215,7 +215,7 @@ pub(super) fn plan_dense_loop_saved_home_preferences(
         high = high.saturating_sub(1);
     }
 
-    let mut low = u8::try_from(32usize.saturating_sub(saved_count)).unwrap_or(14);
+    let mut low = u32::try_from(32usize.saturating_sub(saved_count)).unwrap_or(14);
     for retained_index in 0..retained_parameters.len() {
         let home_index = eager_home_count + retained_index;
         if homes.contains_key(&home_index) {

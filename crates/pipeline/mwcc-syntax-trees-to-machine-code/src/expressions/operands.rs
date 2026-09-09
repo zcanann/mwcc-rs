@@ -10,7 +10,7 @@ impl Generator {
     pub(crate) fn evaluate_promoted_general_operand(
         &mut self,
         operand: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         self.evaluate_general(operand, destination)?;
         if !self.narrow_truncation_context && self.is_signed_byte_load(operand)? {
@@ -28,8 +28,8 @@ impl Generator {
     pub(crate) fn signed_byte_scratch_source(
         &mut self,
         operand: &Expression,
-        destination: u8,
-    ) -> Compilation<Option<u8>> {
+        destination: u32,
+    ) -> Compilation<Option<u32>> {
         if destination != GENERAL_SCRATCH && self.is_signed_byte_load(operand)? {
             self.evaluate_general(operand, GENERAL_SCRATCH)?;
             self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
@@ -42,9 +42,9 @@ impl Generator {
     pub(crate) fn place_operand(
         &mut self,
         operand: &Expression,
-        destination: u8,
+        destination: u32,
         prefer_destination: bool,
-    ) -> Compilation<Option<u8>> {
+    ) -> Compilation<Option<u32>> {
         // A same-width 32-bit integer cast (`(unsigned)x` / `(int)u`) is a bit-exact
         // reinterpretation — place its operand directly rather than copying it
         // through the scratch. The consumer takes the signedness from the cast, so
@@ -125,7 +125,7 @@ impl Generator {
             // reused (no reload), reproducing mwcc.
             if !self.locations.contains_key(name) && self.globals.contains_key(name.as_str()) {
                 if let Some(register) = self.condition_global_base(name)? {
-                    return Ok(Some(register));
+                    return Ok(Some(register.into()));
                 }
                 if let Some(register) = self.live_global_register(name, prefer_destination) {
                     return Ok(Some(register));
@@ -195,8 +195,8 @@ impl Generator {
     pub(crate) fn place_operand_or_scratch(
         &mut self,
         operand: &Expression,
-        destination: u8,
-    ) -> Compilation<u8> {
+        destination: u32,
+    ) -> Compilation<u32> {
         match self.place_operand(operand, destination, false)? {
             Some(source) => Ok(source),
             None => {

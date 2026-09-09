@@ -71,13 +71,13 @@ pub(super) fn fold_masked_high_constant(instructions: &mut [Instruction]) -> Opt
     None
 }
 
-fn touches_general(instruction: &Instruction, register: u8) -> bool {
+fn touches_general(instruction: &Instruction, register: u32) -> bool {
     register_operands(instruction)
         .iter()
         .any(|operand| operand.class == Class::General && operand.register == register)
 }
 
-fn defines_general(instruction: &Instruction, register: u8) -> bool {
+fn defines_general(instruction: &Instruction, register: u32) -> bool {
     register_operands(instruction).iter().any(|operand| {
         operand.class == Class::General
             && operand.register == register
@@ -88,7 +88,7 @@ fn defines_general(instruction: &Instruction, register: u8) -> bool {
 fn uses_general_after_first_access(
     instructions: &[Instruction],
     start: usize,
-    register: u8,
+    register: u32,
 ) -> bool {
     for instruction in &instructions[start..] {
         let operands = register_operands(instruction);

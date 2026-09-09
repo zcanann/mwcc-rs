@@ -159,7 +159,7 @@ struct Region {
     store: usize,
 }
 
-fn insert_address(generator: &mut Generator, at: usize, destination: u8, object: u8, offset: i16) {
+fn insert_address(generator: &mut Generator, at: usize, destination: u32, object: u32, offset: i16) {
     crate::insert_instruction_retargeting(
         generator,
         at,
@@ -172,7 +172,7 @@ fn insert_address(generator: &mut Generator, at: usize, destination: u8, object:
     crate::retarget_instruction_destinations(generator, at + 1, at);
 }
 
-fn decrement_region(instructions: &[Instruction], object: u8, offset: i16) -> Option<Region> {
+fn decrement_region(instructions: &[Instruction], object: u32, offset: i16) -> Option<Region> {
     instructions.windows(6).enumerate().find_map(|(start, window)| {
         let [
             Instruction::LoadWord { d: compared, a: load_base, offset: load_offset },
@@ -199,7 +199,7 @@ fn decrement_region(instructions: &[Instruction], object: u8, offset: i16) -> Op
 
 fn callback_region(
     instructions: &[Instruction],
-    object: u8,
+    object: u32,
     offset: i16,
     after: usize,
 ) -> Option<Region> {
@@ -242,7 +242,7 @@ fn callback_region(
 
 fn clear_region(
     instructions: &[Instruction],
-    object: u8,
+    object: u32,
     offset: i16,
     after: usize,
 ) -> Option<Region> {

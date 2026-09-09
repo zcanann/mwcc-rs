@@ -56,14 +56,14 @@ impl Generator {
 
         self.output
             .instructions
-            .push(displacement_store(pointee, source, base, displacement)?);
+            .push(displacement_store(pointee, source.into(), base, displacement)?);
         Ok(true)
     }
 
     fn emit_retained_accumulator_value(
         &mut self,
         accumulator: RetainedAccumulator<'_>,
-    ) -> Compilation<u8> {
+    ) -> Compilation<u32> {
         let decrement = self.fresh_virtual_general_preferring(4);
         self.evaluate_general(accumulator.decrement, decrement)?;
         let restore_decrement = self.reserved.insert(decrement);

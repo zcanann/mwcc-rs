@@ -53,7 +53,7 @@ impl Generator {
             self.move_instruction_before(start + 3, start + 2);
             let initializer = start + 3;
             let retained =
-                self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+                self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT.into());
             match &mut self.output.instructions[initializer] {
                 Instruction::LoadWord { d, .. } => *d = retained,
                 _ => unreachable!(),
@@ -188,12 +188,12 @@ impl Generator {
             b: entry,
         };
         match &mut self.output.instructions[start + 1] {
-            Instruction::LoadWord { d, .. } => *d = Eabi::FIRST_GENERAL_ARGUMENT,
+            Instruction::LoadWord { d, .. } => *d = 3,
             _ => unreachable!(),
         }
         match &mut self.output.instructions[start + 2] {
             Instruction::CompareLogicalWordImmediate { a, .. } => {
-                *a = Eabi::FIRST_GENERAL_ARGUMENT
+                *a = 3
             }
             _ => unreachable!(),
         }
@@ -223,13 +223,13 @@ impl Generator {
         let Some(start) = start else {
             return;
         };
-        let receiver = Eabi::FIRST_GENERAL_ARGUMENT;
+        let receiver: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         match &mut self.output.instructions[start + 1] {
-            Instruction::LoadWord { d, .. } => *d = receiver,
+            Instruction::LoadWord { d, .. } => *d = u32::from(receiver),
             _ => unreachable!(),
         }
         match &mut self.output.instructions[start + 2] {
-            Instruction::CompareLogicalWordImmediate { a, .. } => *a = receiver,
+            Instruction::CompareLogicalWordImmediate { a, .. } => *a = u32::from(receiver),
             _ => unreachable!(),
         }
         self.remove_structured_condition_instruction(start + 4);
@@ -290,7 +290,7 @@ impl Generator {
                     match &mut self.output.instructions[term_start + 1] {
                         Instruction::CompareLogicalWordImmediate { a, .. }
                         | Instruction::CompareWordImmediate { a, .. }
-                            if *a == redundant =>
+                            if *a == redundant.into() =>
                         {
                             *a = retained;
                         }
@@ -309,7 +309,7 @@ impl Generator {
             })
         {
             let previous_load = term_start - 3;
-            let retained = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+            let retained = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT.into());
             match &mut self.output.instructions[previous_load] {
                 Instruction::LoadByteZero { d, .. } => *d = retained,
                 _ => unreachable!(),
@@ -361,7 +361,7 @@ fn conditional_goto_diamond(
     .then_some((*options, *condition_bit, *target))
 }
 
-fn find_entry_member_saved_home(instructions: &[Instruction]) -> Option<(usize, u8)> {
+fn find_entry_member_saved_home(instructions: &[Instruction]) -> Option<(usize, u32)> {
     for initializer in 0..instructions.len().saturating_sub(3) {
         let [
             Instruction::LoadWord {
@@ -415,7 +415,7 @@ fn find_entry_member_saved_home(instructions: &[Instruction]) -> Option<(usize, 
 
 fn find_staggered_entry_member_saved_home(
     instructions: &[Instruction],
-) -> Option<(usize, u8)> {
+) -> Option<(usize, u32)> {
     instructions.windows(6).enumerate().find_map(|(start, window)| {
         match window {
             [
@@ -589,14 +589,14 @@ fn is_guarded_member_classifier_chain(window: &[Instruction]) -> bool {
         ..
     ] if saved != entry
         && tested == compared
-        && *test_base == entry
-        && *classifier_base == saved
-        && *kind_base == saved
+        && *test_base == entry.into()
+        && *classifier_base == saved.into()
+        && *kind_base == saved.into()
         && test_offset == classifier_offset
         && test_offset == kind_offset)
 }
 
-fn entry_register_copy(instruction: &Instruction) -> Option<(u8, u8)> {
+fn entry_register_copy(instruction: &Instruction) -> Option<(u32, u32)> {
     match instruction {
         Instruction::AddImmediate {
             d,
@@ -640,7 +640,7 @@ fn reuses_preceding_member_load(instructions: &[Instruction], term_start: usize)
 fn repeated_narrow_member_load(
     instructions: &[Instruction],
     term_start: usize,
-) -> Option<(u8, u8)> {
+) -> Option<(u32, u32)> {
     let previous = term_start.checked_sub(3)?;
     let [
         Instruction::LoadByteZero {

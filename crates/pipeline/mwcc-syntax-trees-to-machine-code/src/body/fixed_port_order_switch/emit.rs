@@ -40,7 +40,7 @@ impl Generator {
         &mut self,
         global: &str,
         global_type: Type,
-        register: u8,
+        register: u32,
     ) -> Compilation<()> {
         self.evaluate(&Expression::Variable(global.into()), global_type, register)
     }

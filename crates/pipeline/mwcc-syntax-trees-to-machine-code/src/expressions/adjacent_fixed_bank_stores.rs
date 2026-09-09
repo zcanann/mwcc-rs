@@ -9,14 +9,14 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Region {
     start: usize,
-    first_base: u8,
-    second_base: u8,
+    first_base: u32,
+    second_base: u32,
     low: i16,
     first_offset: i16,
     second_offset: i16,
 }
 
-fn store_operands(instruction: &Instruction) -> Option<(u8, u8, i16)> {
+fn store_operands(instruction: &Instruction) -> Option<(u32, u32, i16)> {
     match instruction {
         Instruction::StoreByte { s, a, offset }
         | Instruction::StoreHalfword { s, a, offset }
@@ -64,11 +64,11 @@ fn recognize(instructions: &[Instruction]) -> Option<Region> {
             };
             if first_base != completed_first
                 || first_base != first_source
-                || *first_base != first_store_base
+                || *first_base != first_store_base.into()
                 || second_base != completed_second
                 || second_base != second_source
-                || *second_base != second_store_base
-                || *value != first_value
+                || *second_base != second_store_base.into()
+                || *value != first_value.into()
                 || first_high != second_high
                 || first_low != second_low
                 || first_low.checked_add(first_offset).is_none()
@@ -87,7 +87,7 @@ fn recognize(instructions: &[Instruction]) -> Option<Region> {
         })
 }
 
-fn retarget_store(instruction: &mut Instruction, base: u8, offset: i16) {
+fn retarget_store(instruction: &mut Instruction, base: u32, offset: i16) {
     match instruction {
         Instruction::StoreByte { a, offset: at, .. }
         | Instruction::StoreHalfword { a, offset: at, .. }

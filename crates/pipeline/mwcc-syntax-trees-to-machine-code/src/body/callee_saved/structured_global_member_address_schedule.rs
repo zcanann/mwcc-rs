@@ -265,7 +265,7 @@ fn assign_deferred_guarded_mwcc_registers(instructions: &mut [Instruction]) {
     set_add(&mut instructions[42], 6, 4);
 }
 
-fn set_load(instruction: &mut Instruction, destination: u8, base: u8) {
+fn set_load(instruction: &mut Instruction, destination: u32, base: u32) {
     let Instruction::LoadWord { d, a, .. } = instruction else {
         unreachable!("validated member-address load changed form")
     };
@@ -273,7 +273,7 @@ fn set_load(instruction: &mut Instruction, destination: u8, base: u8) {
     *a = base;
 }
 
-fn set_add(instruction: &mut Instruction, destination: u8, base: u8) {
+fn set_add(instruction: &mut Instruction, destination: u32, base: u32) {
     let Instruction::AddImmediate { d, a, .. } = instruction else {
         unreachable!("validated member-address add changed form")
     };
@@ -281,7 +281,7 @@ fn set_add(instruction: &mut Instruction, destination: u8, base: u8) {
     *a = base;
 }
 
-fn set_shifted_add(instruction: &mut Instruction, destination: u8, base: u8) {
+fn set_shifted_add(instruction: &mut Instruction, destination: u32, base: u32) {
     let Instruction::AddImmediateShifted { d, a, .. } = instruction else {
         unreachable!("validated member-address shifted add changed form")
     };

@@ -44,7 +44,7 @@ impl Generator {
     }
 }
 
-fn find_delayed_entry_saved_member_mask(instructions: &[Instruction]) -> Option<(usize, u8)> {
+fn find_delayed_entry_saved_member_mask(instructions: &[Instruction]) -> Option<(usize, u32)> {
     for initializer in 0..instructions.len().saturating_sub(4) {
         let [
             Instruction::LoadWord {

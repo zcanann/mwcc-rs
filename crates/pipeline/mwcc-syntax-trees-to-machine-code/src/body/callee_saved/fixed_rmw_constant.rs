@@ -46,7 +46,7 @@ impl Generator {
                         && types.iter().zip(arguments).enumerate().all(|(index, (ty, argument))| {
                             matches!(ty, Type::Int | Type::UnsignedInt)
                                 && matches!(argument, Expression::Variable(name) if self.locations.get(name).is_some_and(|location|
-                                    location.class == ValueClass::General && location.width == 32 && location.register == index as u8 + 3))
+                                    location.class == ValueClass::General && location.width == 32 && location.register == (index as u8 + 3).into()))
                         })
                 }) { return Ok(false); }
             Some((name, arguments))

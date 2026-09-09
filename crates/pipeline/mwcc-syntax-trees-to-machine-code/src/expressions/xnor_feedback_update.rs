@@ -11,7 +11,7 @@ impl Generator {
     pub(super) fn try_emit_xnor_feedback_update(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> bool {
         let Some((name, direction)) = xnor_feedback_update_source(expression) else {
             return false;
@@ -24,7 +24,7 @@ impl Generator {
             .instructions
             .iter()
             .any(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }));
-        if !follows_call || source != Eabi::general_result().number || destination != 0 {
+        if !follows_call || source != u32::from(Eabi::general_result().number) || destination != 0 {
             return false;
         }
 

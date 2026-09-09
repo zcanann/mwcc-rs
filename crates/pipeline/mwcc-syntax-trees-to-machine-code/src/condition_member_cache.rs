@@ -14,7 +14,7 @@ use mwcc_syntax_trees::{BinaryOperator, Expression, Type};
 #[derive(Clone)]
 struct ConditionMemberValue {
     expression: Expression,
-    register: u8,
+    register: u32,
     instruction_index: usize,
 }
 
@@ -22,7 +22,7 @@ struct ConditionMemberValue {
 pub(crate) struct ConditionMemberCache {
     active: bool,
     values: Vec<ConditionMemberValue>,
-    preferred_registers: Vec<(Expression, u8)>,
+    preferred_registers: Vec<(Expression, u32)>,
     assignment_reuse: Option<Expression>,
     derived_minus_one: Option<ConditionMemberValue>,
 }
@@ -76,7 +76,7 @@ impl Generator {
     pub(crate) fn prefer_condition_member_register(
         &mut self,
         member: &Expression,
-        register: u8,
+        register: u32,
     ) {
         if !self.condition_member_cache.active {
             return;
@@ -92,7 +92,7 @@ impl Generator {
     pub(crate) fn preferred_condition_member_register(
         &self,
         member: &Expression,
-    ) -> Option<u8> {
+    ) -> Option<u32> {
         self.condition_member_cache
             .active
             .then(|| {
@@ -120,7 +120,7 @@ impl Generator {
     pub(crate) fn fix_condition_member_value_register(
         &mut self,
         operand: &Expression,
-        register: u8,
+        register: u32,
     ) -> bool {
         let Some(value) = self
             .condition_member_cache
@@ -164,7 +164,7 @@ impl Generator {
     pub(crate) fn condition_member_register(
         &self,
         operand: &Expression,
-    ) -> Option<u8> {
+    ) -> Option<u32> {
         if !self.condition_member_cache.active || !cacheable_member(operand, self) {
             return None;
         }
@@ -182,7 +182,7 @@ impl Generator {
     pub(crate) fn record_condition_member_value(
         &mut self,
         operand: &Expression,
-        register: u8,
+        register: u32,
     ) {
         if !self.condition_member_cache.active || !cacheable_member(operand, self) {
             return;
@@ -215,7 +215,7 @@ impl Generator {
     pub(crate) fn record_assignment_condition_minus_one(
         &mut self,
         member: &Expression,
-        register: u8,
+        register: u32,
     ) {
         if !self.assignment_condition_reuses_member(member) {
             return;
@@ -230,7 +230,7 @@ impl Generator {
     pub(crate) fn assignment_condition_minus_one_register(
         &self,
         expression: &Expression,
-    ) -> Option<u8> {
+    ) -> Option<u32> {
         let Expression::Binary {
             operator: BinaryOperator::Subtract,
             left,

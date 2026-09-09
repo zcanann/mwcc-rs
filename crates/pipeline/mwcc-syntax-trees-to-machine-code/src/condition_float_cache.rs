@@ -15,20 +15,20 @@ mod edge;
 #[derive(Clone)]
 pub(crate) struct ConditionFloatValue {
     expression: Expression,
-    register: u8,
+    register: u32,
     instruction_index: usize,
 }
 
 #[derive(Clone, Copy)]
 struct ConditionFloatRegisterValue {
-    register: u8,
+    register: u32,
     instruction_index: usize,
 }
 
 #[derive(Clone, Copy)]
 struct ConditionFloatLiteralValue {
     key: FloatCompareLiteralKey,
-    register: u8,
+    register: u32,
     instruction_index: usize,
 }
 
@@ -155,7 +155,7 @@ impl Generator {
         }
     }
 
-    pub(crate) fn condition_float_register(&mut self, operand: &Expression) -> Option<u8> {
+    pub(crate) fn condition_float_register(&mut self, operand: &Expression) -> Option<u32> {
         if self.non_leaf {
             if let Some(value) = self
                 .condition_float_cache
@@ -186,7 +186,7 @@ impl Generator {
     pub(crate) fn condition_float_guarded_edge_register(
         &mut self,
         operand: &Expression,
-    ) -> Option<u8> {
+    ) -> Option<u32> {
         if !self.condition_float_cache.guarded_edge {
             return None;
         }
@@ -220,7 +220,7 @@ impl Generator {
                 .is_some_and(|value| self.condition_float_value_is_live(value))
     }
 
-    pub(crate) fn record_condition_float_value(&mut self, operand: &Expression, register: u8) {
+    pub(crate) fn record_condition_float_value(&mut self, operand: &Expression, register: u32) {
         if !self.condition_float_cache.active
             || !self.condition_float_cache.recording_allowed
             || !is_direct_float_memory_load(operand)
@@ -281,7 +281,7 @@ impl Generator {
     pub(crate) fn record_condition_float_computed_value(
         &mut self,
         operand: &Expression,
-        register: u8,
+        register: u32,
     ) {
         if !self.condition_float_cache.active
             || !self.condition_float_cache.recording_allowed
@@ -308,7 +308,7 @@ impl Generator {
 
     fn condition_float_register_value_is_live(
         &self,
-        register: u8,
+        register: u32,
         instruction_index: usize,
     ) -> bool {
         float_register_value_is_live(
@@ -318,7 +318,7 @@ impl Generator {
         )
     }
 
-    pub(crate) fn invalidate_condition_float_register(&mut self, register: u8) {
+    pub(crate) fn invalidate_condition_float_register(&mut self, register: u32) {
         self.condition_float_cache
             .intra_condition
             .retain(|value| value.register != register);
@@ -340,7 +340,7 @@ impl Generator {
         }
     }
 
-    pub(crate) fn condition_float_zero_register(&self) -> Option<u8> {
+    pub(crate) fn condition_float_zero_register(&self) -> Option<u32> {
         if !self.condition_float_cache.active
             || !self.non_leaf
             || !self.has_virtual_float_location()
@@ -352,7 +352,7 @@ impl Generator {
             .then_some(value.register)
     }
 
-    pub(crate) fn record_condition_float_zero(&mut self, register: u8) {
+    pub(crate) fn record_condition_float_zero(&mut self, register: u32) {
         if !self.condition_float_cache.active
             || !self.condition_float_cache.recording_allowed
             || !self.non_leaf
@@ -370,7 +370,7 @@ impl Generator {
     pub(crate) fn observed_condition_float_register(
         &self,
         operand: &Expression,
-    ) -> Option<u8> {
+    ) -> Option<u32> {
         self.condition_float_cache
             .observed
             .iter()
@@ -389,7 +389,7 @@ impl Generator {
         &mut self,
         operand: &Expression,
         double: bool,
-        register: u8,
+        register: u32,
     ) {
         if !self.condition_float_cache.active
             || !self.condition_float_cache.recording_allowed
@@ -415,7 +415,7 @@ impl Generator {
         &self,
         operand: &Expression,
         double: bool,
-    ) -> Option<u8> {
+    ) -> Option<u32> {
         let key = float_compare_literal_key(operand, double)?;
         let value = self
             .condition_float_cache
@@ -429,7 +429,7 @@ impl Generator {
 
 fn float_register_value_is_live(
     instructions: &[Instruction],
-    register: u8,
+    register: u32,
     instruction_index: usize,
 ) -> bool {
     !instructions[instruction_index..].iter().any(|instruction| {

@@ -67,8 +67,8 @@ impl Generator {
     fn try_emit_native_wide_call_argument(
         &mut self,
         argument: &Expression,
-        high: u8,
-        low: u8,
+        high: u32,
+        low: u32,
     ) -> Compilation<bool> {
         let Expression::Dereference { pointer } = argument else {
             return Ok(false);
@@ -142,7 +142,7 @@ impl Generator {
         }
 
         let start = self.output.instructions.len();
-        self.evaluate_general(ticks, Eabi::FIRST_GENERAL_ARGUMENT + 3)?;
+        self.evaluate_general(ticks, (Eabi::FIRST_GENERAL_ARGUMENT + 3).into())?;
         let wide_end = self.output.instructions.len();
         let raw_shape = matches!(
             self.output.instructions.get(start..wide_end),
@@ -191,15 +191,15 @@ impl Generator {
             )));
         }
 
-        self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT, callback);
+        self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT.into(), callback);
         self.record_relocation(RelocationKind::Addr16Lo, callback);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: Eabi::FIRST_GENERAL_ARGUMENT + 4,
-            a: Eabi::FIRST_GENERAL_ARGUMENT,
+            d: u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 4),
+            a: 3,
             immediate: 0,
         });
-        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
-        self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT + 2, 0);
+        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
+        self.load_integer_constant((Eabi::FIRST_GENERAL_ARGUMENT + 2).into(), 0);
 
         // Alternate the constant high half with the fixed load, then use the
         // callback high half as the next independent instruction.
@@ -209,7 +209,7 @@ impl Generator {
         self.output.instructions[start] = match self.output.instructions[start] {
             Instruction::AddImmediateShifted { immediate, .. } => {
                 Instruction::AddImmediateShifted {
-                    d: Eabi::FIRST_GENERAL_ARGUMENT,
+                    d: 3,
                     a: 0,
                     immediate,
                 }
@@ -219,7 +219,7 @@ impl Generator {
         self.output.instructions[start + 1] = match self.output.instructions[start + 1] {
             Instruction::LoadWord { d, offset, .. } => Instruction::LoadWord {
                 d,
-                a: Eabi::FIRST_GENERAL_ARGUMENT,
+                a: 3,
                 offset,
             },
             _ => unreachable!("the fixed-clock load was verified"),
@@ -227,7 +227,7 @@ impl Generator {
         self.output.instructions[start + 2] = match self.output.instructions[start + 2] {
             Instruction::AddImmediateShifted { immediate, .. } => {
                 Instruction::AddImmediateShifted {
-                    d: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                    d: 4,
                     a: 0,
                     immediate,
                 }
@@ -246,15 +246,15 @@ impl Generator {
         };
         self.output.instructions[start + 5] = match self.output.instructions[start + 5] {
             Instruction::AddImmediate { immediate, .. } => Instruction::AddImmediate {
-                d: Eabi::FIRST_GENERAL_ARGUMENT + 1,
-                a: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                d: 4,
+                a: 4,
                 immediate,
             },
             _ => unreachable!("the fixed-clock magic low half was verified"),
         };
         self.output.instructions[start + 6] = Instruction::MultiplyHighWordUnsigned {
             d: GENERAL_SCRATCH,
-            a: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+            a: 4,
             b: GENERAL_SCRATCH,
         };
         Ok(true)
@@ -269,8 +269,8 @@ impl Generator {
         &mut self,
         argument: &Expression,
         parameter_type: Type,
-        mut next_general: u8,
-    ) -> Compilation<u8> {
+        mut next_general: u32,
+    ) -> Compilation<u32> {
         debug_assert!(matches!(
             parameter_type,
             Type::LongLong | Type::UnsignedLongLong
@@ -290,7 +290,7 @@ impl Generator {
         let low = high
             .checked_add(1)
             .ok_or_else(|| Diagnostic::error("a wide call argument register pair overflowed"))?;
-        if low > Eabi::LAST_GENERAL_ARGUMENT {
+        if low > Eabi::LAST_GENERAL_ARGUMENT.into() {
             return Err(Diagnostic::error(
                 "a wide call argument needs an outgoing stack pair (roadmap)",
             ));
@@ -299,8 +299,8 @@ impl Generator {
         // Earlier ABI arguments remain live while the low word is evaluated.
         // Reserve them so an expression temporary cannot silently overwrite
         // one before the call.
-        let newly_reserved: Vec<_> = (Eabi::FIRST_GENERAL_ARGUMENT..high)
-            .filter(|register| self.reserved.insert(*register))
+        let newly_reserved: Vec<_> = (u32::from(Eabi::FIRST_GENERAL_ARGUMENT)..high)
+            .filter(|register| self.reserved.insert((*register).into()))
             .collect();
         if native_wide {
             let emitted = self.try_emit_native_wide_call_argument(argument, high, low);

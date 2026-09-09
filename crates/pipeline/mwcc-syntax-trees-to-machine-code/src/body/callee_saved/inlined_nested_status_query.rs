@@ -320,8 +320,8 @@ impl Generator {
         let Some(plan) = classify(function) else {
             return Ok(false);
         };
-        const RESULT: u8 = 31;
-        const OUTER_TOKEN: u8 = 30;
+        const RESULT: u32 = 31;
+        const OUTER_TOKEN: u32 = 30;
 
         self.non_leaf = true;
         self.frame_size = 24;

@@ -11,7 +11,7 @@ use super::*;
 use mwcc_syntax_trees::Parameter;
 
 pub(super) struct StructuredLoopCallPublicationLayout {
-    preference_by_home: [u8; 4],
+    preference_by_home: [u32; 4],
     save_order: [usize; 4],
 }
 
@@ -105,7 +105,7 @@ impl StructuredLoopCallPublicationLayout {
         let tail_home = home(&tail.name)?;
         let mut preference_by_home = [0; 4];
         let mut occupied = [false; 4];
-        let mut set = |home: usize, preference: u8| {
+        let mut set = |home: usize, preference: u32| {
             if home >= preference_by_home.len() || occupied[home] {
                 return false;
             }
@@ -127,8 +127,8 @@ impl StructuredLoopCallPublicationLayout {
         })
     }
 
-    pub(super) fn preference(&self, home_index: usize) -> Option<u8> {
-        self.preference_by_home.get(home_index).copied()
+    pub(super) fn preference(&self, home_index: usize) -> Option<u32> {
+        (self.preference_by_home.get(home_index).copied()).map(u32::from)
     }
 
     pub(super) fn save_order(&self) -> [usize; 4] {

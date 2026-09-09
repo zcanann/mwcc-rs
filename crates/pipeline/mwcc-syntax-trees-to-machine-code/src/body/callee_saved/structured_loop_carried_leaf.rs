@@ -35,10 +35,10 @@ pub(super) fn returned_loop_carried_local(function: &Function) -> Option<&str> {
 /// Prefer the returned carried value in r3 and its carried companions in
 /// declaration order from r4 upward. A preference on the returned value alone
 /// arrives too late for linear scan: an earlier cursor has already claimed r3.
-pub(super) fn returned_loop_home_preference(function: &Function, local: &str) -> Option<u8> {
+pub(super) fn returned_loop_home_preference(function: &Function, local: &str) -> Option<u32> {
     let returned = returned_loop_carried_local(function)?;
     if local == returned {
-        return Some(mwcc_target::Eabi::general_result().number);
+        return Some(u32::from(mwcc_target::Eabi::general_result().number));
     }
     let rank = function
         .locals
@@ -60,7 +60,7 @@ pub(super) fn returned_loop_home_preference(function: &Function, local: &str) ->
         .position(|candidate| candidate.name == local)?;
     u8::try_from(rank)
         .ok()
-        .and_then(|rank| mwcc_target::Eabi::general_result().number.checked_add(1 + rank))
+        .and_then(|rank| u32::from(mwcc_target::Eabi::general_result().number).checked_add((1 + rank).into()))
 }
 
 /// A member value loaded at the top of an infinite list walk, tested for null,
@@ -70,7 +70,7 @@ pub(super) fn returned_loop_home_preference(function: &Function, local: &str) ->
 pub(super) fn transient_loop_member_home_preference(
     function: &Function,
     local: &str,
-) -> Option<u8> {
+) -> Option<u32> {
     function
         .locals
         .iter()

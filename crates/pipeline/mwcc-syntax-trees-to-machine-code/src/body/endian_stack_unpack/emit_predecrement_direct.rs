@@ -9,9 +9,9 @@ pub(super) fn emit(
     plan: &DirectStackUnpack<'_>,
     read: &InlineRead,
 ) {
-    const BUFFER: u8 = 29;
-    const LENGTH: u8 = 30;
-    const ERROR: u8 = 31;
+    const BUFFER: u32 = 29;
+    const LENGTH: u32 = 30;
+    const ERROR: u32 = 31;
     let enough_bytes = generator.fresh_label();
 
     generator.non_leaf = true;

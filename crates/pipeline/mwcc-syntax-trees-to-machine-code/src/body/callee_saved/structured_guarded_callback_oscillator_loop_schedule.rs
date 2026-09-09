@@ -127,7 +127,7 @@ impl Generator {
     }
 }
 
-fn oscillator_body(instructions: &[Instruction], receiver: u8) -> Option<(usize, i16)> {
+fn oscillator_body(instructions: &[Instruction], receiver: u32) -> Option<(usize, i16)> {
     instructions
         .windows(BODY_LEN)
         .enumerate()
@@ -175,7 +175,7 @@ fn loop_tail(instructions: &[Instruction], frame_offset: i16) -> Option<usize> {
     })
 }
 
-fn redundant_callback_arm_bridge(instructions: &[Instruction], receiver: u8) -> Option<usize> {
+fn redundant_callback_arm_bridge(instructions: &[Instruction], receiver: u32) -> Option<usize> {
     instructions.windows(6).enumerate().find_map(|(start, window)| {
         matches!(window, [
             Instruction::AddImmediate { d: 3, a: 0, immediate: 0 },

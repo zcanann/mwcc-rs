@@ -12,10 +12,10 @@ use mwcc_vreg::{register_operands, Class, Reg};
 struct Plan {
     low: usize,
     quotient: usize,
-    address: u8,
-    sign: u8,
-    result: u8,
-    dividend: u8,
+    address: u32,
+    sign: u32,
+    result: u32,
+    dividend: u32,
 }
 
 impl Generator {

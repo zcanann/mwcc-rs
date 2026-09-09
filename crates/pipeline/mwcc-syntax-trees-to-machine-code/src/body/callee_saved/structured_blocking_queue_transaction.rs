@@ -25,10 +25,10 @@ pub(super) struct StructuredBlockingQueueTransaction {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct StructuredBlockingQueueHomes {
-    owner: u8,
-    payload: u8,
-    flags: u8,
-    interrupt: u8,
+    owner: u32,
+    payload: u32,
+    flags: u32,
+    interrupt: u32,
 }
 
 impl StructuredBlockingQueueTransaction {
@@ -74,7 +74,7 @@ impl StructuredBlockingQueueTransaction {
         })
     }
 
-    pub(super) fn preference(&self, name: &str) -> Option<u8> {
+    pub(super) fn preference(&self, name: &str) -> Option<u32> {
         match self.direction {
             Direction::Enqueue if name == self.owner => Some(28),
             Direction::Enqueue if name == self.payload => Some(29),
@@ -90,17 +90,17 @@ impl StructuredBlockingQueueTransaction {
 
     pub(super) fn homes(
         &self,
-        mut home_for: impl FnMut(&str) -> Option<u8>,
+        mut home_for: impl FnMut(&str) -> Option<u32>,
     ) -> Option<StructuredBlockingQueueHomes> {
         Some(StructuredBlockingQueueHomes {
-            owner: home_for(&self.owner)?,
-            payload: home_for(&self.payload)?,
+            owner: home_for(&self.owner)?.into(),
+            payload: home_for(&self.payload)?.into(),
             flags: home_for(&self.flags)?,
-            interrupt: home_for(&self.interrupt)?,
+            interrupt: home_for(&self.interrupt)?.into(),
         })
     }
 
-    pub(super) fn save_order(&self, homes: StructuredBlockingQueueHomes) -> [u8; 4] {
+    pub(super) fn save_order(&self, homes: StructuredBlockingQueueHomes) -> [u32; 4] {
         match self.direction {
             Direction::Enqueue => [homes.flags, homes.interrupt, homes.payload, homes.owner],
             Direction::Dequeue => [homes.owner, homes.flags, homes.interrupt, homes.payload],
@@ -286,10 +286,10 @@ impl StructuredBlockingQueueTransaction {
     fn schedule_prologue(
         &self,
         generator: &mut Generator,
-        owner: u8,
-        payload: u8,
-        flags: u8,
-        interrupt: u8,
+        owner: u32,
+        payload: u32,
+        flags: u32,
+        interrupt: u32,
     ) {
         let Some(frame) = generator
             .output
@@ -311,8 +311,8 @@ impl StructuredBlockingQueueTransaction {
         }
         let scheduled = match self.direction {
             Direction::Enqueue => vec![
-                store(flags, 28),
-                Instruction::move_register(flags, 5),
+                store(flags.into(), 28),
+                Instruction::move_register(flags.into(), 5),
                 store(interrupt, 24),
                 store(payload, 20),
                 Instruction::move_register(payload, 4),
@@ -322,8 +322,8 @@ impl StructuredBlockingQueueTransaction {
             Direction::Dequeue => vec![
                 store(owner, 28),
                 Instruction::move_register(owner, 3),
-                store(flags, 24),
-                Instruction::move_register(flags, 5),
+                store(flags.into(), 24),
+                Instruction::move_register(flags.into(), 5),
                 store(interrupt, 20),
                 store(payload, 16),
                 Instruction::move_register(payload, 4),
@@ -335,10 +335,10 @@ impl StructuredBlockingQueueTransaction {
     fn schedule_epilogue(
         &self,
         generator: &mut Generator,
-        owner: u8,
-        payload: u8,
-        flags: u8,
-        interrupt: u8,
+        owner: u32,
+        payload: u32,
+        flags: u32,
+        interrupt: u32,
     ) {
         let Some(return_index) = generator
             .output
@@ -356,7 +356,7 @@ impl StructuredBlockingQueueTransaction {
         }
         let ordered = match self.direction {
             Direction::Enqueue => [flags, interrupt, payload, owner],
-            Direction::Dequeue => [owner, flags, interrupt, payload],
+            Direction::Dequeue => [owner, flags.into(), interrupt, payload],
         };
         generator.output.instructions.splice(
             start..=return_index,
@@ -374,7 +374,7 @@ impl StructuredBlockingQueueTransaction {
     }
 }
 
-fn store(register: u8, offset: i16) -> Instruction {
+fn store(register: u32, offset: i16) -> Instruction {
     Instruction::StoreWord {
         s: register,
         a: 1,
@@ -382,7 +382,7 @@ fn store(register: u8, offset: i16) -> Instruction {
     }
 }
 
-fn load(register: u8, offset: i16) -> Instruction {
+fn load(register: u32, offset: i16) -> Instruction {
     Instruction::LoadWord {
         d: register,
         a: 1,
@@ -390,7 +390,7 @@ fn load(register: u8, offset: i16) -> Instruction {
     }
 }
 
-fn load_member(destination: u8, owner: u8, offset: i16) -> Instruction {
+fn load_member(destination: u32, owner: u32, offset: i16) -> Instruction {
     Instruction::LoadWord {
         d: destination,
         a: owner,
@@ -398,7 +398,7 @@ fn load_member(destination: u8, owner: u8, offset: i16) -> Instruction {
     }
 }
 
-fn store_member(source: u8, owner: u8, offset: i16) -> Instruction {
+fn store_member(source: u32, owner: u32, offset: i16) -> Instruction {
     Instruction::StoreWord {
         s: source,
         a: owner,

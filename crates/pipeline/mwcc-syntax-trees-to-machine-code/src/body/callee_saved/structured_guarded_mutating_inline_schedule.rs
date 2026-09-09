@@ -27,7 +27,7 @@ impl Generator {
             *a = plan.inlined_receiver;
         }
         self.output.instructions[plan.body_start + 8] = Instruction::AddImmediate {
-            d: Eabi::FIRST_GENERAL_ARGUMENT,
+            d: 3,
             a: plan.inlined_receiver,
             immediate: 0,
         };
@@ -61,7 +61,7 @@ impl Generator {
                             s,
                             a: 1,
                             ..
-                        } if *s == plan.attributes
+                        } if *s == plan.attributes.into()
                     )
                 });
         if let (Some(first_saved_home), Some(attribute_home)) = (first_saved_home, attribute_home) {
@@ -77,8 +77,8 @@ impl Generator {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GuardedMutatingInline {
     body_start: usize,
-    inlined_receiver: u8,
-    attributes: u8,
+    inlined_receiver: u32,
+    attributes: u32,
 }
 
 fn guarded_mutating_inline(instructions: &[Instruction]) -> Option<GuardedMutatingInline> {

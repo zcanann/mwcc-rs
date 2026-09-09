@@ -212,14 +212,14 @@ fn has_expected_relocations(generator: &Generator, start: usize) -> bool {
         })
 }
 
-fn set_add_shifted_destination(instruction: &mut Instruction, destination: u8) {
+fn set_add_shifted_destination(instruction: &mut Instruction, destination: u32) {
     let Instruction::AddImmediateShifted { d, .. } = instruction else {
         unreachable!("the complete grab-mash stream was recognized")
     };
     *d = destination;
 }
 
-fn set_add_immediate_registers(instruction: &mut Instruction, destination: u8, base: u8) {
+fn set_add_immediate_registers(instruction: &mut Instruction, destination: u32, base: u32) {
     let Instruction::AddImmediate { d, a, .. } = instruction else {
         unreachable!("the complete grab-mash stream was recognized")
     };
@@ -227,21 +227,21 @@ fn set_add_immediate_registers(instruction: &mut Instruction, destination: u8, b
     *a = base;
 }
 
-fn set_word_load_destination(instruction: &mut Instruction, destination: u8) {
+fn set_word_load_destination(instruction: &mut Instruction, destination: u32) {
     let Instruction::LoadWord { d, .. } = instruction else {
         unreachable!("the complete grab-mash stream was recognized")
     };
     *d = destination;
 }
 
-fn set_byte_load_destination(instruction: &mut Instruction, destination: u8) {
+fn set_byte_load_destination(instruction: &mut Instruction, destination: u32) {
     let Instruction::LoadByteZero { d, .. } = instruction else {
         unreachable!("the complete grab-mash stream was recognized")
     };
     *d = destination;
 }
 
-fn set_byte_store_source(instruction: &mut Instruction, source: u8) {
+fn set_byte_store_source(instruction: &mut Instruction, source: u32) {
     let Instruction::StoreByte { s, .. } = instruction else {
         unreachable!("the complete grab-mash stream was recognized")
     };

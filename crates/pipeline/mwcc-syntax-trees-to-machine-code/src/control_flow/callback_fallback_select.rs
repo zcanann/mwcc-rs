@@ -99,14 +99,14 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
         tail: bool,
     ) -> Compilation<bool> {
         let Some(shape) = classify(condition, when_true, when_false) else {
             return Ok(false);
         };
         if tail
-            || destination != mwcc_target::Eabi::general_result().number
+            || destination != u32::from(mwcc_target::Eabi::general_result().number)
             || !self.globals.contains_key(shape.callback)
             || self.globals.contains_key(shape.fallback)
         {

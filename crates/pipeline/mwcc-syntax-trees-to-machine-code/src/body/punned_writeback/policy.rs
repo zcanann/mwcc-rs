@@ -1,9 +1,9 @@
 //! Versioned frame and register-role planning for punned writebacks.
 
 pub(super) struct GuardRegisterRoles {
-    pub(super) homes: Vec<u8>,
-    pub(super) loads: Vec<u8>,
-    pub(super) guard: u8,
+    pub(super) homes: Vec<u32>,
+    pub(super) loads: Vec<u32>,
+    pub(super) guard: u32,
     pub(super) copied_source: Option<usize>,
 }
 
@@ -35,7 +35,7 @@ pub(super) fn plan_guard_registers(
         };
     }
 
-    let mut next_general = if has_guard_local { 4u8 } else { 3u8 };
+    let mut next_general = if has_guard_local { 4u32 } else { 3u32 };
     let mut homes = Vec::new();
     let mut r0_used = scratch_taken;
     for _ in 0..local_count {
@@ -97,11 +97,11 @@ pub(super) fn shift_writeback_plan(
 pub(super) fn allocate_shift_registers(
     style: mwcc_versions::PunnedShiftWritebackStyle,
     values: &[mwcc_vreg::int_alloc::Value],
-) -> Vec<u8> {
+) -> Vec<u32> {
     use mwcc_vreg::int_alloc::{assign, model_order, Class};
 
     if style != mwcc_versions::PunnedShiftWritebackStyle::LegacyReloading {
-        return assign(&model_order(values), values);
+        return assign(&model_order(values), values).into_iter().map(u32::from).collect();
     }
 
     let crossers = values.iter().any(|value| {
@@ -145,16 +145,16 @@ pub(super) fn allocate_shift_registers(
     if !crossers {
         push_class(&mut order, Class::LoadDiscarded, true);
     }
-    assign(&order, values)
+    assign(&order, values).into_iter().map(u32::from).collect()
 }
 
 pub(super) struct LegacyShiftCarryRegisters {
-    pub(super) mask: u8,
-    pub(super) source: u8,
-    pub(super) guard: u8,
-    pub(super) shift: u8,
-    pub(super) other: u8,
-    pub(super) carry_one: u8,
+    pub(super) mask: u32,
+    pub(super) source: u32,
+    pub(super) guard: u32,
+    pub(super) shift: u32,
+    pub(super) other: u32,
+    pub(super) carry_one: u32,
 }
 
 pub(super) fn legacy_shift_carry_registers(
@@ -173,15 +173,15 @@ pub(super) fn legacy_shift_carry_registers(
 }
 
 pub(super) struct LegacyLadderRegisters {
-    pub(super) extract: u8,
-    pub(super) scrutinee: u8,
-    pub(super) source_load: u8,
-    pub(super) source_home: u8,
-    pub(super) other: u8,
-    pub(super) arm_temp: u8,
-    pub(super) arm_shift: u8,
-    pub(super) arm_mask: u8,
-    pub(super) carry_one: u8,
+    pub(super) extract: u32,
+    pub(super) scrutinee: u32,
+    pub(super) source_load: u32,
+    pub(super) source_home: u32,
+    pub(super) other: u32,
+    pub(super) arm_temp: u32,
+    pub(super) arm_shift: u32,
+    pub(super) arm_mask: u32,
+    pub(super) carry_one: u32,
     pub(super) constant_label_bump: u32,
 }
 

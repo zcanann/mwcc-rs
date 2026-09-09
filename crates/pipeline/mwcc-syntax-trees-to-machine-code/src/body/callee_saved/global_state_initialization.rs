@@ -152,7 +152,7 @@ impl Generator {
             .instructions
             .push(Instruction::load_immediate_shifted(0, plan.scalar_high));
         self.output.instructions.push(Instruction::StoreWord {
-            s: Eabi::general_result().number,
+            s: u32::from(Eabi::general_result().number),
             a: 5,
             offset: plan.call_offset,
         });

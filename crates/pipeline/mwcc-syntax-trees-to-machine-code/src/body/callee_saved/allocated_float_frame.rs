@@ -203,7 +203,7 @@ impl Generator {
     /// some early exits intentionally enter after the FPR restore packet.
     pub(crate) fn materialize_allocated_float_frame(
         &mut self,
-        registers: &[u8],
+        registers: &[u32],
         paired_single_frame: bool,
         restores_before_gpr_helper_setup: bool,
         branches_enter_float_restores: bool,
@@ -293,7 +293,7 @@ impl Generator {
 
 fn uses_compact_scalar_parameter_lane(
     instructions: &[Instruction],
-    registers: &[u8],
+    registers: &[u32],
 ) -> bool {
     let [register] = registers else {
         return false;
@@ -317,8 +317,8 @@ fn uses_compact_scalar_parameter_lane(
 /// range through the lowest lane owned by either side.
 fn required_float_save_range(
     declared_count: u8,
-    allocated: &[u8],
-) -> Result<Vec<u8>, String> {
+    allocated: &[u32],
+) -> Result<Vec<u32>, String> {
     if allocated.is_empty() {
         return Ok(Vec::new());
     }
@@ -327,13 +327,13 @@ fn required_float_save_range(
             "allocator-selected FPRs {allocated:?} include a volatile or invalid register"
         ));
     }
-    let allocated_count = 32u8.saturating_sub(
+    let allocated_count = 32u32.saturating_sub(
         *allocated
             .iter()
             .min()
             .expect("nonempty allocation checked above"),
     );
-    let count = declared_count.max(allocated_count);
+    let count = u32::from(declared_count).max(allocated_count);
     if count > 18 {
         return Err(format!(
             "allocator-selected FPR range requires {count} saved registers"
@@ -344,15 +344,15 @@ fn required_float_save_range(
 
 fn materialize_predecrement_frame(
     instructions: &mut Vec<Instruction>,
-    registers: &[u8],
+    registers: &[u32],
     saved_gpr_count: usize,
     paired_single_frame: bool,
     restores_before_gpr_helper_setup: bool,
     branches_enter_float_restores: bool,
     link_reload_before_final_restore: bool,
 ) -> Result<(Vec<usize>, i16), &'static str> {
-    let expected: Vec<u8> = (0..registers.len())
-        .map(|index| 31u8.saturating_sub(index as u8))
+    let expected: Vec<u32> = (0..registers.len())
+        .map(|index| 31u32.saturating_sub(index as u32))
         .collect();
     if registers != expected {
         return Err("allocator-selected FPR saves are not a contiguous f31-down range");
@@ -588,7 +588,7 @@ fn materialize_predecrement_frame(
 /// Select the smallest encoding that can represent a saved paired-single
 /// lane. `psq_l` has a signed 12-bit displacement; only a larger frame needs
 /// the materialized-offset `psq_lx` packet.
-fn paired_single_restore(register: u8, offset: i16) -> Vec<Instruction> {
+fn paired_single_restore(register: u32, offset: i16) -> Vec<Instruction> {
     if (-2048..=2047).contains(&offset) {
         vec![Instruction::PairedSingleQuantizedLoad {
             d: register,
@@ -626,7 +626,7 @@ fn instruction_is_gpr_restore(instruction: &Instruction) -> bool {
 
 fn materialize_leaf_predecrement_frame(
     instructions: &mut Vec<Instruction>,
-    registers: &[u8],
+    registers: &[u32],
     paired_single_frame: bool,
     frame_push: usize,
     old_size: i16,
@@ -709,7 +709,7 @@ fn materialize_leaf_predecrement_frame(
 fn interleaved_leaf_linkage_reload(
     instructions: &[Instruction],
     frame_size: i16,
-    saved: &[u8],
+    saved: &[u32],
 ) -> Option<usize> {
     let tail = instructions.len().checked_sub(3)?;
     if !matches!(&instructions[tail..], [

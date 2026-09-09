@@ -40,8 +40,8 @@ impl Generator {
         };
         let anchor_symbol = anchor.anchor_symbol.clone();
 
-        const OBJECT: u8 = 30;
-        const MANAGER: u8 = 31;
+        const OBJECT: u32 = 30;
+        const MANAGER: u32 = 31;
         self.non_leaf = true;
         self.frame_size = 24;
         self.callee_saved = vec![MANAGER, OBJECT];
@@ -59,7 +59,7 @@ impl Generator {
             Instruction::StoreMultipleWord { s: OBJECT, a: 1, offset: 16 },
             Instruction::AddImmediate {
                 d: OBJECT,
-                a: Eabi::FIRST_GENERAL_ARGUMENT,
+                a: 3,
                 immediate: 0,
             },
         ]);

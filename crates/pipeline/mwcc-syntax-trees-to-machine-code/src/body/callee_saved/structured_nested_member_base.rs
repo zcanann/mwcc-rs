@@ -66,8 +66,8 @@ impl Generator {
                         Eabi::FIRST_GENERAL_ARGUMENT + 1,
                     )
                 };
-            self.prefer_virtual_general(value, value_preference);
-            self.prefer_virtual_general(retained, retained_preference);
+            self.prefer_virtual_general(value, value_preference.into());
+            self.prefer_virtual_general(retained, retained_preference.into());
             match &mut self.output.instructions[start] {
                 Instruction::LoadWord { d, .. } => *d = retained,
                 _ => unreachable!("shape checked"),
@@ -81,7 +81,7 @@ impl Generator {
     }
 }
 
-fn guarded_nested_member_reload(instructions: &[Instruction]) -> Option<(usize, u8, u8)> {
+fn guarded_nested_member_reload(instructions: &[Instruction]) -> Option<(usize, u32, u32)> {
     instructions.windows(8).enumerate().find_map(|(start, window)| {
         match window {
             [

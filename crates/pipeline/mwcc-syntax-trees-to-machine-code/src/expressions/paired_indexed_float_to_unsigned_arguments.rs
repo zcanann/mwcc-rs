@@ -34,28 +34,28 @@ impl Generator {
         let retained_second = self.fresh_virtual_general();
         self.emit_float_to_unsigned_integer(
             pair.second_operand,
-            Eabi::general_result().number,
+            u32::from(Eabi::general_result().number),
         )?;
         self.output.instructions.push(Instruction::move_register(
             retained_second,
-            Eabi::general_result().number,
+            u32::from(Eabi::general_result().number),
         ));
         self.emit_float_to_unsigned_integer(
             pair.first_operand,
-            Eabi::general_result().number,
+            u32::from(Eabi::general_result().number),
         )?;
         self.output.instructions.push(Instruction::move_register(
-            Eabi::FIRST_GENERAL_ARGUMENT + 2,
-            Eabi::general_result().number,
+            (Eabi::FIRST_GENERAL_ARGUMENT + 2).into(),
+            u32::from(Eabi::general_result().number),
         ));
 
-        self.evaluate_general(&arguments[1], Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+        self.evaluate_general(&arguments[1], (Eabi::FIRST_GENERAL_ARGUMENT + 1).into())?;
         self.output.instructions.push(Instruction::move_register(
-            Eabi::FIRST_GENERAL_ARGUMENT + 4,
+            (Eabi::FIRST_GENERAL_ARGUMENT + 4).into(),
             retained_second,
         ));
-        self.evaluate_general(&arguments[0], Eabi::FIRST_GENERAL_ARGUMENT)?;
-        self.evaluate_general(&arguments[3], Eabi::FIRST_GENERAL_ARGUMENT + 3)?;
+        self.evaluate_general(&arguments[0], Eabi::FIRST_GENERAL_ARGUMENT.into())?;
+        self.evaluate_general(&arguments[3], (Eabi::FIRST_GENERAL_ARGUMENT + 3).into())?;
         Ok(true)
     }
 }

@@ -162,7 +162,7 @@ fn schedule_options(instructions: &mut [Instruction]) -> bool {
     true
 }
 
-fn access_calls(instructions: &[Instruction], owner: u8) -> Vec<usize> {
+fn access_calls(instructions: &[Instruction], owner: u32) -> Vec<usize> {
     instructions.windows(6).enumerate().filter_map(|(start, window)| {
         (matches!(window[0], Instruction::LoadHalfwordZero { d: 3, a: 1, .. })
             && matches!(window[1], Instruction::LoadHalfwordZero { d: 4, a: 1, .. })
@@ -180,7 +180,7 @@ fn direct_call(instructions: &[Instruction], expected: &str) -> Option<usize> {
     })
 }
 
-fn owner_argument_copies(instructions: &[Instruction], owner: u8, argument: u8) -> Vec<usize> {
+fn owner_argument_copies(instructions: &[Instruction], owner: u32, argument: u32) -> Vec<usize> {
     instructions.iter().enumerate().filter_map(|(index, instruction)| {
         matches!(instruction, Instruction::Or { a, s, b }
             if *a == argument && *s == owner && *b == owner)
@@ -188,7 +188,7 @@ fn owner_argument_copies(instructions: &[Instruction], owner: u8, argument: u8) 
     }).collect()
 }
 
-fn schedule_error_dispatch(generator: &mut Generator, start: usize, result: u8) -> bool {
+fn schedule_error_dispatch(generator: &mut Generator, start: usize, result: u32) -> bool {
     let Some(window) = generator.output.instructions.get(start..start + 31) else {
         return false;
     };

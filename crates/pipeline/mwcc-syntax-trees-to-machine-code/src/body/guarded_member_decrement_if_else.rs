@@ -33,7 +33,7 @@ impl Generator {
             .get(plan.parameter)
             .filter(|location| location.class == ValueClass::General)
             .map(|location| location.register);
-        if incoming != Some(Eabi::FIRST_GENERAL_ARGUMENT) {
+        if incoming != Some(Eabi::FIRST_GENERAL_ARGUMENT.into()) {
             return Ok(false);
         }
 
@@ -54,25 +54,25 @@ impl Generator {
             },
         ]);
 
-        let arm_home = Eabi::FIRST_GENERAL_ARGUMENT + 2;
-        let condition_value = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+        let arm_home: u32 = (Eabi::FIRST_GENERAL_ARGUMENT + 2) as u32;
+        let condition_value: u32 = (Eabi::FIRST_GENERAL_ARGUMENT + 1) as u32;
         self.output.instructions.push(Instruction::move_register(
             arm_home,
-            Eabi::FIRST_GENERAL_ARGUMENT,
+            u32::from(Eabi::FIRST_GENERAL_ARGUMENT),
         ));
         self.emit_member_load(
             plan.condition_base,
             plan.member_offset,
             plan.member_type,
             None,
-            condition_value,
+            condition_value.into(),
         )?;
         let cached_name = "@guarded_member_value".to_string();
         self.locations.insert(
             cached_name.clone(),
             Location {
                 class: ValueClass::General,
-                register: condition_value,
+                register: u32::from(condition_value),
                 // The signed/unsigned member load has already produced a
                 // promoted word in r4. Treating the cached value as narrow
                 // would redundantly emit `extsh.`/`extsb.` instead of MWCC's
@@ -101,7 +101,7 @@ impl Generator {
         self.locations
             .get_mut(plan.parameter)
             .expect("guarded parameter location")
-            .register = arm_home;
+            .register = u32::from(arm_home);
         let decrement = Expression::Binary {
             operator: BinaryOperator::Subtract,
             left: Box::new(Expression::Variable(cached_name.clone())),
@@ -126,7 +126,7 @@ impl Generator {
         self.locations
             .get_mut(plan.parameter)
             .expect("guarded parameter location")
-            .register = Eabi::FIRST_GENERAL_ARGUMENT;
+            .register = 3;
         for statement in plan.else_body {
             self.emit_statement(statement)?;
         }
@@ -137,7 +137,7 @@ impl Generator {
         // In this consumer-heavy diamond, build 81 fills the last call's
         // return-latency slot with the independent constant before reloading
         // LR (distinct from its simpler non-leaf constant-join schedule).
-        self.load_integer_constant(Eabi::general_result().number, i64::from(plan.return_value));
+        self.load_integer_constant(u32::from(Eabi::general_result().number), i64::from(plan.return_value));
         self.output.instructions.extend([
             Instruction::LoadWord {
                 d: 0,

@@ -40,7 +40,7 @@ impl Generator {
                                         mwcc_syntax_trees::Type::Float
                                             | mwcc_syntax_trees::Type::Void
                                     )
-                            }) && usize::from(register) >= 3 + parameters.len()
+                            }) && usize::try_from(register).expect("register-derived offset") >= 3 + parameters.len()
                         })
             })
         {
@@ -52,7 +52,7 @@ impl Generator {
 #[derive(Debug)]
 struct EntryPlan {
     order: Vec<usize>,
-    anchor: Option<(usize, usize, u8)>,
+    anchor: Option<(usize, usize, u32)>,
 }
 
 impl EntryPlan {
@@ -73,7 +73,7 @@ fn entry_plan_with_calls(
     output: &MachineFunction,
     frame_size: i16,
     anchor: Option<&str>,
-    call_ignores: impl Fn(&str, u8) -> bool,
+    call_ignores: impl Fn(&str, u32) -> bool,
 ) -> Option<EntryPlan> {
     use Instruction::*;
     let instructions = &output.instructions;
@@ -179,7 +179,7 @@ fn entry_plan_with_calls(
                     offset,
                 } => {
                     *offset >= 8
-                        && i32::from(*offset) + 4 * i32::from(32 - *first) <= i32::from(frame_size)
+                        && i32::from(*offset) + 4 * i32::try_from(32 - *first).expect("register-derived offset") <= i32::from(frame_size)
                 }
                 _ => false,
             };
@@ -287,10 +287,10 @@ fn entry_plan_with_calls(
     })
 }
 
-fn live_after(live: &Liveness, register: u8, index: usize) -> bool {
+fn live_after(live: &Liveness, register: u32, index: usize) -> bool {
     live.pinned.iter().any(|range| {
         range.class == Class::General
-            && range.register == register
+            && u32::from(range.register) == register
             && range
                 .live_slots
                 .as_ref()

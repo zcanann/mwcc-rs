@@ -53,9 +53,9 @@ impl Plan {
     /// order at the bottom of the nonvolatile window; allowing an unpreferred
     /// home here can color a call-spanning mirror into a volatile argument
     /// register merely because its frame image is also available.
-    pub(super) fn home_preference(&self, home_index: usize, first_saved: usize) -> Option<u8> {
+    pub(super) fn home_preference(&self, home_index: usize, first_saved: usize) -> Option<u32> {
         let preferred = first_saved.checked_add(home_index)?;
-        (preferred >= 14 && preferred < 32).then(|| preferred as u8)
+        ((preferred >= 14 && preferred < 32).then(|| preferred as u8)).map(u32::from)
     }
 }
 

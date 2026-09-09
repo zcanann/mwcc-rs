@@ -131,13 +131,13 @@ fn repeated_append_frame(instructions: &[Instruction]) -> Option<(usize, usize)>
     (frame < epilogue).then_some((frame, epilogue))
 }
 
-fn repeated_value_append(instructions: &[Instruction], owner: u8) -> Option<AppendWindow> {
+fn repeated_value_append(instructions: &[Instruction], owner: u32) -> Option<AppendWindow> {
     repeated_value_appends(instructions, owner).next()
 }
 
 fn repeated_value_appends(
     instructions: &[Instruction],
-    owner: u8,
+    owner: u32,
 ) -> impl Iterator<Item = AppendWindow> + '_ {
     instructions.windows(16).enumerate().filter_map(move |(start, window)| {
         let [
@@ -197,7 +197,7 @@ fn repeated_value_appends(
     })
 }
 
-fn schedule_append(generator: &mut Generator, window: AppendWindow, owner: u8) {
+fn schedule_append(generator: &mut Generator, window: AppendWindow, owner: u32) {
     let start = window.start;
     generator.output.instructions[start] = Instruction::LoadWord {
         d: 3,

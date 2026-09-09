@@ -33,7 +33,7 @@ impl Generator {
         }
 
         let (pointee, address) = self.pointer_leaf(pointer_target)?;
-        let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
+        let restore = address != GENERAL_SCRATCH && self.reserved.insert(address.into());
         let source = self.place_store_value(value, pointee)?;
         if restore {
             self.reserved.remove(&address);
@@ -121,7 +121,7 @@ impl Generator {
         target: &Expression,
         operator: BinaryOperator,
         pointer_link: Option<(u32, u32)>,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if pointer_link.is_some() {
             return Err(Diagnostic::error(
@@ -357,7 +357,7 @@ impl Generator {
         Ok(())
     }
 
-    fn post_step_old_value_register(&mut self, destination: u8) -> u8 {
+    fn post_step_old_value_register(&mut self, destination: u32) -> u32 {
         // PowerPC treats r0 as the literal zero base for addi.  Retaining a
         // postfix result in r0 and then using it as the source of the step
         // would therefore materialize only the increment instead of old +

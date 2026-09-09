@@ -69,8 +69,8 @@ impl Generator {
         let index = if matches!(store.index, Expression::Variable(_)) {
             self.general_register_of_leaf(store.index)?
         } else {
-            let index = self.fresh_virtual_general_avoiding(vec![base, GENERAL_SCRATCH]);
-            let restore = self.reserved.insert(base);
+            let index = self.fresh_virtual_general_avoiding(vec![base.into(), GENERAL_SCRATCH]);
+            let restore = self.reserved.insert(base.into());
             let evaluated = self
                 .with_reserved_inputs(store.value, |me| me.evaluate_general(store.index, index));
             if restore {
@@ -111,7 +111,7 @@ impl Generator {
         })?;
         self.output.instructions.push(displacement_store(
             store.element,
-            source,
+            source.into(),
             address,
             offset,
         )?);

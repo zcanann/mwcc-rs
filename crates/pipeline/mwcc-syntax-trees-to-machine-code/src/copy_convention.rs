@@ -36,7 +36,7 @@ impl Generator {
                     .flatten()
             })
         {
-            self.output.instructions[start] = Instruction::move_register(3, start_source);
+            self.output.instructions[start] = Instruction::move_register(3, start_source.into());
             self.output.instructions[start + 2] = Instruction::SubtractFrom {
                 d: 4,
                 a: start_source,
@@ -62,7 +62,7 @@ impl Generator {
         else {
             return;
         };
-        self.output.instructions[start] = Instruction::move_register(3, start_source);
+        self.output.instructions[start] = Instruction::move_register(3, start_source.into());
     }
 
     /// Nonreturning linkage-first functions keep register copies in their `mr`
@@ -172,7 +172,7 @@ impl Generator {
     /// ABI-result forwarding); later generations use the canonical `mr` alias.
     /// Address preservation and control-flow merges are separate copy purposes
     /// and deliberately do not call this helper.
-    pub(crate) fn emit_integer_materialization_copy(&mut self, destination: u8, source: u8) {
+    pub(crate) fn emit_integer_materialization_copy(&mut self, destination: u32, source: u32) {
         let instruction = if self.behavior.materialization_copy_style
             == MaterializationCopyStyle::AddImmediateZero
             && source != 0
@@ -215,7 +215,7 @@ fn normalize_saved_literal_indirect_call_arguments(instructions: &mut [Instructi
     }
 }
 
-fn patched_pointer_difference_call(window: &[Instruction]) -> Option<(u8, u8)> {
+fn patched_pointer_difference_call(window: &[Instruction]) -> Option<(u32, u32)> {
     let [
         Instruction::AddImmediate {
             d: 3,
@@ -236,7 +236,7 @@ fn patched_pointer_difference_call(window: &[Instruction]) -> Option<(u8, u8)> {
     (*start != 0 && *end != 0 && start != end && a == start).then_some((*start, *end))
 }
 
-fn compact_patched_pointer_difference_call(window: &[Instruction]) -> Option<u8> {
+fn compact_patched_pointer_difference_call(window: &[Instruction]) -> Option<u32> {
     let [
         Instruction::AddImmediate {
             d: 3,

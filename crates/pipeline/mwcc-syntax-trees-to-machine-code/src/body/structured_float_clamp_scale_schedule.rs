@@ -19,7 +19,7 @@ impl Generator {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ClampScalePlan {
     start: usize,
-    base: u8,
+    base: u32,
     first_offset: i16,
     branch_options: u8,
     condition_bit: u8,

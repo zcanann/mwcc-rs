@@ -74,7 +74,7 @@ impl Generator {
         let channel = self.lookup_general(shape.index).ok_or_else(|| {
             Diagnostic::error("guarded computed survivor index has no incoming register")
         })?;
-        if channel != Eabi::FIRST_GENERAL_ARGUMENT {
+        if channel != Eabi::FIRST_GENERAL_ARGUMENT.into() {
             return Ok(false);
         }
 
@@ -317,8 +317,8 @@ impl<'a> GuardedComputedSurvivor<'a> {
 
 pub(super) fn emit_scaled_index(
     instructions: &mut Vec<Instruction>,
-    destination: u8,
-    source: u8,
+    destination: u32,
+    source: u32,
     stride: u32,
 ) -> Compilation<()> {
     if stride == 1 {

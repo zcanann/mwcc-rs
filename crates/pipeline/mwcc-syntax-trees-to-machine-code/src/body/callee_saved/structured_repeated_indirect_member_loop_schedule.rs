@@ -329,7 +329,7 @@ fn schedule_entry_parameter_copies(instructions: &mut [Instruction], enabled: bo
     copies.sort_by_key(|instruction| {
         entry_parameter_copy(instruction)
             .map(|(_, incoming)| incoming)
-            .unwrap_or(u8::MAX)
+            .unwrap_or(u8::MAX.into())
     });
     for instruction in copies {
         let (destination, incoming) =
@@ -350,7 +350,7 @@ fn is_dense_entry_packet(window: &[Instruction]) -> bool {
     sources == [Some(3), Some(4), Some(5)]
 }
 
-fn entry_parameter_copy(instruction: &Instruction) -> Option<(u8, u8)> {
+fn entry_parameter_copy(instruction: &Instruction) -> Option<(u32, u32)> {
     let Instruction::AddImmediate {
         d,
         a,

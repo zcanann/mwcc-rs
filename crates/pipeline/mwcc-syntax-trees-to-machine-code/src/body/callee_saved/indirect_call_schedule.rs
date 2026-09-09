@@ -243,7 +243,7 @@ fn retarget_block_entry(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GlobalIndirectCallbackTail {
     start: usize,
-    receiver: u8,
+    receiver: u32,
 }
 
 fn external_target(relocation: &mwcc_machine_code::Relocation) -> Option<&str> {

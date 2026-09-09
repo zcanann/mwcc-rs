@@ -14,8 +14,8 @@ use std::collections::{HashMap, HashSet};
 #[derive(Clone, Copy)]
 pub(crate) enum ConditionGlobalValue {
     Pending,
-    PendingPreferred(u8),
-    Register(u8),
+    PendingPreferred(u32),
+    Register(u32),
 }
 
 impl Generator {
@@ -95,7 +95,7 @@ impl Generator {
     /// the opposite arm. Build 163's linear allocation gives the carried value
     /// the next caller-clobbered home even though path-sensitive coalescing
     /// could legally merge both values.
-    pub(crate) fn prefer_pending_condition_global_values(&mut self, register: u8) {
+    pub(crate) fn prefer_pending_condition_global_values(&mut self, register: u32) {
         for value in self.condition_global_values.values_mut() {
             if matches!(value, ConditionGlobalValue::Pending) {
                 *value = ConditionGlobalValue::PendingPreferred(register);
@@ -106,7 +106,7 @@ impl Generator {
     pub(crate) fn materialize_pending_condition_global_value_fixed(
         &mut self,
         name: &str,
-        register: u8,
+        register: u32,
     ) -> Compilation<bool> {
         if !matches!(
             self.condition_global_values.get(name),
@@ -152,7 +152,7 @@ impl Generator {
         Ok(())
     }
 
-    pub(crate) fn condition_global_base(&mut self, name: &str) -> Compilation<Option<u8>> {
+    pub(crate) fn condition_global_base(&mut self, name: &str) -> Compilation<Option<u32>> {
         match self.condition_global_values.get(name).copied() {
             None => Ok(None),
             Some(ConditionGlobalValue::Register(register)) => Ok(Some(register)),
@@ -164,7 +164,7 @@ impl Generator {
                 Ok(Some(register))
             }
             Some(ConditionGlobalValue::PendingPreferred(preferred)) => {
-                let register = self.fresh_virtual_general_preferring(preferred);
+                let register = self.fresh_virtual_general_preferring(preferred.into());
                 self.emit_global_load_value(name, register)?;
                 self.condition_global_values
                     .insert(name.to_owned(), ConditionGlobalValue::Register(register));

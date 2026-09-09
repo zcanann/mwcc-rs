@@ -10,7 +10,7 @@ impl Generator {
         &mut self,
         name: &str,
         index: &Expression,
-    ) -> Compilation<Option<u8>> {
+    ) -> Compilation<Option<u32>> {
         if !matches!(
             self.globals.get(name),
             Some(Type::Pointer(Pointee::Pointer | Pointee::WordPointer))

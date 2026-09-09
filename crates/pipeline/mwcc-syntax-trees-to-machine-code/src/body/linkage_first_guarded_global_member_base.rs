@@ -15,7 +15,7 @@ struct Plan {
     repeated_high: usize,
     repeated_low: usize,
     store: usize,
-    base: u8,
+    base: u32,
     offset: i16,
 }
 

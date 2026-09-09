@@ -6,11 +6,11 @@ use super::*;
 /// The participants of the measured __va_arg ALIGN-store arm (fire 672):
 /// `*reg = C; addr = list->member; addr = ALIGN(addr, size); list->member = addr + size;`.
 struct AlignStoreArm {
-    reg_register: u8,
+    reg_register: u32,
     store_constant: i16,
-    list_register: u8,
+    list_register: u32,
     offset: i16,
-    size_register: u8,
+    size_register: u32,
 }
 
 impl Generator {
@@ -76,8 +76,8 @@ impl Generator {
             return Ok(false);
         }
         let result = match function.return_type {
-            Type::Float | Type::Double => Eabi::float_result().number,
-            _ => Eabi::general_result().number,
+            Type::Float | Type::Double => u32::from(Eabi::float_result().number),
+            _ => u32::from(Eabi::general_result().number),
         };
         // `if (c) y = A; else y = B;` is the guard `if (c) y = A` with fall-through B
         // — mwcc normalizes a negated `if (!c)` the same way it does a guard return
@@ -146,7 +146,7 @@ impl Generator {
             return Ok(false);
         };
         // -- emit (measured) --
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         let value_register = [arm.list_register, arm.size_register, arm.reg_register]
             .iter()
             .max()
@@ -251,7 +251,7 @@ impl Generator {
         else {
             return None;
         };
-        let size_minus_one = |expression: &Expression, generator: &Self| -> Option<u8> {
+        let size_minus_one = |expression: &Expression, generator: &Self| -> Option<u32> {
             let Expression::Binary {
                 operator: BinaryOperator::Subtract,
                 left,
@@ -330,9 +330,9 @@ impl Generator {
     fn emit_align_store_arm(
         &mut self,
         arm: &AlignStoreArm,
-        store_register: u8,
-        mask_register: u8,
-        addr_home: u8,
+        store_register: u32,
+        mask_register: u32,
+        addr_home: u32,
     ) {
         self.load_integer_constant(store_register, i64::from(arm.store_constant));
         let serial_scratch = self.behavior.va_arg_schedule_style
@@ -398,7 +398,7 @@ impl Generator {
     /// (`clrlwi.`, cr0 set by the mask itself) and the compare disappears
     /// entirely (measured across every narrow-guard family at 2.6; the callers
     /// skip their cmplwi when the constant is zero).
-    fn push_narrow_guard_test(&mut self, register: u8, clear: u8, constant: u16) {
+    fn push_narrow_guard_test(&mut self, register: u32, clear: u8, constant: u16) {
         if constant == 0 {
             self.output
                 .instructions
@@ -559,11 +559,11 @@ impl Generator {
             return Ok(false);
         };
         // -- emit (measured) --
-        let result = Eabi::general_result().number;
-        let addr_home = (3u8..=10)
+        let result = u32::from(Eabi::general_result().number);
+        let addr_home = (3u32..=10)
             .find(|register| {
                 !self.locations.values().any(|location| {
-                    location.class == ValueClass::General && location.register == *register
+                    location.class == ValueClass::General && location.register == (*register).into()
                 })
             })
             .unwrap_or(3);
@@ -596,7 +596,7 @@ impl Generator {
         });
         self.output
             .instructions
-            .push(Instruction::move_register(result, addr_home));
+            .push(Instruction::move_register(result, addr_home.into()));
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
@@ -657,7 +657,7 @@ impl Generator {
         let Some(g_name) = leaf_name(left) else {
             return Ok(false);
         };
-        let signed_word = |generator: &Self, name: &str| -> Option<u8> {
+        let signed_word = |generator: &Self, name: &str| -> Option<u32> {
             generator
                 .locations
                 .get(name)
@@ -790,7 +790,7 @@ impl Generator {
             return Ok(false);
         }
         // -- emit (measured) --
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.output.instructions.push(Instruction::CompareWord {
             a: g_register,
             b: max_register,
@@ -1039,7 +1039,7 @@ impl Generator {
             return Ok(false);
         };
         // -- emit (measured) --
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.output.instructions.push(Instruction::Add {
             d: counter,
             a: counter,
@@ -1118,8 +1118,8 @@ impl Generator {
         // reclaims the dying struct-pointer register:
         //   add r0,g,inc; stb r0,0(reg); mullw r0,g,rs; lwz r3,off(list); add r3,r3,r0
         enum ReturnBase {
-            Param(u8),
-            Member { base: u8, offset: u16 },
+            Param(u32),
+            Member { base: u32, offset: u16 },
         }
         let return_base = if let Some(&crate::generator::Location {
             class: ValueClass::General,
@@ -1232,7 +1232,7 @@ impl Generator {
             _ => return Ok(false),
         };
         // -- emit (measured orders — they differ by base kind) --
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         match return_base {
             ReturnBase::Param(base) => {
                 // The multiply consumes its operand FIRST, so the store value may
@@ -1250,7 +1250,7 @@ impl Generator {
                 self.output.instructions.push(store_instruction);
                 self.output.instructions.push(Instruction::Add {
                     d: result,
-                    a: base,
+                    a: u32::from(base),
                     b: GENERAL_SCRATCH,
                 });
             }
@@ -1386,7 +1386,7 @@ impl Generator {
         };
         let (test_register, test_width) = width;
         // -- emit (measured) --
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.output
             .instructions
             .push(Instruction::RotateAndMaskRecord {
@@ -1561,7 +1561,7 @@ impl Generator {
         // from pinned interference alone (the record test pins r0, the live inner
         // operand pins its register, the first local's li pins r3 — the lowest free
         // is r5), validating policy #4 as derived, not hardcoded.
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         let compare_first = self.behavior.narrow_guard_schedule_style
             == mwcc_versions::NarrowGuardScheduleStyle::CompareFirstDeclarationOrder;
         let (first_home, second_home) = if compare_first {
@@ -1757,7 +1757,7 @@ impl Generator {
         // EMERGE from half-open interference — the parameter's pin ends at the
         // width-op that copied it out, so r3 is free at the load's definition
         // (policy #2 derived, like #4). The const local keeps the r0 preference.
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         let load_home = self.fresh_virtual_general();
         let const_home = self.fresh_virtual_general_preferring(GENERAL_SCRATCH);
         self.push_narrow_guard_test(register, 32 - width, constant);
@@ -1978,7 +1978,7 @@ impl Generator {
         {
             return Ok(false);
         }
-        let mut condition_register_width: Option<(u8, u16)> = None;
+        let mut condition_register_width: Option<(u32, u16)> = None;
         let mut tests: Vec<(u16, u8, u8)> = Vec::new(); // (constant, options, bit)
         for (condition, _) in &blocks {
             let Expression::Binary {
@@ -2022,14 +2022,14 @@ impl Generator {
         // -- emit (measured) -- homes are SEQUENTIAL volatiles past the live
         // condition parameter (r4, r5, r6 …), riding preferred VIRTUALS through the
         // general allocation machinery.
-        let result = Eabi::general_result().number;
-        let homes: Vec<u8> = (0..locals.len())
-            .map(|index| self.fresh_virtual_general_preferring(result + 1 + index as u8))
+        let result = u32::from(Eabi::general_result().number);
+        let homes: Vec<u32> = (0..locals.len())
+            .map(|index| self.fresh_virtual_general_preferring(result + 1 + u32::from(index as u8)))
             .collect();
         for (block_index, ((_, arm), &(constant, options, condition_bit))) in
             blocks.iter().zip(&tests).enumerate()
         {
-            self.push_narrow_guard_test(register, 32 - width as u8, constant);
+            self.push_narrow_guard_test(register.into(), 32 - width as u8, constant);
             let compare_first = self.behavior.narrow_guard_schedule_style
                 == mwcc_versions::NarrowGuardScheduleStyle::CompareFirstDeclarationOrder;
             if block_index == 0 && !compare_first {
@@ -2205,7 +2205,7 @@ impl Generator {
         //   bne JOIN; lbz r3,0(p); li r0,n2; extsb r3,r3; JOIN: add r3,r3,r0
         enum ArmFirst {
             Const(i16),
-            Load { base: u8, signed_char: bool },
+            Load { base: u32, signed_char: bool },
         }
         let arm_first = if let Some(constant) =
             constant_value(value1).and_then(|value| i16::try_from(value).ok())
@@ -2282,7 +2282,7 @@ impl Generator {
                 // is a PLAIN virtual — the measured r3 EMERGES (the condition
                 // parameter's pin ends at the width-op) — and the const local rides
                 // the r0 preference.
-                let result = Eabi::general_result().number;
+                let result = u32::from(Eabi::general_result().number);
                 let compare_first = self.behavior.narrow_guard_schedule_style
                     == mwcc_versions::NarrowGuardScheduleStyle::CompareFirstDeclarationOrder;
                 let (first_home, const_home) = if compare_first {
@@ -2484,7 +2484,7 @@ impl Generator {
         // -- emit (measured order) -- Homes per the consumer tree: two locals ->
         // [r3, r0] (in-place `add r3,r3,r0`); three (reassociated `a+(b+c)`) ->
         // [first free volatile, r0, r3] (`add r3,r0,r3; add r3,rF,r3`).
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         // The three-local first home is r4 — measured with the condition as the ONLY
         // parameter. A second parameter complicates it: mwcc reclaims a DEAD extra
         // param's register (an unused `u` in r4 still yields r4) but must skip a live
@@ -2505,7 +2505,7 @@ impl Generator {
         // at the post-compare `li`, after the width-op's physical r0 died.
         let compare_first = self.behavior.narrow_guard_schedule_style
             == mwcc_versions::NarrowGuardScheduleStyle::CompareFirstDeclarationOrder;
-        let homes: Vec<u8> = match (pairs.len(), compare_first) {
+        let homes: Vec<u32> = match (pairs.len(), compare_first) {
             (2, false) => vec![
                 self.fresh_virtual_general_preferring(result),
                 self.fresh_virtual_general_preferring(GENERAL_SCRATCH),
@@ -2629,7 +2629,7 @@ impl Generator {
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
             return Ok(false);
         }
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         let init_const = constant_value(initializer);
         let new_const = constant_value(value);
 
@@ -2857,7 +2857,7 @@ impl Generator {
         let Some(Expression::Variable(init_name)) = &local.initializer else {
             return Ok(false);
         };
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         if self.lookup_general(init_name) != Some(result) {
             return Ok(false);
         }
@@ -2945,7 +2945,7 @@ impl Generator {
             return Ok(false);
         }
         let home = location.register;
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         // No side effect in either arm of an if/ELSE: the SELECT layouts — checked
         // before the reassign plan, whose in-place gates are narrower than select's
         // computed-from-any-register arms.
@@ -3113,7 +3113,7 @@ impl Generator {
 
     /// True when an arm emits no code: no stores, and its reassignment is a copy whose
     /// source already lives in the result register.
-    pub(crate) fn reassign_arm_is_empty(&self, order: &[&Statement], result: u8) -> bool {
+    pub(crate) fn reassign_arm_is_empty(&self, order: &[&Statement], result: u32) -> bool {
         order.iter().all(|statement| match statement {
             Statement::Assign {
                 value: Expression::Variable(source),
@@ -3128,8 +3128,8 @@ impl Generator {
     pub(crate) fn emit_reassign_arm_into_result(
         &mut self,
         order: &[&Statement],
-        home: u8,
-        result: u8,
+        home: u32,
+        result: u32,
     ) -> Compilation<()> {
         for statement in order {
             match statement {
@@ -3196,7 +3196,7 @@ impl Generator {
         let Some(else_arm) = self.classify_select_arm(else_body, returned) else {
             return Ok(false);
         };
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         if self.behavior.integer_select_style
             == mwcc_versions::IntegerSelectStyle::BranchPreserving
         {
@@ -3221,15 +3221,15 @@ impl Generator {
                             options,
                             condition_bit,
                         });
-                    self.emit_select_arm(&then_arm, phi);
+                    self.emit_select_arm(&then_arm, phi.into());
                 } else {
                     let merge = self.fresh_label();
                     self.emit_branch_conditional_to(options, condition_bit, merge);
-                    self.emit_select_arm(&then_arm, phi);
+                    self.emit_select_arm(&then_arm, phi.into());
                     self.bind_label(merge);
                     self.output
                         .instructions
-                        .push(Instruction::move_register(result, phi));
+                        .push(Instruction::move_register(result, phi.into()));
                 }
                 self.emit_epilogue_and_return();
                 return Ok(true);
@@ -3288,7 +3288,7 @@ impl Generator {
         condition: &Expression,
         then_arm: &SelectArm,
         else_arm: &SelectArm,
-        result: u8,
+        result: u32,
     ) -> Compilation<()> {
         let (options, condition_bit) = self.emit_condition_test(condition)?;
 
@@ -3300,12 +3300,12 @@ impl Generator {
             self.emit_branch_conditional_to(options, condition_bit, false_arm);
             self.emit_branch_to(join);
             self.bind_label(false_arm);
-            self.emit_select_arm(&SelectArm::Copy(*else_source), *then_phi);
+            self.emit_select_arm(&SelectArm::Copy(*else_source), (*then_phi).into());
             self.bind_label(join);
             if *then_phi != result {
                 self.output
                     .instructions
-                    .push(Instruction::move_register(result, *then_phi));
+                    .push(Instruction::move_register(result, (*then_phi).into()));
             }
             self.emit_epilogue_and_return();
             return Ok(());
@@ -3323,11 +3323,11 @@ impl Generator {
             } else {
                 let join = self.fresh_label();
                 self.emit_branch_conditional_to(options, condition_bit, join);
-                self.emit_select_arm(then_arm, *phi);
+                self.emit_select_arm(then_arm, (*phi).into());
                 self.bind_label(join);
                 self.output
                     .instructions
-                    .push(Instruction::move_register(result, *phi));
+                    .push(Instruction::move_register(result, (*phi).into()));
             }
             self.emit_epilogue_and_return();
             return Ok(());
@@ -3393,7 +3393,7 @@ impl Generator {
     }
 
     /// Materialize a select arm into the phi register.
-    pub(crate) fn emit_select_arm(&mut self, arm: &SelectArm, phi: u8) {
+    pub(crate) fn emit_select_arm(&mut self, arm: &SelectArm, phi: u32) {
         match arm {
             SelectArm::Constant(constant) => self
                 .output
@@ -3402,7 +3402,7 @@ impl Generator {
             SelectArm::Copy(source) => self
                 .output
                 .instructions
-                .push(Instruction::move_register(phi, *source)),
+                .push(Instruction::move_register(phi, (*source).into())),
             SelectArm::Computed { source, immediate } => {
                 self.output.instructions.push(Instruction::AddImmediate {
                     d: phi,
@@ -3519,7 +3519,7 @@ impl Generator {
     pub(crate) fn emit_conditional_reassign_body(
         &mut self,
         order: &[&Statement],
-        home: u8,
+        home: u32,
     ) -> Compilation<()> {
         for statement in order {
             match statement {

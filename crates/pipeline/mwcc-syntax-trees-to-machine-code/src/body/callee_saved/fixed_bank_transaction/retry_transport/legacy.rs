@@ -272,10 +272,10 @@ impl Generator {
     fn retry_status_read(
         &mut self,
         bank: &Transaction<'_>,
-        command: u8,
+        command: u32,
         home: i16,
         output: i16,
-        error: u8,
+        error: u32,
         first: bool,
         retain_result: bool,
     ) {
@@ -327,7 +327,7 @@ impl Generator {
     fn retry_bank_start(
         &mut self,
         bank: &Transaction<'_>,
-        command: u8,
+        command: u32,
         home: i16,
         length: i16,
         first: bool,
@@ -406,7 +406,7 @@ impl Generator {
         });
         self.bank_transfer_call(bank.transfer);
     }
-    fn retry_normalize_failure(&mut self, result: u8) {
+    fn retry_normalize_failure(&mut self, result: u32) {
         self.output.instructions.extend([
             Instruction::CountLeadingZeros { a: 0, s: 3 },
             Instruction::ShiftRightLogicalImmediate {
@@ -474,7 +474,7 @@ impl Generator {
                 target,
             });
     }
-    fn retry_counter_load(&mut self, counter: &str, d: u8) {
+    fn retry_counter_load(&mut self, counter: &str, d: u32) {
         self.record_relocation(RelocationKind::EmbSda21, counter);
         self.output
             .instructions

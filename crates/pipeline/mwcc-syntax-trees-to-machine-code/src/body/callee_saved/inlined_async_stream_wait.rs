@@ -428,8 +428,8 @@ impl Generator {
         let Some(plan) = classify(function) else {
             return Ok(false);
         };
-        const INTERRUPT: u8 = 31;
-        const BLOCK_OR_RESULT: u8 = 30;
+        const INTERRUPT: u32 = 31;
+        const BLOCK_OR_RESULT: u32 = 30;
         let frame_size = if plan.extended_setup.is_some() { 40 } else { 32 };
 
         self.non_leaf = true;

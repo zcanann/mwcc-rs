@@ -100,24 +100,24 @@ impl Generator {
 
         self.output.packed_string_literals = packed;
         let placeholder = self.string_literal_placeholder(string);
-        self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT + 1, &placeholder);
+        self.emit_address_high((Eabi::FIRST_GENERAL_ARGUMENT + 1).into(), &placeholder);
         self.output.instructions.push(Instruction::move_register(
-            Eabi::FIRST_GENERAL_ARGUMENT + 2,
-            Eabi::general_result().number,
+            (Eabi::FIRST_GENERAL_ARGUMENT + 2).into(),
+            u32::from(Eabi::general_result().number),
         ));
         if packed {
             self.emit_string_address_low(
                 &placeholder,
-                Eabi::FIRST_GENERAL_ARGUMENT + 1,
-                Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 1),
+                u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 1),
             );
-            self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT, *leading);
+            self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT.into(), *leading);
         } else {
-            self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT, *leading);
+            self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT.into(), *leading);
             self.emit_string_address_low(
                 &placeholder,
-                Eabi::FIRST_GENERAL_ARGUMENT + 1,
-                Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 1),
+                u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 1),
             );
         }
         self.emit_forward_consumer_link(consumer_name);
@@ -152,7 +152,7 @@ impl Generator {
                 .locations
                 .get(parameter.name.as_str())
                 .map(|location| location.register)
-                != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+                != Some(Eabi::FIRST_GENERAL_ARGUMENT.into())
         {
             return Ok(false);
         }
@@ -206,7 +206,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.evaluate_general(integer, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+        self.evaluate_general(integer, (Eabi::FIRST_GENERAL_ARGUMENT + 1).into())?;
         self.output.instructions.push(Instruction::StoreWord {
             s: 0,
             a: 1,
@@ -224,9 +224,9 @@ impl Generator {
                 .initializer
                 .as_ref()
                 .expect("member initializer checked"),
-            Eabi::FIRST_GENERAL_ARGUMENT,
+            Eabi::FIRST_GENERAL_ARGUMENT.into(),
         )?;
-        self.evaluate_float(float, Eabi::FIRST_FLOAT_ARGUMENT)?;
+        self.evaluate_float(float, Eabi::FIRST_FLOAT_ARGUMENT.into())?;
         self.emit_forward_consumer_link(consumer_name);
         self.emit_epilogue_and_return();
         Ok(true)
@@ -290,8 +290,8 @@ impl Generator {
         }
         // Prove the producer consumes each incoming parameter in its assigned
         // EABI lane, so setting up the call emits no moves and no live-in survives.
-        let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
-        let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
+        let mut next_general: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
+        let mut next_float: u32 = (Eabi::FIRST_FLOAT_ARGUMENT) as u32;
         for parameter in &function.parameters {
             let expected = match class_of(parameter.parameter_type)? {
                 ValueClass::General => {
@@ -309,7 +309,7 @@ impl Generator {
                 .locations
                 .get(parameter.name.as_str())
                 .map(|location| location.register)
-                != Some(expected)
+                != Some(expected.into())
             {
                 return Ok(false);
             }
@@ -341,8 +341,8 @@ impl Generator {
             offset: 20,
         });
         self.emit_call(producer_name, producer_arguments, None, false)?;
-        self.evaluate_float(float, Eabi::FIRST_FLOAT_ARGUMENT)?;
-        self.evaluate_general(integer, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+        self.evaluate_float(float, Eabi::FIRST_FLOAT_ARGUMENT.into())?;
+        self.evaluate_general(integer, (Eabi::FIRST_GENERAL_ARGUMENT + 1).into())?;
         self.emit_forward_consumer_link(consumer_name);
         self.emit_epilogue_and_return();
         Ok(true)

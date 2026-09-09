@@ -13,7 +13,7 @@ impl Generator {
         operator: BinaryOperator,
         variable: &Expression,
         constant: i64,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if operator != BinaryOperator::BitAnd || rlwinm_mask(constant).is_some() {
             return Ok(false);

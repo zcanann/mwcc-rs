@@ -33,7 +33,7 @@ impl Generator {
         }
         self.output
             .instructions
-            .push(displacement_store(pointee, source?, pointer, offset)?);
+            .push(displacement_store(pointee, source?.into(), pointer, offset)?);
         Ok(true)
     }
 
@@ -49,7 +49,7 @@ impl Generator {
         index: &Expression,
         member_offset: u32,
         pointee: Pointee,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if !matches!(
             self.globals.get(name),

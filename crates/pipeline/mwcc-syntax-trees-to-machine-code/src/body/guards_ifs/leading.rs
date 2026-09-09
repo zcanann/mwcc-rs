@@ -115,7 +115,7 @@ impl Generator {
         // parameter living in the result register — the fold clobbers it. Such bodies
         // stay ordered for the branch-form handler.
         if let Some(occupant) = self.locations.iter().find_map(|(name, location)| {
-            (location.register == mwcc_target::Eabi::general_result().number
+            (location.register == u32::from(mwcc_target::Eabi::general_result().number)
                 && location.class == ValueClass::General)
                 .then_some(name.as_str())
         }) {

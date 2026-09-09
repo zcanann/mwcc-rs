@@ -237,10 +237,10 @@ impl Generator {
             return Ok(false);
         }
 
-        const SAVED_MASK: u8 = 31;
-        const SAVED_COUNT: u8 = 30;
-        const SAVED_FORMAT: u8 = 29;
-        const SAVED_TYPE: u8 = 28;
+        const SAVED_MASK: u32 = 31;
+        const SAVED_COUNT: u32 = 30;
+        const SAVED_FORMAT: u32 = 29;
+        const SAVED_TYPE: u32 = 28;
         self.non_leaf = true;
         self.frame_size = 40;
         self.callee_saved = vec![SAVED_MASK, SAVED_COUNT, SAVED_FORMAT, SAVED_TYPE];

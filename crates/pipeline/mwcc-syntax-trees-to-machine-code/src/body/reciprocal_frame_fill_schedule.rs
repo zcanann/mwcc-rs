@@ -58,7 +58,7 @@ fn schedule(output: &mut mwcc_machine_code::MachineFunction) -> Option<usize> {
     Some(start)
 }
 
-fn reciprocal_frame_fill(window: &[Instruction]) -> Option<(u8, u8)> {
+fn reciprocal_frame_fill(window: &[Instruction]) -> Option<(u32, u32)> {
     let [
         Instruction::LoadFloatSingle {
             d: result,

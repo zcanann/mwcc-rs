@@ -147,7 +147,7 @@ impl Generator {
             return Ok(false);
         };
 
-        const SAVED_MASK: u8 = 31;
+        const SAVED_MASK: u32 = 31;
         self.non_leaf = true;
         self.frame_size = 16;
         self.callee_saved = vec![SAVED_MASK];
@@ -217,7 +217,7 @@ impl Generator {
         Ok(true)
     }
 
-    pub(super) fn emit_saved_bit_calls(&mut self, calls: &[BitCall<'_>], saved_mask: u8) {
+    pub(super) fn emit_saved_bit_calls(&mut self, calls: &[BitCall<'_>], saved_mask: u32) {
         for call in calls {
             let (begin, end) = rotate_mask_bounds(call.mask).expect("gated contiguous mask");
             if call.mask == 1 {

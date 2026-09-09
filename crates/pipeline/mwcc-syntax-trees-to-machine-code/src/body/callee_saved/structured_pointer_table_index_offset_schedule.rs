@@ -130,7 +130,7 @@ impl Generator {
             let from = self.output.instructions[start..start + count]
                 .iter()
                 .position(|instruction| {
-                    matches!(instruction, Instruction::AddImmediate { d, .. } if *d == destination)
+                    matches!(instruction, Instruction::AddImmediate { d, .. } if *d == destination.into())
                 })
                 .map(|offset| start + offset)
                 .expect("the descending parameter-copy packet was recognized");

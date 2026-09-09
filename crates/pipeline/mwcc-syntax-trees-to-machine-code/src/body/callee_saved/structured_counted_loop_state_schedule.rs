@@ -9,15 +9,15 @@
 #[allow(unused_imports)]
 use super::*;
 
-const STATE_HOMES: [u8; 6] = [11, 12, 5, 27, 26, 25];
+const STATE_HOMES: [u32; 6] = [11, 12, 5, 27, 26, 25];
 const LOOP_ORDER: [usize; 9] = [4, 1, 2, 3, 6, 0, 5, 7, 8];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StatePlan {
-    values: [u8; 6],
+    values: [u32; 6],
     loop_start: usize,
-    flags: [u8; 4],
-    sample: u8,
+    flags: [u32; 4],
+    sample: u32,
 }
 
 impl Generator {
@@ -32,13 +32,13 @@ impl Generator {
             self.prefer_virtual_general(value, home);
         }
         for (flag, home) in plan.flags.into_iter().zip([7, 10, 9, 8]) {
-            self.prefer_virtual_general(flag, home);
+            self.prefer_virtual_general(flag.into(), home);
         }
         if !merge_sample_into_overwritten_state(
             &mut self.output.instructions,
             plan.loop_start + 4,
             plan.sample,
-            plan.values[2],
+            plan.values[2].into(),
         ) {
             return false;
         }
@@ -49,9 +49,9 @@ impl Generator {
         ) else {
             return false;
         };
-        self.prefer_virtual_general(delta, 19);
-        self.prefer_virtual_general(n_dlx, 19);
-        if !rewrite_state_product(self, plan.loop_start + 31, plan.values, plan.flags, n_dlx) {
+        self.prefer_virtual_general(delta.into(), 19);
+        self.prefer_virtual_general(n_dlx.into(), 19);
+        if !rewrite_state_product(self, plan.loop_start + 31, plan.values, plan.flags, n_dlx.into()) {
             return false;
         }
         if !rewrite_state_publication(&mut self.output.instructions, plan.values) {
@@ -72,7 +72,7 @@ impl Generator {
         }
         crate::remap_instruction_indices(self, &permutation);
         crate::retarget_instruction_destinations(self, plan.loop_start + 5, plan.loop_start);
-        if !merge_integer_conversion_state(self, plan.values[1]) {
+        if !merge_integer_conversion_state(self, plan.values[1].into()) {
             return false;
         }
         self.output
@@ -82,7 +82,7 @@ impl Generator {
     }
 }
 
-fn merge_integer_conversion_state(generator: &mut Generator, n_dl: u8) -> bool {
+fn merge_integer_conversion_state(generator: &mut Generator, n_dl: u32) -> bool {
     let Some(copy) = generator.output.instructions.iter().position(|instruction| {
         matches!(instruction, Instruction::Or { a, s, b } if a != s && s == &n_dl && b == &n_dl)
     }) else {
@@ -130,9 +130,9 @@ fn merge_integer_conversion_state(generator: &mut Generator, n_dl: u8) -> bool {
 fn rewrite_state_product(
     generator: &mut Generator,
     start: usize,
-    values: [u8; 6],
-    flags: [u8; 4],
-    n_dlx: u8,
+    values: [u32; 6],
+    flags: [u32; 4],
+    n_dlx: u32,
 ) -> bool {
     let Some(window) = generator.output.instructions.get(start..start + 12) else {
         return false;
@@ -161,20 +161,20 @@ fn rewrite_state_product(
     else {
         return false;
     };
-    if s != flags[0]
-        || term_a_source != values[1]
-        || term_a_flag != flags[3]
-        || term_c_source != values[5]
-        || term_c_flag != flags[1]
-        || !matches!(window[0], Instruction::ShiftRightLogicalImmediate { a, s, shift: 31 } if a == n_dlx && s == values[5])
-        || !matches!(window[1], Instruction::Add { d, a, b } if d == n_dlx && a == n_dlx && b == values[5])
+    if s != flags[0].into()
+        || term_a_source != values[1].into()
+        || term_a_flag != flags[3].into()
+        || term_c_source != values[5].into()
+        || term_c_flag != flags[1].into()
+        || !matches!(window[0], Instruction::ShiftRightLogicalImmediate { a, s, shift: 31 } if a == n_dlx && s == values[5].into())
+        || !matches!(window[1], Instruction::Add { d, a, b } if d == n_dlx && a == n_dlx && b == values[5].into())
         || !matches!(window[2], Instruction::ShiftRightAlgebraicImmediate { a, s, shift: 1 } if a == n_dlx && s == n_dlx)
         || !matches!(window[4], Instruction::SubtractFromImmediate { d, a, immediate: 1 } if d == factor && a == factor)
-        || !matches!(window[6], Instruction::MultiplyLow { d: 0, a, b } if a == values[4] && b == flags[2])
+        || !matches!(window[6], Instruction::MultiplyLow { d: 0, a, b } if a == values[4].into() && b == flags[2].into())
         || !matches!(window[7], Instruction::Add { d: 0, a, b: 0 } if a == term_a)
         || !matches!(window[9], Instruction::Add { d: 0, a, b: 0 } if a == term_c)
         || !matches!(window[10], Instruction::Add { d: 0, a, b: 0 } if a == n_dlx)
-        || !matches!(window[11], Instruction::MultiplyLow { d, a, b: 0 } if d == values[2] && a == factor)
+        || !matches!(window[11], Instruction::MultiplyLow { d, a, b: 0 } if d == values[2].into() && a == factor)
     {
         return false;
     }
@@ -183,19 +183,19 @@ fn rewrite_state_product(
     generator.prefer_virtual_general(term_a, 21);
     generator.prefer_virtual_general(term_c, 20);
     generator.output.instructions[start + 3] = Instruction::ShiftLeftImmediate {
-        a: values[2],
-        s: flags[0],
+        a: u32::from(values[2]),
+        s: u32::from(flags[0]),
         shift: 1,
     };
     generator.output.instructions[start + 4] = Instruction::SubtractFromImmediate {
-        d: values[2],
-        a: values[2],
+        d: u32::from(values[2]),
+        a: u32::from(values[2]),
         immediate: 1,
     };
     generator.output.instructions[start + 6] = Instruction::MultiplyLow {
         d: term_b,
-        a: values[4],
-        b: flags[2],
+        a: u32::from(values[4]),
+        b: u32::from(flags[2]),
     };
     generator.output.instructions[start + 7] = Instruction::Add {
         d: term_a,
@@ -213,8 +213,8 @@ fn rewrite_state_product(
         b: term_b,
     };
     generator.output.instructions[start + 11] = Instruction::MultiplyLow {
-        d: values[2],
-        a: values[2],
+        d: u32::from(values[2]),
+        a: u32::from(values[2]),
         b: term_b,
     };
 
@@ -234,7 +234,7 @@ fn rewrite_state_product(
     true
 }
 
-fn rewrite_state_publication(instructions: &mut [Instruction], values: [u8; 6]) -> bool {
+fn rewrite_state_publication(instructions: &mut [Instruction], values: [u32; 6]) -> bool {
     let Some(start) = instructions.windows(6).position(|window| {
         let mut base = None;
         for (index, instruction) in window.iter().enumerate() {
@@ -242,7 +242,7 @@ fn rewrite_state_publication(instructions: &mut [Instruction], values: [u8; 6]) 
                 return false;
             };
             let expected_source = if index == 3 { 3 } else { values[index] };
-            if *s != expected_source || *offset != (index * 4) as i16 {
+            if *s != expected_source.into() || *offset != (index * 4) as i16 {
                 return false;
             }
             if let Some(base) = base {
@@ -260,15 +260,15 @@ fn rewrite_state_publication(instructions: &mut [Instruction], values: [u8; 6]) 
     let Instruction::StoreWord { s, .. } = &mut instructions[start + 3] else {
         unreachable!("the dense state publication was recognized as a word store")
     };
-    *s = values[3];
+    *s = u32::from(values[3]);
     true
 }
 
 fn rewrite_state_arithmetic(
     instructions: &mut [Instruction],
     start: usize,
-    values: [u8; 6],
-) -> Option<(u8, u8)> {
+    values: [u32; 6],
+) -> Option<(u32, u32)> {
     let window = instructions.get(start..start + 25)?;
     let Instruction::SubtractFrom {
         d: delta,
@@ -310,25 +310,25 @@ fn rewrite_state_arithmetic(
     else {
         return None;
     };
-    if a != values[0]
-        || b != values[2]
+    if a != values[0].into()
+        || b != values[2].into()
         || s != delta
-        || n_dlh != values[4]
-        || n_dlq != values[5]
+        || n_dlh != values[4].into()
+        || n_dlq != values[5].into()
         || !matches!(window[2], Instruction::Xor { a: 3, s, b } if s == sign && b == delta)
         || !matches!(window[3], Instruction::SubtractFrom { d: 3, a, b: 3 } if a == sign)
-        || !matches!(window[4], Instruction::CompareWord { a: 3, b } if b == values[1])
-        || !matches!(window[7], Instruction::SubtractFrom { d: 3, a, b: 3 } if a == values[1])
-        || !matches!(window[8], Instruction::ShiftRightLogicalImmediate { a: 0, s, shift: 31 } if s == values[1])
-        || !matches!(window[9], Instruction::Add { d: 0, a: 0, b } if b == values[1])
-        || !matches!(window[11], Instruction::CompareWord { a: 3, b } if b == values[4])
-        || !matches!(window[14], Instruction::SubtractFrom { d: 3, a, b: 3 } if a == values[4])
-        || !matches!(window[15], Instruction::ShiftRightLogicalImmediate { a: 0, s, shift: 31 } if s == values[4])
-        || !matches!(window[16], Instruction::Add { d: 0, a: 0, b } if b == values[4])
-        || !matches!(window[18], Instruction::CompareWord { a: 3, b } if b == values[5])
-        || !matches!(window[21], Instruction::SubtractFrom { d: 3, a, b: 3 } if a == values[5])
-        || !matches!(window[22], Instruction::ShiftRightLogicalImmediate { a: 0, s, shift: 31 } if s == values[5])
-        || !matches!(window[23], Instruction::Add { d: 0, a: 0, b } if b == values[5])
+        || !matches!(window[4], Instruction::CompareWord { a: 3, b } if b == values[1].into())
+        || !matches!(window[7], Instruction::SubtractFrom { d: 3, a, b: 3 } if a == values[1].into())
+        || !matches!(window[8], Instruction::ShiftRightLogicalImmediate { a: 0, s, shift: 31 } if s == values[1].into())
+        || !matches!(window[9], Instruction::Add { d: 0, a: 0, b } if b == values[1].into())
+        || !matches!(window[11], Instruction::CompareWord { a: 3, b } if b == values[4].into())
+        || !matches!(window[14], Instruction::SubtractFrom { d: 3, a, b: 3 } if a == values[4].into())
+        || !matches!(window[15], Instruction::ShiftRightLogicalImmediate { a: 0, s, shift: 31 } if s == values[4].into())
+        || !matches!(window[16], Instruction::Add { d: 0, a: 0, b } if b == values[4].into())
+        || !matches!(window[18], Instruction::CompareWord { a: 3, b } if b == values[5].into())
+        || !matches!(window[21], Instruction::SubtractFrom { d: 3, a, b: 3 } if a == values[5].into())
+        || !matches!(window[22], Instruction::ShiftRightLogicalImmediate { a: 0, s, shift: 31 } if s == values[5].into())
+        || !matches!(window[23], Instruction::Add { d: 0, a: 0, b } if b == values[5].into())
     {
         return None;
     }
@@ -336,31 +336,31 @@ fn rewrite_state_arithmetic(
     let n_qn = values[2];
     let n_dn = values[3];
     instructions[start + 1] = Instruction::ShiftRightAlgebraicImmediate {
-        a: n_qn,
+        a: u32::from(n_qn),
         s: delta,
         shift: 31,
     };
     instructions[start + 2] = Instruction::Xor {
-        a: n_dn,
-        s: n_qn,
+        a: u32::from(n_dn),
+        s: u32::from(n_qn),
         b: delta,
     };
     instructions[start + 3] = Instruction::SubtractFrom {
-        d: n_dn,
-        a: n_qn,
-        b: n_dn,
+        d: u32::from(n_dn),
+        a: u32::from(n_qn),
+        b: u32::from(n_dn),
     };
     for relative in [4, 7, 11, 14, 18, 21] {
         mwcc_vreg::for_each_register(&mut instructions[start + relative], |_, class, register| {
             if class == mwcc_vreg::Class::General && *register == 3 {
-                *register = n_dn;
+                *register = u32::from(n_dn);
             }
         });
     }
     for relative in [8, 9, 10, 15, 16, 17] {
         mwcc_vreg::for_each_register(&mut instructions[start + relative], |_, class, register| {
             if class == mwcc_vreg::Class::General && *register == 0 {
-                *register = n_qn;
+                *register = u32::from(n_qn);
             }
         });
     }
@@ -377,8 +377,8 @@ fn rewrite_state_arithmetic(
 fn merge_sample_into_overwritten_state(
     instructions: &mut [Instruction],
     definition: usize,
-    sample: u8,
-    carried: u8,
+    sample: u32,
+    carried: u32,
 ) -> bool {
     let Some(Instruction::LoadHalfwordAlgebraic { d, .. }) = instructions.get_mut(definition)
     else {
@@ -420,18 +420,18 @@ fn locate_state_plan(instructions: &[Instruction]) -> Option<StatePlan> {
         .windows(9)
         .enumerate()
         .find_map(|(start, window)| {
-            recognize_loop_entry(window, start, values[0])
+            recognize_loop_entry(window, start, values[0].into())
                 .map(|(flags, sample)| (start, flags, sample))
         })?;
     Some(StatePlan {
         values,
         loop_start,
         flags,
-        sample,
+        sample: sample.into(),
     })
 }
 
-fn recognize_state_diamond(window: &[Instruction], start: usize) -> Option<[u8; 6]> {
+fn recognize_state_diamond(window: &[Instruction], start: usize) -> Option<[u32; 6]> {
     if !matches!(window[0], Instruction::AndMaskRecord { .. })
         || !matches!(
             window[1],
@@ -442,7 +442,7 @@ fn recognize_state_diamond(window: &[Instruction], start: usize) -> Option<[u8; 
         return None;
     }
     let immediates = [0, 127, 0, 0, 0, 0];
-    let mut values = [0u8; 6];
+    let mut values = [0u32; 6];
     for index in 0..6 {
         let Instruction::AddImmediate { d, a: 0, immediate } = window[index + 2] else {
             return None;
@@ -457,7 +457,7 @@ fn recognize_state_diamond(window: &[Instruction], start: usize) -> Option<[u8; 
         let Instruction::LoadWord { d, a, offset } = window[index + 9] else {
             return None;
         };
-        if d != value || offset != i16::try_from(index * 4).ok()? {
+        if d != value.into() || offset != i16::try_from(index * 4).ok()? {
             return None;
         }
         if let Some(base) = base {
@@ -474,8 +474,8 @@ fn recognize_state_diamond(window: &[Instruction], start: usize) -> Option<[u8; 
 fn recognize_loop_entry(
     window: &[Instruction],
     start: usize,
-    n_xn: u8,
-) -> Option<([u8; 4], u8)> {
+    n_xn: u32,
+) -> Option<([u32; 4], u32)> {
     let Instruction::AddImmediate {
         d: first_flag,
         a: 0,

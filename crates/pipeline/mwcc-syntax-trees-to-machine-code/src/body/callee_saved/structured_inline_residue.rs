@@ -36,7 +36,7 @@ impl Generator {
         };
         let Some(()) = mixed_literal_call_region(
             &self.output.instructions[*first_call + 1..=*second_call],
-            entry,
+            entry.into(),
         ) else {
             return false;
         };
@@ -53,13 +53,13 @@ impl Generator {
             vec![4],
         );
         match &mut self.output.instructions[7] {
-            Instruction::LoadWord { d, a, .. } if *d == child && *a == state => {
+            Instruction::LoadWord { d, a, .. } if *d == child.into() && *a == state.into() => {
                 *d = intermediate;
             }
             _ => return false,
         }
         match &mut self.output.instructions[8] {
-            Instruction::LoadWord { d, a, .. } if *d == child && *a == child => {
+            Instruction::LoadWord { d, a, .. } if *d == child.into() && *a == child.into() => {
                 *a = intermediate;
             }
             _ => return false,
@@ -83,7 +83,7 @@ impl Generator {
                 a: entry,
                 immediate: 0,
             };
-            if trailing_state_call_pair(&self.output.instructions[36..], state) {
+            if trailing_state_call_pair(&self.output.instructions[36..], state.into()) {
                 self.output.instructions[38] = Instruction::AddImmediate {
                     d: 3,
                     a: state,
@@ -105,7 +105,7 @@ impl Generator {
     }
 }
 
-fn residue_registers(instructions: &[Instruction]) -> Option<(u8, u8, u8)> {
+fn residue_registers(instructions: &[Instruction]) -> Option<(u32, u32, u32)> {
     if instructions.len() != 16
         || !matches!(instructions[0], Instruction::StoreWordWithUpdate { .. })
         || !matches!(instructions[1], Instruction::MoveFromLinkRegister { d: 0 })
@@ -197,7 +197,7 @@ fn residue_registers(instructions: &[Instruction]) -> Option<(u8, u8, u8)> {
         .then_some((state, entry, child_first))
 }
 
-fn mixed_literal_call_region(instructions: &[Instruction], entry: u8) -> Option<()> {
+fn mixed_literal_call_region(instructions: &[Instruction], entry: u32) -> Option<()> {
     if instructions.len() != 8
         || !matches!(
             instructions[1],
@@ -229,7 +229,7 @@ fn mixed_literal_call_region(instructions: &[Instruction], entry: u8) -> Option<
     (first == entry && first_copy == entry).then_some(())
 }
 
-fn post_callback_bitfield_call_region(instructions: &[Instruction], state: u8, entry: u8) -> bool {
+fn post_callback_bitfield_call_region(instructions: &[Instruction], state: u32, entry: u32) -> bool {
     let Some(region) = instructions.get(..12) else {
         return false;
     };
@@ -325,7 +325,7 @@ fn post_callback_bitfield_call_region(instructions: &[Instruction], state: u8, e
         && call_argument_copy == entry
 }
 
-fn trailing_state_call_pair(instructions: &[Instruction], state: u8) -> bool {
+fn trailing_state_call_pair(instructions: &[Instruction], state: u32) -> bool {
     matches!(
         instructions.get(..5),
         Some([

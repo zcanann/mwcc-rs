@@ -23,11 +23,11 @@ impl Generator {
             else {
                 return false;
             };
-            if *high != Eabi::FIRST_GENERAL_ARGUMENT
+            if *high != Eabi::FIRST_GENERAL_ARGUMENT.into()
                 || *low_base != *high
                 || *argument != *high
                 || published != stored
-                || *published == Eabi::FIRST_GENERAL_ARGUMENT + 1
+                || *published == (Eabi::FIRST_GENERAL_ARGUMENT + 1).into()
                 || self
                     .call_parameter_types
                     .get(target)
@@ -65,16 +65,16 @@ impl Generator {
             return;
         };
 
-        let borrowed = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+        let borrowed: u32 = (Eabi::FIRST_GENERAL_ARGUMENT + 1) as u32;
         let Instruction::AddImmediateShifted { d, .. } = &mut self.output.instructions[start]
         else {
             unreachable!()
         };
-        *d = borrowed;
+        *d = u32::from(borrowed);
         let Instruction::AddImmediate { a, .. } = &mut self.output.instructions[start + 1] else {
             unreachable!()
         };
-        *a = borrowed;
+        *a = u32::from(borrowed);
         self.output.instructions.swap(start + 1, start + 2);
         swap_relocation_indices(&mut self.output.relocations, start + 1, start + 2);
     }

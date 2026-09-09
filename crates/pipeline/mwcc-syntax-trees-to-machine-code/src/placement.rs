@@ -444,12 +444,12 @@ impl Generator {
 
     /// The lowest free general register that avoids the registers read by the
     /// given base expressions (so a member's shared base survives the first load).
-    pub(crate) fn free_register_avoiding(&mut self, bases: &[&Expression]) -> Compilation<u8> {
+    pub(crate) fn free_register_avoiding(&mut self, bases: &[&Expression]) -> Compilation<u32> {
         let mut reserved_registers = HashSet::new();
         for base in bases {
             reserved_registers.extend(self.registers_used_by(base));
         }
-        let newly: Vec<u8> = reserved_registers
+        let newly: Vec<u32> = reserved_registers
             .iter()
             .copied()
             .filter(|register| self.reserved.insert(*register))
@@ -592,7 +592,7 @@ impl Generator {
 
     /// The base register of a located operand (`*pointer` or `base->field`): the
     /// register holding the address it loads from.
-    fn located_base_register(&mut self, operand: &Expression) -> Compilation<u8> {
+    fn located_base_register(&mut self, operand: &Expression) -> Compilation<u32> {
         if let Some((base, _, _)) = as_member(operand) {
             self.member_base_register(base)
         } else if let Some(pointer) = as_dereference(operand) {
@@ -609,7 +609,7 @@ impl Generator {
     pub(crate) fn emit_located_operand(
         &mut self,
         operand: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if let Expression::Member {
             base,
@@ -724,7 +724,7 @@ impl Generator {
             if let Some((base, offset, member_type)) = as_member(anchor) {
                 // The member anchor loads into its base register; the global -> scratch.
                 let base_register = self.member_base_register(base)?;
-                self.emit_member_load(base, offset, member_type, None, base_register)?;
+                self.emit_member_load(base, offset, member_type, None, base_register.into())?;
                 self.emit_global_load(leaf_name(other).unwrap(), GENERAL_SCRATCH)?;
                 (base_register, GENERAL_SCRATCH)
             } else {
@@ -745,7 +745,7 @@ impl Generator {
 
     /// The home register of a wide (32-bit) leaf variable; narrow leaves and
     /// non-leaves are deferred (they need extension or their own placement).
-    fn wide_leaf_register(&self, operand: &Expression) -> Compilation<u8> {
+    fn wide_leaf_register(&self, operand: &Expression) -> Compilation<u32> {
         self.transparent_word_cast_register(operand).ok_or_else(|| {
             Diagnostic::error(
                 "dereference combined with this operand needs the full allocator (roadmap)",
@@ -764,9 +764,9 @@ impl Generator {
         &mut self,
         operand: &Expression,
         located: &Expression,
-    ) -> Compilation<u8> {
+    ) -> Compilation<u32> {
         if let Some(register) = self.transparent_word_cast_register(operand) {
-            return Ok(register);
+            return Ok(register.into());
         }
         self.with_reserved_inputs(located, |generator| {
             let register = generator.fresh_virtual_general();
@@ -783,7 +783,7 @@ impl Generator {
         body: impl FnOnce(&mut Self) -> Compilation<T>,
     ) -> Compilation<T> {
         let registers = self.registers_used_by(expression);
-        let newly_reserved: Vec<u8> = registers
+        let newly_reserved: Vec<u32> = registers
             .iter()
             .copied()
             .filter(|register| self.reserved.insert(*register))
@@ -796,13 +796,13 @@ impl Generator {
     }
 
     /// The general registers read by variables in `expression`.
-    pub(crate) fn registers_used_by(&self, expression: &Expression) -> HashSet<u8> {
+    pub(crate) fn registers_used_by(&self, expression: &Expression) -> HashSet<u32> {
         let mut registers = HashSet::new();
         self.collect_registers(expression, &mut registers);
         registers
     }
 
-    pub(crate) fn collect_registers(&self, expression: &Expression, registers: &mut HashSet<u8>) {
+    pub(crate) fn collect_registers(&self, expression: &Expression, registers: &mut HashSet<u32>) {
         // Within a single expression all variables share a class, so we record
         // register numbers without filtering by class.
         match expression {
@@ -855,33 +855,36 @@ impl Generator {
 
     /// The lowest free general register: the first in the target's general pool
     /// (which already excludes the scratch) that is not reserved.
-    pub(crate) fn lowest_free_general(&self) -> Compilation<u8> {
+    pub(crate) fn lowest_free_general(&self) -> Compilation<u32> {
         self.constraints
             .pool(Class::General)
             .iter()
             .copied()
+            .map(u32::from)
             .find(|register| !self.reserved.contains(register))
             .ok_or_else(|| Diagnostic::error("out of free registers (roadmap M1: spilling)"))
     }
 
     /// The lowest free general register that also avoids `exclude` (e.g. an operand
     /// register that must survive).
-    pub(crate) fn free_general_excluding(&self, exclude: u8) -> Compilation<u8> {
+    pub(crate) fn free_general_excluding(&self, exclude: u32) -> Compilation<u32> {
         self.constraints
             .pool(Class::General)
             .iter()
             .copied()
+            .map(u32::from)
             .find(|register| *register != exclude && !self.reserved.contains(register))
             .ok_or_else(|| Diagnostic::error("out of free registers (roadmap M1: spilling)"))
     }
 
     /// The lowest free general register avoiding TWO registers (e.g. a destination and a
     /// live index that both must survive while a scratch base is materialized).
-    pub(crate) fn free_general_excluding_two(&self, first: u8, second: u8) -> Compilation<u8> {
+    pub(crate) fn free_general_excluding_two(&self, first: u32, second: u32) -> Compilation<u32> {
         self.constraints
             .pool(Class::General)
             .iter()
             .copied()
+            .map(u32::from)
             .find(|register| {
                 *register != first && *register != second && !self.reserved.contains(register)
             })
@@ -890,11 +893,12 @@ impl Generator {
 
     /// The lowest free float register: the first in the target's float pool (which
     /// already excludes the scratch) that is not reserved.
-    pub(crate) fn lowest_free_float(&self) -> Compilation<u8> {
+    pub(crate) fn lowest_free_float(&self) -> Compilation<u32> {
         self.constraints
             .pool(Class::Float)
             .iter()
             .copied()
+            .map(u32::from)
             .find(|register| !self.reserved.contains(register))
             .ok_or_else(|| Diagnostic::error("out of free float registers (roadmap M1: spilling)"))
     }

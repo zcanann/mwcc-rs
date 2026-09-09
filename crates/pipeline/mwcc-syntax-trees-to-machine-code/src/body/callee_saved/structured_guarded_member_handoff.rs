@@ -11,12 +11,12 @@ use super::*;
 pub(super) struct Plan<'a> {
     pub(super) member: Expression,
     pub(super) followup: &'a Expression,
-    pub(super) preferred_register: u8,
+    pub(super) preferred_register: u32,
 }
 
 pub(super) struct ConditionPlan {
     pub(super) member: Expression,
-    pub(super) preferred_register: u8,
+    pub(super) preferred_register: u32,
 }
 
 pub(super) fn plan<'a>(

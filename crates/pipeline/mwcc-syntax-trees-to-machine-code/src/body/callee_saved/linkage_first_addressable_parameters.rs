@@ -51,7 +51,7 @@ fn move_instruction_before(
 fn schedule_publication(
     output: &mut mwcc_machine_code::MachineFunction,
     labels: &mut mwcc_vreg::Labels,
-    parameter_slots: &[(i16, u8)],
+    parameter_slots: &[(i16, u32)],
     frame_offsets: &[i16],
 ) {
     let Some(first_call) = output.instructions.iter().position(|instruction| {
@@ -120,7 +120,7 @@ fn schedule_publication(
 fn schedule_reload(
     output: &mut mwcc_machine_code::MachineFunction,
     labels: &mut mwcc_vreg::Labels,
-    parameter_slots: &[(i16, u8)],
+    parameter_slots: &[(i16, u32)],
 ) {
     let calls: Vec<_> = output
         .instructions
@@ -166,7 +166,7 @@ fn schedule_reload(
     }
 }
 
-fn touches_register(instruction: &Instruction, register: u8) -> bool {
+fn touches_register(instruction: &Instruction, register: u32) -> bool {
     mwcc_vreg::register_operands(instruction)
         .into_iter()
         .any(|operand| {

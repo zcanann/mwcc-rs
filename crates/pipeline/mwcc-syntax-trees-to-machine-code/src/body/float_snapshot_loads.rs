@@ -40,8 +40,8 @@ impl Generator {
         let Some(end) = instructions.iter().rposition(is_float_instruction) else {
             return;
         };
-        let remaining_ids = u32::from(u8::MAX) + 1 - u32::from(mwcc_vreg::VIRTUAL_BASE);
-        if self.virtual_cursors.float + (end - start + 1) as u32 > remaining_ids
+        let remaining_ids = u64::from(u32::MAX) + 1 - u64::from(mwcc_vreg::VIRTUAL_BASE);
+        if u64::from(self.virtual_cursors.float) + (end - start + 1) as u64 > remaining_ids
             || !instructions[start..=end]
                 .iter()
                 .all(|instruction| match instruction {
@@ -60,8 +60,8 @@ impl Generator {
             return;
         }
         let mut trial = self.clone();
-        let mut values = HashMap::<u8, u8>::new();
-        let mut loads = HashMap::<(u8, i16), u8>::new();
+        let mut values = HashMap::<u32, u32>::new();
+        let mut loads = HashMap::<(u32, i16), u32>::new();
         let mut removed = Vec::new();
         for index in start..=end {
             let mut instruction = self.output.instructions[index].clone();

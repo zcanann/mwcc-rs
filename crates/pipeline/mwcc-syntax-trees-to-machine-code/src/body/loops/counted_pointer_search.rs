@@ -204,7 +204,7 @@ impl Generator {
                 condition_bit: 0,
                 target: 3,
             },
-            Instruction::load_immediate(Eabi::general_result().number, 0),
+            Instruction::load_immediate(u32::from(Eabi::general_result().number), 0),
             Instruction::BranchToLinkRegister,
         ]);
         Ok(true)

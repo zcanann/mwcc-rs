@@ -13,13 +13,13 @@
 //! allocation resolves it. The description is about *which fields are registers
 //! of which class and role*, independent of whether a given value is virtual.
 
-use mwcc_machine_code::Instruction;
+use mwcc_machine_code::{Instruction, RegisterField};
 
 use crate::register::Class;
 
 /// A computed base that cannot be colored into r0: these encodings either
 /// interpret zero as a literal base or forbid it for an updating address.
-pub(crate) fn nonzero_base(instruction: &Instruction) -> Option<u8> {
+pub(crate) fn nonzero_base(instruction: &Instruction) -> Option<RegisterField> {
     use Instruction::*;
     let base = match instruction {
         AddImmediate { a, .. } | AddImmediateShifted { a, .. }
@@ -59,7 +59,7 @@ pub enum RegisterRole {
 pub struct RegisterOperand {
     pub role: RegisterRole,
     pub class: Class,
-    pub register: u8,
+    pub register: RegisterField,
 }
 
 /// Visit every register field of `instruction` in turn — definitions and uses,
@@ -71,7 +71,7 @@ pub struct RegisterOperand {
 /// updated, but is always the pinned stack pointer, never a virtual). A call
 /// (`bl`) has no register *fields*; its implicit argument/return/clobber set is
 /// the ABI's, and is handled where calls are selected rather than here.
-pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(RegisterRole, Class, &mut u8)) {
+pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(RegisterRole, Class, &mut RegisterField)) {
     use Class::{Float as F, General as G};
     use Instruction::*;
     use RegisterRole::{Define as D, Use as U};
@@ -324,14 +324,14 @@ pub fn register_operands(instruction: &Instruction) -> Vec<RegisterOperand> {
 mod tests {
     use super::*;
 
-    fn defs(instruction: &Instruction) -> Vec<(Class, u8)> {
+    fn defs(instruction: &Instruction) -> Vec<(Class, RegisterField)> {
         register_operands(instruction)
             .into_iter()
             .filter(|operand| operand.role == RegisterRole::Define)
             .map(|operand| (operand.class, operand.register))
             .collect()
     }
-    fn uses(instruction: &Instruction) -> Vec<(Class, u8)> {
+    fn uses(instruction: &Instruction) -> Vec<(Class, RegisterField)> {
         register_operands(instruction)
             .into_iter()
             .filter(|operand| operand.role == RegisterRole::Use)

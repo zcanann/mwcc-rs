@@ -12,7 +12,7 @@ impl Generator {
         &mut self,
         value: &Expression,
         pointee: Pointee,
-    ) -> Compilation<Option<u8>> {
+    ) -> Compilation<Option<u32>> {
         if !matches!(
             pointee,
             Pointee::Char | Pointee::UnsignedChar | Pointee::Short | Pointee::UnsignedShort

@@ -11,8 +11,8 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FloatConversionReportPlan {
     start: usize,
-    retained_result: u8,
-    index: u8,
+    retained_result: u32,
+    index: u32,
 }
 
 impl Generator {

@@ -129,7 +129,7 @@ const FLOAT_ARITH_LATENCY: u32 = 3;
 /// priority (measured: the z=x*x chains; see the linearize fixtures).
 const FLOAT_MUL_GATE: u32 = 4;
 
-fn float_def(instruction: &Instruction) -> Option<u8> {
+fn float_def(instruction: &Instruction) -> Option<u32> {
     match instruction {
         Instruction::LoadFloatDouble { d, .. }
         | Instruction::FloatMultiplyDouble { d, .. }
@@ -142,7 +142,7 @@ fn float_def(instruction: &Instruction) -> Option<u8> {
     }
 }
 
-fn float_reads_register(instruction: &Instruction, register: u8) -> bool {
+fn float_reads_register(instruction: &Instruction, register: u32) -> bool {
     match instruction {
         Instruction::FloatMultiplyDouble { a, c, .. } => *a == register || *c == register,
         Instruction::FloatAddDouble { a, b, .. }

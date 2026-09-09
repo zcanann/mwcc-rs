@@ -25,7 +25,7 @@ impl Generator {
             Diagnostic::error("global pointer-table member displacement is out of range")
         })?;
 
-        let restore = self.reserved.insert(table);
+        let restore = self.reserved.insert(table.into());
         let source = self.place_store_value(value, pointee)?;
         if restore {
             self.reserved.remove(&table);

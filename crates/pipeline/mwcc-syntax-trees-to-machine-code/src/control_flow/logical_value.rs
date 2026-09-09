@@ -13,7 +13,7 @@ impl Generator {
     pub(crate) fn try_emit_flat_logical_or_value(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if self.behavior.logical_or_value_style != mwcc_versions::LogicalOrValueStyle::TrueFirst
             || crate::analysis::expression_has_side_effect(expression)

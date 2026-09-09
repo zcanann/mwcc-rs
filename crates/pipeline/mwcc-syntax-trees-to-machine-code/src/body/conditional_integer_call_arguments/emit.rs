@@ -54,7 +54,7 @@ impl Generator {
                     self.locations
                         .get(&parameter.name)
                         .map(|location| location.register)
-                        != u8::try_from(index + 3).ok()
+                        != (u8::try_from(index + 3).ok()).map(u32::from)
                 })
         {
             return Ok(false);

@@ -104,26 +104,26 @@ impl Generator {
             return Ok(false);
         }
 
-        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        let first: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         let base = first + 2;
-        self.emit_address_high(first, array);
+        self.emit_address_high(first.into(), array);
         self.record_relocation(RelocationKind::Addr16Lo, array);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: base,
-            a: first,
+            d: u32::from(base),
+            a: u32::from(first),
             immediate: 0,
         });
         self.output
             .instructions
-            .push(Instruction::LoadWord { d: first, a: base, offset: 0 });
+            .push(Instruction::LoadWord { d: u32::from(first), a: u32::from(base), offset: 0 });
         self.output.instructions.push(Instruction::LoadWord {
-            d: first + 1,
-            a: base,
+            d: u32::from(first + 1),
+            a: u32::from(base),
             offset: 4,
         });
         self.output
             .instructions
-            .push(Instruction::LoadWord { d: base, a: base, offset: 8 });
+            .push(Instruction::LoadWord { d: u32::from(base), a: u32::from(base), offset: 8 });
         Ok(true)
     }
 
@@ -154,20 +154,20 @@ impl Generator {
             return Ok(false);
         }
 
-        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        let first: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         if self.behavior.string_literals_packed {
             self.output.packed_string_literals = true;
             let string = self.string_literal_placeholder(string);
-            self.emit_address_high(first + 1, &string);
-            self.emit_address_high(first, array);
+            self.emit_address_high((first + 1).into(), &string);
+            self.emit_address_high(first.into(), array);
             self.emit_string_address_low(&string, first + 1, first + 1);
-            self.emit_address_low(first, array);
+            self.emit_address_low(first.into(), array);
             return Ok(true);
         }
         if self.behavior.global_addressing == GlobalAddressing::SmallData && string.len() + 1 <= 8 {
-            self.emit_address_high(first, array);
-            self.evaluate_general(&arguments[1], first + 1)?;
-            self.emit_address_low(first, array);
+            self.emit_address_high(first.into(), array);
+            self.evaluate_general(&arguments[1], (first + 1).into())?;
+            self.emit_address_low(first.into(), array);
             return Ok(true);
         }
         Ok(false)
@@ -209,15 +209,15 @@ impl Generator {
             return Ok(false);
         }
 
-        let first = Eabi::FIRST_GENERAL_ARGUMENT;
-        self.emit_address_high(first, array);
+        let first: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
+        self.emit_address_high(first.into(), array);
         self.output
             .instructions
-            .push(Instruction::load_immediate(first + 1, second));
-        self.emit_address_low(first, array);
+            .push(Instruction::load_immediate((first + 1).into(), second));
+        self.emit_address_low(first.into(), array);
         self.output
             .instructions
-            .push(Instruction::load_immediate(first + 2, third));
+            .push(Instruction::load_immediate((first + 2).into(), third));
         Ok(true)
     }
 
@@ -257,20 +257,20 @@ impl Generator {
             return Ok(false);
         }
 
-        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        let first: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         self.output.packed_string_literals = true;
         let string = self.string_literal_placeholder(string);
-        self.emit_address_high(first, array);
-        self.emit_address_high(first + 1, &string);
+        self.emit_address_high(first.into(), array);
+        self.emit_address_high((first + 1).into(), &string);
         self.record_relocation(RelocationKind::Addr16Lo, array);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: first,
-            a: first,
+            d: u32::from(first),
+            a: u32::from(first),
             immediate: 0,
         });
         self.output
             .instructions
-            .push(Instruction::load_immediate(first + 2, value));
+            .push(Instruction::load_immediate((first + 2).into(), value));
         self.emit_string_address_low(&string, first + 1, first + 1);
         Ok(true)
     }
@@ -310,20 +310,20 @@ impl Generator {
             return Ok(false);
         }
 
-        let first_argument = Eabi::FIRST_GENERAL_ARGUMENT;
-        self.emit_address_high(first_argument + 1, array);
+        let first_argument: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
+        self.emit_address_high((first_argument + 1).into(), array);
         self.output
             .instructions
-            .push(Instruction::load_immediate(first_argument, first));
+            .push(Instruction::load_immediate(first_argument.into(), first));
         self.record_relocation(RelocationKind::Addr16Lo, array);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: first_argument + 1,
-            a: first_argument + 1,
+            d: u32::from(first_argument + 1),
+            a: u32::from(first_argument + 1),
             immediate: 0,
         });
         self.output
             .instructions
-            .push(Instruction::load_immediate(first_argument + 2, third));
+            .push(Instruction::load_immediate((first_argument + 2).into(), third));
         Ok(true)
     }
 
@@ -390,24 +390,24 @@ impl Generator {
             return Ok(false);
         }
 
-        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        let first: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         self.output
             .instructions
-            .push(Instruction::load_immediate(first + 2, third));
+            .push(Instruction::load_immediate((first + 2).into(), third));
         self.emit_global_load(first_global, GENERAL_SCRATCH)?;
-        self.evaluate_general(second, first + 1)?;
+        self.evaluate_general(second, (first + 1).into())?;
         let scale = u32::try_from(scale).expect("positive i16 scale checked above");
         if scale.is_power_of_two() {
             self.output
                 .instructions
                 .push(Instruction::ShiftLeftImmediate {
-                    a: first,
+                    a: u32::from(first),
                     s: GENERAL_SCRATCH,
                     shift: scale.trailing_zeros() as u8,
                 });
         } else {
             self.output.instructions.push(Instruction::MultiplyImmediate {
-                d: first,
+                d: u32::from(first),
                 a: GENERAL_SCRATCH,
                 immediate: scale as i16,
             });
@@ -473,7 +473,7 @@ impl Generator {
             return Ok(false);
         }
 
-        self.evaluate_float(tail, Eabi::FIRST_FLOAT_ARGUMENT)
+        self.evaluate_float(tail, Eabi::FIRST_FLOAT_ARGUMENT.into())
             .map_err(|mut diagnostic| {
                 diagnostic.message.push_str(&format!(
                     " (while scheduling call-bearing float tail argument to '{name}')"
@@ -483,7 +483,7 @@ impl Generator {
         for (index, argument) in prefix.iter().enumerate() {
             self.evaluate_general(
                 argument,
-                Eabi::FIRST_GENERAL_ARGUMENT + index as u8,
+                (Eabi::FIRST_GENERAL_ARGUMENT + index as u8).into(),
             )
             .map_err(|mut diagnostic| {
                 diagnostic.message.push_str(&format!(
@@ -557,16 +557,16 @@ impl Generator {
             return Ok(false);
         }
 
-        self.evaluate_general(nested_argument, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        self.evaluate_general(nested_argument, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
         self.emit_integer_materialization_copy(
-            Eabi::FIRST_GENERAL_ARGUMENT + nested_index as u8,
-            Eabi::FIRST_GENERAL_ARGUMENT,
+            u32::from(Eabi::FIRST_GENERAL_ARGUMENT + nested_index as u8),
+            u32::from(Eabi::FIRST_GENERAL_ARGUMENT),
         );
         for (index, argument) in arguments.iter().enumerate() {
             if index != nested_index {
                 self.evaluate_general(
                     argument,
-                    Eabi::FIRST_GENERAL_ARGUMENT + index as u8,
+                    (Eabi::FIRST_GENERAL_ARGUMENT + index as u8).into(),
                 )?;
             }
         }
@@ -616,7 +616,7 @@ impl Generator {
                 return Ok(false);
             }
             self.evaluate_general(nested_call, GENERAL_SCRATCH)?;
-            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
             let (left, right) = if call_is_left {
                 (GENERAL_SCRATCH, stable_register)
             } else {
@@ -624,12 +624,12 @@ impl Generator {
             };
             self.output.instructions.push(match operator {
                 BinaryOperator::Add => Instruction::Add {
-                    d: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                    d: 4,
                     a: left,
                     b: right,
                 },
                 BinaryOperator::Subtract => Instruction::SubtractFrom {
-                    d: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                    d: 4,
                     a: right,
                     b: left,
                 },
@@ -638,8 +638,8 @@ impl Generator {
             return Ok(true);
         }
 
-        self.evaluate_general(second, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
-        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        self.evaluate_general(second, (Eabi::FIRST_GENERAL_ARGUMENT + 1).into())?;
+        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
         Ok(true)
     }
 
@@ -682,9 +682,9 @@ impl Generator {
             return Ok(false);
         }
 
-        self.evaluate_float(third, Eabi::FIRST_FLOAT_ARGUMENT)?;
-        self.emit_integer_materialization_copy(Eabi::FIRST_GENERAL_ARGUMENT, first_source);
-        self.evaluate_general(second, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+        self.evaluate_float(third, Eabi::FIRST_FLOAT_ARGUMENT.into())?;
+        self.emit_integer_materialization_copy(Eabi::FIRST_GENERAL_ARGUMENT.into(), first_source);
+        self.evaluate_general(second, (Eabi::FIRST_GENERAL_ARGUMENT + 1).into())?;
         Ok(true)
     }
 
@@ -750,13 +750,13 @@ impl Generator {
         }
 
         if matches!(first_base_register, 0 | 3..=12) {
-            self.evaluate_general(third, Eabi::FIRST_GENERAL_ARGUMENT + 2)?;
-            self.evaluate_general(second, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
-            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+            self.evaluate_general(third, (Eabi::FIRST_GENERAL_ARGUMENT + 2).into())?;
+            self.evaluate_general(second, (Eabi::FIRST_GENERAL_ARGUMENT + 1).into())?;
+            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
         } else {
-            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
-            self.evaluate_general(third, Eabi::FIRST_GENERAL_ARGUMENT + 2)?;
-            self.evaluate_general(second, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
+            self.evaluate_general(third, (Eabi::FIRST_GENERAL_ARGUMENT + 2).into())?;
+            self.evaluate_general(second, (Eabi::FIRST_GENERAL_ARGUMENT + 1).into())?;
         }
         Ok(true)
     }
@@ -809,13 +809,13 @@ impl Generator {
             BinaryOperator::Multiply,
             left,
             right,
-            Eabi::FIRST_FLOAT_ARGUMENT,
+            Eabi::FIRST_FLOAT_ARGUMENT.into(),
             double,
         )?;
-        self.evaluate_general(general, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        self.evaluate_general(general, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
         self.output.instructions.push(float_combine(
             BinaryOperator::Multiply,
-            Eabi::FIRST_FLOAT_ARGUMENT,
+            Eabi::FIRST_FLOAT_ARGUMENT.into(),
             operands,
             double,
         )?);
@@ -889,15 +889,15 @@ impl Generator {
             // r4 is overwritten by the second load before the first member is
             // evaluated. r3 is safe because it is overwritten last; any other
             // shared base (including a callee-saved loop home) is independent.
-            || shared_base == Eabi::FIRST_GENERAL_ARGUMENT + 1
+            || shared_base == (Eabi::FIRST_GENERAL_ARGUMENT + 1).into()
             || third_info.is_some_and(|(register, width, _)| {
-                width != 32 || register == Eabi::FIRST_GENERAL_ARGUMENT + 1
+                width != 32 || register == (Eabi::FIRST_GENERAL_ARGUMENT + 1).into()
             })
         {
             return Ok(false);
         }
 
-        let first_argument = Eabi::FIRST_GENERAL_ARGUMENT;
+        let first_argument: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         let second_argument = first_argument + 1;
         let third_argument = first_argument + 2;
         self.emit_member_load(
@@ -905,15 +905,15 @@ impl Generator {
             *second_offset,
             Type::UnsignedChar,
             None,
-            second_argument,
+            second_argument.into(),
         )?;
         if let Some(third) = third {
-            self.evaluate_general(third, third_argument)?;
+            self.evaluate_general(third, third_argument.into())?;
         }
-        self.evaluate_general(first, first_argument)?;
+        self.evaluate_general(first, first_argument.into())?;
         self.output.instructions.push(Instruction::RotateAndMask {
-            a: second_argument,
-            s: second_argument,
+            a: u32::from(second_argument),
+            s: u32::from(second_argument),
             shift: (32 - *shift) % 32,
             begin: 32 - *width,
             end: 31,
@@ -952,15 +952,15 @@ impl Generator {
         // schedule materializes the third argument first.
         self.string_literal_placeholder(first);
         let third = self.string_literal_placeholder(third);
-        self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT, &third);
+        self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT.into(), &third);
         self.emit_string_address_low(
             &third,
-            Eabi::FIRST_GENERAL_ARGUMENT,
-            Eabi::FIRST_GENERAL_ARGUMENT + 2,
+            u32::from(Eabi::FIRST_GENERAL_ARGUMENT),
+            u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 2),
         );
-        self.evaluate_general(&arguments[0], Eabi::FIRST_GENERAL_ARGUMENT)?;
+        self.evaluate_general(&arguments[0], Eabi::FIRST_GENERAL_ARGUMENT.into())?;
         self.output.instructions.push(Instruction::load_immediate(
-            Eabi::FIRST_GENERAL_ARGUMENT + 1,
+            (Eabi::FIRST_GENERAL_ARGUMENT + 1).into(),
             *line as i16,
         ));
         Ok(true)
@@ -994,17 +994,17 @@ impl Generator {
         }
 
         if !self.behavior.string_literals_packed
-            && self.emit_data_anchor_string_literal(first, Eabi::FIRST_GENERAL_ARGUMENT)
+            && self.emit_data_anchor_string_literal(first, Eabi::FIRST_GENERAL_ARGUMENT.into())
         {
             assert!(
                 self.emit_data_anchor_string_literal(
                     third,
-                    Eabi::FIRST_GENERAL_ARGUMENT + 2,
+                    (Eabi::FIRST_GENERAL_ARGUMENT + 2).into(),
                 ),
                 "the retained data anchor must remain available for both call arguments"
             );
             self.output.instructions.push(Instruction::load_immediate(
-                Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                (Eabi::FIRST_GENERAL_ARGUMENT + 1).into(),
                 *line as i16,
             ));
             return Ok(true);
@@ -1012,20 +1012,20 @@ impl Generator {
 
         let first = self.string_literal_placeholder(first);
         let third = self.string_literal_placeholder(third);
-        self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT, &first);
-        self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT + 1, &third);
+        self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT.into(), &first);
+        self.emit_address_high((Eabi::FIRST_GENERAL_ARGUMENT + 1).into(), &third);
         self.emit_string_address_low(
             &third,
-            Eabi::FIRST_GENERAL_ARGUMENT + 1,
-            Eabi::FIRST_GENERAL_ARGUMENT + 2,
+            u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 1),
+            u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 2),
         );
         self.emit_string_address_low(
             &first,
-            Eabi::FIRST_GENERAL_ARGUMENT,
-            Eabi::FIRST_GENERAL_ARGUMENT,
+            u32::from(Eabi::FIRST_GENERAL_ARGUMENT),
+            u32::from(Eabi::FIRST_GENERAL_ARGUMENT),
         );
         self.output.instructions.push(Instruction::load_immediate(
-            Eabi::FIRST_GENERAL_ARGUMENT + 1,
+            (Eabi::FIRST_GENERAL_ARGUMENT + 1).into(),
             *line as i16,
         ));
         Ok(true)
@@ -1078,18 +1078,18 @@ impl Generator {
                 .locations
                 .get(first_base.as_str())
                 .map(|location| location.register)
-                != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+                != Some(Eabi::FIRST_GENERAL_ARGUMENT.into())
         {
             return Ok(false);
         }
 
-        self.evaluate_float(second_value, Eabi::FIRST_FLOAT_ARGUMENT + 1)?;
+        self.evaluate_float(second_value, (Eabi::FIRST_FLOAT_ARGUMENT + 1).into())?;
         self.emit_float_abs_select(
-            Eabi::FIRST_FLOAT_ARGUMENT + 1,
-            Eabi::FIRST_FLOAT_ARGUMENT + 1,
+            u32::from(Eabi::FIRST_FLOAT_ARGUMENT + 1),
+            u32::from(Eabi::FIRST_FLOAT_ARGUMENT + 1),
             false,
         )?;
-        self.evaluate_float(first, Eabi::FIRST_FLOAT_ARGUMENT)?;
+        self.evaluate_float(first, Eabi::FIRST_FLOAT_ARGUMENT.into())?;
         Ok(true)
     }
 
@@ -1141,7 +1141,7 @@ impl Generator {
             || first_name != low_base_name
             || first_name != high_base_name
             || self.leaf_info(first).ok().map(|value| value.0)
-                != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+                != Some(Eabi::FIRST_GENERAL_ARGUMENT.into())
         {
             return Ok(false);
         }
@@ -1154,7 +1154,7 @@ impl Generator {
         };
 
         self.evaluate_float(high, 4)?;
-        self.evaluate_float(low, Eabi::FIRST_FLOAT_ARGUMENT)?;
+        self.evaluate_float(low, Eabi::FIRST_FLOAT_ARGUMENT.into())?;
         self.output
             .instructions
             .push(Instruction::FloatMove { d: 2, b: second });
@@ -1207,7 +1207,7 @@ impl Generator {
             || !expected_types
             || first_name != base_name
             || self.leaf_info(first).ok().map(|value| value.0)
-                != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+                != Some(Eabi::FIRST_GENERAL_ARGUMENT.into())
             || self.float_register_of(second_name).ok() != Some(1)
             || self.float_register_of(third_name).ok() != Some(2)
             || self.float_register_of(fourth_name).ok() != Some(3)
@@ -1229,7 +1229,7 @@ impl Generator {
             d: 2,
             b: FLOAT_SCRATCH,
         });
-        self.evaluate_float(member, Eabi::FIRST_FLOAT_ARGUMENT)?;
+        self.evaluate_float(member, Eabi::FIRST_FLOAT_ARGUMENT.into())?;
         Ok(true)
     }
 
@@ -1275,13 +1275,13 @@ impl Generator {
                 .locations
                 .get(first_name.as_str())
                 .map(|location| location.register)
-                != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+                != Some(Eabi::FIRST_GENERAL_ARGUMENT.into())
         {
             return Ok(false);
         }
 
-        self.evaluate_general(second, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
-        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        self.evaluate_general(second, (Eabi::FIRST_GENERAL_ARGUMENT + 1).into())?;
+        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
         Ok(true)
     }
 
@@ -1317,13 +1317,13 @@ impl Generator {
         let Expression::Variable(parameter) = second_base else {
             return Ok(false);
         };
-        let first_argument = Eabi::FIRST_GENERAL_ARGUMENT;
+        let first_argument: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         if !self.globals.contains_key(global.as_str())
             || self
                 .locations
                 .get(parameter.as_str())
                 .map(|location| location.register)
-                != Some(first_argument)
+                != Some(first_argument.into())
         {
             return Ok(false);
         }
@@ -1332,7 +1332,7 @@ impl Generator {
         })?;
         let preserved = first_argument + 2;
         self.emit_integer_materialization_copy(preserved, first_argument);
-        self.evaluate_general(first, first_argument)?;
+        self.evaluate_general(first, first_argument.into())?;
         if second_offset == 0 {
             self.output.instructions.push(Instruction::move_register(
                 first_argument + 1,
@@ -1340,8 +1340,8 @@ impl Generator {
             ));
         } else {
             self.output.instructions.push(Instruction::AddImmediate {
-                d: first_argument + 1,
-                a: preserved,
+                d: u32::from(first_argument + 1),
+                a: u32::from(preserved),
                 immediate: second_offset,
             });
         }
@@ -1395,9 +1395,9 @@ impl Generator {
 
         self.evaluate_general(
             &Expression::IntegerLiteral(*value),
-            Eabi::FIRST_GENERAL_ARGUMENT + 1,
+            (Eabi::FIRST_GENERAL_ARGUMENT + 1).into(),
         )?;
-        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
         Ok(true)
     }
 
@@ -1426,7 +1426,7 @@ impl Generator {
         }
 
         for (position, argument) in arguments.iter().enumerate() {
-            self.evaluate_general(argument, Eabi::FIRST_GENERAL_ARGUMENT + position as u8)?;
+            self.evaluate_general(argument, (Eabi::FIRST_GENERAL_ARGUMENT + position as u8).into())?;
         }
         Ok(true)
     }
@@ -1471,9 +1471,9 @@ impl Generator {
             return Ok(false);
         }
 
-        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
-        self.evaluate_general(third, Eabi::FIRST_GENERAL_ARGUMENT + 2)?;
-        self.evaluate_general(second, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
+        self.evaluate_general(third, (Eabi::FIRST_GENERAL_ARGUMENT + 2).into())?;
+        self.evaluate_general(second, (Eabi::FIRST_GENERAL_ARGUMENT + 1).into())?;
         Ok(true)
     }
 
@@ -1509,7 +1509,7 @@ impl Generator {
             return Ok(false);
         }
 
-        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        let first: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         let second = first + 1;
         let wide_parts = wide.map(|wide| {
             let wide = *wide as i32;
@@ -1523,22 +1523,22 @@ impl Generator {
             }
         }
 
-        self.emit_address_high(first, global);
+        self.emit_address_high(first.into(), global);
         if let Some((_, high_adjusted, _)) = wide_parts {
             self.output.instructions.push(Instruction::load_immediate_shifted(
-                first + 2,
+                (first + 2).into(),
                 high_adjusted,
             ));
         }
 
-        self.emit_address_low(first, global);
+        self.emit_address_low(first.into(), global);
         self.output
             .instructions
-            .push(Instruction::load_immediate(second, *middle as i16));
+            .push(Instruction::load_immediate(second.into(), *middle as i16));
         if let Some((_, _, low)) = wide_parts {
             self.output.instructions.push(Instruction::AddImmediate {
-                d: first + 2,
-                a: first + 2,
+                d: u32::from(first + 2),
+                a: u32::from(first + 2),
                 immediate: low,
             });
         }

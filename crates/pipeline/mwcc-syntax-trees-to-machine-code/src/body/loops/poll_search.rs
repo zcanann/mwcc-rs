@@ -77,7 +77,7 @@ impl Generator {
                                             if self.locations.get(name).is_some_and(|location| {
                                                 location.class == ValueClass::General
                                                     && location.width == 32
-                                                    && location.register == index as u8 + 3
+                                                    && location.register == (index as u8 + 3).into()
                                             }))
                                     },
                                 )
@@ -156,16 +156,16 @@ impl Generator {
             }
             None => None,
         };
-        let (load, element_bytes): (fn(u8, u8, i16) -> Instruction, u32) = match element {
+        let (load, element_bytes): (fn(u32, u32, i16) -> Instruction, u32) = match element {
             Type::Int | Type::UnsignedInt => {
-                (|d, a, offset| Instruction::LoadWord { d, a, offset }, 4)
+                (|d, a, offset| Instruction::LoadWord { d: d.into(), a: a.into(), offset }, 4)
             }
             Type::Short | Type::UnsignedShort => (
-                |d, a, offset| Instruction::LoadHalfwordZero { d, a, offset },
+                |d, a, offset| Instruction::LoadHalfwordZero { d: d.into(), a: a.into(), offset },
                 2,
             ),
             Type::Char | Type::UnsignedChar => {
-                (|d, a, offset| Instruction::LoadByteZero { d, a, offset }, 1)
+                (|d, a, offset| Instruction::LoadByteZero { d: d.into(), a: a.into(), offset }, 1)
             }
             _ => return Ok(false),
         };
@@ -377,7 +377,7 @@ impl Generator {
         let Some(loop_register) = self.lookup_general(loop_ptr) else {
             return Ok(false);
         };
-        if loop_register != Eabi::general_result().number {
+        if loop_register != u32::from(Eabi::general_result().number) {
             return Ok(false);
         }
         // A while-loop keeps the chase as its final body statement. The
@@ -448,7 +448,7 @@ impl Generator {
 
         // -- emit: b test; body{ if-cond, found-arm, chase }; test: cmplwi; bne body; default; blr --
         self.output.anonymous_label_bump = 6; // while (4) + the inner if (2)
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         let skip = self.output.instructions.len();
         self.output
             .instructions
@@ -679,10 +679,10 @@ impl Generator {
             .map_err(|_| Diagnostic::error("fixed-list next offset is out of range"))?;
         let (head_high, head_low) = split_address(head_address);
         let searched = self.general_register_of(&parameter.name)?;
-        if searched != Eabi::general_result().number {
+        if searched != u32::from(Eabi::general_result().number) {
             return Ok(false);
         }
-        const CURSOR: u8 = 4;
+        const CURSOR: u32 = 4;
         self.output.pre_scheduled = true;
         // Function baseline accounting is handled centrally; this body adds
         // two labels for each `if` and five for the source `for`.
@@ -702,7 +702,7 @@ impl Generator {
                 condition_bit: 2,
                 target: 5,
             },
-            Instruction::load_immediate(Eabi::general_result().number, 0),
+            Instruction::load_immediate(u32::from(Eabi::general_result().number), 0),
             Instruction::BranchToLinkRegister,
             Instruction::load_immediate_shifted(CURSOR, head_high),
             Instruction::LoadWord {
@@ -720,7 +720,7 @@ impl Generator {
                 condition_bit: 2,
                 target: 12,
             },
-            Instruction::load_immediate(Eabi::general_result().number, 1),
+            Instruction::load_immediate(u32::from(Eabi::general_result().number), 1),
             Instruction::BranchToLinkRegister,
             Instruction::LoadWord {
                 d: CURSOR,
@@ -736,7 +736,7 @@ impl Generator {
                 condition_bit: 2,
                 target: 8,
             },
-            Instruction::load_immediate(Eabi::general_result().number, 0),
+            Instruction::load_immediate(u32::from(Eabi::general_result().number), 0),
             Instruction::BranchToLinkRegister,
         ]);
         Ok(true)
@@ -927,20 +927,20 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::ShiftRightLogicalImmediate {
-                a: temp,
+                a: u32::from(temp),
                 s: lx_register,
                 shift: 31,
             });
         if policy.dependency_first {
             self.output.instructions.push(Instruction::Add {
-                d: temp,
+                d: u32::from(temp),
                 a: hx_register,
-                b: temp,
+                b: u32::from(temp),
             });
             self.output.instructions.push(Instruction::Add {
                 d: hx_register,
                 a: hx_register,
-                b: temp,
+                b: u32::from(temp),
             });
             self.output.instructions.push(Instruction::Add {
                 d: lx_register,
@@ -959,9 +959,9 @@ impl Generator {
                 b: lx_register,
             });
             self.output.instructions.push(Instruction::Add {
-                d: temp,
+                d: u32::from(temp),
                 a: hx_register,
-                b: temp,
+                b: u32::from(temp),
             });
             self.output.instructions.push(Instruction::AddImmediate {
                 d: iy_register,
@@ -971,7 +971,7 @@ impl Generator {
             self.output.instructions.push(Instruction::Add {
                 d: hx_register,
                 a: hx_register,
-                b: temp,
+                b: u32::from(temp),
             });
         }
         self.bind_label(test_label);

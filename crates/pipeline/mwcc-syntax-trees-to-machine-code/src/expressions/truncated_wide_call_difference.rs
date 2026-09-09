@@ -9,7 +9,7 @@ impl Generator {
     pub(crate) fn try_emit_truncated_wide_call_difference(
         &mut self,
         operand: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if self.behavior.global_addressing != GlobalAddressing::SmallData {
             return Ok(false);

@@ -289,7 +289,7 @@ impl Generator {
         self.packet_store(plan.whole, 4, false);
         self.output
             .instructions
-            .push(Instruction::load_immediate(0, i16::from(plan.flag_value)));
+            .push(Instruction::load_immediate(0, i16::try_from(plan.flag_value).expect("packet flag value")));
         self.packet_store(plan.field, 3, false);
         self.packet_store(plan.flag, 0, true);
     }
@@ -311,13 +311,13 @@ impl Generator {
             target: name.to_owned(),
         });
     }
-    fn packet_load(&mut self, name: &str, d: u8) {
+    fn packet_load(&mut self, name: &str, d: u32) {
         self.record_relocation(RelocationKind::EmbSda21, name);
         self.output
             .instructions
             .push(Instruction::LoadWord { d, a: 0, offset: 0 });
     }
-    fn packet_store(&mut self, name: &str, s: u8, byte: bool) {
+    fn packet_store(&mut self, name: &str, s: u32, byte: bool) {
         self.record_relocation(RelocationKind::EmbSda21, name);
         self.output.instructions.push(if byte {
             Instruction::StoreByte { s, a: 0, offset: 0 }

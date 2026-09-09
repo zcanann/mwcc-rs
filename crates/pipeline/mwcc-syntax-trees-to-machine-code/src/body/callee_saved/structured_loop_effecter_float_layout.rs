@@ -12,14 +12,14 @@ use mwcc_machine_code::{MachineFunction, RelocationTarget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Layout {
-    one: u8,
-    zero: u8,
-    complements: [u8; 3],
-    bias: u8,
-    selected: u8,
-    accumulator: u8,
-    product: u8,
-    third_input: u8,
+    one: u32,
+    zero: u32,
+    complements: [u32; 3],
+    bias: u32,
+    selected: u32,
+    accumulator: u32,
+    product: u32,
+    third_input: u32,
 }
 
 impl Generator {
@@ -34,7 +34,7 @@ impl Generator {
         self.prefer_virtual_float(layout.one, 24);
         self.prefer_virtual_float(layout.zero, 25);
         for (register, preferred) in layout.complements.into_iter().zip([23, 22, 21]) {
-            self.prefer_virtual_float(register, preferred);
+            self.prefer_virtual_float(register.into(), preferred);
         }
         self.prefer_virtual_float(layout.bias, 26);
         self.prefer_virtual_float(layout.selected, 27);
@@ -56,7 +56,7 @@ fn layout(output: &MachineFunction, insertion: usize, bias_load: usize) -> Optio
     let zero = loaded_single_destination(output, zero_load)?;
     let complement_pairs = (one_load.min(zero_load) + 1..insertion)
         .filter_map(|index| match output.instructions[index] {
-            Instruction::FloatSubtractSingle { d, a, b } if a == one => Some((d, b)),
+            Instruction::FloatSubtractSingle { d, a, b } if a == one.into() => Some((d, b)),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -103,8 +103,8 @@ fn layout(output: &MachineFunction, insertion: usize, bias_load: usize) -> Optio
     };
 
     Some(Layout {
-        one,
-        zero,
+        one: one.into(),
+        zero: zero.into(),
         complements: [*first, *second, *third],
         bias,
         selected,
@@ -114,7 +114,7 @@ fn layout(output: &MachineFunction, insertion: usize, bias_load: usize) -> Optio
     })
 }
 
-fn loaded_single_destination(output: &MachineFunction, instruction: usize) -> Option<u8> {
+fn loaded_single_destination(output: &MachineFunction, instruction: usize) -> Option<u32> {
     match output.instructions[instruction] {
         Instruction::LoadFloatSingle { d, .. } => Some(d),
         _ => None,

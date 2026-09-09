@@ -69,13 +69,13 @@ enum Operand {
     Constant,
 }
 
-fn defines(instruction: &I, register: u8) -> bool {
+fn defines(instruction: &I, register: u32) -> bool {
     register_operands(instruction).iter().any(|o| {
         o.class == Class::General && o.role == RegisterRole::Define && o.register == register
     })
 }
 
-fn operand(instructions: &[I], register: u8) -> Option<Operand> {
+fn operand(instructions: &[I], register: u32) -> Option<Operand> {
     let Some(at) = instructions.iter().rposition(|i| defines(i, register)) else {
         return Some(Operand::Incoming);
     };
@@ -91,7 +91,7 @@ fn operand(instructions: &[I], register: u8) -> Option<Operand> {
     }
 }
 
-fn published_value(instructions: &[I], result: u8) -> Option<PublishedValue> {
+fn published_value(instructions: &[I], result: u32) -> Option<PublishedValue> {
     let at = instructions.iter().rposition(|i| defines(i, result))?;
     match instructions[at] {
         I::AddImmediate { a: 0, .. } => Some(PublishedValue::Literal),

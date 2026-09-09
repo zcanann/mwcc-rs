@@ -82,7 +82,7 @@ pub(crate) fn supports_source_run(function: &Function) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Address {
-    base: u8,
+    base: u32,
     offset: i16,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -98,7 +98,7 @@ impl Value {
     }
 }
 struct Store {
-    base: u8,
+    base: u32,
     offset: i16,
     value: Value,
 }
@@ -209,11 +209,11 @@ impl Generator {
 fn materialize(
     g: &mut Generator,
     value: Value,
-    homes: &mut HashMap<Value, u8>,
+    homes: &mut HashMap<Value, u32>,
     code: &mut Vec<I>,
-) -> u8 {
+) -> u32 {
     if let Some(&r) = homes.get(&value) {
-        return r;
+        return r.into();
     }
     let address = value.address();
     let r = match value {
@@ -247,7 +247,7 @@ fn eligible(i: &I) -> bool {
     }
     matches!(
         i,
-        I::AddImmediate { a: 1..=u8::MAX, .. }
+        I::AddImmediate { a: 1..=u32::MAX, .. }
             | I::ShiftRightLogicalImmediate { shift: 16, .. }
             | I::StoreHalfword { .. }
     )
@@ -276,7 +276,7 @@ fn recognize(
     let mut roots = HashSet::new();
     let mut stores = Vec::new();
     let mut high_stores = 0;
-    fn read(values: &HashMap<u8, Value>, register: u8) -> Value {
+    fn read(values: &HashMap<u32, Value>, register: u32) -> Value {
         values
             .get(&register)
             .copied()
@@ -334,7 +334,7 @@ fn recognize(
     }
     Some(Plan { start, end, stores })
 }
-fn live_at(live: &mwcc_vreg::Liveness, register: u8, at: usize) -> bool {
+fn live_at(live: &mwcc_vreg::Liveness, register: u32, at: usize) -> bool {
     let slots = if let Some(vreg) = Reg::from_field(register, Class::General).virtual_register() {
         live.intervals
             .iter()
@@ -343,7 +343,7 @@ fn live_at(live: &mwcc_vreg::Liveness, register: u8, at: usize) -> bool {
     } else {
         live.pinned
             .iter()
-            .find(|p| p.class == Class::General && p.register == register)
+            .find(|p| p.class == Class::General && u32::from(p.register) == register)
             .and_then(|p| p.live_slots.as_ref())
     };
     slots.is_some_and(|slots| slots.binary_search(&(2 * at)).is_ok())

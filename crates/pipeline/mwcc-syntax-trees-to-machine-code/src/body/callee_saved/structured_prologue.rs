@@ -84,7 +84,7 @@ pub(super) fn repeated_indirect_member_loop_home_preference(
     parameter_home_count: usize,
     total_home_count: usize,
     home_index: usize,
-) -> Option<u8> {
+) -> Option<u32> {
     if !enabled || eager_home_count != 0 || parameter_home_count != 3 {
         return None;
     }
@@ -377,7 +377,7 @@ impl Generator {
     pub(super) fn try_emit_dense_eager_global_array_initializer(
         &mut self,
         initializer: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Expression::AddressOf { operand } = initializer else {
             return Ok(false);
@@ -528,7 +528,7 @@ impl Generator {
     pub(super) fn try_emit_structured_wide_saved_initializer(
         &mut self,
         initializer: &Expression,
-        home: u8,
+        home: u32,
     ) -> bool {
         let Some(value) = constant_value(initializer) else {
             return false;
@@ -542,7 +542,7 @@ impl Generator {
             return false;
         }
         let high_adjusted = ((value - i32::from(low)) >> 16) as i16;
-        let scratch = Eabi::general_result().number;
+        let scratch = u32::from(Eabi::general_result().number);
         self.output
             .instructions
             .push(Instruction::load_immediate_shifted(scratch, high_adjusted));
@@ -556,7 +556,7 @@ impl Generator {
 
     pub(super) fn emit_structured_saved_home_store(
         &mut self,
-        home: u8,
+        home: u32,
         home_index: usize,
         frame_size: i16,
     ) {
@@ -592,7 +592,7 @@ fn is_transient_condition_float_entry(window: &[Instruction]) -> bool {
                 && (3..=10).contains(&incoming)
         })
         && *saved_float >= 14
-        && *incoming_float == Eabi::FIRST_FLOAT_ARGUMENT
+        && *incoming_float == Eabi::FIRST_FLOAT_ARGUMENT.into()
 }
 
 fn is_saved_member_entry(window: &[Instruction]) -> bool {
@@ -667,7 +667,7 @@ fn is_saved_parameter_derived_initializer(window: &[Instruction]) -> bool {
         && register_copy(copy) == Some((*saved, *incoming))
 }
 
-fn register_copy(instruction: &Instruction) -> Option<(u8, u8)> {
+fn register_copy(instruction: &Instruction) -> Option<(u32, u32)> {
     match instruction {
         Instruction::Or { a, s, b } if s == b => Some((*a, *s)),
         Instruction::AddImmediate {
@@ -857,7 +857,7 @@ mod tests {
 impl Generator {
     pub(super) fn emit_structured_data_anchor_initializer(
         &mut self,
-        register: u8,
+        register: u32,
         save_slot: usize,
         frame_size: i16,
         dense_saved_range: bool,

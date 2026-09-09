@@ -72,24 +72,24 @@ impl Generator {
             return Ok(false);
         }
 
-        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        let first: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         self.emit_call(nested_name, nested_arguments, None, false)?;
 
         self.output.packed_string_literals = true;
         let string = self.string_literal_placeholder(string);
-        self.emit_address_high(first + 1, &string);
-        self.emit_address_high(first + 2, array);
+        self.emit_address_high((first + 1).into(), &string);
+        self.emit_address_high((first + 2).into(), array);
         self.emit_integer_materialization_copy(first + 3, first);
         self.emit_string_address_low(&string, first + 1, first + 1);
         self.record_relocation(RelocationKind::Addr16Lo, array);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: first,
-            a: first + 2,
+            d: u32::from(first),
+            a: u32::from(first + 2),
             immediate: 0,
         });
         self.output.instructions.push(Instruction::AddImmediate {
-            d: first + 2,
-            a: first + 3,
+            d: u32::from(first + 2),
+            a: u32::from(first + 3),
             immediate: offset,
         });
         Ok(true)
@@ -154,20 +154,20 @@ impl Generator {
             return Ok(false);
         }
 
-        let first = Eabi::FIRST_GENERAL_ARGUMENT;
-        self.emit_address_high(first, global);
+        let first: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
+        self.emit_address_high(first.into(), global);
         self.output
             .instructions
-            .push(Instruction::load_immediate(first + 1, value));
-        self.emit_address_low(first, global);
+            .push(Instruction::load_immediate((first + 1).into(), value));
+        self.emit_address_low(first.into(), global);
         self.output.instructions.push(Instruction::LoadWord {
-            d: first,
-            a: first,
+            d: u32::from(first),
+            a: u32::from(first),
             offset: outer_offset,
         });
         self.output.instructions.push(Instruction::LoadWord {
-            d: first,
-            a: first,
+            d: u32::from(first),
+            a: u32::from(first),
             offset: inner_offset,
         });
         Ok(true)
@@ -217,19 +217,19 @@ impl Generator {
             return Ok(false);
         }
 
-        let first = Eabi::FIRST_GENERAL_ARGUMENT;
-        self.evaluate_general(nested, first)?;
+        let first: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
+        self.evaluate_general(nested, first.into())?;
 
         self.output.packed_string_literals = true;
         let string = self.string_literal_placeholder(string);
-        self.emit_address_high(first + 1, &string);
-        self.emit_address_high(first + 3, array);
+        self.emit_address_high((first + 1).into(), &string);
+        self.emit_address_high((first + 3).into(), array);
         self.emit_string_address_low(&string, first + 1, first + 1);
         self.emit_integer_materialization_copy(first + 2, first);
         self.record_relocation(RelocationKind::Addr16Lo, array);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: first,
-            a: first + 3,
+            d: u32::from(first),
+            a: u32::from(first + 3),
             immediate: 0,
         });
         Ok(true)
@@ -268,15 +268,15 @@ impl Generator {
             return Ok(false);
         }
 
-        let first = Eabi::FIRST_GENERAL_ARGUMENT;
-        self.evaluate_general(nested, first)?;
+        let first: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
+        self.evaluate_general(nested, first.into())?;
 
         self.output.packed_string_literals = true;
         let string = self.string_literal_placeholder(string);
-        self.emit_address_high(first + 1, &string);
+        self.emit_address_high((first + 1).into(), &string);
         self.emit_integer_materialization_copy(first + 2, first);
         self.emit_string_address_low(&string, first + 1, first + 1);
-        self.evaluate_general(frame_array, first)?;
+        self.evaluate_general(frame_array, first.into())?;
         Ok(true)
     }
 }

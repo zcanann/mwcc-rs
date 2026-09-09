@@ -109,8 +109,8 @@ fn narrow_copy_mode_dimensions(instructions: &mut [Instruction]) {
 #[derive(Clone, Copy)]
 struct CopyPacket {
     start: usize,
-    cursor: u8,
-    saved: u8,
+    cursor: u32,
+    saved: u32,
 }
 
 fn conditional_copy_packet(instructions: &[Instruction]) -> Option<CopyPacket> {

@@ -281,7 +281,7 @@ impl Generator {
             return Ok(false);
         }
 
-        const WALKER: u8 = 31;
+        const WALKER: u32 = 31;
         // The table entry is a function pointer (4 bytes); the walk steps by that.
         let step = 4i16;
         self.non_leaf = true;

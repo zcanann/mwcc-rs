@@ -63,7 +63,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::CompareWordImmediate {
-                a: Eabi::FIRST_GENERAL_ARGUMENT,
+                a: 3,
                 immediate: plan.selector,
             });
         let false_branch = self.output.instructions.len();

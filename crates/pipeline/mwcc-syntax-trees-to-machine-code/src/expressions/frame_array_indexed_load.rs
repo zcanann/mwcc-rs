@@ -10,7 +10,7 @@ impl Generator {
         &mut self,
         name: &str,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if constant_value(index).is_some() {
             return Ok(false);
@@ -47,7 +47,7 @@ impl Generator {
                 });
             scaled
         };
-        let base = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+        let base = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT.into());
         self.output.instructions.push(Instruction::AddImmediate {
             d: base,
             a: 1,

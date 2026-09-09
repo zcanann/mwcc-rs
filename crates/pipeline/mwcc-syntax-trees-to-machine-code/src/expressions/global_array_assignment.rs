@@ -11,7 +11,7 @@ impl Generator {
         &mut self,
         target: &Expression,
         value: &Expression,
-        destination: Option<u8>,
+        destination: Option<u32>,
     ) -> Compilation<bool> {
         let Expression::Index { base, index } = target else {
             return Ok(false);

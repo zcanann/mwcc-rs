@@ -190,7 +190,7 @@ impl Generator {
         Ok(true)
     }
 
-    fn emit_decay_store_and_reload(&mut self, base: u8, offset: i16) {
+    fn emit_decay_store_and_reload(&mut self, base: u32, offset: i16) {
         self.output.instructions.push(Instruction::StoreFloatSingle {
             s: 0,
             a: base,
@@ -203,7 +203,7 @@ impl Generator {
         });
     }
 
-    fn emit_decay_zero_and_return(&mut self, base: u8, offset: i16) {
+    fn emit_decay_zero_and_return(&mut self, base: u32, offset: i16) {
         self.output.instructions.push(Instruction::StoreFloatSingle {
             s: 2,
             a: base,

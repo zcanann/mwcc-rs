@@ -37,8 +37,8 @@ struct FramePointerUpdate {
     reload: usize,
     add: usize,
     copy: usize,
-    pointer: u8,
-    value: u8,
+    pointer: u32,
+    value: u32,
 }
 
 fn frame_pointer_update(instructions: &[Instruction]) -> Option<FramePointerUpdate> {

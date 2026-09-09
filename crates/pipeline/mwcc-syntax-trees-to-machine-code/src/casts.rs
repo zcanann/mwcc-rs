@@ -609,7 +609,7 @@ impl Generator {
     fn emit_float_to_signed_integer(
         &mut self,
         operand: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let leaf_source = if self.is_float_leaf(operand) {
             Some(self.float_register_of_leaf(operand)?)
@@ -692,7 +692,7 @@ impl Generator {
     pub(crate) fn emit_cast_to_float(
         &mut self,
         operand: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<()> {
         // Modern MSL defines `fabsf(float f)` as
@@ -761,12 +761,12 @@ impl Generator {
                 )
             {
                 let signed = self.signedness_of(operand)?;
-                let source = mwcc_target::Eabi::general_result().number;
+                let source = u32::from(mwcc_target::Eabi::general_result().number);
                 self.emit_call(name, arguments, None, false)?;
                 let bias_register = if destination != FLOAT_SCRATCH {
                     destination
                 } else {
-                    mwcc_target::Eabi::float_result().number
+                    u32::from(mwcc_target::Eabi::float_result().number)
                 };
                 let scratch = self.claim_int_to_float_scratch()?;
                 self.emit_int_to_float_body_at(
@@ -785,7 +785,7 @@ impl Generator {
         // (FLOAT_SCRATCH): the destination when it isn't f0 (a return into f1), else f1
         // for a value/store into f0 — otherwise the assembled `lfd f0` would overwrite
         // the bias, leaving `fsub f0,f0,f0` = 0.
-        const FLOAT_FIRST: u8 = 1; // f1
+        const FLOAT_FIRST: u32 = 1; // f1
         let bias_register = if destination != FLOAT_SCRATCH {
             destination
         } else {
@@ -836,7 +836,7 @@ impl Generator {
             let source = self.materialize_integer_conversion_operand(operand)?;
             let scratch = self.claim_int_to_float_scratch()?;
             self.emit_int_to_float_body_at(
-                source,
+                source.into(),
                 destination,
                 double,
                 signed,
@@ -855,7 +855,7 @@ impl Generator {
             let scratch = self.claim_int_to_float_scratch()?;
             let source = self.materialize_integer_conversion_operand(operand)?;
             self.emit_int_to_float_body_at(
-                source,
+                source.into(),
                 destination,
                 double,
                 signed,
@@ -879,9 +879,9 @@ impl Generator {
     fn emit_loaded_unsigned_int_to_float(
         &mut self,
         operand: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
-        bias_register: u8,
+        bias_register: u32,
     ) -> Compilation<()> {
         let source = self.fresh_virtual_general();
         if !self.non_leaf && self.frame_size == 0 {
@@ -970,9 +970,9 @@ impl Generator {
     pub(crate) fn emit_int_to_float(
         &mut self,
         operand: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
-        bias_register: u8,
+        bias_register: u32,
     ) -> Compilation<()> {
         // A signed value flips its sign bit first and subtracts `0x43300000_80000000`; an
         // unsigned value skips the flip and subtracts `0x43300000_00000000`. Bumps the @N counter.
@@ -1019,11 +1019,11 @@ impl Generator {
     /// `r1+8`/`r1+12` scratch before build-specific frame normalization.
     pub(crate) fn emit_int_to_float_body(
         &mut self,
-        source: u8,
-        destination: u8,
+        source: u32,
+        destination: u32,
         double: bool,
         signed: bool,
-        bias_register: u8,
+        bias_register: u32,
         schedule: IntToFloatSchedule,
     ) {
         self.emit_int_to_float_body_at(
@@ -1039,11 +1039,11 @@ impl Generator {
 
     pub(crate) fn emit_int_to_float_body_at(
         &mut self,
-        source: u8,
-        destination: u8,
+        source: u32,
+        destination: u32,
         double: bool,
         signed: bool,
-        bias_register: u8,
+        bias_register: u32,
         schedule: IntToFloatSchedule,
         scratch: i16,
     ) {
@@ -1184,9 +1184,9 @@ impl Generator {
     /// makes that liveness decision explicit at the conversion boundary.
     pub(crate) fn emit_preserved_signed_int_to_float_body_at(
         &mut self,
-        source: u8,
-        destination: u8,
-        bias_register: u8,
+        source: u32,
+        destination: u32,
+        bias_register: u32,
         scratch: i16,
     ) {
         let image_word = self.fresh_virtual_general_preferring(GENERAL_SCRATCH);
@@ -1237,7 +1237,7 @@ impl Generator {
         &mut self,
         target_type: Type,
         operand: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         // `(int)(float)x` / `(int)(double)x` is a ROUND-TRIP conversion, not an identity — a float
         // cannot represent every int exactly, so the value can change. The full int->float->int
@@ -1353,7 +1353,7 @@ impl Generator {
             let source = source?;
             self.emit_widen(
                 destination,
-                source,
+                source.into(),
                 target_type.width(),
                 self.signed_of(target_type),
             );

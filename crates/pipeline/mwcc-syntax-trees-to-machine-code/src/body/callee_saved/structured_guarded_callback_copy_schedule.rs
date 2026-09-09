@@ -40,7 +40,7 @@ impl Generator {
     }
 }
 
-pub(super) fn retained_receiver(instructions: &[Instruction], member_offset: i16) -> Option<u8> {
+pub(super) fn retained_receiver(instructions: &[Instruction], member_offset: i16) -> Option<u32> {
     instructions.windows(2).find_map(|window| {
         matches!(window, [
             Instruction::AddImmediate { d: 4, a, immediate },
@@ -67,7 +67,7 @@ fn callback_result_snapshot(instructions: &[Instruction]) -> Option<usize> {
 
 fn countdown_guard_reload(
     instructions: &[Instruction],
-    receiver: u8,
+    receiver: u32,
     offset: i16,
 ) -> Option<usize> {
     instructions.windows(7).enumerate().find_map(|(start, window)| {
@@ -89,7 +89,7 @@ fn countdown_guard_reload(
     })
 }
 
-fn schedule_copy_placement(generator: &mut Generator, receiver: u8) {
+fn schedule_copy_placement(generator: &mut Generator, receiver: u32) {
     if let Some(start) = initial_zero_cleanup_copy(&generator.output.instructions) {
         crate::move_instruction_before_retargeting(generator, start + 3, start + 1);
     }
@@ -122,7 +122,7 @@ fn initial_zero_cleanup_copy(instructions: &[Instruction]) -> Option<usize> {
     })
 }
 
-fn state_change_receiver_copy(instructions: &[Instruction], receiver: u8) -> Option<usize> {
+fn state_change_receiver_copy(instructions: &[Instruction], receiver: u32) -> Option<usize> {
     instructions.windows(4).position(|window| {
         matches!(window, [
             Instruction::AddImmediate { d: state, a: 0, immediate: 6 },
@@ -133,7 +133,7 @@ fn state_change_receiver_copy(instructions: &[Instruction], receiver: u8) -> Opt
     })
 }
 
-fn derived_list_argument_copy(instructions: &[Instruction], receiver: u8) -> Option<usize> {
+fn derived_list_argument_copy(instructions: &[Instruction], receiver: u32) -> Option<usize> {
     instructions.windows(4).position(|window| {
         matches!(window, [
             Instruction::LoadWord { d: 3, a, .. },
@@ -156,7 +156,7 @@ fn zero_return_copy(instructions: &[Instruction]) -> Option<usize> {
     })
 }
 
-fn normalize_instructions(instructions: &mut [Instruction], receiver: u8) {
+fn normalize_instructions(instructions: &mut [Instruction], receiver: u32) {
     for index in 0..instructions.len().saturating_sub(1) {
         let is_store_hoist = index > 0
             && matches!(

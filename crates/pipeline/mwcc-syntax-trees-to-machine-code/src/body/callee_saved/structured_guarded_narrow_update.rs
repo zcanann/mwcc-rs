@@ -13,8 +13,8 @@ impl Generator {
             return;
         };
         self.prefer_virtual_general(plan.owner, 5);
-        self.prefer_virtual_general(plan.attributes, 4);
-        self.prefer_virtual_general(plan.value, Eabi::FIRST_GENERAL_ARGUMENT);
+        self.prefer_virtual_general(plan.attributes.into(), 4);
+        self.prefer_virtual_general(plan.value, 3);
         match &mut self.output.instructions[plan.reload + 1] {
             Instruction::AddImmediate { a, .. } => *a = plan.value,
             _ => unreachable!("guarded narrow update shape was checked"),
@@ -25,9 +25,9 @@ impl Generator {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GuardedNarrowUpdate {
-    owner: u8,
-    attributes: u8,
-    value: u8,
+    owner: u32,
+    attributes: u32,
+    value: u32,
     reload: usize,
 }
 

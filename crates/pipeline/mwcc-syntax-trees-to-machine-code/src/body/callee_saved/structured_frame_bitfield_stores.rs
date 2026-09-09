@@ -88,7 +88,7 @@ impl Generator {
 
         match (self.behavior.frame_convention, stores.as_slice()) {
             (FrameConvention::Predecrement, stores) => {
-                let registers: &[u8] = if stores.len() == 4 {
+                let registers: &[u32] = if stores.len() == 4 {
                     &[5, 4, 3, 0]
                 } else {
                     &[3, 0]
@@ -121,7 +121,7 @@ impl Generator {
         Ok(true)
     }
 
-    fn emit_frame_array_byte_store(&mut self, source: u8, offset: i16) {
+    fn emit_frame_array_byte_store(&mut self, source: u32, offset: i16) {
         self.output.instructions.push(Instruction::StoreByte {
             s: source,
             a: 1,

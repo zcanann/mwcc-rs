@@ -3,16 +3,16 @@ use super::*;
 use mwcc_machine_code::Instruction::*;
 use mwcc_versions::FixedBankStreamStyle;
 
-fn addi(d: u8, a: u8, immediate: i16) -> Instruction {
+fn addi(d: u32, a: u32, immediate: i16) -> Instruction {
     AddImmediate { d, a, immediate }
 }
-fn load(d: u8, a: u8, offset: i16) -> Instruction {
+fn load(d: u32, a: u32, offset: i16) -> Instruction {
     LoadWord { d, a, offset }
 }
-fn store(s: u8, a: u8, offset: i16) -> Instruction {
+fn store(s: u32, a: u32, offset: i16) -> Instruction {
     StoreWord { s, a, offset }
 }
-fn boolean(a: u8) -> Instruction {
+fn boolean(a: u32) -> Instruction {
     ShiftRightLogicalImmediate { a, s: 0, shift: 5 }
 }
 
@@ -196,7 +196,7 @@ impl Generator {
         ]);
     }
 
-    fn mainline_stream_poll(&mut self, plan: &Transaction<'_>, page: u8, offset: i16) {
+    fn mainline_stream_poll(&mut self, plan: &Transaction<'_>, page: u32, offset: i16) {
         if let mwcc_versions::FixedAddressPollAddressStyle::FoldedAlignedBankDisplacement {
             alignment,
         } = self.behavior.fixed_address_poll_address_style

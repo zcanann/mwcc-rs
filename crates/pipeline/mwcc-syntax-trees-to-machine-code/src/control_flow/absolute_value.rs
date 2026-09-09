@@ -9,7 +9,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
         tail: bool,
     ) -> Compilation<bool> {
         let Some((value, value_when_true)) =

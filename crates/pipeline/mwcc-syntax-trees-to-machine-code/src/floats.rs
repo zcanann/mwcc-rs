@@ -38,7 +38,7 @@ impl Generator {
         self.evaluate(
             returned,
             function.return_type,
-            mwcc_target::Eabi::float_result().number,
+            u32::from(mwcc_target::Eabi::float_result().number),
         )?;
         self.output
             .instructions
@@ -50,7 +50,7 @@ impl Generator {
     pub(crate) fn evaluate_float(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         match expression {
             Expression::IndexedUpdateValue { value } => {
@@ -411,7 +411,7 @@ impl Generator {
                     self.emit_located_operand(operand, FLOAT_SCRATCH)?;
                     FLOAT_SCRATCH
                 } else if self.is_float_call_value(operand) {
-                    let result = mwcc_target::Eabi::float_result().number;
+                    let result = u32::from(mwcc_target::Eabi::float_result().number);
                     self.evaluate_float(operand, result)?;
                     result
                 } else if is_complex(operand) {
@@ -461,11 +461,11 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<bool> {
-        const FLOAT_FIRST: u8 = 1; // f1
-        const BIAS_REGISTER: u8 = 2; // f2: avoids the scratch f0 and the operand/result f1
+        const FLOAT_FIRST: u32 = 1; // f1
+        const BIAS_REGISTER: u32 = 2; // f2: avoids the scratch f0 and the operand/result f1
         if !matches!(
             operator,
             BinaryOperator::Add
@@ -644,7 +644,7 @@ impl Generator {
         }
     }
 
-    pub(crate) fn place_float_addend(&mut self, expression: &Expression) -> Compilation<u8> {
+    pub(crate) fn place_float_addend(&mut self, expression: &Expression) -> Compilation<u32> {
         // A memory-loaded addend (member, *float_ptr, or float global) goes through
         // the scratch, like a sub-expression.
         if self.is_float_located(expression) {
@@ -714,10 +714,10 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<Operands> {
-        const FLOAT_RESULT: u8 = 1;
+        const FLOAT_RESULT: u32 = 1;
         // A call result arrives in f1. For `loaded_value OP call()`, mwcc emits
         // the call first, then loads the memory operand into f0 so it does not
         // need to preserve that operand across the call. The mirrored source
@@ -841,7 +841,7 @@ impl Generator {
                 if destination == FLOAT_SCRATCH {
                     if let Some(register) = retained.filter(|register| *register != destination) {
                         self.load_float_literal(destination, *value, double);
-                        return Operands::ordered(destination, register);
+                        return Operands::ordered(destination, register.into());
                     }
                     let literal = self.fresh_virtual_float();
                     self.load_float_literal(literal, *value, double);
@@ -898,7 +898,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        left_register: u8,
+        left_register: u32,
     ) -> Compilation<Option<Operands>> {
         if self.behavior.optimization == mwcc_versions::Optimization::O0 {
             return Ok(None);
@@ -951,7 +951,7 @@ impl Generator {
             .push(crate::expressions::displacement_load(
                 left_pointee,
                 left_register,
-                base,
+                base.into(),
                 left_offset,
             )?);
         self.output
@@ -959,7 +959,7 @@ impl Generator {
             .push(crate::expressions::displacement_load(
                 right_pointee,
                 FLOAT_SCRATCH,
-                base,
+                base.into(),
                 right_offset,
             )?);
         Ok(Some(Operands::ordered(left_register, FLOAT_SCRATCH)?))
@@ -989,7 +989,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<Operands> {
         // A float operand loaded from memory (a member or `*float_pointer`) loads

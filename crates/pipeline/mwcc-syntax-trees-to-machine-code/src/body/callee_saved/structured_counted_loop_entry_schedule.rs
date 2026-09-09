@@ -18,8 +18,8 @@ const ENTRY_ORDER: [usize; ENTRY_LEN] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EntryPlan {
     start: usize,
-    pool_base: u8,
-    midpoint: u8,
+    pool_base: u32,
+    midpoint: u32,
 }
 
 impl Generator {
@@ -89,7 +89,7 @@ fn recognize_entry(window: &[Instruction]) -> Option<EntryPlan> {
     if a != pool_base {
         return None;
     }
-    let mut floats = [0u8; 8];
+    let mut floats = [0u32; 8];
     floats[0] = first_float;
     for index in 1..8 {
         let Instruction::LoadFloatDouble { d, a, offset } = window[index + 1] else {
@@ -104,14 +104,14 @@ fn recognize_entry(window: &[Instruction]) -> Option<EntryPlan> {
         if !matches!(
             window[index + 9],
             Instruction::StoreFloatDouble { s, a: 1, offset }
-                if s == float && offset == i16::try_from((index + 1) * 8).ok()?
+                if s == float.into() && offset == i16::try_from((index + 1) * 8).ok()?
         ) {
             return None;
         }
     }
 
     let incoming = [6, 7, 5, 4, 3];
-    let mut homes = [0u8; 5];
+    let mut homes = [0u32; 5];
     for (index, &source) in incoming.iter().enumerate() {
         let Instruction::Or { a, s, b } = window[index + 17] else {
             return None;
@@ -129,7 +129,7 @@ fn recognize_entry(window: &[Instruction]) -> Option<EntryPlan> {
     else {
         return None;
     };
-    if a != homes[0]
+    if a != homes[0].into()
         || !matches!(
             window[23],
             Instruction::ShiftRightLogicalImmediate { a: 0, s, shift: 31 }
@@ -144,7 +144,7 @@ fn recognize_entry(window: &[Instruction]) -> Option<EntryPlan> {
             Instruction::ShiftRightAlgebraicImmediate { a, s: 0, shift: 1 }
                 if a == midpoint
         )
-        || !matches!(window[26], Instruction::Or { a: 3, s, b } if s == homes[1] && b == homes[1])
+        || !matches!(window[26], Instruction::Or { a: 3, s, b } if s == homes[1].into() && b == homes[1].into())
         || !matches!(window[27], Instruction::AddImmediate { d: 4, a: 0, immediate: 0 })
         || !matches!(window[28], Instruction::Or { a: 5, s, b } if s == midpoint && b == midpoint)
         || !matches!(&window[29], Instruction::BranchAndLink { target } if target == "memset")
@@ -175,14 +175,14 @@ mod tests {
         });
         for index in 1..8 {
             instructions.push(Instruction::LoadFloatDouble {
-                d: 32 + index as u8,
+                d: u32::from(32 + index as u8),
                 a: 65,
                 offset: (index * 8) as i16,
             });
         }
         for index in 0..8 {
             instructions.push(Instruction::StoreFloatDouble {
-                s: 32 + index as u8,
+                s: u32::from(32 + index as u8),
                 a: 1,
                 offset: ((index + 1) * 8) as i16,
             });

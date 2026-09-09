@@ -64,9 +64,9 @@ impl Generator {
     /// area before decrementing r1; mainline retains `FramePlan`'s layout.
     fn emit_conditional_saved_prologue(
         &mut self,
-        homes: &[u8],
-        incoming: &[u8],
-        condition_register: u8,
+        homes: &[u32],
+        incoming: &[u32],
+        condition_register: u32,
         compare_constant: i16,
     ) {
         debug_assert_eq!(homes.len(), incoming.len());
@@ -245,7 +245,7 @@ impl Generator {
         let else_label = self.fresh_label();
         let join_label = self.fresh_label();
         self.emit_branch_conditional_to(skip_bo, skip_bi, else_label);
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         // Taken arm: the guard's call, its result in r3, then jump to the epilogue.
         self.evaluate_tail(&guard.value, function.return_type, result)?;
         self.emit_branch_to(join_label);
@@ -539,7 +539,7 @@ impl Generator {
         };
         // Each saved value is a distinct general parameter, none the condition operand;
         // a call argument referencing one would keep it in its incoming register.
-        let mut promoted: Vec<(usize, String, u8)> = Vec::new();
+        let mut promoted: Vec<(usize, String, u32)> = Vec::new();
         for name in &saved_names {
             if *name == cond_name {
                 return Ok(false);
@@ -583,8 +583,8 @@ impl Generator {
         let count = promoted.len();
 
         // -- emit --
-        let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
-        let incoming_ordered: Vec<u8> = promoted
+        let homes: Vec<u32> = (0..count).map(|_| self.fresh_virtual_general()).collect();
+        let incoming_ordered: Vec<u32> = promoted
             .iter()
             .rev()
             .map(|(_, _, incoming)| *incoming)
@@ -611,7 +611,7 @@ impl Generator {
         // sit after the merge, since the call is one-armed), then the return move/compute,
         // then the saved GPRs (highest first), then `mtlr`/`addi`/`blr`. Hand-emitted —
         // the LR-reload hoist can't cross the branch.
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         if self.behavior.frame_convention == FrameConvention::LinkageFirst {
             self.evaluate_tail(
                 function.return_expression.as_ref().unwrap(),
@@ -719,7 +719,7 @@ impl Generator {
         }
         // Exactly one general parameter, referenced by the store, live across the call
         // (and not the condition operand): it parks in the single callee-saved home.
-        let saved: Vec<(String, u8)> = function
+        let saved: Vec<(String, u32)> = function
             .parameters
             .iter()
             .filter_map(|parameter| {
@@ -890,7 +890,7 @@ impl Generator {
         self.output
             .instructions
             .extend(mwcc_vreg::FramePlan::sized_for(vec![]).prologue());
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.evaluate_general(left, result)?; // lwz r3, g
         self.output
             .instructions

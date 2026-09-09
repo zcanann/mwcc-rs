@@ -22,7 +22,7 @@ impl Generator {
         let Some(shape) = recognize(function) else {
             return Ok(false);
         };
-        if self.lookup_general(shape.item) != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+        if self.lookup_general(shape.item) != Some(Eabi::FIRST_GENERAL_ARGUMENT.into())
             || shape.string.len() + 1 <= 8
             || !self.variadic_callees.contains(shape.callee)
             || self.locations.contains_key(shape.callee)

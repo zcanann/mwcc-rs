@@ -1,10 +1,10 @@
 use super::*;
 
 pub(super) fn emit(generator: &mut Generator, plan: &DspChannelParameterUpdate<'_>) {
-    const OBJECT: u8 = 28;
-    const INDEX: u8 = 29;
-    const CHANNEL_ID: u8 = 30;
-    const BYTE_OFFSET: u8 = 31;
+    const OBJECT: u32 = 28;
+    const INDEX: u32 = 29;
+    const CHANNEL_ID: u32 = 30;
+    const BYTE_OFFSET: u32 = 31;
     generator.non_leaf = true;
     generator.frame_size = 32;
     generator.callee_saved = vec![BYTE_OFFSET, CHANNEL_ID, INDEX, OBJECT];

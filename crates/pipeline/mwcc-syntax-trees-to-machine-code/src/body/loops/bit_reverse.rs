@@ -38,12 +38,12 @@ impl Generator {
             mwcc_versions::OptimizationGoal::Performance => 2,
         };
 
-        const MASK: u8 = 5;
-        const TOP_BIT: u8 = 6;
-        const WORK: u8 = 7;
-        const INDEX: u8 = 8;
-        const LOW_COUNT: u8 = 9;
-        const HIGH_SHIFT: u8 = 10;
+        const MASK: u32 = 5;
+        const TOP_BIT: u32 = 6;
+        const WORK: u32 = 7;
+        const INDEX: u32 = 8;
+        const LOW_COUNT: u32 = 9;
+        const HIGH_SHIFT: u32 = 10;
 
         self.output
             .instructions
@@ -107,16 +107,16 @@ impl Generator {
 
     fn emit_bit_reverse_iteration(
         &mut self,
-        data: u8,
+        data: u32,
         dependency_first: bool,
         counter_fills_result_latency: bool,
     ) {
-        const MASK: u8 = 5;
-        const TOP_BIT: u8 = 6;
-        const WORK: u8 = 7;
-        const INDEX: u8 = 8;
-        const LOW_COUNT: u8 = 9;
-        const HIGH_SHIFT: u8 = 10;
+        const MASK: u32 = 5;
+        const TOP_BIT: u32 = 6;
+        const WORK: u32 = 7;
+        const INDEX: u32 = 8;
+        const LOW_COUNT: u32 = 9;
+        const HIGH_SHIFT: u32 = 10;
 
         self.output
             .instructions

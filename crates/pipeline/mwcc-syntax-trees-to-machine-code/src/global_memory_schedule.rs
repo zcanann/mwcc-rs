@@ -52,7 +52,7 @@ pub(crate) fn hoist_independent_sda_loads(
         let independent_registers = register_operands(&instructions[store])
             .iter()
             .all(|operand| {
-                operand.class != load_destination.0 || operand.register != load_destination.1
+                operand.class != load_destination.0 || operand.register != load_destination.1.into()
             });
         if direct_store(&instructions[store])
             && store_target != load_target
@@ -303,7 +303,7 @@ fn direct_store(instruction: &Instruction) -> bool {
     )
 }
 
-fn direct_load_destination(instruction: &Instruction) -> Option<(Class, u8)> {
+fn direct_load_destination(instruction: &Instruction) -> Option<(Class, u32)> {
     if !matches!(
         instruction,
         Instruction::LoadWord { .. }

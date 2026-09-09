@@ -52,7 +52,7 @@ pub(super) fn sequenced_callback_wait_home_preference(
     deferred_saved_locals: &[&LocalDeclaration],
     first_saved: usize,
     home_index: usize,
-) -> Option<u8> {
+) -> Option<u32> {
     let transaction = is_sequenced_callback_wait_layout(
         function,
         saved_parameters,
@@ -71,7 +71,7 @@ pub(super) fn sequenced_callback_wait_home_preference(
             }
         })
         .unwrap_or(first_saved + 2);
-    u8::try_from(preferred).ok()
+    (u8::try_from(preferred).ok()).map(u32::from)
 }
 
 pub(super) fn is_sequenced_callback_wait_layout(
@@ -119,20 +119,20 @@ impl Generator {
         };
 
         self.output.instructions[plan.identifier_copy] =
-            Instruction::move_register(30, Eabi::FIRST_GENERAL_ARGUMENT + 1);
+            Instruction::move_register(30, (Eabi::FIRST_GENERAL_ARGUMENT + 1).into());
         let Instruction::LoadByteZero { a, .. } =
             &mut self.output.instructions[plan.identifier_load]
         else {
             unreachable!()
         };
-        *a = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+        *a = 4;
         self.output.instructions[plan.issue_receiver] = Instruction::AddImmediate {
-            d: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+            d: 4,
             a: 29,
             immediate: 0,
         };
         self.output.instructions[plan.interrupt_copy] =
-            Instruction::move_register(31, Eabi::general_result().number);
+            Instruction::move_register(31, u32::from(Eabi::general_result().number));
         let Instruction::LoadWord { d, .. } = &mut self.output.instructions[plan.state_load] else {
             unreachable!()
         };

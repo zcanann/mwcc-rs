@@ -183,7 +183,7 @@ impl Generator {
             let left_offset = self.comma_home_offset(left_name)?;
             let right_offset = self.comma_home_offset(right_name)?;
             let mut loads = [
-                (left_offset, left_name, Eabi::general_result().number),
+                (left_offset, left_name, u32::from(Eabi::general_result().number)),
                 (right_offset, right_name, GENERAL_SCRATCH),
             ];
             loads.sort_by_key(|(offset, _, _)| *offset);
@@ -192,7 +192,7 @@ impl Generator {
             }
             self.output.instructions.push(Instruction::Add {
                 d: GENERAL_SCRATCH,
-                a: Eabi::general_result().number,
+                a: u32::from(Eabi::general_result().number),
                 b: GENERAL_SCRATCH,
             });
             return Ok(());
@@ -213,7 +213,7 @@ impl Generator {
         })?;
         match operator {
             BinaryOperator::Add if left_comma.is_some() => {
-                let source = Eabi::general_result().number;
+                let source = u32::from(Eabi::general_result().number);
                 self.load_comma_home(name, source)?;
                 self.output.instructions.push(Instruction::AddImmediate {
                     d: GENERAL_SCRATCH,
@@ -245,7 +245,7 @@ impl Generator {
             .ok_or_else(|| Diagnostic::error("a build 163 comma home was not allocated"))
     }
 
-    fn load_comma_home(&mut self, name: &str, destination: u8) -> Compilation<()> {
+    fn load_comma_home(&mut self, name: &str, destination: u32) -> Compilation<()> {
         let offset = self.comma_home_offset(name)?;
         self.output.instructions.push(Instruction::LoadWord {
             d: destination,

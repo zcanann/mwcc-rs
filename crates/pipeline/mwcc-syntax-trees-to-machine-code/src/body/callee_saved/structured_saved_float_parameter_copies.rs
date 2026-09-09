@@ -12,13 +12,13 @@ use mwcc_versions::SavedFloatParameterCopyOrder;
 /// end of the source parameter list.
 pub(super) fn emit(
     instructions: &mut Vec<Instruction>,
-    copies: &[(u8, u8)],
+    copies: &[(u32, u32)],
     order: SavedFloatParameterCopyOrder,
 ) {
-    let mut append = |&(destination, incoming): &(u8, u8)| {
+    let mut append = |&(destination, incoming): &(u32, u32)| {
         instructions.push(Instruction::FloatMove {
-            d: destination,
-            b: incoming,
+            d: u32::from(destination),
+            b: u32::from(incoming),
         });
     };
     match order {

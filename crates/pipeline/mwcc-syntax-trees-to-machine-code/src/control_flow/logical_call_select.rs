@@ -14,14 +14,14 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
         tail: bool,
     ) -> Compilation<bool> {
         let Some((operator, left, right)) = logical_parts(condition) else {
             return Ok(false);
         };
         if tail
-            || destination != mwcc_target::Eabi::general_result().number
+            || destination != u32::from(mwcc_target::Eabi::general_result().number)
             || !call_and_constant_arms(when_true, when_false)
         {
             return Ok(false);
@@ -47,7 +47,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let initial = if operator == BinaryOperator::LogicalAnd {
             0

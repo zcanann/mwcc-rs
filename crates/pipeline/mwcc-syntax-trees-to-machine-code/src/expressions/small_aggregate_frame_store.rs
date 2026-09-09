@@ -92,7 +92,7 @@ impl Generator {
             self.output.instructions.push(displacement_load(
                 element,
                 source,
-                aggregate,
+                aggregate.into(),
                 offset,
             )?);
         } else {
@@ -109,7 +109,7 @@ impl Generator {
                 self.output.instructions.push(indexed_load(
                     element,
                     source,
-                    aggregate,
+                    aggregate.into(),
                     source,
                 )?);
                 self.output.instructions.push(displacement_store(

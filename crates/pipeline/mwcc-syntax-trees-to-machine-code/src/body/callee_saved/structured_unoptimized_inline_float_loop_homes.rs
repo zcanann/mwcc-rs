@@ -44,15 +44,15 @@ impl StructuredUnoptimizedInlineFloatLoopHomes {
         Some(plan)
     }
 
-    pub(super) fn preference(&self, name: &str, existing_saved_count: u8) -> Option<u8> {
+    pub(super) fn preference(&self, name: &str, existing_saved_count: u8) -> Option<u32> {
         let top = 31u8.checked_sub(existing_saved_count)?;
         if name == self.result {
-            return Some(top);
+            return Some(top.into());
         }
-        self.arguments
+        (self.arguments
             .iter()
             .position(|candidate| candidate == name)
-            .and_then(|index| top.checked_sub(u8::try_from(index + 1).ok()?))
+            .and_then(|index| top.checked_sub(u8::try_from(index + 1).ok()?))).map(u32::from)
     }
 }
 
@@ -234,7 +234,7 @@ impl Generator {
         self.callee_saved.push(31);
         self.callee_saved_float = self
             .callee_saved_float
-            .max(32u8.saturating_sub(shape.stored));
+            .max(u8::try_from(32 - shape.stored).expect("saved FPR count"));
     }
 
     /// The generic leaf frame preserves an existing GPR restore before newly
@@ -322,13 +322,13 @@ struct PhysicalHandoffShape {
     third_input_advance: usize,
     round: usize,
     store: usize,
-    first_input: u8,
-    result: u8,
-    shadow: u8,
-    returned: u8,
-    stored: u8,
-    store_base: u8,
-    store_index: u8,
+    first_input: u32,
+    result: u32,
+    shadow: u32,
+    returned: u32,
+    stored: u32,
+    store_base: u32,
+    store_index: u32,
 }
 
 fn physical_handoff_shape(instructions: &[Instruction]) -> Option<PhysicalHandoffShape> {

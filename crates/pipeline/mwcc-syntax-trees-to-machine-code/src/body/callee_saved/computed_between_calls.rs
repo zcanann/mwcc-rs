@@ -127,16 +127,16 @@ impl Generator {
         // r3 holds `state` until the leave call. Make that ABI liveness visible
         // to the inline placement helpers while the expression is migrated onto
         // the virtual home.
-        self.reserved.insert(Eabi::general_result().number);
+        self.reserved.insert(u32::from(Eabi::general_result().number));
         let evaluated = self.evaluate_general(value, home);
-        self.reserved.remove(&Eabi::general_result().number);
+        self.reserved.remove(&u32::from(Eabi::general_result().number));
         evaluated?;
 
         self.locations.insert(
             state.name.clone(),
             Location {
                 class: ValueClass::General,
-                register: Eabi::general_result().number,
+                register: u32::from(Eabi::general_result().number),
                 signed: state.declared_type.is_signed(),
                 width: 32,
                 pointee: None,
@@ -145,7 +145,7 @@ impl Generator {
         );
         self.emit_call(leave, leave_arguments, None, false)?;
         self.output.instructions.push(Instruction::Or {
-            a: Eabi::general_result().number,
+            a: u32::from(Eabi::general_result().number),
             s: home,
             b: home,
         });

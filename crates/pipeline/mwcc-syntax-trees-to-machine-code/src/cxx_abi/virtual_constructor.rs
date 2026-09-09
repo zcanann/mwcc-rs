@@ -20,7 +20,7 @@ struct ParameterizedDerivedConstructor {
     derived_vtable: String,
     vptr_offset: i16,
     member_stores: Vec<(i16, u8)>,
-    derived_vtable_register: u8,
+    derived_vtable_register: u32,
 }
 
 /// Lower a polymorphic leaf constructor consisting of its synthesized primary
@@ -227,7 +227,7 @@ fn recognize_parameterized_derived_constructor(
         derived_vtable,
         vptr_offset,
         member_stores,
-        derived_vtable_register,
+        derived_vtable_register: derived_vtable_register.into(),
     })
 }
 
@@ -268,7 +268,7 @@ fn emit_parameterized_derived_constructor(
                 .member_stores
                 .iter()
                 .map(|(offset, register)| Instruction::StoreWord {
-                    s: *register,
+                    s: u32::from(*register),
                     a: 3,
                     offset: *offset,
                 }),
@@ -320,7 +320,7 @@ fn emit_later_parameterized_derived_constructor(
             .next()
             .expect("the parameterized constructor has at least one member store");
         output.instructions.push(Instruction::StoreWord {
-            s: *register,
+            s: u32::from(*register),
             a: 3,
             offset: *offset,
         });
@@ -339,7 +339,7 @@ fn emit_later_parameterized_derived_constructor(
     output
         .instructions
         .extend(member_stores.map(|(offset, register)| Instruction::StoreWord {
-            s: *register,
+            s: u32::from(*register),
             a: 3,
             offset: *offset,
         }));

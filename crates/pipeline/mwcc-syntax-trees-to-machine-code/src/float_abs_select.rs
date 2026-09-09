@@ -15,7 +15,7 @@ impl Generator {
     pub(crate) fn try_emit_float_abs_select(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(value) = abs_select_value(expression) else {
             return Ok(false);
@@ -36,7 +36,7 @@ impl Generator {
                 destination
             };
             let source = self.place_condition_float_load(value, source)?;
-            self.emit_float_abs_select_after_zero(source, destination)?;
+            self.emit_float_abs_select_after_zero(source.into(), destination)?;
             return Ok(true);
         } else if self.is_float_leaf(value) {
             self.float_register_of_leaf(value)?
@@ -49,8 +49,8 @@ impl Generator {
 
     pub(crate) fn emit_float_abs_select(
         &mut self,
-        source: u8,
-        destination: u8,
+        source: u32,
+        destination: u32,
         double: bool,
     ) -> Compilation<()> {
         self.load_float_literal_into(
@@ -63,8 +63,8 @@ impl Generator {
 
     fn emit_float_abs_select_after_zero(
         &mut self,
-        source: u8,
-        destination: u8,
+        source: u32,
+        destination: u32,
     ) -> Compilation<()> {
         self.output
             .instructions

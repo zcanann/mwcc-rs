@@ -55,7 +55,7 @@ impl Generator {
                     self.locations
                         .get(&parameter.name)
                         .map(|location| location.register)
-                        != Some(Eabi::FIRST_GENERAL_ARGUMENT + index as u8)
+                        != Some((Eabi::FIRST_GENERAL_ARGUMENT + index as u8).into())
                 })
             || function.parameters.iter().enumerate().any(|(index, parameter)| {
                 if matches!(index, 7 | 8) {

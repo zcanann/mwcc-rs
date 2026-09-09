@@ -62,25 +62,25 @@ pub(super) fn direct_callback_wait_home_preference(
     deferred_saved_locals: &[&LocalDeclaration],
     first_saved: usize,
     home_index: usize,
-) -> Option<u8> {
-    (saved_parameters.len() == 1
+) -> Option<u32> {
+    ((saved_parameters.len() == 1
         && deferred_saved_locals.len() == 1
         && direct_callback_wait_entry(function)
             .is_some_and(|(receiver, _, _)| receiver == saved_parameters[0].name))
     .then(|| u8::try_from(first_saved + home_index).ok())
-    .flatten()
+    .flatten()).map(u32::from)
 }
 
 pub(super) fn transient_call_argument_register(
     statements: &[Statement],
     candidate: &str,
-) -> Option<u8> {
-    statements
+) -> Option<u32> {
+    (statements
         .iter()
         .find_map(|statement| statement_call_argument_index(statement, candidate))
         .and_then(|index| u8::try_from(index).ok())
         .and_then(|index| Eabi::FIRST_GENERAL_ARGUMENT.checked_add(index))
-        .filter(|register| *register <= 10)
+        .filter(|register| *register <= 10)).map(u32::from)
 }
 
 /// Select the ABI home when a terminal offset computation is consumed directly
@@ -90,7 +90,7 @@ pub(super) fn terminal_offset_call_argument_register(
     value: &Expression,
     next: Option<&Statement>,
     candidate: &str,
-) -> Option<u8> {
+) -> Option<u32> {
     let is_offset = matches!(
         value,
         Expression::Binary {
@@ -110,12 +110,12 @@ pub(super) fn terminal_offset_call_argument_register(
         } if matches!(left.as_ref(), Expression::Variable(_))
             && constant_value(right).is_some()
     );
-    is_offset
+    (is_offset
         .then(|| next.and_then(|statement| statement_call_argument_index(statement, candidate)))
         .flatten()
         .and_then(|index| u8::try_from(index).ok())
         .and_then(|index| Eabi::FIRST_GENERAL_ARGUMENT.checked_add(index))
-        .filter(|register| *register <= 10)
+        .filter(|register| *register <= 10)).map(u32::from)
 }
 
 fn statement_call_argument_index(statement: &Statement, candidate: &str) -> Option<usize> {
@@ -464,7 +464,7 @@ impl Generator {
         } else {
             Eabi::FIRST_GENERAL_ARGUMENT
         };
-        let staged = self.fresh_virtual_general_preferring(preferred);
+        let staged = self.fresh_virtual_general_preferring(preferred.into());
         let [Instruction::ShiftLeftImmediate { a, .. }, Instruction::AddImmediate { a: source, .. }] =
             &mut self.output.instructions[emitted_start..]
         else {
@@ -517,7 +517,7 @@ impl Generator {
             return;
         };
         self.output.instructions[*copy] = Instruction::AddImmediate {
-            d: Eabi::FIRST_GENERAL_ARGUMENT,
+            d: 3,
             a: source,
             immediate: 0,
         };
@@ -591,7 +591,7 @@ fn dying_first_local_argument<'a>(
     (known_locals.contains(name) && !body_uses_local(remaining, name)).then_some(name)
 }
 
-fn is_coalesced_shift_add_window(instructions: &[Instruction], home: u8) -> bool {
+fn is_coalesced_shift_add_window(instructions: &[Instruction], home: u32) -> bool {
     matches!(
         instructions,
         [

@@ -1094,7 +1094,7 @@ impl Generator {
         let base_home = walking_array.as_ref().map(|_| self.fresh_virtual_general());
         let counter_home = self.fresh_virtual_general();
         let bound_home = self.fresh_virtual_general();
-        let homes: Vec<u8> = base_home
+        let homes: Vec<u32> = base_home
             .iter()
             .copied()
             .chain([counter_home, bound_home])

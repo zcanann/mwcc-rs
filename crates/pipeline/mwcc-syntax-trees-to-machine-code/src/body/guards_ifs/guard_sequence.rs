@@ -36,7 +36,7 @@ impl Generator {
         guards: &[GuardedReturn],
         final_return: &Expression,
         return_type: Type,
-        result: u8,
+        result: u32,
     ) -> Compilation<()> {
         let final_in_result = match final_return {
             Expression::Variable(name) => {

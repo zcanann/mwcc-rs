@@ -167,7 +167,7 @@ fn is_value_inlined_byte_append(
 impl Generator {
     /// The owner passed beside a frame-array address is a final value
     /// materialization in build 163, not the generic pointer-preservation copy.
-    pub(super) fn schedule_single_inlined_byte_append_owner_argument(&mut self, source: u8) {
+    pub(super) fn schedule_single_inlined_byte_append_owner_argument(&mut self, source: u32) {
         if self.behavior.materialization_copy_style
             != mwcc_versions::MaterializationCopyStyle::AddImmediateZero
         {
@@ -245,9 +245,9 @@ impl Generator {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ValueInlineByteAppend {
     start: usize,
-    cursor: u8,
-    scratch: u8,
-    byte_address: u8,
+    cursor: u32,
+    scratch: u32,
+    byte_address: u32,
 }
 
 fn value_inlined_byte_append(instructions: &[Instruction]) -> Option<ValueInlineByteAppend> {
@@ -274,7 +274,7 @@ fn value_inlined_byte_append(instructions: &[Instruction]) -> Option<ValueInline
         (*options == 12
             && *success == start + 5
             && *end == start + 15
-            && *error_result == Eabi::general_result().number
+            && *error_result == u32::from(Eabi::general_result().number)
             && *success_result == *error_result
             && *guarded == *guarded_cursor
             && *guarded_cursor == 0

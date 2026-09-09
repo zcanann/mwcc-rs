@@ -29,10 +29,10 @@ impl Generator {
     }
 
     fn emit_inlined_object_make(&mut self, shape: &InlinedObjectMake) {
-        const OUTPUT: u8 = 28;
-        const ARGUMENT: u8 = 29;
-        const OBJECT_TYPE: u8 = 30;
-        const CREATED: u8 = 31;
+        const OUTPUT: u32 = 28;
+        const ARGUMENT: u32 = 29;
+        const OBJECT_TYPE: u32 = 30;
+        const CREATED: u32 = 31;
         const PAYLOAD_SLOT: i16 = 20;
         let find_body = self.fresh_label();
         let find_condition = self.fresh_label();

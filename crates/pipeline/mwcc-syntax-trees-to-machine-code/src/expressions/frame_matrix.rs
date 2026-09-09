@@ -24,7 +24,7 @@ impl Generator {
         &mut self,
         name: &str,
         row: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let slot = self.frame_slots.get(name).copied().ok_or_else(|| {
             Diagnostic::error(format!("flattened frame matrix '{name}' has no frame slot"))

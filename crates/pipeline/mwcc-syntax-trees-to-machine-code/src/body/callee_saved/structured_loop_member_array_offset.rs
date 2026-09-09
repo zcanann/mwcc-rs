@@ -242,8 +242,8 @@ impl Plan {
 /// function, followed by the two loop-carried values in source-definition
 /// order; MWCC assigns those lifetimes to r31, r29, and r30 respectively.
 pub(super) struct HomeLayout {
-    preferences: std::collections::HashMap<usize, u8>,
-    loop_invariant_homes: Option<[u8; 3]>,
+    preferences: std::collections::HashMap<usize, u32>,
+    loop_invariant_homes: Option<[u32; 3]>,
 }
 
 impl HomeLayout {
@@ -314,23 +314,23 @@ impl HomeLayout {
         })
     }
 
-    pub(super) fn preference(&self, home: usize) -> Option<u8> {
+    pub(super) fn preference(&self, home: usize) -> Option<u32> {
         self.preferences.get(&home).copied()
     }
 
-    pub(super) fn loop_invariant_homes(&self) -> Option<[u8; 3]> {
+    pub(super) fn loop_invariant_homes(&self) -> Option<[u32; 3]> {
         self.loop_invariant_homes
     }
 
     /// Lowest physical register covered by this layout's dense save image.
     /// Sparse semantic homes still make `stmw`/`lmw` preserve every register
     /// between the lowest preference and r31.
-    pub(super) fn first_saved_register(&self) -> u8 {
+    pub(super) fn first_saved_register(&self) -> u32 {
         self.preferences
             .values()
             .copied()
             .min()
-            .expect("a member-array home layout has preferences")
+            .expect("a member-array home layout has preferences").into()
     }
 }
 
@@ -360,8 +360,8 @@ impl Generator {
             else {
                 continue;
             };
-            if (d == 31 && a == Eabi::FIRST_GENERAL_ARGUMENT)
-                || (d == Eabi::FIRST_GENERAL_ARGUMENT && a == 31)
+            if (d == 31 && a == Eabi::FIRST_GENERAL_ARGUMENT.into())
+                || (d == Eabi::FIRST_GENERAL_ARGUMENT.into() && a == 31)
             {
                 *instruction = Instruction::move_register(d, a);
             }
@@ -379,7 +379,7 @@ impl Generator {
             else {
                 unreachable!("receiver load changed after recognition")
             };
-            *a = Eabi::FIRST_GENERAL_ARGUMENT;
+            *a = 3;
         }
     }
 

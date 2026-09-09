@@ -36,7 +36,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some((pointer_expression, index, stride)) =
             non_power_member_pointer_add(operator, left, right)
@@ -54,7 +54,7 @@ impl Generator {
                 a: index,
                 immediate: stride,
             });
-        let pointer = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+        let pointer = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT.into());
         self.evaluate_general(pointer_expression, pointer)?;
         self.output.instructions.push(Instruction::Add {
             d: destination,

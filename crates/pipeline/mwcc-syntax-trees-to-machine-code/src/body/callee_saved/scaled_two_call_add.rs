@@ -60,13 +60,13 @@ impl Generator {
             .instructions
             .push(Instruction::MultiplyImmediate {
                 d: saved,
-                a: Eabi::general_result().number,
+                a: u32::from(Eabi::general_result().number),
                 immediate: scale,
             });
         self.emit_call(other_name, other_arguments, None, false)?;
         self.output.instructions.push(Instruction::Add {
-            d: Eabi::general_result().number,
-            a: Eabi::general_result().number,
+            d: u32::from(Eabi::general_result().number),
+            a: u32::from(Eabi::general_result().number),
             b: saved,
         });
         self.emit_epilogue_and_return();

@@ -4,8 +4,8 @@
 use super::*;
 
 struct NarrowMemberInitialization {
-    target_register: u8,
-    source_register: u8,
+    target_register: u32,
+    source_register: u32,
     computed_offset: i16,
     increment: i16,
     constant_offset: i16,
@@ -346,12 +346,12 @@ impl Generator {
                 .locations
                 .get(&this.name)
                 .map(|location| (location.class, location.register))
-                != Some((ValueClass::General, Eabi::FIRST_GENERAL_ARGUMENT))
+                != Some((ValueClass::General, Eabi::FIRST_GENERAL_ARGUMENT.into()))
             || self
                 .locations
                 .get(&value_parameter.name)
                 .map(|location| (location.class, location.register))
-                != Some((ValueClass::General, Eabi::FIRST_GENERAL_ARGUMENT + 1))
+                != Some((ValueClass::General, (Eabi::FIRST_GENERAL_ARGUMENT + 1).into()))
         {
             return Ok(false);
         }
@@ -402,13 +402,13 @@ impl Generator {
         self.output.instructions.extend([
             Instruction::load_immediate(0, constant),
             Instruction::StoreWord {
-                s: Eabi::FIRST_GENERAL_ARGUMENT + 1,
-                a: Eabi::FIRST_GENERAL_ARGUMENT,
+                s: 4,
+                a: 3,
                 offset: first_offset,
             },
             Instruction::StoreWord {
                 s: 0,
-                a: Eabi::FIRST_GENERAL_ARGUMENT,
+                a: 3,
                 offset: second_offset,
             },
             Instruction::BranchToLinkRegister,

@@ -39,11 +39,11 @@ impl Generator {
             return Ok(false);
         }
 
-        const MATCH: u8 = 27;
-        const OBJECT: u8 = 28;
-        const INDEX: u8 = 29;
-        const BASE: u8 = 30;
-        const OFFSET: u8 = 31;
+        const MATCH: u32 = 27;
+        const OBJECT: u32 = 28;
+        const INDEX: u32 = 29;
+        const BASE: u32 = 30;
+        const OFFSET: u32 = 31;
         self.non_leaf = true;
         self.frame_size = 40;
         self.callee_saved = vec![OFFSET, BASE, INDEX, OBJECT, MATCH];

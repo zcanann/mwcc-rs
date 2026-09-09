@@ -6,15 +6,15 @@ use super::masked_index::MaskedIndex;
 use super::*;
 
 pub(super) enum MaskedGlobalAddress {
-    Displacement { base: u8 },
-    Indexed { base: u8, offset: u8 },
+    Displacement { base: u32 },
+    Indexed { base: u32, offset: u32 },
 }
 
 impl MaskedGlobalAddress {
-    pub(super) fn load(self, pointee: Pointee, destination: u8) -> Compilation<Instruction> {
+    pub(super) fn load(self, pointee: Pointee, destination: u32) -> Compilation<Instruction> {
         match self {
             Self::Displacement { base } => displacement_load(pointee, destination, base, 0),
-            Self::Indexed { base, offset } => indexed_load(pointee, destination, base, offset),
+            Self::Indexed { base, offset } => indexed_load(pointee, destination, base, offset.into()),
         }
     }
 }
@@ -22,11 +22,11 @@ impl MaskedGlobalAddress {
 #[derive(Default)]
 pub(super) struct MaskedGlobalAddressUse<'a> {
     /// Optional high-half and completed-base registers for O0 operand placement.
-    pub(super) unoptimized_base: Option<(u8, u8)>,
+    pub(super) unoptimized_base: Option<(u32, u32)>,
     /// A sibling value occupies r0 before this address's final load.
     pub(super) preserve_scratch: bool,
     /// An independent load can fill the first high-half address latency slot.
-    pub(super) after_high: Option<(&'a Expression, u8)>,
+    pub(super) after_high: Option<(&'a Expression, u32)>,
 }
 
 impl Generator {
@@ -36,7 +36,7 @@ impl Generator {
         total_size: u32,
         pointee: Pointee,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(address) = self.select_masked_global_address(
             name,
@@ -59,7 +59,7 @@ impl Generator {
         name: &str,
         small: bool,
         index: &MaskedIndex<'_>,
-        registers: Option<(u8, u8)>,
+        registers: Option<(u32, u32)>,
     ) -> Compilation<MaskedGlobalAddress> {
         // O0 discovers a full array address before creating the function's
         // global symbol. SDA references retain the ordinary body event order.
@@ -107,10 +107,10 @@ impl Generator {
                 immediate: 0,
             });
         } else {
-            self.emit_address_high(high, name);
+            self.emit_address_high(high.into(), name);
             self.record_relocation(RelocationKind::Addr16Lo, name);
             self.output.instructions.push(Instruction::AddImmediate {
-                d: if explicit { GENERAL_SCRATCH } else { base },
+                d: if explicit { GENERAL_SCRATCH } else { base.into() },
                 a: high,
                 immediate: 0,
             });
@@ -121,10 +121,10 @@ impl Generator {
                 a: GENERAL_SCRATCH,
                 b: scaled,
             });
-            Ok(MaskedGlobalAddress::Displacement { base })
+            Ok(MaskedGlobalAddress::Displacement { base: base.into() })
         } else {
             Ok(MaskedGlobalAddress::Indexed {
-                base,
+                base: base.into(),
                 offset: scaled,
             })
         }
@@ -244,7 +244,7 @@ impl Generator {
         };
         self.emit_address_high(high, name);
         if let Some((expression, destination)) = address_use.after_high {
-            self.evaluate_general(expression, destination)?;
+            self.evaluate_general(expression, destination.into())?;
         }
         if legacy {
             if !loaded {

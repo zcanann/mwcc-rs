@@ -5,18 +5,18 @@ use super::*;
 
 /// Decode the register-home convention used by decompilation sources. Names
 /// outside the explicit `var_fN` / `temp_fN` forms carry no allocation policy.
-pub(super) fn register(name: &str) -> Option<u8> {
+pub(super) fn register(name: &str) -> Option<u32> {
     let suffix = name
         .strip_prefix("var_f")
         .or_else(|| name.strip_prefix("temp_f"))?;
     let register = suffix.parse::<u8>().ok()?;
-    (14..=31).contains(&register).then_some(register)
+    (14..=31).contains(&register).then_some(register.into())
 }
 
 /// Prefer an explicitly recovered home over the generic lifetime-group
 /// placement. This remains a preference rather than a pin, so interference
 /// and allocator constraints still take precedence.
-pub(super) fn preference(local: &LocalDeclaration, fallback: u8) -> u8 {
+pub(super) fn preference(local: &LocalDeclaration, fallback: u32) -> u32 {
     register(&local.name).unwrap_or(fallback)
 }
 
@@ -28,7 +28,7 @@ pub(super) fn saved_count(function: &Function) -> u8 {
         .iter()
         .filter(|local| matches!(local.declared_type, Type::Float | Type::Double))
         .filter_map(|local| register(&local.name))
-        .map(|register| 32 - register)
+        .map(|register| (32 - register) as u8)
         .max()
         .unwrap_or(0)
 }

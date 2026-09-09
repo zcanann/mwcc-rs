@@ -13,7 +13,7 @@ mod retained_diamond;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CancelCompletionArm {
     start: usize,
-    object: u8,
+    object: u32,
 }
 
 fn external_target_at<'a>(

@@ -117,7 +117,7 @@ pub(super) fn poll(statement: &Statement) -> Option<(&str, i64, u8, u8)> {
         return None;
     }
     let (begin, end) = rlwinm_mask(mask)?;
-    Some((bank, index, begin, end))
+    Some((bank, index, begin.into(), end.into()))
 }
 
 pub(super) fn transaction<'a>(

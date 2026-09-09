@@ -10,7 +10,7 @@ use mwcc_machine_code::Instruction;
 use mwcc_target::Eabi;
 
 pub(crate) struct FrexpFamilyPlan {
-    pub(crate) eptr_register: u8,
+    pub(crate) eptr_register: u32,
     pub(crate) guard_high: i16,
     pub(crate) block_high: i16,
     pub(crate) scale_bits: u64,
@@ -28,15 +28,15 @@ impl Generator {
     /// operation, so these fixed homes describe a schedule rather than a capture.
     pub(crate) fn emit_legacy_frexp_family(&mut self, plan: FrexpFamilyPlan) {
         const SLOT: i16 = 8;
-        const ZERO_OR_IX: u8 = 4;
-        const HX_OR_EXPONENT: u8 = 5;
-        const INITIAL_IX: u8 = 6;
-        const HX: u8 = 7;
-        const LX: u8 = 8;
+        const ZERO_OR_IX: u32 = 4;
+        const HX_OR_EXPONENT: u32 = 5;
+        const INITIAL_IX: u32 = 6;
+        const HX: u32 = 7;
+        const LX: u32 = 8;
 
         self.frame_size = 24;
         self.non_leaf = false;
-        let float_result = Eabi::float_result().number;
+        let float_result = u32::from(Eabi::float_result().number);
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
@@ -56,7 +56,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::StoreFloatDouble {
-                s: Eabi::FIRST_FLOAT_ARGUMENT,
+                s: u32::from(Eabi::FIRST_FLOAT_ARGUMENT),
                 a: 1,
                 offset: SLOT,
             });

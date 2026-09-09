@@ -12,7 +12,7 @@ impl Generator {
     pub(crate) fn try_emit_biased_scaled_member_sum(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if destination == GENERAL_SCRATCH {
             return Ok(false);

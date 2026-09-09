@@ -20,7 +20,7 @@ impl Generator {
     pub(crate) fn try_emit_packed_shift_mask(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(pipeline) = decompose(expression) else {
             return Ok(false);

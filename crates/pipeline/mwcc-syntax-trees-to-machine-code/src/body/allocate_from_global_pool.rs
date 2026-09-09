@@ -46,13 +46,13 @@ impl Generator {
             .map(|anchor| anchor.anchor_symbol.clone())
             .unwrap_or_else(|| "...bss.0".to_owned());
 
-        const OBJECT: u8 = 25;
-        const COUNT: u8 = 26;
-        const MANAGER: u8 = 27;
-        const LIMIT: u8 = 28;
-        const MANAGER_LIST: u8 = 29;
-        const GLOBAL_LIST: u8 = 30;
-        const ANCHOR: u8 = 31;
+        const OBJECT: u32 = 25;
+        const COUNT: u32 = 26;
+        const MANAGER: u32 = 27;
+        const LIMIT: u32 = 28;
+        const MANAGER_LIST: u32 = 29;
+        const GLOBAL_LIST: u32 = 30;
+        const ANCHOR: u32 = 31;
         self.non_leaf = true;
         self.frame_size = 56;
         self.callee_saved = vec![

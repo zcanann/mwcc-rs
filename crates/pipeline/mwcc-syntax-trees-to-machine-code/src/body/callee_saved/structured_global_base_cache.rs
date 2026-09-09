@@ -373,7 +373,7 @@ fn collect_global_member(
 }
 
 impl Generator {
-    pub(crate) fn structured_global_base_register(&self, name: &str) -> Option<u8> {
+    pub(crate) fn structured_global_base_register(&self, name: &str) -> Option<u32> {
         self.structured_global_base_cache
             .as_ref()
             .filter(|cache| cache.global == name && cache.remaining_uses != 0)

@@ -147,7 +147,7 @@ fn rewrite_commutative_operands(instructions: &mut [Instruction]) -> bool {
     true
 }
 
-fn recovered_local(function: &Function, register: u8) -> Option<&LocalDeclaration> {
+fn recovered_local(function: &Function, register: u32) -> Option<&LocalDeclaration> {
     function.locals.iter().find(|local| {
         local.declared_type == Type::Float
             && local.initializer.is_none()

@@ -16,11 +16,11 @@ mod indexed_mixed_arguments;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ArgumentPlacement {
-    Register { source: u8, target: u8 },
-    FrameValue { target: u8 },
-    Constant { value: i64, target: u8 },
-    FunctionAddress { target: u8 },
-    GlobalAddress { target: u8 },
+    Register { source: u32, target: u32 },
+    FrameValue { target: u32 },
+    Constant { value: i64, target: u32 },
+    FunctionAddress { target: u32 },
+    GlobalAddress { target: u32 },
 }
 
 fn transparent_pointer_cast(expression: &Expression) -> &Expression {
@@ -96,16 +96,16 @@ impl Generator {
         let base = if let Some(base) = self.condition_global_base(global)? {
             base
         } else {
-            self.emit_global_load_value(global, Eabi::FIRST_GENERAL_ARGUMENT)?;
-            Eabi::FIRST_GENERAL_ARGUMENT
+            self.emit_global_load_value(global, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
+            u32::from(Eabi::FIRST_GENERAL_ARGUMENT)
         };
         self.output.instructions.push(Instruction::LoadWord {
             d: 12,
-            a: base,
+            a: u32::from(base),
             offset,
         });
-        if base != Eabi::FIRST_GENERAL_ARGUMENT {
-            self.emit_integer_materialization_copy(Eabi::FIRST_GENERAL_ARGUMENT, base);
+        if base != u32::from(Eabi::FIRST_GENERAL_ARGUMENT) {
+            self.emit_integer_materialization_copy(u32::from(Eabi::FIRST_GENERAL_ARGUMENT), base);
         }
         self.emit_indirect_branch_and_link(12);
         Ok(true)
@@ -143,15 +143,15 @@ impl Generator {
         // A short-lived local used as the second argument can live in r4 from
         // its definition. The explicit copy below then coalesces as a self
         // move; a fixed r3 call result still retains the required copy.
-        self.prefer_virtual_general_if_unset(base, Eabi::FIRST_GENERAL_ARGUMENT + 1);
+        self.prefer_virtual_general_if_unset(base, (Eabi::FIRST_GENERAL_ARGUMENT + 1).into());
         self.evaluate(target, Type::UnsignedInt, 12)?;
-        if base != Eabi::FIRST_GENERAL_ARGUMENT + 1 {
+        if base != (Eabi::FIRST_GENERAL_ARGUMENT + 1).into() {
             self.emit_integer_materialization_copy(
-                Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                (Eabi::FIRST_GENERAL_ARGUMENT + 1).into(),
                 base,
             );
         }
-        self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT, *constant);
+        self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT.into(), *constant);
         self.emit_indirect_branch_and_link(12);
         Ok(true)
     }
@@ -205,19 +205,19 @@ impl Generator {
             return Ok(false);
         }
         let base = self.general_register_of(base_name)?;
-        if base == Eabi::FIRST_GENERAL_ARGUMENT {
+        if base == Eabi::FIRST_GENERAL_ARGUMENT.into() {
             self.output.instructions.push(Instruction::move_register(
-                Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                (Eabi::FIRST_GENERAL_ARGUMENT + 1).into(),
                 base,
             ));
             self.evaluate(target, Type::UnsignedInt, 12)?;
-            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
         } else {
             self.evaluate(target, Type::UnsignedInt, 12)?;
-            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
-            if base != Eabi::FIRST_GENERAL_ARGUMENT + 1 {
+            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
+            if base != (Eabi::FIRST_GENERAL_ARGUMENT + 1).into() {
                 self.output.instructions.push(Instruction::move_register(
-                    Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                    (Eabi::FIRST_GENERAL_ARGUMENT + 1).into(),
                     base,
                 ));
             }
@@ -234,29 +234,29 @@ impl Generator {
             .iter()
             .enumerate()
             .map(|(index, argument)| {
-                let target = Eabi::FIRST_GENERAL_ARGUMENT + index as u8;
+                let target: u32 = (Eabi::FIRST_GENERAL_ARGUMENT + index as u8) as u32;
                 let transparent = transparent_pointer_cast(argument);
                 if let Expression::IntegerLiteral(value) = transparent {
                     return Ok(ArgumentPlacement::Constant {
                         value: *value,
-                        target,
+                        target: target.into(),
                     });
                 }
                 if let Expression::Variable(name) = transparent {
                     if self.is_direct_function_symbol(name) {
-                        return Ok(ArgumentPlacement::FunctionAddress { target });
+                        return Ok(ArgumentPlacement::FunctionAddress { target: target.into() });
                     }
                     if self.frame_slots.get(name).is_some_and(|slot| {
                         !slot.is_array
                             && slot.class == ValueClass::General
                             && slot.value_type.width() == 32
                     }) {
-                        return Ok(ArgumentPlacement::FrameValue { target });
+                        return Ok(ArgumentPlacement::FrameValue { target: target.into() });
                     }
                 }
                 if let Expression::AddressOf { operand } = transparent {
                     if matches!(operand.as_ref(), Expression::Variable(name) if self.globals.contains_key(name)) {
-                        return Ok(ArgumentPlacement::GlobalAddress { target });
+                        return Ok(ArgumentPlacement::GlobalAddress { target: target.into() });
                     }
                 }
                 let (source, width, _) = self.leaf_info(transparent)?;
@@ -265,7 +265,7 @@ impl Generator {
                         "arguments to a bare indirect call need dependency-aware marshaling (roadmap)",
                     ));
                 }
-                Ok(ArgumentPlacement::Register { source, target })
+                Ok(ArgumentPlacement::Register { source, target: target.into() })
             })
             .collect::<Compilation<Vec<_>>>()?;
         if arguments.len() > 8 || placement_overwrites_later_source(&placements) {
@@ -363,7 +363,7 @@ impl Generator {
                 self.with_reserved_inputs(argument, |generator| {
                     generator.evaluate_general(target, callee)
                 })?;
-                self.evaluate_general(argument, Eabi::FIRST_GENERAL_ARGUMENT)?;
+                self.evaluate_general(argument, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
                 self.emit_indirect_branch_and_link(callee);
                 return Ok(());
             }
@@ -478,7 +478,7 @@ impl Generator {
         }); // lwz r12,off(r4)
         for (index, &value) in constants.iter().enumerate().skip(1) {
             self.output.instructions.push(Instruction::AddImmediate {
-                d: 3 + index as u8,
+                d: u32::from(3 + index as u8),
                 a: 0,
                 immediate: value,
             });

@@ -10,7 +10,7 @@ impl Generator {
     }
 
     /// Materialize a bare function designator directly in an ABI value lane.
-    pub(crate) fn emit_function_address_value(&mut self, name: &str, destination: u8) {
+    pub(crate) fn emit_function_address_value(&mut self, name: &str, destination: u32) {
         self.emit_address_high(destination, name);
         self.record_relocation(RelocationKind::Addr16Lo, name);
         self.output.instructions.push(Instruction::AddImmediate {
@@ -24,7 +24,7 @@ impl Generator {
     ///
     /// Functions always use an absolute address pair. GC 1.x/2.x completes
     /// that pair in r0; GC 3/Wii retain the high-half register as the value.
-    pub(crate) fn emit_function_address_store_value(&mut self, name: &str) -> u8 {
+    pub(crate) fn emit_function_address_store_value(&mut self, name: &str) -> u32 {
         self.emit_function_address_store_value_avoiding_result(name, false)
     }
 
@@ -32,12 +32,12 @@ impl Generator {
         &mut self,
         name: &str,
         avoid_result: bool,
-    ) -> u8 {
+    ) -> u32 {
         // A call result retained in its ABI register may need to become a later
         // call argument without an intervening instruction. Keep an overlapping
         // address arm out of that physical register; otherwise the instruction
         // liveness stream cannot see the implicit later argument use.
-        let result_register = Eabi::general_result().number;
+        let result_register = u32::from(Eabi::general_result().number);
         let high = if avoid_result {
             self.fresh_virtual_general_avoiding(vec![result_register])
         } else {
@@ -67,7 +67,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-    ) -> Compilation<Option<u8>> {
+    ) -> Compilation<Option<u32>> {
         if self.behavior.function_address_store_style != FunctionAddressStoreStyle::ScratchValue
             || constant_value(when_false) != Some(0)
         {
@@ -93,7 +93,7 @@ impl Generator {
             Expression::Variable(name) => Some(name.as_str()),
             _ => None,
         };
-        let result_register = Eabi::general_result().number;
+        let result_register = u32::from(Eabi::general_result().number);
         let another_result_value_is_live = self.locations.iter().any(|(name, location)| {
             Some(name.as_str()) != condition_name
                 && location.class == ValueClass::General

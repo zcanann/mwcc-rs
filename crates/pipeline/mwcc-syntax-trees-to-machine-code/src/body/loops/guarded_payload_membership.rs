@@ -188,8 +188,8 @@ impl Generator {
     }
 
     fn emit_guarded_payload_membership(&mut self, shape: &GuardedPayloadMembership) {
-        const PAYLOAD: u8 = 31;
-        const REQUESTED_TYPE: u8 = 30;
+        const PAYLOAD: u32 = 31;
+        const REQUESTED_TYPE: u32 = 30;
         let failure = self.fresh_label();
         let epilogue = self.fresh_label();
 

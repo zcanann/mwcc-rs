@@ -5,9 +5,9 @@ use super::super::*;
 use super::ReadPlan;
 
 pub(super) fn emit(generator: &mut Generator, plan: &ReadPlan<'_>) {
-    const ERROR: u8 = 31;
-    const REQUESTED: u8 = 30;
-    const BUFFER: u8 = 29;
+    const ERROR: u32 = 31;
+    const REQUESTED: u32 = 30;
+    const BUFFER: u32 = 29;
     let nonempty = generator.fresh_label();
     let unclamped = generator.fresh_label();
     let epilogue = generator.fresh_label();

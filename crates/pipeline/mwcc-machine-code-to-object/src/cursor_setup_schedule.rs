@@ -266,7 +266,7 @@ mod tests {
             let wide = i16::try_from(offset).is_err();
             if wide {
                 f.instructions.push(I::AddImmediateShifted {
-                    d: destination,
+                    d: u32::from(destination),
                     a: 31,
                     immediate: ((u64::from(offset) + 0x8000) >> 16) as i16,
                 });
@@ -277,8 +277,8 @@ mod tests {
                 target: Target::Symbol(name.clone()),
             });
             f.instructions.push(I::AddImmediate {
-                d: destination,
-                a: if wide { destination } else { 31 },
+                d: u32::from(destination),
+                a: if wide { u32::from(destination) } else { 31 },
                 immediate: 0,
             });
             names.push(name);

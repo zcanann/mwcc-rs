@@ -166,14 +166,14 @@ impl Generator {
         let carry_form = matches!(operator, BinaryOperator::Less | BinaryOperator::Greater);
         // Homes: the select value in r0; </> claim r3/r4 for K and its
         // sign; the load lands beyond them (r5) or shares r0 (self-mask).
-        let load_register: u8 = if self_mask_arm {
+        let load_register: u32 = if self_mask_arm {
             0
         } else if carry_form {
             5
         } else {
             3
         };
-        let guard_register: u8 = if carry_form { 5 } else { 3 };
+        let guard_register: u32 = if carry_form { 5 } else { 3 };
         self.frame_size = 16;
         self.output
             .instructions
@@ -627,8 +627,8 @@ impl Generator {
         // With the -K0 fold the guard needs a home (r3) and the else value
         // lands beyond it (r4); without it the extract computes in place
         // on r0 and the home is r3 (measured H7).
-        let home: u8 = if offset_negative.is_some() { 4 } else { 3 };
-        let guard_register: u8 = if offset_negative.is_some() { 3 } else { 0 };
+        let home: u32 = if offset_negative.is_some() { 4 } else { 3 };
+        let guard_register: u32 = if offset_negative.is_some() { 3 } else { 0 };
         self.frame_size = 16;
         self.output
             .instructions

@@ -18,7 +18,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
             || destination == GENERAL_SCRATCH
@@ -110,7 +110,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let (Some(left_field), Some(right_field)) = (as_field(left), as_field(right)) else {
             return Ok(false);
@@ -234,7 +234,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         // Split into (rotated value, left-shift amount P, right-shift amount Q); the OR's operands may
         // be in either order.
@@ -331,7 +331,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let (Some((insert_load, insert_mask)), Some((base_load, base_mask))) =
             (as_masked_load(left), as_masked_load(right))
@@ -370,7 +370,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if self.behavior.shift_mask_fusion_style == mwcc_versions::ShiftMaskFusionStyle::Separate {
             return Ok(false);
@@ -387,8 +387,8 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
-        input_destination: Option<u8>,
+        destination: u32,
+        input_destination: Option<u32>,
     ) -> Compilation<bool> {
         let Some((value, rotate, begin, end, needs_unsigned)) =
             self.fused_rotate_mask(operator, left, right)?
@@ -417,7 +417,7 @@ impl Generator {
             match self.place_operand(value, GENERAL_SCRATCH, false)? {
                 Some(register) => register,
                 None => return Ok(false),
-            }
+            }.into()
         };
         self.output.instructions.push(Instruction::RotateAndMask {
             a: destination,
@@ -437,8 +437,8 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
-        input_destination: u8,
+        destination: u32,
+        input_destination: u32,
     ) -> Compilation<bool> {
         let Some(mask) = constant_value(right).map(|value| value as u32) else {
             return Ok(false);
@@ -622,7 +622,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let signed = self.signedness_of(left)?;
         // A narrow (char/short) value promotes to a SIGNED int before a `>>`, so a narrow
@@ -716,7 +716,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         // A wide quadrant constant combined with an unsigned-short call result
         // is the post-inline arctangent-octant form. Preserve the narrow result
@@ -911,7 +911,7 @@ impl Generator {
         operator: BinaryOperator,
         variable: &Expression,
         constant: i64,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         // A SIGNED CHAR load with a fitting constant for `|`, `^`, or `<<`: mwcc loads the byte into
         // the scratch and sign-extends it in place (`lbz r0; extsb r0,r0`), then the immediate op

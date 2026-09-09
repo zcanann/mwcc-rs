@@ -25,7 +25,7 @@ impl Generator {
         {
             return Ok(false);
         }
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         if self.general_register_of_leaf(value).ok() != Some(result) {
             return Ok(false);
         }

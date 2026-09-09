@@ -64,7 +64,7 @@ impl Generator {
     }
 }
 
-fn touches_general_register(instruction: &Instruction, register: u8) -> bool {
+fn touches_general_register(instruction: &Instruction, register: u32) -> bool {
     mwcc_vreg::register_operands(instruction)
         .iter()
         .any(|operand| operand.class == mwcc_vreg::Class::General && operand.register == register)

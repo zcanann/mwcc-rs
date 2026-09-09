@@ -25,8 +25,8 @@ impl Generator {
         scheduled.extend_from_slice(&old[..6]);
         scheduled.push(Instruction::OrRecord {
             a: 30,
-            s: Eabi::general_result().number,
-            b: Eabi::general_result().number,
+            s: u32::from(Eabi::general_result().number),
+            b: u32::from(Eabi::general_result().number),
         });
         for instruction in &old[8..24] {
             let mut instruction = instruction.clone();
@@ -46,13 +46,13 @@ impl Generator {
         };
         scheduled.extend([
             Instruction::AddImmediateShifted {
-                d: Eabi::general_result().number,
+                d: u32::from(Eabi::general_result().number),
                 a: 0,
                 immediate: global_high,
             },
             Instruction::AddImmediate {
                 d: 31,
-                a: Eabi::general_result().number,
+                a: u32::from(Eabi::general_result().number),
                 immediate: global_low,
             },
             old[24].clone(),
@@ -65,9 +65,9 @@ impl Generator {
             old[26].clone(),
             old[27].clone(),
             old[30].clone(),
-            Instruction::move_register(0, Eabi::general_result().number),
+            Instruction::move_register(0, u32::from(Eabi::general_result().number)),
             Instruction::LoadWord {
-                d: Eabi::general_result().number,
+                d: u32::from(Eabi::general_result().number),
                 a: 31,
                 offset: 0,
             },
@@ -186,7 +186,7 @@ fn spell_status_result_copy(instruction: &mut Instruction) {
             immediate: 0
         }
     ) {
-        *instruction = Instruction::move_register(30, Eabi::general_result().number);
+        *instruction = Instruction::move_register(30, u32::from(Eabi::general_result().number));
     }
 }
 

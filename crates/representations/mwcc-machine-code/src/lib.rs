@@ -19,3 +19,7 @@ pub use function::{
 };
 pub use instruction::Instruction;
 pub use relocation::{Relocation, RelocationKind, RelocationTarget};
+
+/// A selected register field: physical numbers occupy 0..32, and allocation
+/// identities use the remaining space until the allocation pass resolves them.
+pub type RegisterField = u32;

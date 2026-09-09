@@ -40,7 +40,7 @@ pub(super) enum Target {
 #[derive(Clone, Copy)]
 enum SwitchCompareOperand {
     Immediate,
-    SharedBase { register: u8, value: i64 },
+    SharedBase { register: u32, value: i64 },
 }
 
 impl Generator {
@@ -77,7 +77,7 @@ impl Generator {
     /// Evaluate a switch operand after C/C++ integral promotion. Narrow entry
     /// parameters still carry unspecified high bits in their ABI register, so
     /// every switch topology shares this one canonicalization policy.
-    fn switch_scrutinee_register(&mut self, scrutinee: &Expression) -> Compilation<u8> {
+    fn switch_scrutinee_register(&mut self, scrutinee: &Expression) -> Compilation<u32> {
         match scrutinee {
             Expression::Variable(name) => {
                 let location = self.locations.get(name).ok_or_else(|| {
@@ -98,7 +98,7 @@ impl Generator {
                 }
             }
             Expression::Call { .. } | Expression::CallThrough { .. } => {
-                let result = Eabi::general_result().number;
+                let result = u32::from(Eabi::general_result().number);
                 self.evaluate_general(scrutinee, result)?;
                 Ok(result)
             }
@@ -188,7 +188,7 @@ impl Generator {
         let values: Vec<i64> = sorted.iter().map(|arm| arm.value).collect();
         let mut dispatch_patches = Vec::new();
         self.lower_switch_range(
-            register,
+            register.into(),
             &values,
             0,
             values.len() - 1,
@@ -328,10 +328,10 @@ impl Generator {
     /// values to those bodies and gaps to the join.
     pub(crate) fn emit_assignment_call_jump_table(
         &mut self,
-        scrutinee_register: u8,
+        scrutinee_register: u32,
         arms: &[(i64, String)],
-        forwarded_register: u8,
-        result_register: u8,
+        forwarded_register: u32,
+        result_register: u32,
     ) -> Compilation<()> {
         if arms.is_empty() {
             return Err(Diagnostic::error("an empty call dispatcher is not supported"));
@@ -492,7 +492,7 @@ impl Generator {
         default: &Expression,
         default_is_labeled: bool,
         return_type: Type,
-        result: u8,
+        result: u32,
     ) -> Compilation<()> {
         let register = self.switch_scrutinee_register(scrutinee)?;
 
@@ -526,7 +526,7 @@ impl Generator {
             let contiguous = span == sorted.len() as i64;
             if contiguous && sorted.len() >= 7 && register == result {
                 return self.emit_jump_table(
-                    register,
+                    register.into(),
                     arms,
                     &sorted,
                     default,
@@ -553,7 +553,7 @@ impl Generator {
         let values: Vec<i64> = sorted.iter().map(|arm| arm.value).collect();
         let mut patches: Vec<(usize, Target)> = Vec::new();
         self.lower_switch_range(
-            register,
+            register.into(),
             &values,
             0,
             values.len() - 1,
@@ -693,7 +693,7 @@ impl Generator {
         let values: Vec<i64> = sorted.iter().map(|arm| arm.value).collect();
         let mut patches: Vec<(usize, Target)> = Vec::new();
         self.lower_switch_range(
-            register,
+            register.into(),
             &values,
             0,
             values.len() - 1,
@@ -903,13 +903,13 @@ impl Generator {
     /// `@N` address relocations (`lis`/`addi`) and the per-entry `ADDR32` relocations.
     fn emit_jump_table(
         &mut self,
-        register: u8,
+        register: u32,
         arms: &[SwitchArm],
         sorted: &[&SwitchArm],
         default: &Expression,
         default_is_labeled: bool,
         return_type: Type,
-        result: u8,
+        result: u32,
     ) -> Compilation<()> {
         let min = sorted[0].value;
         let max = sorted[sorted.len() - 1].value;
@@ -1057,7 +1057,7 @@ impl Generator {
     /// pinned on both sides has no code and is branched to directly by its parent.
     pub(super) fn lower_switch_range(
         &mut self,
-        register: u8,
+        register: u32,
         values: &[i64],
         lo: usize,
         hi: usize,
@@ -1081,9 +1081,9 @@ impl Generator {
     /// high-half base across case values that do not fit `cmpwi`.
     pub(super) fn lower_shared_base_switch_range(
         &mut self,
-        register: u8,
+        register: u32,
         values: &[i64],
-        base_register: u8,
+        base_register: u32,
         base_value: i64,
         patches: &mut Vec<(usize, Target)>,
     ) -> usize {
@@ -1117,7 +1117,7 @@ impl Generator {
     #[allow(clippy::too_many_arguments)]
     fn lower_switch_range_with_operand(
         &mut self,
-        register: u8,
+        register: u32,
         values: &[i64],
         lo: usize,
         hi: usize,
@@ -1286,7 +1286,7 @@ impl Generator {
 
     fn emit_switch_compare(
         &mut self,
-        register: u8,
+        register: u32,
         value: i64,
         operand: SwitchCompareOperand,
     ) {
@@ -1351,8 +1351,8 @@ const BGE: (u8, u8) = (4, 0);
 const BGT: (u8, u8) = (12, 1);
 
 fn shared_base_compare_instructions(
-    register: u8,
-    base_register: u8,
+    register: u32,
+    base_register: u32,
     base_value: i64,
     value: i64,
 ) -> Vec<Instruction> {

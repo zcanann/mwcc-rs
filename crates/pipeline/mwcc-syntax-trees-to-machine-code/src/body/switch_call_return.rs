@@ -124,13 +124,13 @@ impl Generator {
                 a: 1,
                 offset: 24,
             },
-            Instruction::move_register(30, Eabi::FIRST_GENERAL_ARGUMENT),
+            Instruction::move_register(30, Eabi::FIRST_GENERAL_ARGUMENT.into()),
             Instruction::StoreHalfword {
-                s: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                s: 4,
                 a: 1,
                 offset: 8,
             },
-            Instruction::move_register(31, Eabi::FIRST_GENERAL_ARGUMENT + 2),
+            Instruction::move_register(31, (Eabi::FIRST_GENERAL_ARGUMENT + 2).into()),
             Instruction::LoadHalfwordZero {
                 d: 0,
                 a: 1,
@@ -158,22 +158,22 @@ impl Generator {
         for (value, callee, result) in call_arms {
             body_starts.insert(value, self.output.instructions.len());
             self.output.instructions.extend([
-                Instruction::move_register(Eabi::FIRST_GENERAL_ARGUMENT, 30),
-                Instruction::move_register(Eabi::FIRST_GENERAL_ARGUMENT + 1, 31),
+                Instruction::move_register(Eabi::FIRST_GENERAL_ARGUMENT.into(), 30),
+                Instruction::move_register((Eabi::FIRST_GENERAL_ARGUMENT + 1).into(), 31),
             ]);
             self.record_relocation(RelocationKind::Rel24, callee);
             self.output.instructions.push(Instruction::BranchAndLink {
                 target: callee.to_owned(),
             });
             self.output.instructions.push(Instruction::load_immediate(
-                Eabi::general_result().number,
+                u32::from(Eabi::general_result().number),
                 result,
             ));
             join_branches.push(self.push_call_return_branch());
         }
         let default_start = self.output.instructions.len();
         self.output.instructions.push(Instruction::load_immediate(
-            Eabi::general_result().number,
+            u32::from(Eabi::general_result().number),
             default_result,
         ));
         let epilogue = self.output.instructions.len();

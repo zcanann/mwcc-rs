@@ -12,7 +12,7 @@ impl Generator {
         name: &str,
         pointee: Pointee,
         value: &Expression,
-    ) -> Compilation<Option<u8>> {
+    ) -> Compilation<Option<u32>> {
         if self.behavior.narrow_compound_shift_style
             != mwcc_versions::NarrowCompoundShiftStyle::MaterializedCount
             || self.behavior.global_addressing != GlobalAddressing::SmallData

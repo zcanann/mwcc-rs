@@ -75,11 +75,11 @@ impl Generator {
             .map_err(|_| Diagnostic::error("struct member store offset is out of range"))?;
 
         let target_address = self.member_base_register(target_base)?;
-        let restore = target_address != GENERAL_SCRATCH && self.reserved.insert(target_address);
-        let value_register = if target_address == Eabi::FIRST_GENERAL_ARGUMENT {
+        let restore = target_address != GENERAL_SCRATCH && self.reserved.insert(target_address.into());
+        let value_register = if target_address == Eabi::FIRST_GENERAL_ARGUMENT.into() {
             GENERAL_SCRATCH
         } else {
-            self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT)
+            self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT.into())
         };
         let index_register = if let Ok(register) = self.general_register_of_leaf(index) {
             register
@@ -147,7 +147,7 @@ impl Generator {
         self.output.instructions.push(displacement_store(
             target_pointee,
             value_register,
-            target_address,
+            target_address.into(),
             target_offset,
         )?);
         Ok(true)

@@ -17,7 +17,7 @@ enum Value {
 
 #[derive(Debug)]
 struct Plan {
-    base: u8,
+    base: u32,
     values: Vec<Value>,
     // None keeps an independent store's existing register source.
     stores: Vec<(Instruction, Option<usize>)>,
@@ -42,7 +42,7 @@ impl Generator {
         }
     }
 
-    fn emit_member_values(&mut self, plan: &Plan) -> (Vec<Instruction>, Vec<u8>) {
+    fn emit_member_values(&mut self, plan: &Plan) -> (Vec<Instruction>, Vec<u32>) {
         let registers: Vec<_> = plan
             .values
             .iter()
@@ -140,7 +140,7 @@ impl Generator {
     }
 }
 
-fn store_parts(instruction: &Instruction) -> Option<(u8, u8)> {
+fn store_parts(instruction: &Instruction) -> Option<(u32, u32)> {
     match *instruction {
         Instruction::StoreWord { s, a, .. }
         | Instruction::StoreHalfword { s, a, .. }
@@ -203,7 +203,7 @@ fn plan_body(body: &[Instruction]) -> Option<Plan> {
     let mut used = true;
     for instruction in body {
         match *instruction {
-            Instruction::AddImmediate { d: 0, a, immediate } if a == 0 || a == base => {
+            Instruction::AddImmediate { d: 0, a, immediate } if a == 0 || a == base.into() => {
                 if !used {
                     return None;
                 }
@@ -257,7 +257,7 @@ fn plan_body(body: &[Instruction]) -> Option<Plan> {
         return None;
     }
     Some(Plan {
-        base,
+        base: base.into(),
         values,
         stores,
     })
@@ -473,7 +473,7 @@ fn schedule(plan: &Plan, style: MemberValueSchedule, enabled: bool, ordinary: bo
     events
 }
 
-fn emit(plan: &Plan, registers: &[u8], events: &[Event]) -> Vec<Instruction> {
+fn emit(plan: &Plan, registers: &[u32], events: &[Event]) -> Vec<Instruction> {
     let mut instructions = Vec::new();
     let load = |index: usize| match plan.values[index] {
         Value::Constant(immediate) => Instruction::AddImmediate {

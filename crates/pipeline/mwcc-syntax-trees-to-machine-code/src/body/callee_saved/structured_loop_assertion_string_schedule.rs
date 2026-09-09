@@ -24,8 +24,8 @@ impl Generator {
 
 fn string_high_schedule_start(
     instructions: &[Instruction],
-    first_high: u8,
-    second_high: u8,
+    first_high: u32,
+    second_high: u32,
 ) -> Option<usize> {
     instructions.windows(4).position(|window| {
         matches!(
@@ -60,7 +60,7 @@ fn string_high_schedule_start(
 mod tests {
     use super::*;
 
-    fn stream(first: u8, second: u8) -> Vec<Instruction> {
+    fn stream(first: u32, second: u32) -> Vec<Instruction> {
         vec![
             Instruction::LoadWord {
                 d: 31,

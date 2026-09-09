@@ -70,9 +70,9 @@ impl Generator {
             let home = if scratch_snapshot {
                 GENERAL_SCRATCH
             } else {
-                let first_home: u8 = if function.return_type == Type::Void { 3 } else { 4 };
+                let first_home: u32 = if function.return_type == Type::Void { 3 } else { 4 };
                 let preferred =
-                    first_home.saturating_add(u8::try_from(materialized).unwrap_or(8));
+                    first_home.saturating_add(u8::try_from(materialized).unwrap_or(8).into());
                 self.fresh_virtual_general_preferring(preferred)
             };
             self.evaluate(&initializer, local.declared_type, home)?;
@@ -109,7 +109,7 @@ impl Generator {
             }
         }
         if let Some(returned) = &function.return_expression {
-            let result = Eabi::general_result().number;
+            let result = u32::from(Eabi::general_result().number);
             let returned = crate::value_tracking::substitute(returned, &aliases);
             self.evaluate(&returned, function.return_type, result)?;
         }

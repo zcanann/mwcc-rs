@@ -55,14 +55,14 @@ impl Generator {
         member_offset: u32,
         member_type: Type,
         index_stride: Option<u32>,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(load) = classify(base, member_offset, member_type, index_stride) else {
             return Ok(false);
         };
 
         let index = self.materialize_index_operand(load.index)?;
-        let scaled = self.fresh_virtual_general_preferring(index);
+        let scaled = self.fresh_virtual_general_preferring(index.into());
         self.output
             .instructions
             .push(Instruction::ShiftLeftImmediate {

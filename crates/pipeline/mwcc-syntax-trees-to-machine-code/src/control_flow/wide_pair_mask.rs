@@ -20,15 +20,15 @@ struct WidePairMask<'a> {
 struct RetainedHighMask {
     high: String,
     zero: String,
-    high_source: u8,
-    zero_source: u8,
-    register: u8,
+    high_source: u32,
+    zero_source: u32,
+    register: u32,
 }
 
 #[derive(Clone)]
 struct RetainedZero {
     name: String,
-    source: u8,
+    source: u32,
 }
 
 #[derive(Clone, Default)]
@@ -64,7 +64,7 @@ impl Generator {
         self.wide_pair_mask_cache.clone()
     }
 
-    pub(crate) fn retained_wide_pair_zero_register(&self) -> Option<u8> {
+    pub(crate) fn retained_wide_pair_zero_register(&self) -> Option<u32> {
         self.wide_pair_mask_cache
             .retained_zero
             .as_ref()
@@ -183,9 +183,9 @@ impl Generator {
 fn retained_high_register(
     cache: &WidePairMaskCache,
     test: &WidePairMask<'_>,
-    high_source: u8,
-    zero_source: u8,
-) -> Option<u8> {
+    high_source: u32,
+    zero_source: u32,
+) -> Option<u32> {
     cache.retained_high.as_ref().and_then(|retained| {
         (retained.high == test.high
             && retained.zero == test.zero

@@ -19,7 +19,7 @@ const REMOVED_SECOND_INSTRUCTIONS: [usize; 5] = [13, 16, 17, 19, 23];
 struct ScaledItemTransaction {
     first: usize,
     second: usize,
-    receiver: u8,
+    receiver: u32,
 }
 
 impl Generator {
@@ -51,13 +51,13 @@ impl Generator {
         let Instruction::LoadWord { d, .. } = &mut self.output.instructions[start] else {
             unreachable!("the first guarded pointer load was recognized")
         };
-        *d = Eabi::general_result().number;
+        *d = u32::from(Eabi::general_result().number);
         let Instruction::CompareLogicalWordImmediate { a, .. } =
             &mut self.output.instructions[start + 1]
         else {
             unreachable!("the first guarded pointer comparison was recognized")
         };
-        *a = Eabi::general_result().number;
+        *a = u32::from(Eabi::general_result().number);
         self.remove_structured_condition_instruction(start + 5);
     }
 
@@ -181,7 +181,7 @@ impl Generator {
         *target = start + 20;
     }
 
-    fn has_compact_scaled_item_frame(&self, receiver: u8) -> bool {
+    fn has_compact_scaled_item_frame(&self, receiver: u32) -> bool {
         self.output.instructions.iter().any(|instruction| {
             matches!(
                 instruction,
@@ -212,7 +212,7 @@ impl Generator {
         })
     }
 
-    fn expand_scaled_item_frame(&mut self, receiver: u8) {
+    fn expand_scaled_item_frame(&mut self, receiver: u32) {
         for instruction in &mut self.output.instructions {
             match instruction {
                 Instruction::StoreWordWithUpdate {
@@ -293,18 +293,18 @@ fn scaled_item_transaction(instructions: &[Instruction]) -> Option<ScaledItemTra
             continue;
         };
         let second = first + 8;
-        if second_scaled_item_call(instructions, second, receiver) {
+        if second_scaled_item_call(instructions, second, receiver.into()) {
             return Some(ScaledItemTransaction {
                 first,
                 second,
-                receiver,
+                receiver: receiver.into(),
             });
         }
     }
     None
 }
 
-fn first_scaled_item_call(instructions: &[Instruction], start: usize) -> Option<u8> {
+fn first_scaled_item_call(instructions: &[Instruction], start: usize) -> Option<u32> {
     let [Instruction::LoadWord {
         d: tested,
         a: entry_base,
@@ -335,7 +335,7 @@ fn first_scaled_item_call(instructions: &[Instruction], start: usize) -> Option<
     };
     (*tested == *compared
         && *tested == 0
-        && *entry_base == Eabi::general_result().number
+        && *entry_base == u32::from(Eabi::general_result().number)
         && (14..=31).contains(reload_base)
         && *reload_base == *first_base
         && *reload_base == *second_base
@@ -344,7 +344,7 @@ fn first_scaled_item_call(instructions: &[Instruction], start: usize) -> Option<
         .then_some(*reload_base)
 }
 
-fn second_scaled_item_call(instructions: &[Instruction], start: usize, receiver: u8) -> bool {
+fn second_scaled_item_call(instructions: &[Instruction], start: usize, receiver: u32) -> bool {
     matches!(
         instructions.get(start..start + 30),
         Some([

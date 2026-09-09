@@ -171,7 +171,7 @@ fn is_forwarded_member_initialization(window: &[Instruction], start: usize) -> b
             .all(|(index, offset)| !offsets[..index].contains(offset))
 }
 
-fn is_zero(instruction: &Instruction, register: u8) -> bool {
+fn is_zero(instruction: &Instruction, register: u32) -> bool {
     matches!(
         instruction,
         Instruction::AddImmediate {

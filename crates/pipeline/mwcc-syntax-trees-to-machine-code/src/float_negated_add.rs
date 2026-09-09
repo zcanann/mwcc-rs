@@ -39,7 +39,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<bool> {
         if !matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply) {
@@ -127,7 +127,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<bool> {
         let Some((operand, call)) = negated_operand_and_call(operator, left, right) else {
@@ -141,7 +141,7 @@ impl Generator {
             return Ok(false);
         }
 
-        let call_result = Eabi::float_result().number;
+        let call_result = u32::from(Eabi::float_result().number);
         self.evaluate_float(call, call_result)?;
         let source = self.float_register_of_leaf(operand)?;
         let negated = self.fresh_virtual_float_preferring(source);

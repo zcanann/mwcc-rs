@@ -160,11 +160,11 @@ impl Generator {
     }
 
     fn emit_masked_word_store_switch(&mut self, shape: &MaskedWordStoreSwitch) {
-        const OBJECT: u8 = 3;
-        const SELECTOR: u8 = 4;
-        const OUTPUT: u8 = 5;
-        const SCRATCH: u8 = 0;
-        const TABLE: u8 = 4;
+        const OBJECT: u32 = 3;
+        const SELECTOR: u32 = 4;
+        const OUTPUT: u32 = 5;
+        const SCRATCH: u32 = 0;
+        const TABLE: u32 = 4;
 
         self.output.pre_scheduled = true;
         self.output.instructions.extend([

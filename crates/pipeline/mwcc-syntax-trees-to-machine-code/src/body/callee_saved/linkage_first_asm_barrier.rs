@@ -11,7 +11,7 @@ use super::*;
 impl Generator {
     pub(crate) fn schedule_linkage_first_asm_barrier_entry(
         &mut self,
-        saved: &[u8],
+        saved: &[u32],
     ) -> bool {
         if !self.preceded_by_asm
             || self.behavior.frame_convention != FrameConvention::LinkageFirst
@@ -180,7 +180,7 @@ impl Generator {
     }
 }
 
-fn asm_barrier_entry_copy(instruction: &Instruction) -> Option<(u8, u8)> {
+fn asm_barrier_entry_copy(instruction: &Instruction) -> Option<(u32, u32)> {
     match *instruction {
         Instruction::Or { a, s, b } if s == b && s < 14 => Some((a, s)),
         Instruction::AddImmediate {
@@ -195,7 +195,7 @@ fn asm_barrier_entry_copy(instruction: &Instruction) -> Option<(u8, u8)> {
 fn saved_copy_position(
     instructions: &[Instruction],
     range: std::ops::RangeInclusive<usize>,
-    destination: u8,
+    destination: u32,
 ) -> Option<usize> {
     range.into_iter().find(|index| {
         matches!(instructions[*index],

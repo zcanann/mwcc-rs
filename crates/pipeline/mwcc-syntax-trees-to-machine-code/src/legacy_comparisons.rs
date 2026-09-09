@@ -22,7 +22,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         signed: bool,
     ) -> Compilation<bool> {
         if self.behavior.integer_comparison_value_style
@@ -334,7 +334,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if !is_zero_literal(right) {
             if let (Ok((left_register, 32, _)), Some(constant)) =
@@ -427,7 +427,7 @@ impl Generator {
         Ok(true)
     }
 
-    pub(super) fn emit_legacy_not_equal_tail(&mut self, value: u8, destination: u8) {
+    pub(super) fn emit_legacy_not_equal_tail(&mut self, value: u32, destination: u32) {
         self.output
             .instructions
             .push(Instruction::AddImmediateCarrying {

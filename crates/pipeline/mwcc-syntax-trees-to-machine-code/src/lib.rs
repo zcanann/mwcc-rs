@@ -1523,11 +1523,11 @@ fn lower_function_body(
                 match location.class {
                     generator::ValueClass::General => {
                         mwcc_machine_code::DebugVariableLocation::GeneralRegister(
-                            location.register,
+                            u8::try_from(location.register).expect("allocated debug register"),
                         )
                     }
                     generator::ValueClass::Float => {
-                        mwcc_machine_code::DebugVariableLocation::FloatRegister(location.register)
+                        mwcc_machine_code::DebugVariableLocation::FloatRegister(u8::try_from(location.register).expect("allocated debug register"))
                     }
                 }
             };
@@ -1602,7 +1602,7 @@ pub(crate) fn allocation_operator_returns_pointer(name: &str) -> bool {
 /// emit virtuals, this pass becomes where their physical registers are decided —
 /// each migration step verified byte-exact against the oracle. Running it
 /// unconditionally keeps one pipeline (no fork between a legacy and a vreg path).
-fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
+fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u32>> {
     let mut liveness = mwcc_vreg::analyze_with_jump_tables(
         &generator.output.instructions,
         &generator.output.relocations,
@@ -1615,7 +1615,7 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
     // and the consumer-tree preference it should take when free (policy #1).
     for interval in &mut liveness.intervals {
         if let Some(avoid) = generator.register_avoid.get(&interval.vreg) {
-            interval.avoid.extend(avoid.iter().copied());
+            interval.avoid.extend(avoid.iter().copied().filter(|register| *register < 32).map(|register| register as u8));
         }
         if generator
             .forced_general_callee_saved
@@ -1628,7 +1628,7 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
             interval.avoid.dedup();
         }
         if let Some(&prefer) = generator.register_prefer.get(&interval.vreg) {
-            interval.prefer = Some(prefer);
+            interval.prefer = (prefer < 32).then_some(prefer as u8);
         }
         interval.prefer_virtual = generator.register_affinity.get(&interval.vreg).copied();
     }
@@ -1637,7 +1637,7 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
     // everything else keeps lowest-free LinearScan.
     let allocation = match generator.descending_allocation_top {
         Some(top) => mwcc_vreg::Allocator::allocate(
-            &mwcc_vreg::DescendingScan { top },
+            &mwcc_vreg::DescendingScan { top: u8::try_from(top).expect("physical allocation window") },
             &liveness.intervals,
             &liveness.pinned,
             &liveness.calls,
@@ -1664,7 +1664,7 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
         mwcc_core::Diagnostic::error(format!("register allocation failed: {error:?}"))
     })?;
     let used_float = allocation.assigned_float_callee_saved(&generator.constraints);
-    let used = allocation.assigned_callee_saved(&generator.constraints);
+    let used: Vec<u32> = allocation.assigned_callee_saved(&generator.constraints).into_iter().map(u32::from).collect();
     allocation_diagnostics::report_pressure(generator, &liveness, &allocation, &used);
     generator.reconcile_allocated_general_frame(&allocation, &used)?;
     allocation_debug::reconcile_variable_locations(&mut generator.locations, &allocation);
@@ -1680,7 +1680,7 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
             generator.callee_saved.len()
         )));
     }
-    Ok(used_float)
+    Ok(used_float.into_iter().map(u32::from).collect())
 }
 
 /// The instruction-scheduling pass (Phase E): reorder instructions within the
@@ -1718,7 +1718,7 @@ fn schedule_instructions(generator: &mut Generator) {
 
 /// Move the epilogue's saved-LR reload up to right after the last call, remapping
 /// relocation indices through the resulting permutation.
-fn hoist_link_register_reload(generator: &mut Generator, saved_float_registers: &[u8]) {
+fn hoist_link_register_reload(generator: &mut Generator, saved_float_registers: &[u32]) {
     if generator.owns_link_register_schedule || !generator.behavior.schedule_latency_slots {
         return;
     }
@@ -1977,9 +1977,9 @@ fn coalesce_float_conversion_moves(generator: &mut Generator) {
             Some(Instruction::RoundToSingle { .. })
         );
         generator.output.instructions[index + 1] = if rounds_to_single {
-            Instruction::RoundToSingle { d, b }
+            Instruction::RoundToSingle { d: d.into(), b: b.into() }
         } else {
-            Instruction::ConvertToIntegerWordZero { d, b }
+            Instruction::ConvertToIntegerWordZero { d: d.into(), b: b.into() }
         };
         remove_instruction_retargeting_to_next(generator, index);
     }
@@ -1988,7 +1988,7 @@ fn coalesce_float_conversion_moves(generator: &mut Generator) {
 fn adjacent_float_conversion_move(
     instructions: &[Instruction],
     index: usize,
-) -> Option<(u8, u8)> {
+) -> Option<(u32, u32)> {
     match (instructions.get(index)?, instructions.get(index + 1)?) {
         (
             Instruction::FloatMove {

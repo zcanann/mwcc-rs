@@ -15,7 +15,7 @@ impl Generator {
         &mut self,
         array: &Expression,
         index: &Expression,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         if !matches!(index, Expression::Call { .. }) {
             return Ok(None);
         }
@@ -32,10 +32,10 @@ impl Generator {
             return Ok(None);
         }
 
-        let index_register = Eabi::general_result().number;
-        let array_register = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+        let index_register = u32::from(Eabi::general_result().number);
+        let array_register: u32 = (Eabi::FIRST_GENERAL_ARGUMENT + 1) as u32;
         self.evaluate_general(index, index_register)?;
-        self.evaluate_general(array, array_register)?;
-        Ok(Some((array_register, index_register)))
+        self.evaluate_general(array, array_register.into())?;
+        Ok(Some((array_register.into(), index_register)))
     }
 }

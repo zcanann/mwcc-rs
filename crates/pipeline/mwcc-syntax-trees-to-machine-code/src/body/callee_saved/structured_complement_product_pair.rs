@@ -104,8 +104,8 @@ impl StructuredComplementProductPair {
         &self,
         total_homes: usize,
         home_index: usize,
-    ) -> Option<u8> {
-        (total_homes == 2 && home_index < 2).then_some(30 + home_index as u8)
+    ) -> Option<u32> {
+        (total_homes == 2 && home_index < 2).then_some((30 + home_index as u8).into())
     }
 }
 
@@ -113,9 +113,9 @@ impl Generator {
     pub(super) fn emit_structured_complement_product_pair(
         &mut self,
         plan: &StructuredComplementProductPair,
-        destinations: [u8; 2],
+        destinations: [u32; 2],
     ) -> Compilation<()> {
-        const ONE: u8 = 7;
+        const ONE: u32 = 7;
         self.load_float_constant(ONE, 1.0);
         let shared_one = self
             .output
@@ -200,7 +200,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::FloatMultiplySingle {
-                d: destinations[0],
+                d: u32::from(destinations[0]),
                 a: 6,
                 c: 5,
             });
@@ -213,7 +213,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::FloatMultiplySingle {
-                d: destinations[1],
+                d: u32::from(destinations[1]),
                 a: 2,
                 c: 1,
             });

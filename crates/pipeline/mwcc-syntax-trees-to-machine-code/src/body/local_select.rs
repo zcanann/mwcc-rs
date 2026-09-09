@@ -89,7 +89,7 @@ impl Generator {
         &mut self,
         name: &str,
         value_type: Type,
-        register: u8,
+        register: u32,
     ) {
         let pointee = match value_type {
             Type::Pointer(pointee) => Some(pointee),
@@ -115,7 +115,7 @@ impl Generator {
         &mut self,
         value: &Expression,
         value_type: Type,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if let Expression::Variable(name) = value {
             if self.global_array_sizes.contains_key(name.as_str()) {
@@ -228,8 +228,8 @@ impl Generator {
     pub(crate) fn emit_unoptimized_local_select_core(
         &mut self,
         plan: &UnoptimizedLocalSelectSummary,
-        result_home: u8,
-        derived_home: u8,
+        result_home: u32,
+        derived_home: u32,
     ) -> Compilation<()> {
         self.bind_unoptimized_local_select_value(&plan.result_name, plan.result_type, result_home);
         self.bind_unoptimized_local_select_value(
@@ -285,8 +285,8 @@ impl Generator {
             return Ok(false);
         };
 
-        const RESULT_HOME: u8 = 31;
-        const DERIVED_HOME: u8 = 30;
+        const RESULT_HOME: u32 = 31;
+        const DERIVED_HOME: u32 = 30;
         self.output.pre_scheduled = true;
         self.output.anonymous_label_bump += 2;
         self.frame_size = 16;
@@ -295,7 +295,7 @@ impl Generator {
         // `-O0` retains incoming parameter homes for the whole source function;
         // short-lived mask/address values begin after them even once a path no
         // longer reads the parameter.
-        let parameter_homes: Vec<u8> = function
+        let parameter_homes: Vec<u32> = function
             .parameters
             .iter()
             .filter_map(|parameter| self.lookup_general(&parameter.name))
@@ -322,7 +322,7 @@ impl Generator {
 
         self.emit_unoptimized_local_select_core(&plan, RESULT_HOME, DERIVED_HOME)?;
         self.output.instructions.push(Instruction::move_register(
-            Eabi::general_result().number,
+            u32::from(Eabi::general_result().number),
             RESULT_HOME,
         ));
         self.emit_epilogue_and_return();

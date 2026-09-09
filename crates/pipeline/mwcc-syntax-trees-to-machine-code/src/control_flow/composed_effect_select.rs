@@ -16,7 +16,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
         tail: bool,
     ) -> Compilation<bool> {
         if tail
@@ -41,7 +41,7 @@ impl Generator {
     fn emit_composed_effect_arm(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let mut value = expression;
         while let Expression::Comma { left, right } = value {

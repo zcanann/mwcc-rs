@@ -29,7 +29,7 @@ fn patch(generator: &mut Generator, index: usize, target_index: usize) {
 }
 
 impl Generator {
-    fn emit_scale_global(&mut self, global: &str, global_type: Type, register: u8) -> Compilation<()> {
+    fn emit_scale_global(&mut self, global: &str, global_type: Type, register: u32) -> Compilation<()> {
         self.evaluate(&Expression::Variable(global.into()), global_type, register)
     }
 

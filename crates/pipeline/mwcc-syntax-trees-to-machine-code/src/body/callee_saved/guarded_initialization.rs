@@ -340,7 +340,7 @@ impl Generator {
         let epilogue = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, initialize);
         self.output.instructions.push(Instruction::load_immediate(
-            Eabi::general_result().number,
+            u32::from(Eabi::general_result().number),
             0x4000,
         ));
         self.emit_branch_to(epilogue);
@@ -357,7 +357,7 @@ impl Generator {
         if !linkage_first {
             self.output
                 .instructions
-                .push(Instruction::move_register(5, Eabi::general_result().number));
+                .push(Instruction::move_register(5, u32::from(Eabi::general_result().number)));
         }
         self.record_relocation(RelocationKind::Addr16Ha, shape.handler);
         self.output
@@ -365,7 +365,7 @@ impl Generator {
             .push(Instruction::load_immediate_shifted(4, 0));
         self.emit_global_store(shape.callback, Pointee::UnsignedInt, 0)?;
         if linkage_first {
-            self.emit_callee_saved_home_copy(old_home, Eabi::general_result().number);
+            self.emit_callee_saved_home_copy(old_home, u32::from(Eabi::general_result().number));
         }
         self.record_relocation(RelocationKind::Addr16Lo, shape.handler);
         self.output.instructions.push(Instruction::AddImmediate {
@@ -512,12 +512,12 @@ impl Generator {
         if linkage_first {
             self.emit_global_store(shape.initialized, Pointee::UnsignedInt, 0)?;
             self.output.instructions.push(Instruction::move_register(
-                Eabi::general_result().number,
+                u32::from(Eabi::general_result().number),
                 old_home,
             ));
         } else {
             self.output.instructions.push(Instruction::move_register(
-                Eabi::general_result().number,
+                u32::from(Eabi::general_result().number),
                 old_home,
             ));
             self.emit_global_store(shape.initialized, Pointee::UnsignedInt, 0)?;
@@ -526,7 +526,7 @@ impl Generator {
         self.output.instructions.push(Instruction::BranchAndLink {
             target: shape.restore.to_string(),
         });
-        self.emit_global_load(shape.stack_pointer, Eabi::general_result().number)?;
+        self.emit_global_load(shape.stack_pointer, u32::from(Eabi::general_result().number))?;
         if linkage_first {
             // Scheduled first-reference order differs from source traversal for
             // the handler/callback pair and the free/stack stores.

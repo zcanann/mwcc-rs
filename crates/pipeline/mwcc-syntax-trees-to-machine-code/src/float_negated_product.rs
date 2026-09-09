@@ -42,7 +42,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<bool> {
         let (source, negate) = match left {
@@ -97,7 +97,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<bool> {
         if let Some((negated, literal)) = negated_and_literal(left, right) {
@@ -171,7 +171,7 @@ impl Generator {
 fn schedule_later_absolute_value_load(
     output: &mut MachineFunction,
     start: usize,
-    multiplier: u8,
+    multiplier: u32,
 ) -> bool {
     if output.instructions.len().saturating_sub(start) < 2 {
         return false;
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn places_a_later_absolute_member_before_its_zero_literal() {
-        const MULTIPLIER: u8 = 40;
+        const MULTIPLIER: u32 = 40;
         let mut output = MachineFunction::default();
         output.instructions = vec![
             Instruction::LoadFloatSingle {

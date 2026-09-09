@@ -47,9 +47,9 @@ impl Generator {
         helper: &LinkedListAppend,
     ) {
         const BSS_ANCHOR: &str = "...bss.0";
-        const LIST_OUT: u8 = 31;
-        const REGISTRY: u8 = 30;
-        const ITEM_SIZE: u8 = 29;
+        const LIST_OUT: u32 = 31;
+        const REGISTRY: u32 = 30;
+        const ITEM_SIZE: u32 = 29;
         const NODE_SLOT: i16 = 20;
         let allocation_succeeded = self.fresh_label();
         let loop_body = self.fresh_label();

@@ -157,7 +157,7 @@ impl Generator {
         member_offset: u32,
         member_type: Type,
         index_stride: Option<u32>,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(load) = indexed_member(base, member_offset, member_type, index_stride) else {
             return Ok(false);
@@ -178,14 +178,14 @@ impl Generator {
             self.output.instructions.push(displacement_load(
                 load.element,
                 destination,
-                aggregate,
+                aggregate.into(),
                 displacement,
             )?);
             return Ok(true);
         }
 
         let index = self.materialize_index_operand(load.index)?;
-        let scaled = self.fresh_virtual_general_preferring(index);
+        let scaled = self.fresh_virtual_general_preferring(index.into());
         if load.stride.is_power_of_two() {
             self.output
                 .instructions
@@ -224,7 +224,7 @@ impl Generator {
         &mut self,
         base: &Expression,
         trailing_offset: u32,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(embedded) = element(base) else {
             return Ok(false);
@@ -240,7 +240,7 @@ impl Generator {
         &mut self,
         base: &Expression,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(access) = scalar(base, index) else {
             return Ok(false);
@@ -252,7 +252,7 @@ impl Generator {
         self.output.instructions.push(displacement_load(
             access.element,
             destination,
-            address,
+            address.into(),
             offset,
         )?);
         Ok(true)
@@ -275,7 +275,7 @@ impl Generator {
             Diagnostic::error("embedded struct-array store offset is out of range")
         })?;
         let address = self.member_base_register(access.aggregate)?;
-        let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
+        let restore = address != GENERAL_SCRATCH && self.reserved.insert(address.into());
         let source = self.place_store_value(value, access.element)?;
         if restore {
             self.reserved.remove(&address);

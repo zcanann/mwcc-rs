@@ -134,7 +134,7 @@ impl Generator {
         Ok(true)
     }
 
-    fn emit_absolute_velocity(&mut self, destination: u8) {
+    fn emit_absolute_velocity(&mut self, destination: u32) {
         self.load_float_constant(0, 0.0);
         self.output.instructions.push(Instruction::FloatCompareOrdered { a: 3, b: 0 });
         let nonnegative = self.fresh_label();
@@ -147,7 +147,7 @@ impl Generator {
         self.bind_label(done);
     }
 
-    fn emit_conditional_friction_arm(&mut self, pointer: u8, output_offset: i16, source: Source<'_>, result: i16) -> Compilation<()> {
+    fn emit_conditional_friction_arm(&mut self, pointer: u32, output_offset: i16, source: Source<'_>, result: i16) -> Compilation<()> {
         self.load_float_constant(0, 0.0);
         match source {
             Source::Global { name, offset } => self.emit_global_load_value(name, 4).map(|_| self.output.instructions.push(Instruction::LoadFloatSingle { d: 2, a: 4, offset }))?,

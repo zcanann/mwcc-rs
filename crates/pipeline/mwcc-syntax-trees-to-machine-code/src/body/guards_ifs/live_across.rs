@@ -169,7 +169,7 @@ impl Generator {
                 *target = join;
             }
         }
-        let result = Eabi::float_result().number;
+        let result = u32::from(Eabi::float_result().number);
         self.evaluate_tail(return_expression, function.return_type, result)?;
         self.output
             .instructions
@@ -384,7 +384,7 @@ impl Generator {
             })
         };
         // Dying condition registers: a condition param never referenced later.
-        let mut dying_condition_registers: Vec<u8> = Vec::new();
+        let mut dying_condition_registers: Vec<u32> = Vec::new();
         for condition in &branch_conditions {
             let param = match condition {
                 Expression::Variable(name) => name.as_str(),
@@ -413,8 +413,8 @@ impl Generator {
                 }
             }
         }
-        let mut homes: Vec<(String, u8)> = Vec::new();
-        let mut taken: Vec<u8> = Vec::new();
+        let mut homes: Vec<(String, u32)> = Vec::new();
+        let mut taken: Vec<u32> = Vec::new();
         for local in &function.locals {
             // In a VOID body, r0 belongs to the LAST tail chain: the local may
             // take it only when it IS that chain's value (stored bare by the
@@ -432,14 +432,14 @@ impl Generator {
             } else {
                 !forbids_r0(&local.name)
             };
-            let candidates: Vec<u8> = if !r0_ok {
+            let candidates: Vec<u32> = if !r0_ok {
                 dying_condition_registers
                     .iter()
                     .copied()
                     .chain(5..=12)
                     .collect()
             } else {
-                std::iter::once(0u8)
+                std::iter::once(0u32)
                     .chain(dying_condition_registers.iter().copied())
                     .chain(5..=12)
                     .collect()
@@ -572,7 +572,7 @@ impl Generator {
             return Ok(true);
         }
         let return_expression = function.return_expression.as_ref().expect("gated");
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         if function.guards.is_empty() {
             self.evaluate_tail(return_expression, Type::Int, result)?;
             self.output

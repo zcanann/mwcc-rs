@@ -149,7 +149,7 @@ impl Generator {
         };
 
         let flags = self.fresh_virtual_general_preferring(4);
-        let result = self.fresh_virtual_general_preferring(Eabi::general_result().number);
+        let result = self.fresh_virtual_general_preferring(u32::from(Eabi::general_result().number));
         self.evaluate_general(member, flags)?;
         self.load_integer_constant(result, 0);
         self.output.instructions.push(Instruction::AndMaskRecord {

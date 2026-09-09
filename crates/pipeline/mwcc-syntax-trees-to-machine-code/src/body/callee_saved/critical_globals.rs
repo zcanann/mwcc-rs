@@ -187,7 +187,7 @@ impl Generator {
             state.name.clone(),
             Location {
                 class: ValueClass::General,
-                register: Eabi::general_result().number,
+                register: u32::from(Eabi::general_result().number),
                 signed: state.declared_type.is_signed(),
                 width: 32,
                 pointee: None,
@@ -196,7 +196,7 @@ impl Generator {
         );
         self.emit_call(leave, leave_arguments, None, false)?;
         self.output.instructions.push(Instruction::move_register(
-            Eabi::general_result().number,
+            u32::from(Eabi::general_result().number),
             old_home,
         ));
         self.emit_epilogue_and_return();
@@ -394,7 +394,7 @@ impl Generator {
             state.name.clone(),
             Location {
                 class: ValueClass::General,
-                register: Eabi::general_result().number,
+                register: u32::from(Eabi::general_result().number),
                 signed: state.declared_type.is_signed(),
                 width: 32,
                 pointee: None,
@@ -413,7 +413,7 @@ impl Generator {
         // Build 163 starts the return reload before the saved LR. Later builds
         // fill the slot between the saved-LR and saved-GPR reloads with it.
         if linkage_first {
-            self.emit_global_load(cursor_write, Eabi::general_result().number)?;
+            self.emit_global_load(cursor_write, u32::from(Eabi::general_result().number))?;
         }
         self.output.instructions.push(Instruction::LoadWord {
             d: 0,
@@ -421,7 +421,7 @@ impl Generator {
             offset: self.frame_size + 4,
         });
         if !linkage_first {
-            self.emit_global_load(cursor_write, Eabi::general_result().number)?;
+            self.emit_global_load(cursor_write, u32::from(Eabi::general_result().number))?;
         }
         self.output.instructions.push(Instruction::LoadWord {
             d: output_home,

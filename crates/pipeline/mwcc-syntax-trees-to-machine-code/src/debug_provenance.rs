@@ -11,12 +11,12 @@ use mwcc_syntax_trees::{Function, Type};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DenseCountedLoopHomes {
-    parameters: [u8; 5],
+    parameters: [u32; 5],
     frame_array: i16,
-    loop_index: u8,
-    sample: u8,
-    flags: [u8; 4],
-    state: [u8; 6],
+    loop_index: u32,
+    sample: u32,
+    flags: [u32; 4],
+    state: [u32; 6],
 }
 
 impl Generator {
@@ -27,9 +27,9 @@ impl Generator {
         let Some(homes) = dense_counted_loop_homes(self, function) else {
             return;
         };
-        let parameter = |index: usize, register: u8| DebugVariable {
+        let parameter = |index: usize, register: u32| DebugVariable {
             name: function.parameters[index].name.clone(),
-            location: DebugVariableLocation::GeneralRegister(register),
+            location: DebugVariableLocation::GeneralRegister(u8::try_from(register).expect("allocated debug register")),
         };
         let local = |index: usize, location| DebugVariable {
             name: function.locals[index].name.clone(),
@@ -40,14 +40,14 @@ impl Generator {
             .parameters
             .into_iter()
             .enumerate()
-            .map(|(index, register)| parameter(index, register))
+            .map(|(index, register)| parameter(index, register.into()))
             .collect::<Vec<_>>();
         variables.extend([
             local(0, DebugVariableLocation::FrameOffset(homes.frame_array)),
-            local(2, DebugVariableLocation::GeneralRegister(0)),
+            local(2, DebugVariableLocation::GeneralRegister(u8::try_from(0).expect("allocated debug register"))),
             local(3, DebugVariableLocation::Unavailable),
-            local(4, DebugVariableLocation::GeneralRegister(homes.loop_index)),
-            local(5, DebugVariableLocation::GeneralRegister(homes.sample)),
+            local(4, DebugVariableLocation::GeneralRegister(u8::try_from(homes.loop_index).expect("allocated debug register"))),
+            local(5, DebugVariableLocation::GeneralRegister(u8::try_from(homes.sample).expect("allocated debug register"))),
         ]);
         variables.extend(
             homes
@@ -55,7 +55,7 @@ impl Generator {
                 .into_iter()
                 .enumerate()
                 .map(|(index, register)| {
-                    local(6 + index, DebugVariableLocation::GeneralRegister(register))
+                    local(6 + index, DebugVariableLocation::GeneralRegister(u8::try_from(register).expect("allocated debug register")))
                 }),
         );
         variables.push(local(11, DebugVariableLocation::Unavailable));
@@ -65,10 +65,10 @@ impl Generator {
                 .into_iter()
                 .enumerate()
                 .map(|(index, register)| {
-                    local(15 + index, DebugVariableLocation::GeneralRegister(register))
+                    local(15 + index, DebugVariableLocation::GeneralRegister(u8::try_from(register).expect("allocated debug register")))
                 }),
         );
-        variables.push(local(21, DebugVariableLocation::GeneralRegister(0)));
+        variables.push(local(21, DebugVariableLocation::GeneralRegister(u8::try_from(0).expect("allocated debug register"))));
         self.output.debug_variables = variables;
     }
 }
@@ -155,7 +155,7 @@ fn recognize_dense_counted_loop_homes(
     })
 }
 
-fn publication_homes(instructions: &[Instruction]) -> Option<(u8, [u8; 6])> {
+fn publication_homes(instructions: &[Instruction]) -> Option<(u32, [u32; 6])> {
     for (start, instruction) in instructions.iter().enumerate() {
         let Instruction::StoreWord {
             s: first,

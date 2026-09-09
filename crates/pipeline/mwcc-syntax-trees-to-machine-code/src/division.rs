@@ -15,7 +15,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let signed = self.signedness_of(left)? && self.signedness_of(right)?;
         let d = destination;
@@ -254,19 +254,19 @@ impl Generator {
         &mut self,
         dividend: &Expression,
         divisor: i32,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let (magic, shift) = signed_magic(divisor);
         let dividend_register = self.place_retained_division_operand(dividend)?;
         let named_dividend = leaf_name(dividend)
             .and_then(|name| self.lookup_general(name))
             .is_some();
-        let preserve_dividend = named_dividend && destination != dividend_register;
+        let preserve_dividend = named_dividend && destination != dividend_register.into();
         // The lowest free general register holds the materialized magic's high
         // half. The destination counts as free here — its incoming value is dead
         // and the divide writes its result there only at the very end — but the
         // dividend is live through the multiply, so it is excluded.
-        let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
+        let Some(temp) = (3u32..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
         else {
             return Err(Diagnostic::error(
                 "out of registers for magic-number division",
@@ -278,9 +278,9 @@ impl Generator {
         let temp = if self.structured_global_base_cache.as_ref().is_some_and(|cache| {
             cache.remaining_uses != 0 && mwcc_vreg::Reg::is_virtual_field(cache.register)
         }) {
-            self.fresh_virtual_general_preferring(temp)
+            self.fresh_virtual_general_preferring(temp.into())
         } else {
-            temp
+            temp.into()
         };
         // Materialize the 32-bit magic with lis + addi (the addi's low half is
         // sign-extended, so the high half is adjusted to compensate).
@@ -331,7 +331,7 @@ impl Generator {
             let sign = if preserve_dividend {
                 self.fresh_virtual_general()
             } else {
-                dividend_register
+                dividend_register.into()
             };
             (GENERAL_SCRATCH, sign)
         } else {
@@ -341,7 +341,7 @@ impl Generator {
             let quotient = if preserve_dividend {
                 self.fresh_virtual_general()
             } else {
-                dividend_register
+                dividend_register.into()
             };
             self.output
                 .instructions
@@ -364,7 +364,7 @@ impl Generator {
             )
         {
             let mut group = Vec::new();
-            for field in [destination, sign_temp, quotient, dividend_register] {
+            for field in [destination, sign_temp, quotient, dividend_register.into()] {
                 if let Some(register) = mwcc_vreg::Reg::from_field(field, mwcc_vreg::Class::General)
                     .virtual_register()
                 {
@@ -400,14 +400,14 @@ impl Generator {
         &mut self,
         dividend: &Expression,
         divisor: u32,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let (magic, add, shift) = unsigned_magic(divisor);
         if !add && self.try_emit_fixed_address_unsigned_divide(dividend, magic, shift, destination)? {
             return Ok(());
         }
         let dividend_register = self.place_retained_division_operand(dividend)?;
-        let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
+        let Some(temp) = (3u32..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
         else {
             return Err(Diagnostic::error(
                 "out of registers for magic-number division",
@@ -490,10 +490,10 @@ impl Generator {
         dividend: &Expression,
         divisor: i64,
         signed: bool,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let dividend_register = self.place_retained_division_operand(dividend)?;
-        let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
+        let Some(temp) = (3u32..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
         else {
             return Err(Diagnostic::error(
                 "out of registers for magic-number modulo",
@@ -651,7 +651,7 @@ impl Generator {
     /// quotient/remainder sequence. Leaves retain their established home;
     /// richer expressions receive a virtual home so evaluation scratch cannot
     /// collide with the later divide or magic-constant transaction.
-    fn place_retained_division_operand(&mut self, operand: &Expression) -> Compilation<u8> {
+    fn place_retained_division_operand(&mut self, operand: &Expression) -> Compilation<u32> {
         if let Some(register) =
             leaf_name(operand).and_then(|name| self.lookup_general(name))
         {
@@ -669,8 +669,8 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
-    ) -> Compilation<Option<(u8, u8, u8)>> {
+        destination: u32,
+    ) -> Compilation<Option<(u32, u32, u32)>> {
         let Expression::Binary {
             operator: mwcc_syntax_trees::BinaryOperator::Add,
             left: first,
@@ -729,7 +729,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let signed = self.signedness_of(left)? && self.signedness_of(right)?;
 
@@ -805,7 +805,7 @@ impl Generator {
                     }
                     if k == 1 {
                         // srwi s,x,31; clrlwi r0,x,31; xor r0,r0,s; subf d,s,r0
-                        let Some(sign) = (3u8..=12)
+                        let Some(sign) = (3u32..=12)
                             .find(|r| *r != x && *r != destination && !self.reserved.contains(r))
                         else {
                             return Err(Diagnostic::error(
@@ -1002,7 +1002,7 @@ fn signed_magic(d: i32) -> (i32, u8) {
     if d < 0 {
         magic = magic.wrapping_neg();
     }
-    (magic, (p - 32) as u8)
+    (magic, ((p - 32) as u8).into())
 }
 
 /// The unsigned magic number, "add" indicator, and post-shift for unsigned
@@ -1045,7 +1045,7 @@ fn unsigned_magic(d: u32) -> (u32, bool, u8) {
             break;
         }
     }
-    (q2.wrapping_add(1), add, (p - 32) as u8)
+    (q2.wrapping_add(1), add, ((p - 32) as u8).into())
 }
 
 #[cfg(test)]

@@ -73,7 +73,7 @@ impl Generator {
 
 struct Plan {
     arguments: usize,
-    pointer: u8,
+    pointer: u32,
     order: Vec<usize>,
 }
 
@@ -91,7 +91,7 @@ impl Plan {
     }
 }
 
-fn saved_copy(i: &I, destination: u8) -> Option<u8> {
+fn saved_copy(i: &I, destination: u32) -> Option<u32> {
     match *i {
         I::AddImmediate {
             d,
@@ -133,7 +133,7 @@ fn plan(
     }
     let mut inputs = Vec::new();
     for n in 0..parameters {
-        inputs.push(saved_copy(&code[arguments + n], 3 + n as u8)?);
+        inputs.push(saved_copy(&code[arguments + n], (3 + n as u8).into())?);
     }
     let pointer = inputs[0];
     let [I::StoreWord {
@@ -200,7 +200,7 @@ fn plan(
     }) || code[start..arguments].iter().any(|i| {
         !ordinary(i)
             || register_operands(i).iter().any(|r| {
-                r.class == Class::General && r.role == RegisterRole::Define && r.register == pointer
+                r.class == Class::General && r.role == RegisterRole::Define && r.register == pointer.into()
             })
     }) || code[call + 1..latch].iter().any(|i| {
         !matches!(
@@ -262,7 +262,7 @@ fn plan(
     }
     Some(Plan {
         arguments,
-        pointer,
+        pointer: pointer.into(),
         order,
     })
 }

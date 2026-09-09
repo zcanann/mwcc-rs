@@ -129,8 +129,8 @@ fn schedule_setup_before_stores(generator: &mut Generator, start: usize) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Plan {
     start: usize,
-    owner: u8,
-    index: u8,
+    owner: u32,
+    index: u32,
     count: i16,
     source_offset: i16,
     destination_offset: i16,

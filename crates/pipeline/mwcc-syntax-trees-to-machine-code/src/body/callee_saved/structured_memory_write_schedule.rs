@@ -108,7 +108,7 @@ fn call(instructions: &[Instruction], expected: &str) -> Option<usize> {
     })
 }
 
-fn schedule_write_bounds(generator: &mut Generator, owner: u8) -> bool {
+fn schedule_write_bounds(generator: &mut Generator, owner: u32) -> bool {
     let Some(start) = generator.output.instructions.windows(7).position(|window| {
         matches!(window[0], Instruction::LoadWord { d: 0, a, offset: 8 } if a == owner)
             && matches!(window[1], Instruction::LoadHalfwordZero { d: 3, a: 1, .. })
@@ -176,7 +176,7 @@ fn schedule_write_bounds(generator: &mut Generator, owner: u8) -> bool {
     true
 }
 
-fn retain_read_buffer_result(generator: &mut Generator, result: u8) -> bool {
+fn retain_read_buffer_result(generator: &mut Generator, result: u32) -> bool {
     let Some(call) = call(&generator.output.instructions, "TRKReadBuffer") else {
         return false;
     };
@@ -271,7 +271,7 @@ fn schedule_target_access_packet(instructions: &mut [Instruction]) -> bool {
     true
 }
 
-fn retain_target_access_result(generator: &mut Generator, result: u8) -> bool {
+fn retain_target_access_result(generator: &mut Generator, result: u32) -> bool {
     let Some(call) = call(&generator.output.instructions, "TRKTargetAccessMemory") else {
         return false;
     };
@@ -299,7 +299,7 @@ fn retain_target_access_result(generator: &mut Generator, result: u8) -> bool {
     true
 }
 
-fn preserve_message_result(generator: &mut Generator, result: u8) -> bool {
+fn preserve_message_result(generator: &mut Generator, result: u32) -> bool {
     let Some(call) = call(&generator.output.instructions, "TRKMessageIntoReply") else {
         return false;
     };
@@ -312,7 +312,7 @@ fn preserve_message_result(generator: &mut Generator, result: u8) -> bool {
     true
 }
 
-fn retain_append_result(generator: &mut Generator, result: u8) -> bool {
+fn retain_append_result(generator: &mut Generator, result: u32) -> bool {
     let Some(call) = call(&generator.output.instructions, "TRKAppendBuffer1_ui16") else {
         return false;
     };

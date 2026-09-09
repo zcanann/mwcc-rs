@@ -12,7 +12,7 @@ impl Generator {
         &mut self,
         function: &Function,
         remaining: &[Statement],
-    ) -> Vec<u8> {
+    ) -> Vec<u32> {
         function
             .locals
             .iter()
@@ -33,7 +33,7 @@ impl Generator {
             .collect()
     }
 
-    pub(in crate::body) fn release_reserved_physical_homes(&mut self, registers: Vec<u8>) {
+    pub(in crate::body) fn release_reserved_physical_homes(&mut self, registers: Vec<u32>) {
         for register in registers {
             self.reserved.remove(&register);
         }

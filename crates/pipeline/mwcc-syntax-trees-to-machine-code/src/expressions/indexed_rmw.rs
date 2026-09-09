@@ -232,7 +232,7 @@ impl Generator {
         {
             self.emit_computed_indexed_rmw(
                 pointee,
-                address,
+                address.into(),
                 index,
                 *operator,
                 right,
@@ -255,7 +255,7 @@ impl Generator {
         {
             self.emit_explicit_address_indexed_rmw(
                 pointee,
-                address,
+                address.into(),
                 index_register,
                 size_shift,
                 *operator,
@@ -278,7 +278,7 @@ impl Generator {
                 });
             self.output
                 .instructions
-                .push(indexed_load(pointee, scratch, address, scaled)?);
+                .push(indexed_load(pointee, scratch, address.into(), scaled)?);
             let combined = match operator {
                 Add => Instruction::Add {
                     d: scratch,
@@ -354,7 +354,7 @@ impl Generator {
             self.output.instructions.push(combined);
             self.output
                 .instructions
-                .push(indexed_store(pointee, scratch, address, scaled)?);
+                .push(indexed_store(pointee, scratch, address.into(), scaled)?);
             return Ok(true);
         }
 
@@ -389,7 +389,7 @@ impl Generator {
                 let loaded = self.fresh_virtual_general();
                 self.output
                     .instructions
-                    .push(indexed_load(pointee, loaded, address, scaled)?);
+                    .push(indexed_load(pointee, loaded, address.into(), scaled)?);
                 self.output.instructions.push(Instruction::AddImmediate {
                     d: scratch,
                     a: loaded,
@@ -397,7 +397,7 @@ impl Generator {
                 });
                 self.output
                     .instructions
-                    .push(indexed_store(pointee, scratch, address, scaled)?);
+                    .push(indexed_store(pointee, scratch, address.into(), scaled)?);
                 return Ok(true);
             }
         }
@@ -454,11 +454,11 @@ impl Generator {
                 });
             self.output
                 .instructions
-                .push(indexed_load(pointee, scratch, address, scaled)?);
+                .push(indexed_load(pointee, scratch, address.into(), scaled)?);
             self.output.instructions.push(immediate_op);
             self.output
                 .instructions
-                .push(indexed_store(pointee, scratch, address, scaled)?);
+                .push(indexed_store(pointee, scratch, address.into(), scaled)?);
             return Ok(true);
         }
         Ok(false)
@@ -471,8 +471,8 @@ impl Generator {
     fn emit_explicit_address_indexed_rmw(
         &mut self,
         pointee: Pointee,
-        base: u8,
-        index: u8,
+        base: u32,
+        index: u32,
         size_shift: u8,
         operator: BinaryOperator,
         right: &Expression,

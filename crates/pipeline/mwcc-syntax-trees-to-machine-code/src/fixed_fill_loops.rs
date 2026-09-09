@@ -14,9 +14,9 @@ use mwcc_vreg::{Class, Liveness, Reg};
 #[derive(Debug)]
 struct Plan {
     start: usize,
-    counter: u8,
-    pointer: u8,
-    fill: u8,
+    counter: u32,
+    pointer: u32,
+    fill: u32,
     value: i16,
     count: i16,
     width: i16,
@@ -27,7 +27,7 @@ struct Plan {
 }
 
 impl Plan {
-    fn store_at(&self, slot: i16, fill: u8) -> I {
+    fn store_at(&self, slot: i16, fill: u32) -> I {
         let mut store = self.store.clone();
         match &mut store {
             I::StoreWord { s, offset, .. }
@@ -374,7 +374,7 @@ fn recognize(
     })
 }
 
-fn live_at(live: &Liveness, register: u8, at: usize) -> bool {
+fn live_at(live: &Liveness, register: u32, at: usize) -> bool {
     let slots = if let Some(vreg) = Reg::from_field(register, Class::General).virtual_register() {
         live.intervals
             .iter()
@@ -383,7 +383,7 @@ fn live_at(live: &Liveness, register: u8, at: usize) -> bool {
     } else {
         live.pinned
             .iter()
-            .find(|p| p.class == Class::General && p.register == register)
+            .find(|p| p.class == Class::General && u32::from(p.register) == register)
             .and_then(|p| p.live_slots.as_ref())
     };
     slots.is_some_and(|slots| slots.binary_search(&(2 * at)).is_ok())

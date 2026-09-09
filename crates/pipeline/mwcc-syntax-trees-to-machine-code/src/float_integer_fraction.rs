@@ -18,7 +18,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<bool> {
         if operator != BinaryOperator::Multiply
@@ -59,7 +59,7 @@ impl Generator {
         let fraction_value = self.fresh_virtual_float_preferring(1);
         let numerator_scratch = self.claim_int_to_float_scratch()?;
         self.emit_preserved_signed_int_to_float_body_at(
-            numerator_source,
+            numerator_source.into(),
             fraction_value,
             fraction_value,
             numerator_scratch,

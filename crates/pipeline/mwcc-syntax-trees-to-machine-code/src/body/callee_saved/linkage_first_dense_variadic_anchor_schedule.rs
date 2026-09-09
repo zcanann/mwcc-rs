@@ -10,8 +10,8 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DenseVariadicAnchorPrefix {
-    anchor_home: u8,
-    context_home: u8,
+    anchor_home: u32,
+    context_home: u32,
 }
 
 pub(super) fn schedule_dense_variadic_anchor_prefix(generator: &mut Generator) -> bool {
@@ -27,18 +27,18 @@ pub(super) fn schedule_dense_variadic_anchor_prefix(generator: &mut Generator) -
     generator.move_instruction_before(9, 6);
 
     generator.output.instructions[4] =
-        Instruction::move_register(plan.context_home, Eabi::FIRST_GENERAL_ARGUMENT);
+        Instruction::move_register(plan.context_home, Eabi::FIRST_GENERAL_ARGUMENT.into());
     let Instruction::AddImmediateShifted { d, .. } = &mut generator.output.instructions[5]
     else {
         unreachable!("the dense variadic anchor high half was matched")
     };
-    *d = Eabi::FIRST_GENERAL_ARGUMENT;
+    *d = 3;
     let Instruction::AddImmediate { a, .. } = &mut generator.output.instructions[7] else {
         unreachable!("the dense variadic anchor low half was matched")
     };
-    *a = Eabi::FIRST_GENERAL_ARGUMENT;
+    *a = 3;
     generator.output.instructions[8] =
-        Instruction::move_register(Eabi::FIRST_GENERAL_ARGUMENT, plan.anchor_home);
+        Instruction::move_register(Eabi::FIRST_GENERAL_ARGUMENT.into(), plan.anchor_home);
     generator.output.instructions[9] = Instruction::move_register(4, plan.context_home);
     true
 }

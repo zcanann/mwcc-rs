@@ -36,7 +36,7 @@ impl Generator {
             return Ok(false);
         };
         let cursor = owner + 1;
-        if owner != Eabi::general_result().number {
+        if owner != u32::from(Eabi::general_result().number) {
             return Ok(false);
         }
 

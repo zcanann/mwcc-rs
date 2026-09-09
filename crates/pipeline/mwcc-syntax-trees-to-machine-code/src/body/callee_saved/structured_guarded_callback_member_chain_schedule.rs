@@ -58,7 +58,7 @@ impl Generator {
         self.schedule_guarded_callback_priority_update(receiver);
     }
 
-    fn schedule_guarded_callback_priority_update(&mut self, receiver: u8) {
+    fn schedule_guarded_callback_priority_update(&mut self, receiver: u32) {
         let Some(start) = priority_update(&self.output.instructions, receiver) else {
             return;
         };
@@ -89,7 +89,7 @@ impl Generator {
     }
 }
 
-fn nullable_member_chain(instructions: &[Instruction], receiver: u8) -> Option<usize> {
+fn nullable_member_chain(instructions: &[Instruction], receiver: u32) -> Option<usize> {
     instructions.windows(9).position(|window| {
         matches!(window, [
             Instruction::LoadWord { d: 0, a, offset: 16 },
@@ -105,7 +105,7 @@ fn nullable_member_chain(instructions: &[Instruction], receiver: u8) -> Option<u
     })
 }
 
-fn priority_update(instructions: &[Instruction], receiver: u8) -> Option<usize> {
+fn priority_update(instructions: &[Instruction], receiver: u32) -> Option<usize> {
     instructions.windows(11).position(|window| {
         matches!(window, [
             Instruction::LoadWord { d: 0, a, offset: 288 },

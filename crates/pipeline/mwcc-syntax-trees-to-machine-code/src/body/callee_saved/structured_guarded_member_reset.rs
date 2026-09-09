@@ -17,8 +17,8 @@ pub(super) struct StructuredGuardedMemberReset {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct StructuredGuardedMemberResetHomes {
-    owner: u8,
-    zero: u8,
+    owner: u32,
+    zero: u32,
 }
 
 impl StructuredGuardedMemberReset {
@@ -111,7 +111,7 @@ impl StructuredGuardedMemberReset {
         [&self.owner, &self.zero]
     }
 
-    pub(super) fn preference(&self, name: &str) -> Option<u8> {
+    pub(super) fn preference(&self, name: &str) -> Option<u32> {
         if name == self.owner {
             Some(30)
         } else if name == self.zero {
@@ -123,18 +123,18 @@ impl StructuredGuardedMemberReset {
 
     pub(super) fn homes(
         &self,
-        mut home_for: impl FnMut(&str) -> Option<u8>,
+        mut home_for: impl FnMut(&str) -> Option<u32>,
     ) -> Option<StructuredGuardedMemberResetHomes> {
         Some(StructuredGuardedMemberResetHomes {
-            owner: home_for(&self.owner)?,
-            zero: home_for(&self.zero)?,
+            owner: home_for(&self.owner)?.into(),
+            zero: home_for(&self.zero)?.into(),
         })
     }
 
     pub(super) fn save_order(
         &self,
         homes: StructuredGuardedMemberResetHomes,
-    ) -> [u8; 2] {
+    ) -> [u32; 2] {
         [homes.zero, homes.owner]
     }
 
@@ -231,7 +231,7 @@ fn call_with_member(statement: &Statement, owner: &str, offset: u32) -> bool {
     matches!(arguments.as_slice(), [argument] if member_offset(argument, owner) == Some(offset))
 }
 
-fn guarded_clear_window(instructions: &[Instruction], owner: u8, offset: i16) -> bool {
+fn guarded_clear_window(instructions: &[Instruction], owner: u32, offset: i16) -> bool {
     matches!(
         instructions,
         [

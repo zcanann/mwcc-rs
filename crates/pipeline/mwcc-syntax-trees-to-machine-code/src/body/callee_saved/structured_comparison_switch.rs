@@ -54,8 +54,8 @@ impl Generator {
                 location.register
             }
             _ => {
-                self.evaluate_general(scrutinee, Eabi::general_result().number)?;
-                Eabi::general_result().number
+                self.evaluate_general(scrutinee, u32::from(Eabi::general_result().number))?;
+                u32::from(Eabi::general_result().number)
             }
         };
 
@@ -73,7 +73,7 @@ impl Generator {
             .map(|(name, location)| (name.clone(), location.register))
             .collect::<Vec<_>>();
         for (offset, (name, source)) in preserved.into_iter().enumerate() {
-            let retained = self.fresh_virtual_general_preferring(7u8.saturating_sub(offset as u8));
+            let retained = self.fresh_virtual_general_preferring(7u8.saturating_sub(offset as u8).into());
             self.output
                 .instructions
                 .push(Instruction::move_register(retained, source));
@@ -82,16 +82,16 @@ impl Generator {
                 .expect("preserved dispatch value came from a known location")
                 .register = retained;
         }
-        if source_register != Eabi::general_result().number {
+        if source_register != u32::from(Eabi::general_result().number) {
             self.output.instructions.push(Instruction::move_register(
-                Eabi::general_result().number,
+                u32::from(Eabi::general_result().number),
                 source_register,
             ));
         }
 
         let mut patches = Vec::new();
         self.lower_shared_base_switch_range(
-            Eabi::general_result().number,
+            u32::from(Eabi::general_result().number),
             &values,
             4,
             base,
@@ -122,8 +122,8 @@ impl Generator {
                 }
                 ArmBody::Return(value) => {
                     let result = match function.return_type {
-                        Type::Float | Type::Double => Eabi::float_result().number,
-                        _ => Eabi::general_result().number,
+                        Type::Float | Type::Double => u32::from(Eabi::float_result().number),
+                        _ => u32::from(Eabi::general_result().number),
                     };
                     self.evaluate(value, function.return_type, result)?;
                     return_branches.push(self.output.instructions.len());
@@ -162,8 +162,8 @@ impl Generator {
                 }
                 ArmBody::Return(value) => {
                     let result = match function.return_type {
-                        Type::Float | Type::Double => Eabi::float_result().number,
-                        _ => Eabi::general_result().number,
+                        Type::Float | Type::Double => u32::from(Eabi::float_result().number),
+                        _ => u32::from(Eabi::general_result().number),
                     };
                     self.evaluate(value, function.return_type, result)?;
                     return_branches.push(self.output.instructions.len());

@@ -16,7 +16,7 @@ impl Generator {
         product: &Expression,
         literal: &Expression,
         double: bool,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         let Expression::Binary {
             operator: BinaryOperator::Multiply,
             left,

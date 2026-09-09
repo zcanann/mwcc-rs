@@ -12,7 +12,7 @@ impl Generator {
     fn emit_call_result_arm(
         &mut self,
         statement: &Statement,
-        result_register: u8,
+        result_register: u32,
     ) -> Compilation<()> {
         let Statement::Expression(Expression::Call { name, arguments }) = statement else {
             unreachable!("the owner validates both arms");
@@ -29,14 +29,14 @@ impl Generator {
         // ordinary left-to-right argument emitter rejects; restricting it to a
         // three-word direct call leaves no intervening value that can be
         // clobbered by the early materialization.
-        let tail_register = Eabi::FIRST_GENERAL_ARGUMENT + 2;
-        self.evaluate_general(&arguments[2], tail_register)?;
+        let tail_register: u32 = (Eabi::FIRST_GENERAL_ARGUMENT + 2) as u32;
+        self.evaluate_general(&arguments[2], tail_register.into())?;
         let temporary = "@call-result-if-else-tail".to_string();
         self.locations.insert(
             temporary.clone(),
             Location {
                 class: ValueClass::General,
-                register: tail_register,
+                register: u32::from(tail_register),
                 signed: true,
                 width: 32,
                 pointee: None,
@@ -152,7 +152,7 @@ impl Generator {
         });
         self.emit_call(initializer_name, initializer_arguments, None, false)?;
 
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.locations.insert(
             discriminator.name.clone(),
             Location {

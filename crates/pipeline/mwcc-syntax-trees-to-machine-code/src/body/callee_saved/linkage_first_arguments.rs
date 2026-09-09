@@ -11,7 +11,7 @@ impl Generator {
     /// standard-build epilogue writes LR before releasing the stack.
     pub(crate) fn schedule_linkage_first_entry_arguments(
         &mut self,
-        physical_saved: &[u8],
+        physical_saved: &[u32],
     ) -> bool {
         if self.schedule_linkage_first_asm_barrier_entry(physical_saved) {
             return false;
@@ -684,7 +684,7 @@ fn schedule_post_asm_function_address_argument(
     output: &mut mwcc_machine_code::MachineFunction,
     is_function_symbol: &dyn Fn(&str) -> bool,
 ) {
-    let first = Eabi::FIRST_GENERAL_ARGUMENT;
+    let first: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
     let second = first + 1;
     let Some(start) = output.instructions.windows(7).position(|window| {
         matches!(window,
@@ -696,7 +696,7 @@ fn schedule_post_asm_function_address_argument(
                 Instruction::AddImmediate { d: constant, a: 0, .. },
                 Instruction::AddImmediate { d: completed, a: base, .. },
                 Instruction::BranchAndLink { .. },
-            ] if *d == second && *constant == first && *completed == second && *base == second)
+            ] if *d == second.into() && *constant == first.into() && *completed == second.into() && *base == second.into())
     }) else {
         return;
     };
@@ -725,11 +725,11 @@ fn schedule_post_asm_function_address_argument(
     let Instruction::AddImmediateShifted { d, .. } = &mut output.instructions[high] else {
         unreachable!("post-asm callback high was recognized")
     };
-    *d = first;
+    *d = u32::from(first);
     let Instruction::AddImmediate { a, .. } = &mut output.instructions[low] else {
         unreachable!("post-asm callback low was recognized")
     };
-    *a = first;
+    *a = u32::from(first);
     output.instructions.swap(start + 4, start + 5);
     for relocation in &mut output.relocations {
         relocation.instruction_index = match relocation.instruction_index {
@@ -740,7 +740,7 @@ fn schedule_post_asm_function_address_argument(
     }
 }
 
-fn touches_general_register(instruction: &Instruction, register: u8) -> bool {
+fn touches_general_register(instruction: &Instruction, register: u32) -> bool {
     mwcc_vreg::register_operands(instruction)
         .into_iter()
         .any(|operand| operand.class == mwcc_vreg::Class::General && operand.register == register)

@@ -11,15 +11,15 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct InlinedContextClearPlan {
     start: usize,
-    saved_interrupt_state: u8,
-    saved_current_context: u8,
+    saved_interrupt_state: u32,
+    saved_current_context: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TailContextRestorePlan {
     start: usize,
-    saved_interrupt_state: u8,
-    saved_current_context: u8,
+    saved_interrupt_state: u32,
+    saved_current_context: u32,
 }
 
 impl Generator {
@@ -73,7 +73,7 @@ impl Generator {
             }
         }
 
-        const FIXED_BANK: u8 = 6;
+        const FIXED_BANK: u32 = 6;
         let Instruction::AddImmediateShifted { d, .. } =
             &mut self.output.instructions[plan.start + 1]
         else {

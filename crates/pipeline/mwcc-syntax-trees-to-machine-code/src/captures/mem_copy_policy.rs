@@ -10,7 +10,7 @@ use mwcc_versions::MemCopyRemainderMaskStyle;
 
 impl Generator {
     /// Emit the final `count &= 3` condition used by reverse copy helpers.
-    pub(super) fn emit_mem_copy_remainder_mask(&mut self, count: u8) {
+    pub(super) fn emit_mem_copy_remainder_mask(&mut self, count: u32) {
         match self.behavior.mem_copy_remainder_mask_style {
             MemCopyRemainderMaskStyle::MaterializedThree => {
                 self.output.instructions.push(Instruction::AddImmediate {
@@ -40,11 +40,11 @@ impl Generator {
     /// helpers. Build 53 schedules the source adjustment between `li` and `and.`.
     pub(super) fn emit_mem_copy_forward_remainder_setup(
         &mut self,
-        count: u8,
-        source: u8,
-        source_base: u8,
-        destination: u8,
-        destination_base: u8,
+        count: u32,
+        source: u32,
+        source_base: u32,
+        destination: u32,
+        destination_base: u32,
     ) {
         if self.behavior.mem_copy_remainder_mask_style
             == MemCopyRemainderMaskStyle::MaterializedThree

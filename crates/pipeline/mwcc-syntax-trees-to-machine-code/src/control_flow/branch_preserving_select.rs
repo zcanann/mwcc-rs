@@ -12,7 +12,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
         tail: bool,
         origin: ConditionalOrigin,
     ) -> Compilation<bool> {
@@ -120,7 +120,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
         tail: bool,
         origin: ConditionalOrigin,
     ) -> Compilation<bool> {
@@ -171,7 +171,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
         tail: bool,
         origin: ConditionalOrigin,
     ) -> Compilation<bool> {
@@ -250,7 +250,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
         tail: bool,
         origin: ConditionalOrigin,
     ) -> Compilation<bool> {
@@ -319,7 +319,7 @@ impl Generator {
         when_true: &Expression,
         when_false: &Expression,
         origin: ConditionalOrigin,
-    ) -> Compilation<Option<u8>> {
+    ) -> Compilation<Option<u32>> {
         if self.behavior.integer_select_style != mwcc_versions::IntegerSelectStyle::BranchPreserving
             || self.non_leaf
             || origin != ConditionalOrigin::Ternary
@@ -347,7 +347,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
         tail: bool,
         origin: ConditionalOrigin,
     ) -> Compilation<bool> {
@@ -431,7 +431,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        phi: u8,
+        phi: u32,
         true_is_phi: bool,
     ) -> Compilation<()> {
         self.output.anonymous_label_bump += 3;
@@ -476,7 +476,7 @@ impl Generator {
         Ok(())
     }
 
-    fn place_legacy_phi_value(&mut self, value: &Expression, destination: u8) -> Compilation<()> {
+    fn place_legacy_phi_value(&mut self, value: &Expression, destination: u32) -> Compilation<()> {
         if self.is_single_op_register_value(value) {
             self.evaluate_general(value, destination)
         } else {

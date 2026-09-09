@@ -1,9 +1,9 @@
 use super::*;
 
 pub(super) fn emit(generator: &mut Generator, plan: &FixedListBankTransfer<'_>) {
-    const SOURCE: u8 = 29;
-    const DESTINATION: u8 = 30;
-    const OBJECT: u8 = 31;
+    const SOURCE: u32 = 29;
+    const DESTINATION: u32 = 30;
+    const OBJECT: u32 = 31;
     generator.non_leaf = true;
     generator.frame_size = 40;
     generator.callee_saved = vec![OBJECT, DESTINATION, SOURCE];

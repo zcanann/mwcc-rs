@@ -10,7 +10,7 @@
 use super::*;
 
 impl Generator {
-    fn materialize_word_pointer_table(&mut self, base: &Expression) -> Compilation<Option<u8>> {
+    fn materialize_word_pointer_table(&mut self, base: &Expression) -> Compilation<Option<u32>> {
         if self.pointee_of(base).ok() != Some(Pointee::WordPointer) {
             return Ok(None);
         }
@@ -22,7 +22,7 @@ impl Generator {
             self.evaluate_general(base, table)?;
             table
         } else {
-            self.resolve_pointer(base)?.1
+            self.resolve_pointer(base)?.1.into()
         };
         Ok(Some(table))
     }
@@ -35,7 +35,7 @@ impl Generator {
         &mut self,
         base: &Expression,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Expression::Index {
             base: table_base,
@@ -92,7 +92,7 @@ impl Generator {
     pub(crate) fn try_resolve_nested_pointer_table_entry(
         &mut self,
         expression: &Expression,
-    ) -> Compilation<Option<(Pointee, u8)>> {
+    ) -> Compilation<Option<(Pointee, u32)>> {
         let Expression::Index { base, index } = expression else {
             return Ok(None);
         };

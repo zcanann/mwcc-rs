@@ -101,11 +101,11 @@ impl Generator {
         let call_result = self.fresh_virtual_general_preferring(GENERAL_SCRATCH);
         self.output.instructions.push(Instruction::move_register(
             call_result,
-            Eabi::general_result().number,
+            u32::from(Eabi::general_result().number),
         ));
 
         let int_scratch = self.claim_int_to_float_scratch()?;
-        let promoted = self.fresh_virtual_float_preferring(Eabi::float_result().number);
+        let promoted = self.fresh_virtual_float_preferring(u32::from(Eabi::float_result().number));
         self.load_double_constant(promoted, 0x4330_0000_8000_0000);
         let biased = self.fresh_virtual_general_preferring(4);
         self.output
@@ -174,7 +174,7 @@ impl Generator {
                 a: 1,
                 offset: float_scratch,
             });
-        let result = self.fresh_virtual_general_preferring(Eabi::general_result().number);
+        let result = self.fresh_virtual_general_preferring(u32::from(Eabi::general_result().number));
         self.output.instructions.push(Instruction::LoadWord {
             d: result,
             a: 1,

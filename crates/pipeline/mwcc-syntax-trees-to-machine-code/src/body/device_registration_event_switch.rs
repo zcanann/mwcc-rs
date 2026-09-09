@@ -312,9 +312,9 @@ impl Generator {
     }
 
     fn emit_device_registration_event_switch(&mut self, shape: &DeviceRegistrationEventSwitch) {
-        const OBJECT: u8 = 30;
-        const ARGUMENT: u8 = 31;
-        const SELECTOR: u8 = 4;
+        const OBJECT: u32 = 30;
+        const ARGUMENT: u32 = 31;
+        const SELECTOR: u32 = 4;
         let upper = self.fresh_label();
         let initialize = self.fresh_label();
         let register = self.fresh_label();
@@ -485,7 +485,7 @@ impl Generator {
             offset: shape.host_offset,
         });
         for (register, callback) in [5_u8, 6, 7].into_iter().zip(&registration.callbacks[..3]) {
-            self.emit_address_high(register, callback);
+            self.emit_address_high(register.into(), callback);
         }
         self.output.instructions.push(Instruction::LoadWord {
             d: 3,
@@ -500,7 +500,7 @@ impl Generator {
             immediate: 0,
         });
         for (register, callback) in [5_u8, 6, 7].into_iter().zip(&registration.callbacks[..3]) {
-            self.emit_address_low(register, callback);
+            self.emit_address_low(register.into(), callback);
         }
         self.output.instructions.push(Instruction::AddImmediate {
             d: 4,

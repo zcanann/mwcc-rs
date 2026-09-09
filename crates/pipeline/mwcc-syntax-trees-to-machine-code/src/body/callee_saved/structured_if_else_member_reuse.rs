@@ -257,7 +257,7 @@ fn count_arm_assignments(body: &mwcc_syntax_trees::ArmBody, name: &str) -> usize
 pub(super) fn compared_register_before_branch(
     instructions: &[Instruction],
     branch: usize,
-) -> Option<u8> {
+) -> Option<u32> {
     match instructions.get(branch.checked_sub(1)?)? {
         Instruction::CompareWordImmediate { a, .. }
         | Instruction::CompareLogicalWordImmediate { a, .. } => Some(*a),
@@ -266,7 +266,7 @@ pub(super) fn compared_register_before_branch(
 }
 
 impl Generator {
-    pub(super) fn emit_member_else_reuse(&mut self, plan: MemberElseReuse<'_>, source: u8) -> bool {
+    pub(super) fn emit_member_else_reuse(&mut self, plan: MemberElseReuse<'_>, source: u32) -> bool {
         let Some(location) = self.locations.get(plan.result) else {
             return false;
         };

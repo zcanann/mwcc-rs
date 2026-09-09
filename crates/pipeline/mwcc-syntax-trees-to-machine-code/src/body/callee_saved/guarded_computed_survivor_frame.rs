@@ -166,7 +166,7 @@ impl Generator {
                         && next_is_array_call
                     {
                         self.output.instructions.push(Instruction::AddImmediate {
-                            d: Eabi::FIRST_GENERAL_ARGUMENT,
+                            d: 3,
                             a: 1,
                             immediate: array_offset,
                         });

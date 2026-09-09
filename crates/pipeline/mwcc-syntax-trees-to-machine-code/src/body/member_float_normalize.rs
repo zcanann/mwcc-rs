@@ -294,10 +294,10 @@ fn selector_store<'a>(
 fn emit_select(
     output: &mut MachineFunction,
     callee: &str,
-    difference_left: u8,
-    difference_right: u8,
-    positive: u8,
-    negative: u8,
+    difference_left: u32,
+    difference_right: u32,
+    positive: u32,
+    negative: u32,
     member_offset: i16,
 ) {
     output.instructions.extend([

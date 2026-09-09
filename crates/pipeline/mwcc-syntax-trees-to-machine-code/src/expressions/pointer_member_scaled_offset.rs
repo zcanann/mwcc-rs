@@ -57,14 +57,14 @@ fn parts(
         return None;
     }
     let shift = u8::try_from(scale.trailing_zeros()).ok()?;
-    Some((pointer, count, shift, bias))
+    Some((pointer, count, shift.into(), bias))
 }
 
 impl Generator {
     pub(crate) fn try_emit_pointer_member_scaled_offset(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if destination == GENERAL_SCRATCH {
             return Ok(false);
@@ -122,7 +122,7 @@ impl Generator {
 
         // r3 is MWCC's preferred transient result lane. Whole-body liveness can
         // still displace it when an incoming value survives this expression.
-        let scaled = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+        let scaled = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT.into());
         self.output
             .instructions
             .push(Instruction::ShiftLeftImmediate {

@@ -109,7 +109,7 @@ impl Generator {
         &mut self,
         name: &str,
         total_size: u32,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let anchored = self
             .data_section_anchor

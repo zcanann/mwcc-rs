@@ -53,10 +53,10 @@ impl Generator {
             let Expression::Variable(argument_name) = argument else {
                 return Ok(false);
             };
-            let expected = mwcc_target::Eabi::FIRST_GENERAL_ARGUMENT + position as u8;
+            let expected: u32 = (mwcc_target::Eabi::FIRST_GENERAL_ARGUMENT + position as u8) as u32;
             match self.locations.get(argument_name) {
                 Some(location)
-                    if location.class == ValueClass::General && location.register == expected => {}
+                    if location.class == ValueClass::General && location.register == expected.into() => {}
                 _ => return Ok(false),
             }
         }

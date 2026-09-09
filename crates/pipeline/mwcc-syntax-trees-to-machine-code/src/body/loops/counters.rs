@@ -87,7 +87,7 @@ impl Generator {
         }
 
         // Prologue: save the link register and r31, move the counter into r31.
-        const SAVED: u8 = 31;
+        const SAVED: u32 = 31;
         self.non_leaf = true;
         self.frame_size = 16;
         self.callee_saved = vec![SAVED];
@@ -613,8 +613,8 @@ impl Generator {
         };
 
         // Prologue: r31 = counter (init 0), r30 = bound, saved at the top of a frame.
-        const COUNTER: u8 = 31;
-        const BOUND: u8 = 30;
+        const COUNTER: u32 = 31;
+        const BOUND: u32 = 30;
         self.non_leaf = true;
         self.frame_size = 16;
         self.callee_saved = vec![COUNTER, BOUND];

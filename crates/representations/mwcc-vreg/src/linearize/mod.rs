@@ -831,9 +831,9 @@ pub enum ReuseRule {
 pub fn assign_registers(
     nodes: &[DagNode],
     order: &[usize],
-    params: &[(u32, u8)],
+    params: &[(u32, u32)],
     policy: RegisterPolicy,
-) -> Vec<Option<u8>> {
+) -> Vec<Option<u32>> {
     let count = nodes.len();
     // Rebuild chains and the final-op set the same way linearize_with does.
     let mut consumer_of: Vec<Vec<usize>> = vec![Vec::new(); count];
@@ -866,9 +866,9 @@ pub fn assign_registers(
         }
         position
     };
-    let mut result: Vec<Option<u8>> = vec![None; count];
+    let mut result: Vec<Option<u32>> = vec![None; count];
     // Live map: register -> death slot (exclusive). Params live until last read.
-    let mut live: Vec<(u8, usize)> = params
+    let mut live: Vec<(u32, usize)> = params
         .iter()
         .map(|&(value, register)| {
             let death = (0..count)
@@ -895,7 +895,7 @@ pub fn assign_registers(
             continue;
         }
         let death = consumer_of[node].iter().map(|&reader| position[reader]).max().unwrap_or(slot);
-        let own_dying: Option<u8> = nodes[node].reads.iter().find_map(|read| {
+        let own_dying: Option<u32> = nodes[node].reads.iter().find_map(|read| {
             params.iter().find(|&&(value, _)| value == *read).and_then(|&(value, register)| {
                 let value_death = (0..count)
                     .filter(|&reader| nodes[reader].reads.contains(&value))
@@ -905,7 +905,7 @@ pub fn assign_registers(
                 (value_death == slot).then_some(register)
             })
         });
-        let is_free = |register: u8, live: &[(u8, usize)], include_same_cycle: bool| -> bool {
+        let is_free = |register: u32, live: &[(u32, usize)], include_same_cycle: bool| -> bool {
             live.iter().all(|&(taken, taken_death)| {
                 taken != register || taken_death < slot || (include_same_cycle && taken_death == slot)
             })
@@ -936,7 +936,7 @@ pub fn assign_registers(
 /// Assignment processes values in ISSUE order but checks conflicts against
 /// EVERY other value's interval, including future ones (interval allocation,
 /// not greedy-at-issue).
-pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u8)]) -> Vec<Option<u8>> {
+pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u32)]) -> Vec<Option<u32>> {
     let count = nodes.len();
     let mut consumer_of: Vec<Vec<usize>> = vec![Vec::new(); count];
     for (index, node) in nodes.iter().enumerate() {
@@ -964,7 +964,7 @@ pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u
     let last_sink = (0..count).rev().find(|&node| consumer_of[node].is_empty()).unwrap_or(count - 1);
     // Intervals: params [0, last read]; values [def slot, last read slot].
     struct Interval {
-        register: Option<u8>,
+        register: Option<u32>,
         start: usize,
         end: usize,
     }
@@ -986,11 +986,11 @@ pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u
     // Process in issue order; assignment sees all existing intervals AND we
     // re-check against them after each placement (future values conflict via
     // their later placement — the in-place preference is what needs care).
-    let mut result: Vec<Option<u8>> = vec![None; count];
+    let mut result: Vec<Option<u32>> = vec![None; count];
     let ordered_values: Vec<usize> = order.iter().copied().filter(|&node| !nodes[node].writes.is_empty() && nodes[node].kind != OpKind::Store).collect();
     for &node in &ordered_values {
         let (start, end) = value_interval(node);
-        let free_over = |register: u8, intervals: &[Interval], open_start: bool| -> bool {
+        let free_over = |register: u32, intervals: &[Interval], open_start: bool| -> bool {
             intervals.iter().all(|interval| {
                 interval.register != Some(register)
                     || interval.end < start
@@ -1000,7 +1000,7 @@ pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         };
         // The source register dying exactly at this def (the in-place candidate):
         // lowest such source.
-        let in_place: Option<u8> = nodes[node]
+        let in_place: Option<u32> = nodes[node]
             .reads
             .iter()
             .filter_map(|read| {
@@ -1048,7 +1048,7 @@ pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u
 ///   use r0 only when their whole interval PRECEDES the last chain's first def;
 /// - a FINAL op (feeding a store) may reuse its own dying source's register
 ///   (an open-interval exception); last-chain finals still prefer r0.
-pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u8)]) -> Vec<Option<u8>> {
+pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u32)]) -> Vec<Option<u32>> {
     let count = nodes.len();
     let mut consumer_of: Vec<Vec<usize>> = vec![Vec::new(); count];
     for (index, node) in nodes.iter().enumerate() {
@@ -1098,11 +1098,11 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         consumer_of[node].iter().map(|&reader| position[reader]).max().unwrap_or(position[node])
     };
     // Occupancies as (register, start, end) with CLOSED ends.
-    let mut occupied: Vec<(u8, usize, usize)> = params
+    let mut occupied: Vec<(u32, usize, usize)> = params
         .iter()
         .map(|&(value, register)| (register, 0, param_end(value)))
         .collect();
-    let mut result: Vec<Option<u8>> = vec![None; count];
+    let mut result: Vec<Option<u32>> = vec![None; count];
     // Pre-claim the return value's r3 (its occupancy participates in every
     // in-place conflict check below).
     let return_claim_start = return_node.map(|node| position[node]);
@@ -1164,7 +1164,7 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         }
         let start = position[node];
         let end = value_end(node);
-        let closed_free = |register: u8, occupied: &[(u8, usize, usize)]| -> bool {
+        let closed_free = |register: u32, occupied: &[(u32, usize, usize)]| -> bool {
             occupied.iter().all(|&(taken, taken_start, taken_end)| {
                 taken != register
                     || taken_end < start
@@ -1217,7 +1217,7 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
                 || start % 2 == 1
                 || nodes[node].kind == OpKind::Load
                 || (nodes[node].extension && consumer_of[node].len() == 1));
-        let own_dying: Option<u8> = nodes[node]
+        let own_dying: Option<u32> = nodes[node]
             .reads
             .iter()
             .filter_map(|read| {
@@ -1234,7 +1234,7 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
             .filter(|&(_, death, internal)| death == start && (internal || relaxed))
             .map(|(register, _, _)| register)
             .min();
-        let open_free = |register: u8, occupied: &[(u8, usize, usize)]| -> bool {
+        let open_free = |register: u32, occupied: &[(u32, usize, usize)]| -> bool {
             occupied.iter().all(|&(taken, taken_start, taken_end)| {
                 taken != register || taken_end <= start || taken_start > end
             })
@@ -1249,7 +1249,7 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         // own dying source (internal sources always; params in the relaxed
         // regime only). First candidate in pool order wins.
         let r0_eligible = (return_mode || on_last_chain || end < last_chain_first_def) && !nodes[node].forbid_r0;
-        let pool: Vec<u8> = if !return_mode && on_last_chain && is_final && !nodes[node].forbid_r0 {
+        let pool: Vec<u32> = if !return_mode && on_last_chain && is_final && !nodes[node].forbid_r0 {
             vec![0]
         } else if return_mode
             && is_final
@@ -1259,7 +1259,7 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
             // Only the LAST store chain's final PREFERS r0 in return mode
             // (measured); it falls through when r0 is held — by another
             // occupant or by an overlapping return-intermediate RESERVATION.
-            let mut pool = vec![0u8, 3, 4];
+            let mut pool = vec![0u32, 3, 4];
             pool.extend(5..=12);
             pool
         } else if return_mode && is_final && !nodes[node].forbid_r0 {
@@ -1267,7 +1267,7 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
             // free r0 under the srawi handoff).
             (3..=12).collect()
         } else if r0_eligible {
-            let mut pool = vec![3u8, 4, 0];
+            let mut pool = vec![3u32, 4, 0];
             pool.extend(5..=12);
             pool
         } else {
@@ -1298,9 +1298,9 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
 pub fn assign_registers_sequenced(
     nodes: &[DagNode],
     order: &[usize],
-    params: &[(u32, u8)],
+    params: &[(u32, u32)],
     chain_sequence: &[usize],
-) -> Vec<Option<u8>> {
+) -> Vec<Option<u32>> {
     let count = nodes.len();
     let mut consumer_of: Vec<Vec<usize>> = vec![Vec::new(); count];
     for (index, node) in nodes.iter().enumerate() {
@@ -1345,12 +1345,12 @@ pub fn assign_registers_sequenced(
         .copied()
         .filter(|&sink| nodes[sink].kind == OpKind::Store)
         .max();
-    let mut occupied: Vec<(u8, usize, usize)> =
+    let mut occupied: Vec<(u32, usize, usize)> =
         params.iter().map(|&(value, register)| (register, 0, param_end(value))).collect();
-    let mut result: Vec<Option<u8>> = vec![None; count];
+    let mut result: Vec<Option<u32>> = vec![None; count];
     // Pre-claim forced positions: the return VALUE's r3; store-only, the last
     // chain's final r0.
-    let mut forced: Vec<(usize, u8)> = Vec::new();
+    let mut forced: Vec<(usize, u32)> = Vec::new();
     for node in 0..count {
         if return_mode && consumer_of[node].is_empty() && nodes[node].kind != OpKind::Store {
             forced.push((node, 3));
@@ -1377,13 +1377,13 @@ pub fn assign_registers_sequenced(
         for node in members {
             let start = position[node];
             let end = value_end(node);
-            let closed_free = |register: u8, occupied: &[(u8, usize, usize)]| -> bool {
+            let closed_free = |register: u32, occupied: &[(u32, usize, usize)]| -> bool {
                 occupied.iter().all(|&(taken, s, e)| taken != register || e < start || s > end)
             };
-            let open_free = |register: u8, occupied: &[(u8, usize, usize)]| -> bool {
+            let open_free = |register: u32, occupied: &[(u32, usize, usize)]| -> bool {
                 occupied.iter().all(|&(taken, s, e)| taken != register || e <= start || s > end)
             };
-            let own_dying: Option<u8> = nodes[node]
+            let own_dying: Option<u32> = nodes[node]
                 .reads
                 .iter()
                 .filter_map(|read| {
@@ -1415,8 +1415,8 @@ pub fn assign_registers_sequenced(
                     .unwrap_or(usize::MAX);
                 end < last_first_def
             };
-            let pool: Vec<u8> = if r0_eligible {
-                let mut pool = vec![3u8, 4, 0];
+            let pool: Vec<u32> = if r0_eligible {
+                let mut pool = vec![3u32, 4, 0];
                 pool.extend(5..=12);
                 pool
             } else {
@@ -1471,7 +1471,7 @@ pub struct FloatRegModel {
     /// A LOWER BOUND on the register window: the dual composition arm
     /// passes the tails' pressure (escaping values + live params + tail
     /// constants), which the shared DAG alone cannot see.
-    pub window_floor: u8,
+    pub window_floor: u32,
     /// DUAL-TAIL shapes order the prefix tier by DEFINITION descending
     /// (the LAST-defined local takes the top: w > v > z — measured across
     /// the fire-350/354 dual matrix; single-tail shapes keep death-asc).
@@ -1581,9 +1581,9 @@ pub const FROZEN_FLOAT_REG: FloatRegModel = FloatRegModel {
 pub fn assign_float_registers(
     nodes: &[DagNode],
     order: &[usize],
-    params: &[(u32, u8)],
+    params: &[(u32, u32)],
     model: FloatRegModel,
-) -> Vec<Option<u8>> {
+) -> Vec<Option<u32>> {
     let count = nodes.len();
     let mut consumer_of: Vec<Vec<usize>> = vec![Vec::new(); count];
     for (index, node) in nodes.iter().enumerate() {
@@ -1614,7 +1614,7 @@ pub fn assign_float_registers(
     let return_node: Option<usize> = (0..count).find(|&node| {
         consumer_of[node].is_empty() && is_value(node)
     });
-    let mut result: Vec<Option<u8>> = vec![None; count];
+    let mut result: Vec<Option<u32>> = vec![None; count];
     if let Some(ret) = return_node {
         result[ret] = Some(1);
     }
@@ -1649,16 +1649,16 @@ pub fn assign_float_registers(
             window += 1;
         }
         window
-    } as u8;
+    } as u32;
     let window = window.max(model.window_floor);
-    let param_registers: Vec<u8> = params.iter().map(|&(_, register)| register).collect();
+    let param_registers: Vec<u32> = params.iter().map(|&(_, register)| register).collect();
     let use_reverse = model.reverse && (return_node.is_some() || !model.void_forward);
     if use_reverse {
         // Occupancies: (register, start, end, owner) — owner usize::MAX marks
         // a param.
         // A param NO node reads is dead on entry (the dual-tail's x after
         // the shared z consumed it) — no occupancy at all.
-        let mut occupied: Vec<(u8, usize, usize, usize)> = params
+        let mut occupied: Vec<(u32, usize, usize, usize)> = params
             .iter()
             .filter(|&&(value, _)| (0..count).any(|reader| nodes[reader].reads.contains(&value)))
             .map(|&(value, register)| (register, 0, param_end(value), usize::MAX))
@@ -1862,7 +1862,7 @@ pub fn assign_float_registers(
                     }
                     let start = position[node];
                     let end = value_end(node);
-                    let free = |register: u8, occupied: &Vec<(u8, usize, usize, usize)>| -> bool {
+                    let free = |register: u32, occupied: &Vec<(u32, usize, usize, usize)>| -> bool {
                         occupied.iter().all(|&(taken, taken_start, taken_end, _)| {
                             taken != register || taken_end < start || taken_start > end
                         })
@@ -1872,7 +1872,7 @@ pub fn assign_float_registers(
                     // A dying register is reusable only when nothing ELSE
                     // holds it across this value's span (the d5 interleave's
                     // early-claimed f0 blocks chain1's MIN — measured).
-                    let reusable = |register: u8, occupied: &Vec<(u8, usize, usize, usize)>| -> bool {
+                    let reusable = |register: u32, occupied: &Vec<(u32, usize, usize, usize)>| -> bool {
                         occupied.iter().all(|&(taken, taken_start, taken_end, owner)| {
                             if taken != register || taken_end <= start || taken_start > end {
                                 return true;
@@ -1889,7 +1889,7 @@ pub fn assign_float_registers(
                                     .is_some_and(|value| nodes[owner].reads.contains(value))
                         })
                     };
-                    let min_dying: Option<u8> = nodes[node]
+                    let min_dying: Option<u32> = nodes[node]
                         .reads
                         .iter()
                         .filter_map(|read| {
@@ -1921,7 +1921,7 @@ pub fn assign_float_registers(
                             nodes[reader].kind == OpKind::Store && nodes[reader].reads.contains(value)
                         })
                     });
-                    let c_dying: Option<u8> = if escapes && nodes[node].reads.len() >= 2 {
+                    let c_dying: Option<u32> = if escapes && nodes[node].reads.len() >= 2 {
                         let c_value = nodes[node].reads[1];
                         (0..count)
                             .rev()
@@ -1966,7 +1966,7 @@ pub fn assign_float_registers(
         // Whether one of `node`'s own operands (param or value) holds
         // `register` and dies exactly at `node`'s definition — the register
         // is being vacated TO this node (the dying door).
-        let dying_vacates = |node: usize, register: u8, result: &Vec<Option<u8>>| -> bool {
+        let dying_vacates = |node: usize, register: u32, result: &Vec<Option<u32>>| -> bool {
             nodes[node].reads.iter().any(|read| {
                 if let Some(&(value, param_register)) = params.iter().find(|&&(value, _)| value == *read) {
                     return param_register == register && param_end(value) == position[node];
@@ -1982,7 +1982,7 @@ pub fn assign_float_registers(
         // pending-arith sibling) allocates FIRST and claims it (measured:
         // the k_sin else-tail's v*r fmul takes its fmsub's f0 ahead of the
         // 0.5 load; groups whose shares are pending-blocked keep start-desc).
-        let allowed_share_now = |node: usize, result: &Vec<Option<u8>>| -> bool {
+        let allowed_share_now = |node: usize, result: &Vec<Option<u32>>| -> bool {
             let Some(&value) = nodes[node].writes.first() else {
                 return false;
             };
@@ -2046,7 +2046,7 @@ pub fn assign_float_registers(
             }
             let start = position[node];
             let end = value_end(node);
-            let share_ok = |owner: usize, result: &Vec<Option<u8>>| -> bool {
+            let share_ok = |owner: usize, result: &Vec<Option<u32>>| -> bool {
                 let class_ok = if nodes[node].kind == OpKind::Load {
                     model.share_loads
                 } else {
@@ -2083,7 +2083,7 @@ pub fn assign_float_registers(
                 }
                 true
             };
-            let pick = (0u8..14).find(|&register| {
+            let pick = (0u32..14).find(|&register| {
                 occupied.iter().all(|&(taken, taken_start, taken_end, owner)| {
                     if taken != register || taken_end < start || taken_start > end {
                         return true;
@@ -2123,8 +2123,8 @@ pub fn assign_float_registers(
         // FORWARD: the MRU free-stack. Available = the window minus params.
         // A def whose operands die at its slot reuses one of their registers
         // (per dying_pick), releasing the others; otherwise it pops the stack.
-        let mut stack: Vec<u8> = Vec::new();
-        let available: Vec<u8> = (0..window).filter(|register| !param_registers.contains(register)).collect();
+        let mut stack: Vec<u32> = Vec::new();
+        let available: Vec<u32> = (0..window).filter(|register| !param_registers.contains(register)).collect();
         if model.init_ascending {
             stack.extend(available.iter());
         } else {
@@ -2132,7 +2132,7 @@ pub fn assign_float_registers(
         }
         let return_slot = return_node.map(|ret| position[ret]);
         // Dying operands of `node`: (register, def slot; params def at -1).
-        let dying_of = |node: usize, result: &Vec<Option<u8>>| -> Vec<(u8, isize)> {
+        let dying_of = |node: usize, result: &Vec<Option<u32>>| -> Vec<(u32, isize)> {
             nodes[node]
                 .reads
                 .iter()
@@ -2175,7 +2175,7 @@ pub fn assign_float_registers(
                 }
                 continue;
             }
-            let reused: Option<u8> = match model.dying_pick {
+            let reused: Option<u32> = match model.dying_pick {
                 DyingPick::MinReg => dying.iter().map(|&(register, _)| register).min(),
                 DyingPick::MaxReg => dying.iter().map(|&(register, _)| register).max(),
                 DyingPick::OldestDef => dying.iter().min_by_key(|&&(_, slot)| slot).map(|&(register, _)| register),

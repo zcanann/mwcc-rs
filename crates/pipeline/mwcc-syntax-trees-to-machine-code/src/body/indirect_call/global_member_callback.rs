@@ -23,35 +23,35 @@ impl Generator {
             return Ok(false);
         }
         let (source, width, _) = self.leaf_info(argument)?;
-        if width != 32 || source == 12 || source == Eabi::FIRST_GENERAL_ARGUMENT + 1 {
+        if width != 32 || source == 12 || source == (Eabi::FIRST_GENERAL_ARGUMENT + 1).into() {
             return Ok(false);
         }
         let offset = i16::try_from(offset)
             .map_err(|_| Diagnostic::error("global callback member offset is out of range"))?;
 
-        let base = Eabi::FIRST_GENERAL_ARGUMENT;
-        let callback_lane = Eabi::FIRST_GENERAL_ARGUMENT + 1;
-        self.emit_address_high(base, global);
+        let base: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
+        let callback_lane: u32 = (Eabi::FIRST_GENERAL_ARGUMENT + 1) as u32;
+        self.emit_address_high(base.into(), global);
         self.record_relocation(RelocationKind::Addr16Lo, global);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: base,
-            a: base,
+            d: u32::from(base),
+            a: u32::from(base),
             immediate: 0,
         });
-        self.emit_address_high(callback_lane, callback);
+        self.emit_address_high(callback_lane.into(), callback);
         self.output.instructions.push(Instruction::LoadWord {
             d: 12,
-            a: base,
+            a: u32::from(base),
             offset,
         });
         self.record_relocation(RelocationKind::Addr16Lo, callback);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: callback_lane,
-            a: callback_lane,
+            d: u32::from(callback_lane),
+            a: u32::from(callback_lane),
             immediate: 0,
         });
-        if source != base {
-            self.evaluate_general(argument, base)?;
+        if source != base.into() {
+            self.evaluate_general(argument, base.into())?;
         }
         self.emit_indirect_branch_and_link(12);
         Ok(true)

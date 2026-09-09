@@ -637,31 +637,31 @@ impl Generator {
         let extract_temp = legacy_roles
             .as_ref()
             .map(|roles| roles.extract)
-            .unwrap_or(registers[0]);
+            .unwrap_or(registers[0].into());
         let a2_temp = legacy_roles
             .as_ref()
             .map(|roles| roles.arm_temp)
-            .unwrap_or(registers[1]);
+            .unwrap_or(registers[1].into());
         let a3_mask_reg = legacy_roles
             .as_ref()
             .map(|roles| roles.arm_mask)
-            .unwrap_or(registers[2]);
+            .unwrap_or(u32::from(registers[2]));
         let one_reg = legacy_roles
             .as_ref()
             .map(|roles| roles.carry_one)
-            .unwrap_or(registers[3]);
+            .unwrap_or(registers[3].into());
         let j0_reg = legacy_roles
             .as_ref()
             .map(|roles| roles.scrutinee)
-            .unwrap_or(registers[4]);
+            .unwrap_or(registers[4].into());
         let i0_reg = legacy_roles
             .as_ref()
             .map(|roles| roles.source_home)
-            .unwrap_or(if i0 == 0 { registers[5] } else { registers[6] });
+            .unwrap_or(if i0 == 0 { registers[5].into() } else { registers[6].into() });
         let i1_reg = legacy_roles
             .as_ref()
             .map(|roles| roles.other)
-            .unwrap_or(if i0 == 0 { registers[6] } else { registers[5] });
+            .unwrap_or(if i0 == 0 { registers[6].into() } else { registers[5].into() });
         let source_load = legacy_roles
             .as_ref()
             .map(|roles| roles.source_load)
@@ -669,11 +669,11 @@ impl Generator {
         let a2_i = legacy_roles
             .as_ref()
             .map(|roles| roles.arm_shift)
-            .unwrap_or(registers[7]);
+            .unwrap_or(u32::from(registers[7]));
         let a3_i = legacy_roles
             .as_ref()
             .map(|roles| roles.arm_shift)
-            .unwrap_or(registers[8]);
+            .unwrap_or(u32::from(registers[8]));
         // NB: loads emit in frame-offset order = locals order; registers[5]
         // belongs to locals[0].
         let load0 = if i0 == 0 { source_load } else { i1_reg };
@@ -799,7 +799,7 @@ impl Generator {
                 immediate: 0,
             });
         self.emit_branch_conditional_to(sign1_branch.0, sign1_branch.1, arm1_else);
-        let emit_constant = |generator: &mut Self, register: u8, constant: i64| {
+        let emit_constant = |generator: &mut Self, register: u32, constant: i64| {
             if let Ok(small) = i16::try_from(constant) {
                 generator
                     .output
@@ -872,14 +872,14 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::ShiftRightAlgebraicWord {
-                a: a2_i,
+                a: u32::from(a2_i),
                 s: 0,
                 b: j0_reg,
             });
         self.output.instructions.push(Instruction::And {
             a: 0,
             s: i0_reg,
-            b: a2_i,
+            b: u32::from(a2_i),
         });
         self.output.instructions.push(Instruction::OrRecord {
             a: 0,
@@ -937,7 +937,7 @@ impl Generator {
         self.output.instructions.push(Instruction::AndComplement {
             a: i0_reg,
             s: i0_reg,
-            b: a2_i,
+            b: u32::from(a2_i),
         });
         self.output
             .instructions
@@ -993,16 +993,16 @@ impl Generator {
         });
         self.output
             .instructions
-            .push(Instruction::load_immediate(a3_mask_reg, a3_mask_small));
+            .push(Instruction::load_immediate(a3_mask_reg.into(), a3_mask_small));
         self.output.instructions.push(Instruction::ShiftRightWord {
-            a: a3_i,
-            s: a3_mask_reg,
+            a: u32::from(a3_i),
+            s: u32::from(a3_mask_reg),
             b: 0,
         });
         self.output.instructions.push(Instruction::AndRecord {
             a: 0,
             s: i1_reg,
-            b: a3_i,
+            b: u32::from(a3_i),
         });
         let a3_cont = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, a3_cont); // bne
@@ -1094,7 +1094,7 @@ impl Generator {
         self.output.instructions.push(Instruction::AndComplement {
             a: i1_reg,
             s: i1_reg,
-            b: a3_i,
+            b: u32::from(a3_i),
         });
         // JOIN + EPI.
         self.bind_label(join);

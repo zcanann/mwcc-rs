@@ -400,7 +400,7 @@ impl Generator {
         Ok(true)
     }
 
-    fn emit_guarded_callback_tail(&mut self, entry_address: u8, done: mwcc_vreg::Label) {
+    fn emit_guarded_callback_tail(&mut self, entry_address: u32, done: mwcc_vreg::Label) {
         self.output.instructions.push(Instruction::LoadWord {
             d: 12,
             a: entry_address,
@@ -423,7 +423,7 @@ impl Generator {
 
     pub(super) fn emit_either_null_guarded_callback(
         &mut self,
-        alias: u8,
+        alias: u32,
         first_offset: i16,
         second_offset: i16,
         selector_offset: i16,

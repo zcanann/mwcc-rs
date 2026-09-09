@@ -22,15 +22,15 @@ impl Generator {
         let Instruction::LoadWord { d, .. } = &mut self.output.instructions[start] else {
             unreachable!("terminal wrapper inline changed form")
         };
-        *d = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+        *d = 4;
         let Instruction::LoadWord { a, .. } = &mut self.output.instructions[start + 1] else {
             unreachable!("terminal wrapper attribute load changed form")
         };
-        *a = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+        *a = 4;
         self.output.instructions[start + 2] = Instruction::Or {
-            a: Eabi::FIRST_GENERAL_ARGUMENT,
-            s: Eabi::FIRST_GENERAL_ARGUMENT + 1,
-            b: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+            a: 3,
+            s: 4,
+            b: 4,
         };
 
         // load receiver; li zero; load attributes; copy first call receiver.

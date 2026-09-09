@@ -3,8 +3,8 @@ use recognize::ListTransfer;
 
 impl Generator {
     pub(super) fn emit_legacy_list_transfer(&mut self, shape: &ListTransfer<'_>) {
-        const DESCRIPTOR: u8 = 31;
-        const CELL: u8 = 6;
+        const DESCRIPTOR: u32 = 31;
+        const CELL: u32 = 6;
 
         self.non_leaf = true;
         self.frame_size = 24;
@@ -153,7 +153,7 @@ impl Generator {
     }
 
     pub(super) fn emit_modern_list_transfer(&mut self, shape: &ListTransfer<'_>) {
-        const DESCRIPTOR: u8 = 31;
+        const DESCRIPTOR: u32 = 31;
 
         self.non_leaf = true;
         self.frame_size = 16;

@@ -16,7 +16,7 @@ impl Generator {
         dividend: &Expression,
         magic: u32,
         shift: u8,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if self.behavior.optimization < Optimization::O2 {
             return Ok(false);

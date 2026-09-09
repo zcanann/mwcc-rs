@@ -356,21 +356,21 @@ fn assign_conversion_registers_and_lanes(instructions: &mut [Instruction]) {
     set_float_multiply(second_multiply, 0, 2, 0);
 }
 
-fn set_halfword_load(instruction: &mut Instruction, destination: u8) {
+fn set_halfword_load(instruction: &mut Instruction, destination: u32) {
     let Instruction::LoadHalfwordZero { d, .. } = instruction else {
         unreachable!()
     };
     *d = destination;
 }
 
-fn set_shifted_destination(instruction: &mut Instruction, destination: u8) {
+fn set_shifted_destination(instruction: &mut Instruction, destination: u32) {
     let Instruction::AddImmediateShifted { d, .. } = instruction else {
         unreachable!()
     };
     *d = destination;
 }
 
-fn set_word_store(instruction: &mut Instruction, source: u8, new_offset: i16) {
+fn set_word_store(instruction: &mut Instruction, source: u32, new_offset: i16) {
     let Instruction::StoreWord { s, offset, .. } = instruction else {
         unreachable!()
     };
@@ -378,7 +378,7 @@ fn set_word_store(instruction: &mut Instruction, source: u8, new_offset: i16) {
     *offset = new_offset;
 }
 
-fn set_shift_register(instruction: &mut Instruction, register: u8) {
+fn set_shift_register(instruction: &mut Instruction, register: u32) {
     let Instruction::ShiftLeftImmediate { a, s, .. } = instruction else {
         unreachable!()
     };
@@ -386,7 +386,7 @@ fn set_shift_register(instruction: &mut Instruction, register: u8) {
     *s = register;
 }
 
-fn set_double_load(instruction: &mut Instruction, destination: u8, base: u8, new_offset: i16) {
+fn set_double_load(instruction: &mut Instruction, destination: u32, base: u32, new_offset: i16) {
     let Instruction::LoadFloatDouble { d, a, offset } = instruction else {
         unreachable!()
     };
@@ -395,7 +395,7 @@ fn set_double_load(instruction: &mut Instruction, destination: u8, base: u8, new
     *offset = new_offset;
 }
 
-fn set_single_load(instruction: &mut Instruction, destination: u8, base: Option<u8>) {
+fn set_single_load(instruction: &mut Instruction, destination: u32, base: Option<u32>) {
     let Instruction::LoadFloatSingle { d, a, .. } = instruction else {
         unreachable!()
     };
@@ -405,7 +405,7 @@ fn set_single_load(instruction: &mut Instruction, destination: u8, base: Option<
     }
 }
 
-fn set_float_subtract(instruction: &mut Instruction, destination: u8, left: u8, right: u8) {
+fn set_float_subtract(instruction: &mut Instruction, destination: u32, left: u32, right: u32) {
     let Instruction::FloatSubtractSingle { d, a, b } = instruction else {
         unreachable!()
     };
@@ -414,7 +414,7 @@ fn set_float_subtract(instruction: &mut Instruction, destination: u8, left: u8, 
     *b = right;
 }
 
-fn set_float_multiply(instruction: &mut Instruction, destination: u8, left: u8, right: u8) {
+fn set_float_multiply(instruction: &mut Instruction, destination: u32, left: u32, right: u32) {
     let Instruction::FloatMultiplySingle { d, a, c } = instruction else {
         unreachable!()
     };

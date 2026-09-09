@@ -8,7 +8,7 @@
 #[allow(unused_imports)]
 use super::*;
 
-const POOLED_COPY_REGISTERS: [u8; 24] = [
+const POOLED_COPY_REGISTERS: [u32; 24] = [
     0, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 12, 11, 10, 9, 8, 7, 6, 5,
 ];
 
@@ -16,7 +16,7 @@ pub(super) struct StructuredArrayPoolPlan {
     pub(super) direct_word_count: usize,
     pub(super) loop_array_index: Option<usize>,
     pub(super) loop_source_offset: usize,
-    pub(super) first_saved_register: u8,
+    pub(super) first_saved_register: u32,
 }
 
 pub(super) fn plan_structured_array_pool(
@@ -84,7 +84,7 @@ pub(super) fn plan_structured_array_pool(
     };
 
     let first_saved_register = if loop_array_index.is_some() && direct_word_count <= 16 {
-        u8::try_from(37usize.checked_sub(direct_word_count)?.min(30)).ok()?
+        u32::try_from(37usize.checked_sub(direct_word_count)?.min(30)).ok()?
     } else if loop_array_index.is_some() {
         14
     } else {
@@ -99,7 +99,7 @@ pub(super) fn plan_structured_array_pool(
         direct_word_count,
         loop_array_index,
         loop_source_offset,
-        first_saved_register,
+        first_saved_register: first_saved_register.into(),
     })
 }
 
@@ -207,7 +207,7 @@ impl Generator {
                 .map_err(|_| Diagnostic::error("pooled array copy is too large"))?;
             self.output
                 .instructions
-                .push(Instruction::load_immediate(plan.loop_count_register(), iterations));
+                .push(Instruction::load_immediate(plan.loop_count_register().into(), iterations));
             let slot = self.frame_slots[&arrays[loop_array_index].name];
             self.output.instructions.push(Instruction::AddImmediate {
                 d: plan.loop_destination_register(),
@@ -266,7 +266,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::MoveToCountRegister {
-                s: plan.loop_count_register(),
+                s: u32::from(plan.loop_count_register()),
             });
         let loop_head = self.fresh_label();
         self.bind_label(loop_head);
@@ -317,7 +317,7 @@ impl StructuredArrayPoolPlan {
         self.loop_array_index.is_some() && self.direct_word_count <= 16
     }
 
-    fn pool_base_register(&self) -> u8 {
+    fn pool_base_register(&self) -> u32 {
         if self.uses_compact_tail_registers() {
             self.first_saved_register
         } else {
@@ -333,7 +333,7 @@ impl StructuredArrayPoolPlan {
         }
     }
 
-    fn loop_source_register(&self) -> u8 {
+    fn loop_source_register(&self) -> u32 {
         if self.uses_compact_tail_registers() {
             5
         } else {
@@ -341,7 +341,7 @@ impl StructuredArrayPoolPlan {
         }
     }
 
-    fn loop_destination_register(&self) -> u8 {
+    fn loop_destination_register(&self) -> u32 {
         if self.uses_compact_tail_registers() {
             6
         } else {
@@ -349,7 +349,7 @@ impl StructuredArrayPoolPlan {
         }
     }
 
-    fn direct_registers(&self) -> Vec<u8> {
+    fn direct_registers(&self) -> Vec<u32> {
         if !self.uses_compact_tail_registers() {
             return POOLED_COPY_REGISTERS[..self.direct_word_count].to_vec();
         }

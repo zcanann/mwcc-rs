@@ -156,7 +156,7 @@ fn expand(function: &mut MachineFunction, resolved: &[(usize, u32)]) -> Compilat
                     *r != a
                         && !liveness.pinned.iter().any(|p| {
                             p.class == mwcc_vreg::Class::General
-                                && p.register == *r
+                                && u32::from(p.register) == *r
                                 && p.live_slots.as_ref().map_or(
                                     p.start <= at && at <= p.end,
                                     |slots| {
@@ -243,12 +243,12 @@ mod tests {
         f.instructions = vec![
             Instruction::Branch { target: 1 },
             Instruction::AddImmediate {
-                d: destination,
+                d: u32::from(destination),
                 a: 31,
                 immediate: 0,
             },
             Instruction::StoreWord {
-                s: destination,
+                s: u32::from(destination),
                 a: 31,
                 offset: 0,
             },

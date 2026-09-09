@@ -96,7 +96,7 @@ impl Generator {
             let table_register = if temporary_scrutinee
                 || scrutinee_register == GENERAL_SCRATCH
             {
-                Eabi::general_result().number
+                u32::from(Eabi::general_result().number)
             } else {
                 scrutinee_register
             };
@@ -109,10 +109,10 @@ impl Generator {
                 }),
             )
         } else {
-            let table_register = if scrutinee_register == Eabi::general_result().number {
+            let table_register = if scrutinee_register == u32::from(Eabi::general_result().number) {
                 4
             } else {
-                Eabi::general_result().number
+                u32::from(Eabi::general_result().number)
             };
             (
                 scrutinee_register,
@@ -176,7 +176,7 @@ impl Generator {
                     s: index_register,
                     shift: 2,
                 });
-            let base = self.fresh_virtual_general_preferring(Eabi::general_result().number);
+            let base = self.fresh_virtual_general_preferring(u32::from(Eabi::general_result().number));
             self.record_target(RelocationKind::Addr16Lo, table_target);
             self.output.instructions.push(Instruction::AddImmediate {
                 d: base,
@@ -217,8 +217,8 @@ impl Generator {
                 }
                 ArmBody::Return(value) => {
                     let result = match function.return_type {
-                        Type::Float | Type::Double => Eabi::float_result().number,
-                        _ => Eabi::general_result().number,
+                        Type::Float | Type::Double => u32::from(Eabi::float_result().number),
+                        _ => u32::from(Eabi::general_result().number),
                     };
                     self.evaluate(value, function.return_type, result)?;
                     return_branches.push(self.output.instructions.len());
@@ -257,8 +257,8 @@ impl Generator {
                 }
                 ArmBody::Return(value) => {
                     let result = match function.return_type {
-                        Type::Float | Type::Double => Eabi::float_result().number,
-                        _ => Eabi::general_result().number,
+                        Type::Float | Type::Double => u32::from(Eabi::float_result().number),
+                        _ => u32::from(Eabi::general_result().number),
                     };
                     self.evaluate(value, function.return_type, result)?;
                     return_branches.push(self.output.instructions.len());
@@ -480,9 +480,9 @@ pub(super) fn switch_bodies_use_name(
         })
 }
 
-fn computed_scrutinee_register(requires_rebase: bool) -> u8 {
+fn computed_scrutinee_register(requires_rebase: bool) -> u32 {
     if requires_rebase {
-        Eabi::general_result().number + 1
+        u32::from(Eabi::general_result().number) + 1
     } else {
         GENERAL_SCRATCH
     }
@@ -691,7 +691,7 @@ mod tests {
         assert_ne!(computed_scrutinee_register(true), GENERAL_SCRATCH);
         assert_eq!(
             computed_scrutinee_register(true),
-            Eabi::general_result().number + 1
+            u32::from(Eabi::general_result().number) + 1
         );
         assert_eq!(computed_scrutinee_register(false), GENERAL_SCRATCH);
     }

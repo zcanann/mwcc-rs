@@ -16,7 +16,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         signed: bool,
     ) -> Compilation<bool> {
         if operator == BinaryOperator::NotEqual && is_zero_literal(right) {

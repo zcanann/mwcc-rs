@@ -89,7 +89,7 @@ impl Generator {
         // core arm's convention) and f1 frees for the chain.
         let in_frame = self.float.reload_x.is_some();
         // Double params for the shared DAG.
-        let mut params: Vec<(u32, u8)> = Vec::new();
+        let mut params: Vec<(u32, u32)> = Vec::new();
         let mut param_ids: Vec<(String, u32)> = Vec::new();
         for (index, parameter) in function.parameters.iter().enumerate() {
             let Some(location) = self.locations.get(&parameter.name) else {
@@ -536,7 +536,7 @@ impl Generator {
             model.tier_position_desc = true;
             model.legacy_three_tier_rotation = !in_frame && legacy_shared_prefix;
             model.legacy_inframe_full_tier = legacy_deep_inframe;
-            model.window_floor = window_floor;
+            model.window_floor = u32::from(window_floor);
             // The sink absorbs every consumer, so there is no return node;
             // the shared DAG still allocates on the reverse/tier machine.
             model.void_forward = false;
@@ -600,7 +600,7 @@ impl Generator {
                 let Operand::Node(root_node) = local_operands[*chain_index] else {
                     return Ok(false);
                 };
-                let mut dry_pseudos: Vec<(String, u8)> = Vec::new();
+                let mut dry_pseudos: Vec<(String, u32)> = Vec::new();
                 for &index in &escaping_locals {
                     if let Operand::Node(node) = local_operands[index] {
                         let register = if index == *chain_index {
@@ -608,19 +608,19 @@ impl Generator {
                         } else {
                             registers[node].expect("checked above")
                         };
-                        dry_pseudos.push((local_names[index].0.clone(), register));
+                        dry_pseudos.push((local_names[index].0.clone(), register.into()));
                     }
                 }
                 let mut x_pseudo_name: Option<String> = None;
                 if in_frame {
                     if let Some((name, _)) = param_ids.iter().find(|(_, value)| *value == 9) {
                         x_pseudo_name = Some(name.clone());
-                        dry_pseudos.push((name.clone(), registers[0].expect("checked above")));
+                        dry_pseudos.push((name.clone(), registers[0].expect("checked above").into()));
                     }
                 }
                 let saved_pseudo = std::mem::take(&mut self.float.pseudo_params);
                 let saved_reload = self.float.reload_x.take();
-                let mut exclusions: Vec<u8> = Vec::new();
+                let mut exclusions: Vec<u32> = Vec::new();
                 for (tail, is_else) in [(then_value, false), (else_value, true)] {
                     // The COMPOSED else tail re-reads x and the diamond local
                     // from the FRAME (no x pseudo) and owns the fold locals.
@@ -661,7 +661,7 @@ impl Generator {
                         for instruction in &self.output.instructions[mark..mark + last] {
                             if let Some(register) = float_def(instruction) {
                                 if !exclusions.contains(&register) {
-                                    exclusions.push(register);
+                                    exclusions.push(register.into());
                                 }
                             }
                         }
@@ -701,22 +701,22 @@ impl Generator {
                         // Dying exactly AT the root is reusable — only
                         // values living BEYOND it exclude their register.
                         if live_end(node) > root_position && !exclusions.contains(&register) {
-                            exclusions.push(register);
+                            exclusions.push(register.into());
                         }
                     }
                 }
                 for &(_, register) in &params {
                     if !exclusions.contains(&register) {
-                        exclusions.push(register);
+                        exclusions.push(register.into());
                     }
                 }
-                let Some(root_register) = (0..32u8).find(|register| !exclusions.contains(register))
+                let Some(root_register) = (0..32u32).find(|register| !exclusions.contains(register))
                 else {
                     return Ok(false);
                 };
                 registers[root_node] = Some(root_register);
             }
-            let register_of = |operand: Operand| -> u8 {
+            let register_of = |operand: Operand| -> u32 {
                 match operand {
                     Operand::Param(value) => params
                         .iter()
@@ -739,12 +739,12 @@ impl Generator {
                 let d = registers[node].expect("checked above");
                 match &ops[node] {
                     FloatOp::Const(bits) => {
-                        self.load_double_constant(d, *bits);
+                        self.load_double_constant(d.into(), *bits);
                         emitted_loads += 1;
                     }
                     FloatOp::FrameLoad(offset) => {
                         self.output.instructions.push(Instruction::LoadFloatDouble {
-                            d,
+                            d: d.into(),
                             a: 1,
                             offset: *offset,
                         });
@@ -766,28 +766,28 @@ impl Generator {
                         self.output
                             .instructions
                             .push(Instruction::FloatMultiplyAddDouble {
-                                d,
-                                a: register_of(*a),
-                                c: register_of(*c),
-                                b: register_of(*b),
+                                d: d.into(),
+                                a: u32::from(register_of(*a)),
+                                c: u32::from(register_of(*c)),
+                                b: u32::from(register_of(*b)),
                             })
                     }
                     FloatOp::Fnmsub { a, c, b } => self.output.instructions.push(
                         Instruction::FloatNegativeMultiplySubtractDouble {
-                            d,
-                            a: register_of(*a),
-                            c: register_of(*c),
-                            b: register_of(*b),
+                            d: d.into(),
+                            a: u32::from(register_of(*a)),
+                            c: u32::from(register_of(*c)),
+                            b: u32::from(register_of(*b)),
                         },
                     ),
                     FloatOp::Fmsub { a, c, b } => {
                         self.output
                             .instructions
                             .push(Instruction::FloatMultiplySubtractDouble {
-                                d,
-                                a: register_of(*a),
-                                c: register_of(*c),
-                                b: register_of(*b),
+                                d: d.into(),
+                                a: u32::from(register_of(*a)),
+                                c: u32::from(register_of(*c)),
+                                b: u32::from(register_of(*b)),
                             })
                     }
                     FloatOp::Mul { a, c } => {
@@ -806,13 +806,13 @@ impl Generator {
                         }
                         self.output
                             .instructions
-                            .push(Instruction::FloatMultiplyDouble { d, a: ra, c: rc });
+                            .push(Instruction::FloatMultiplyDouble { d: d.into(), a: u32::from(ra), c: u32::from(rc) });
                     }
                     FloatOp::Add { a, b } => {
                         self.output.instructions.push(Instruction::FloatAddDouble {
-                            d,
-                            a: register_of(*a),
-                            b: register_of(*b),
+                            d: d.into(),
+                            a: u32::from(register_of(*a)),
+                            b: u32::from(register_of(*b)),
                         })
                     }
                     _ => {
@@ -864,7 +864,7 @@ impl Generator {
                 if let Operand::Node(node) = local_operands[index] {
                     self.float.pseudo_params.push((
                         local_names[index].0.clone(),
-                        registers[node].expect("checked above"),
+                        registers[node].expect("checked above").into(),
                     ));
                 }
             }
@@ -872,7 +872,7 @@ impl Generator {
                 if let Some((name, _)) = param_ids.iter().find(|(_, value)| *value == 9) {
                     self.float
                         .pseudo_params
-                        .push((name.clone(), registers[0].expect("checked above")));
+                        .push((name.clone(), registers[0].expect("checked above").into()));
                 }
             }
         }
@@ -1145,7 +1145,7 @@ impl Generator {
             }
         }
         // The punned form's HI store: (leaf register, optional addis shift).
-        let general_leaf = |expression: &Expression| -> Option<u8> {
+        let general_leaf = |expression: &Expression| -> Option<u32> {
             match expression {
                 Expression::Variable(name) => self
                     .locations
@@ -1155,7 +1155,7 @@ impl Generator {
                 _ => None,
             }
         };
-        let punned_hi: Option<(u8, Option<i16>)> = match punned_else {
+        let punned_hi: Option<(u32, Option<i16>)> = match punned_else {
             None => None,
             Some(Expression::Variable(_)) => {
                 let Some(register) = general_leaf(punned_else.expect("checked")) else {
@@ -1297,7 +1297,7 @@ impl Generator {
                         });
                     target
                 }
-                None => hi_register,
+                None => hi_register.into(),
             };
             if legacy_frame {
                 self.output.instructions.push(Instruction::StoreWord {

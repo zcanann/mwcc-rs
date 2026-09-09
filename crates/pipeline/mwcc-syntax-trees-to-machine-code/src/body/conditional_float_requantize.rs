@@ -347,12 +347,12 @@ impl Generator {
 
     fn emit_float_requantize_image(
         &mut self,
-        source: u8,
+        source: u32,
         converted_offset: i16,
         converted_word_offset: i16,
         biased_word_offset: i16,
         biased_high_offset: i16,
-        destination: u8,
+        destination: u32,
     ) {
         self.output
             .instructions

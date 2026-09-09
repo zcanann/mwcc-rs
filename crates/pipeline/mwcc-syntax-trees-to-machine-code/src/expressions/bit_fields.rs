@@ -10,7 +10,7 @@ impl Generator {
     pub(crate) fn evaluate_bit_field_read(
         &mut self,
         extracted: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if self.behavior.bit_field_load_placement == BitFieldLoadPlacement::Scratch {
             return self.evaluate_general(extracted, destination);
@@ -52,7 +52,7 @@ impl Generator {
     pub(crate) fn evaluate_bit_field_condition(
         &mut self,
         extracted: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         self.evaluate_bit_field_read(extracted, destination)?;
         let Some(last) = self.output.instructions.last_mut() else {

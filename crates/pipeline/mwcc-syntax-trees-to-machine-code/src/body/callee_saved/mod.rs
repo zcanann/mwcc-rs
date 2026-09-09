@@ -704,7 +704,7 @@ impl Generator {
                 _ => false,
             });
         // (parameter index, name, incoming register) for each promoted value.
-        let mut promoted: Vec<(usize, String, u8)> = Vec::new();
+        let mut promoted: Vec<(usize, String, u32)> = Vec::new();
         for name in &live {
             let Some(index) = function
                 .parameters
@@ -875,7 +875,7 @@ impl Generator {
         // Phase D: the promoted parameters' homes are virtuals, created highest-rank
         // first — id order reproduces r31, r30, … through the callee-saved pool. The
         // interleaved save+move prologue comes from the FRAME BUILDER.
-        let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
+        let homes: Vec<u32> = (0..count).map(|_| self.fresh_virtual_general()).collect();
         self.callee_saved = homes.clone();
         // Only a STORE SINK — a body whose TRAILING statement is the store of the saved value (after
         // all calls) — reloads the saved LR before the GPR reloads, even when a value is also returned
@@ -887,7 +887,7 @@ impl Generator {
             && matches!(function.statements.last(), Some(Statement::Store { .. }));
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
-        let incoming_ordered: Vec<u8> = promoted
+        let incoming_ordered: Vec<u32> = promoted
             .iter()
             .rev()
             .map(|(_, _, incoming)| *incoming)
@@ -932,7 +932,7 @@ impl Generator {
             }
         }
         if function.return_type != Type::Void {
-            let result = Eabi::general_result().number;
+            let result = u32::from(Eabi::general_result().number);
             // A non-void function may FALL OFF THE END (C89; strikers alloc's
             // FORCE_DONT_INLINE stubs) — mwcc emits a bare blr, r3 undefined.
             if let Some(return_expression) = function.return_expression.as_ref() {
@@ -1081,7 +1081,7 @@ impl Generator {
         if let Some(location) = self.locations.get_mut(pointer_name) {
             location.register = saved;
         }
-        let argument_copy_sources: Vec<u8> = arguments
+        let argument_copy_sources: Vec<u32> = arguments
             .iter()
             .filter_map(|argument| match argument {
                 Expression::Variable(argument_name) => self
@@ -1095,10 +1095,10 @@ impl Generator {
         // A float-returning call leaves its result in f1 (stfs/stfd); an int call in r3.
         let mut result = if float_store {
             self.emit_call(name, arguments, None, true)?;
-            mwcc_target::Eabi::float_result().number
+            u32::from(mwcc_target::Eabi::float_result().number)
         } else {
             self.emit_call(name, arguments, None, false)?;
-            mwcc_target::Eabi::general_result().number
+            u32::from(mwcc_target::Eabi::general_result().number)
         };
         // When saving the pointer removes an entry argument from the call, the
         // remaining leaf arguments compact toward r3. Build 163 materializes
@@ -1140,7 +1140,7 @@ impl Generator {
             self.evaluate_tail(
                 return_expression,
                 function.return_type,
-                mwcc_target::Eabi::general_result().number,
+                u32::from(mwcc_target::Eabi::general_result().number),
             )?;
         }
         self.emit_epilogue_and_return();
@@ -1451,7 +1451,7 @@ impl Generator {
                 for statement in calls {
                     self.emit_statement(statement)?;
                 }
-                let result = mwcc_target::Eabi::general_result().number;
+                let result = u32::from(mwcc_target::Eabi::general_result().number);
                 self.output.instructions.push(Instruction::Or {
                     a: result,
                     s: saved,
@@ -1577,7 +1577,7 @@ impl Generator {
             for statement in calls {
                 self.emit_statement(statement)?;
             }
-            let result = mwcc_target::Eabi::general_result().number;
+            let result = u32::from(mwcc_target::Eabi::general_result().number);
             self.output.instructions.push(Instruction::LoadWord {
                 d: 0,
                 a: 1,
@@ -1670,7 +1670,7 @@ impl Generator {
                     a: index_register,
                     offset: 0,
                 });
-                let result = mwcc_target::Eabi::general_result().number;
+                let result = u32::from(mwcc_target::Eabi::general_result().number);
                 let early_epilogue =
                     if let Some((condition, early_constant)) = guard_chain.first().copied() {
                         self.locations.insert(
@@ -1785,7 +1785,7 @@ impl Generator {
         // (r31), and apply() rewrites the saves, loads, moves, and restores together.
         // (The paired form allocates its second virtual below; creation order makes
         // the ids deterministic: the local first -> r31, the parameter -> r30.)
-        let saved: u8 = self.fresh_virtual_general();
+        let saved: u32 = self.fresh_virtual_general();
         // The paired parameter saves in r30 between the r31 save and the memory load:
         // `stw r31,12; stw r30,8; mr r30,<param>; lwz r31,<gi>`.
         if let Some(parameter) = paired_parameter {
@@ -1835,7 +1835,7 @@ impl Generator {
             }
             // Build 163 computes the return before the LR reload; later builds use
             // the LR-load latency slot. Saved-register restores follow either form.
-            let result = mwcc_target::Eabi::general_result().number;
+            let result = u32::from(mwcc_target::Eabi::general_result().number);
             if self.behavior.frame_convention == FrameConvention::LinkageFirst {
                 self.evaluate_tail(
                     function.return_expression.as_ref().expect("checked above"),
@@ -1948,7 +1948,7 @@ impl Generator {
                 });
             }
         }
-        let result = mwcc_target::Eabi::general_result().number;
+        let result = u32::from(mwcc_target::Eabi::general_result().number);
         if guard.is_some() {
             // Each guard tests the just-loaded value (the staged r0 copy for a scalar —
             // valid across the whole chain, no call intervenes — or r31 for the array
@@ -2244,7 +2244,7 @@ impl Generator {
         // Phase D: each saved pointer's home is a virtual, created in DESCENDING
         // incoming order — all widen to entry via their saves, so the scan assigns
         // by id: first virtual -> r31, next -> r30, … exactly the positional rule.
-        let mut saved_reg = vec![0u8; count];
+        let mut saved_reg = vec![0u32; count];
         let mut callee_saved = Vec::with_capacity(count);
         for &index in order.iter() {
             let register = self.fresh_virtual_general();
@@ -2259,24 +2259,24 @@ impl Generator {
         self.frame_size = plan.frame_size;
         self.callee_saved = callee_saved;
         self.epilogue_lr_before_gprs = true;
-        let incoming_ordered: Vec<u8> = order.iter().map(|&index| incoming[index]).collect();
+        let incoming_ordered: Vec<u32> = order.iter().map(|&index| incoming[index]).collect();
         self.output
             .instructions
             .extend(plan.prologue_interleaved(&incoming_ordered));
         for (index, (pointer_name, _, _, _)) in decoded.iter().enumerate() {
             if let Some(location) = self.locations.get_mut(pointer_name) {
-                location.register = saved_reg[index];
+                location.register = u32::from(saved_reg[index]);
             }
         }
 
         // Each call in source order, its result stored through the saved pointer.
-        let result = mwcc_target::Eabi::general_result().number;
+        let result = u32::from(mwcc_target::Eabi::general_result().number);
         for (index, (_, offset, pointee, call)) in decoded.iter().enumerate() {
             self.emit_call(call, &[], None, false)?;
             self.output.instructions.push(displacement_store(
                 *pointee,
                 result,
-                saved_reg[index],
+                saved_reg[index].into(),
                 *offset,
             )?);
         }
@@ -2473,20 +2473,20 @@ impl Generator {
         if constant_count > 3 || local_count > 1 {
             return Ok(false);
         }
-        let constants: Vec<(u8, i16)> = decoded_arguments
+        let constants: Vec<(u32, i16)> = decoded_arguments
             .iter()
             .enumerate()
             .filter_map(|(position, argument)| match argument {
-                Argument::Constant(value) => Some((3 + position as u8, *value)),
+                Argument::Constant(value) => Some((3 + position as u32, *value)),
                 Argument::Local => None,
             })
             .collect();
-        let local_argument_register: Option<u8> = decoded_arguments
+        let local_argument_register: Option<u32> = (decoded_arguments
             .iter()
             .position(|argument| matches!(argument, Argument::Local))
-            .map(|position| 3 + position as u8);
+            .map(|position| 3 + position as u8)).map(u32::from);
 
-        let homes: Vec<u8> = (0..function.locals.len())
+        let homes: Vec<u32> = (0..function.locals.len())
             .map(|_| self.fresh_virtual_general())
             .collect();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
@@ -2549,7 +2549,7 @@ impl Generator {
                 Source::Call(producer) => {
                     // The producing call, its result parked into the home.
                     self.emit_call(producer, &[], None, false)?;
-                    let result = mwcc_target::Eabi::general_result().number;
+                    let result = u32::from(mwcc_target::Eabi::general_result().number);
                     self.output.instructions.push(Instruction::Or {
                         a: home,
                         s: result,

@@ -202,7 +202,7 @@ impl Generator {
             return Ok(false);
         }
         let index = self.general_register_of(shape.index)?;
-        if index != Eabi::FIRST_GENERAL_ARGUMENT {
+        if index != Eabi::FIRST_GENERAL_ARGUMENT.into() {
             return Ok(false);
         }
         let element = self.fresh_virtual_general_preferring(31);
@@ -265,14 +265,14 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::AddImmediateShifted {
-                d: Eabi::general_result().number,
+                d: u32::from(Eabi::general_result().number),
                 a: 0,
                 immediate: 0,
             });
         self.record_relocation(RelocationKind::Addr16Lo, shape.array);
         self.output.instructions.push(Instruction::AddImmediate {
             d: GENERAL_SCRATCH,
-            a: Eabi::general_result().number,
+            a: u32::from(Eabi::general_result().number),
             immediate: 0,
         });
         self.output.instructions.push(Instruction::Add {

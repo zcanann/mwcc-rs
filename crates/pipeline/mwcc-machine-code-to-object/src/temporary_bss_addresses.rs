@@ -84,7 +84,7 @@ fn packet(
     function: &MachineFunction,
     start: usize,
     symbols: &[String],
-) -> Option<(Vec<u8>, Vec<u8>)> {
+) -> Option<(Vec<u32>, Vec<u32>)> {
     let end = start + 2 * symbols.len();
     let interior = |at: usize| start < at && at < end;
     if function.entry_points.iter().any(|(_, at)| interior(*at))
@@ -141,7 +141,7 @@ fn packet(
         .filter(|register| {
             !liveness.pinned.iter().any(|p| {
                 p.class == mwcc_vreg::Class::General
-                    && p.register == *register
+                    && u32::from(p.register) == *register
                     && p.live_slots
                         .as_ref()
                         .map_or(p.start < end && p.end >= start, |slots| {
@@ -161,7 +161,7 @@ struct AddressPacket {
     displacements: Vec<(usize, String)>,
 }
 
-fn narrow_packet(symbols: &[String], destinations: &[u8], temporary: u8) -> AddressPacket {
+fn narrow_packet(symbols: &[String], destinations: &[u32], temporary: u32) -> AddressPacket {
     let mut instructions = vec![
         Instruction::AddImmediateShifted {
             d: temporary,
@@ -275,7 +275,7 @@ mod tests {
             target: 7,
         });
         for (index, name) in ["a", "b", "c"].into_iter().enumerate() {
-            let d = 31 - index as u8;
+            let d = 31 - index as u32;
             let at = f.instructions.len();
             f.instructions.extend([
                 Instruction::AddImmediateShifted {

@@ -9,7 +9,7 @@ use super::structured_locals::DeferredSavedHomePlan;
 use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 
 pub(super) struct ExclusiveArmHomeLayout {
-    preferences: std::collections::HashMap<usize, u8>,
+    preferences: std::collections::HashMap<usize, u32>,
 }
 
 impl ExclusiveArmHomeLayout {
@@ -54,18 +54,18 @@ impl ExclusiveArmHomeLayout {
         Some(Self { preferences })
     }
 
-    pub(super) fn preference(&self, home: usize) -> Option<u8> {
+    pub(super) fn preference(&self, home: usize) -> Option<u32> {
         self.preferences.get(&home).copied()
     }
 
-    pub(super) fn data_anchor_preference(&self) -> u8 {
+    pub(super) fn data_anchor_preference(&self) -> u32 {
         29
     }
 }
 
 fn preferences_for_fresh_homes(
     fresh: &[(usize, usize)],
-) -> std::collections::HashMap<usize, u8> {
+) -> std::collections::HashMap<usize, u32> {
     std::collections::HashMap::from([
         (0, 28),
         (1, 26),

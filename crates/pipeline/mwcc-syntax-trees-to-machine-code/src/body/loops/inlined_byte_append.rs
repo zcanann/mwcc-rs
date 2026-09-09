@@ -106,11 +106,11 @@ impl Generator {
         if !self.skipped_inline_names.contains(shape.helper) || !self.frame_slots.is_empty() {
             return Ok(false);
         }
-        const ERROR: u8 = 0;
-        const INDEX: u8 = 9;
-        const POSITION: u8 = 7;
-        const BYTE: u8 = 8;
-        const TEMP: u8 = 6;
+        const ERROR: u32 = 0;
+        const INDEX: u32 = 9;
+        const POSITION: u32 = 7;
+        const BYTE: u32 = 8;
+        const TEMP: u32 = 6;
         let condition = self.fresh_label();
         let body = self.fresh_label();
         let append = self.fresh_label();

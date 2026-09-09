@@ -72,7 +72,7 @@ impl Generator {
         &mut self,
         base: &Expression,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if let Some((pointee, global)) =
             member_pointer_and_affine_global_index(base, index)

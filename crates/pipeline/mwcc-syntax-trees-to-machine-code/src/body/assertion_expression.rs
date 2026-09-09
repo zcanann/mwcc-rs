@@ -33,7 +33,7 @@ impl Generator {
     pub(crate) fn try_emit_dense_frame_assertion(
         &mut self,
         expression: &Expression,
-        condition_register: u8,
+        condition_register: u32,
         zero_preloaded: bool,
     ) -> Compilation<bool> {
         let Some(shape) = DiscardedAssertion::recognize(expression) else {

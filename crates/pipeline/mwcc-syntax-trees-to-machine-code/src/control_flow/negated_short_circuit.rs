@@ -8,7 +8,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        result: u8,
+        result: u32,
     ) -> Compilation<()> {
         let is_logical = |expression: &Expression| {
             matches!(

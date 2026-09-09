@@ -33,7 +33,7 @@ impl Generator {
         &mut self,
         value: &Expression,
         pointee: Pointee,
-    ) -> Option<u8> {
+    ) -> Option<u32> {
         if let Some(constant) = self.folded_float_store_constant(value, pointee) {
             self.load_integer_constant(GENERAL_SCRATCH, constant);
             return Some(GENERAL_SCRATCH);
@@ -72,7 +72,7 @@ impl Generator {
         &mut self,
         value: &Expression,
         pointee: Pointee,
-    ) -> Compilation<Option<u8>> {
+    ) -> Compilation<Option<u32>> {
         let style = self.behavior.narrow_store_conversion_style;
         if style == mwcc_versions::NarrowStoreConversionStyle::ElideRedundantConversion {
             return Ok(None);

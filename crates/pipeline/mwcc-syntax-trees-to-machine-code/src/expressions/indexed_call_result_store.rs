@@ -78,7 +78,7 @@ impl Generator {
             } else {
                 index_register
             };
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.emit_call(callee, arguments, Some(result), false)?;
 
         let restore = self.reserved.insert(result);

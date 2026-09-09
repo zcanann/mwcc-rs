@@ -11,7 +11,7 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StatefulCompletionArm {
     start: usize,
-    object: u8,
+    object: u32,
     call: usize,
 }
 

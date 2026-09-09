@@ -293,7 +293,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::StoreMultipleWord {
-                s: first_saved,
+                s: u32::from(first_saved),
                 a: 1,
                 offset: 12,
             });
@@ -418,7 +418,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::LoadMultipleWord {
-                d: first_saved,
+                d: u32::from(first_saved),
                 a: 1,
                 offset: 12,
             });

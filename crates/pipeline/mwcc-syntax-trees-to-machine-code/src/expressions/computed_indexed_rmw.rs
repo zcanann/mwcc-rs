@@ -10,7 +10,7 @@ impl Generator {
     pub(crate) fn emit_computed_indexed_rmw(
         &mut self,
         pointee: Pointee,
-        base: u8,
+        base: u32,
         index: &Expression,
         operator: BinaryOperator,
         right: &Expression,
@@ -29,7 +29,7 @@ impl Generator {
         let scaled = if pointee.size() == 1 {
             index
         } else {
-            let scaled = self.fresh_virtual_general_avoiding(vec![index]);
+            let scaled = self.fresh_virtual_general_avoiding(vec![index.into()]);
             self.output
                 .instructions
                 .push(Instruction::ShiftLeftImmediate {
@@ -66,7 +66,7 @@ impl Generator {
     fn try_emit_shifted_byte_half_index_update(
         &mut self,
         pointee: Pointee,
-        base: u8,
+        base: u32,
         index: &Expression,
         operator: BinaryOperator,
         right: &Expression,
@@ -214,9 +214,9 @@ impl Generator {
 
     fn finish_shifted_byte_update(
         &mut self,
-        base: u8,
-        index: u8,
-        loaded: u8,
+        base: u32,
+        index: u32,
+        loaded: u32,
     ) -> Compilation<()> {
         self.output.instructions.push(Instruction::Or {
             a: GENERAL_SCRATCH,
@@ -235,8 +235,8 @@ impl Generator {
 
 fn combine_computed_update(
     operator: BinaryOperator,
-    loaded: u8,
-    right: u8,
+    loaded: u32,
+    right: u32,
 ) -> Instruction {
     use BinaryOperator::*;
     match operator {

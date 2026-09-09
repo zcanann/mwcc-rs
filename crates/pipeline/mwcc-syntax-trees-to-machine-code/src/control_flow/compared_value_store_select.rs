@@ -74,7 +74,7 @@ impl Generator {
         when_true: &Expression,
         when_false: &Expression,
         origin: ConditionalOrigin,
-    ) -> Compilation<Option<u8>> {
+    ) -> Compilation<Option<u32>> {
         if self.behavior.integer_select_style != mwcc_versions::IntegerSelectStyle::BranchPreserving
             || !self.non_leaf
         {
@@ -126,7 +126,7 @@ impl Generator {
         }
 
         let phi =
-            self.fresh_virtual_general_preferring(mwcc_target::Eabi::FIRST_GENERAL_ARGUMENT + 1);
+            self.fresh_virtual_general_preferring((mwcc_target::Eabi::FIRST_GENERAL_ARGUMENT + 1).into());
         let value_start = self.output.instructions.len();
         self.evaluate_general(plan.value, GENERAL_SCRATCH)?;
         let constant = self.output.instructions.len();

@@ -22,19 +22,19 @@ pub struct FramePlan {
     pub frame_size: i16,
     /// Registers saved across the body (virtual field values allowed), highest
     /// logical slot first — slot k stores at `frame_size - 4*(k+1)`.
-    pub saved: Vec<u8>,
+    pub saved: Vec<u32>,
 }
 
 impl FramePlan {
     /// A plan for `count` saved registers: the standard 16-byte-aligned size.
-    pub fn sized_for(saved: Vec<u8>) -> FramePlan {
+    pub fn sized_for(saved: Vec<u32>) -> FramePlan {
         Self::with_local_region(saved, 0)
     }
 
     /// Compose the linkage area, a caller-laid-out local region, and the saved
     /// GPR suffix into one 16-byte-aligned frame. Local slots grow upward from
     /// r1+8; saved homes grow downward from the top of the frame.
-    pub fn with_local_region(saved: Vec<u8>, local_bytes: i16) -> FramePlan {
+    pub fn with_local_region(saved: Vec<u32>, local_bytes: i16) -> FramePlan {
         debug_assert!(local_bytes >= 0);
         let frame_size = ((8 + local_bytes + 4 * saved.len() as i16 + 15) / 16) * 16;
         FramePlan { frame_size, saved }
@@ -49,7 +49,7 @@ impl FramePlan {
             Instruction::StoreWord { s: 0, a: 1, offset: self.frame_size + 4 },
         ];
         for (slot, &register) in self.saved.iter().enumerate() {
-            instructions.push(Instruction::StoreWord { s: register, a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
+            instructions.push(Instruction::StoreWord { s: u32::from(register), a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
         }
         instructions
     }
@@ -58,15 +58,15 @@ impl FramePlan {
     /// that parks its incoming value — `stwu; mflr; stw r0; stw rS,fs-4; mr rS,rX;
     /// stw rS',fs-8; mr rS',rY; …` — the captured schedule for parameters saved
     /// across calls. `incoming[k]` pairs with `saved[k]`.
-    pub fn prologue_interleaved(&self, incoming: &[u8]) -> Vec<Instruction> {
+    pub fn prologue_interleaved(&self, incoming: &[u32]) -> Vec<Instruction> {
         let mut instructions = vec![
             Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -self.frame_size },
             Instruction::MoveFromLinkRegister { d: 0 },
             Instruction::StoreWord { s: 0, a: 1, offset: self.frame_size + 4 },
         ];
         for (slot, (&register, &source)) in self.saved.iter().zip(incoming).enumerate() {
-            instructions.push(Instruction::StoreWord { s: register, a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
-            instructions.push(Instruction::Or { a: register, s: source, b: source });
+            instructions.push(Instruction::StoreWord { s: u32::from(register), a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
+            instructions.push(Instruction::Or { a: u32::from(register), s: u32::from(source), b: u32::from(source) });
         }
         instructions
     }
@@ -84,7 +84,7 @@ impl FramePlan {
         instructions.extend(head);
         instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: self.frame_size + 4 });
         for (slot, &register) in self.saved.iter().enumerate() {
-            instructions.push(Instruction::StoreWord { s: register, a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
+            instructions.push(Instruction::StoreWord { s: u32::from(register), a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
         }
         instructions
     }
@@ -94,7 +94,7 @@ impl FramePlan {
     pub fn epilogue(&self) -> Vec<Instruction> {
         let mut instructions = vec![Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 }];
         for (slot, &register) in self.saved.iter().enumerate() {
-            instructions.push(Instruction::LoadWord { d: register, a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
+            instructions.push(Instruction::LoadWord { d: u32::from(register), a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
         }
         instructions.push(Instruction::MoveToLinkRegister { s: 0 });
         instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });

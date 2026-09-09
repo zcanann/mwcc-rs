@@ -132,8 +132,8 @@ impl Generator {
         while let Some((copy, saved)) = direct_call_result_zero_test(&self.output.instructions) {
             self.output.instructions[copy] = Instruction::OrRecord {
                 a: saved,
-                s: Eabi::FIRST_GENERAL_ARGUMENT,
-                b: Eabi::FIRST_GENERAL_ARGUMENT,
+                s: 3,
+                b: 3,
             };
             crate::remove_instruction_retargeting_to_next(self, copy + 1);
         }

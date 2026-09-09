@@ -160,8 +160,8 @@ impl Generator {
     pub(super) fn emit_unscaled_index_mask(
         &mut self,
         index: &MaskedIndex<'_>,
-        source: u8,
-        destination: u8,
+        source: u32,
+        destination: u32,
     ) {
         if let Some((begin, end)) = mask_to_run(index.mask) {
             self.output.instructions.push(Instruction::RotateAndMask {
@@ -185,8 +185,8 @@ impl Generator {
     pub(super) fn emit_masked_scale(
         &mut self,
         index: &MaskedIndex<'_>,
-        source: u8,
-        destination: u8,
+        source: u32,
+        destination: u32,
     ) {
         if let Some((begin, end)) = index.run {
             self.output.instructions.push(Instruction::RotateAndMask {
@@ -219,9 +219,9 @@ impl Generator {
     pub(crate) fn try_emit_masked_pointer_subscript(
         &mut self,
         pointee: Pointee,
-        address: u8,
+        address: u32,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(index) = self.masked_index_with_bias(index, pointee) else {
             return Ok(false);

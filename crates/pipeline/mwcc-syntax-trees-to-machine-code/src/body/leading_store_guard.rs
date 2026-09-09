@@ -162,8 +162,8 @@ impl Generator {
     fn emit_planned_member_store(
         &mut self,
         store: &LeadingStore,
-        value_register: u8,
-        base_register: u8,
+        value_register: u32,
+        base_register: u32,
     ) -> Compilation<()> {
         let pointee = pointee_of_type(store.member_type).ok_or_else(|| {
             Diagnostic::error("leading-store guard member has no scalar store width")

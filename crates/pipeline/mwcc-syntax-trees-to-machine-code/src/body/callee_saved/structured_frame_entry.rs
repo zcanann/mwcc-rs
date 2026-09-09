@@ -25,7 +25,7 @@ impl Generator {
     pub(super) fn emit_structured_dense_frame_entry(
         &mut self,
         function: &Function,
-        saved_parameters: &[(String, u8, u8)],
+        saved_parameters: &[(String, u32, u32)],
     ) -> Compilation<Option<usize>> {
         let Some(assignment_index) = structured_dense_frame_entry_index(function) else {
             return Ok(None);
@@ -60,7 +60,7 @@ impl Generator {
         else {
             return Ok(None);
         };
-        if index_incoming != Eabi::FIRST_GENERAL_ARGUMENT {
+        if index_incoming != u32::from(Eabi::FIRST_GENERAL_ARGUMENT) {
             return Ok(None);
         }
         let Some(destination) = self.locations.get(name).map(|location| location.register) else {
@@ -89,9 +89,9 @@ impl Generator {
         };
                 if assertion_parameter.as_deref() == Some(parameter.name.as_str()) {
                     self.output.instructions.push(Instruction::OrRecord {
-                        a: *home,
-                        s: *incoming,
-                        b: *incoming,
+                        a: u32::from(*home),
+                        s: u32::from(*incoming),
+                        b: u32::from(*incoming),
                     });
                 } else {
                     self.emit_callee_saved_home_copy(*home, *incoming);
@@ -99,14 +99,14 @@ impl Generator {
                 self.locations
                     .get_mut(name)
                     .expect("saved parameter was eligibility checked")
-                    .register = *home;
+                    .register = u32::from(*home);
             }
             for statement in &function.statements[..assignment_index] {
                 let emitted = match statement {
                     Statement::Expression(expression) => self
                         .try_emit_dense_frame_assertion(
                             expression,
-                            index_home,
+                            index_home.into(),
                             self.behavior.frame_convention == FrameConvention::LinkageFirst,
                         )?,
                     _ => false,
@@ -131,7 +131,7 @@ impl Generator {
             emit_scaled_index(
                 &mut self.output.instructions,
                 scaled,
-                index_home,
+                index_home.into(),
                 element_size,
             )?;
             self.emit_address_high(high, global);
@@ -157,7 +157,7 @@ impl Generator {
         let high = self.fresh_virtual_general_preferring(high_preference);
         let scaled = self.fresh_virtual_general_preferring(scaled_preference);
         self.emit_address_high(high, global);
-        let remaining: Vec<(u8, u8)> = function
+        let remaining: Vec<(u32, u32)> = function
             .parameters
             .iter()
             .filter_map(|parameter| {
@@ -171,7 +171,7 @@ impl Generator {
             emit_scaled_index(
                 &mut self.output.instructions,
                 scaled,
-                index_incoming,
+                index_incoming.into(),
                 element_size,
             )?;
         }
@@ -188,7 +188,7 @@ impl Generator {
             emit_scaled_index(
                 &mut self.output.instructions,
                 scaled,
-                index_home,
+                index_home.into(),
                 element_size,
             )?;
         }

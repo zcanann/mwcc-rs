@@ -27,7 +27,7 @@ impl Generator {
     /// relocation fills (r13 + the small-data offset); under absolute addressing
     /// (`-sdata 0`) the address is materialized with a `lis`/`addi` pair (see
     /// [`Self::emit_global_load_absolute`]). The load is chosen by the global's type.
-    pub(crate) fn emit_global_load(&mut self, name: &str, destination: u8) -> Compilation<()> {
+    pub(crate) fn emit_global_load(&mut self, name: &str, destination: u32) -> Compilation<()> {
         // A FUNCTION name in value position (a callback argument — `reg(cb, 5)`) is
         // its ADDRESS: an ADDR16 lis/addi pair against the function symbol (text
         // symbols are never small-data, so this bypasses the SDA path). Selection
@@ -41,7 +41,7 @@ impl Generator {
             // immediately preceding call result may still be live there even
             // though it has no named location.
             let high = if destination == GENERAL_SCRATCH {
-                self.fresh_virtual_general_avoiding(vec![Eabi::general_result().number])
+                self.fresh_virtual_general_avoiding(vec![u32::from(Eabi::general_result().number)])
             } else {
                 destination
             };
@@ -74,7 +74,7 @@ impl Generator {
     pub(crate) fn emit_global_load_value(
         &mut self,
         name: &str,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let global_type = *self
             .globals
@@ -126,8 +126,8 @@ impl Generator {
     pub(crate) fn global_load_instruction(
         &self,
         global_type: Type,
-        d: u8,
-        a: u8,
+        d: u32,
+        a: u32,
     ) -> Compilation<Instruction> {
         Ok(match global_type {
             Type::Int | Type::UnsignedInt => Instruction::LoadWord { d, a, offset: 0 },
@@ -151,7 +151,7 @@ impl Generator {
     /// Emit `lis base, name@ha` — the high-adjusted half of an absolute address,
     /// with its `R_PPC_ADDR16_HA` relocation. `base` must never be r0: an `addi`
     /// or load based on r0 reads literal zero, not the register (the `li` trap).
-    pub(crate) fn emit_address_high(&mut self, base: u8, name: &str) {
+    pub(crate) fn emit_address_high(&mut self, base: u32, name: &str) {
         self.record_relocation(RelocationKind::Addr16Ha, name);
         self.output
             .instructions
@@ -160,7 +160,7 @@ impl Generator {
 
     /// Finish absolute address formation with `addi base,base,name@l`.
     /// O0 keeps this source-order step separate from the following access.
-    pub(crate) fn emit_address_low(&mut self, base: u8, name: &str) {
+    pub(crate) fn emit_address_low(&mut self, base: u32, name: &str) {
         self.record_relocation(RelocationKind::Addr16Lo, name);
         self.output.instructions.push(Instruction::AddImmediate {
             d: base,
@@ -179,7 +179,7 @@ impl Generator {
         &mut self,
         name: &str,
         global_type: Type,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if global_type == Type::Float {
             let base = self.lowest_free_general()?;
@@ -233,7 +233,7 @@ impl Generator {
         &mut self,
         name: &str,
         pointee: Pointee,
-        source: u8,
+        source: u32,
     ) -> Compilation<()> {
         match self.behavior.global_addressing {
             GlobalAddressing::SmallData => {
@@ -265,7 +265,7 @@ impl Generator {
     /// instruction emitted), and a scratch (`r0`) value can only feed a consumer
     /// that does not use it as an `addi` base (where `r0` reads as literal zero).
     /// Build 163 deliberately declines this optimization and reloads memory.
-    pub(crate) fn live_global_register(&self, name: &str, prefer_destination: bool) -> Option<u8> {
+    pub(crate) fn live_global_register(&self, name: &str, prefer_destination: bool) -> Option<u32> {
         if self.behavior.stored_global_read_style
             == mwcc_versions::StoredGlobalReadStyle::ReloadAfterStore
         {

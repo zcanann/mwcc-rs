@@ -356,7 +356,7 @@ impl Generator {
     }
 
     fn emit_transfer_command_switch(&mut self, shape: &TransferCommandSwitch) {
-        const OBJECT: u8 = 31;
+        const OBJECT: u32 = 31;
         let default = self.fresh_label();
         let success = self.fresh_label();
         let epilogue = self.fresh_label();

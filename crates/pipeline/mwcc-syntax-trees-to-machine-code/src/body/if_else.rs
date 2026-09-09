@@ -15,7 +15,7 @@ impl Generator {
     pub(crate) fn emit_non_leaf_constant_join_epilogue(&mut self, constant: i64) {
         let emit_return = |generator: &mut Self| {
             generator.load_integer_constant(
-                mwcc_target::Eabi::general_result().number,
+                u32::from(mwcc_target::Eabi::general_result().number),
                 constant,
             );
         };
@@ -79,7 +79,7 @@ impl Generator {
         {
             return Ok(false);
         }
-        let result = mwcc_target::Eabi::general_result().number;
+        let result = u32::from(mwcc_target::Eabi::general_result().number);
         let return_expression = function.return_expression.as_ref();
         let already_in_result = matches!(return_expression, Some(Expression::Variable(name)) if self.lookup_general(name) == Some(result));
         // TWO-EXIT form: the return value is ALREADY in r3 (`return <cond var>`) and the

@@ -391,7 +391,7 @@ impl Generator {
 
     fn emit_toggled_callback_arm(
         &mut self,
-        alias: u8,
+        alias: u32,
         selector_offset: i16,
         table: &str,
         done: mwcc_vreg::Label,

@@ -127,7 +127,7 @@ impl Generator {
         ]);
     }
 
-    fn emit_linked_entry_address(&mut self, index: u8, shift: u8, entry_step: i16) {
+    fn emit_linked_entry_address(&mut self, index: u32, shift: u8, entry_step: i16) {
         self.output.instructions.extend([
             Instruction::ShiftLeftImmediate {
                 a: 3,

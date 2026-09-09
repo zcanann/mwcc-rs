@@ -15,8 +15,8 @@ impl Generator {
         high: i16,
         low: i16,
         offsets: [i16; 3],
-        address: u8,
-        length: u8,
+        address: u32,
+        length: u32,
     ) {
         let page = offsets.map(|offset| offset - low);
         self.output
@@ -89,7 +89,7 @@ impl Generator {
         });
         self.output.instructions.push(Instruction::RotateAndMask {
             a: 0,
-            s: length,
+            s: u32::from(length),
             shift: 27,
             begin: 16,
             end: 31,
@@ -124,10 +124,10 @@ impl Generator {
         high: i16,
         low: i16,
         offsets: &[i16],
-        direction: u8,
-        main_address: u8,
-        aram_address: u8,
-        length: u8,
+        direction: u32,
+        main_address: u32,
+        aram_address: u32,
+        length: u32,
     ) {
         let page: Vec<i16> = offsets.iter().map(|offset| offset - low).collect();
         self.output
@@ -270,14 +270,14 @@ impl Generator {
             .instructions
             .push(Instruction::ShiftRightLogicalImmediate {
                 a: 6,
-                s: length,
+                s: u32::from(length),
                 shift: 16,
             });
         self.output
             .instructions
             .push(Instruction::ClearLeftImmediate {
                 a: 0,
-                s: length,
+                s: u32::from(length),
                 clear: 16,
             });
         self.output

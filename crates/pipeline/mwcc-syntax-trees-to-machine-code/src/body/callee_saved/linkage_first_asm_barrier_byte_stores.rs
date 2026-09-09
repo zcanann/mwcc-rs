@@ -32,7 +32,7 @@ impl Generator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AlternatingByteStorePacket {
     start: usize,
-    object: u8,
+    object: u32,
     first_offset: i16,
     first_constant: i16,
     second_constant: i16,

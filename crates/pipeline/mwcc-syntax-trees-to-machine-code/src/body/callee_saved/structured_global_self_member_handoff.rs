@@ -30,11 +30,11 @@ impl Generator {
         };
         let global = global.to_owned();
         let value = value.clone();
-        self.evaluate_general(&value, Eabi::FIRST_GENERAL_ARGUMENT)?;
-        self.emit_global_store(&global, pointee, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        self.evaluate_general(&value, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
+        self.emit_global_store(&global, pointee, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
         self.stored_globals.insert(
             global,
-            (Eabi::FIRST_GENERAL_ARGUMENT, self.output.instructions.len()),
+            (Eabi::FIRST_GENERAL_ARGUMENT.into(), self.output.instructions.len()),
         );
         Ok(true)
     }

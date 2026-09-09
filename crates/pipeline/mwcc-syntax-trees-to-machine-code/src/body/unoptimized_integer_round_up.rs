@@ -37,7 +37,7 @@ impl Generator {
                 .locations
                 .get(&parameter.name)
                 .map(|location| (location.class, location.register))
-                != Some((ValueClass::General, Eabi::FIRST_GENERAL_ARGUMENT))
+                != Some((ValueClass::General, Eabi::FIRST_GENERAL_ARGUMENT.into()))
         {
             return Ok(false);
         }
@@ -48,21 +48,21 @@ impl Generator {
         self.output.instructions.extend([
             Instruction::ShiftLeftImmediate {
                 a: GENERAL_SCRATCH,
-                s: Eabi::FIRST_GENERAL_ARGUMENT,
+                s: 3,
                 shift: plan.shift,
             },
             Instruction::SubtractFrom {
-                d: Eabi::FIRST_GENERAL_ARGUMENT + 1,
-                a: Eabi::FIRST_GENERAL_ARGUMENT,
+                d: 4,
+                a: 3,
                 b: GENERAL_SCRATCH,
             },
             Instruction::AddImmediate {
                 d: GENERAL_SCRATCH,
-                a: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                a: 4,
                 immediate: plan.bias,
             },
             Instruction::AndContiguousMask {
-                a: Eabi::general_result().number,
+                a: u32::from(Eabi::general_result().number),
                 s: GENERAL_SCRATCH,
                 begin: 0,
                 end: plan.mask_end,

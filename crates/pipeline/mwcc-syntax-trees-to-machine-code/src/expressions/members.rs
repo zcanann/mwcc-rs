@@ -110,9 +110,9 @@ pub(crate) fn embedded_member_address_base(expression: &Expression) -> Option<(&
 }
 
 fn embedded_aggregate_address_tail(
-    base: u8,
-    scaled_index: u8,
-    destination: u8,
+    base: u32,
+    scaled_index: u32,
+    destination: u32,
     offset: i16,
 ) -> Vec<Instruction> {
     if offset == 0 {
@@ -195,7 +195,7 @@ impl Generator {
         &mut self,
         array: &Expression,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let (base, offset, stride) = match array {
             Expression::Member {
@@ -227,7 +227,7 @@ impl Generator {
                 if base != destination {
                     self.output
                         .instructions
-                        .push(Instruction::move_register(destination, base));
+                        .push(Instruction::move_register(destination, base.into()));
                 }
             } else {
                 self.output.instructions.push(Instruction::AddImmediate {
@@ -300,7 +300,7 @@ impl Generator {
         };
         let base_register = self.member_base_register(base)?;
         self.output.instructions.extend(embedded_aggregate_address_tail(
-            base_register,
+            base_register.into(),
             scaled,
             destination,
             offset,
@@ -315,7 +315,7 @@ impl Generator {
         &mut self,
         base: &Expression,
         offset: u32,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         // An absolute-address object carries a constant aggregate pointer. Its
         // member address is arithmetic on that pointer, with no memory access
@@ -430,7 +430,7 @@ impl Generator {
             self.emit_member_load(inner, *member_offset, *member_type, None, destination)?;
             destination
         } else {
-            self.member_base_register(base)?
+            self.member_base_register(base)?.into()
         };
         if offset == 0 {
             if base_register != destination {
@@ -451,7 +451,7 @@ impl Generator {
     /// Split an arbitrary 32-bit member offset into MWCC's address adjustment
     /// and signed D-form displacement. Small offsets remain a single load/store;
     /// larger offsets use `addis base,base,ha(offset)` before the access.
-    pub(super) fn emit_member_base_adjustment(&mut self, base: u8, offset: u32) -> i16 {
+    pub(super) fn emit_member_base_adjustment(&mut self, base: u32, offset: u32) -> i16 {
         let (high_adjusted, low) = split_address(offset);
         if high_adjusted != 0 {
             self.output
@@ -471,7 +471,7 @@ impl Generator {
         offset: u32,
         member_type: Type,
         index_stride: Option<u32>,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if offset == 0
             && index_stride.is_none()
@@ -526,7 +526,7 @@ impl Generator {
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
-                address,
+                address.into(),
                 displacement,
             )?);
             if !self.emit_post_step_update_after_use(target, *operator, *pointer_link)? {
@@ -701,21 +701,21 @@ impl Generator {
                     ))
                 })?;
                 if let Some(base) = self.condition_global_base(name)? {
-                    let displacement = self.emit_member_base_adjustment(base, offset);
+                    let displacement = self.emit_member_base_adjustment(base.into(), offset);
                     self.output.instructions.push(displacement_load(
                         pointee,
                         destination,
-                        base,
+                        base.into(),
                         displacement,
                     )?);
                     return Ok(());
                 }
                 if let Some(base) = self.live_global_register(name, true) {
-                    let displacement = self.emit_member_base_adjustment(base, offset);
+                    let displacement = self.emit_member_base_adjustment(base.into(), offset);
                     self.output.instructions.push(displacement_load(
                         pointee,
                         destination,
-                        base,
+                        base.into(),
                         displacement,
                     )?);
                     return Ok(());
@@ -735,12 +735,12 @@ impl Generator {
                     )?);
                 } else {
                     let base = self.address_base_for_load_destination(destination)?;
-                    self.emit_global_load_value(name, base)?;
-                    let displacement = self.emit_member_base_adjustment(base, offset);
+                    self.emit_global_load_value(name, base.into())?;
+                    let displacement = self.emit_member_base_adjustment(base.into(), offset);
                     self.output.instructions.push(displacement_load(
                         pointee,
                         destination,
-                        base,
+                        base.into(),
                         displacement,
                     )?);
                 }
@@ -962,11 +962,11 @@ impl Generator {
                 Diagnostic::error("constant-adjusted member load offset out of range (roadmap)")
             })?;
         let address = self.member_base_register(base)?;
-        let displacement = self.emit_member_base_adjustment(address, combined_displacement as u32);
+        let displacement = self.emit_member_base_adjustment(address.into(), combined_displacement as u32);
         self.output.instructions.push(displacement_load(
             pointee,
             destination,
-            address,
+            address.into(),
             displacement,
         )?);
         Ok(())
@@ -981,7 +981,7 @@ impl Generator {
         stride: u32,
         offset: u32,
         member_type: Type,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         // `arr[i].field` where `arr` is a file-scope struct array: materialize arr's
         // address with the same interleaved base/scale schedule as a plain global
@@ -1019,7 +1019,7 @@ impl Generator {
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
-                array_register,
+                array_register.into(),
                 displacement,
             )?);
             return Ok(());
@@ -1061,7 +1061,7 @@ impl Generator {
             self.output.instructions.push(indexed_load(
                 pointee,
                 destination,
-                array_register,
+                array_register.into(),
                 GENERAL_SCRATCH,
             )?);
         } else {
@@ -1095,7 +1095,7 @@ impl Generator {
         &mut self,
         array: &Expression,
         stride: u32,
-    ) -> Compilation<u8> {
+    ) -> Compilation<u32> {
         if super::pointers::pointer_member_stride(array) == Some(stride) {
             let register = self.fresh_virtual_general_preferring(3);
             self.evaluate_general(array, register)?;
@@ -1122,7 +1122,7 @@ impl Generator {
         stride: u32,
         offset: u32,
         member_type: Type,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let pointee = pointee_of_type(member_type).ok_or_else(|| {
             Diagnostic::error(format!(
@@ -1181,7 +1181,7 @@ impl Generator {
             self.evaluate_general(index, GENERAL_SCRATCH)?;
             GENERAL_SCRATCH
         } else {
-            self.materialize_index_operand(index)?
+            self.materialize_index_operand(index)?.into()
         };
         if needs_distinct_address {
             if self.emit_legacy_global_struct_array_scratch_load(
@@ -1337,7 +1337,7 @@ impl Generator {
             }
             self.output
                 .instructions
-                .push(displacement_store(pointee, source, base, total)?);
+                .push(displacement_store(pointee, source.into(), base, total)?);
             return Ok(());
         }
         if !stride.is_power_of_two() {
@@ -1357,7 +1357,7 @@ impl Generator {
                 self.reserved.remove(&address);
             }
             self.output.instructions.push(displacement_store(
-                pointee, source?, address, displacement,
+                pointee, source?.into(), address, displacement,
             )?);
             return Ok(());
         }
@@ -1472,7 +1472,7 @@ impl Generator {
     /// The register holding a struct pointer for member access. A plain variable
     /// is in its own register; a chained base `a->b` is itself a pointer member, so
     /// its value is loaded into the inner base register (reused) before use.
-    pub(crate) fn member_base_register(&mut self, base: &Expression) -> Compilation<u8> {
+    pub(crate) fn member_base_register(&mut self, base: &Expression) -> Compilation<u32> {
         if let Some(address) = absolute_member_base(base) {
             let register = self.fresh_virtual_general();
             self.load_integer_constant(register, i64::from(address));
@@ -1514,7 +1514,7 @@ impl Generator {
                     ) =>
             {
                 if let Some(register) = self.condition_global_base(name)? {
-                    Ok(register)
+                    Ok(register.into())
                 } else {
                     // An uncached file-scope pointer is a memory-backed value,
                     // not a missing local register. Keep its loaded address in
@@ -1612,7 +1612,7 @@ impl Generator {
                 // Keep the values distinct; allocation can coalesce their physical
                 // homes when the complete CFG proves the root dead.
                 let register = self.fresh_virtual_general();
-                let displacement = self.emit_member_base_adjustment(base_register, *offset);
+                let displacement = self.emit_member_base_adjustment(base_register.into(), *offset);
                 self.output.instructions.push(Instruction::LoadWord {
                     d: register,
                     a: base_register,
@@ -1738,7 +1738,7 @@ impl Generator {
             // evaluator so a following member access owns one pointer value,
             // including when its destination or another operand is live.
             Expression::CallThrough { .. } if self.non_leaf => {
-                let register = self.fresh_virtual_general_preferring(Eabi::general_result().number);
+                let register = self.fresh_virtual_general_preferring(u32::from(Eabi::general_result().number));
                 self.evaluate_general(base, register)?;
                 Ok(register)
             }
@@ -1758,7 +1758,7 @@ impl Generator {
         &mut self,
         base: &Expression,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if self.try_emit_embedded_struct_array_load(base, index, destination)? {
             return Ok(());
@@ -1854,7 +1854,7 @@ impl Generator {
                 self.output.instructions.push(displacement_load(
                     *element,
                     destination,
-                    address,
+                    address.into(),
                     total,
                 )?);
                 return Ok(());
@@ -1877,7 +1877,7 @@ impl Generator {
                 self.output.instructions.push(indexed_load(
                     *element,
                     destination,
-                    address,
+                    address.into(),
                     scaled,
                 )?);
             } else {
@@ -1932,11 +1932,11 @@ impl Generator {
                     let address = self.address_base_for_load_destination(destination)?;
                     self.output
                         .instructions
-                        .push(Instruction::load_immediate_shifted(address, high_adjusted));
+                        .push(Instruction::load_immediate_shifted(address.into(), high_adjusted));
                     self.output.instructions.push(displacement_load(
                         element,
                         destination,
-                        address,
+                        address.into(),
                         displacement,
                     )?);
                     return Ok(());
@@ -1998,7 +1998,7 @@ impl Generator {
             return Ok(());
         }
         let (pointee, address) = self.resolve_pointer(base)?;
-        if self.try_emit_masked_pointer_subscript(pointee, address, index, destination)? {
+        if self.try_emit_masked_pointer_subscript(pointee, address.into(), index, destination)? {
             return Ok(());
         }
         if let Some(constant) = constant_value(index) {
@@ -2008,13 +2008,14 @@ impl Generator {
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
-                address,
+                address.into(),
                 offset,
             )?);
             return Ok(());
         }
         // `a[i + const]` / `a[i - const]`: scale the variable index, add it to the base, and fold the
-        // constant into the load displacement — mwcc emits `slwi r0,i,k; add base,base,r0; lwz d,off(base)`.
+        // constant into the load displacement. Preserve the original pointer
+        // for subsequent loads and loop iterations.
         // (A bare variable index below uses `lwzx`, which has no displacement field for the constant.)
         if let Expression::Binary {
             operator: operator @ (BinaryOperator::Add | BinaryOperator::Subtract),
@@ -2047,15 +2048,16 @@ impl Generator {
                             });
                         GENERAL_SCRATCH
                     };
+                    let indexed_base = self.fresh_virtual_general_avoiding(vec![address]);
                     self.output.instructions.push(Instruction::Add {
-                        d: address,
+                        d: indexed_base,
                         a: address,
                         b: scaled,
                     });
                     self.output.instructions.push(displacement_load(
                         pointee,
                         destination,
-                        address,
+                        indexed_base,
                         offset,
                     )?);
                     return Ok(());
@@ -2105,7 +2107,7 @@ impl Generator {
                 };
                 self.output
                     .instructions
-                    .push(indexed_load(pointee, destination, address, scaled)?);
+                    .push(indexed_load(pointee, destination, address.into(), scaled)?);
                 return Ok(());
             }
         }
@@ -2133,7 +2135,7 @@ impl Generator {
         };
         self.output
             .instructions
-            .push(indexed_load(pointee, destination, address, scaled)?);
+            .push(indexed_load(pointee, destination, address.into(), scaled)?);
         Ok(())
     }
 
@@ -2147,7 +2149,7 @@ impl Generator {
         name: &str,
         total_size: u32,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let element_type = self.globals[name];
         let pointee = pointee_of_type(element_type).ok_or_else(|| {
@@ -2341,7 +2343,7 @@ impl Generator {
                 name,
                 total_size,
                 pointee,
-                legacy_index,
+                legacy_index.into(),
                 byte_normalized.is_some(),
                 destination,
             )? {
@@ -2386,7 +2388,7 @@ impl Generator {
                 pointee,
                 destination,
                 base,
-                index_register,
+                index_register.into(),
             )?);
             return Ok(());
         }
@@ -2395,7 +2397,7 @@ impl Generator {
             name,
             total_size,
             pointee,
-            index_register,
+            index_register.into(),
             destination,
         )? {
             return Ok(());
@@ -2427,10 +2429,10 @@ impl Generator {
         } else {
             // The high half goes to the base register when it does not hold the index; otherwise to
             // a free register the scale will read before it is reused.
-            let high = if base_gpr != index_register {
+            let high = if base_gpr != index_register.into() {
                 base_gpr
             } else {
-                self.free_general_excluding(index_register)?
+                self.free_general_excluding(index_register.into())?
             };
             self.emit_address_high(high, name);
             self.output
@@ -2466,7 +2468,7 @@ impl Generator {
         name: &str,
         total_size: u32,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let element_type = self.globals[name];
         let element_size = match element_type {
@@ -2583,7 +2585,7 @@ impl Generator {
         name: &str,
         size: u32,
         offset: u32,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         // Taking a member's address uses the same retained object base as a
         // member load/store. Derive a new address without adjusting the shared
@@ -2641,7 +2643,7 @@ impl Generator {
         &mut self,
         name: &str,
         total_size: u32,
-        dest: u8,
+        dest: u32,
     ) -> Compilation<()> {
         self.emit_global_array_base_with_high(name, total_size, dest, dest)
     }
@@ -2653,8 +2655,8 @@ impl Generator {
         &mut self,
         name: &str,
         total_size: u32,
-        dest: u8,
-        high: u8,
+        dest: u32,
+        high: u32,
     ) -> Compilation<()> {
         self.emit_global_array_base_with_high(name, total_size, dest, high)
     }
@@ -2663,8 +2665,8 @@ impl Generator {
         &mut self,
         name: &str,
         total_size: u32,
-        dest: u8,
-        high: u8,
+        dest: u32,
+        high: u32,
     ) -> Compilation<()> {
         if let Some(base) = self
             .data_section_anchor
@@ -2764,7 +2766,7 @@ impl Generator {
                     self.record_relocation(RelocationKind::EmbSda21, name);
                     self.output
                         .instructions
-                        .push(displacement_store(pointee, source, 0, 0)?);
+                        .push(displacement_store(pointee, source.into(), 0, 0)?);
                     return Ok(());
                 }
                 let base = self.fresh_virtual_general();
@@ -2783,7 +2785,7 @@ impl Generator {
                     }
                     self.output
                         .instructions
-                        .push(displacement_store(pointee, source, base, offset)?);
+                        .push(displacement_store(pointee, source.into(), base, offset)?);
                 } else if offset == 0 {
                     // value ; lis base,name@ha ; stf val,name@l(base)  (`@l` folds into the store)
                     let source = self.place_store_value(value, pointee)?;
@@ -2794,7 +2796,7 @@ impl Generator {
                     self.record_relocation(RelocationKind::Addr16Lo, name);
                     self.output
                         .instructions
-                        .push(displacement_store(pointee, source, base, 0)?);
+                        .push(displacement_store(pointee, source.into(), base, 0)?);
                 } else {
                     // lis base,name@ha ; value ; addi base,base,name@l ; stf val,offset(base)
                     self.emit_address_high(base, name);
@@ -2810,7 +2812,7 @@ impl Generator {
                     }
                     self.output
                         .instructions
-                        .push(displacement_store(pointee, source, base, offset)?);
+                        .push(displacement_store(pointee, source.into(), base, offset)?);
                 }
                 return Ok(());
             }
@@ -2878,7 +2880,7 @@ impl Generator {
                 self.record_relocation(RelocationKind::EmbSda21, name);
                 self.output
                     .instructions
-                    .push(displacement_store(pointee, source, 0, 0)?);
+                    .push(displacement_store(pointee, source.into(), 0, 0)?);
                 return Ok(());
             }
             let base = self.fresh_virtual_general();
@@ -2897,7 +2899,7 @@ impl Generator {
                 self.record_relocation(RelocationKind::Addr16Lo, name);
                 self.output
                     .instructions
-                    .push(displacement_store(pointee, source, base, 0)?);
+                    .push(displacement_store(pointee, source.into(), base, 0)?);
                 return Ok(());
             }
             self.emit_global_array_base(name, total_size, base)?;
@@ -2907,7 +2909,7 @@ impl Generator {
             }
             self.output
                 .instructions
-                .push(displacement_store(pointee, source, base, offset)?);
+                .push(displacement_store(pointee, source.into(), base, offset)?);
             return Ok(());
         }
         // Variable index: the base reuses the (scaled-away) index register and the value stores
@@ -2953,7 +2955,7 @@ impl Generator {
                 )
             })?;
             let index_register = self.materialize_index_operand(index_leaf)?;
-            let index_register = self.preserve_address_index(index_register);
+            let index_register = self.preserve_address_index(index_register.into());
             if self.emit_legacy_global_array_constant_store(
                 name,
                 pointee,
@@ -3017,7 +3019,7 @@ impl Generator {
             self.general_register_of_leaf(value)?
         };
         let index_register = self.materialize_index_operand(index)?;
-        let index_register = self.preserve_address_index(index_register);
+        let index_register = self.preserve_address_index(index_register.into());
         if self.emit_legacy_global_array_variable_store(
             name,
             total_size,
@@ -3169,7 +3171,7 @@ impl Generator {
         element: Pointee,
         address: u32,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let high_adjusted = (((address as i64 + 0x8000) >> 16) & 0xFFFF) as i16;
         let low = address as i16;
@@ -3187,7 +3189,7 @@ impl Generator {
                 let base = self.address_base_for_load_destination(destination)?;
                 self.output
                     .instructions
-                    .push(Instruction::load_immediate_shifted(base, high_adjusted));
+                    .push(Instruction::load_immediate_shifted(base.into(), high_adjusted));
                 self.output.instructions.push(Instruction::AddImmediate {
                     d: base,
                     a: base,
@@ -3196,7 +3198,7 @@ impl Generator {
                 self.output.instructions.push(displacement_load(
                     element,
                     destination,
-                    base,
+                    base.into(),
                     displacement,
                 )?);
                 return Ok(());
@@ -3207,11 +3209,11 @@ impl Generator {
             let base = self.address_base_for_load_destination(destination)?;
             self.output
                 .instructions
-                .push(Instruction::load_immediate_shifted(base, high_adjusted));
+                .push(Instruction::load_immediate_shifted(base.into(), high_adjusted));
             self.output.instructions.push(displacement_load(
                 element,
                 destination,
-                base,
+                base.into(),
                 displacement,
             )?);
             return Ok(());
@@ -3408,7 +3410,7 @@ impl Generator {
                     == mwcc_versions::FixedAddressConstantStoreStyle::ValueFirst
             {
                 let source = self.place_store_value(value, element)?;
-                let base = self.free_general_excluding(source)?;
+                let base = self.free_general_excluding(source.into())?;
                 self.output
                     .instructions
                     .push(Instruction::load_immediate_shifted(base, high_adjusted));

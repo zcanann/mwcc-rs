@@ -50,7 +50,7 @@ impl IntegerLoopPolicy {
 
     pub(crate) fn pair_temporaries(
         self,
-        count_register: u8,
+        count_register: u32,
         parameter_count: usize,
         has_sign: bool,
     ) -> PairTemporaries {
@@ -58,14 +58,14 @@ impl IntegerLoopPolicy {
         if self.reuse_count_home {
             PairTemporaries {
                 hz: count_register,
-                sign: has_sign.then_some(first_free),
-                lz: first_free + u8::from(has_sign),
+                sign: has_sign.then_some(first_free.into()),
+                lz: u32::from(first_free + u8::from(has_sign)),
             }
         } else {
             PairTemporaries {
-                hz: first_free,
-                sign: has_sign.then_some(first_free + 1),
-                lz: first_free + 1 + u8::from(has_sign),
+                hz: u32::from(first_free),
+                sign: has_sign.then_some((first_free + 1).into()),
+                lz: u32::from(first_free + 1 + u8::from(has_sign)),
             }
         }
     }
@@ -73,9 +73,9 @@ impl IntegerLoopPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PairTemporaries {
-    pub(crate) hz: u8,
-    pub(crate) lz: u8,
-    pub(crate) sign: Option<u8>,
+    pub(crate) hz: u32,
+    pub(crate) lz: u32,
+    pub(crate) sign: Option<u32>,
 }
 
 #[cfg(test)]

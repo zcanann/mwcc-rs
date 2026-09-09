@@ -13,8 +13,8 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct InlineByteAppend {
     start: usize,
-    cursor: u8,
-    cursor_scratch: u8,
+    cursor: u32,
+    cursor_scratch: u32,
     end: usize,
 }
 

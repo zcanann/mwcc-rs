@@ -186,9 +186,9 @@ impl Generator {
     /// `bytes[index / 8] & (1 << (index % 8))` at O0. Although the source index
     /// is non-negative, C promotion makes both divide and modulo signed; MWCC
     /// therefore preserves its signed power-of-two correction sequences.
-    fn emit_unoptimized_indexed_bit_test(&mut self, pointer: u8, index: u8) {
-        const ONE: u8 = 5;
-        const VALUE: u8 = 4;
+    fn emit_unoptimized_indexed_bit_test(&mut self, pointer: u32, index: u32) {
+        const ONE: u32 = 5;
+        const VALUE: u32 = 4;
 
         self.output
             .instructions
@@ -264,7 +264,7 @@ impl Generator {
                 b: GENERAL_SCRATCH,
             });
         self.output.instructions.push(Instruction::And {
-            a: Eabi::general_result().number,
+            a: u32::from(Eabi::general_result().number),
             s: VALUE,
             b: GENERAL_SCRATCH,
         });
@@ -275,18 +275,18 @@ impl Generator {
     /// schedule; only the combining instruction differs.
     fn emit_unoptimized_indexed_bit_update(
         &mut self,
-        pointer: u8,
-        index: u8,
+        pointer: u32,
+        index: u32,
         operation: AccessOperation,
     ) {
         debug_assert!(matches!(
             operation,
             AccessOperation::Set | AccessOperation::Clear
         ));
-        const BYTE_INDEX: u8 = 7;
-        const OLD_BYTE: u8 = 6;
-        const ONE: u8 = 5;
-        const VALUE: u8 = 4;
+        const BYTE_INDEX: u32 = 7;
+        const OLD_BYTE: u32 = 6;
+        const ONE: u32 = 5;
+        const VALUE: u32 = 4;
 
         self.output
             .instructions
@@ -411,12 +411,12 @@ impl Generator {
             return Ok(false);
         }
 
-        const HELPER_DERIVED: u8 = 27;
-        const INLINE_RESULT_COPY: u8 = 28;
-        const HELPER_RESULT: u8 = 29;
-        const INDEX_HOME: u8 = 30;
-        const POINTER_HOME: u8 = 31;
-        const FIRST_SAVED: u8 = HELPER_DERIVED;
+        const HELPER_DERIVED: u32 = 27;
+        const INLINE_RESULT_COPY: u32 = 28;
+        const HELPER_RESULT: u32 = 29;
+        const INDEX_HOME: u32 = 30;
+        const POINTER_HOME: u32 = 31;
+        const FIRST_SAVED: u32 = HELPER_DERIVED;
 
         let parameter_home = self
             .lookup_general(&call.parameter.name)

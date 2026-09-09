@@ -37,7 +37,7 @@ impl Generator {
             return Ok(false);
         }
 
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         match condition {
             Expression::Variable(primary)
                 if matches!(

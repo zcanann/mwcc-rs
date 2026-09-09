@@ -30,9 +30,9 @@ impl Generator {
     }
 
     fn emit_inlined_callback_open(&mut self, shape: &InlinedCallbackOpen) {
-        const OUTPUT: u8 = 29;
-        const KIND: u8 = 30;
-        const NAME: u8 = 31;
+        const OUTPUT: u32 = 29;
+        const KIND: u32 = 30;
+        const NAME: u32 = 31;
         let made = self.fresh_label();
         let fallback = self.fresh_label();
         let opened = self.fresh_label();

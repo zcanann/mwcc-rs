@@ -10,7 +10,7 @@ use super::structured_locals::body_uses_local;
 
 pub(super) struct StructuredUnoptimizedFrameCallHomes {
     names: std::collections::HashSet<String>,
-    preferences: std::collections::HashMap<String, u8>,
+    preferences: std::collections::HashMap<String, u32>,
 }
 
 impl StructuredUnoptimizedFrameCallHomes {
@@ -94,7 +94,7 @@ impl StructuredUnoptimizedFrameCallHomes {
         true
     }
 
-    pub(super) fn preference(&self, name: &str) -> Option<u8> {
+    pub(super) fn preference(&self, name: &str) -> Option<u32> {
         self.preferences.get(name).copied()
     }
 }
@@ -156,7 +156,7 @@ fn frame_call_role_preferences(
     result: &str,
     first_post_call: &str,
     second_post_call: &str,
-) -> std::collections::HashMap<String, u8> {
+) -> std::collections::HashMap<String, u32> {
     [
         (parameter, 27),
         (entry_pointer, 30),

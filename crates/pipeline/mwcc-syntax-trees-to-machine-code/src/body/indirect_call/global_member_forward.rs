@@ -31,28 +31,28 @@ impl Generator {
             let Ok((source, width, _)) = self.leaf_info(argument) else {
                 return Ok(false);
             };
-            if width != 32 || source != Eabi::FIRST_GENERAL_ARGUMENT + index as u8 {
+            if width != 32 || source != (Eabi::FIRST_GENERAL_ARGUMENT + index as u8).into() {
                 return Ok(false);
             }
         }
 
-        let base = Eabi::FIRST_GENERAL_ARGUMENT + arguments.len() as u8;
+        let base: u32 = (Eabi::FIRST_GENERAL_ARGUMENT + arguments.len() as u8) as u32;
         if base >= 12 {
             return Ok(false);
         }
         let offset = i16::try_from(offset)
             .map_err(|_| Diagnostic::error("global indirect-call member offset is out of range"))?;
 
-        self.emit_address_high(base, global);
+        self.emit_address_high(base.into(), global);
         self.record_relocation(RelocationKind::Addr16Lo, global);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: base,
-            a: base,
+            d: u32::from(base),
+            a: u32::from(base),
             immediate: 0,
         });
         self.output.instructions.push(Instruction::LoadWord {
             d: 12,
-            a: base,
+            a: u32::from(base),
             offset,
         });
         Ok(true)

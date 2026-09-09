@@ -58,7 +58,7 @@ impl Generator {
 #[derive(Clone, Copy)]
 struct GuardedUcodePackets {
     start: usize,
-    cursor: u8,
+    cursor: u32,
 }
 
 fn guarded_ucode_packets(instructions: &[Instruction]) -> Option<GuardedUcodePackets> {
@@ -91,7 +91,7 @@ fn guarded_ucode_packets(instructions: &[Instruction]) -> Option<GuardedUcodePac
                         },
                         Instruction::BranchAndLink { .. },
                         Instruction::StoreWord {
-                            s: Eabi::FIRST_GENERAL_ARGUMENT,
+                            s: 3,
                             a: first_result_base,
                             offset: 4,
                         },
@@ -122,7 +122,7 @@ fn guarded_ucode_packets(instructions: &[Instruction]) -> Option<GuardedUcodePac
                         },
                         Instruction::BranchAndLink { .. },
                         Instruction::StoreWord {
-                            s: Eabi::FIRST_GENERAL_ARGUMENT,
+                            s: 3,
                             a: second_result_base,
                             offset: 4,
                         },
@@ -153,7 +153,7 @@ fn guarded_ucode_packets(instructions: &[Instruction]) -> Option<GuardedUcodePac
         })
 }
 
-fn assign_guarded_ucode_packet_registers(instructions: &mut [Instruction], cursor: u8) {
+fn assign_guarded_ucode_packet_registers(instructions: &mut [Instruction], cursor: u32) {
     let Instruction::AddImmediateShifted { d, .. } = &mut instructions[0] else {
         unreachable!("the first command high was scheduled first")
     };
@@ -167,12 +167,12 @@ fn assign_guarded_ucode_packet_registers(instructions: &mut [Instruction], curso
     let Instruction::AddImmediateShifted { d, .. } = &mut instructions[5] else {
         unreachable!("the second command high was scheduled before the first result")
     };
-    *d = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+    *d = 4;
     let Instruction::AddImmediate { d, a, .. } = &mut instructions[7] else {
         unreachable!("the second command low was scheduled third")
     };
     *d = 0;
-    *a = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+    *a = 4;
     let Instruction::StoreWord { s, a, .. } = &mut instructions[9] else {
         unreachable!("the second command store was scheduled before the cursor bump")
     };
@@ -183,7 +183,7 @@ fn assign_guarded_ucode_packet_registers(instructions: &mut [Instruction], curso
 #[derive(Clone, Copy)]
 struct ScheduledGuardedUcodePackets {
     start: usize,
-    first_alias: u8,
+    first_alias: u32,
 }
 
 fn scheduled_guarded_ucode_packets(
@@ -223,7 +223,7 @@ fn scheduled_guarded_ucode_packets(
                         ..
                     },
                     Instruction::StoreWord {
-                        s: Eabi::FIRST_GENERAL_ARGUMENT,
+                        s: 3,
                         a: first_result_base,
                         offset: 4,
                     },
@@ -249,7 +249,7 @@ fn scheduled_guarded_ucode_packets(
                     },
                     Instruction::BranchAndLink { .. },
                     Instruction::StoreWord {
-                        s: Eabi::FIRST_GENERAL_ARGUMENT,
+                        s: 3,
                         a: second_result_base,
                         offset: 4,
                     },

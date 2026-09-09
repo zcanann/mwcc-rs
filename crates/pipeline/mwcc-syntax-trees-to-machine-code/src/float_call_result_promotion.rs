@@ -25,7 +25,7 @@ impl Generator {
     pub(crate) fn emit_integer_call_float_value(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<bool> {
         let Expression::Call { name, arguments } = expression else {
@@ -35,7 +35,7 @@ impl Generator {
             return Ok(false);
         }
         let signed = self.signedness_of(expression)?;
-        let source = Eabi::general_result().number;
+        let source = u32::from(Eabi::general_result().number);
         self.emit_call(name, arguments, None, false)?;
         let scratch = self.claim_int_to_float_scratch()?;
         self.emit_int_to_float_body_at(
@@ -55,7 +55,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<bool> {
         if !matches!(
@@ -96,7 +96,7 @@ impl Generator {
         // The measured schedule uses f2 for the bias while f0 assembles the
         // conversion image and the result occupies its consumer destination.
         // Leave rarer conflicts to a later allocator-owned variant.
-        const BIAS_REGISTER: u8 = 2;
+        const BIAS_REGISTER: u32 = 2;
         if destination == BIAS_REGISTER
             || float_register == BIAS_REGISTER
             || destination == float_register
@@ -105,7 +105,7 @@ impl Generator {
         }
 
         let signed = self.signedness_of(call)?;
-        let source = Eabi::general_result().number;
+        let source = u32::from(Eabi::general_result().number);
         self.emit_call(name, arguments, None, false)?;
         self.emit_int_to_float_body(
             source,

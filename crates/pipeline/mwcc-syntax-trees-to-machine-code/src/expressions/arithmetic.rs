@@ -15,7 +15,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Expression::Binary {
             operator: BinaryOperator::Multiply,
@@ -134,7 +134,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         use BinaryOperator::*;
         let (
@@ -194,7 +194,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if self.try_emit_global_lookup_sum(left, right, destination)? {
             return Ok(true);
@@ -271,7 +271,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         use BinaryOperator::*;
         if !same_operand(left, right) {
@@ -324,7 +324,7 @@ impl Generator {
         &mut self,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let (Some((left_leaf, m1)), Some((right_leaf, m2))) =
             (as_masked_leaf(left), as_masked_leaf(right))
@@ -348,7 +348,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         use BinaryOperator::*;
         // Byte-pointer subtraction uses the loaded address bits directly.
@@ -449,7 +449,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         use BinaryOperator::*;
         if !matches!(
@@ -537,7 +537,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let constant_select = |expression: &Expression| {
             matches!(expression,

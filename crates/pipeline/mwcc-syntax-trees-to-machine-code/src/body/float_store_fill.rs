@@ -71,8 +71,8 @@ impl Generator {
         } else {
             let mut assignments = Vec::with_capacity(count);
             for (index, &value) in values.iter().enumerate() {
-                let register = (count - 1 - index) as u8;
-                self.load_float_literal(register, value, run_is_double);
+                let register = (count - 1 - index) as u32;
+                self.load_float_literal(register.into(), value, run_is_double);
                 assignments.push((keys[index], register));
             }
             self.prematerialized_float_constants = assignments;
@@ -170,7 +170,7 @@ impl Generator {
         let keys: Vec<u64> = values.iter().map(|value| value.to_bits()).collect();
         let all_same = keys.iter().all(|key| *key == keys[0]);
         let distinct: std::collections::HashSet<u64> = keys.iter().copied().collect();
-        let emit_store = |generator: &mut Self, register: u8, offset: u16| {
+        let emit_store = |generator: &mut Self, register: u32, offset: u16| {
             let instruction = if run_is_double {
                 Instruction::StoreFloatDouble {
                     s: register,
@@ -193,13 +193,13 @@ impl Generator {
             }
         } else if distinct.len() == count {
             // Two-FPR software pipeline: register(i) = f((N-1-i) & 1), two loads ahead of the stores.
-            let register = |index: usize| ((count - 1 - index) & 1) as u8;
-            self.load_float_literal(register(0), values[0], run_is_double);
-            self.load_float_literal(register(1), values[1], run_is_double);
+            let register = |index: usize| ((count - 1 - index) & 1) as u32;
+            self.load_float_literal(register(0).into(), values[0], run_is_double);
+            self.load_float_literal(register(1).into(), values[1], run_is_double);
             for index in 0..count {
-                emit_store(self, register(index), offsets[index]);
+                emit_store(self, register(index).into(), offsets[index]);
                 if index + 2 < count {
-                    self.load_float_literal(register(index + 2), values[index + 2], run_is_double);
+                    self.load_float_literal(register(index + 2).into(), values[index + 2], run_is_double);
                 }
             }
         } else {
@@ -237,16 +237,16 @@ impl Generator {
                 }
                 item_of_store.push(item);
             }
-            let register = |item: usize| (pooled - 1 - item) as u8;
-            self.load_float_literal(register(0), seen[0].1, run_is_double);
+            let register = |item: usize| (pooled - 1 - item) as u32;
+            self.load_float_literal(register(0).into(), seen[0].1, run_is_double);
             if pooled >= 2 {
-                self.load_float_literal(register(1), seen[1].1, run_is_double);
+                self.load_float_literal(register(1).into(), seen[1].1, run_is_double);
             }
             for (index, &item) in item_of_store.iter().enumerate() {
-                emit_store(self, register(item), offsets[index]);
+                emit_store(self, register(item).into(), offsets[index]);
                 // A first-use store releases the next pipelined distinct load.
                 if first_use[item] == index && item + 2 < pooled {
-                    self.load_float_literal(register(item + 2), seen[item + 2].1, run_is_double);
+                    self.load_float_literal(register(item + 2).into(), seen[item + 2].1, run_is_double);
                 }
             }
         }
@@ -375,7 +375,7 @@ impl Generator {
 
     /// Push a float/double store-with-update (`stfsu`/`stfdu`) — writes `s` at `0(base)` then
     /// sets `base` to that effective address (the `@l` relocation rides the displacement field).
-    fn push_float_store_update(&mut self, s: u8, base: u8, double: bool) {
+    fn push_float_store_update(&mut self, s: u32, base: u32, double: bool) {
         self.output.instructions.push(if double {
             Instruction::StoreFloatDoubleWithUpdate {
                 s,
@@ -392,7 +392,7 @@ impl Generator {
     }
 
     /// Push a plain float/double displacement store (`stfs`/`stfd`) of `s` at `offset(base)`.
-    fn push_float_store_at(&mut self, s: u8, base: u8, offset: i16, double: bool) {
+    fn push_float_store_at(&mut self, s: u32, base: u32, offset: i16, double: bool) {
         self.output.instructions.push(if double {
             Instruction::StoreFloatDouble { s, a: base, offset }
         } else {
@@ -491,7 +491,7 @@ impl Generator {
         //   distinct:  lfs f1,@a ; li r3,g@sda ; lfs f0,@b ; stfs f1,g@sda ; stfs f0,4(r3)
         //   all-same:  lfs f0,@a ; li r3,g@sda ; stfs f0,g@sda ; stfs f0,4(r3)
         if small {
-            let fold_store = |generator: &mut Self, source: u8| {
+            let fold_store = |generator: &mut Self, source: u32| {
                 generator.record_relocation(RelocationKind::EmbSda21, &array_name);
                 generator.push_float_store_at(source, 0, 0, double);
             };
@@ -513,8 +513,8 @@ impl Generator {
                     );
                 }
             } else {
-                let fpr = |i: usize| (count - 1 - i) as u8;
-                self.load_float_literal(fpr(0), values[0], double);
+                let fpr = |i: usize| (count - 1 - i) as u32;
+                self.load_float_literal(fpr(0).into(), values[0], double);
                 self.record_relocation(RelocationKind::EmbSda21, &array_name);
                 self.output.instructions.push(Instruction::AddImmediate {
                     d: base,
@@ -522,12 +522,12 @@ impl Generator {
                     immediate: 0,
                 });
                 for i in 1..count {
-                    self.load_float_literal(fpr(i), values[i], double);
+                    self.load_float_literal(fpr(i).into(), values[i], double);
                 }
-                fold_store(self, fpr(0));
+                fold_store(self, fpr(0).into());
                 for i in 1..count {
                     self.push_float_store_at(
-                        fpr(i),
+                        fpr(i).into(),
                         base,
                         (i as i64 * element_size) as i16,
                         double,
@@ -551,17 +551,17 @@ impl Generator {
                 );
             }
         } else {
-            let fpr = |i: usize| (count - 1 - i) as u8;
-            self.load_float_literal(fpr(0), values[0], double);
+            let fpr = |i: usize| (count - 1 - i) as u32;
+            self.load_float_literal(fpr(0).into(), values[0], double);
             self.emit_address_high(base, &array_name);
-            self.load_float_literal(fpr(1), values[1], double);
+            self.load_float_literal(fpr(1).into(), values[1], double);
             self.record_relocation(RelocationKind::Addr16Lo, &array_name);
-            self.push_float_store_update(fpr(0), base, double);
+            self.push_float_store_update(fpr(0).into(), base, double);
             for i in 2..count {
-                self.load_float_literal(fpr(i), values[i], double);
+                self.load_float_literal(fpr(i).into(), values[i], double);
             }
             for i in 1..count {
-                self.push_float_store_at(fpr(i), base, (i as i64 * element_size) as i16, double);
+                self.push_float_store_at(fpr(i).into(), base, (i as i64 * element_size) as i16, double);
             }
         }
         self.emit_epilogue_and_return();

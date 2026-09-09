@@ -12,9 +12,9 @@ use mwcc_syntax_trees::AsmOperand;
 pub(super) fn gprs<const N: usize>(
     mnemonic: &str,
     operands: &[AsmOperand],
-) -> Compilation<[u8; N]> {
+) -> Compilation<[u32; N]> {
     expect_operand_count(mnemonic, operands, N)?;
-    let mut registers = [0u8; N];
+    let mut registers = [0u32; N];
     for (slot, operand) in registers.iter_mut().zip(operands) {
         *slot = gpr(mnemonic, operand)?;
     }
@@ -22,7 +22,7 @@ pub(super) fn gprs<const N: usize>(
 }
 
 /// Read exactly three GPR operands positionally (`op dst, srcA, srcB`).
-pub(super) fn rrr(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<[u8; 3]> {
+pub(super) fn rrr(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<[u32; 3]> {
     gprs(mnemonic, operands)
 }
 
@@ -30,9 +30,9 @@ pub(super) fn rrr(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<[u8; 3
 pub(super) fn fprs<const N: usize>(
     mnemonic: &str,
     operands: &[AsmOperand],
-) -> Compilation<[u8; N]> {
+) -> Compilation<[u32; N]> {
     expect_operand_count(mnemonic, operands, N)?;
-    let mut registers = [0u8; N];
+    let mut registers = [0u32; N];
     for (slot, operand) in registers.iter_mut().zip(operands) {
         *slot = fpr(mnemonic, operand)?;
     }
@@ -85,7 +85,7 @@ pub(super) fn require_cr0<'a>(
 pub(super) fn rotate5(
     mnemonic: &str,
     operands: &[AsmOperand],
-) -> Compilation<(u8, u8, u8, u8, u8)> {
+) -> Compilation<(u32, u32, u8, u8, u8)> {
     expect_operand_count(mnemonic, operands, 5)?;
     let a = gpr(mnemonic, &operands[0])?;
     let s = gpr(mnemonic, &operands[1])?;
@@ -108,7 +108,7 @@ pub(super) fn rotate5(
 pub(super) fn rr_two_immediates(
     mnemonic: &str,
     operands: &[AsmOperand],
-) -> Compilation<(u8, u8, u8, u8)> {
+) -> Compilation<(u32, u32, u8, u8)> {
     expect_operand_count(mnemonic, operands, 4)?;
     let a = gpr(mnemonic, &operands[0])?;
     let s = gpr(mnemonic, &operands[1])?;
@@ -123,7 +123,7 @@ pub(super) fn rr_two_immediates(
 
 /// Read a `(GPR, GPR, shift-amount)` triple (`op dst, src, SH`) where the shift is
 /// a 0..=31 immediate encoded in the instruction's SH field.
-pub(super) fn rr_shift(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u8, u8)> {
+pub(super) fn rr_shift(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u32, u32, u8)> {
     expect_operand_count(mnemonic, operands, 3)?;
     let a = gpr(mnemonic, &operands[0])?;
     let s = gpr(mnemonic, &operands[1])?;
@@ -139,7 +139,7 @@ pub(super) fn rr_shift(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(
 }
 
 /// Read a `(GPR, GPR, signed-immediate)` triple (`op dst, src, SIMM`).
-pub(super) fn rri(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u8, i16)> {
+pub(super) fn rri(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u32, u32, i16)> {
     expect_operand_count(mnemonic, operands, 3)?;
     let d = gpr(mnemonic, &operands[0])?;
     let a = gpr(mnemonic, &operands[1])?;
@@ -154,7 +154,7 @@ pub(super) fn rri(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u
 pub(super) fn rri_symbolic(
     mnemonic: &str,
     operands: &[AsmOperand],
-) -> Compilation<(u8, u8, i16)> {
+) -> Compilation<(u32, u32, i16)> {
     expect_operand_count(mnemonic, operands, 3)?;
     let d = gpr(mnemonic, &operands[0])?;
     let a = gpr(mnemonic, &operands[1])?;
@@ -163,7 +163,7 @@ pub(super) fn rri_symbolic(
 }
 
 /// Read a `(GPR, GPR, unsigned-immediate)` triple (`op dst, src, UIMM`).
-pub(super) fn rri_u(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u8, u16)> {
+pub(super) fn rri_u(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u32, u32, u16)> {
     expect_operand_count(mnemonic, operands, 3)?;
     let a = gpr(mnemonic, &operands[0])?;
     let s = gpr(mnemonic, &operands[1])?;
@@ -172,7 +172,7 @@ pub(super) fn rri_u(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8,
 }
 
 /// Read a `(GPR, displacement, base-GPR)` triple from `rT, <disp>(rA)`.
-pub(super) fn gpr_mem(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, i16, u8)> {
+pub(super) fn gpr_mem(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u32, i16, u32)> {
     expect_operand_count(mnemonic, operands, 2)?;
     let register = gpr(mnemonic, &operands[0])?;
     let (displacement, base) = memory(mnemonic, &operands[1])?;
@@ -180,7 +180,7 @@ pub(super) fn gpr_mem(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u
 }
 
 /// Read a `(FPR, displacement, base-GPR)` triple from `fT, <disp>(rA)`.
-pub(super) fn fpr_mem(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, i16, u8)> {
+pub(super) fn fpr_mem(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u32, i16, u32)> {
     expect_operand_count(mnemonic, operands, 2)?;
     let register = fpr(mnemonic, &operands[0])?;
     let (displacement, base) = memory(mnemonic, &operands[1])?;
@@ -193,7 +193,7 @@ pub(super) fn fpr_mem(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u
 pub(super) fn quantized_fpr_mem(
     mnemonic: &str,
     operands: &[AsmOperand],
-) -> Compilation<(u8, i16, u8, u8, u8)> {
+) -> Compilation<(u32, i16, u32, u8, u8)> {
     expect_operand_count(mnemonic, operands, 4)?;
     let register = fpr(mnemonic, &operands[0])?;
     let (displacement, base) = memory(mnemonic, &operands[1])?;
@@ -222,27 +222,27 @@ pub(super) fn quantized_fpr_mem(
 }
 
 /// Read a `(GPR, immediate)` operand pair.
-pub(super) fn gpr_immediate(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, i16)> {
+pub(super) fn gpr_immediate(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u32, i16)> {
     expect_operand_count(mnemonic, operands, 2)?;
     let register = gpr(mnemonic, &operands[0])?;
     let immediate = immediate16(mnemonic, &operands[1])?;
     Ok((register, immediate))
 }
 
-fn fpr(mnemonic: &str, operand: &AsmOperand) -> Compilation<u8> {
+fn fpr(mnemonic: &str, operand: &AsmOperand) -> Compilation<u32> {
     match operand {
-        AsmOperand::Fpr(index) => Ok(*index),
+        AsmOperand::Fpr(index) => Ok(u32::from(*index)),
         _ => Err(Diagnostic::error(format!(
             "inline-asm '{mnemonic}' expected a floating-point register operand"
         ))),
     }
 }
 
-fn memory(mnemonic: &str, operand: &AsmOperand) -> Compilation<(i16, u8)> {
+fn memory(mnemonic: &str, operand: &AsmOperand) -> Compilation<(i16, u32)> {
     match operand {
-        AsmOperand::Memory { displacement, base } => Ok((*displacement, *base)),
+        AsmOperand::Memory { displacement, base } => Ok((*displacement, u32::from(*base))),
         AsmOperand::SymbolMemory { base, .. }
-        | AsmOperand::SmallDataSymbolMemory { base, .. } => Ok((0, *base)),
+        | AsmOperand::SmallDataSymbolMemory { base, .. } => Ok((0, u32::from(*base))),
         _ => Err(Diagnostic::error(format!(
             "inline-asm '{mnemonic}' expected a `<disp>(<reg>)` memory operand"
         ))),
@@ -266,9 +266,9 @@ pub(super) fn immediate16u(mnemonic: &str, operand: &AsmOperand) -> Compilation<
     }
 }
 
-pub(super) fn gpr(mnemonic: &str, operand: &AsmOperand) -> Compilation<u8> {
+pub(super) fn gpr(mnemonic: &str, operand: &AsmOperand) -> Compilation<u32> {
     match operand {
-        AsmOperand::Gpr(index) => Ok(*index),
+        AsmOperand::Gpr(index) => Ok(u32::from(*index)),
         _ => Err(Diagnostic::error(format!(
             "inline-asm '{mnemonic}' expected a general-purpose register operand"
         ))),
@@ -394,9 +394,9 @@ pub(super) fn special_register(mnemonic: &str, operand: &AsmOperand) -> Compilat
 
 /// A general-purpose register, or the literal `0` written as an immediate (a
 /// cache op's `dcbt 0, rB` base — an rA=0 encoding, not a use of r0).
-pub(super) fn gpr_or_zero(mnemonic: &str, operand: &AsmOperand) -> Compilation<u8> {
+pub(super) fn gpr_or_zero(mnemonic: &str, operand: &AsmOperand) -> Compilation<u32> {
     match operand {
-        AsmOperand::Gpr(index) => Ok(*index),
+        AsmOperand::Gpr(index) => Ok(u32::from(*index)),
         AsmOperand::Immediate(0) => Ok(0),
         _ => Err(Diagnostic::error(format!(
             "inline-asm '{mnemonic}' expected a register or 0 base"

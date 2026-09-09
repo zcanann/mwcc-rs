@@ -28,8 +28,8 @@ pub(super) enum CallArgumentPlacement {
 ///
 /// The first overflow word occupies the caller parameter area at `8(r1)`;
 /// each subsequent word advances by four bytes.
-pub(super) fn outgoing_general_stack_offset(next_register: u8) -> Option<i16> {
-    Eabi::general_stack_offset(next_register)
+pub(super) fn outgoing_general_stack_offset(next_register: u32) -> Option<i16> {
+    Eabi::general_stack_offset(u8::try_from(next_register).expect("argument register number"))
 }
 
 pub(super) fn classify_call_argument(
@@ -82,8 +82,8 @@ pub(super) fn classify_call_argument(
 /// the source can remain in a saved register when it is still live.
 pub(super) fn narrow_general_argument(
     parameter_type: Type,
-    argument_register: u8,
-    source_register: u8,
+    argument_register: u32,
+    source_register: u32,
 ) -> Option<Instruction> {
     match parameter_type {
         Type::Char => Some(Instruction::ExtendSignByte {
@@ -259,15 +259,15 @@ mod tests {
     #[test]
     fn assigns_general_overflow_words_above_the_linkage_area() {
         assert_eq!(
-            outgoing_general_stack_offset(Eabi::LAST_GENERAL_ARGUMENT),
+            outgoing_general_stack_offset(u32::from(Eabi::LAST_GENERAL_ARGUMENT)),
             None
         );
         assert_eq!(
-            outgoing_general_stack_offset(Eabi::LAST_GENERAL_ARGUMENT + 1),
+            outgoing_general_stack_offset(u32::from(Eabi::LAST_GENERAL_ARGUMENT + 1)),
             Some(8)
         );
         assert_eq!(
-            outgoing_general_stack_offset(Eabi::LAST_GENERAL_ARGUMENT + 2),
+            outgoing_general_stack_offset(u32::from(Eabi::LAST_GENERAL_ARGUMENT + 2)),
             Some(12)
         );
     }

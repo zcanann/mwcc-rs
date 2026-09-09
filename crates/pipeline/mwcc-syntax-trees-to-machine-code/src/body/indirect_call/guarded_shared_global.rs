@@ -26,8 +26,8 @@ impl Generator {
         } else if let Some(base) = switch_base {
             base
         } else {
-            self.emit_global_load_value(global, Eabi::FIRST_GENERAL_ARGUMENT)?;
-            Eabi::FIRST_GENERAL_ARGUMENT
+            self.emit_global_load_value(global, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
+            Eabi::FIRST_GENERAL_ARGUMENT.into()
         };
         self.output.instructions.push(Instruction::LoadWord {
             d: 12,
@@ -42,9 +42,9 @@ impl Generator {
             });
         let done = self.fresh_label();
         self.emit_branch_conditional_to(12, 2, done);
-        if base != Eabi::FIRST_GENERAL_ARGUMENT {
+        if base != u32::from(Eabi::FIRST_GENERAL_ARGUMENT) {
             self.emit_integer_materialization_copy(
-                Eabi::FIRST_GENERAL_ARGUMENT,
+                Eabi::FIRST_GENERAL_ARGUMENT.into(),
                 base,
             );
         }

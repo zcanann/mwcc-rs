@@ -45,7 +45,7 @@ impl Generator {
             scaled
         };
         let source = self.place_store_value(value, element)?;
-        let base = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+        let base = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT.into());
         self.output.instructions.push(Instruction::AddImmediate {
             d: base,
             a: 1,
@@ -53,7 +53,7 @@ impl Generator {
         });
         self.output
             .instructions
-            .push(indexed_store(element, source, base, scaled)?);
+            .push(indexed_store(element, source.into(), base, scaled)?);
         self.written_slots.insert(frame_offset);
         Ok(true)
     }

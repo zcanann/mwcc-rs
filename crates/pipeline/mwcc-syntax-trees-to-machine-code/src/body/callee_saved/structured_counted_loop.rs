@@ -270,12 +270,12 @@ impl Plan {
 
 #[derive(Clone, Copy)]
 enum InvariantInstruction {
-    UpperBase(u8),
-    StackBase(u8),
-    FloatBias(u8),
-    UpperValue(u8),
-    LowerLimit(u8),
-    IntegerBias(u8),
+    UpperBase(u32),
+    StackBase(u32),
+    FloatBias(u32),
+    UpperValue(u32),
+    LowerLimit(u32),
+    IntegerBias(u32),
 }
 
 impl InvariantInstruction {
@@ -284,45 +284,45 @@ impl InvariantInstruction {
             Self::UpperBase(register) => matches!(
                 instruction,
                 Instruction::AddImmediateShifted { d, a: 0, immediate: 1 }
-                    if *d == register
+                    if *d == register.into()
             ),
             Self::StackBase(register) => matches!(
                 instruction,
-                Instruction::AddImmediate { d, a: 1, .. } if *d == register
+                Instruction::AddImmediate { d, a: 1, .. } if *d == register.into()
             ),
             Self::FloatBias(register) => matches!(
                 instruction,
-                Instruction::LoadFloatDouble { d, a: 0, offset: 0 } if *d == register
+                Instruction::LoadFloatDouble { d, a: 0, offset: 0 } if *d == register.into()
             ),
             Self::UpperValue(register) => matches!(
                 instruction,
-                Instruction::AddImmediate { d, immediate: -1, .. } if *d == register
+                Instruction::AddImmediate { d, immediate: -1, .. } if *d == register.into()
             ),
             Self::LowerLimit(register) => matches!(
                 instruction,
                 Instruction::AddImmediateShifted { d, a: 0, immediate: -1 }
-                    if *d == register
+                    if *d == register.into()
             ),
             Self::IntegerBias(register) => matches!(
                 instruction,
                 Instruction::AddImmediateShifted { d, a: 0, immediate: 17200 }
-                    if *d == register
+                    if *d == register.into()
             ),
         }
     }
 }
 
 struct PreheaderInvariants {
-    upper_base: u8,
-    upper_value: u8,
+    upper_base: u32,
+    upper_value: u32,
     upper_base_position: usize,
     upper_value_position: usize,
     duplicate_upper_base: usize,
     duplicate_upper_value: usize,
-    stack_base: u8,
-    float_bias: u8,
-    lower_limit: u8,
-    integer_bias: u8,
+    stack_base: u32,
+    float_bias: u32,
+    lower_limit: u32,
+    integer_bias: u32,
     integer_bias_position: usize,
     integer_bias_store: usize,
 }
@@ -330,7 +330,7 @@ struct PreheaderInvariants {
 fn locate_preheader_invariants(
     instructions: &[Instruction],
     relocations: &[mwcc_machine_code::Relocation],
-    index: u8,
+    index: u32,
 ) -> Option<PreheaderInvariants> {
     let entry = instructions.iter().position(
         |instruction| matches!(instruction, Instruction::MoveToCountRegister { .. }),
@@ -500,7 +500,7 @@ struct MachineShape {
     tail_branch: usize,
 }
 
-fn locate_shape(instructions: &[Instruction], index: u8, bound: u8) -> Option<MachineShape> {
+fn locate_shape(instructions: &[Instruction], index: u32, bound: u32) -> Option<MachineShape> {
     for tail_compare in 1..instructions.len().saturating_sub(1) {
         if !matches!(
             instructions[tail_compare],

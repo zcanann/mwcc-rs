@@ -360,7 +360,7 @@ pub(crate) fn lower_composed_constructor(
 
         let mut vptr_registers = vec![vtable_register];
         for (index, (_, addend, _)) in vptrs.iter().enumerate().skip(1) {
-            let register = vtable_register - index as u8;
+            let register = vtable_register - u32::from(index as u8);
             output.instructions.push(Instruction::AddImmediate {
                 d: register,
                 a: vtable_register,
@@ -392,14 +392,14 @@ pub(crate) fn lower_composed_constructor(
         let vtable_hi = output.instructions.len();
         output
             .instructions
-            .push(Instruction::load_immediate_shifted(vtable_register, 0));
+            .push(Instruction::load_immediate_shifted(vtable_register.into(), 0));
         // MWCC fills the address-materialization latency with the first trailing
         // call's adjusted `this` value.
         emit_adjusted_this(&mut output.instructions, tail_actions[0].adjustment()?)?;
         let vtable_lo = output.instructions.len();
         output.instructions.push(Instruction::AddImmediate {
-            d: vtable_register,
-            a: vtable_register,
+            d: u32::from(vtable_register),
+            a: u32::from(vtable_register),
             immediate: 0,
         });
         relocations.extend([
@@ -425,14 +425,14 @@ pub(crate) fn lower_composed_constructor(
             };
             let immediate = i16::try_from(*addend).ok()?;
             output.instructions.push(Instruction::AddImmediate {
-                d: register,
-                a: vtable_register,
+                d: u32::from(register),
+                a: u32::from(vtable_register),
                 immediate,
             });
             vptr_registers.push(register);
             if index == 1 {
                 output.instructions.push(Instruction::StoreWord {
-                    s: vptr_registers[0],
+                    s: u32::from(vptr_registers[0]),
                     a: 31,
                     offset: i16::try_from(vptrs[0].2).ok()?,
                 });
@@ -440,7 +440,7 @@ pub(crate) fn lower_composed_constructor(
         }
         for (index, (_, _, object_offset)) in vptrs.iter().enumerate().skip(1) {
             output.instructions.push(Instruction::StoreWord {
-                s: vptr_registers[index],
+                s: u32::from(vptr_registers[index]),
                 a: 31,
                 offset: i16::try_from(*object_offset).ok()?,
             });

@@ -138,9 +138,9 @@ impl Generator {
             .ok_or_else(|| Diagnostic::error("shared pointer member has no load width"))?;
         let second_pointee = pointee_of_type(plan.second_type)
             .ok_or_else(|| Diagnostic::error("shared pointer member has no load width"))?;
-        let first_argument = Eabi::FIRST_GENERAL_ARGUMENT;
+        let first_argument: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         let shared_base = first_argument + 1;
-        self.emit_global_load_value(plan.global, shared_base)?;
+        self.emit_global_load_value(plan.global, shared_base.into())?;
         self.output.instructions.push(displacement_load(
             first_pointee,
             first_argument,
@@ -192,27 +192,27 @@ impl Generator {
             return Ok(false);
         }
 
-        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        let first: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         self.output.packed_string_literals = true;
         let string = self.string_literal_placeholder(string);
-        self.emit_address_high(first, global);
-        self.emit_address_high(first + 2, array);
+        self.emit_address_high(first.into(), global);
+        self.emit_address_high((first + 2).into(), array);
         self.record_relocation(RelocationKind::Addr16Lo, global);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: first + 1,
-            a: first,
+            d: u32::from(first + 1),
+            a: u32::from(first),
             immediate: 0,
         });
         self.record_relocation(RelocationKind::Addr16Lo, array);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: first,
-            a: first + 2,
+            d: u32::from(first),
+            a: u32::from(first + 2),
             immediate: 0,
         });
-        self.emit_address_high(first + 3, &string);
+        self.emit_address_high((first + 3).into(), &string);
         self.output.instructions.push(Instruction::LoadWord {
-            d: first + 2,
-            a: first + 1,
+            d: u32::from(first + 2),
+            a: u32::from(first + 1),
             offset: member_offset,
         });
         self.emit_string_address_low(&string, first + 3, first + 1);
@@ -270,28 +270,28 @@ impl Generator {
             return Ok(false);
         }
 
-        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        let first: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         self.output.packed_string_literals = true;
         let string = self.string_literal_placeholder(string);
-        self.emit_address_high(first, global);
-        self.emit_address_high(first + 1, &string);
-        self.emit_address_low(first, global);
-        self.emit_address_high(first + 3, array);
+        self.emit_address_high(first.into(), global);
+        self.emit_address_high((first + 1).into(), &string);
+        self.emit_address_low(first.into(), global);
+        self.emit_address_high((first + 3).into(), array);
         self.emit_string_address_low(&string, first + 1, first + 1);
         self.output.instructions.push(Instruction::LoadByteZero {
-            d: first + 2,
-            a: first,
+            d: u32::from(first + 2),
+            a: u32::from(first),
             offset: member_offset,
         });
         self.record_relocation(RelocationKind::Addr16Lo, array);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: first,
-            a: first + 3,
+            d: u32::from(first),
+            a: u32::from(first + 3),
             immediate: 0,
         });
         self.output.instructions.push(Instruction::AddImmediate {
-            d: first + 2,
-            a: first + 2,
+            d: u32::from(first + 2),
+            a: u32::from(first + 2),
             immediate: adjustment,
         });
         Ok(true)

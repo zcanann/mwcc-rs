@@ -37,13 +37,13 @@ impl Generator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Plan {
     receiver: usize,
-    owner: u8,
+    owner: u32,
     first: usize,
     second: usize,
     compare: usize,
     reload: usize,
-    scratch: u8,
-    reused: u8,
+    scratch: u32,
+    reused: u32,
 }
 
 fn plan(instructions: &[Instruction]) -> Option<Plan> {

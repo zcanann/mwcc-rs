@@ -10,7 +10,7 @@ impl Generator {
     pub(crate) fn emit_writeback_block(
         &mut self,
         block: &[Statement],
-        bindings: &[(String, u8)],
+        bindings: &[(String, u32)],
         join: mwcc_vreg::Label,
         epilogue: mwcc_vreg::Label,
     ) -> Compilation<()> {
@@ -49,10 +49,10 @@ impl Generator {
                         let small = i16::try_from(constant).expect("validated");
                         self.output
                             .instructions
-                            .push(Instruction::load_immediate(inner_register, small));
+                            .push(Instruction::load_immediate(inner_register.into(), small));
                         self.output
                             .instructions
-                            .push(Instruction::load_immediate(register, small));
+                            .push(Instruction::load_immediate(register.into(), small));
                         index += 1;
                         continue;
                     }
@@ -60,12 +60,12 @@ impl Generator {
                         if let Ok(small) = i16::try_from(constant) {
                             self.output
                                 .instructions
-                                .push(Instruction::load_immediate(register, small));
+                                .push(Instruction::load_immediate(register.into(), small));
                         } else {
                             self.output
                                 .instructions
                                 .push(Instruction::load_immediate_shifted(
-                                    register,
+                                    register.into(),
                                     (constant >> 16) as i16,
                                 ));
                         }
@@ -78,8 +78,8 @@ impl Generator {
                         let mask = crate::analysis::constant_value(right).expect("validated");
                         let (begin, end) = crate::analysis::rlwinm_mask(mask).expect("validated");
                         self.output.instructions.push(Instruction::RotateAndMask {
-                            a: register,
-                            s: register,
+                            a: u32::from(register),
+                            s: u32::from(register),
                             shift: 0,
                             begin,
                             end,

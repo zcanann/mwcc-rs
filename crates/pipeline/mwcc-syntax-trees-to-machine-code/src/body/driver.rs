@@ -41,7 +41,7 @@ impl Generator {
         // r4; the result address is not represented as a source Parameter.
         let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT
             + u8::from(matches!(function.return_type, Type::Struct { .. }));
-        let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
+        let mut next_float: u32 = (Eabi::FIRST_FLOAT_ARGUMENT) as u32;
         for parameter in &function.parameters {
             let class = class_of(parameter.parameter_type)?;
             let register = match class {
@@ -65,13 +65,13 @@ impl Generator {
                         });
                         home
                     } else {
-                        register
+                        register.into()
                     }
                 }
                 ValueClass::Float => {
                     let register = next_float;
                     next_float += 1;
-                    register
+                    register.into()
                 }
             };
             let signed = self.signed_of(parameter.parameter_type);
@@ -129,7 +129,7 @@ impl Generator {
             self.outgoing_general_parameter_end = outgoing_end;
             let avoid: Vec<_> = self.locations.iter().filter_map(|(name, location)| {
                 (referenced.contains(name) && location.class == ValueClass::General
-                    && (Eabi::FIRST_GENERAL_ARGUMENT..=Eabi::LAST_GENERAL_ARGUMENT)
+                    && (u32::from(Eabi::FIRST_GENERAL_ARGUMENT)..=u32::from(Eabi::LAST_GENERAL_ARGUMENT))
                         .contains(&location.register)).then_some(location.register)
             }).collect();
             for parameter in self.incoming_stack_parameters.clone() {
@@ -203,17 +203,17 @@ impl Generator {
                         Some(Type::LongLong | Type::UnsignedLongLong)
                     )
                 {
-                    let high = Eabi::FIRST_GENERAL_ARGUMENT; // r3 — the param's HIGH word
+                    let high: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32; // r3 — the param's HIGH word
                     let low = high + 1; //                      r4 — the param's LOW word
                     self.record_relocation_with_addend(RelocationKind::EmbSda21, global, 4);
                     self.output.instructions.push(Instruction::StoreWord {
-                        s: low,
+                        s: u32::from(low),
                         a: 0,
                         offset: 0,
                     });
                     self.record_relocation(RelocationKind::EmbSda21, global);
                     self.output.instructions.push(Instruction::StoreWord {
-                        s: high,
+                        s: u32::from(high),
                         a: 0,
                         offset: 0,
                     });
@@ -250,7 +250,7 @@ impl Generator {
                     _ => None,
                 };
                 if let Some((pointer_name, byte_offset)) = target_access {
-                    let mut next = Eabi::FIRST_GENERAL_ARGUMENT;
+                    let mut next: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
                     let mut pointer_register = None;
                     let mut source_pair = None;
                     for parameter in &function.parameters {
@@ -272,20 +272,20 @@ impl Generator {
                             }
                             Type::Int | Type::UnsignedInt => next += 1,
                             _ => {
-                                next = u8::MAX; // an unmodeled param type — bail
+                                next = u32::from(u8::MAX); // an unmodeled param type — bail
                                 break;
                             }
                         }
                     }
                     if let (Some(base), Some((high, low))) = (pointer_register, source_pair) {
                         self.output.instructions.push(Instruction::StoreWord {
-                            s: low,
-                            a: base,
+                            s: u32::from(low),
+                            a: u32::from(base),
                             offset: byte_offset + 4,
                         });
                         self.output.instructions.push(Instruction::StoreWord {
-                            s: high,
-                            a: base,
+                            s: u32::from(high),
+                            a: u32::from(base),
                             offset: byte_offset,
                         });
                         self.emit_epilogue_and_return();
@@ -313,7 +313,7 @@ impl Generator {
                 function.name
             )));
         }
-        let high = Eabi::general_result().number; // r3 — the result HIGH word
+        let high = u32::from(Eabi::general_result().number); // r3 — the result HIGH word
         let low = high + 1; //                       r4 — the result LOW word
         let return_expression = function.return_expression.as_ref().ok_or_else(|| {
             Diagnostic::error("a non-void long long function needs a return value")
@@ -418,13 +418,13 @@ impl Generator {
                                 )
                         });
                     if is_first_ll_pointer {
-                        let pointer_register = Eabi::FIRST_GENERAL_ARGUMENT; // r3 — p
+                        let pointer_register: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32; // r3 — p
                         self.output
                             .instructions
-                            .push(Instruction::move_register(low, pointer_register));
+                            .push(Instruction::move_register(low, pointer_register.into()));
                         self.output.instructions.push(Instruction::LoadWord {
                             d: high,
-                            a: pointer_register,
+                            a: u32::from(pointer_register),
                             offset: 0,
                         });
                         self.output.instructions.push(Instruction::LoadWord {
@@ -454,14 +454,14 @@ impl Generator {
                                 && matches!(parameter.parameter_type, Type::StructPointer { .. })
                         });
                     if is_first_struct_pointer {
-                        let base_register = Eabi::FIRST_GENERAL_ARGUMENT; // r3 — s
+                        let base_register: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32; // r3 — s
                         let off = *offset as i16;
                         self.output
                             .instructions
-                            .push(Instruction::move_register(low, base_register));
+                            .push(Instruction::move_register(low, base_register.into()));
                         self.output.instructions.push(Instruction::LoadWord {
                             d: high,
-                            a: base_register,
+                            a: u32::from(base_register),
                             offset: off,
                         });
                         self.output.instructions.push(Instruction::LoadWord {
@@ -484,8 +484,8 @@ impl Generator {
         // the next GPR is even), so `f(int x, long long a)` puts x in r3 and a in r5:r6. A float/
         // double/struct param alongside a long long (FPRs or aggregates) and an argument list that
         // overflows r3..r10 both defer.
-        let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
-        let mut param_pair: std::collections::HashMap<&str, (u8, Option<u8>)> =
+        let mut next_general: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
+        let mut param_pair: std::collections::HashMap<&str, (u32, Option<u32>)> =
             std::collections::HashMap::new();
         for parameter in &function.parameters {
             match parameter.parameter_type {
@@ -493,18 +493,18 @@ impl Generator {
                     if next_general % 2 == 0 {
                         next_general += 1; // a long-long pair starts on an odd register
                     }
-                    if next_general + 1 > Eabi::LAST_GENERAL_ARGUMENT {
+                    if next_general + 1 > u32::from(Eabi::LAST_GENERAL_ARGUMENT) {
                         return Err(Diagnostic::error("a long-long argument that overflows to the stack is not modeled yet (roadmap)"));
                     }
-                    param_pair.insert(parameter.name.as_str(), (next_general, Some(next_general + 1)));
+                    param_pair.insert(parameter.name.as_str(), (next_general.into(), Some((next_general + 1).into())));
                     next_general += 2;
                 }
                 Type::Int | Type::UnsignedInt | Type::Short | Type::UnsignedShort | Type::Char | Type::UnsignedChar
                 | Type::Pointer(_) | Type::StructPointer { .. } => {
-                    if next_general > Eabi::LAST_GENERAL_ARGUMENT {
+                    if next_general > u32::from(Eabi::LAST_GENERAL_ARGUMENT) {
                         return Err(Diagnostic::error("an integer argument that overflows to the stack is not modeled yet (roadmap)"));
                     }
-                    param_pair.insert(parameter.name.as_str(), (next_general, None));
+                    param_pair.insert(parameter.name.as_str(), (next_general.into(), None));
                     next_general += 1;
                 }
                 _ => return Err(Diagnostic::error("a float/double/struct parameter alongside a long long is not modeled yet (roadmap)")),
@@ -525,7 +525,7 @@ impl Generator {
                 if let Some(&(_, Some(low_register))) = param_pair.get(name.as_str()) {
                     self.output
                         .instructions
-                        .push(Instruction::move_register(high, low_register));
+                        .push(Instruction::move_register(high, low_register.into()));
                     self.emit_epilogue_and_return();
                     return Ok(());
                 }
@@ -688,7 +688,7 @@ impl Generator {
                     if let Some(&(param_high, Some(param_low))) = param_pair.get(name.as_str()) {
                         if function.parameters.len() == 1 {
                             let zero = param_low + 1; // r5 — the next free GPR
-                            self.load_integer_constant(zero, 0);
+                            self.load_integer_constant(zero.into(), 0);
                             self.output.instructions.push(Instruction::Xor {
                                 a: GENERAL_SCRATCH,
                                 s: param_low,
@@ -755,8 +755,8 @@ impl Generator {
         if let Expression::Variable(name) = return_expression {
             if let Some(&(parameter_high, Some(parameter_low))) = param_pair.get(name.as_str()) {
                 if parameter_high != high {
-                    self.emit_integer_materialization_copy(low, parameter_low);
-                    self.emit_integer_materialization_copy(high, parameter_high);
+                    self.emit_integer_materialization_copy(low, parameter_low.into());
+                    self.emit_integer_materialization_copy(high, parameter_high.into());
                 }
                 self.emit_epilogue_and_return();
                 return Ok(());
@@ -944,7 +944,7 @@ impl Generator {
                                 s: int_register,
                                 shift: 31,
                             });
-                        let make = |a: u8, s: u8, b: u8| match operator {
+                        let make = |a: u32, s: u32, b: u32| match operator {
                             BinaryOperator::BitAnd => Instruction::And { a, s, b },
                             BinaryOperator::BitOr => Instruction::Or { a, s, b },
                             _ => Instruction::Xor { a, s, b },
@@ -954,7 +954,7 @@ impl Generator {
                             .push(make(low, left_low, int_register));
                         self.output
                             .instructions
-                            .push(make(high, left_high, GENERAL_SCRATCH));
+                            .push(make(high, left_high.into(), GENERAL_SCRATCH));
                         self.emit_epilogue_and_return();
                         return Ok(());
                     }
@@ -1051,7 +1051,7 @@ impl Generator {
                                 });
                             self.output
                                 .instructions
-                                .push(Instruction::move_register(param_low, scratch));
+                                .push(Instruction::move_register(param_low.into(), scratch));
                             self.emit_epilogue_and_return();
                             return Ok(());
                         }
@@ -1092,7 +1092,7 @@ impl Generator {
                                 });
                             self.output
                                 .instructions
-                                .push(Instruction::move_register(param_high, scratch));
+                                .push(Instruction::move_register(param_high.into(), scratch));
                             self.emit_epilogue_and_return();
                             return Ok(());
                         }
@@ -1120,7 +1120,7 @@ impl Generator {
                         if (0..=i64::from(i16::MAX)).contains(&constant) {
                             let constant_low = param_low + 1; // r5 — the next free GPR
                             self.load_integer_constant(GENERAL_SCRATCH, 0);
-                            self.load_integer_constant(constant_low, constant);
+                            self.load_integer_constant(constant_low.into(), constant);
                             self.output.instructions.push(Instruction::And {
                                 a: low,
                                 s: param_low,
@@ -1425,7 +1425,7 @@ impl Generator {
                 super::aggregate_local_return::HIDDEN_RESULT_NAME.into(),
                 Location {
                     class: ValueClass::General,
-                    register: Eabi::FIRST_GENERAL_ARGUMENT,
+                    register: 3,
                     signed: false,
                     width: 32,
                     pointee: Some(Pointee::UnsignedInt),
@@ -2350,7 +2350,7 @@ impl Generator {
                     member_type.width(),
                 ))
             };
-            let store_by_width = |width: u8, source: u8, base: u8, offset: i16| -> Instruction {
+            let store_by_width = |width: u8, source: u32, base: u32, offset: i16| -> Instruction {
                 match width {
                     8 => Instruction::StoreByte {
                         s: source,
@@ -2410,8 +2410,8 @@ impl Generator {
                 && plan.windows(2).all(|pair| pair[0].1 < pair[1].1)
             {
                 let name = plan[0].0.clone();
-                self.descending_allocation_top = Some(count as u8 + 2);
-                let value_virtuals: Vec<u8> =
+                self.descending_allocation_top = Some((count as u8 + 2).into());
+                let value_virtuals: Vec<u32> =
                     (0..count).map(|_| self.fresh_virtual_general()).collect();
                 self.output.instructions.push(Instruction::AddImmediate {
                     d: value_virtuals[0],
@@ -2463,8 +2463,8 @@ impl Generator {
                 // the base next, values descending with r3 recycled, the last
                 // value in r0 — schedule and registers both from the pass
                 // (fires 851-856; policies landed fires 867-870).
-                self.descending_allocation_top = Some(count as u8 + 2);
-                let value_virtuals: Vec<u8> =
+                self.descending_allocation_top = Some((count as u8 + 2).into());
+                let value_virtuals: Vec<u32> =
                     (0..count).map(|_| self.fresh_virtual_general()).collect();
                 let base = self.fresh_virtual_general();
                 self.record_relocation(RelocationKind::Addr16Ha, &name);
@@ -3792,7 +3792,7 @@ impl Generator {
                             "a void switch is not supported yet (roadmap)",
                         ))
                     }
-                    _ => Eabi::general_result().number,
+                    _ => u32::from(Eabi::general_result().number),
                 };
                 return self.emit_switch(
                     scrutinee,
@@ -4627,8 +4627,8 @@ impl Generator {
         }
 
         let result = match function.return_type {
-            Type::Float | Type::Double => Eabi::float_result().number,
-            _ => Eabi::general_result().number,
+            Type::Float | Type::Double => u32::from(Eabi::float_result().number),
+            _ => u32::from(Eabi::general_result().number),
         };
         // A non-void function may FALL OFF THE END (C89; strikers alloc's
         // FORCE_DONT_INLINE stubs) — mwcc emits a bare blr, r3 undefined.
@@ -5148,8 +5148,8 @@ impl Generator {
     pub(crate) fn evaluate_with_live_locals(
         &mut self,
         value: &Expression,
-        destination: u8,
-        homes: &[(String, u8)],
+        destination: u32,
+        homes: &[(String, u32)],
     ) -> Compilation<()> {
         for (name, register) in homes {
             self.locations
@@ -5172,7 +5172,7 @@ impl Generator {
         &mut self,
         expression: &Expression,
         value_type: Type,
-        result: u8,
+        result: u32,
     ) -> Compilation<()> {
         // `bool` shares one-byte storage with `unsigned char` in the compact
         // type IR, but a relational/equality/logical-not expression already
@@ -5363,7 +5363,7 @@ impl Generator {
         local: &LocalDeclaration,
         return_expression: &Expression,
         return_type: Type,
-        result: u8,
+        result: u32,
     ) -> Compilation<()> {
         let class = class_of(local.declared_type)?;
         // The single-local straight-line path needs the local's initializer; an
@@ -5599,7 +5599,7 @@ impl Generator {
         &mut self,
         expression: &Expression,
         value_type: Type,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         // A C++ reference binding to an aggregate carries the aggregate's
         // address. Only an aggregate-pointer cast/member has those semantics:
@@ -5729,12 +5729,12 @@ impl Generator {
                             Some(Type::Float | Type::Double)
                         )
                     {
-                        let source = Eabi::general_result().number;
+                        let source = u32::from(Eabi::general_result().number);
                         self.emit_call(name, arguments, None, false)?;
                         let bias_register = if destination != FLOAT_SCRATCH {
                             destination
                         } else {
-                            Eabi::float_result().number
+                            u32::from(Eabi::float_result().number)
                         };
                         self.emit_int_to_float_body(
                             source,

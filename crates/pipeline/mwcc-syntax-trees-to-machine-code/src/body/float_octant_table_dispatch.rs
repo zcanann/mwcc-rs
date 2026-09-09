@@ -387,8 +387,8 @@ impl Generator {
 
     fn emit_inlined_guarded_float_table_index(
         &mut self,
-        numerator: u8,
-        denominator: u8,
+        numerator: u32,
+        denominator: u32,
         table: &str,
         scale: usize,
         bias: usize,

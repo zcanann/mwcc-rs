@@ -63,14 +63,14 @@ impl Generator {
     }
 }
 
-fn set_float_load_destination(instruction: &mut Instruction, destination: u8) {
+fn set_float_load_destination(instruction: &mut Instruction, destination: u32) {
     match instruction {
         Instruction::LoadFloatSingle { d, .. } => *d = destination,
         _ => unreachable!("the complete bounded-acceleration stream was recognized"),
     }
 }
 
-fn set_float_store_source(instruction: &mut Instruction, source: u8) {
+fn set_float_store_source(instruction: &mut Instruction, source: u32) {
     match instruction {
         Instruction::StoreFloatSingle { s, .. } => *s = source,
         _ => unreachable!("the complete bounded-acceleration stream was recognized"),

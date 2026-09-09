@@ -123,7 +123,7 @@ impl Generator {
         self.emit_call(
             name,
             arguments,
-            Some(Eabi::general_result().number),
+            Some(u32::from(Eabi::general_result().number)),
             false,
         )?;
         self.emit_epilogue_and_return();

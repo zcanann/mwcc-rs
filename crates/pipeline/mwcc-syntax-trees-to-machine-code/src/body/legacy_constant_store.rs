@@ -43,7 +43,7 @@ impl Generator {
     pub(crate) fn emit_legacy_distinct_constant_store_run(
         &mut self,
         statements: &[Statement],
-        assignments: &[(i32, u8)],
+        assignments: &[(i32, u32)],
     ) -> Compilation<()> {
         let all_globals = statements.iter().all(|statement| {
             matches!(
@@ -113,11 +113,11 @@ fn interleaved_events(count: usize) -> Vec<StoreEvent> {
 /// Reverse greedy interval coloring, using build 163's scratch-first register
 /// order. Later values get the canonical r0/r3/r4... colors; earlier values
 /// reuse those colors once their preceding store ends the live interval.
-fn reverse_color(events: &[StoreEvent], count: usize) -> Vec<u8> {
+fn reverse_color(events: &[StoreEvent], count: usize) -> Vec<u32> {
     reverse_color_avoiding(events, count, &[])
 }
 
-fn reverse_color_avoiding(events: &[StoreEvent], count: usize, forbidden: &[u8]) -> Vec<u8> {
+fn reverse_color_avoiding(events: &[StoreEvent], count: usize, forbidden: &[u32]) -> Vec<u32> {
     let mut loads = vec![0usize; count];
     let mut stores = vec![0usize; count];
     for (position, event) in events.iter().enumerate() {
@@ -127,8 +127,8 @@ fn reverse_color_avoiding(events: &[StoreEvent], count: usize, forbidden: &[u8])
         }
     }
 
-    let colors: Vec<u8> = core::iter::once(GENERAL_SCRATCH)
-        .chain(3u8..=12)
+    let colors: Vec<u32> = core::iter::once(GENERAL_SCRATCH)
+        .chain(3u32..=12)
         .filter(|register| !forbidden.contains(register))
         .collect();
     let mut registers = vec![GENERAL_SCRATCH; count];
@@ -180,8 +180,8 @@ fn color_member_constants(
     events: &[StoreEvent],
     value_for_store: &[usize],
     unique_count: usize,
-    forbidden: &[u8],
-) -> Option<Vec<u8>> {
+    forbidden: &[u32],
+) -> Option<Vec<u32>> {
     let mut loads = vec![0usize; unique_count];
     let mut last_stores = vec![0usize; unique_count];
     for (position, event) in events.iter().enumerate() {
@@ -191,8 +191,8 @@ fn color_member_constants(
         }
     }
 
-    let colors: Vec<u8> = core::iter::once(GENERAL_SCRATCH)
-        .chain(3u8..=12)
+    let colors: Vec<u32> = core::iter::once(GENERAL_SCRATCH)
+        .chain(3u32..=12)
         .filter(|register| !forbidden.contains(register))
         .collect();
     let mut registers = vec![GENERAL_SCRATCH; unique_count];
@@ -208,7 +208,7 @@ fn color_member_constants(
     Some(registers)
 }
 
-fn serialized_member_pair(instructions: &[Instruction], at: usize) -> Option<(i16, u8)> {
+fn serialized_member_pair(instructions: &[Instruction], at: usize) -> Option<(i16, u32)> {
     let Instruction::AddImmediate {
         d: GENERAL_SCRATCH,
         a: 0,
@@ -221,7 +221,7 @@ fn serialized_member_pair(instructions: &[Instruction], at: usize) -> Option<(i1
     (source == GENERAL_SCRATCH && base > 2).then_some((immediate, base))
 }
 
-fn store_source_and_base(instruction: &Instruction) -> Option<(u8, u8)> {
+fn store_source_and_base(instruction: &Instruction) -> Option<(u32, u32)> {
     match *instruction {
         Instruction::StoreWord { s, a, .. }
         | Instruction::StoreByte { s, a, .. }
@@ -230,7 +230,7 @@ fn store_source_and_base(instruction: &Instruction) -> Option<(u8, u8)> {
     }
 }
 
-fn set_store_source(instruction: &mut Instruction, source: u8) {
+fn set_store_source(instruction: &mut Instruction, source: u32) {
     match instruction {
         Instruction::StoreWord { s, .. }
         | Instruction::StoreByte { s, .. }
@@ -301,7 +301,7 @@ fn schedule_serialized_member_constants(
         let live_at = |register, slot| {
             liveness.pinned.iter().any(|p| {
                 p.class == mwcc_vreg::Class::General
-                    && p.register == register
+                    && u32::from(p.register) == register
                     && p.live_slots
                         .as_ref()
                         .is_some_and(|slots| slots.binary_search(&slot).is_ok())

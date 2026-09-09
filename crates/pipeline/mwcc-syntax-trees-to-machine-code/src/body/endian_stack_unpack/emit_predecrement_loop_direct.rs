@@ -6,12 +6,12 @@ use super::recognize::InlineRead;
 use super::recognize_loop::ReadLoop;
 
 pub(super) fn emit(generator: &mut Generator, plan: &ReadLoop<'_>, read: &InlineRead) {
-    const BUFFER: u8 = 26;
-    const OUTPUT: u8 = 27;
-    const COUNT: u8 = 28;
-    const INDEX: u8 = 29;
-    const LENGTH: u8 = 30;
-    const ERROR: u8 = 31;
+    const BUFFER: u32 = 26;
+    const OUTPUT: u32 = 27;
+    const COUNT: u32 = 28;
+    const INDEX: u32 = 29;
+    const LENGTH: u32 = 30;
+    const ERROR: u32 = 31;
     let loop_body = generator.fresh_label();
     let enough_bytes = generator.fresh_label();
     let loop_check = generator.fresh_label();

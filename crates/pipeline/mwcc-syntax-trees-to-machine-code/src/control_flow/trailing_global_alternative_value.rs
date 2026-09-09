@@ -19,7 +19,7 @@ impl Generator {
     pub(crate) fn try_emit_trailing_global_alternative_value(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(alternative) = trailing_global_alternative(expression) else {
             return Ok(false);

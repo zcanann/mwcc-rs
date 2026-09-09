@@ -12,7 +12,7 @@ impl Generator {
         if self.loop_assertion_string_highs.len() != 2 {
             return;
         }
-        let canonical_boolean_homes: Vec<u8> = self
+        let canonical_boolean_homes: Vec<u32> = self
             .canonical_boolean_locals
             .iter()
             .filter_map(|name| self.lookup_general(name))
@@ -45,7 +45,7 @@ impl Generator {
 
 fn post_call_float_schedule_start(
     instructions: &[Instruction],
-    canonical_boolean_homes: &[u8],
+    canonical_boolean_homes: &[u32],
 ) -> Option<usize> {
     instructions.windows(5).position(|window| {
         matches!(
@@ -82,7 +82,7 @@ fn post_call_float_schedule_start(
 
 fn canonical_argument_schedule_start(
     instructions: &[Instruction],
-    canonical_boolean_homes: &[u8],
+    canonical_boolean_homes: &[u32],
 ) -> Option<usize> {
     instructions.windows(4).position(|window| {
         matches!(

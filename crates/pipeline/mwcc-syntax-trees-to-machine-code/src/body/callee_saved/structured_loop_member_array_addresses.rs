@@ -412,7 +412,7 @@ fn fresh_name(used: &mut std::collections::HashSet<String>, next: &mut usize) ->
 }
 
 pub(super) struct HomeLayout {
-    preferences: std::collections::HashMap<usize, u8>,
+    preferences: std::collections::HashMap<usize, u32>,
 }
 
 impl HomeLayout {
@@ -461,7 +461,7 @@ impl HomeLayout {
         })
     }
 
-    pub(super) fn preference(&self, home: usize) -> Option<u8> {
+    pub(super) fn preference(&self, home: usize) -> Option<u32> {
         self.preferences.get(&home).copied()
     }
 }

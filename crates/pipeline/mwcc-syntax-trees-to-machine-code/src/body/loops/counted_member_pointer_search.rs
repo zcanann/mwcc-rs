@@ -235,7 +235,7 @@ impl Generator {
                 condition_bit: 2,
                 target: 11,
             },
-            Instruction::move_register(Eabi::general_result().number, index),
+            Instruction::move_register(u32::from(Eabi::general_result().number), index),
             Instruction::BranchToLinkRegister,
             Instruction::AddImmediate {
                 d: cursor,
@@ -252,7 +252,7 @@ impl Generator {
                 condition_bit: 0,
                 target: 6,
             },
-            Instruction::load_immediate(Eabi::general_result().number, -1),
+            Instruction::load_immediate(u32::from(Eabi::general_result().number), -1),
             Instruction::BranchToLinkRegister,
         ]);
         Ok(true)

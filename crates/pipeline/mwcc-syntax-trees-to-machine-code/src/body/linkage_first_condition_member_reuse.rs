@@ -12,7 +12,7 @@ use super::*;
 struct Plan {
     base_load: usize,
     reload: usize,
-    member: u8,
+    member: u32,
     offset: i16,
 }
 

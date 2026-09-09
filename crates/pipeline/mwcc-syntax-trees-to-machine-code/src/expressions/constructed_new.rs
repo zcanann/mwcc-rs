@@ -12,7 +12,7 @@ impl Generator {
         allocation_size: u32,
         constructor: &str,
         arguments: &[Expression],
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         self.emit_constructed_new_impl(
             allocation,
@@ -45,7 +45,7 @@ impl Generator {
         allocation_size: u32,
         constructor: &str,
         arguments: &[Expression],
-        destination: Option<u8>,
+        destination: Option<u32>,
     ) -> Compilation<()> {
         if arguments.len() > usize::from(Eabi::LAST_GENERAL_ARGUMENT - 3) {
             return Err(Diagnostic::error(
@@ -103,11 +103,11 @@ impl Generator {
                 .instructions
                 .push(Instruction::move_register(retained, tested));
         } else {
-            self.evaluate_general(allocation, Eabi::FIRST_GENERAL_ARGUMENT)?;
+            self.evaluate_general(allocation, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
             self.output.instructions.push(Instruction::OrRecord {
                 a: retained,
-                s: Eabi::FIRST_GENERAL_ARGUMENT,
-                b: Eabi::FIRST_GENERAL_ARGUMENT,
+                s: 3,
+                b: 3,
             });
             self.emit_branch_conditional_to(12, 2, done); // beq: allocation failed
         }
@@ -133,12 +133,12 @@ impl Generator {
             emitted?;
         } else {
             for (index, argument) in arguments.iter().enumerate() {
-                self.evaluate_general(argument, Eabi::FIRST_GENERAL_ARGUMENT + 1 + index as u8)?;
+                self.evaluate_general(argument, (Eabi::FIRST_GENERAL_ARGUMENT + 1 + index as u8).into())?;
             }
             self.emit_call(constructor, &[], None, false)?;
             self.output.instructions.push(Instruction::move_register(
                 retained,
-                Eabi::general_result().number,
+                u32::from(Eabi::general_result().number),
             ));
         }
 

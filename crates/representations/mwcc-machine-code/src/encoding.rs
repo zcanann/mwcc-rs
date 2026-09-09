@@ -3,6 +3,7 @@
 //! `mwcceppc` output by the differential oracle.
 
 use crate::instruction::Instruction;
+use crate::RegisterField;
 
 impl Instruction {
     /// Encode to a 32-bit big-endian instruction word.
@@ -20,8 +21,8 @@ impl Instruction {
             Instruction::SubtractFromRecord { d, a, b } => xo_form(d, a, b, 40) | 1,
             Instruction::Negate { d, a } => xo_form(d, a, 0, 104),
             Instruction::NegateRecord { d, a } => (xo_form(d, a, 0, 104)) | 1,
-            Instruction::AndImmediateRecord { a, s, immediate } => (28 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | (immediate as u32),
-            Instruction::AndImmediateShiftedRecord { a, s, immediate } => (29 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | (immediate as u32),
+            Instruction::AndImmediateRecord { a, s, immediate } => (28 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | (immediate as u32),
+            Instruction::AndImmediateShiftedRecord { a, s, immediate } => (29 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | (immediate as u32),
             Instruction::Nor { a, s, b } => logical_form(s, a, b, 124),
             Instruction::Nand { a, s, b } => logical_form(s, a, b, 476),
             Instruction::Eqv { a, s, b } => logical_form(s, a, b, 284),
@@ -36,10 +37,10 @@ impl Instruction {
             Instruction::SubtractFromCarrying { d, a, b } => xo_form(d, a, b, 8),
             Instruction::SubtractFromExtended { d, a, b } => xo_form(d, a, b, 136),
             Instruction::SubtractFromExtendedRecord { d, a, b } => xo_form(d, a, b, 136) | 1,
-            Instruction::SubtractFromZeroExtended { d, a } => (31 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | (200 << 1),
+            Instruction::SubtractFromZeroExtended { d, a } => (31 << 26) | (register_bits(d) << 21) | (register_bits(a) << 16) | (200 << 1),
             Instruction::AddCarrying { d, a, b } => xo_form(d, a, b, 10),
             Instruction::AddExtended { d, a, b } => xo_form(d, a, b, 138),
-            Instruction::AddToZeroExtended { d, a } => (31 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | (202 << 1),
+            Instruction::AddToZeroExtended { d, a } => (31 << 26) | (register_bits(d) << 21) | (register_bits(a) << 16) | (202 << 1),
             Instruction::MultiplyLow { d, a, b } => xo_form(d, a, b, 235),
             Instruction::MultiplyLowRecord { d, a, b } => xo_form(d, a, b, 235) | 1,
             Instruction::MultiplyHighWord { d, a, b } => xo_form(d, a, b, 75),
@@ -50,7 +51,7 @@ impl Instruction {
             // slwi rA,rS,n == rlwinm rA,rS,n,0,31-n
             Instruction::ShiftLeftImmediate { a, s, shift } => {
                 let mask_end = 31 - shift as u32;
-                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | (mask_end << 1)
+                (21 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | ((shift as u32) << 11) | (mask_end << 1)
             }
             Instruction::Or { a, s, b } => logical_form(s, a, b, 444),
             Instruction::OrRecord { a, s, b } => logical_form(s, a, b, 444) | 1,
@@ -62,15 +63,15 @@ impl Instruction {
             Instruction::ShiftRightAlgebraicWord { a, s, b } => logical_form(s, a, b, 792),
             Instruction::ShiftRightWord { a, s, b } => logical_form(s, a, b, 536),
             Instruction::ShiftRightAlgebraicImmediate { a, s, shift } => {
-                (31 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | (824 << 1)
+                (31 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | ((shift as u32) << 11) | (824 << 1)
             }
             Instruction::ShiftRightAlgebraicImmediateRecord { a, s, shift } => {
-                (31 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | (824 << 1) | 1
+                (31 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | ((shift as u32) << 11) | (824 << 1) | 1
             }
             // srwi rA,rS,n == rlwinm rA,rS,32-n,n,31
             Instruction::ShiftRightLogicalImmediate { a, s, shift } => {
                 let rotate = 32 - shift as u32;
-                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | (rotate << 11) | ((shift as u32) << 6) | (31 << 1)
+                (21 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | (rotate << 11) | ((shift as u32) << 6) | (31 << 1)
             }
             Instruction::XorImmediate { a, s, immediate } => d_form(26, s, a, immediate),
             Instruction::XorImmediateShifted { a, s, immediate } => d_form(27, s, a, immediate),
@@ -87,28 +88,28 @@ impl Instruction {
             Instruction::StoreFloatDoubleIndexed { s, a, b } => xo_form(s, a, b, 727),
             // clrlwi rA,rS,n == rlwinm rA,rS,0,n,31
             Instruction::ClearLeftImmediate { a, s, clear } => {
-                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((clear as u32) << 6) | (31 << 1)
+                (21 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | ((clear as u32) << 6) | (31 << 1)
             }
             Instruction::ClearLeftImmediateRecord { a, s, clear } => {
-                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((clear as u32) << 6) | (31 << 1) | 1
+                (21 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | ((clear as u32) << 6) | (31 << 1) | 1
             }
             Instruction::AndContiguousMask { a, s, begin, end } => {
-                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((begin as u32) << 6) | ((end as u32) << 1)
+                (21 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | ((begin as u32) << 6) | ((end as u32) << 1)
             }
             Instruction::RotateAndMask { a, s, shift, begin, end } => {
-                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1)
+                (21 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | ((shift as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1)
             }
             Instruction::RotateAndMaskRecord { a, s, shift, begin, end } => {
-                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1) | 1
+                (21 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | ((shift as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1) | 1
             }
             Instruction::RotateAndMaskVariable { a, s, b, begin, end } => {
-                (23 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1)
+                (23 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | (register_bits(b) << 11) | ((begin as u32) << 6) | ((end as u32) << 1)
             }
             Instruction::RotateAndMaskInsert { a, s, shift, begin, end } => {
-                (20 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1)
+                (20 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | ((shift as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1)
             }
             Instruction::AndMaskRecord { a, s, begin, end } => {
-                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((begin as u32) << 6) | ((end as u32) << 1) | 1
+                (21 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | ((begin as u32) << 6) | ((end as u32) << 1) | 1
             }
             Instruction::FloatAddSingle { d, a, b } => a_form(59, d, a, b, 0, 21),
             Instruction::FloatSubtractSingle { d, a, b } => a_form(59, d, a, b, 0, 20),
@@ -126,8 +127,8 @@ impl Instruction {
             Instruction::FloatMultiplyAddDouble { d, a, c, b } => a_form(63, d, a, b, c, 29),
             Instruction::FloatMultiplySubtractDouble { d, a, c, b } => a_form(63, d, a, b, c, 28),
             Instruction::FloatNegativeMultiplySubtractDouble { d, a, c, b } => a_form(63, d, a, b, c, 30),
-            Instruction::RoundToSingle { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (12 << 1),
-            Instruction::FloatMove { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (72 << 1),
+            Instruction::RoundToSingle { d, b } => (63 << 26) | (register_bits(d) << 21) | (register_bits(b) << 11) | (12 << 1),
+            Instruction::FloatMove { d, b } => (63 << 26) | (register_bits(d) << 21) | (register_bits(b) << 11) | (72 << 1),
             Instruction::PairedSingleAdd { d, a, b } => a_form(4, d, a, b, 0, 21),
             Instruction::PairedSingleSubtract { d, a, b } => a_form(4, d, a, b, 0, 20),
             Instruction::PairedSingleMultiply { d, a, c } => a_form(4, d, a, 0, c, 25),
@@ -135,19 +136,19 @@ impl Instruction {
             Instruction::PairedSingleMultiplyAdd { d, a, c, b } => a_form(4, d, a, b, c, 29),
             Instruction::PairedSingleSum0 { d, a, c, b } => a_form(4, d, a, b, c, 10),
             Instruction::PairedSingleSum1 { d, a, c, b } => a_form(4, d, a, b, c, 11),
-            Instruction::PairedSingleMerge00 { d, a, b } => (4 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (528 << 1),
-            Instruction::PairedSingleMerge01 { d, a, b } => (4 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (560 << 1),
-            Instruction::PairedSingleMerge10 { d, a, b } => (4 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (592 << 1),
-            Instruction::PairedSingleMerge11 { d, a, b } => (4 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (624 << 1),
+            Instruction::PairedSingleMerge00 { d, a, b } => (4 << 26) | (register_bits(d) << 21) | (register_bits(a) << 16) | (register_bits(b) << 11) | (528 << 1),
+            Instruction::PairedSingleMerge01 { d, a, b } => (4 << 26) | (register_bits(d) << 21) | (register_bits(a) << 16) | (register_bits(b) << 11) | (560 << 1),
+            Instruction::PairedSingleMerge10 { d, a, b } => (4 << 26) | (register_bits(d) << 21) | (register_bits(a) << 16) | (register_bits(b) << 11) | (592 << 1),
+            Instruction::PairedSingleMerge11 { d, a, b } => (4 << 26) | (register_bits(d) << 21) | (register_bits(a) << 16) | (register_bits(b) << 11) | (624 << 1),
             Instruction::PairedSingleMultiplyScalar1 { d, a, c } => a_form(4, d, a, 0, c, 13),
             Instruction::PairedSingleMultiplyAddScalar0 { d, a, c, b } => a_form(4, d, a, b, c, 14),
             Instruction::PairedSingleMultiplyAddScalar1 { d, a, c, b } => a_form(4, d, a, b, c, 15),
-            Instruction::PairedSingleMove { d, b } => (4 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (72 << 1),
+            Instruction::PairedSingleMove { d, b } => (4 << 26) | (register_bits(d) << 21) | (register_bits(b) << 11) | (72 << 1),
             // frsqrte: opcode 63, A-form xo 26 (fc 40 08 34 = frsqrte f2,f1)
-            Instruction::FloatReciprocalSqrtEstimate { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (26 << 1),
-            Instruction::FloatNegate { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (40 << 1),
-            Instruction::FloatAbsolute { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (264 << 1),
-            Instruction::ConvertToIntegerWordZero { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (15 << 1),
+            Instruction::FloatReciprocalSqrtEstimate { d, b } => (63 << 26) | (register_bits(d) << 21) | (register_bits(b) << 11) | (26 << 1),
+            Instruction::FloatNegate { d, b } => (63 << 26) | (register_bits(d) << 21) | (register_bits(b) << 11) | (40 << 1),
+            Instruction::FloatAbsolute { d, b } => (63 << 26) | (register_bits(d) << 21) | (register_bits(b) << 11) | (264 << 1),
+            Instruction::ConvertToIntegerWordZero { d, b } => (63 << 26) | (register_bits(d) << 21) | (register_bits(b) << 11) | (15 << 1),
             Instruction::StoreWordWithUpdate { s, a, offset } => d_form(37, s, a, offset as u16),
             Instruction::LoadWord { d, a, offset } => d_form(32, d, a, offset as u16),
             Instruction::LoadWordWithUpdate { d, a, offset } => d_form(33, d, a, offset as u16),
@@ -168,29 +169,29 @@ impl Instruction {
             Instruction::LoadHalfwordAlgebraicIndexed { d, a, b } => xo_form(d, a, b, 343),
             Instruction::LoadFloatSingleIndexed { d, a, b } => xo_form(d, a, b, 535),
             Instruction::StoreFloatDouble { s, a, offset } => d_form(54, s, a, offset as u16),
-            Instruction::FloatCompareOrdered { a, b } => (63 << 26) | ((a as u32) << 16) | ((b as u32) << 11) | (32 << 1),
-            Instruction::FloatCompareUnordered { a, b } => (63 << 26) | ((a as u32) << 16) | ((b as u32) << 11),
-            Instruction::FloatCompareUnorderedField { crf, a, b } => (63 << 26) | ((crf as u32) << 23) | ((a as u32) << 16) | ((b as u32) << 11),
-            Instruction::MoveFromConditionRegister { d } => (31 << 26) | ((d as u32) << 21) | (19 << 1),
+            Instruction::FloatCompareOrdered { a, b } => (63 << 26) | (register_bits(a) << 16) | (register_bits(b) << 11) | (32 << 1),
+            Instruction::FloatCompareUnordered { a, b } => (63 << 26) | (register_bits(a) << 16) | (register_bits(b) << 11),
+            Instruction::FloatCompareUnorderedField { crf, a, b } => (63 << 26) | ((crf as u32) << 23) | (register_bits(a) << 16) | (register_bits(b) << 11),
+            Instruction::MoveFromConditionRegister { d } => (31 << 26) | (register_bits(d) << 21) | (19 << 1),
             // mffs frD (63/583; measured fc 00 04 8e for f0)
-            Instruction::MoveFromFpscr { d } => 0xFC00_048E | ((d as u32) << 21),
+            Instruction::MoveFromFpscr { d } => 0xFC00_048E | (register_bits(d) << 21),
             // mtcrf CRM,rS (31/144; measured 7c cf f1 20 for 255,r6)
-            Instruction::MoveToConditionRegisterFields { mask, s } => 0x7C00_0120 | ((s as u32) << 21) | ((mask as u32) << 12),
+            Instruction::MoveToConditionRegisterFields { mask, s } => 0x7C00_0120 | (register_bits(s) << 21) | ((mask as u32) << 12),
             // mtfsf FM,frB (63/711; measured fd fe 05 8e for 255,f0)
-            Instruction::MoveToFpscrFields { mask, b } => 0xFC00_058E | ((mask as u32) << 17) | ((b as u32) << 11),
+            Instruction::MoveToFpscrFields { mask, b } => 0xFC00_058E | ((mask as u32) << 17) | (register_bits(b) << 11),
             // stmw rS,d(rA) (opcode 47; measured bd a3 00 14 for r13,20(r3))
-            Instruction::StoreMultipleWord { s, a, offset } => (47 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | (offset as u16 as u32),
+            Instruction::StoreMultipleWord { s, a, offset } => (47 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | (offset as u16 as u32),
             // lmw rD,d(rA) (opcode 46; measured b9 a3 00 14 for r13,20(r3))
-            Instruction::LoadMultipleWord { d, a, offset } => (46 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | (offset as u16 as u32),
-            Instruction::ConditionRegisterOr { d, a, b } => (19 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (449 << 1),
-            Instruction::ConditionRegisterClear { d } => 0x4C00_0182 | ((d as u32) << 21) | ((d as u32) << 16) | ((d as u32) << 11),
-            Instruction::ConditionRegisterSet { d } => 0x4C00_0242 | ((d as u32) << 21) | ((d as u32) << 16) | ((d as u32) << 11),
-            Instruction::CompareWordImmediate { a, immediate } => (11 << 26) | ((a as u32) << 16) | (immediate as u16 as u32),
-            Instruction::CompareWordImmediateField { crf, a, immediate } => (11 << 26) | ((crf as u32) << 23) | ((a as u32) << 16) | (immediate as u16 as u32),
-            Instruction::CompareWordField { crf, a, b } => (31 << 26) | ((crf as u32) << 23) | ((a as u32) << 16) | ((b as u32) << 11),
-            Instruction::CompareWord { a, b } => (31 << 26) | ((a as u32) << 16) | ((b as u32) << 11),
-            Instruction::CompareLogicalWordImmediate { a, immediate } => (10 << 26) | ((a as u32) << 16) | (immediate as u32),
-            Instruction::CompareLogicalWord { a, b } => (31 << 26) | ((a as u32) << 16) | ((b as u32) << 11) | (32 << 1),
+            Instruction::LoadMultipleWord { d, a, offset } => (46 << 26) | (register_bits(d) << 21) | (register_bits(a) << 16) | (offset as u16 as u32),
+            Instruction::ConditionRegisterOr { d, a, b } => (19 << 26) | (register_bits(d) << 21) | (register_bits(a) << 16) | (register_bits(b) << 11) | (449 << 1),
+            Instruction::ConditionRegisterClear { d } => 0x4C00_0182 | (register_bits(d) << 21) | (register_bits(d) << 16) | (register_bits(d) << 11),
+            Instruction::ConditionRegisterSet { d } => 0x4C00_0242 | (register_bits(d) << 21) | (register_bits(d) << 16) | (register_bits(d) << 11),
+            Instruction::CompareWordImmediate { a, immediate } => (11 << 26) | (register_bits(a) << 16) | (immediate as u16 as u32),
+            Instruction::CompareWordImmediateField { crf, a, immediate } => (11 << 26) | ((crf as u32) << 23) | (register_bits(a) << 16) | (immediate as u16 as u32),
+            Instruction::CompareWordField { crf, a, b } => (31 << 26) | ((crf as u32) << 23) | (register_bits(a) << 16) | (register_bits(b) << 11),
+            Instruction::CompareWord { a, b } => (31 << 26) | (register_bits(a) << 16) | (register_bits(b) << 11),
+            Instruction::CompareLogicalWordImmediate { a, immediate } => (10 << 26) | (register_bits(a) << 16) | (immediate as u32),
+            Instruction::CompareLogicalWord { a, b } => (31 << 26) | (register_bits(a) << 16) | (register_bits(b) << 11) | (32 << 1),
             // resolved positionally in encode_text
             Instruction::BranchConditionalForward { .. } => 0,
             Instruction::Branch { .. } => 0,
@@ -198,58 +199,58 @@ impl Instruction {
                 (19 << 26) | ((options as u32) << 21) | ((condition_bit as u32) << 16) | (16 << 1)
             }
             Instruction::PairedSingleQuantizedLoad { d, a, offset, w, i } => {
-                (56 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
+                (56 << 26) | (register_bits(d) << 21) | (register_bits(a) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
             }
             Instruction::PairedSingleQuantizedLoadIndexed { d, a, b, w, i } => {
-                (4 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | ((w as u32) << 10) | ((i as u32) << 7) | (6 << 1)
+                (4 << 26) | (register_bits(d) << 21) | (register_bits(a) << 16) | (register_bits(b) << 11) | ((w as u32) << 10) | ((i as u32) << 7) | (6 << 1)
             }
             Instruction::PairedSingleQuantizedStore { s, a, offset, w, i } => {
-                (60 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
+                (60 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
             }
             Instruction::PairedSingleQuantizedLoadWithUpdate { d, a, offset, w, i } => {
-                (57 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
+                (57 << 26) | (register_bits(d) << 21) | (register_bits(a) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
             }
             Instruction::PairedSingleQuantizedStoreWithUpdate { s, a, offset, w, i } => {
-                (61 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
+                (61 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
             }
             Instruction::BranchToLinkRegister => 0x4E80_0020,
             Instruction::BranchToLinkRegisterAndLink => 0x4E80_0021,
             // The displacement is supplied by the relocation; emit the placeholder.
             Instruction::BranchAndLink { .. } => 0x4800_0001,
             Instruction::BranchExternal { .. } => 0x4800_0000,
-            Instruction::MoveFromLinkRegister { d } => 0x7C08_02A6 | ((d as u32) << 21),
-            Instruction::MoveToLinkRegister { s } => 0x7C08_03A6 | ((s as u32) << 21),
-            Instruction::MoveToCountRegister { s } => 0x7C09_03A6 | ((s as u32) << 21),
+            Instruction::MoveFromLinkRegister { d } => 0x7C08_02A6 | (register_bits(d) << 21),
+            Instruction::MoveToLinkRegister { s } => 0x7C08_03A6 | (register_bits(s) << 21),
+            Instruction::MoveToCountRegister { s } => 0x7C09_03A6 | (register_bits(s) << 21),
             Instruction::BranchToCountRegister => 0x4E80_0420,
             Instruction::BranchToCountRegisterAndLink => 0x4E80_0421,
             // The SPR/TBR field is the two 5-bit halves of the number, SWAPPED:
             // instruction bits 11-15 = spr[0:4], bits 16-20 = spr[5:9].
             Instruction::MoveFromSpr { d, spr } => {
                 let field = ((spr as u32 & 0x1F) << 5) | ((spr as u32 >> 5) & 0x1F);
-                (31 << 26) | ((d as u32) << 21) | (field << 11) | (339 << 1)
+                (31 << 26) | (register_bits(d) << 21) | (field << 11) | (339 << 1)
             }
             Instruction::MoveFromTimeBase { d, tbr } => {
                 let field = ((tbr as u32 & 0x1F) << 5) | ((tbr as u32 >> 5) & 0x1F);
-                (31 << 26) | ((d as u32) << 21) | (field << 11) | (371 << 1)
+                (31 << 26) | (register_bits(d) << 21) | (field << 11) | (371 << 1)
             }
             Instruction::MoveToSpr { spr, s } => {
                 let field = ((spr as u32 & 0x1F) << 5) | ((spr as u32 >> 5) & 0x1F);
-                (31 << 26) | ((s as u32) << 21) | (field << 11) | (467 << 1)
+                (31 << 26) | (register_bits(s) << 21) | (field << 11) | (467 << 1)
             }
             Instruction::MoveFromSegmentRegister { d, segment } => {
-                (31 << 26) | ((d as u32) << 21) | ((segment as u32) << 16) | (595 << 1)
+                (31 << 26) | (register_bits(d) << 21) | ((segment as u32) << 16) | (595 << 1)
             }
             Instruction::MoveToSegmentRegister { segment, s } => {
-                (31 << 26) | ((s as u32) << 21) | ((segment as u32) << 16) | (210 << 1)
+                (31 << 26) | (register_bits(s) << 21) | ((segment as u32) << 16) | (210 << 1)
             }
-            Instruction::MoveFromMsr { d } => (31 << 26) | ((d as u32) << 21) | (83 << 1),
-            Instruction::MoveToMsr { s } => (31 << 26) | ((s as u32) << 21) | (146 << 1),
+            Instruction::MoveFromMsr { d } => (31 << 26) | (register_bits(d) << 21) | (83 << 1),
+            Instruction::MoveToMsr { s } => (31 << 26) | (register_bits(s) << 21) | (146 << 1),
             Instruction::InstructionSynchronize => 0x4C00_012C,
             Instruction::Synchronize => 0x7C00_04AC,
             Instruction::EnforceInOrderIo => 0x7C00_06AC,
             Instruction::ReturnFromInterrupt => 0x4C00_0064,
             Instruction::CacheOp { primary, xo, a, b } => {
-                ((primary as u32) << 26) | ((a as u32) << 16) | ((b as u32) << 11) | ((xo as u32) << 1)
+                ((primary as u32) << 26) | (register_bits(a) << 16) | (register_bits(b) << 11) | ((xo as u32) << 1)
             }
             Instruction::SystemCall => 0x4400_0002,
             Instruction::VerbatimWord(word) => word,
@@ -260,6 +261,21 @@ impl Instruction {
 #[cfg(test)]
 mod tests {
     use crate::Instruction;
+
+    #[test]
+    fn unresolved_registers_are_rejected_before_they_can_corrupt_opcode_bits() {
+        for register in [32, 255, 256, 65_536, u32::MAX] {
+            for instruction in [
+                Instruction::load_immediate(register, 7),
+                Instruction::LoadWord { d: 3, a: register, offset: 4 },
+                Instruction::Add { d: 3, a: 4, b: register },
+                Instruction::FloatMultiplyDouble { d: 1, a: 2, c: register },
+                Instruction::StoreFloatDouble { s: register, a: 1, offset: 8 },
+            ] {
+                assert!(std::panic::catch_unwind(|| instruction.encode()).is_err());
+            }
+        }
+    }
 
     #[test]
     fn encodes_move_from_segment_register_fields() {
@@ -331,21 +347,27 @@ mod tests {
     }
 }
 
-fn d_form(opcode: u32, d: u8, a: u8, immediate: u16) -> u32 {
-    (opcode << 26) | ((d as u32) << 21) | ((a as u32) << 16) | (immediate as u32)
+fn d_form(opcode: u32, d: RegisterField, a: RegisterField, immediate: u16) -> u32 {
+    (opcode << 26) | (register_bits(d) << 21) | (register_bits(a) << 16) | (immediate as u32)
 }
-fn xo_form(d: u8, a: u8, b: u8, extended_opcode: u32) -> u32 {
-    (31 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (extended_opcode << 1)
+fn xo_form(d: RegisterField, a: RegisterField, b: RegisterField, extended_opcode: u32) -> u32 {
+    (31 << 26) | (register_bits(d) << 21) | (register_bits(a) << 16) | (register_bits(b) << 11) | (extended_opcode << 1)
 }
 /// Logical/shift register form: opcode 31, rS in the D slot, rA in the A slot, rB.
-fn logical_form(s: u8, a: u8, b: u8, extended_opcode: u32) -> u32 {
-    (31 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (extended_opcode << 1)
+fn logical_form(s: RegisterField, a: RegisterField, b: RegisterField, extended_opcode: u32) -> u32 {
+    (31 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | (register_bits(b) << 11) | (extended_opcode << 1)
 }
-fn a_form(opcode: u32, d: u8, a: u8, b: u8, c: u8, extended_opcode: u32) -> u32 {
+fn a_form(opcode: u32, d: RegisterField, a: RegisterField, b: RegisterField, c: RegisterField, extended_opcode: u32) -> u32 {
     (opcode << 26)
-        | ((d as u32) << 21)
-        | ((a as u32) << 16)
-        | ((b as u32) << 11)
-        | ((c as u32) << 6)
+        | (register_bits(d) << 21)
+        | (register_bits(a) << 16)
+        | (register_bits(b) << 11)
+        | (register_bits(c) << 6)
         | (extended_opcode << 1)
+}
+
+fn register_bits(register: impl Into<RegisterField>) -> u32 {
+    let register = register.into();
+    assert!(register < 32, "unallocated register field {register} reached encoding");
+    register
 }

@@ -14,7 +14,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if !matches!(operator, BinaryOperator::BitAnd | BinaryOperator::BitOr) {
             return Ok(false);

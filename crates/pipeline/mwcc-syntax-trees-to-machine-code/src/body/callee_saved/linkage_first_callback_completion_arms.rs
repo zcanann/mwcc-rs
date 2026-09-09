@@ -11,8 +11,8 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CompletionArm {
     start: usize,
-    object: u8,
-    replacement: u8,
+    object: u32,
+    replacement: u32,
     call: usize,
     constant_first_argument: bool,
 }

@@ -15,7 +15,7 @@ struct PhysicalHandoffShape {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Vec3CopyPacket {
-    source: u8,
+    source: u32,
     target_offset: i16,
 }
 
@@ -277,7 +277,7 @@ impl StructuredUnoptimizedInlineFloatTransactionHomes {
         })
     }
 
-    pub(super) fn preference(&self, name: &str) -> Option<u8> {
+    pub(super) fn preference(&self, name: &str) -> Option<u32> {
         if name == self.caller_result {
             Some(27)
         } else if name == self.projection_result {

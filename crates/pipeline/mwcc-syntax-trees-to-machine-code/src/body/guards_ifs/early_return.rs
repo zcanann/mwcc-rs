@@ -11,7 +11,7 @@ impl Generator {
         value: &Expression,
         tail: &[Statement],
     ) -> Compilation<()> {
-        let result = mwcc_target::Eabi::general_result().number;
+        let result = u32::from(mwcc_target::Eabi::general_result().number);
         let (options, condition_bit) = self.emit_condition_test(condition)?;
         if matches!(value, Expression::Variable(name) if self.lookup_general(name) == Some(result))
         {
@@ -151,7 +151,7 @@ impl Generator {
             None
         };
 
-        let result = mwcc_target::Eabi::general_result().number;
+        let result = u32::from(mwcc_target::Eabi::general_result().number);
         let (options, condition_bit) = self.emit_condition_test(condition)?;
         let branch_index = self.output.instructions.len();
         self.output
@@ -428,7 +428,7 @@ impl Generator {
                         }
                     }
                 }
-                let result = mwcc_target::Eabi::general_result().number;
+                let result = u32::from(mwcc_target::Eabi::general_result().number);
                 let guard_value_in_result = matches!(value, Expression::Variable(name) if self.lookup_general(name) == Some(result));
                 // A register-leaf store value (`*p = b`) is already in a register — mwcc stores it
                 // DIRECTLY, before the return, with no r0 materialization (`bgtlr; stw r4,0(r5);
@@ -503,7 +503,7 @@ impl Generator {
                 // The return value: a constant `li`, or a General register `mr`.
                 enum ReturnValue {
                     Constant(i16),
-                    Register(u8),
+                    Register(u32),
                 }
                 let return_value = match function.return_expression.as_ref() {
                     Some(expression) => {
@@ -575,8 +575,8 @@ impl Generator {
                     ReturnValue::Register(register) => {
                         generator.output.instructions.push(Instruction::Or {
                             a: result,
-                            s: register,
-                            b: register,
+                            s: u32::from(register),
+                            b: u32::from(register),
                         });
                     }
                 };
@@ -715,7 +715,7 @@ impl Generator {
             let Some(value_register) = self.lookup_general(value_name) else {
                 return Ok(false);
             };
-            let result = mwcc_target::Eabi::general_result().number;
+            let result = u32::from(mwcc_target::Eabi::general_result().number);
             let (options, condition_bit) = self.emit_condition_test(condition)?;
             self.evaluate_tail(assigned_value, function.return_type, result)?;
             self.output

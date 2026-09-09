@@ -9,8 +9,8 @@ use super::*;
 
 #[derive(Clone, Copy)]
 enum StoreSource {
-    General(u8),
-    Float(u8),
+    General(u32),
+    Float(u32),
 }
 
 #[derive(Clone, Copy)]
@@ -134,7 +134,7 @@ impl Generator {
                         _ => return Ok(false),
                     };
                     let lane_offset = frame_size
-                        .checked_add(8 + i16::from(stack_index) * 4)
+                        .checked_add(8 + i16::try_from(stack_index).expect("stack argument index") * 4)
                         .and_then(|offset| {
                             offset.checked_add(match parameter.parameter_type.width() {
                                 8 => 3,

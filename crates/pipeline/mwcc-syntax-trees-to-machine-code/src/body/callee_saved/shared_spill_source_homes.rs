@@ -180,7 +180,7 @@ impl Generator {
         } else {
             function.clone()
         };
-        let saved: Vec<_> = (0..homes).map(|i| 31 - i as u8).collect();
+        let saved: Vec<_> = (0..homes).map(|i| 31 - i as u32).collect();
         let mut ranked_names: Vec<_> = locals.iter().map(|l| l.name.as_str()).collect();
         if source_counts.is_some() {
             // Stable ties retain local first-definition order, followed by
@@ -200,7 +200,7 @@ impl Generator {
         if helpers {
             let frame = (self.outgoing_general_parameter_end + 4 * homes as i16 + 7) & !7;
             self.emit_savegpr_frame_prologue_with_convention(
-                first,
+                first.into(),
                 frame,
                 FrameConvention::LinkageFirst,
             );
@@ -211,7 +211,7 @@ impl Generator {
                 self.output
                     .instructions
                     .push(Instruction::StoreMultipleWord {
-                        s: first,
+                        s: u32::from(first),
                         a: 1,
                         offset: self.frame_size - 4 * homes as i16,
                     });
@@ -223,7 +223,7 @@ impl Generator {
                 local.name.clone(),
                 Location {
                     class: ValueClass::General,
-                    register: home_of(&local.name),
+                    register: u32::from(home_of(&local.name)),
                     signed: self.signed_of(ty),
                     width: ty.width(),
                     pointee: match ty {
@@ -244,8 +244,8 @@ impl Generator {
                 let home = home_of(&parameter.name);
                 self.output
                     .instructions
-                    .push(Instruction::move_register(home, incoming));
-                self.locations.get_mut(&parameter.name).unwrap().register = home;
+                    .push(Instruction::move_register(home.into(), incoming));
+                self.locations.get_mut(&parameter.name).unwrap().register = u32::from(home);
             } else if spilled.iter().any(|p| p.name == parameter.name) {
                 self.output.instructions.push(Instruction::StoreWord {
                     s: incoming,
@@ -300,13 +300,13 @@ impl Generator {
         }
         self.schedule_shared_spill_store_literals();
         if helpers {
-            self.emit_restgpr_frame_epilogue_with_convention(first, FrameConvention::LinkageFirst);
+            self.emit_restgpr_frame_epilogue_with_convention(first.into(), FrameConvention::LinkageFirst);
         } else {
             let end = self.output.instructions.len();
             self.emit_epilogue_and_return();
             if multiple {
                 self.output.instructions[end] = Instruction::LoadMultipleWord {
-                    d: first,
+                    d: u32::from(first),
                     a: 1,
                     offset: self.frame_size - 4 * homes as i16,
                 };

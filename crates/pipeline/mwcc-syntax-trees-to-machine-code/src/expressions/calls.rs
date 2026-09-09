@@ -18,10 +18,10 @@ use mwcc_versions::{FrameConvention, VirtualCallDispatchSchedule};
 /// sufficient for pointer operands.
 fn bind_parameterized_asm_fragment(
     function: &Function,
-    destination: Option<u8>,
+    destination: Option<u32>,
     float_result: bool,
-    general_locals: &std::collections::HashMap<String, u8>,
-) -> Option<(Vec<AsmItem>, Option<u8>)> {
+    general_locals: &std::collections::HashMap<String, u32>,
+) -> Option<(Vec<AsmItem>, Option<u32>)> {
     let [block] = function.inline_asm_blocks.as_slice() else {
         return None;
     };
@@ -30,14 +30,14 @@ fn bind_parameterized_asm_fragment(
         return None;
     }
 
-    let mut bindings = std::collections::HashMap::<&str, u8>::new();
-    let mut next_float_argument = Eabi::FIRST_FLOAT_ARGUMENT;
+    let mut bindings = std::collections::HashMap::<&str, u32>::new();
+    let mut next_float_argument: u32 = (Eabi::FIRST_FLOAT_ARGUMENT) as u32;
     for parameter in &function.parameters {
         if matches!(parameter.parameter_type, Type::Float | Type::Double) {
             if next_float_argument > 8 {
                 return None;
             }
-            bindings.insert(parameter.name.as_str(), next_float_argument);
+            bindings.insert(parameter.name.as_str(), next_float_argument.into());
             next_float_argument += 1;
         }
     }
@@ -47,7 +47,7 @@ fn bind_parameterized_asm_fragment(
         None => None,
         _ => return None,
     };
-    let parameter_registers: std::collections::HashSet<u8> =
+    let parameter_registers: std::collections::HashSet<u32> =
         bindings.values().copied().collect();
     let direct_result = destination.filter(|register| !parameter_registers.contains(register));
     let mut volatile_fprs = (0..=13).filter(|register| {
@@ -77,9 +77,9 @@ fn bind_parameterized_asm_fragment(
                 continue;
             };
             if let Some(register) = bindings.get(name.as_str()) {
-                *operand = AsmOperand::Fpr(*register);
+                *operand = AsmOperand::Fpr(u8::try_from(*register).expect("physical inline assembly FPR"));
             } else if let Some(register) = general_locals.get(name) {
-                *operand = AsmOperand::Gpr(*register);
+                *operand = AsmOperand::Gpr(u8::try_from(*register).expect("physical inline assembly GPR"));
             }
         }
     }
@@ -88,7 +88,7 @@ fn bind_parameterized_asm_fragment(
 
 fn rebind_asm_memory_bases(
     items: &mut [AsmItem],
-    bindings: &std::collections::HashMap<u8, (u8, i16)>,
+    bindings: &std::collections::HashMap<u32, (u32, i16)>,
 ) -> bool {
     let mut rebound = std::collections::HashSet::new();
     for item in items {
@@ -99,14 +99,14 @@ fn rebind_asm_memory_bases(
             let AsmOperand::Memory { displacement, base } = operand else {
                 continue;
             };
-            let Some((actual_base, adjustment)) = bindings.get(base).copied() else {
+            let Some((actual_base, adjustment)) = bindings.get(&u32::from(*base)).copied() else {
                 continue;
             };
             let Some(combined) = displacement.checked_add(adjustment) else {
                 return false;
             };
             rebound.insert(*base);
-            *base = actual_base;
+            *base = u8::try_from(actual_base).expect("physical inline assembly base");
             *displacement = combined;
         }
     }
@@ -257,7 +257,7 @@ impl Generator {
             || parameterized_asm
     }
 
-    fn inline_asm_address_base(&self, expression: &Expression) -> Option<u8> {
+    fn inline_asm_address_base(&self, expression: &Expression) -> Option<u32> {
         match expression {
             Expression::Variable(name) => self.lookup_general(name),
             Expression::Cast { operand, .. } => self.inline_asm_address_base(operand),
@@ -265,7 +265,7 @@ impl Generator {
         }
     }
 
-    fn inline_asm_address(&self, expression: &Expression) -> Option<(u8, i16)> {
+    fn inline_asm_address(&self, expression: &Expression) -> Option<(u32, i16)> {
         match expression {
             Expression::Cast { operand, .. } => self.inline_asm_address(operand),
             Expression::Variable(name) => self.lookup_general(name).map(|base| (base, 0)),
@@ -314,7 +314,7 @@ impl Generator {
         arguments: &[Expression],
         fragment: &mut [AsmItem],
     ) -> bool {
-        let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
+        let mut next_general: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         let mut bindings = std::collections::HashMap::new();
         for (parameter, argument) in function.parameters.iter().zip(arguments) {
             match parameter.parameter_type {
@@ -338,12 +338,12 @@ impl Generator {
         arguments: &[Expression],
         name: &str,
     ) -> Compilation<()> {
-        let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
+        let mut next_float: u32 = (Eabi::FIRST_FLOAT_ARGUMENT) as u32;
         for (index, (parameter, argument)) in
             function.parameters.iter().zip(arguments).enumerate()
         {
             if matches!(parameter.parameter_type, Type::Float | Type::Double) {
-                self.evaluate(argument, parameter.parameter_type, next_float)
+                self.evaluate(argument, parameter.parameter_type, next_float.into())
                     .map_err(|mut diagnostic| {
                         diagnostic.message.push_str(&format!(
                             " (while evaluating floating argument {index} to '{name}')"
@@ -365,14 +365,14 @@ impl Generator {
         &mut self,
         name: &str,
         arguments: &[Expression],
-        destination: Option<u8>,
+        destination: Option<u32>,
         float_result: bool,
     ) -> Compilation<bool> {
         let Some(destination) = destination.filter(|_| float_result) else {
             return Ok(false);
         };
         if name == JGEOMETRY_EPSILON && arguments.is_empty() {
-            let result = Eabi::float_result().number;
+            let result = u32::from(Eabi::float_result().number);
             self.load_float_constant(result, 32.0);
             self.emit_global_load_absolute("__float_epsilon", Type::Float, FLOAT_SCRATCH)?;
             self.output
@@ -403,7 +403,7 @@ impl Generator {
             destination
         } else {
             self.emit_arguments(arguments, name)?;
-            Eabi::float_result().number
+            u32::from(Eabi::float_result().number)
         };
         self.output.has_float_branch = true;
         self.load_float_constant(FLOAT_SCRATCH, 0.0);
@@ -482,7 +482,7 @@ impl Generator {
 
     /// Preserve an indirect callee across argument marshaling in r12. The copy
     /// instruction follows the generation's ordinary register-copy encoding.
-    pub(crate) fn stage_indirect_callee(&mut self, register: u8) {
+    pub(crate) fn stage_indirect_callee(&mut self, register: u32) {
         match self.behavior.frame_convention {
             FrameConvention::Predecrement => self.output.instructions.push(Instruction::Or {
                 a: 12,
@@ -499,7 +499,7 @@ impl Generator {
         }
     }
 
-    pub(crate) fn emit_indirect_branch_and_link(&mut self, register: u8) {
+    pub(crate) fn emit_indirect_branch_and_link(&mut self, register: u32) {
         // Caller-saved fixed-address bases do not survive a call. MWCC may
         // deliberately retain one in a nonvolatile home for a sufficiently
         // dense whole-function access pattern, but that is a frame-planning
@@ -536,7 +536,7 @@ impl Generator {
         slot_offset: u16,
         variadic: bool,
         arguments: &[Expression],
-        destination: Option<u8>,
+        destination: Option<u32>,
         float_result: bool,
     ) -> Compilation<()> {
         self.emit_virtual_call_with_hidden_result(
@@ -681,7 +681,7 @@ impl Generator {
         variadic: bool,
         arguments: &[Expression],
         hidden_result: Option<&Expression>,
-        destination: Option<u8>,
+        destination: Option<u32>,
         float_result: bool,
     ) -> Compilation<()> {
         let object_argument = match object {
@@ -696,7 +696,7 @@ impl Generator {
             }
             _ => object.clone(),
         };
-        let object_register = Eabi::FIRST_GENERAL_ARGUMENT + u8::from(hidden_result.is_some());
+        let object_register: u32 = (Eabi::FIRST_GENERAL_ARGUMENT + u8::from(hidden_result.is_some())) as u32;
         let two_step_argument = arguments.first().map(|argument| match argument {
             // A C++ reference argument retains the source `&*pointer` wrapper;
             // ABI marshaling canonically evaluates the enclosed pointer value.
@@ -717,7 +717,7 @@ impl Generator {
                 .leaf_info(&object_argument)
                 .ok()
                 .is_some_and(|(register, width, _)| {
-                    register == object_register && width == 32
+                    register == object_register.into() && width == 32
                 })
             && arguments.len() == 1
             && matches!(two_step_argument, Some(Expression::Member {
@@ -742,7 +742,7 @@ impl Generator {
             // argument loads after ordinary marshaling proves that exact shape.
             self.output.instructions.push(Instruction::LoadWord {
                 d: 12,
-                a: object_register,
+                a: u32::from(object_register),
                 offset: vptr_offset,
             });
         }
@@ -759,8 +759,8 @@ impl Generator {
                 .filter(|(register, width, _)| *register >= 14 && *width == 32)
                 .map(|(register, _, _)| register);
             if let Some(receiver) = saved_receiver {
-                self.evaluate_general(&object_argument, object_register)?;
-                self.evaluate_general(result_address, Eabi::FIRST_GENERAL_ARGUMENT)?;
+                self.evaluate_general(&object_argument, object_register.into())?;
+                self.evaluate_general(result_address, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
                 receiver
             } else {
                 let mut all_arguments = Vec::with_capacity(arguments.len() + 2);
@@ -768,20 +768,20 @@ impl Generator {
                 all_arguments.push(object_argument);
                 all_arguments.extend_from_slice(arguments);
                 self.emit_arguments(&all_arguments, "<virtual>")?;
-                object_register
+                object_register.into()
             }
         } else {
             let saved_receiver = arguments
                 .is_empty()
                 .then(|| self.leaf_info(&object_argument).ok())
                 .flatten()
-                .filter(|(register, width, _)| *register != object_register && *width == 32)
+                .filter(|(register, width, _)| *register != object_register.into() && *width == 32)
                 .map(|(register, _, _)| register);
             let mut all_arguments = Vec::with_capacity(arguments.len() + 1);
             all_arguments.push(object_argument);
             all_arguments.extend_from_slice(arguments);
             self.emit_arguments(&all_arguments, "<virtual>")?;
-            saved_receiver.unwrap_or(object_register)
+            saved_receiver.unwrap_or(object_register.into())
         };
 
         if interleave_dispatch {
@@ -819,11 +819,11 @@ impl Generator {
         Ok(())
     }
 
-    fn emit_call_result_copy(&mut self, destination: u8, float_result: bool) {
+    fn emit_call_result_copy(&mut self, destination: u32, float_result: bool) {
         let result = if float_result {
-            Eabi::float_result().number
+            u32::from(Eabi::float_result().number)
         } else {
-            Eabi::general_result().number
+            u32::from(Eabi::general_result().number)
         };
         if destination == result {
             return;
@@ -849,7 +849,7 @@ impl Generator {
         &mut self,
         name: &str,
         arguments: &[Expression],
-        destination: Option<u8>,
+        destination: Option<u32>,
         float_result: bool,
     ) -> Compilation<()> {
         if crate::intrinsics::classify(name, arguments.len())
@@ -915,7 +915,7 @@ impl Generator {
                     }
                     crate::asm::append_embedded_asm(&mut self.output, &fragment, &self.behavior)?;
                     if let (Some(destination), Some(result)) = (destination, result_register) {
-                        if destination != result {
+                        if destination != result.into() {
                             self.output.instructions.push(Instruction::FloatMove {
                                 d: destination,
                                 b: result,
@@ -1202,14 +1202,14 @@ impl Generator {
                 && self.is_float_value(second)
                 && expression_has_call(second)
             {
-                self.evaluate_float(second, Eabi::FIRST_FLOAT_ARGUMENT + 1)
+                self.evaluate_float(second, (Eabi::FIRST_FLOAT_ARGUMENT + 1).into())
                     .map_err(|mut diagnostic| {
                         diagnostic.message.push_str(&format!(
                             " (while scheduling call-bearing second float argument to '{name}')"
                         ));
                         diagnostic
                     })?;
-                self.evaluate_float(first, Eabi::FIRST_FLOAT_ARGUMENT)
+                self.evaluate_float(first, Eabi::FIRST_FLOAT_ARGUMENT.into())
                     .map_err(|mut diagnostic| {
                         diagnostic.message.push_str(&format!(
                             " (while restoring first float argument to '{name}')"
@@ -1237,39 +1237,39 @@ impl Generator {
         }] = arguments
         {
             if self.globals.contains_key(global.as_str()) && call_arguments.is_empty() {
-                let first_register = Eabi::FIRST_GENERAL_ARGUMENT;
+                let first_register: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
                 if let Some(&total_size) = self.global_array_sizes.get(global.as_str()) {
                     let small = self.behavior.global_addressing == GlobalAddressing::SmallData
                         && total_size <= 8;
                     let global = global.clone();
-                    self.evaluate_general(second, first_register)?; // bl g -> r3
+                    self.evaluate_general(second, first_register.into())?; // bl g -> r3
                     if small {
                         self.emit_integer_materialization_copy(first_register + 1, first_register); // pointer result -> argument r4
                         self.record_relocation(RelocationKind::EmbSda21, &global);
                         self.output.instructions.push(Instruction::AddImmediate {
-                            d: first_register,
+                            d: u32::from(first_register),
                             a: 0,
                             immediate: 0,
                         }); // li r3,arr@sda21
                     } else {
                         let high = first_register + 2; // r5 — past both argument registers
-                        self.emit_address_high(high, &global); // lis r5,arr@ha
+                        self.emit_address_high(high.into(), &global); // lis r5,arr@ha
                         self.emit_integer_materialization_copy(first_register + 1, first_register); // pointer result -> argument r4
                         self.record_relocation(RelocationKind::Addr16Lo, &global);
                         self.output.instructions.push(Instruction::AddImmediate {
-                            d: first_register,
-                            a: high,
+                            d: u32::from(first_register),
+                            a: u32::from(high),
                             immediate: 0,
                         }); // addi r3,r5,arr@l
                     }
                     return Ok(());
                 }
-                self.evaluate_general(second, first_register)?; // bl g -> r3
+                self.evaluate_general(second, first_register.into())?; // bl g -> r3
                 self.output.instructions.push(Instruction::move_register(
                     first_register + 1,
                     first_register,
                 )); // mr r4,r3
-                self.evaluate_general(&arguments[0], first_register)?; // lwz r3,gg
+                self.evaluate_general(&arguments[0], first_register.into())?; // lwz r3,gg
                 return Ok(());
             }
         }
@@ -1352,8 +1352,8 @@ impl Generator {
             && matches!(arguments.get(1), Some(Expression::StringLiteral(_)))
             && arguments.len() == 2
         {
-            self.evaluate_general(&arguments[1], Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
-            self.evaluate_general(&arguments[0], Eabi::FIRST_GENERAL_ARGUMENT)?;
+            self.evaluate_general(&arguments[1], (Eabi::FIRST_GENERAL_ARGUMENT + 1).into())?;
+            self.evaluate_general(&arguments[0], Eabi::FIRST_GENERAL_ARGUMENT.into())?;
             return Ok(());
         }
         if self.try_emit_global_member_and_endangered_member_address(arguments, direct_call)? {
@@ -1448,23 +1448,23 @@ impl Generator {
                 // Two large object addresses plus an i16 constant use both
                 // address-high instructions first, then fill each dependent
                 // addi's latency slot: lis r3; lis r4; addi r3; li r5; addi r4.
-                self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT, &addressed);
-                self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT + 1, &array);
+                self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT.into(), &addressed);
+                self.emit_address_high((Eabi::FIRST_GENERAL_ARGUMENT + 1).into(), &array);
                 self.record_relocation(RelocationKind::Addr16Lo, &addressed);
                 self.output.instructions.push(Instruction::AddImmediate {
-                    d: Eabi::FIRST_GENERAL_ARGUMENT,
-                    a: Eabi::FIRST_GENERAL_ARGUMENT,
+                    d: 3,
+                    a: 3,
                     immediate: 0,
                 });
                 self.output.instructions.push(Instruction::AddImmediate {
-                    d: Eabi::FIRST_GENERAL_ARGUMENT + 2,
+                    d: u32::from(Eabi::FIRST_GENERAL_ARGUMENT + 2),
                     a: 0,
                     immediate: value,
                 });
                 self.record_relocation(RelocationKind::Addr16Lo, &array);
                 self.output.instructions.push(Instruction::AddImmediate {
-                    d: Eabi::FIRST_GENERAL_ARGUMENT + 1,
-                    a: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                    d: 4,
+                    a: 4,
                     immediate: 0,
                 });
                 return Ok(());
@@ -1523,12 +1523,12 @@ impl Generator {
                         if pointer_middle {
                             self.emit_global_load(
                                 &global_name,
-                                Eabi::FIRST_GENERAL_ARGUMENT + global_position as u8,
+                                (Eabi::FIRST_GENERAL_ARGUMENT + global_position as u8).into(),
                             )?;
                         }
                         for &(position, value) in &constants {
                             self.output.instructions.push(Instruction::AddImmediate {
-                                d: Eabi::FIRST_GENERAL_ARGUMENT + position as u8,
+                                d: u32::from(Eabi::FIRST_GENERAL_ARGUMENT + position as u8),
                                 a: 0,
                                 immediate: value,
                             });
@@ -1536,7 +1536,7 @@ impl Generator {
                         if !pointer_middle {
                             self.emit_global_load(
                                 &global_name,
-                                Eabi::FIRST_GENERAL_ARGUMENT + global_position as u8,
+                                (Eabi::FIRST_GENERAL_ARGUMENT + global_position as u8).into(),
                             )?;
                         }
                         return Ok(());
@@ -1570,7 +1570,7 @@ impl Generator {
         // and constant-index word subscripts of the base qualify; the general N-argument / mixed-width
         // choreography is the allocator's.
         if let [argument0, argument1] = arguments {
-            let base_register = Eabi::FIRST_GENERAL_ARGUMENT;
+            let base_register: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
             let copy_register = base_register + 1;
             // (base pointer name, byte offset, load pointee) for a word `p->m` / `p[k]` argument.
             let word_pointer_load =
@@ -1633,7 +1633,7 @@ impl Generator {
                         .locations
                         .get(pointer0.as_str())
                         .map(|location| location.register)
-                        == Some(base_register)
+                        == Some(base_register.into())
                 {
                     self.output
                         .instructions
@@ -1664,7 +1664,7 @@ impl Generator {
         // offsets only (a repeated member diverges on the @N seam, as in the
         // two-argument case).
         if matches!(arguments.len(), 3 | 4) {
-            let base_register = Eabi::FIRST_GENERAL_ARGUMENT;
+            let base_register: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
             let member_load = |argument: &Expression| -> Option<(String, i16, Pointee)> {
                 match argument {
                     Expression::Member {
@@ -1713,9 +1713,9 @@ impl Generator {
                         .locations
                         .get(loads[0].0.as_str())
                         .map(|location| location.register)
-                        == Some(base_register)
+                        == Some(base_register.into())
                 {
-                    let copy_register = base_register + arguments.len() as u8 - 1;
+                    let copy_register = base_register + arguments.len() as u32 - 1;
                     self.output
                         .instructions
                         .push(Instruction::move_register(copy_register, base_register));
@@ -1733,7 +1733,7 @@ impl Generator {
                         };
                         self.output.instructions.push(displacement_load(
                             pointee,
-                            base_register + slot as u8,
+                            base_register + slot as u32,
                             source,
                             offset,
                         )?);
@@ -1747,9 +1747,9 @@ impl Generator {
         }
         let by_value_aggregate_call =
             self.prepare_structured_by_value_aggregate_call(arguments, name)?;
-        let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
-        let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
-        let mut folded_float_arguments: Vec<(u64, bool, u8)> = Vec::new();
+        let mut next_general: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
+        let mut next_float: u32 = (Eabi::FIRST_FLOAT_ARGUMENT) as u32;
+        let mut folded_float_arguments: Vec<(u64, bool, u32)> = Vec::new();
         // Preserve a later word argument whose current register is the target of
         // an earlier argument remap. This is an ABI shuffle, not an arithmetic
         // value materialization: build 163 retains `mr` when moving an endangered
@@ -1759,10 +1759,10 @@ impl Generator {
         // floating/wide calls retain their dedicated schedulers.
         let prematerialized_general = (1..arguments.len()).find_map(|later| {
             let source = self.leaf_info(&arguments[later]).ok()?.0;
-            let target = Eabi::FIRST_GENERAL_ARGUMENT.checked_add(later as u8)?;
-            if source == target
+            let target: u32 = (Eabi::FIRST_GENERAL_ARGUMENT.checked_add(later as u8)?) as u32;
+            if source == target.into()
                 || !(0..later).any(|earlier| {
-                    Eabi::FIRST_GENERAL_ARGUMENT + earlier as u8 == source
+                    u32::from(Eabi::FIRST_GENERAL_ARGUMENT) + earlier as u32 == source
                         && !expression_has_call(&arguments[earlier])
                         && self
                             .leaf_info(&arguments[earlier])
@@ -1812,9 +1812,9 @@ impl Generator {
             {
                 self.output
                     .instructions
-                    .push(Instruction::move_register(target, source));
+                    .push(Instruction::move_register(target.into(), source));
             } else {
-                self.emit_integer_materialization_copy(target, source);
+                self.emit_integer_materialization_copy(target.into(), source);
             }
         }
         for (index, argument) in arguments.iter().enumerate() {
@@ -1854,7 +1854,7 @@ impl Generator {
                     ));
                 }
                 self.output.instructions.push(Instruction::AddImmediate {
-                    d: next_general,
+                    d: u32::from(next_general),
                     a: 1,
                     immediate: copy.copy_offset,
                 });
@@ -1866,7 +1866,7 @@ impl Generator {
                     .emit_widened_general_call_argument(
                         argument,
                         parameter_type,
-                        next_general,
+                        next_general.into(),
                     )
                     .map_err(|mut diagnostic| {
                         diagnostic.message.push_str(&format!(
@@ -1877,7 +1877,7 @@ impl Generator {
                 continue;
             }
             if let CallArgumentPlacement::ConvertFloatingToGeneral { parameter_type } = placement {
-                self.emit_cast_to_integer(parameter_type, argument, next_general)
+                self.emit_cast_to_integer(parameter_type, argument, next_general.into())
                     .map_err(|mut diagnostic| {
                         diagnostic.message.push_str(&format!(
                             " (while converting floating argument {index} to '{name}')"
@@ -1931,12 +1931,12 @@ impl Generator {
                             })
                     {
                         self.output.instructions.push(Instruction::FloatMove {
-                            d: next_float,
+                            d: u32::from(next_float),
                             b: *source,
                         });
                     } else {
-                        self.load_float_literal(next_float, value, double);
-                        folded_float_arguments.push((bits, double, next_float));
+                        self.load_float_literal(next_float.into(), value, double);
+                        folded_float_arguments.push((bits, double, next_float.into()));
                     }
                 } else if let Expression::FloatLiteral(value) = argument {
                     // Source floating literals remain distinct argument nodes at
@@ -1945,7 +1945,7 @@ impl Generator {
                     // path above; an explicitly written `g(2.0f, 2.0f)` instead
                     // materializes both pool loads independently.
                     self.load_float_literal(
-                        next_float,
+                        next_float.into(),
                         *value,
                         parameter_type == Type::Double,
                     );
@@ -1956,10 +1956,10 @@ impl Generator {
                     // unavailable so address selection cannot silently
                     // overwrite an earlier receiver (for example r3).
                     let newly_reserved: Vec<_> =
-                        (Eabi::FIRST_GENERAL_ARGUMENT..next_general)
-                            .filter(|register| self.reserved.insert(*register))
+                        (u32::from(Eabi::FIRST_GENERAL_ARGUMENT)..next_general)
+                            .filter(|register| self.reserved.insert((*register).into()))
                             .collect();
-                    let evaluated = self.evaluate(argument, parameter_type, next_float);
+                    let evaluated = self.evaluate(argument, parameter_type, next_float.into());
                     for register in newly_reserved {
                         self.reserved.remove(&register);
                     }
@@ -2009,7 +2009,7 @@ impl Generator {
                     if let Ok((register, width, _)) = self.leaf_info(general_argument) {
                         if width < 32
                             && width as u32 <= parameter_type.width() as u32
-                            && register == next_general
+                            && register == next_general.into()
                         {
                             next_general += 1;
                             continue;
@@ -2041,7 +2041,7 @@ impl Generator {
                                     self.evaluate_general(general_argument, source)?;
                                     if let Some(narrow) = narrow_general_argument(
                                         parameter_type,
-                                        next_general,
+                                        next_general.into(),
                                         source,
                                     ) {
                                         self.output.instructions.push(narrow);
@@ -2069,7 +2069,7 @@ impl Generator {
                                     self.evaluate_general(general_argument, source)?;
                                     if let Some(narrow) = narrow_general_argument(
                                         parameter_type,
-                                        next_general,
+                                        next_general.into(),
                                         source,
                                     ) {
                                         self.output.instructions.push(narrow);
@@ -2097,8 +2097,8 @@ impl Generator {
                                 )
                             {
                                 let newly_reserved: Vec<_> =
-                                    (Eabi::FIRST_GENERAL_ARGUMENT..next_general)
-                                        .filter(|register| self.reserved.insert(*register))
+                                    (u32::from(Eabi::FIRST_GENERAL_ARGUMENT)..next_general)
+                                        .filter(|register| self.reserved.insert((*register).into()))
                                         .collect();
                                 let evaluated =
                                     self.evaluate_general(general_argument, GENERAL_SCRATCH);
@@ -2108,7 +2108,7 @@ impl Generator {
                                 evaluated?;
                                 if let Some(narrow) = narrow_general_argument(
                                     parameter_type,
-                                    next_general,
+                                    next_general.into(),
                                     GENERAL_SCRATCH,
                                 ) {
                                     self.output.instructions.push(narrow);
@@ -2124,7 +2124,7 @@ impl Generator {
                             if let Ok((register, _, _)) = self.leaf_info(general_argument) {
                                 if let Some(narrow) = narrow_general_argument(
                                     parameter_type,
-                                    next_general,
+                                    next_general.into(),
                                     register,
                                 ) {
                                     self.output.instructions.push(narrow);
@@ -2148,7 +2148,7 @@ impl Generator {
                 // pass through this guard independently.
                 let passthrough_in_place = self
                     .leaf_info(general_argument)
-                    .map(|(register, _, _)| register == next_general)
+                    .map(|(register, _, _)| register == next_general.into())
                     .unwrap_or(false);
                 let endangered_later = (!passthrough_in_place)
                     .then(|| {
@@ -2185,10 +2185,10 @@ impl Generator {
                         .filter(|(source, width, _)| {
                         arguments.len() > 1
                             && *width == 32
-                            && *source > next_general
-                            && *source <= Eabi::LAST_GENERAL_ARGUMENT
+                            && *source > next_general.into()
+                            && *source <= Eabi::LAST_GENERAL_ARGUMENT.into()
                         });
-                if let Some(stack_offset) = outgoing_general_stack_offset(next_general) {
+                if let Some(stack_offset) = outgoing_general_stack_offset(next_general.into()) {
                     let stack_start = i32::from(stack_offset);
                     let stack_end = stack_start + 4;
                     let overlaps_local = self.frame_slots.values().any(|slot| {
@@ -2210,8 +2210,8 @@ impl Generator {
                     let first_temporary = self.virtual_cursors.general;
                     let source = self.fresh_virtual_general_preferring(GENERAL_SCRATCH);
                     let reserved_arguments: Vec<_> =
-                        (Eabi::FIRST_GENERAL_ARGUMENT..=Eabi::LAST_GENERAL_ARGUMENT)
-                            .filter(|register| self.reserved.insert(*register))
+                        (u32::from(Eabi::FIRST_GENERAL_ARGUMENT)..=u32::from(Eabi::LAST_GENERAL_ARGUMENT))
+                            .filter(|register| self.reserved.insert((*register).into()))
                             .collect();
                     let evaluated = match reference_argument {
                         Some(ReferenceArgumentSource::Lvalue(lvalue)) => {
@@ -2225,7 +2225,7 @@ impl Generator {
                     // Nested address/value temporaries belong to the same
                     // marshaling operation and must preserve those arguments too.
                     let argument_registers: Vec<_> =
-                        (Eabi::FIRST_GENERAL_ARGUMENT..=Eabi::LAST_GENERAL_ARGUMENT).collect();
+                        (u32::from(Eabi::FIRST_GENERAL_ARGUMENT)..=u32::from(Eabi::LAST_GENERAL_ARGUMENT)).collect();
                     for id in first_temporary..self.virtual_cursors.general {
                         let register = mwcc_vreg::Reg::Virtual(mwcc_vreg::VirtualRegister::new(
                             id,
@@ -2249,16 +2249,16 @@ impl Generator {
                         offset: stack_offset,
                     });
                 } else if let Some((source, _, _)) = downward_word_copy {
-                    self.emit_integer_materialization_copy(next_general, source);
+                    self.emit_integer_materialization_copy(next_general.into(), source);
                 } else {
                     let evaluated = match reference_argument {
                         Some(ReferenceArgumentSource::Lvalue(lvalue)) => {
-                            self.emit_address_of(lvalue, next_general)
+                            self.emit_address_of(lvalue, next_general.into())
                         }
                         _ if matches!(parameter_type, Some(Type::Int | Type::UnsignedInt)) => {
-                            self.evaluate(general_argument, parameter_type.unwrap(), next_general)
+                            self.evaluate(general_argument, parameter_type.unwrap(), next_general.into())
                         }
-                        _ => self.evaluate_general(general_argument, next_general),
+                        _ => self.evaluate_general(general_argument, next_general.into()),
                     };
                     evaluated
                         .map_err(|mut diagnostic| {
@@ -2322,7 +2322,7 @@ impl Generator {
                 .ok_or_else(|| {
                     Diagnostic::error("structured aggregate argument register is out of range")
                 })?;
-            self.evaluate_general(argument, destination)?;
+            self.evaluate_general(argument, destination.into())?;
         }
 
         let first_temporary = Eabi::FIRST_GENERAL_ARGUMENT
@@ -2336,7 +2336,7 @@ impl Generator {
         let mut loaded = Vec::with_capacity(2);
         for (copy_index, copy) in plan.copies.iter().rev().enumerate() {
             let temporary = if copy_index == 0 {
-                first_temporary
+                u32::from(first_temporary)
             } else {
                 GENERAL_SCRATCH
             };
@@ -2355,7 +2355,7 @@ impl Generator {
             let argument_register = Eabi::FIRST_GENERAL_ARGUMENT
                 + u8::try_from(copy.argument_index).expect("two leading copies");
             self.output.instructions.push(Instruction::AddImmediate {
-                d: argument_register,
+                d: u32::from(argument_register),
                 a: 1,
                 immediate: copy.copy_offset,
             });

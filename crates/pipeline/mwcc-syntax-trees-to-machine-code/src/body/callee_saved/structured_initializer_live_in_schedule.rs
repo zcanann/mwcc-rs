@@ -15,7 +15,7 @@ impl Generator {
             return;
         };
 
-        let high = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT + 1);
+        let high = self.fresh_virtual_general_preferring((Eabi::FIRST_GENERAL_ARGUMENT + 1).into());
         let Instruction::AddImmediateShifted { d, .. } =
             &mut self.output.instructions[prefix.global_high]
         else {
@@ -70,8 +70,8 @@ fn initializer_live_in_prefix(
                 },
                 Instruction::Or {
                     a: retained,
-                    s: Eabi::FIRST_GENERAL_ARGUMENT,
-                    b: Eabi::FIRST_GENERAL_ARGUMENT,
+                    s: 3,
+                    b: 3,
                 },
                 Instruction::StoreWord {
                     s: saved,
@@ -131,7 +131,7 @@ fn initializer_live_in_first_call(
             window,
             [
                 Instruction::Or {
-                    a: Eabi::FIRST_GENERAL_ARGUMENT,
+                    a: 3,
                     s: saved,
                     b: saved_b,
                 },
@@ -158,8 +158,8 @@ fn initializer_live_in_first_call(
                 Instruction::BranchAndLink { .. },
             ] if saved == saved_b
                 && high == low_base
-                && *second_argument == Eabi::FIRST_GENERAL_ARGUMENT + 1
-                && *third_argument == Eabi::FIRST_GENERAL_ARGUMENT + 2
+                && *second_argument == (Eabi::FIRST_GENERAL_ARGUMENT + 1).into()
+                && *third_argument == (Eabi::FIRST_GENERAL_ARGUMENT + 2).into()
                 && address == indexed_base
                 && retained != saved
         )

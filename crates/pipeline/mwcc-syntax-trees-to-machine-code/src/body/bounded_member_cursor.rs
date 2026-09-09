@@ -207,7 +207,7 @@ impl Generator {
 
         self.bind_label(join);
         self.output.instructions.push(Instruction::move_register(
-            Eabi::general_result().number,
+            u32::from(Eabi::general_result().number),
             result_home,
         ));
         self.output

@@ -10,7 +10,7 @@ use mwcc_syntax_trees::LocalDeclaration;
 use std::collections::{HashMap, HashSet};
 
 pub(super) struct StructuredPrecompositionHomeLayout {
-    preferences: HashMap<String, u8>,
+    preferences: HashMap<String, u32>,
     save_order: Vec<String>,
 }
 
@@ -51,7 +51,7 @@ impl StructuredPrecompositionHomeLayout {
         })
     }
 
-    pub(super) fn preference(&self, name: &str) -> Option<u8> {
+    pub(super) fn preference(&self, name: &str) -> Option<u32> {
         self.preferences.get(name).copied()
     }
 

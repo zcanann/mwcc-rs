@@ -11,7 +11,7 @@ impl Generator {
     pub(crate) fn emit_data_anchor_string_literal(
         &mut self,
         bytes: &[u8],
-        destination: u8,
+        destination: u32,
     ) -> bool {
         let Some(base) = self
             .data_section_anchor
@@ -30,7 +30,7 @@ impl Generator {
         true
     }
 
-    pub(crate) fn loop_assertion_string_high_home(&self, bytes: &[u8]) -> Option<u8> {
+    pub(crate) fn loop_assertion_string_high_home(&self, bytes: &[u8]) -> Option<u32> {
         self.loop_assertion_string_highs
             .iter()
             .find_map(|(candidate, home)| (candidate.as_slice() == bytes).then_some(*home))
@@ -53,7 +53,7 @@ impl Generator {
     /// absolute addressing uses the ordinary `lis`/`addi` address pair. Both paths
     /// target a placeholder `@@strN` name, which the unit's string resolver rewrites
     /// to the real `@N`.
-    pub(crate) fn emit_string_literal(&mut self, bytes: &[u8], destination: u8) -> Compilation<()> {
+    pub(crate) fn emit_string_literal(&mut self, bytes: &[u8], destination: u32) -> Compilation<()> {
         if bytes.len() + 1 > 8
             && self
                 .data_section_anchor
@@ -102,7 +102,7 @@ impl Generator {
     /// Form an absolute string address in `destination`. r0 can hold the final
     /// value but cannot serve as the base of `addi`, so scratch-valued stores
     /// keep the high half in a short-lived allocatable GPR.
-    fn emit_string_address(&mut self, placeholder: &str, destination: u8) {
+    fn emit_string_address(&mut self, placeholder: &str, destination: u32) {
         let high = if destination == GENERAL_SCRATCH {
             self.fresh_virtual_general()
         } else {
@@ -122,7 +122,7 @@ impl Generator {
 
     /// Finish an absolute string address in a destination which may differ from
     /// the register holding its high half.
-    pub(crate) fn emit_string_address_low(&mut self, placeholder: &str, base: u8, destination: u8) {
+    pub(crate) fn emit_string_address_low(&mut self, placeholder: &str, base: u32, destination: u32) {
         self.record_relocation(RelocationKind::Addr16Lo, placeholder);
         self.output.instructions.push(Instruction::AddImmediate {
             d: destination,

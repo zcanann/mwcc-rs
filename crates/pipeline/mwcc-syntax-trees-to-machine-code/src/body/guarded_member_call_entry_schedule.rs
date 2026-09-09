@@ -29,12 +29,12 @@ impl Generator {
         };
 
         match &mut self.output.instructions[plan.condition_load] {
-            Instruction::LoadWord { d, .. } => *d = Eabi::FIRST_GENERAL_ARGUMENT,
+            Instruction::LoadWord { d, .. } => *d = 3,
             _ => unreachable!("the guarded member condition load was recognized"),
         }
         match &mut self.output.instructions[plan.condition_compare] {
             Instruction::CompareLogicalWordImmediate { a, .. } => {
-                *a = Eabi::FIRST_GENERAL_ARGUMENT
+                *a = 3
             }
             _ => unreachable!("the guarded member condition comparison was recognized"),
         }

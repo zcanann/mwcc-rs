@@ -427,7 +427,7 @@ impl Generator {
     pub(crate) fn materialize_integer_conversion_operand(
         &mut self,
         expression: &Expression,
-    ) -> Compilation<u8> {
+    ) -> Compilation<u32> {
         if let Ok(register) = self.general_register_of_leaf(expression) {
             return Ok(register);
         }

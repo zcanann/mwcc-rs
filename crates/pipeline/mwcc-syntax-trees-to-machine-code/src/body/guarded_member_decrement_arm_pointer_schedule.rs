@@ -20,7 +20,7 @@ impl Generator {
         crate::insert_instruction_retargeting(
             self,
             start + 3,
-            Instruction::move_register(5, Eabi::FIRST_GENERAL_ARGUMENT),
+            Instruction::move_register(5, Eabi::FIRST_GENERAL_ARGUMENT.into()),
         );
         let Instruction::LoadHalfwordAlgebraic { d, .. } =
             &mut self.output.instructions[start + 4]

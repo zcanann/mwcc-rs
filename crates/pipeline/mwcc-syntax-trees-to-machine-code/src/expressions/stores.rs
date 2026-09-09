@@ -11,7 +11,7 @@ impl Generator {
     fn evaluate_float_assignment_value(
         &mut self,
         value: &Expression,
-        destination: u8,
+        destination: u32,
         target: Pointee,
     ) -> Compilation<()> {
         if let Some((value, double)) = float_assignment_literal(value, target) {
@@ -30,7 +30,7 @@ impl Generator {
         &mut self,
         target: &Expression,
         value: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if let Expression::Variable(name) = target {
             if let Some(location) = self
@@ -112,16 +112,16 @@ impl Generator {
             // an allocator-owned live range just as the plain dereference path
             // does below. Pinned nonvolatile and virtual bases are already safe.
             if expression_has_call(value)
-                && !mwcc_vreg::Reg::is_virtual_field(address)
+                && !mwcc_vreg::Reg::is_virtual_field(address.into())
                 && address < 14
             {
                 let retained = self.fresh_virtual_general();
                 self.output
                     .instructions
-                    .push(Instruction::move_register(retained, address));
+                    .push(Instruction::move_register(retained, address.into()));
                 address = retained;
             }
-            let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
+            let restore = address != GENERAL_SCRATCH && self.reserved.insert(address.into());
             self.evaluate_float_assignment_value(value, destination, pointee)?;
             if restore {
                 self.reserved.remove(&address);
@@ -132,7 +132,7 @@ impl Generator {
             self.output.instructions.push(displacement_store(
                 pointee,
                 destination,
-                address,
+                address.into(),
                 displacement,
             )?);
             return Ok(());
@@ -168,7 +168,7 @@ impl Generator {
         &mut self,
         target: &Expression,
         value: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if self.try_emit_bit_field_assign(target, value, destination)? {
             return Ok(());
@@ -247,7 +247,7 @@ impl Generator {
                     "assignment-valued member needs a distinct address register (roadmap)",
                 ));
             }
-            let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
+            let restore = address != GENERAL_SCRATCH && self.reserved.insert(address.into());
             self.evaluate_general(value, destination)?;
             if restore {
                 self.reserved.remove(&address);
@@ -275,7 +275,7 @@ impl Generator {
             self.output.instructions.push(displacement_store(
                 pointee,
                 converted.map_or(destination, |(converted, _, _)| converted),
-                address,
+                address.into(),
                 displacement,
             )?);
             if let Some((converted, width, signed)) = converted {
@@ -310,7 +310,7 @@ impl Generator {
         &mut self,
         name: &str,
         pointee: Pointee,
-        source: u8,
+        source: u32,
     ) -> Compilation<()> {
         self.record_relocation(RelocationKind::EmbSda21, name);
         self.output
@@ -435,7 +435,7 @@ impl Generator {
                 let source = self.place_store_value(value, pointee)?;
                 self.output
                     .instructions
-                    .push(displacement_store(pointee, source, 1, slot.offset)?);
+                    .push(displacement_store(pointee, source.into(), 1, slot.offset)?);
                 self.written_slots.insert(slot.offset);
                 return Ok(());
             }
@@ -536,7 +536,7 @@ impl Generator {
                         self.record_relocation(RelocationKind::EmbSda21, name);
                         self.output.instructions.push(displacement_store(
                             pointee,
-                            source,
+                            source.into(),
                             0,
                             displacement,
                         )?);
@@ -598,7 +598,7 @@ impl Generator {
                 let source = self.place_store_value(value, pointee)?;
                 self.output
                     .instructions
-                    .push(displacement_store(pointee, source, 1, offset)?);
+                    .push(displacement_store(pointee, source.into(), 1, offset)?);
                 self.written_slots.insert(offset);
                 return Ok(());
             }
@@ -651,11 +651,11 @@ impl Generator {
                         self.record_relocation(RelocationKind::EmbSda21, name);
                         self.output
                             .instructions
-                            .push(displacement_store(pointee, source, 0, 0)?);
+                            .push(displacement_store(pointee, source.into(), 0, 0)?);
                         // The stored value is still in `source`; a following read of
                         // this global reuses it (mwcc does not reload here).
                         self.stored_globals
-                            .insert(name.clone(), (source, self.output.instructions.len()));
+                            .insert(name.clone(), (source.into(), self.output.instructions.len()));
                     }
                     GlobalAddressing::Absolute => {
                         if !self.behavior.schedule_latency_slots {
@@ -663,7 +663,7 @@ impl Generator {
                             // source value before materializing the absolute
                             // destination address (`li value; lis target; stw`).
                             let source = self.place_store_value(value, pointee)?;
-                            let base = self.free_general_excluding(source)?;
+                            let base = self.free_general_excluding(source.into())?;
                             self.emit_address_high(base, name);
                             if self.behavior.absolute_access_style
                                 == mwcc_versions::AbsoluteAccessStyle::MaterializedAddress
@@ -674,7 +674,7 @@ impl Generator {
                             }
                             self.output
                                 .instructions
-                                .push(displacement_store(pointee, source, base, 0)?);
+                                .push(displacement_store(pointee, source.into(), base, 0)?);
                             return Ok(());
                         }
                         // mwcc materializes the address base before the value, so the
@@ -696,7 +696,7 @@ impl Generator {
                         }
                         self.output
                             .instructions
-                            .push(displacement_store(pointee, source, base, 0)?);
+                            .push(displacement_store(pointee, source.into(), base, 0)?);
                     }
                 }
                 return Ok(());
@@ -722,7 +722,7 @@ impl Generator {
                 let source = self.place_store_value(value, element)?;
                 self.output
                     .instructions
-                    .push(displacement_store(element, source, 1, offset)?);
+                    .push(displacement_store(element, source.into(), 1, offset)?);
                 self.written_slots.insert(offset);
                 return Ok(());
             }
@@ -763,7 +763,7 @@ impl Generator {
                     let source = self.place_store_value(value, element)?;
                     self.output
                         .instructions
-                        .push(displacement_store(element, source, 1, offset)?);
+                        .push(displacement_store(element, source.into(), 1, offset)?);
                     self.written_slots.insert(offset);
                     return Ok(());
                 }
@@ -1040,7 +1040,7 @@ impl Generator {
                                 let source = self.place_store_value(value, pointee)?;
                                 self.output.instructions.push(displacement_store(
                                     pointee,
-                                    source,
+                                    source.into(),
                                     base_reg,
                                     0,
                                 )?);
@@ -1052,7 +1052,7 @@ impl Generator {
                                 let source = self.place_store_value(value, pointee)?;
                                 self.output.instructions.push(displacement_store(
                                     pointee,
-                                    source,
+                                    source.into(),
                                     base_reg,
                                     *offset as i16,
                                 )?);
@@ -1070,9 +1070,9 @@ impl Generator {
                                     self.record_relocation(RelocationKind::EmbSda21, name);
                                     self.output
                                         .instructions
-                                        .push(displacement_store(pointee, source, 0, 0)?);
+                                        .push(displacement_store(pointee, source.into(), 0, 0)?);
                                 } else {
-                                    let restore = self.reserved.insert(source);
+                                    let restore = self.reserved.insert(source.into());
                                     let base_reg = self.fresh_virtual_general();
                                     self.emit_global_array_base(name, size, base_reg)?;
                                     if restore {
@@ -1080,7 +1080,7 @@ impl Generator {
                                     }
                                     self.output.instructions.push(displacement_store(
                                         pointee,
-                                        source,
+                                        source.into(),
                                         base_reg,
                                         *offset as i16,
                                     )?);
@@ -1138,7 +1138,7 @@ impl Generator {
                             }
                             self.output.instructions.push(displacement_store(
                                 pointee,
-                                source,
+                                source.into(),
                                 base_reg,
                                 *offset as i16,
                             )?);
@@ -1150,9 +1150,9 @@ impl Generator {
                         let cached_base = self.condition_global_base(name)?;
                         let base_reg =
                             cached_base.unwrap_or_else(|| self.fresh_virtual_general());
-                        let restore = self.reserved.insert(base_reg);
+                        let restore = self.reserved.insert(base_reg.into());
                         if cached_base.is_none() {
-                            self.emit_global_load_value(name, base_reg)?;
+                            self.emit_global_load_value(name, base_reg.into())?;
                         }
                         let source = self.place_store_value(value, pointee)?;
                         if restore {
@@ -1161,7 +1161,7 @@ impl Generator {
                         self.output.instructions.push(displacement_store(
                             pointee,
                             source,
-                            base_reg,
+                            base_reg.into(),
                             *offset as i16,
                         )?);
                         return Ok(());
@@ -1196,7 +1196,7 @@ impl Generator {
                         let source = self.place_store_value(value, pointee)?;
                         self.output.instructions.push(displacement_store(
                             pointee,
-                            source,
+                            source.into(),
                             1,
                             displacement,
                         )?);
@@ -1224,7 +1224,7 @@ impl Generator {
             // The base register is live for the store, so reserve it while the value is
             // placed — otherwise a value that needs a temporary (a magic-number divide)
             // could pick it and clobber the store address.
-            let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
+            let restore = address != GENERAL_SCRATCH && self.reserved.insert(address.into());
             let source = if self.try_emit_aliasing_member_field_merge(base, value)? {
                 GENERAL_SCRATCH
             } else {
@@ -1232,7 +1232,7 @@ impl Generator {
                     value,
                     pointee,
                     indexed_update_syntax || narrow_assignment_is_self_step(target, value),
-                )?
+                )?.into()
             };
             if restore {
                 self.reserved.remove(&address);
@@ -1240,7 +1240,7 @@ impl Generator {
             self.output.instructions.push(displacement_store(
                 pointee,
                 source,
-                address,
+                address.into(),
                 *offset as i16,
             )?);
             return Ok(());
@@ -1303,11 +1303,11 @@ impl Generator {
                     source
                 } else if indexed_source && (loaded_index || element.size() > 1) {
                     let source = self
-                        .fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT + 2);
+                        .fresh_virtual_general_preferring((Eabi::FIRST_GENERAL_ARGUMENT + 2).into());
                     self.evaluate_general(value, source)?;
                     source
                 } else {
-                    self.place_store_value(value, *element)?
+                    self.place_store_value(value, *element)?.into()
                 };
                 // Narrowing a register source can materialize it in r0. The
                 // following index scale also defines r0, so retain that value
@@ -1338,10 +1338,10 @@ impl Generator {
                 if *offset == 0 {
                     self.output
                         .instructions
-                        .push(indexed_store(*element, source, address, scaled)?);
+                        .push(indexed_store(*element, source, address.into(), scaled)?);
                 } else {
                     let indexed_base = self
-                        .fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+                        .fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT.into());
                     self.output.instructions.push(Instruction::Add {
                         d: indexed_base,
                         a: address,
@@ -1371,7 +1371,7 @@ impl Generator {
         };
         if index.is_none() {
             if let Some((pointee, address, offset)) = self.punned_displacement_address(base)? {
-                let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
+                let restore = address != GENERAL_SCRATCH && self.reserved.insert(address.into());
                 let source = self.place_store_value(value, pointee)?;
                 if restore {
                     self.reserved.remove(&address);
@@ -1391,19 +1391,19 @@ impl Generator {
         // r3,0(r31)`, without assigning the physical saved register here.
         let (pointee, mut address) = self.resolve_pointer(base)?;
         if expression_has_call(value)
-            && !mwcc_vreg::Reg::is_virtual_field(address)
+            && !mwcc_vreg::Reg::is_virtual_field(address.into())
             && address < 14
         {
             let retained = self.fresh_virtual_general();
             self.output
                 .instructions
-                .push(Instruction::move_register(retained, address));
+                .push(Instruction::move_register(retained, address.into()));
             address = retained;
         }
         // The address register is live for the store; reserve it while the value is
         // placed so a value needing a temporary (e.g. a magic-number divide) can't pick
         // it and clobber the store address.
-        let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
+        let restore = address != GENERAL_SCRATCH && self.reserved.insert(address.into());
         match index {
             None => {
                 let source = self.place_store_value(value, pointee)?;
@@ -1500,7 +1500,7 @@ impl Generator {
                     // result in a separately allocated value register so the
                     // target's following scale cannot overwrite it.
                     let source = self.fresh_virtual_general_preferring(
-                        Eabi::FIRST_GENERAL_ARGUMENT + 2,
+                        (Eabi::FIRST_GENERAL_ARGUMENT + 2).into(),
                     );
                     self.evaluate_general(value, source)?;
                     source
@@ -1509,12 +1509,12 @@ impl Generator {
                     // register while r0 scales the destination index. This is
                     // the general form of the indexed-load transaction above.
                     let source = self.fresh_virtual_general_preferring(
-                        Eabi::FIRST_GENERAL_ARGUMENT + 2,
+                        (Eabi::FIRST_GENERAL_ARGUMENT + 2).into(),
                     );
                     self.evaluate_general(value, source)?;
                     source
                 } else {
-                    self.place_store_value(value, pointee)?
+                    self.place_store_value(value, pointee)?.into()
                 };
                 // `a[i + const] = v` / `a[i - const] = v`: O0 adjusts a
                 // multi-byte element index before scaling and keeps the final
@@ -1540,7 +1540,7 @@ impl Generator {
                                 })?;
                                 if size == 1 {
                                     let indexed_base = self.fresh_virtual_general_preferring(
-                                        Eabi::FIRST_GENERAL_ARGUMENT + 3,
+                                        (Eabi::FIRST_GENERAL_ARGUMENT + 3).into(),
                                     );
                                     self.output.instructions.push(Instruction::Add {
                                         d: indexed_base,
@@ -1570,7 +1570,7 @@ impl Generator {
                                 self.output.instructions.push(indexed_store(
                                     pointee,
                                     source,
-                                    address,
+                                    address.into(),
                                     GENERAL_SCRATCH,
                                 )?);
                                 return Ok(());
@@ -1591,14 +1591,19 @@ impl Generator {
                                     });
                                 GENERAL_SCRATCH
                             };
+                            // The pointer may be used by another store, a later
+                            // iteration, or the return value. Keep the indexed
+                            // address separate, including physical return homes
+                            // whose final use can be an implicit ABI return.
+                            let indexed_base = self.fresh_virtual_general_avoiding(vec![address]);
                             self.output.instructions.push(Instruction::Add {
-                                d: address,
+                                d: indexed_base,
                                 a: address,
                                 b: scaled,
                             });
                             self.output
                                 .instructions
-                                .push(displacement_store(pointee, source, address, offset)?);
+                                .push(displacement_store(pointee, source, indexed_base, offset)?);
                             return Ok(());
                         }
                     }
@@ -1618,7 +1623,7 @@ impl Generator {
                 };
                 self.output
                     .instructions
-                    .push(indexed_store(pointee, source, address, scaled)?);
+                    .push(indexed_store(pointee, source, address.into(), scaled)?);
             }
         }
         Ok(())
@@ -1749,7 +1754,7 @@ impl Generator {
     /// The register of the leaf at the end of a chained assignment's value, walking
     /// through nested `=`. `None` for a computed or non-leaf value (which flows through
     /// the scratch normally). Used to store the same source register to every target.
-    pub(crate) fn innermost_assigned_leaf(&self, value: &Expression) -> Option<u8> {
+    pub(crate) fn innermost_assigned_leaf(&self, value: &Expression) -> Option<u32> {
         match value {
             Expression::Assign { value, .. } => self.innermost_assigned_leaf(value),
             Expression::Variable(name) => self.lookup_general(name),
@@ -1761,7 +1766,7 @@ impl Generator {
         &mut self,
         value: &Expression,
         pointee: Pointee,
-    ) -> Compilation<u8> {
+    ) -> Compilation<u32> {
         self.place_store_value_with_update_syntax(value, pointee, false)
     }
 
@@ -1774,7 +1779,7 @@ impl Generator {
         value: &Expression,
         pointee: Pointee,
         update_syntax: bool,
-    ) -> Compilation<u8> {
+    ) -> Compilation<u32> {
         // `&p->first` at offset zero and `&*p` are the already-resident pointer
         // value. Preserve its home register instead of manufacturing a scratch
         // move; absolute stores rely on this being an instruction-free source.
@@ -1828,7 +1833,7 @@ impl Generator {
             if let Some(register) =
                 self.condition_float_literal_register(value, pointee == Pointee::Double)
             {
-                return Ok(register);
+                return Ok(register.into());
             }
         }
         if let Some(bits) = prematerialized_float_bits {
@@ -1860,7 +1865,7 @@ impl Generator {
             if let Some(source) =
                 self.condition_float_guarded_edge_register(value)
             {
-                return Ok(source);
+                return Ok(source.into());
             }
             // A `(double)` cast of an already-double value is a no-op; when the target
             // is itself double, see through it so a double leaf/call stores from its own
@@ -1930,7 +1935,7 @@ impl Generator {
                         // a float target: convert its r3 to the target precision via the magic-
                         // bias sequence (value-store-first for a call result, like the return
                         // case), leaving the result in the scratch f0 for the caller's store.
-                        let source = Eabi::general_result().number;
+                        let source = u32::from(Eabi::general_result().number);
                         self.emit_call(name, arguments, None, false)?;
                         let double = matches!(pointee, Pointee::Double);
                         self.emit_int_to_float_body(
@@ -1938,12 +1943,12 @@ impl Generator {
                             FLOAT_SCRATCH,
                             double,
                             true,
-                            Eabi::float_result().number,
+                            u32::from(Eabi::float_result().number),
                             crate::casts::IntToFloatSchedule::CallResult,
                         );
                         return Ok(FLOAT_SCRATCH);
                     }
-                    let result = Eabi::float_result().number;
+                    let result = u32::from(Eabi::float_result().number);
                     self.emit_call(name, arguments, Some(result), true)?;
                     return Ok(result);
                 }
@@ -2269,7 +2274,7 @@ impl Generator {
             arguments,
         } = value
         {
-            let result = Eabi::general_result().number;
+            let result = u32::from(Eabi::general_result().number);
             self.emit_constructed_new(
                 allocation,
                 *allocation_size,
@@ -2280,7 +2285,7 @@ impl Generator {
             return Ok(result);
         }
         if let Expression::Call { name, arguments } = value {
-            let result = Eabi::general_result().number;
+            let result = u32::from(Eabi::general_result().number);
             self.emit_call(name, arguments, Some(result), false)?;
             return Ok(result);
         }
@@ -2370,7 +2375,7 @@ impl Generator {
         &mut self,
         value: &Expression,
         value_type: Type,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if let Expression::Comma { left, right } = value {
             self.emit_comma_side_effect(left)?;
@@ -2398,7 +2403,7 @@ impl Generator {
         if let Expression::Call { name, arguments } = value {
             if let Some(return_type) = self.call_return_types.get(name).copied() {
                 if return_type.width() < value_type.width() && return_type.width() < 32 {
-                    let result = Eabi::general_result().number;
+                    let result = u32::from(Eabi::general_result().number);
                     self.emit_call(name, arguments, Some(result), false)?;
                     self.emit_widen(
                         destination,
@@ -2555,7 +2560,7 @@ fn assignment_narrowing(
     (target_width < 32
         && (source_width.unwrap_or(32) > target_width
             || (source_width == Some(target_width) && source_signed != target.is_signed())))
-        .then_some((target_width, target.is_signed()))
+        .then_some((target_width.into(), target.is_signed()))
 }
 
 fn integer_constant_fits_type(expression: &Expression, target: Type) -> bool {

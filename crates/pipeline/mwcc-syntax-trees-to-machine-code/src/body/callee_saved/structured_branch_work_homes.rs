@@ -5,8 +5,8 @@ use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct StructuredBranchWorkHomes {
-    pub(super) float: u8,
-    pub(super) constant_address: u8,
+    pub(super) float: u32,
+    pub(super) constant_address: u32,
 }
 
 impl StructuredBranchWorkHomes {
@@ -36,8 +36,8 @@ impl StructuredBranchWorkHomes {
             .max()?
             .checked_add(1)?;
         (float <= 13 && constant_address <= 12).then_some(Self {
-            float,
-            constant_address,
+            float: float.into(),
+            constant_address: constant_address.into(),
         })
     }
 }
@@ -46,10 +46,10 @@ fn physical_parameter_register(
     generator: &Generator,
     name: &str,
     class: mwcc_vreg::Class,
-) -> Option<u8> {
+) -> Option<u32> {
     let location = generator.locations.get(name)?;
     match mwcc_vreg::Reg::from_field(location.register, class) {
-        mwcc_vreg::Reg::Physical(register) => Some(register),
+        mwcc_vreg::Reg::Physical(register) => Some(register.into()),
         mwcc_vreg::Reg::Virtual(_) => None,
     }
 }

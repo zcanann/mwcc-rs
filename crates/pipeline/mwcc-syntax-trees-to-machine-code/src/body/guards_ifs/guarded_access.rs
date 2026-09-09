@@ -15,7 +15,7 @@ impl Generator {
         hot: &Expression,
         cold: &Expression,
         return_type: Type,
-        result: u8,
+        result: u32,
     ) -> Compilation<bool> {
         let Some(pointer_register) = self.lookup_general(pointer) else {
             return Ok(false);

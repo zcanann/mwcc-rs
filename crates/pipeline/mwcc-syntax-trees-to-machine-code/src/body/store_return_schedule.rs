@@ -71,7 +71,7 @@ impl Generator {
         self.emit_global_load(global_read, GENERAL_SCRATCH)?;
         self.emit_global_store(global_write, pointee, replacement)?;
         self.output.instructions.push(Instruction::move_register(
-            Eabi::general_result().number,
+            u32::from(Eabi::general_result().number),
             GENERAL_SCRATCH,
         ));
         self.emit_epilogue_and_return();
@@ -144,7 +144,7 @@ impl Generator {
             && plan.stores.len() == 1
         {
             let (global, pointee) = &plan.stores[0];
-            let base = self.fresh_virtual_general_preferring(Eabi::general_result().number);
+            let base = self.fresh_virtual_general_preferring(u32::from(Eabi::general_result().number));
             self.emit_address_high(base, global);
             self.load_integer_constant(GENERAL_SCRATCH, i64::from(plan.stored));
             self.record_relocation(RelocationKind::Addr16Lo, global);
@@ -155,7 +155,7 @@ impl Generator {
                 0,
             )?);
             self.output.instructions.push(Instruction::AddImmediate {
-                d: Eabi::general_result().number,
+                d: u32::from(Eabi::general_result().number),
                 a: 0,
                 immediate: plan.returned,
             });
@@ -163,7 +163,7 @@ impl Generator {
         }
         self.load_integer_constant(GENERAL_SCRATCH, i64::from(plan.stored));
         let result_instruction = Instruction::AddImmediate {
-            d: Eabi::general_result().number,
+            d: u32::from(Eabi::general_result().number),
             a: 0,
             immediate: plan.returned,
         };
@@ -267,7 +267,7 @@ impl Generator {
         };
 
         self.emit_plain_nonleaf_prologue();
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.emit_call(enter, enter_arguments, Some(result), false)?;
 
         let address = self.fresh_virtual_general_preferring(4);
@@ -396,7 +396,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::AddImmediate {
-                d: Eabi::general_result().number,
+                d: u32::from(Eabi::general_result().number),
                 a: 0,
                 immediate: guard_constant,
             });
@@ -418,7 +418,7 @@ impl Generator {
                 immediate: store_constant,
             });
         let return_instruction = Instruction::AddImmediate {
-            d: Eabi::general_result().number,
+            d: u32::from(Eabi::general_result().number),
             a: 0,
             immediate: return_constant,
         };

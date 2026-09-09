@@ -60,15 +60,15 @@ impl Generator {
 
         self.evaluate_general(
             &arguments[pointer_index],
-            Eabi::FIRST_GENERAL_ARGUMENT + pointer_index as u8,
+            (Eabi::FIRST_GENERAL_ARGUMENT + pointer_index as u8).into(),
         )?;
         self.evaluate_general(
             &arguments[address_index],
-            Eabi::FIRST_GENERAL_ARGUMENT + address_index as u8,
+            (Eabi::FIRST_GENERAL_ARGUMENT + address_index as u8).into(),
         )?;
         self.evaluate_general(
             &Expression::IntegerLiteral(i64::from(value)),
-            Eabi::FIRST_GENERAL_ARGUMENT + 2,
+            (Eabi::FIRST_GENERAL_ARGUMENT + 2).into(),
         )?;
         Ok(true)
     }

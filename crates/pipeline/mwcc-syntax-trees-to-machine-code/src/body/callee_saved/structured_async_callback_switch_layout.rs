@@ -17,9 +17,9 @@ pub(super) struct StructuredAsyncCallbackSwitchLayout {
 
 #[derive(Clone, Copy)]
 pub(super) struct StructuredAsyncCallbackSwitchHomes {
-    pub(super) callback: u8,
-    pub(super) receiver: u8,
-    pub(super) token: u8,
+    pub(super) callback: u32,
+    pub(super) receiver: u32,
+    pub(super) token: u32,
 }
 
 impl StructuredAsyncCallbackSwitchLayout {
@@ -91,7 +91,7 @@ impl StructuredAsyncCallbackSwitchLayout {
         })
     }
 
-    pub(super) fn preference(&self, home_index: usize) -> Option<u8> {
+    pub(super) fn preference(&self, home_index: usize) -> Option<u32> {
         if home_index == self.callback_home {
             Some(30)
         } else if home_index == self.receiver_home {
@@ -103,7 +103,7 @@ impl StructuredAsyncCallbackSwitchLayout {
         }
     }
 
-    pub(super) fn homes(&self, homes: &[u8]) -> StructuredAsyncCallbackSwitchHomes {
+    pub(super) fn homes(&self, homes: &[u32]) -> StructuredAsyncCallbackSwitchHomes {
         StructuredAsyncCallbackSwitchHomes {
             callback: homes[self.callback_home],
             receiver: homes[self.receiver_home],
@@ -111,7 +111,7 @@ impl StructuredAsyncCallbackSwitchLayout {
         }
     }
 
-    pub(super) fn save_order(&self, homes: &[u8]) -> [u8; 3] {
+    pub(super) fn save_order(&self, homes: &[u32]) -> [u32; 3] {
         let homes = self.homes(homes);
         [homes.token, homes.callback, homes.receiver]
     }

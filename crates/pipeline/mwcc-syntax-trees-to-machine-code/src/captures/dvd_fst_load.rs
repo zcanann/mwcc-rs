@@ -630,7 +630,7 @@ impl Generator {
         });
     }
 
-    fn sda_load_capture(&mut self, target: &str, destination: u8) {
+    fn sda_load_capture(&mut self, target: &str, destination: u32) {
         self.record_relocation(RelocationKind::EmbSda21, target);
         self.output.instructions.push(Instruction::LoadWord {
             d: destination,
@@ -639,7 +639,7 @@ impl Generator {
         });
     }
 
-    fn sda_store_capture(&mut self, target: &str, source: u8) {
+    fn sda_store_capture(&mut self, target: &str, source: u32) {
         self.record_relocation(RelocationKind::EmbSda21, target);
         self.output.instructions.push(Instruction::StoreWord {
             s: source,
@@ -648,7 +648,7 @@ impl Generator {
         });
     }
 
-    fn short_string_capture(&mut self, destination: u8, bytes: &[u8]) {
+    fn short_string_capture(&mut self, destination: u32, bytes: &[u8]) {
         let index = self.intern_string_literal(bytes);
         self.record_relocation(RelocationKind::EmbSda21, &format!("@@str{index}"));
         self.output.instructions.push(Instruction::AddImmediate {

@@ -33,17 +33,17 @@ impl Generator {
         }
 
         match &mut self.output.instructions[start + 1] {
-            Instruction::LoadWord { d, .. } => *d = Eabi::FIRST_GENERAL_ARGUMENT,
+            Instruction::LoadWord { d, .. } => *d = 3,
             _ => unreachable!("inlined address receiver was recognized"),
         }
         for index in [first_payload_load, guard_load] {
             match &mut self.output.instructions[index] {
-                Instruction::LoadWord { a, .. } => *a = Eabi::FIRST_GENERAL_ARGUMENT,
+                Instruction::LoadWord { a, .. } => *a = 3,
                 _ => unreachable!("inlined address receiver was recognized"),
             }
         }
         match &mut self.output.instructions[receiver_float_load] {
-            Instruction::LoadFloatSingle { a, .. } => *a = Eabi::FIRST_GENERAL_ARGUMENT,
+            Instruction::LoadFloatSingle { a, .. } => *a = 3,
             _ => unreachable!("inlined address receiver was recognized"),
         }
         self.output
@@ -59,17 +59,17 @@ impl Generator {
                     u32::from(payload - mwcc_vreg::VIRTUAL_BASE),
                     mwcc_vreg::Class::General,
                 ),
-                vec![Eabi::FIRST_GENERAL_ARGUMENT + 1],
+                vec![(Eabi::FIRST_GENERAL_ARGUMENT + 1).into()],
             );
         }
         self.remove_structured_condition_instruction(argument_copy);
 
-        debug_assert_ne!(working, Eabi::FIRST_GENERAL_ARGUMENT);
+        debug_assert_ne!(working, u32::from(Eabi::FIRST_GENERAL_ARGUMENT));
         debug_assert_ne!(payload, 0);
     }
 }
 
-fn inlined_member_address_receiver(instructions: &[Instruction]) -> Option<(usize, u8, u8)> {
+fn inlined_member_address_receiver(instructions: &[Instruction]) -> Option<(usize, u32, u32)> {
     instructions.windows(11).enumerate().find_map(|(start, window)| {
         match window {
             [

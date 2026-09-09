@@ -139,7 +139,7 @@ impl Generator {
         let Some(input) = self.lookup_general(plan.input) else {
             return Ok(false);
         };
-        if input != Eabi::FIRST_GENERAL_ARGUMENT || !self.frame_slots.is_empty() {
+        if input != Eabi::FIRST_GENERAL_ARGUMENT.into() || !self.frame_slots.is_empty() {
             return Ok(false);
         }
         self.output.pre_scheduled = true;

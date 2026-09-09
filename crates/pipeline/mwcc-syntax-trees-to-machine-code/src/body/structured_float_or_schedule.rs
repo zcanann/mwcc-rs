@@ -179,7 +179,7 @@ impl ChainedFloatLiteralOr {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DominatedThreeWayMax {
     start: usize,
-    base: u8,
+    base: u32,
     second_offset: i16,
     third_offset: i16,
     branch_options: u8,
@@ -390,7 +390,7 @@ fn chained_float_literal_or(
 fn chained_float_literal_term(
     output: &mwcc_machine_code::MachineFunction,
     start: usize,
-) -> Option<(u8, i16, u8, u8)> {
+) -> Option<(u32, i16, u8, u8)> {
     let [value, literal, compare, branch] = output.instructions.get(start..start + 4)? else {
         return None;
     };

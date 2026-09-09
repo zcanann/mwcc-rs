@@ -11,8 +11,8 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StackTraceReportLoopPlan {
     start: usize,
-    old_counter: u8,
-    old_pointer: u8,
+    old_counter: u32,
+    old_pointer: u32,
 }
 
 impl Generator {
@@ -36,8 +36,8 @@ fn apply_stack_trace_report_loop_plan(
     basic_block_schedule::permute_contents(output, plan.start, [1, 0]);
     basic_block_schedule::permute_contents(output, plan.start + 5, [2, 1, 3, 0, 4, 5]);
 
-    const POINTER: u8 = 25;
-    const COUNTER: u8 = 26;
+    const POINTER: u32 = 25;
+    const COUNTER: u32 = 26;
     let Instruction::LoadWord { d, .. } = &mut output.instructions[plan.start] else {
         unreachable!("the initial back-chain load was matched")
     };

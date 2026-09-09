@@ -14,7 +14,7 @@ impl Generator {
         total_size: u32,
         element_size: u32,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if destination == GENERAL_SCRATCH
             || constant_value(index).is_some()

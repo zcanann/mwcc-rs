@@ -7,7 +7,7 @@ use super::structured::logical_and_terms;
 #[derive(Clone)]
 pub(super) struct EntryParameterAlias {
     pub(super) name: String,
-    pub(super) home: u8,
+    pub(super) home: u32,
     pub(super) boundary: EntryAliasBoundary,
 }
 
@@ -44,7 +44,7 @@ impl Generator {
     pub(super) fn retire_entry_parameter_aliases_after_initializer(
         &mut self,
         local: &LocalDeclaration,
-        saved_parameters: &[(String, u8, u8)],
+        saved_parameters: &[(String, u32, u32)],
     ) {
         if !initializer_clobbers_entry_alias(local) {
             return;
@@ -53,7 +53,7 @@ impl Generator {
             self.locations
                 .get_mut(name)
                 .expect("saved parameter was eligibility checked")
-                .register = *home;
+                .register = u32::from(*home);
         }
     }
 }
@@ -63,7 +63,7 @@ impl Generator {
 /// home after that call has clobbered the entry alias.
 pub(super) fn plan_first_call_alias(
     statements: &[Statement],
-    saved_parameters: &[(String, u8, u8)],
+    saved_parameters: &[(String, u32, u32)],
     parameters: &[mwcc_syntax_trees::Parameter],
 ) -> Option<EntryParameterAlias> {
     let zero_test_record_form = |name: &str| {
@@ -108,7 +108,7 @@ pub(super) fn plan_first_call_alias(
         }
         return Some(EntryParameterAlias {
             name: name.clone(),
-            home: *home,
+            home: u32::from(*home),
             boundary: EntryAliasBoundary::AfterStatement(statement_index),
         });
     }
@@ -134,7 +134,7 @@ pub(super) fn plan_first_call_alias(
     }
     Some(EntryParameterAlias {
         name: name.clone(),
-        home: *home,
+        home: u32::from(*home),
         boundary: EntryAliasBoundary::AfterFirstConditionTerm,
     })
 }

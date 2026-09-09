@@ -30,7 +30,7 @@ impl Generator {
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
-        destination: u8,
+        destination: u32,
         tail: bool,
         origin: ConditionalOrigin,
     ) -> Compilation<()> {
@@ -1204,10 +1204,10 @@ impl Generator {
                 } else if crate::condition_float_cache::is_direct_float_memory_load(operand) {
                     self.place_condition_float_load(
                         operand,
-                        mwcc_target::Eabi::float_result().number,
+                        u32::from(mwcc_target::Eabi::float_result().number),
                     )?
                 } else {
-                    let source = mwcc_target::Eabi::float_result().number;
+                    let source = u32::from(mwcc_target::Eabi::float_result().number);
                     self.invalidate_condition_float_register(source);
                     self.evaluate_float(operand, source)?;
                     source
@@ -1257,7 +1257,7 @@ impl Generator {
                         s: register,
                     });
             } else if self.is_signed_byte_load(operand)? {
-                self.emit_widen_record(GENERAL_SCRATCH, register, 8, true);
+                self.emit_widen_record(GENERAL_SCRATCH, register.into(), 8, true);
             } else if self.signedness_of(operand)? {
                 self.output
                     .instructions
@@ -1545,7 +1545,7 @@ impl Generator {
                         _ => None,
                     };
                     if let Some(left_register) = retained_left {
-                        let inserted = self.reserved.insert(left_register);
+                        let inserted = self.reserved.insert(left_register.into());
                         let right_result =
                             self.condition_operand_register(right);
                         if inserted {
@@ -1557,14 +1557,14 @@ impl Generator {
                         if signed {
                             self.output.instructions.push(
                                 Instruction::CompareWord {
-                                    a: left_register,
+                                    a: u32::from(left_register),
                                     b: right_register,
                                 },
                             );
                         } else {
                             self.output.instructions.push(
                                 Instruction::CompareLogicalWord {
-                                    a: left_register,
+                                    a: u32::from(left_register),
                                     b: right_register,
                                 },
                             );
@@ -1765,7 +1765,7 @@ impl Generator {
                 // selecting that address; otherwise `global.field == parameter`
                 // can materialize the global base over the parameter and compare
                 // against the address it just wrote (SIBios's `Si.chan == chan`).
-                let newly_reserved: Vec<u8> = self
+                let newly_reserved: Vec<u32> = self
                     .registers_used_by(right)
                     .into_iter()
                     .filter(|register| self.reserved.insert(*register))
@@ -1785,7 +1785,7 @@ impl Generator {
                 let mut left_extend: Option<(u8, bool)> = self
                     .leaf_info(left)
                     .ok()
-                    .filter(|&(register, width, _)| register == left_register && width < 32)
+                    .filter(|&(register, width, _)| register == left_register.into() && width < 32)
                     .map(|(_, width, narrow_signed)| (width, narrow_signed))
                     // A direct call returns in r3, but the EABI does not promise
                     // that the high bits of a narrow result are clean. Treat its
@@ -1850,7 +1850,7 @@ impl Generator {
                             {
                                 self.emit_widen(
                                     GENERAL_SCRATCH,
-                                    left_register,
+                                    left_register.into(),
                                     width,
                                     narrow_signed,
                                 );
@@ -1872,7 +1872,7 @@ impl Generator {
                             } else {
                                 self.emit_widen_record(
                                     GENERAL_SCRATCH,
-                                    left_register,
+                                    left_register.into(),
                                     width,
                                     narrow_signed,
                                 );
@@ -1895,10 +1895,10 @@ impl Generator {
                     }
                     (Some(constant), false) => {
                         let register = if let Some((width, narrow_signed)) = left_extend {
-                            self.emit_widen(GENERAL_SCRATCH, left_register, width, narrow_signed);
+                            self.emit_widen(GENERAL_SCRATCH, left_register.into(), width, narrow_signed);
                             GENERAL_SCRATCH
                         } else {
-                            left_register
+                            left_register.into()
                         };
                         if signed || (constant == 0 && scalarized_one_word_member) {
                             self.output
@@ -1919,7 +1919,7 @@ impl Generator {
                     (None, false) => {
                         let left_leaf =
                             self.leaf_info(left).ok().filter(|&(register, width, _)| {
-                                register == left_register && width < 32
+                                register == left_register.into() && width < 32
                             });
                         let right_leaf = self
                             .leaf_info(right)
@@ -1968,7 +1968,7 @@ impl Generator {
                                 if self.try_emit_narrow_memory_compare(
                                     left,
                                     right,
-                                    left_register,
+                                    left_register.into(),
                                     signed,
                                 )? {
                                     return Ok(false_branch_bo_bi(*operator)
@@ -1977,7 +1977,7 @@ impl Generator {
                                 if self.try_emit_narrow_leaf_member_compare(
                                     left,
                                     right,
-                                    left_register,
+                                    left_register.into(),
                                     signed,
                                 )? {
                                     return Ok(false_branch_bo_bi(*operator)
@@ -2004,7 +2004,7 @@ impl Generator {
                                     let preserved = self.fresh_virtual_general();
                                     self.output.instructions.push(Instruction::move_register(
                                         preserved,
-                                        left_register,
+                                        left_register.into(),
                                     ));
                                     left_register = preserved;
                                 }
@@ -2015,11 +2015,11 @@ impl Generator {
                                 let right_register =
                                     if let Some(constant) = constant_value(right) {
                                         let register = self
-                                            .fresh_virtual_general_avoiding(vec![left_register]);
+                                            .fresh_virtual_general_avoiding(vec![left_register.into()]);
                                         self.load_integer_constant(register, constant);
                                         register
                                     } else {
-                                        self.condition_operand_register(right)?
+                                        self.condition_operand_register(right)?.into()
                                     };
                                 if signed {
                                     self.output.instructions.push(Instruction::CompareWord {
@@ -2072,10 +2072,10 @@ impl Generator {
             } else if crate::condition_float_cache::is_direct_float_memory_load(condition) {
                 self.place_condition_float_load(
                     condition,
-                    mwcc_target::Eabi::float_result().number,
+                    u32::from(mwcc_target::Eabi::float_result().number),
                 )?
             } else {
-                let source = mwcc_target::Eabi::float_result().number;
+                let source = u32::from(mwcc_target::Eabi::float_result().number);
                 self.invalidate_condition_float_register(source);
                 self.evaluate_float(condition, source)?;
                 source
@@ -2103,7 +2103,7 @@ impl Generator {
                 && !self.globals.contains_key(name)
             {
                 let high = self.fresh_virtual_general_preferring(
-                    mwcc_target::Eabi::general_result().number,
+                    u32::from(mwcc_target::Eabi::general_result().number),
                 );
                 self.emit_address_high(high, name);
                 self.record_relocation(mwcc_machine_code::RelocationKind::Addr16Lo, name);
@@ -2127,7 +2127,7 @@ impl Generator {
         let narrow = self
             .leaf_info(condition)
             .ok()
-            .filter(|&(leaf_register, width, _)| leaf_register == register && width < 32)
+            .filter(|&(leaf_register, width, _)| leaf_register == register.into() && width < 32)
             .or_else(|| match condition {
                 Expression::Call { name, .. } => self
                     .call_return_types
@@ -2151,7 +2151,7 @@ impl Generator {
                         ) =>
                 {
                     Some((
-                        register,
+                        register.into(),
                         return_type.width(),
                         self.signed_of(*return_type),
                     ))
@@ -2166,7 +2166,7 @@ impl Generator {
                 && self.behavior.narrow_call_zero_test_style
                     == mwcc_versions::NarrowCallZeroTestStyle::SeparateCompare
             {
-                self.emit_widen(GENERAL_SCRATCH, register, width, narrow_signed);
+                self.emit_widen(GENERAL_SCRATCH, register.into(), width, narrow_signed);
                 if narrow_signed {
                     self.output
                         .instructions
@@ -2183,7 +2183,7 @@ impl Generator {
                     );
                 }
             } else {
-                self.emit_widen_record(GENERAL_SCRATCH, register, width, narrow_signed);
+                self.emit_widen_record(GENERAL_SCRATCH, register.into(), width, narrow_signed);
             }
         } else if matches!(
             as_member(condition),
@@ -2196,7 +2196,7 @@ impl Generator {
                     s: register,
                 });
         } else if self.is_signed_byte_load(condition)? {
-            self.emit_widen_record(GENERAL_SCRATCH, register, 8, true);
+            self.emit_widen_record(GENERAL_SCRATCH, register.into(), 8, true);
         } else if is_scalarized_one_word_member(condition, &self.one_word_aggregate_locals)
             || self.signedness_of(condition)?
         {
@@ -2219,7 +2219,7 @@ impl Generator {
 
     /// The register holding a condition operand: a leaf variable stays in its home
     /// register; a struct member loads into the scratch (mwcc compares `r0`).
-    pub(crate) fn condition_operand_register(&mut self, operand: &Expression) -> Compilation<u8> {
+    pub(crate) fn condition_operand_register(&mut self, operand: &Expression) -> Compilation<u32> {
         if let Some(register) = self.assignment_condition_minus_one_register(operand) {
             return Ok(register);
         }
@@ -2239,7 +2239,7 @@ impl Generator {
         if super::logical_call_select::is_logical_call_select(operand)
             || super::callback_fallback_select::is_callback_fallback_select(operand)
         {
-            let result = mwcc_target::Eabi::general_result().number;
+            let result = u32::from(mwcc_target::Eabi::general_result().number);
             self.evaluate_general(operand, result)?;
             return Ok(result);
         }
@@ -2263,9 +2263,9 @@ impl Generator {
             let destination = self
                 .preferred_condition_member_register(operand)
                 .unwrap_or(GENERAL_SCRATCH);
-            self.emit_member_load(base, offset, member_type, None, destination)?;
-            self.record_condition_member_value(operand, destination);
-            return Ok(destination);
+            self.emit_member_load(base, offset, member_type, None, destination.into())?;
+            self.record_condition_member_value(operand, destination.into());
+            return Ok(destination.into());
         }
         // A full-word memory load (`*p`, `a[i]`) goes into the scratch; the caller
         // then compares it. (A narrow signed load needs a record-form extend
@@ -2296,7 +2296,7 @@ impl Generator {
         if self.is_global(operand) {
             if let Expression::Variable(name) = operand {
                 if let Some(register) = self.condition_global_base(name)? {
-                    return Ok(register);
+                    return Ok(register.into());
                 }
             }
             self.evaluate_general(operand, GENERAL_SCRATCH)?;
@@ -2311,7 +2311,7 @@ impl Generator {
                 | Expression::CallThrough { .. }
                 | Expression::VirtualCall { .. }
         ) {
-            let result = mwcc_target::Eabi::general_result().number;
+            let result = u32::from(mwcc_target::Eabi::general_result().number);
             self.evaluate_general(operand, result)?;
             return Ok(result);
         }

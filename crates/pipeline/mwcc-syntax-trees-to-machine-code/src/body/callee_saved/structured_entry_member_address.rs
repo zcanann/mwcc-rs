@@ -170,9 +170,9 @@ impl Materialization {
 
 fn entry_transaction(
     instructions: &[Instruction],
-    source_home: u8,
-    owner_home: u8,
-    address_home: u8,
+    source_home: u32,
+    owner_home: u32,
+    address_home: u32,
     frame_offset: i16,
     member_offset: i16,
 ) -> Option<usize> {

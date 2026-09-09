@@ -22,13 +22,13 @@ impl Generator {
             let Instruction::LoadWord { d, .. } = &mut self.output.instructions[packet.load] else {
                 unreachable!("the guarded pointer load was matched")
             };
-            *d = Eabi::general_result().number;
+            *d = u32::from(Eabi::general_result().number);
             let Instruction::CompareLogicalWordImmediate { a, .. } =
                 &mut self.output.instructions[packet.load + 1]
             else {
                 unreachable!("the guarded pointer comparison was matched")
             };
-            *a = Eabi::general_result().number;
+            *a = u32::from(Eabi::general_result().number);
             crate::remove_instruction_retargeting_to_next(self, packet.reload);
         }
 

@@ -111,7 +111,7 @@ fn is_store(instruction: &Instruction) -> bool {
 /// `old index -> new index` permutation so callers can remap relocations.
 pub fn hoist_link_register_reload(
     instructions: &mut Vec<Instruction>,
-    saved_float_registers: &[u8],
+    saved_float_registers: &[u32],
     follow_saved_float_result: bool,
 ) -> Vec<usize> {
     let identity: Vec<usize> = (0..instructions.len()).collect();
@@ -251,12 +251,12 @@ pub fn hoist_link_register_reload(
 /// operations and comparisons remain natural boundaries.
 fn leading_saved_float_result_chain_end(
     instructions: &[Instruction],
-    saved_float_registers: &[u8],
+    saved_float_registers: &[u32],
 ) -> Option<usize> {
     if saved_float_registers.is_empty() {
         return None;
     }
-    let mut result_registers = vec![1u8];
+    let mut result_registers = vec![1u32];
     let mut consumes_saved = false;
     let mut length = 0;
     for instruction in instructions {
@@ -266,12 +266,12 @@ fn leading_saved_float_result_chain_end(
         {
             break;
         }
-        let uses: Vec<u8> = operands
+        let uses: Vec<u32> = operands
             .iter()
             .filter(|operand| operand.role == RegisterRole::Use)
             .map(|operand| operand.register)
             .collect();
-        let definitions: Vec<u8> = operands
+        let definitions: Vec<u32> = operands
             .iter()
             .filter(|operand| operand.role == RegisterRole::Define)
             .map(|operand| operand.register)
@@ -285,7 +285,7 @@ fn leading_saved_float_result_chain_end(
         }
         consumes_saved |= uses
             .iter()
-            .any(|register| saved_float_registers.contains(register));
+            .any(|register| saved_float_registers.iter().any(|saved| u32::from(*saved) == *register));
         for register in definitions {
             if !result_registers.contains(&register) {
                 result_registers.push(register);
@@ -637,7 +637,7 @@ fn has_forward_branch(instructions: &[Instruction]) -> bool {
 }
 
 /// The (class, register) sets an instruction defines and uses.
-fn defs_and_uses(instruction: &Instruction) -> (Vec<(Class, u8)>, Vec<(Class, u8)>) {
+fn defs_and_uses(instruction: &Instruction) -> (Vec<(Class, u32)>, Vec<(Class, u32)>) {
     let mut defs = Vec::new();
     let mut uses = Vec::new();
     for operand in register_operands(instruction) {
@@ -656,7 +656,7 @@ fn defs_and_uses(instruction: &Instruction) -> (Vec<(Class, u8)>, Vec<(Class, u8
 fn depends_on(earlier: &Instruction, later: &Instruction) -> bool {
     let (earlier_defs, earlier_uses) = defs_and_uses(earlier);
     let (later_defs, later_uses) = defs_and_uses(later);
-    let intersects = |a: &[(Class, u8)], b: &[(Class, u8)]| a.iter().any(|key| b.contains(key));
+    let intersects = |a: &[(Class, u32)], b: &[(Class, u32)]| a.iter().any(|key| b.contains(key));
     intersects(&earlier_defs, &later_uses) // RAW
         || intersects(&earlier_defs, &later_defs) // WAW
         || intersects(&earlier_uses, &later_defs) // WAR
@@ -816,7 +816,7 @@ fn list_schedule(run: &[usize], instructions: &[Instruction]) -> Vec<usize> {
     scheduled
 }
 
-fn float_subtract_result_and_rhs(instruction: &Instruction) -> Option<(u8, u8)> {
+fn float_subtract_result_and_rhs(instruction: &Instruction) -> Option<(u32, u32)> {
     match instruction {
         Instruction::FloatSubtractSingle { d, b, .. }
         | Instruction::FloatSubtractDouble { d, b, .. } => Some((*d, *b)),
@@ -824,7 +824,7 @@ fn float_subtract_result_and_rhs(instruction: &Instruction) -> Option<(u8, u8)> 
     }
 }
 
-fn float_multiply_parts(instruction: &Instruction) -> Option<(u8, u8, u8)> {
+fn float_multiply_parts(instruction: &Instruction) -> Option<(u32, u32, u32)> {
     match instruction {
         Instruction::FloatMultiplySingle { d, a, c }
         | Instruction::FloatMultiplyDouble { d, a, c } => Some((*d, *a, *c)),
@@ -832,7 +832,7 @@ fn float_multiply_parts(instruction: &Instruction) -> Option<(u8, u8, u8)> {
     }
 }
 
-fn float_multiply_add_parts(instruction: &Instruction) -> Option<(u8, u8, u8)> {
+fn float_multiply_add_parts(instruction: &Instruction) -> Option<(u32, u32, u32)> {
     match instruction {
         Instruction::FloatMultiplyAddSingle { a, c, b, .. }
         | Instruction::FloatMultiplyAddDouble { a, c, b, .. } => Some((*a, *c, *b)),

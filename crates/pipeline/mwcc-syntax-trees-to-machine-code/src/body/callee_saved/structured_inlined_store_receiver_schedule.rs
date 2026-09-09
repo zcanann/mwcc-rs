@@ -53,7 +53,7 @@ impl Generator {
     }
 }
 
-fn inlined_store_receiver(instructions: &[Instruction]) -> Option<(usize, u8, u8)> {
+fn inlined_store_receiver(instructions: &[Instruction]) -> Option<(usize, u32, u32)> {
     instructions.windows(17).enumerate().find_map(|(start, window)| {
         match window {
             [

@@ -91,7 +91,7 @@ impl Generator {
         };
 
         let index = self.materialize_index_operand(update.index)?;
-        let scaled = self.fresh_virtual_general_preferring(index);
+        let scaled = self.fresh_virtual_general_preferring(index.into());
         let element_size = element.size();
         if element_size.is_power_of_two() {
             self.output

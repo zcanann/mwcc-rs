@@ -50,7 +50,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-    ) -> Compilation<Option<(u8, u8)>> {
+    ) -> Compilation<Option<(u32, u32)>> {
         let (first_expr, second_expr) = if operator == BinaryOperator::Subtract {
             (right, left)
         } else {

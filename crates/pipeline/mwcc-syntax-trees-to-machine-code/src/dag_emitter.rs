@@ -72,7 +72,7 @@ enum Template {
 /// A value id source: either a parameter's register or a node's result.
 #[derive(Clone, Copy)]
 enum ValueSource {
-    Parameter(u8),
+    Parameter(u32),
     Node(usize),
 }
 
@@ -83,10 +83,10 @@ struct Builder {
     next_value: u32,
     /// Narrow parameters already re-extended: (register, extension value) —
     /// a second read shares the node (measured: one extsb, two consumers).
-    extended: Vec<(u8, u32)>,
+    extended: Vec<(u32, u32)>,
     /// Registers of parameters the body reads EXACTLY once — the only regime
     /// where the zero-extension+shift rlwinm fold is measured.
-    read_once: Vec<u8>,
+    read_once: Vec<u32>,
     /// Pure address/constant initialization runs share repeated constants.
     static_initializers: bool,
     constants: Vec<(i16, u32)>,
@@ -158,7 +158,7 @@ fn global_halfword_accumulations(function: &Function, generator: &Generator) -> 
 }
 
 impl Builder {
-    fn raw_param(&self, register: u8) -> Option<u32> {
+    fn raw_param(&self, register: u32) -> Option<u32> {
         self.sources
             .iter()
             .find_map(|&(value, source)| match source {
@@ -731,7 +731,7 @@ impl Generator {
             constants: Vec::new(),
             global_accumulations: global_halfword_accumulations(function, self),
         };
-        let mut params: Vec<(u32, u8)> = Vec::new();
+        let mut params: Vec<(u32, u32)> = Vec::new();
         for parameter in &function.parameters {
             let register = match self.lookup_general(&parameter.name) {
                 Some(register) => register,
@@ -1020,7 +1020,7 @@ impl Generator {
         } else {
             assign_registers_v3(&builder.nodes, &order, &params)
         };
-        let register_of = |source: ValueSource, registers: &[Option<u8>]| -> Compilation<u8> {
+        let register_of = |source: ValueSource, registers: &[Option<u32>]| -> Compilation<u32> {
             match source {
                 ValueSource::Parameter(register) => Ok(register),
                 ValueSource::Node(node) => registers[node].ok_or_else(|| {
@@ -1029,7 +1029,7 @@ impl Generator {
             }
         };
         for &node in &order {
-            let operand = |index: usize| -> Compilation<u8> {
+            let operand = |index: usize| -> Compilation<u32> {
                 register_of(
                     builder.value_of(builder.nodes[node].reads[index]),
                     &registers,
@@ -1038,31 +1038,31 @@ impl Generator {
             let destination = registers[node];
             let instruction = match &builder.templates[node] {
                 Template::LoadImmediate(immediate) => {
-                    Instruction::load_immediate(destination.expect("value node"), *immediate)
+                    Instruction::load_immediate(destination.expect("value node").into(), *immediate)
                 }
                 Template::AddressHigh(name) => {
                     self.record_relocation(RelocationKind::Addr16Ha, name);
-                    Instruction::load_immediate_shifted(destination.expect("value node"), 0)
+                    Instruction::load_immediate_shifted(destination.expect("value node").into(), 0)
                 }
                 Template::AddressLow(name) => {
                     self.record_relocation(RelocationKind::Addr16Lo, name);
                     Instruction::AddImmediate {
-                        d: destination.expect("value node"),
-                        a: operand(0)?,
+                        d: u32::from(destination.expect("value node")),
+                        a: operand(0)?.into(),
                         immediate: 0,
                     }
                 }
                 Template::AddressSmallData(name) => {
                     self.record_relocation(RelocationKind::EmbSda21, name);
                     Instruction::AddImmediate {
-                        d: destination.expect("value node"),
+                        d: u32::from(destination.expect("value node")),
                         a: 0,
                         immediate: 0,
                     }
                 }
                 Template::AddImmediate(immediate) => Instruction::AddImmediate {
-                    d: destination.expect("value node"),
-                    a: operand(0)?,
+                    d: u32::from(destination.expect("value node")),
+                    a: operand(0)?.into(),
                     immediate: *immediate,
                 },
                 Template::Add => {
@@ -1086,106 +1086,106 @@ impl Generator {
                     {
                         std::mem::swap(&mut a, &mut b);
                     }
-                    Instruction::Add { d: destination.expect("value node"), a, b }
+                    Instruction::Add { d: u32::from(destination.expect("value node")), a: a.into(), b: b.into() }
                 },
                 Template::Subtract => Instruction::SubtractFrom {
-                    d: destination.expect("value node"),
-                    a: operand(1)?,
-                    b: operand(0)?,
+                    d: u32::from(destination.expect("value node")),
+                    a: operand(1)?.into(),
+                    b: operand(0)?.into(),
                 },
                 Template::MultiplyImmediate(immediate) => Instruction::MultiplyImmediate {
-                    d: destination.expect("value node"),
-                    a: operand(0)?,
+                    d: u32::from(destination.expect("value node")),
+                    a: operand(0)?.into(),
                     immediate: *immediate,
                 },
                 Template::ShiftLeftImmediate(shift) => Instruction::ShiftLeftImmediate {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
+                    a: u32::from(destination.expect("value node")),
+                    s: operand(0)?.into(),
                     shift: *shift,
                 },
                 Template::ShiftRightAlgebraicImmediate(shift) => {
                     Instruction::ShiftRightAlgebraicImmediate {
-                        a: destination.expect("value node"),
-                        s: operand(0)?,
+                        a: u32::from(destination.expect("value node")),
+                        s: operand(0)?.into(),
                         shift: *shift,
                     }
                 }
                 Template::ShiftRightLogicalImmediate(shift) => {
                     Instruction::ShiftRightLogicalImmediate {
-                        a: destination.expect("value node"),
-                        s: operand(0)?,
+                        a: u32::from(destination.expect("value node")),
+                        s: operand(0)?.into(),
                         shift: *shift,
                     }
                 }
                 Template::SignExtendByte => Instruction::ExtendSignByte {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
+                    a: u32::from(destination.expect("value node")),
+                    s: operand(0)?.into(),
                 },
                 Template::SignExtendHalf => Instruction::ExtendSignHalfword {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
+                    a: u32::from(destination.expect("value node")),
+                    s: operand(0)?.into(),
                 },
                 Template::ClearLeft(clear) => Instruction::ClearLeftImmediate {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
+                    a: u32::from(destination.expect("value node")),
+                    s: operand(0)?.into(),
                     clear: *clear,
                 },
                 Template::RotateMask(shift, begin, end) => Instruction::RotateAndMask {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
+                    a: u32::from(destination.expect("value node")),
+                    s: operand(0)?.into(),
                     shift: *shift,
                     begin: *begin,
                     end: *end,
                 },
                 Template::OrImmediate(immediate) => Instruction::OrImmediate {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
+                    a: u32::from(destination.expect("value node")),
+                    s: operand(0)?.into(),
                     immediate: *immediate,
                 },
                 Template::OrImmediateShifted(immediate) => Instruction::OrImmediateShifted {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
+                    a: u32::from(destination.expect("value node")),
+                    s: operand(0)?.into(),
                     immediate: *immediate,
                 },
                 Template::Mask(begin, end) => Instruction::RotateAndMask {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
+                    a: u32::from(destination.expect("value node")),
+                    s: operand(0)?.into(),
                     shift: 0,
                     begin: *begin,
                     end: *end,
                 },
                 Template::XorImmediate(immediate) => Instruction::XorImmediate {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
+                    a: u32::from(destination.expect("value node")),
+                    s: operand(0)?.into(),
                     immediate: *immediate,
                 },
                 Template::ShiftLeftWord => Instruction::ShiftLeftWord {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
-                    b: operand(1)?,
+                    a: u32::from(destination.expect("value node")),
+                    s: operand(0)?.into(),
+                    b: operand(1)?.into(),
                 },
                 Template::ShiftRightAlgebraicWord => Instruction::ShiftRightAlgebraicWord {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
-                    b: operand(1)?,
+                    a: u32::from(destination.expect("value node")),
+                    s: operand(0)?.into(),
+                    b: operand(1)?.into(),
                 },
                 Template::ShiftRightWord => Instruction::ShiftRightWord {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
-                    b: operand(1)?,
+                    a: u32::from(destination.expect("value node")),
+                    s: operand(0)?.into(),
+                    b: operand(1)?.into(),
                 },
                 Template::Move => {
-                    Instruction::move_register(destination.expect("value node"), operand(0)?)
+                    Instruction::move_register(destination.expect("value node").into(), operand(0)?.into())
                 }
                 Template::LoadWord => Instruction::LoadWord {
-                    d: destination.expect("value node"),
-                    a: operand(0)?,
+                    d: u32::from(destination.expect("value node")),
+                    a: operand(0)?.into(),
                     offset: 0,
                 },
                 Template::LoadGlobal(global) => {
                     self.record_relocation(RelocationKind::EmbSda21, global);
                     Instruction::LoadWord {
-                        d: destination.expect("value node"),
+                        d: u32::from(destination.expect("value node")),
                         a: 0,
                         offset: 0,
                     }
@@ -1195,14 +1195,14 @@ impl Generator {
                     let a = operand(0)?;
                     if *signed {
                         Instruction::LoadHalfwordAlgebraic {
-                            d,
-                            a,
+                            d: d.into(),
+                            a: a.into(),
                             offset: *offset,
                         }
                     } else {
                         Instruction::LoadHalfwordZero {
-                            d,
-                            a,
+                            d: d.into(),
+                            a: a.into(),
                             offset: *offset,
                         }
                     }
@@ -1210,7 +1210,7 @@ impl Generator {
                 Template::StoreGlobal(global) => {
                     self.record_relocation(RelocationKind::EmbSda21, global);
                     Instruction::StoreWord {
-                        s: operand(0)?,
+                        s: operand(0)?.into(),
                         a: 0,
                         offset: 0,
                     }

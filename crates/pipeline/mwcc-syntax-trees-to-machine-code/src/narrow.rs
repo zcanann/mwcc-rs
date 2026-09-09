@@ -111,7 +111,7 @@ impl Generator {
         &mut self,
         expression: &Expression,
         return_type: Type,
-        result: u8,
+        result: u32,
     ) -> Compilation<()> {
         let width = return_type.width();
         let signed = self.signed_of(return_type);
@@ -294,7 +294,7 @@ impl Generator {
 
     /// Move/extend a value of `width` bits from `source` into `destination`,
     /// sign- or zero-extending narrow values to 32 bits.
-    pub(crate) fn emit_widen(&mut self, destination: u8, source: u8, width: u8, signed: bool) {
+    pub(crate) fn emit_widen(&mut self, destination: u32, source: u32, width: u8, signed: bool) {
         match (width, signed) {
             (8, true) => self.output.instructions.push(Instruction::ExtendSignByte {
                 a: destination,
@@ -336,8 +336,8 @@ impl Generator {
     /// zero (`if (s < 0)` -> `extsh. r0,rS; bge`).
     pub(crate) fn emit_widen_record(
         &mut self,
-        destination: u8,
-        source: u8,
+        destination: u32,
+        source: u32,
         width: u8,
         signed: bool,
     ) {
@@ -371,8 +371,8 @@ impl Generator {
     /// significant bits out of the single-rlwinm range (deferred, not modeled).
     pub(crate) fn emit_narrow_unsigned_shift(
         &mut self,
-        destination: u8,
-        source: u8,
+        destination: u32,
+        source: u32,
         width: u8,
         left: bool,
         amount: u8,

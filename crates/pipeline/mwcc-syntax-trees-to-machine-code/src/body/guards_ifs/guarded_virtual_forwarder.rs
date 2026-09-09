@@ -85,11 +85,11 @@ impl Generator {
         if !function
             .parameters
             .iter()
-            .zip(3u8..=8)
+            .zip(3u32..=8)
             .all(|(parameter, register)| {
                 self.locations
                     .get(&parameter.name)
-                    .is_some_and(|location| location.register == register)
+                    .is_some_and(|location| location.register == register.into())
             })
         {
             return Ok(false);

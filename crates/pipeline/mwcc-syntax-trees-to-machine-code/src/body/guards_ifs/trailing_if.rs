@@ -307,8 +307,8 @@ impl Generator {
             if let Statement::Return(value) = statement {
                 if let Some(value) = value {
                     let result = match return_type {
-                        Type::Float | Type::Double => Eabi::float_result().number,
-                        _ => Eabi::general_result().number,
+                        Type::Float | Type::Double => u32::from(Eabi::float_result().number),
+                        _ => u32::from(Eabi::general_result().number),
                     };
                     self.evaluate_tail(value, return_type, result)?;
                 }
@@ -413,7 +413,7 @@ impl Generator {
             return Ok(false);
         }
 
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         self.non_leaf = true;
         self.frame_size = 16;
         // The if's branch labels advance mwcc's anonymous-`@N` counter by 2.

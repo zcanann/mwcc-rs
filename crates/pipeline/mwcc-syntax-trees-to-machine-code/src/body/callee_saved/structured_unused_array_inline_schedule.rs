@@ -43,7 +43,7 @@ impl Generator {
     }
 }
 
-fn unused_array_saved_home_prefix(instructions: &[Instruction]) -> Option<(usize, u8, u8, u8)> {
+fn unused_array_saved_home_prefix(instructions: &[Instruction]) -> Option<(usize, u32, u32, u32)> {
     instructions
         .windows(8)
         .enumerate()
@@ -95,8 +95,8 @@ fn unused_array_saved_home_prefix(instructions: &[Instruction]) -> Option<(usize
 
 fn guarded_float_receiver_copy(
     instructions: &[Instruction],
-    receiver: u8,
-    payload: u8,
+    receiver: u32,
+    payload: u32,
 ) -> Option<usize> {
     instructions.windows(5).position(|window| {
         matches!(

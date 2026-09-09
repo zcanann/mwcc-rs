@@ -87,7 +87,7 @@ impl StructuredVariadicOutputFrame {
         parameter_count: usize,
         total_count: usize,
         home_index: usize,
-    ) -> Option<u8> {
+    ) -> Option<u32> {
         (eager_count == 2 && parameter_count == 2 && total_count == 4)
             .then(|| [30, 31, 29, 28].get(home_index).copied())
             .flatten()

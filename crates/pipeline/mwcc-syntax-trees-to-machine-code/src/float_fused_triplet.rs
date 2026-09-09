@@ -20,7 +20,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<bool> {
         if !self.behavior.contract_floating_point {
@@ -133,7 +133,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<bool> {
         if operator != BinaryOperator::Add {
@@ -177,7 +177,7 @@ impl Generator {
         let current = self.fresh_virtual_float_preferring(2);
         let next = self.fresh_virtual_float_preferring(FLOAT_SCRATCH);
         self.output.instructions.push(crate::expressions::indexed_load(
-            pointee, current, base, scaled,
+            pointee, current, base.into(), scaled,
         )?);
         self.output.instructions.push(crate::expressions::displacement_load(
             pointee,
@@ -239,7 +239,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<bool> {
         if let Some((integer, multiplier, base, direction)) = promoted_integer_register_fusion(
@@ -382,7 +382,7 @@ impl Generator {
         operator: BinaryOperator,
         left: &Expression,
         right: &Expression,
-        destination: u8,
+        destination: u32,
         double: bool,
     ) -> Compilation<bool> {
         if double || operator != BinaryOperator::Add {

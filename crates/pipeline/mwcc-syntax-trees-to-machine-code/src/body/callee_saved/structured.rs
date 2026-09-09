@@ -1812,12 +1812,12 @@ impl Generator {
                     .as_ref()
                     .and_then(|layout| layout.member_cache_preference(index))
                 {
-                    return self.fresh_virtual_general_preferring(preferred);
+                    return self.fresh_virtual_general_preferring(preferred.into());
                 }
                 let preceding = u8::from(standalone_data_anchor_home.is_some())
                     + u8::from(standalone_global_base_home.is_some());
                 let first = 31u8.saturating_sub(preceding);
-                self.fresh_virtual_general_preferring(first.saturating_sub(index as u8))
+                self.fresh_virtual_general_preferring(first.saturating_sub(index as u8).into())
             })
             .collect::<Vec<_>>();
         let saved_home_slot_base = usize::from(standalone_data_anchor_home.is_some())
@@ -1828,11 +1828,11 @@ impl Generator {
         let frame_first_saved = array_pool_plan
             .as_ref()
             .map_or(first_saved, |plan| {
-                first_saved.min(usize::from(plan.first_saved_register))
+                first_saved.min(usize::try_from(plan.first_saved_register).expect("register-derived offset"))
             })
             .min(member_array_offset_layout.as_ref().map_or(
                 first_saved,
-                |layout| usize::from(layout.first_saved_register()),
+                |layout| usize::try_from(layout.first_saved_register()).expect("register-derived offset"),
             ));
         let frame_saved_count = 32usize.saturating_sub(frame_first_saved);
         // A five-instruction runtime trampoline is copied into one automatic
@@ -2030,7 +2030,7 @@ impl Generator {
                     &deferred_home_plan, &parameter_home_reuse, count, saved_home_slot_base,
                 )
             })).flatten();
-        let homes: Vec<u8> = (0..count)
+        let homes: Vec<u32> = (0..count)
             .map(|home_index| {
                 if let Some(preferences) = &global_cursor_preferences {
                     self.fresh_virtual_general_preferring(preferences[home_index])
@@ -2054,11 +2054,11 @@ impl Generator {
                     count,
                     home_index,
                 ) {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if retained_store_constant_homes {
-                    self.fresh_virtual_general_preferring((first_saved + home_index) as u8)
+                    self.fresh_virtual_general_preferring(((first_saved + home_index) as u8).into())
                 } else if parameter_retained_constant_homes {
-                    self.fresh_virtual_general_preferring((first_saved + home_index) as u8)
+                    self.fresh_virtual_general_preferring(((first_saved + home_index) as u8).into())
                 } else if let Some(preferred) = recovered_general_homes
                     .as_ref()
                     .and_then(|plan| {
@@ -2071,7 +2071,7 @@ impl Generator {
                         )
                     })
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = unoptimized_leaf_homes
                     .as_ref()
                     .and_then(|plan| {
@@ -2083,51 +2083,51 @@ impl Generator {
                         )
                     })
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = loop_member_receiver_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = loop_call_publication_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = saved_call_token_layout
                     .as_ref().and_then(|layout| layout.preference(home_index))
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = guarded_call_publication_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = member_array_offset_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = member_array_address_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = passive_frame_scalar_mirrors
                     .as_ref()
                     .and_then(|plan| plan.home_preference(home_index, first_saved))
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = object_collision_loop_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = multi_phase_variadic_home_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = frame_publication
                     .as_ref()
                     .and_then(|publication| {
@@ -2142,14 +2142,14 @@ impl Generator {
                         .flatten()
                     })
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(&preferred) = allocator_cursor_preferences.get(&home_index) {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = async_callback_switch_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = variadic_output_frame
                     .as_ref()
                     .and_then(|frame| {
@@ -2161,17 +2161,17 @@ impl Generator {
                         )
                     })
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = complement_product_pair
                     .as_ref()
                     .and_then(|pair| pair.saved_general_home_preference(count, home_index))
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = exclusive_arm_home_layout
                     .as_ref()
                     .and_then(|layout| layout.preference(home_index))
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = paired_eager_deferred_preference(
                     with_frame_array,
                     eager_saved_locals.len(),
@@ -2180,7 +2180,7 @@ impl Generator {
                     self.legacy_inline_expansion_frame_bytes != 0,
                     home_index,
                 ) {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = returned_deferred_pair_preference(
                     with_frame_array,
                     eager_saved_locals.len(),
@@ -2190,7 +2190,7 @@ impl Generator {
                     returned_deferred_home,
                     home_index,
                 ) {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if rounded_pointer_dense_layout {
                     let preferred = dense_deferred_preferences
                         .get(&home_index)
@@ -2204,13 +2204,13 @@ impl Generator {
                             )
                         });
                     if let Some(register) = preferred {
-                        self.fresh_virtual_general_preferring(register)
+                        self.fresh_virtual_general_preferring(register.into())
                     } else {
                         self.fresh_virtual_general()
                     }
                 } else if dense_unused_array_state_transfer {
                     self.fresh_virtual_general_preferring(
-                        31u8.saturating_sub(u8::try_from(home_index).unwrap_or(4).min(4)),
+                        31u8.saturating_sub(u8::try_from(home_index).unwrap_or(4).min(4)).into(),
                     )
                 } else if dense_frame && !eager_saved_locals.is_empty() {
                     let preferred = dense_deferred_preferences
@@ -2225,7 +2225,7 @@ impl Generator {
                             )
                         });
                     if let Some(register) = preferred {
-                        self.fresh_virtual_general_preferring(register)
+                        self.fresh_virtual_general_preferring(register.into())
                     } else {
                         self.fresh_virtual_general()
                     }
@@ -2235,12 +2235,12 @@ impl Generator {
                         .iter()
                         .position(|candidate| *candidate == group)
                         .unwrap_or(group);
-                    self.fresh_virtual_general_preferring(31u8.saturating_sub(rank as u8))
+                    self.fresh_virtual_general_preferring(31u8.saturating_sub(rank as u8).into())
                 } else if unused_array_two_homes || unused_array_aggregate_eager_homes {
                     // A dead scratch array keeps its source frame bytes but no
                     // value node. The retained values keep source creation
                     // order from the bottom of the saved-register range.
-                    self.fresh_virtual_general_preferring((first_saved + home_index) as u8)
+                    self.fresh_virtual_general_preferring(((first_saved + home_index) as u8).into())
                 } else if let Some(preferred) = direct_callback_wait_home_preference(
                     function,
                     &saved_parameters,
@@ -2248,7 +2248,7 @@ impl Generator {
                     first_saved,
                     home_index,
                 ) {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) = sequenced_callback_wait_home_preference(
                     function,
                     &saved_parameters,
@@ -2256,11 +2256,11 @@ impl Generator {
                     first_saved,
                     home_index,
                 ) {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if let Some(preferred) =
                     dense_loop_home_preferences.preference(home_index)
                 {
-                    self.fresh_virtual_general_preferring(preferred)
+                    self.fresh_virtual_general_preferring(preferred.into())
                 } else if with_frame_array && eager_saved_locals.is_empty() && count <= 18 {
                     let preferred = if dense_entry_prefix && deferred_home_plan.group_count == 1 {
                         if home_index < saved_parameters.len() {
@@ -2274,7 +2274,7 @@ impl Generator {
                     } else {
                         first_saved + home_index
                     };
-                    self.fresh_virtual_general_preferring(preferred as u8)
+                    self.fresh_virtual_general_preferring((preferred as u8).into())
                 } else if standalone_global_base_home.is_some() {
                     // Entry aggregate caches consume the high end of the saved
                     // range in source-discovery order. Ordinary survivors
@@ -2284,7 +2284,7 @@ impl Generator {
                     let preferred = 31usize
                         .saturating_sub(saved_home_slot_base)
                         .saturating_sub(home_index);
-                    self.fresh_virtual_general_preferring(preferred as u8)
+                    self.fresh_virtual_general_preferring((preferred as u8).into())
                 } else {
                     self.fresh_virtual_general()
                 }
@@ -2301,7 +2301,7 @@ impl Generator {
             .map(|preferences| {
                 preferences
                     .iter()
-                    .map(|preference| self.fresh_virtual_general_preferring(*preference))
+                    .map(|preference| self.fresh_virtual_general_preferring((*preference).into()))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -2366,14 +2366,14 @@ impl Generator {
             for (local_index, local) in eager_saved_locals.iter().enumerate() {
                 named_homes.insert(local.name.as_str(), homes[local_index]);
                 if let Some(preferred) = layout.preference(&local.name) {
-                    self.prefer_virtual_general(homes[local_index], preferred);
+                    self.prefer_virtual_general(homes[local_index], preferred.into());
                 }
             }
             for (parameter_index, parameter) in saved_parameters.iter().enumerate() {
                 let home = homes[eager_saved_locals.len() + parameter_index];
                 named_homes.insert(parameter.name.as_str(), home);
                 if let Some(preferred) = layout.preference(&parameter.name) {
-                    self.prefer_virtual_general(home, preferred);
+                    self.prefer_virtual_general(home, preferred.into());
                 }
             }
             for local in &deferred_saved_locals {
@@ -2381,7 +2381,7 @@ impl Generator {
                 let home = homes[parameter_home_reuse.home_index(group)];
                 named_homes.insert(local.name.as_str(), home);
                 if let Some(preferred) = layout.preference(&local.name) {
-                    self.prefer_virtual_general(home, preferred);
+                    self.prefer_virtual_general(home, preferred.into());
                 }
             }
             layout.homes(|name| named_homes.get(name).copied())
@@ -2393,14 +2393,14 @@ impl Generator {
             for (local_index, local) in eager_saved_locals.iter().enumerate() {
                 named_homes.insert(local.name.as_str(), homes[local_index]);
                 if let Some(preferred) = layout.preference(&local.name) {
-                    self.prefer_virtual_general(homes[local_index], preferred);
+                    self.prefer_virtual_general(homes[local_index], preferred.into());
                 }
             }
             for (parameter_index, parameter) in saved_parameters.iter().enumerate() {
                 let home = homes[eager_saved_locals.len() + parameter_index];
                 named_homes.insert(parameter.name.as_str(), home);
                 if let Some(preferred) = layout.preference(&parameter.name) {
-                    self.prefer_virtual_general(home, preferred);
+                    self.prefer_virtual_general(home, preferred.into());
                 }
             }
             for local in &deferred_saved_locals {
@@ -2408,7 +2408,7 @@ impl Generator {
                 let home = homes[parameter_home_reuse.home_index(group)];
                 named_homes.insert(local.name.as_str(), home);
                 if let Some(preferred) = layout.preference(&local.name) {
-                    self.prefer_virtual_general(home, preferred);
+                    self.prefer_virtual_general(home, preferred.into());
                 }
             }
             layout.homes(|name| named_homes.get(name).copied())
@@ -2527,7 +2527,7 @@ impl Generator {
         }
         logical_saved_homes.extend(loop_jump_table_homes.iter().copied());
         let mut frame_homes = logical_saved_homes.clone();
-        frame_homes.resize(frame_saved_count, frame_first_saved as u8);
+        frame_homes.resize(frame_saved_count, (frame_first_saved as u8).into());
         // Outgoing word slots occupy the low frame above linkage just like
         // caller-laid-out locals. Reserve their capacity before placing saved
         // homes; call emission separately rejects any actual local-slot overlap.
@@ -3070,7 +3070,7 @@ impl Generator {
         }
         self.frame_size = plan.frame_size;
         self.callee_saved = if array_pool_plan.is_some() {
-            (frame_first_saved as u8..=31).rev().collect()
+            (frame_first_saved as u32..=31).rev().collect()
         } else {
             logical_saved_homes
         };
@@ -3259,7 +3259,7 @@ impl Generator {
             self.output
                 .instructions
                 .push(Instruction::StoreMultipleWord {
-                    s: frame_first_saved as u8,
+                    s: u32::from(frame_first_saved as u8),
                     a: 1,
                     offset: plan.frame_size - 4 * frame_saved_count as i16,
                 });
@@ -3277,7 +3277,7 @@ impl Generator {
                     offset: plan.frame_size + 4,
                 },
                 Instruction::StoreMultipleWord {
-                    s: frame_first_saved as u8,
+                    s: u32::from(frame_first_saved as u8),
                     a: 1,
                     offset: plan.frame_size - 4 * frame_saved_count as i16,
                 },
@@ -3303,7 +3303,7 @@ impl Generator {
                     offset: -plan.frame_size,
                 },
                 Instruction::StoreMultipleWord {
-                    s: frame_first_saved as u8,
+                    s: u32::from(frame_first_saved as u8),
                     a: 1,
                     offset: plan.frame_size - 4 * frame_saved_count as i16,
                 },
@@ -3798,11 +3798,11 @@ impl Generator {
                             u8::try_from(saved_float_parameters.len() + group)
                                 .unwrap_or(17)
                                 .min(17),
-                        )
+                        ).into()
                     };
                     let preferred =
-                        structured_recovered_float_homes::preference(dependency, preferred);
-                    let home = self.fresh_virtual_float_preferring(preferred);
+                        structured_recovered_float_homes::preference(dependency, preferred.into());
+                    let home = self.fresh_virtual_float_preferring(preferred.into());
                     self.evaluate_structured_initializer(
                         function,
                         dependency_initializer,
@@ -4121,7 +4121,7 @@ impl Generator {
                     },
                     |_| 28,
                 );
-            let home = self.fresh_virtual_float_preferring(preferred);
+            let home = self.fresh_virtual_float_preferring(preferred.into());
             saved_float_parameter_copies.push((home, incoming));
             self.locations.insert(
                 parameter.name.clone(),
@@ -4158,9 +4158,9 @@ impl Generator {
                         u8::try_from(saved_float_parameters.len() + group)
                             .unwrap_or(17)
                             .min(17),
-                    )
+                    ).into()
                 };
-                let preferred = structured_recovered_float_homes::preference(local, preferred);
+                let preferred = structured_recovered_float_homes::preference(local, preferred.into());
                 let preferred = unoptimized_leaf_homes
                     .as_ref()
                     .and_then(|plan| plan.float_preference(&local.name))
@@ -4173,11 +4173,11 @@ impl Generator {
                 // but no call-preserved homes. Let ordinary liveness select
                 // volatile FPRs instead of preferring the saved-register bank.
                 let preferred = if self.promoted_float_locals.contains(&local.name) {
-                    (group % 14) as u8
+                    (group % 14) as u32
                 } else {
                     preferred
                 };
-                self.fresh_virtual_float_preferring(preferred)
+                self.fresh_virtual_float_preferring(preferred.into())
             })
             .collect();
         if let Some(pair) = &complement_product_pair {
@@ -4221,7 +4221,7 @@ impl Generator {
         }
         if let Some(plan) = &periodic_float_normalization {
             for (index, name) in plan.result_homes.iter().enumerate() {
-                let register = self.fresh_virtual_float_preferring(30 - index as u8);
+                let register = self.fresh_virtual_float_preferring((30 - index as u8).into());
                 self.locations.insert(
                     (*name).to_owned(),
                     Location {
@@ -4306,7 +4306,7 @@ impl Generator {
             let alias = forwarded_saved_home.or(declaration_alias);
             let temporary = alias.unwrap_or_else(|| match class {
                 ValueClass::General if rounded_byte_pointer == Some(local.name.as_str()) => {
-                    self.fresh_virtual_general_preferring(Eabi::general_result().number)
+                    self.fresh_virtual_general_preferring(u32::from(Eabi::general_result().number))
                 }
                 ValueClass::General if is_frame_address_null_select(function, &local.name) => {
                     self.fresh_virtual_general_preferring(4)
@@ -4324,7 +4324,7 @@ impl Generator {
                             &function.statements,
                             &local.name,
                         )
-                        .expect("aggregate-call companion preference was checked"),
+                        .expect("aggregate-call companion preference was checked").into(),
                     )
                 }
                 ValueClass::General
@@ -4334,7 +4334,7 @@ impl Generator {
                     // A comma-expanded `(temporary = call(), temporary)`
                     // packet has no lifetime beyond the enclosing expression.
                     // Keep both identities in the ABI result register.
-                    mwcc_target::Eabi::general_result().number
+                    u32::from(mwcc_target::Eabi::general_result().number)
                 }
                 ValueClass::General
                     if matches!(
@@ -4350,7 +4350,7 @@ impl Generator {
                     // returns. Ephemeral planning also proves that its value
                     // crosses no later call, so it can remain in the fixed EABI
                     // result home without a copy out and back.
-                    mwcc_target::Eabi::general_result().number
+                    u32::from(mwcc_target::Eabi::general_result().number)
                 }
                 ValueClass::General
                     if is_sequenced_call_result_local(&function.statements, &local.name) =>
@@ -4360,7 +4360,7 @@ impl Generator {
                     // has already proved this local crosses no later call, so
                     // the surviving call value can stay in the EABI result
                     // register just like a bare `result = call()`.
-                    mwcc_target::Eabi::general_result().number
+                    u32::from(mwcc_target::Eabi::general_result().number)
                 }
                 ValueClass::General => {
                     if self.canonical_boolean_locals.contains(&local.name) {
@@ -4368,21 +4368,21 @@ impl Generator {
                     } else if let Some(register) =
                         dense_loop_carried.preference_for(&local.name)
                     {
-                        self.fresh_virtual_general_preferring(register)
+                        self.fresh_virtual_general_preferring(register.into())
                     } else if let Some(register) =
                         super::structured_loop_carried_leaf::transient_loop_member_home_preference(
                             function,
                             &local.name,
                         )
                     {
-                        self.fresh_virtual_general_preferring(register)
+                        self.fresh_virtual_general_preferring(register.into())
                     } else if let Some(register) =
                         super::structured_loop_carried_leaf::returned_loop_home_preference(
                             function,
                             &local.name,
                         )
                     {
-                        self.fresh_virtual_general_preferring(register)
+                        self.fresh_virtual_general_preferring(register.into())
                     } else {
                         self.fresh_virtual_general()
                     }
@@ -4402,7 +4402,7 @@ impl Generator {
                             self.ephemeral_float_home_preference(function, &ephemeral_locals)
                         });
                     self.fresh_virtual_float_preferring(
-                        structured_recovered_float_homes::preference(local, preferred),
+                        structured_recovered_float_homes::preference(local, preferred.into()).into(),
                     )
                 }
             });
@@ -4805,7 +4805,7 @@ impl Generator {
         }
         self.structured_member_array_offset_owner = member_array_offset_layout.is_some();
         if dense_inline_save {
-            let logical_call_result_homes: Vec<u8> = function
+            let logical_call_result_homes: Vec<u32> = function
                 .locals
                 .iter()
                 .filter(|local| {
@@ -4814,7 +4814,7 @@ impl Generator {
                 })
                 .filter_map(|local| self.lookup_general(&local.name))
                 .collect();
-            let recycled_call_result_homes: Vec<u8> = function
+            let recycled_call_result_homes: Vec<u32> = function
                 .locals
                 .iter()
                 .filter(|local| {
@@ -4824,7 +4824,7 @@ impl Generator {
                 .filter_map(|local| self.lookup_general(&local.name))
                 .collect();
             self.normalize_structured_frame_argument_copies(
-                first_saved as u8,
+                (first_saved as u8).into(),
                 &logical_call_result_homes,
                 &recycled_call_result_homes,
             );
@@ -4846,8 +4846,8 @@ impl Generator {
             .filter(|_| implicit_tail_reachable)
         {
             let result = match function.return_type {
-                Type::Float | Type::Double => Eabi::float_result().number,
-                _ => Eabi::general_result().number,
+                Type::Float | Type::Double => u32::from(Eabi::float_result().number),
+                _ => u32::from(Eabi::general_result().number),
             };
             if self.behavior.frame_convention == FrameConvention::LinkageFirst
                 && in_place_call_combined_return_name(function).is_some()
@@ -4961,7 +4961,7 @@ impl Generator {
         {
             self.output.instructions.extend([
                 Instruction::LoadMultipleWord {
-                    d: frame_first_saved as u8,
+                    d: u32::from(frame_first_saved as u8),
                     a: 1,
                     offset: plan.frame_size - 4 * frame_saved_count as i16,
                 },
@@ -5024,7 +5024,7 @@ impl Generator {
             self.coalesce_member_xor_call_argument_loads();
         }
         if dense_frame && self.behavior.power_pc_7400_scheduling_enabled() {
-            self.schedule_power_pc_7400_call_result_handoff(first_saved as u8);
+            self.schedule_power_pc_7400_call_result_handoff((first_saved as u8).into());
         }
         if rounded_pointer_dense_layout {
             self.schedule_power_pc_7400_rounded_pointer_body();
@@ -5179,15 +5179,15 @@ impl Generator {
                         self.condition_global_values.insert(
                             plan.global.clone(),
                             crate::condition_global_cache::ConditionGlobalValue::
-                                PendingPreferred(register),
+                                PendingPreferred(u32::from(register)),
                         );
                     }
                     SharedSwitchGlobalValueHome::EagerFixed(register) => {
-                        self.emit_global_load_value(&plan.global, register)?;
+                        self.emit_global_load_value(&plan.global, register.into())?;
                         self.condition_global_values.insert(
                             plan.global.clone(),
                             crate::condition_global_cache::ConditionGlobalValue::
-                                Register(register),
+                                Register(u32::from(register)),
                         );
                     }
                 }
@@ -5750,7 +5750,7 @@ impl Generator {
                     }) {
                         self.fix_condition_member_value_register(
                             &member,
-                            Eabi::FIRST_GENERAL_ARGUMENT,
+                            Eabi::FIRST_GENERAL_ARGUMENT.into(),
                         );
                     }
                     if let Some(plan) = &guarded_member_handoff {
@@ -5923,8 +5923,8 @@ impl Generator {
                 }
                 Statement::Return(Some(value)) => {
                     let result = match function.return_type {
-                        Type::Float | Type::Double => Eabi::float_result().number,
-                        _ => Eabi::general_result().number,
+                        Type::Float | Type::Double => u32::from(Eabi::float_result().number),
+                        _ => u32::from(Eabi::general_result().number),
                     };
                     if self.unoptimized_inline_float_transaction_homes
                         && matches!(function.return_type, Type::Float | Type::Double)
@@ -6068,11 +6068,11 @@ impl Generator {
                     if terminal_volatile && matches!(value, Expression::Call { .. })
                         && expression_has_call(value)
                     {
-                        self.evaluate(value, declared_type, Eabi::general_result().number)?;
+                        self.evaluate(value, declared_type, u32::from(Eabi::general_result().number))?;
                         self.locations
                             .get_mut(name)
                             .expect("structured assignment home")
-                            .register = Eabi::general_result().number;
+                            .register = u32::from(Eabi::general_result().number);
                         continue;
                     }
                     if terminal_volatile {
@@ -6181,7 +6181,7 @@ impl Generator {
                             let register = if class == ValueClass::Float {
                                 self.fresh_virtual_float()
                             } else if let Some(preferred) = version_preference {
-                                self.fresh_virtual_general_preferring(preferred)
+                                self.fresh_virtual_general_preferring(preferred.into())
                             } else {
                                 self.fresh_virtual_general()
                             };
@@ -6233,7 +6233,7 @@ impl Generator {
                         let split_leaf_parameter_mask =
                             !self.non_leaf && leaf_parameter_mask_version(function, name, value);
                         let destination = if terminal_result {
-                            Eabi::general_result().number
+                            u32::from(Eabi::general_result().number)
                         } else if let Some(register) = terminal_argument {
                             register
                         } else if split_leaf_parameter_mask {
@@ -6245,7 +6245,7 @@ impl Generator {
                                         &statements[statement_index + 1..],
                                         name,
                                     ) {
-                                        self.fresh_virtual_general_preferring(register)
+                                        self.fresh_virtual_general_preferring(register.into())
                                     } else {
                                         self.fresh_virtual_general()
                                     }
@@ -6600,7 +6600,7 @@ impl Generator {
                     ));
                 };
                 self.structured_shared_switch_global_value =
-                    Some((plan.global.clone(), register));
+                    Some((plan.global.clone(), register.into()));
             }
             if shared_switch_global_plan
                 .as_ref()
@@ -6690,9 +6690,9 @@ fn structured_return_is_supported(function: &Function) -> bool {
 
 fn same_class_register(
     source_class: ValueClass,
-    source_register: u8,
+    source_register: u32,
     destination_class: ValueClass,
-    destination_register: u8,
+    destination_register: u32,
 ) -> bool {
     source_class == destination_class && source_register == destination_register
 }

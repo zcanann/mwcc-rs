@@ -12,7 +12,7 @@ use super::*;
 #[derive(Debug, Clone)]
 struct ConstantRange {
     load: usize,
-    destination: u8,
+    destination: u32,
     immediate: i16,
     uses: Vec<usize>,
 }
@@ -20,7 +20,7 @@ struct ConstantRange {
 #[derive(Debug)]
 struct ConstantReuse {
     ranges: Vec<ConstantRange>,
-    register: u8,
+    register: u32,
 }
 
 impl Generator {
@@ -87,11 +87,11 @@ fn repeated_integer_constant_reuse(
         if has_alternate_entry(&output.instructions, first_load + 1..last_use + 1) {
             continue;
         }
-        if let Some(register) = (3u8..=10).find(|&candidate| {
+        if let Some(register) = (3u32..=10).find(|&candidate| {
             register_is_available_for_ranges(
                 &output.instructions,
                 &matching,
-                candidate,
+                candidate.into(),
                 first_load,
                 last_use,
                 block_end,
@@ -99,7 +99,7 @@ fn repeated_integer_constant_reuse(
         }) {
             return Some(ConstantReuse {
                 ranges: matching,
-                register,
+                register: register.into(),
             });
         }
     }
@@ -150,7 +150,7 @@ fn constant_ranges(instructions: &[Instruction]) -> Vec<ConstantRange> {
 fn register_is_available_for_ranges(
     instructions: &[Instruction],
     ranges: &[ConstantRange],
-    candidate: u8,
+    candidate: u32,
     first_load: usize,
     last_use: usize,
     block_end: usize,
@@ -244,7 +244,7 @@ fn has_alternate_entry(instructions: &[Instruction], region: std::ops::Range<usi
 mod tests {
     use super::*;
 
-    fn li(register: u8) -> Instruction {
+    fn li(register: u32) -> Instruction {
         Instruction::AddImmediate {
             d: register,
             a: 0,
@@ -252,7 +252,7 @@ mod tests {
         }
     }
 
-    fn store(register: u8, offset: i16) -> Instruction {
+    fn store(register: u32, offset: i16) -> Instruction {
         Instruction::StoreWord {
             s: register,
             a: 31,

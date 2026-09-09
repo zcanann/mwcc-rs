@@ -388,14 +388,14 @@ impl Generator {
         ]);
     }
 
-    fn copy_barrier_symbol_high(&mut self, symbol: &str, register: u8) {
+    fn copy_barrier_symbol_high(&mut self, symbol: &str, register: u32) {
         self.record_relocation(RelocationKind::Addr16Ha, symbol);
         self.output
             .instructions
             .push(Instruction::load_immediate_shifted(register, 0));
     }
 
-    fn copy_barrier_symbol_low(&mut self, symbol: &str, destination: u8, base: u8) {
+    fn copy_barrier_symbol_low(&mut self, symbol: &str, destination: u32, base: u32) {
         self.record_relocation(RelocationKind::Addr16Lo, symbol);
         self.output.instructions.push(Instruction::AddImmediate {
             d: destination,

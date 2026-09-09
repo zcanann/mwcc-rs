@@ -7,7 +7,7 @@ pub(crate) fn report_pressure(
     generator: &Generator,
     liveness: &Liveness,
     allocation: &Allocation,
-    used: &[u8],
+    used: &[u32],
 ) {
     let Some(requested) = std::env::var_os("MWCC_DIAGNOSTIC_ALLOCATION") else {
         return;

@@ -79,7 +79,7 @@ impl Generator {
                 .any(|(index, parameter)| {
                     !self.locations.get(&parameter.name).is_some_and(|location| {
                         location.class == ValueClass::General
-                            && location.register == 3 + index as u8
+                            && location.register == (3 + index as u8).into()
                             && location.width == 32
                     })
                 })

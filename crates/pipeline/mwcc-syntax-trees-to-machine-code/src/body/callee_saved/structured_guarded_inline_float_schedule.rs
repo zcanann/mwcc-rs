@@ -117,13 +117,13 @@ impl Generator {
 #[derive(Clone, Copy)]
 struct GuardedInlineFloatPlan {
     start: usize,
-    guard_receiver: u8,
+    guard_receiver: u32,
     guard_member_offset: i16,
-    owner: u8,
+    owner: u32,
     owner_member_offset: i16,
     property_pointer_offset: i16,
     property_value_offset: i16,
-    property_home: u8,
+    property_home: u32,
 }
 
 fn guarded_inline_float_plan(instructions: &[Instruction]) -> Option<GuardedInlineFloatPlan> {

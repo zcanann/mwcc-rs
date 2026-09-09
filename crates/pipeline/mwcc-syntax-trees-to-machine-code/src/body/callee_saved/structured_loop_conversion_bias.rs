@@ -18,7 +18,7 @@ struct Plan {
 }
 
 impl Generator {
-    pub(crate) fn hoist_structured_loop_conversion_bias(&mut self, retained: u8) -> bool {
+    pub(crate) fn hoist_structured_loop_conversion_bias(&mut self, retained: u32) -> bool {
         let Some(plan) = plan(&self.output) else {
             return false;
         };

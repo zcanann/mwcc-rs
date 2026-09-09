@@ -11,14 +11,14 @@ pub(super) fn emit(
     flag: &str,
     read: &InlineRead,
 ) {
-    const LENGTH: u8 = 24;
-    const SELECTED: u8 = 25;
-    const ERROR: u8 = 26;
-    const GLOBAL: u8 = 27;
-    const BUFFER: u8 = 28;
-    const COUNT: u8 = 29;
-    const INDEX: u8 = 30;
-    const OUTPUT: u8 = 31;
+    const LENGTH: u32 = 24;
+    const SELECTED: u32 = 25;
+    const ERROR: u32 = 26;
+    const GLOBAL: u32 = 27;
+    const BUFFER: u32 = 28;
+    const COUNT: u32 = 29;
+    const INDEX: u32 = 30;
+    const OUTPUT: u32 = 31;
     let loop_body = generator.fresh_label();
     let temporary = generator.fresh_label();
     let selected = generator.fresh_label();

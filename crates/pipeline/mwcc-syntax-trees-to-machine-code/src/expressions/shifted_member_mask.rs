@@ -16,7 +16,7 @@ impl Generator {
     pub(crate) fn try_emit_fixed_address_member_clear_shift(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Expression::Binary {
             operator: BinaryOperator::ShiftRight,
@@ -90,7 +90,7 @@ impl Generator {
     pub(crate) fn try_emit_shifted_member_high_mask(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if destination == GENERAL_SCRATCH {
             return Ok(false);

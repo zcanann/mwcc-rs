@@ -37,7 +37,7 @@ impl Generator {
                 start,
                 [5, 1, 2, 0, 7, 3, 6, 4, 8],
             );
-            self.output.instructions[start + 1] = Instruction::move_register(4, index);
+            self.output.instructions[start + 1] = Instruction::move_register(4, index.into());
             self.output.instructions[start + 5] = Instruction::move_register(6, 5);
             self.output.instructions[start + 6] = Instruction::move_register(9, 8);
         }
@@ -58,7 +58,7 @@ impl Generator {
                 start,
                 [2, 1, 4, 0, 3, 5, 6],
             );
-            self.output.instructions[start + 1] = Instruction::move_register(4, index);
+            self.output.instructions[start + 1] = Instruction::move_register(4, index.into());
         }
     }
 
@@ -125,7 +125,7 @@ fn two_word_member_report(instructions: &[Instruction]) -> Option<usize> {
     })
 }
 
-fn indexed_word_pair_report(instructions: &[Instruction]) -> Option<(usize, u8)> {
+fn indexed_word_pair_report(instructions: &[Instruction]) -> Option<(usize, u32)> {
     instructions.windows(7).enumerate().find_map(|(start, window)| {
         let [
             Instruction::AddImmediate {
@@ -170,7 +170,7 @@ fn indexed_word_pair_report(instructions: &[Instruction]) -> Option<(usize, u8)>
     })
 }
 
-fn duplicate_word_pair_report(instructions: &[Instruction]) -> Option<(usize, u8)> {
+fn duplicate_word_pair_report(instructions: &[Instruction]) -> Option<(usize, u32)> {
     instructions.windows(9).enumerate().find_map(|(start, window)| {
         let [
             Instruction::AddImmediate { d: 3, a: format_base, .. },

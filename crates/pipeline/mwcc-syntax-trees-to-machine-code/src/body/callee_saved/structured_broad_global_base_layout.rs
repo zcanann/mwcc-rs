@@ -8,7 +8,7 @@
 use mwcc_syntax_trees::LocalDeclaration;
 
 pub(super) struct StructuredBroadGlobalBaseLayout {
-    preferences: std::collections::HashMap<String, u8>,
+    preferences: std::collections::HashMap<String, u32>,
 }
 
 impl StructuredBroadGlobalBaseLayout {
@@ -44,7 +44,7 @@ impl StructuredBroadGlobalBaseLayout {
         Some(Self { preferences })
     }
 
-    pub(super) fn preference(&self, name: &str) -> Option<u8> {
+    pub(super) fn preference(&self, name: &str) -> Option<u32> {
         self.preferences.get(name).copied()
     }
 

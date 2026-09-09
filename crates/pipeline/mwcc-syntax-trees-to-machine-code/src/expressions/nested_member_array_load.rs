@@ -50,7 +50,7 @@ impl Generator {
         &mut self,
         row: &Expression,
         column: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(load) = classify(row, column) else {
             return Ok(false);

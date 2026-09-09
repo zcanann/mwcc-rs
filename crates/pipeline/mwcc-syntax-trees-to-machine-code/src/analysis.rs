@@ -2099,6 +2099,26 @@ pub(crate) fn is_compound_load(expression: &Expression) -> bool {
     ) && contains_memory_load(expression)
 }
 
+/// A load-packing tree can keep each accumulated value in a virtual home while
+/// evaluating the next load. This also covers casts around the unshifted byte
+/// in little-endian decoders, without admitting arbitrary compound arithmetic.
+pub(crate) fn is_shift_or_load_tree(expression: &Expression) -> bool {
+    match expression {
+        Expression::Cast { operand, .. } => is_shift_or_load_tree(operand),
+        Expression::Binary { operator: BinaryOperator::BitOr, left, right } => {
+            is_shift_or_load_tree(left) && is_shift_or_load_tree(right)
+        }
+        Expression::Binary {
+            operator: BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight,
+            left, right,
+        } => constant_value(right).is_some_and(|amount| (0..32).contains(&amount))
+            && is_shift_or_load_tree(left),
+        Expression::Dereference { .. } | Expression::Index { .. }
+        | Expression::Member { .. } => !expression_has_side_effect(expression),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

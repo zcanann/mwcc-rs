@@ -198,9 +198,9 @@ impl Generator {
             return Ok(false);
         }
 
-        const STORED_VALUE: u8 = 31;
-        const ELEMENT: u8 = 30;
-        const COUNTER: u8 = 29;
+        const STORED_VALUE: u32 = 31;
+        const ELEMENT: u32 = 30;
+        const COUNTER: u32 = 29;
         self.non_leaf = true;
         self.frame_size = 32;
         self.callee_saved = vec![STORED_VALUE, ELEMENT, COUNTER];

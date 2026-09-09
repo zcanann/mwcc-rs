@@ -13,7 +13,7 @@ use super::*;
 use mwcc_syntax_trees::Parameter;
 
 pub(super) struct StructuredLoopMemberReceiverLayout {
-    preferences: [u8; 4],
+    preferences: [u32; 4],
     cursor: String,
     receiver_member_offset: Option<i16>,
 }
@@ -71,8 +71,8 @@ impl StructuredLoopMemberReceiverLayout {
         })
     }
 
-    pub(super) fn preference(&self, home_index: usize) -> Option<u8> {
-        self.preferences.get(home_index).copied()
+    pub(super) fn preference(&self, home_index: usize) -> Option<u32> {
+        (self.preferences.get(home_index).copied()).map(u32::from)
     }
 
     pub(super) fn save_order(&self) -> [usize; 4] {
@@ -97,7 +97,7 @@ impl StructuredLoopMemberReceiverLayout {
         generator: &mut Generator,
         local_name: &str,
         initializer: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if local_name != self.cursor {
             return Ok(false);
@@ -141,8 +141,8 @@ impl StructuredLoopMemberReceiverLayout {
     pub(super) fn coalesce_receiver_load(
         &self,
         generator: &mut Generator,
-        cursor_home: u8,
-        receiver_home: u8,
+        cursor_home: u32,
+        receiver_home: u32,
     ) {
         let Some(offset) = self.receiver_member_offset else {
             return;

@@ -87,7 +87,7 @@ pub(crate) fn remove_uninitialized_value_hints(function: &Function) -> Option<Fu
 /// order.
 pub(crate) enum ConstStoreRun {
     AllSame,
-    Distinct(Vec<(i32, u8)>),
+    Distinct(Vec<(i32, u32)>),
 }
 
 /// The `(operand, constant)` a guard condition compares against, when it is `<var> OP <const>`
@@ -1944,8 +1944,8 @@ pub(crate) fn inline_single_call_result(function: &Function) -> Option<Function>
 /// One arm of a pure-assign select diamond, as a value for the phi register.
 pub(crate) enum SelectArm {
     Constant(i16),
-    Copy(u8),
-    Computed { source: u8, immediate: i16 },
+    Copy(u32),
+    Computed { source: u32, immediate: i16 },
 }
 
 /// `*(int*)p` / `*(1+(int*)p)` for a POINTER variable (no AddressOf —

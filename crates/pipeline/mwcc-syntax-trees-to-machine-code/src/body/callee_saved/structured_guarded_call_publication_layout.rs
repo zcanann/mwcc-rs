@@ -12,7 +12,7 @@ use super::*;
 use mwcc_syntax_trees::{LocalDeclaration, Parameter};
 
 pub(super) struct StructuredGuardedCallPublicationLayout {
-    preference_by_home: [u8; 5],
+    preference_by_home: [u32; 5],
     save_order: [usize; 5],
 }
 
@@ -140,8 +140,8 @@ impl StructuredGuardedCallPublicationLayout {
         })
     }
 
-    pub(super) fn preference(&self, home_index: usize) -> Option<u8> {
-        self.preference_by_home.get(home_index).copied()
+    pub(super) fn preference(&self, home_index: usize) -> Option<u32> {
+        (self.preference_by_home.get(home_index).copied()).map(u32::from)
     }
 
     pub(super) fn save_order(&self) -> [usize; 5] {

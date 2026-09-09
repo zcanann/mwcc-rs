@@ -50,7 +50,7 @@ impl Generator {
     }
 }
 
-fn member_bound_call_entry(instructions: &[Instruction]) -> Option<(usize, u8, u8)> {
+fn member_bound_call_entry(instructions: &[Instruction]) -> Option<(usize, u32, u32)> {
     instructions.windows(10).enumerate().find_map(|(start, window)| {
         match window {
             [
@@ -107,8 +107,8 @@ fn member_bound_call_entry(instructions: &[Instruction]) -> Option<(usize, u8, u
 fn retain_member_bound_call_arguments(
     instructions: &mut [Instruction],
     body_start: usize,
-    saved_right: u8,
-    saved_left: u8,
+    saved_right: u32,
+    saved_left: u32,
 ) {
     let Some(call) = instructions[body_start..]
         .iter()
@@ -140,7 +140,7 @@ fn retain_member_bound_call_arguments(
     }
 }
 
-fn is_member_bound_call_epilogue(window: &[Instruction], homes: [u8; 3]) -> bool {
+fn is_member_bound_call_epilogue(window: &[Instruction], homes: [u32; 3]) -> bool {
     matches!(
         window,
         [

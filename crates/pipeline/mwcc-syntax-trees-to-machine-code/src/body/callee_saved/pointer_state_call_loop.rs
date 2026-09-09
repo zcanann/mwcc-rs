@@ -153,7 +153,7 @@ impl Generator {
             node_local.name.clone(),
             Location {
                 class: ValueClass::General,
-                register: Eabi::general_result().number,
+                register: u32::from(Eabi::general_result().number),
                 signed: false,
                 width: 32,
                 pointee: None,
@@ -172,7 +172,7 @@ impl Generator {
             },
         );
 
-        let node = Eabi::general_result().number;
+        let node = u32::from(Eabi::general_result().number);
         self.evaluate(head, node_local.declared_type, node)?;
 
         // The for-loop's retained source edges. The first two are adjacent

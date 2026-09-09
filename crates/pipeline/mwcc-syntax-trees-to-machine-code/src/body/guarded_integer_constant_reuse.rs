@@ -15,25 +15,25 @@ struct Plan {
     condition_load: usize,
     second_load: usize,
     saved_result: Option<usize>,
-    scratch: u8,
+    scratch: u32,
     immediate: i16,
 }
 
 impl Generator {
     pub(crate) fn reuse_guarded_integer_constant(&mut self) {
         while let Some(plan) = recognize(&self.output) {
-            let retained = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+            let retained: u32 = (Eabi::FIRST_GENERAL_ARGUMENT + 1) as u32;
             let Instruction::AddImmediate { d, .. } =
                 &mut self.output.instructions[plan.first_load]
             else {
                 unreachable!("the guarded constant plan owns its first load");
             };
-            *d = retained;
+            *d = u32::from(retained);
             for store in [plan.first_load + 1, plan.second_load + 1] {
                 let Instruction::StoreWord { s, .. } = &mut self.output.instructions[store] else {
                     unreachable!("the guarded constant plan owns both stores");
                 };
-                *s = retained;
+                *s = u32::from(retained);
             }
             crate::remove_instruction_retargeting_to_next(self, plan.second_load);
 
@@ -46,20 +46,20 @@ impl Generator {
                 let destination = match self.output.instructions[saved] {
                     Instruction::AddImmediate {
                         d,
-                        a: Eabi::FIRST_GENERAL_ARGUMENT,
+                        a: 3,
                         immediate: 0,
                     }
                     | Instruction::Or {
                         a: d,
-                        s: Eabi::FIRST_GENERAL_ARGUMENT,
-                        b: Eabi::FIRST_GENERAL_ARGUMENT,
+                        s: 3,
+                        b: 3,
                     } => d,
                     _ => unreachable!("the guarded plan owns the saved result copy"),
                 };
                 // This is a control-flow-preservation copy, not a straight-line
                 // integer materialization; build 163 also spells it as `mr`.
                 self.output.instructions[saved] =
-                    Instruction::move_register(destination, Eabi::FIRST_GENERAL_ARGUMENT);
+                    Instruction::move_register(destination, Eabi::FIRST_GENERAL_ARGUMENT.into());
             } else {
                 // With no result home competing for the issue slot, MWCC starts
                 // the condition's independent SDA load before materializing and
@@ -166,13 +166,13 @@ fn saved_result_before(instructions: &[Instruction], first_load: usize) -> Optio
     let destination = match instructions[saved] {
         Instruction::AddImmediate {
             d,
-            a: Eabi::FIRST_GENERAL_ARGUMENT,
+            a: 3,
             immediate: 0,
         }
         | Instruction::Or {
             a: d,
-            s: Eabi::FIRST_GENERAL_ARGUMENT,
-            b: Eabi::FIRST_GENERAL_ARGUMENT,
+            s: 3,
+            b: 3,
         } if (14..=31).contains(&d) => d,
         _ => return Some(None),
     };
@@ -231,7 +231,7 @@ fn has_alternate_entry(
     })
 }
 
-fn dies_at_call(instructions: &[Instruction], start: usize, retained: u8) -> bool {
+fn dies_at_call(instructions: &[Instruction], start: usize, retained: u32) -> bool {
     for instruction in instructions.iter().skip(start).take(3) {
         if matches!(instruction, Instruction::BranchAndLink { .. }) {
             return true;

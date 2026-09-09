@@ -296,7 +296,7 @@ impl Generator {
     }
 
     fn emit_linked_list_remove(&mut self, shape: &LinkedListRemove<'_>) {
-        const LIST: u8 = 31;
+        const LIST: u32 = 31;
         const NEXT_SLOT: i16 = 16;
         let head_nonempty = self.fresh_label();
         let loop_body = self.fresh_label();

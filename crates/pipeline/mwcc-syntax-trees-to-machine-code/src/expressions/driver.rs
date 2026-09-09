@@ -49,7 +49,7 @@ impl Generator {
     pub(crate) fn evaluate_general(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if self.try_emit_spr_instruction_encoding(expression, destination)? {
             return Ok(());
@@ -105,7 +105,7 @@ impl Generator {
                 sorted.sort_unstable();
                 sorted.dedup();
                 let distinct = names.len() == leaves.len() && sorted.len() == names.len();
-                let registers: Option<Vec<u8>> = leaves
+                let registers: Option<Vec<u32>> = leaves
                     .iter()
                     .map(|leaf| self.general_register_of_leaf(leaf).ok())
                     .collect();
@@ -366,7 +366,7 @@ impl Generator {
             )),
             Expression::CallThrough { target, arguments } => {
                 self.emit_bare_indirect_call_statement(target, arguments)?;
-                let result = Eabi::general_result().number;
+                let result = u32::from(Eabi::general_result().number);
                 if destination != result {
                     self.emit_integer_materialization_copy(destination, result);
                 }
@@ -497,7 +497,7 @@ impl Generator {
                     self.emit_global_array_decay(name, total_size, destination)
                 } else if let Some(source) = self.condition_global_base(name)? {
                     if source != destination {
-                        self.emit_integer_materialization_copy(destination, source);
+                        self.emit_integer_materialization_copy(destination, source.into());
                     }
                     Ok(())
                 } else {
@@ -1096,10 +1096,12 @@ impl Generator {
                 // loads (`*(p+1)+*(p+2)`) stay byte-exact (loads adjacent). mwcc hoists both loads to
                 // the top with an allocator-chosen register assignment; the generic combine
                 // interleaves load/op/load/op — same result, different schedule. Defer, don't ship.
-                // Constant shifts use the ordinary virtual operand homes:
+                // Constant shifts and load-packing OR trees use virtual operand homes:
                 // the left value survives while the right load uses r0.
                 if is_compound_load(left) && is_compound_load(right)
                     && !(is_constant_shift(left) && is_constant_shift(right))
+                    && !(*operator == BinaryOperator::BitOr
+                        && is_shift_or_load_tree(left) && is_shift_or_load_tree(right))
                 {
                     return Err(Diagnostic::error("a binary over two compound-load operands needs the allocator (roadmap)"));
                 }
@@ -1247,7 +1249,7 @@ impl Generator {
         &mut self,
         operator: UnaryOperator,
         operand: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         let d = destination;
         match operator {

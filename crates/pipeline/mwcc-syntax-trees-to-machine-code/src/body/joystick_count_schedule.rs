@@ -219,14 +219,14 @@ fn set_forward_target(instruction: &mut Instruction, destination: usize) {
     *target = destination;
 }
 
-fn set_word_load_destination(instruction: &mut Instruction, destination: u8) {
+fn set_word_load_destination(instruction: &mut Instruction, destination: u32) {
     let Instruction::LoadWord { d, .. } = instruction else {
         unreachable!("the complete joystick-count stream was recognized")
     };
     *d = destination;
 }
 
-fn set_float_load(instruction: &mut Instruction, destination: u8, base: u8) {
+fn set_float_load(instruction: &mut Instruction, destination: u32, base: u32) {
     let Instruction::LoadFloatSingle { d, a, .. } = instruction else {
         unreachable!("the complete joystick-count stream was recognized")
     };
@@ -234,7 +234,7 @@ fn set_float_load(instruction: &mut Instruction, destination: u8, base: u8) {
     *a = base;
 }
 
-fn set_float_load_base(instruction: &mut Instruction, base: u8) {
+fn set_float_load_base(instruction: &mut Instruction, base: u32) {
     let Instruction::LoadFloatSingle { a, .. } = instruction else {
         unreachable!("the complete joystick-count stream was recognized")
     };
@@ -252,7 +252,7 @@ fn swap_instructions_and_relocations(generator: &mut Generator, left: usize, rig
     }
 }
 
-fn is_absolute_value_diamond(window: &[Instruction], start: usize, base: u8) -> Option<i16> {
+fn is_absolute_value_diamond(window: &[Instruction], start: usize, base: u32) -> Option<i16> {
     match &window[start..start + 7] {
         [
             Instruction::LoadFloatSingle { d: 0, a: 0, .. },
@@ -270,7 +270,7 @@ fn is_absolute_value_diamond(window: &[Instruction], start: usize, base: u8) -> 
 fn is_byte_limit_test(
     window: &[Instruction],
     start: usize,
-    base: u8,
+    base: u32,
     branch_options: u8,
 ) -> Option<(i16, i16)> {
     match &window[start..start + 11] {
@@ -296,7 +296,7 @@ fn is_byte_limit_test(
 fn is_call_and_reset(
     window: &[Instruction],
     start: usize,
-    base: u8,
+    base: u32,
     two_stores: bool,
 ) -> Option<(i16, i16, i16)> {
     let width = if two_stores { 8 } else { 6 };
@@ -332,7 +332,7 @@ fn is_call_and_reset(
 fn is_shared_call_and_reset(
     window: &[Instruction],
     start: usize,
-    base: u8,
+    base: u32,
 ) -> Option<(i16, i16, i16)> {
     match &window[start..start + 7] {
         [

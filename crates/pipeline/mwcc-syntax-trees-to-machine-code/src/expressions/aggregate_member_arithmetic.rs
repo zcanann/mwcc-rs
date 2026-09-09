@@ -47,7 +47,7 @@ impl Generator {
             return Ok(false);
         };
 
-        let scale = self.fresh_virtual_float_preferring(Eabi::float_result().number);
+        let scale = self.fresh_virtual_float_preferring(u32::from(Eabi::float_result().number));
         self.evaluate_float(scalar, scale)?;
         let address = self.member_base_register(base)?;
         let lane = self.fresh_virtual_float_preferring(FLOAT_SCRATCH);

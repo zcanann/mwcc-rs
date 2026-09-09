@@ -123,7 +123,7 @@ fn final_noncopy_packet(instructions: &[Instruction]) -> Option<usize> {
 #[derive(Clone, Copy)]
 struct NoncopyPacket {
     start: usize,
-    cursor: u8,
+    cursor: u32,
 }
 
 fn noncopy_packet(instructions: &[Instruction]) -> Option<NoncopyPacket> {

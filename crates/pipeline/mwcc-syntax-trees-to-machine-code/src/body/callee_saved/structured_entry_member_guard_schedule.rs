@@ -28,7 +28,7 @@ impl Generator {
     }
 }
 
-fn entry_member_guard_home(instructions: &[Instruction]) -> Option<(usize, u8, u8)> {
+fn entry_member_guard_home(instructions: &[Instruction]) -> Option<(usize, u32, u32)> {
     instructions
         .windows(5)
         .enumerate()
@@ -71,7 +71,7 @@ fn entry_member_guard_home(instructions: &[Instruction]) -> Option<(usize, u8, u
 fn saved_home_is_live_past_a_call(
     instructions: &[Instruction],
     tail_start: usize,
-    saved: u8,
+    saved: u32,
 ) -> bool {
     let Some(first_call) = instructions[tail_start..]
         .iter()

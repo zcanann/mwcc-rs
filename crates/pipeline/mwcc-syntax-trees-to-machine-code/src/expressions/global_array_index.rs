@@ -136,7 +136,7 @@ impl Generator {
         total_size: u32,
         pointee: Pointee,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Expression::Variable(index_name) = index else {
             return Ok(false);
@@ -212,7 +212,7 @@ impl Generator {
         total_size: u32,
         pointee: Pointee,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Expression::Call {
             name: call,
@@ -247,7 +247,7 @@ impl Generator {
             return Ok(false);
         }
 
-        let index_register = Eabi::general_result().number;
+        let index_register = u32::from(Eabi::general_result().number);
         self.evaluate_general(index, index_register)?;
         let high = self.fresh_virtual_general_preferring(4);
         self.emit_address_high(high, name);
@@ -418,7 +418,7 @@ impl Generator {
         total_size: u32,
         pointee: Pointee,
         index: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some((leaf, factor, offset)) = split_scaled_index(index) else {
             return Ok(false);
@@ -529,11 +529,11 @@ impl Generator {
         &mut self,
         name: &str,
         total_size: u32,
-        index: u8,
+        index: u32,
         stride: u32,
         member_offset: u32,
         pointee: Pointee,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if self.behavior.global_array_index_style
             != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
@@ -590,9 +590,9 @@ impl Generator {
         name: &str,
         total_size: u32,
         pointee: Pointee,
-        index: u8,
+        index: u32,
         normalize_unsigned_byte: bool,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         if self.behavior.global_array_index_style
             != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
@@ -670,8 +670,8 @@ impl Generator {
         name: &str,
         total_size: u32,
         pointee: Pointee,
-        index: u8,
-        destination: u8,
+        index: u32,
+        destination: u32,
     ) -> Compilation<bool> {
         if self.behavior.global_array_index_style
             != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
@@ -734,10 +734,10 @@ impl Generator {
         &mut self,
         name: &str,
         total_size: u32,
-        index: u8,
+        index: u32,
         stride: u32,
         member_offset: u32,
-        address: u8,
+        address: u32,
     ) -> Compilation<Option<i16>> {
         if self.behavior.global_array_index_style
             != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
@@ -776,10 +776,10 @@ impl Generator {
         &mut self,
         name: &str,
         total_size: u32,
-        index: u8,
+        index: u32,
         stride: u32,
         member_offset: u32,
-        address: u8,
+        address: u32,
     ) -> Compilation<bool> {
         if self.behavior.global_array_index_style
             != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
@@ -838,8 +838,8 @@ impl Generator {
         name: &str,
         total_size: u32,
         pointee: Pointee,
-        index: u8,
-        value: u8,
+        index: u32,
+        value: u32,
     ) -> Compilation<bool> {
         if self.behavior.global_array_index_style
             != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
@@ -851,7 +851,7 @@ impl Generator {
         self.emit_legacy_global_array_address(name, total_size, pointee.size(), index, index)?;
         self.output
             .instructions
-            .push(displacement_store(pointee, value, index, 0)?);
+            .push(displacement_store(pointee, value.into(), index, 0)?);
         Ok(true)
     }
 
@@ -933,7 +933,7 @@ impl Generator {
         &mut self,
         name: &str,
         pointee: Pointee,
-        index: u8,
+        index: u32,
         value: i16,
         offset: i16,
     ) -> Compilation<bool> {
@@ -1001,8 +1001,8 @@ impl Generator {
         name: &str,
         total_size: u32,
         element_size: u8,
-        index: u8,
-        address: u8,
+        index: u32,
+        address: u32,
     ) -> Compilation<()> {
         let shift = element_size.trailing_zeros() as u8;
         let small =

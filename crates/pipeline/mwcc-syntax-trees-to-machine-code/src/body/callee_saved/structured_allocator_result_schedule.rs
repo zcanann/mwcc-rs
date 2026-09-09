@@ -18,12 +18,12 @@ impl Generator {
         else {
             unreachable!("the pool high half was matched")
         };
-        *d = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+        *d = 4;
         let Instruction::LoadFloatSingle { a, .. } = &mut self.output.instructions[region.pool_low]
         else {
             unreachable!("the pool load was matched")
         };
-        *a = Eabi::FIRST_GENERAL_ARGUMENT + 1;
+        *a = 4;
         self.output.instructions[region.zero] = Instruction::load_immediate(5, 0);
         let Instruction::StoreHalfword { s, a, .. } =
             &mut self.output.instructions[region.first_store]
@@ -31,7 +31,7 @@ impl Generator {
             unreachable!("the first member store was matched")
         };
         *s = 5;
-        *a = Eabi::FIRST_GENERAL_ARGUMENT;
+        *a = 3;
 
         self.move_instruction_before(region.cursor_reload, region.result_copy);
         self.move_instruction_before(region.zero, region.result_copy + 1);
@@ -46,7 +46,7 @@ impl Generator {
         self.schedule_structured_noncopy_tail_packets();
     }
 
-    fn reuse_allocator_initialization_zero(&mut self, seed: usize, result: u8, zero: u8) {
+    fn reuse_allocator_initialization_zero(&mut self, seed: usize, result: u32, zero: u32) {
         if !matches!(
             self.output.instructions.get(seed),
             Some(Instruction::AddImmediate {
@@ -82,7 +82,7 @@ impl Generator {
         crate::remove_instruction_retargeting_to_next(self, index);
     }
 
-    fn schedule_allocator_initialization_prefix(&mut self, result: u8) {
+    fn schedule_allocator_initialization_prefix(&mut self, result: u32) {
         let Some(prefix) = allocator_initialization_prefix(&self.output, result) else {
             return;
         };
@@ -115,7 +115,7 @@ impl Generator {
             let Instruction::StoreWord { s, .. } = &mut self.output.instructions[copy + 1] else {
                 unreachable!("the direct result store was matched")
             };
-            *s = Eabi::FIRST_GENERAL_ARGUMENT;
+            *s = 3;
             self.remove_allocator_result_instruction(copy);
         }
     }
@@ -129,7 +129,7 @@ struct AllocatorCursorResult {
     first_store: usize,
     pool_high: usize,
     pool_low: usize,
-    result: u8,
+    result: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -140,7 +140,7 @@ struct AllocatorInitializationPrefix {
     constant_high: usize,
     constant_low: usize,
     compare: usize,
-    object: u8,
+    object: u32,
 }
 
 fn allocator_cursor_result(
@@ -155,8 +155,8 @@ fn allocator_cursor_result(
         }
         let [Instruction::Or {
             a: result,
-            s: Eabi::FIRST_GENERAL_ARGUMENT,
-            b: Eabi::FIRST_GENERAL_ARGUMENT,
+            s: 3,
+            b: 3,
         }, Instruction::LoadWord {
             d: cursor, a: 1, ..
         }, Instruction::AddImmediate {
@@ -224,7 +224,7 @@ fn allocator_cursor_result(
 
 fn allocator_initialization_prefix(
     output: &mwcc_machine_code::MachineFunction,
-    result: u8,
+    result: u32,
 ) -> Option<AllocatorInitializationPrefix> {
     let first_width = output.instructions.windows(4).position(|window| {
         matches!(
@@ -327,8 +327,8 @@ fn allocator_initialization_prefix(
 
 fn assign_allocator_initialization_registers(
     instructions: &mut [Instruction],
-    object: u8,
-    result: u8,
+    object: u32,
+    result: u32,
 ) {
     for (load_offset, store_offset) in [(20, 4), (28, 12)] {
         if let Some(start) = instructions.windows(2).position(|window| {
@@ -445,7 +445,7 @@ fn assign_allocator_initialization_registers(
     }
 }
 
-fn reusable_zero_store(window: &[Instruction], result: u8, offsets: &[i16]) -> bool {
+fn reusable_zero_store(window: &[Instruction], result: u32, offsets: &[i16]) -> bool {
     matches!(
         window,
         [
@@ -471,8 +471,8 @@ fn direct_call_result_store(window: &[Instruction]) -> bool {
             Instruction::BranchAndLink { .. },
             Instruction::Or {
                 a: temporary,
-                s: Eabi::FIRST_GENERAL_ARGUMENT,
-                b: Eabi::FIRST_GENERAL_ARGUMENT,
+                s: 3,
+                b: 3,
             },
             Instruction::StoreWord {
                 s,
@@ -484,7 +484,7 @@ fn direct_call_result_store(window: &[Instruction]) -> bool {
     )
 }
 
-fn writes_result_schedule_register(instruction: &Instruction, register: u8) -> bool {
+fn writes_result_schedule_register(instruction: &Instruction, register: u32) -> bool {
     mwcc_vreg::register_operands(instruction)
         .iter()
         .any(|operand| {
@@ -700,7 +700,7 @@ mod tests {
             Instruction::BranchAndLink {
                 target: "get_data".into(),
             },
-            Instruction::move_register(47, Eabi::FIRST_GENERAL_ARGUMENT),
+            Instruction::move_register(47, u32::from(Eabi::FIRST_GENERAL_ARGUMENT)),
             Instruction::StoreWord {
                 s: 47,
                 a: 38,
@@ -711,7 +711,7 @@ mod tests {
             Instruction::BranchAndLink {
                 target: "get_data".into(),
             },
-            Instruction::move_register(47, Eabi::FIRST_GENERAL_ARGUMENT),
+            Instruction::move_register(47, u32::from(Eabi::FIRST_GENERAL_ARGUMENT)),
             Instruction::StoreWord {
                 s: 46,
                 a: 38,

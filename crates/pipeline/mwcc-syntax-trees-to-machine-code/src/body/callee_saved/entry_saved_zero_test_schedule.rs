@@ -77,7 +77,7 @@ fn find_entry_saved_zero_test(instructions: &[Instruction]) -> Option<(usize, us
     None
 }
 
-fn preserves_entry_zero_record(instruction: &Instruction, saved: u8) -> bool {
+fn preserves_entry_zero_record(instruction: &Instruction, saved: u32) -> bool {
     let redefines_saved = mwcc_vreg::register_operands(instruction)
         .into_iter()
         .any(|operand| {

@@ -21,11 +21,11 @@ enum IndexedArgument {
 }
 
 impl IndexedArgument {
-    fn cursor_stride(self) -> Option<u8> {
+    fn cursor_stride(self) -> Option<u32> {
         match self {
             Self::WordValue => Some(4),
             Self::Address { stride: 1 } => None,
-            Self::Address { stride } => Some(stride),
+            Self::Address { stride } => Some(stride.into()),
         }
     }
 }
@@ -152,10 +152,10 @@ impl Generator {
         {
             return Ok(false);
         }
-        const HIGH: u8 = 31;
-        const MIDDLE: u8 = 30;
-        const LOW: u8 = 29;
-        const CONTEXT: u8 = 28;
+        const HIGH: u32 = 31;
+        const MIDDLE: u32 = 30;
+        const LOW: u32 = 29;
+        const CONTEXT: u32 = 28;
         let cursor_stride = shape.argument.cursor_stride();
         let body = self.fresh_label();
         let condition = self.fresh_label();
@@ -290,7 +290,7 @@ impl Generator {
                 Instruction::AddImmediate {
                     d: HIGH,
                     a: HIGH,
-                    immediate: i16::from(stride),
+                    immediate: i16::try_from(stride).expect("register-derived offset"),
                 },
             ]);
         } else {

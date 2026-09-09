@@ -5,7 +5,7 @@ use super::*;
 impl Generator {
     /// Terminal address schedules overwrite the index. A surrounding statement
     /// or named virtual may still own it, so hand that schedule a private copy.
-    pub(crate) fn preserve_address_index(&mut self, index: u8) -> u8 {
+    pub(crate) fn preserve_address_index(&mut self, index: u32) -> u32 {
         let named_virtual = mwcc_vreg::Reg::is_virtual_field(index)
             && self.locations.values().any(|location| {
                 location.class == ValueClass::General && location.register == index
@@ -31,7 +31,7 @@ impl Generator {
     pub(crate) fn materialize_index_operand(
         &mut self,
         expression: &Expression,
-    ) -> Compilation<u8> {
+    ) -> Compilation<u32> {
         if let Ok(register) = self.general_register_of_leaf(expression) {
             return Ok(register);
         }

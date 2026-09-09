@@ -6,20 +6,20 @@ use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::BinaryOperator;
 
 pub(crate) struct Operands {
-    pub(crate) left: u8,
-    pub(crate) right: u8,
+    pub(crate) left: u32,
+    pub(crate) right: u32,
     pub(crate) reversed: bool,
 }
 
 impl Operands {
-    pub(crate) fn ordered(left: u8, right: u8) -> Compilation<Operands> {
+    pub(crate) fn ordered(left: u32, right: u32) -> Compilation<Operands> {
         Ok(Operands {
             left,
             right,
             reversed: false,
         })
     }
-    pub(crate) fn reversed(left: u8, right: u8) -> Compilation<Operands> {
+    pub(crate) fn reversed(left: u32, right: u32) -> Compilation<Operands> {
         Ok(Operands {
             left,
             right,
@@ -27,7 +27,7 @@ impl Operands {
         })
     }
     /// The (first, second) operand registers for a commutative instruction.
-    pub(crate) fn commutative(&self) -> (u8, u8) {
+    pub(crate) fn commutative(&self) -> (u32, u32) {
         if self.reversed {
             (self.right, self.left)
         } else {
@@ -40,7 +40,7 @@ impl Operands {
 /// Subtraction is ordered so `subf` computes `left - right`.
 pub(crate) fn general_combine(
     operator: BinaryOperator,
-    destination: u8,
+    destination: u32,
     operands: Operands,
 ) -> Compilation<Instruction> {
     let (first, second) = operands.commutative();
@@ -99,7 +99,7 @@ pub(crate) fn general_combine(
 
 pub(crate) fn float_combine(
     operator: BinaryOperator,
-    destination: u8,
+    destination: u32,
     operands: Operands,
     double: bool,
 ) -> Compilation<Instruction> {

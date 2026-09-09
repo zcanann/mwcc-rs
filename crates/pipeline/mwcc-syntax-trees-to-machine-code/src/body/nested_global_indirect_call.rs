@@ -152,9 +152,9 @@ impl Generator {
         {
             return Ok(false);
         }
-        for (parameter, expected_register) in function.parameters.iter().zip(3u8..=9) {
+        for (parameter, expected_register) in function.parameters.iter().zip(3u32..=9) {
             if !matches!(self.locations.get(&parameter.name), Some(location)
-                if location.class == ValueClass::General && location.register == expected_register)
+                if location.class == ValueClass::General && location.register == expected_register.into())
             {
                 return Ok(false);
             }

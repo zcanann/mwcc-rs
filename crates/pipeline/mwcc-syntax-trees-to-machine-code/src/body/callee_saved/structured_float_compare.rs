@@ -98,7 +98,7 @@ impl Generator {
         &self,
         function: &Function,
         ephemeral_locals: &[&LocalDeclaration],
-    ) -> u8 {
+    ) -> u32 {
         if self.structured_float_handoff_local(function, ephemeral_locals).is_some() {
             2
         } else {
@@ -180,7 +180,7 @@ impl Generator {
     pub(crate) fn retained_float_compare_register(
         &self,
         operand: &Expression,
-    ) -> Option<u8> {
+    ) -> Option<u32> {
         self.retained_float_compare_value.as_ref().and_then(|retained| {
             same_direct_float_memory_load(&retained.expression, operand)
                 .then_some(retained.register)

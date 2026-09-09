@@ -1,10 +1,10 @@
 use super::*;
 
-const MESSAGE_ID: u8 = 27;
-const OUTPUT: u8 = 28;
-const INDEX: u8 = 29;
-const ERROR: u8 = 30;
-const BUFFER: u8 = 31;
+const MESSAGE_ID: u32 = 27;
+const OUTPUT: u32 = 28;
+const INDEX: u32 = 29;
+const ERROR: u32 = 30;
+const BUFFER: u32 = 31;
 // GC/1.3 build 163 numbers the eliminated lookup, reset, and setter value
 // graphs before the caller's diagnostic string. The composed machine body no
 // longer visits those graphs, so retain their measured source-analysis cost.

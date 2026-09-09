@@ -17,7 +17,7 @@ struct Plan {
 impl Generator {
     pub(crate) fn hoist_structured_loop_integer_conversion_high(
         &mut self,
-        retained: u8,
+        retained: u32,
     ) -> bool {
         let Some(plan) = plan(&self.output) else {
             return false;

@@ -17,16 +17,15 @@ use mwcc_vreg::{Class, Reg, RegisterConstraints, VirtualRegister};
 use std::collections::{HashMap, HashSet};
 
 /// The scratch register mwcc spills the secondary operand of a binary node into.
-pub(crate) const GENERAL_SCRATCH: u8 = 0; // r0
-pub(crate) const FLOAT_SCRATCH: u8 = 0; // f0
+pub(crate) const GENERAL_SCRATCH: u32 = 0; // r0
+pub(crate) const FLOAT_SCRATCH: u32 = 0; // f0
 
 /// Per-register-file virtual identity cursors.
 ///
 /// Instruction fields encode a virtual ID together with an operand's
 /// machine-described class. General and floating registers therefore have
-/// independent 224-ID namespaces; sharing one cursor needlessly halved that
-/// capacity and made long mixed GPR/FPR functions hit the transitional field
-/// ceiling.
+/// independent namespaces. IDs remain wide through selection and liveness;
+/// allocation resolves each namespace into its own physical register file.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct VirtualCursors {
     pub(crate) general: u32,
@@ -81,7 +80,7 @@ pub(crate) fn float_compare_literal_key(
 #[derive(Clone, Copy)]
 pub(crate) struct PreloadedFloatCompareLiteral {
     pub(crate) key: FloatCompareLiteralKey,
-    pub(crate) register: u8,
+    pub(crate) register: u32,
     pub(crate) remaining_uses: usize,
     pub(crate) reuse_for_following_value: bool,
 }
@@ -89,8 +88,8 @@ pub(crate) struct PreloadedFloatCompareLiteral {
 #[derive(Clone)]
 pub(crate) struct StructuredFloatHandoff {
     pub(crate) name: String,
-    pub(crate) source: u8,
-    pub(crate) destination: u8,
+    pub(crate) source: u32,
+    pub(crate) destination: u32,
     pub(crate) emitted: bool,
 }
 
@@ -100,7 +99,7 @@ pub(crate) struct StructuredFloatHandoff {
 #[derive(Clone)]
 pub(crate) struct RetainedFloatCompareValue {
     pub(crate) expression: Expression,
-    pub(crate) register: u8,
+    pub(crate) register: u32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -112,7 +111,7 @@ pub(crate) enum ValueClass {
 #[derive(Clone)]
 pub(crate) struct Location {
     pub(crate) class: ValueClass,
-    pub(crate) register: u8,
+    pub(crate) register: u32,
     pub(crate) signed: bool,
     /// Integer width in bits (8/16/32); narrow values are extended when read.
     pub(crate) width: u8,
@@ -133,17 +132,17 @@ pub(crate) struct FloatContext {
     pub(crate) reload_x: Option<i16>,
     /// Extra float bindings for a DAG tail: shared dual-tail locals already
     /// materialized in registers (name -> FPR).
-    pub(crate) pseudo_params: Vec<(String, u8)>,
+    pub(crate) pseudo_params: Vec<(String, u32)>,
     /// A double local defined by a CONDITIONAL diamond ahead of the float
     /// tail: the tail's DAG allocates it as a window-top tier value (a
     /// PHANTOM node, value id 8, emitting nothing) and reports the assigned
     /// register back so the diamond arms load into it.
     pub(crate) phantom_local: Option<String>,
-    pub(crate) phantom_register: Option<u8>,
+    pub(crate) phantom_register: Option<u32>,
     /// A double local resident in a FRAME slot (value id 7).
     pub(crate) frame_local: Option<(String, i16)>,
     /// The BIG-constant dual compare: (lis high, addi low, ix register).
-    pub(crate) dual_compare: Option<(i16, i16, u8)>,
+    pub(crate) dual_compare: Option<(i16, i16, u32)>,
     /// The k_cos ELSE composition payload.
     pub(crate) else_composition: Option<FloatElseComposition>,
 }
@@ -158,10 +157,10 @@ pub(crate) struct FloatElseComposition {
     pub(crate) skip_options: u8,
     pub(crate) skip_bit: u8,
     /// The preserved ix register (the compare's A side, the addis source).
-    pub(crate) ix_register: u8,
+    pub(crate) ix_register: u32,
     /// The freed raw-word register the addis result lands in (r3 modern,
     /// r0 for the legacy frame convention).
-    pub(crate) addis_target: u8,
+    pub(crate) addis_target: u32,
     /// Whether the high word is stored before r0 is reused to materialize
     /// the zero low word.
     pub(crate) store_high_before_zero: bool,
@@ -192,7 +191,7 @@ pub(crate) struct FrameSlot {
     /// lanes, but must still use byte/halfword loads and stores.
     pub(crate) value_type: Type,
     /// The incoming argument register, if this is a spilled parameter.
-    pub(crate) parameter_register: Option<u8>,
+    pub(crate) parameter_register: Option<u32>,
     /// Whether this slot is a local array (`int buf[N];`): in value position the
     /// name decays to the slot's *address* (`addi d,r1,offset`) rather than a load.
     pub(crate) is_array: bool,
@@ -291,15 +290,15 @@ pub(crate) struct StructuredGlobalIndexCache {
     pub(crate) global: String,
     pub(crate) index: String,
     pub(crate) stride: u32,
-    pub(crate) scaled: u8,
-    pub(crate) retained_element: Option<u8>,
+    pub(crate) scaled: u32,
+    pub(crate) retained_element: Option<u32>,
     pub(crate) retained_element_initialized: bool,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct StructuredGlobalBaseCache {
     pub(crate) global: String,
-    pub(crate) register: u8,
+    pub(crate) register: u32,
     pub(crate) remaining_uses: usize,
 }
 
@@ -308,7 +307,7 @@ pub(crate) struct StructuredGlobalMemberAddressCache {
     pub(crate) global: String,
     pub(crate) total_size: u32,
     pub(crate) offset: i16,
-    pub(crate) register: u8,
+    pub(crate) register: u32,
     pub(crate) initialized: bool,
     /// Source-level accesses covered by the planner. Expressions outside that
     /// range, such as a separately lowered return expression, rematerialize.
@@ -323,7 +322,7 @@ pub(crate) struct DataSectionAnchorPlan {
     /// string and table is known, so each D-form use carries a late fixup.
     pub(crate) symbols: HashSet<String>,
     pub(crate) anchor_symbol: String,
-    pub(crate) register: Option<u8>,
+    pub(crate) register: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -331,7 +330,7 @@ pub(crate) struct TransientGlobalIndexBase {
     pub(crate) global: String,
     pub(crate) index: String,
     pub(crate) stride: u32,
-    pub(crate) register: u8,
+    pub(crate) register: u32,
 }
 
 #[derive(Clone)]
@@ -460,7 +459,7 @@ pub(crate) struct Generator {
     pub(crate) structured_broad_global_base_layout_owner: bool,
     /// A nonvolatile global pointer loaded immediately before a guarded switch
     /// and consumed at the start of several mutually exclusive arms.
-    pub(crate) structured_shared_switch_global_value: Option<(String, u8)>,
+    pub(crate) structured_shared_switch_global_value: Option<(String, u32)>,
     /// Complete global element base shared only within the current call's
     /// argument transaction. It is reset before every argument list.
     pub(crate) transient_global_index_base: Option<TransientGlobalIndexBase>,
@@ -473,7 +472,7 @@ pub(crate) struct Generator {
     /// Registers holding live values that must not be clobbered while a sibling
     /// sub-expression is being evaluated. The allocator draws temporaries from
     /// the registers outside this set.
-    pub(crate) reserved: HashSet<u8>,
+    pub(crate) reserved: HashSet<u32>,
     /// Stack frame size in bytes (0 = leaf function, no frame). Set when an
     /// operation needs scratch stack space (e.g. an int/float conversion).
     pub(crate) frame_size: i16,
@@ -546,10 +545,10 @@ pub(crate) struct Generator {
     /// given virtual id. Selection records these (e.g. "a comparison operand must
     /// avoid the destination") so the allocation pass reproduces mwcc's coalescing
     /// of result-path temporaries onto the destination register.
-    pub(crate) register_avoid: HashMap<VirtualRegister, Vec<u8>>,
+    pub(crate) register_avoid: HashMap<VirtualRegister, Vec<u32>>,
     /// Consumer-tree PREFERENCES: virtual id -> the register its consumer wants
     /// (Phase D policy #1); honored by LinearScan when free, pool order otherwise.
-    pub(crate) register_prefer: HashMap<VirtualRegister, u8>,
+    pub(crate) register_prefer: HashMap<VirtualRegister, u32>,
     /// Optional copy-source homes, resolved only after the source is allocated.
     pub(crate) register_affinity: HashMap<VirtualRegister, VirtualRegister>,
     /// Small expression groups to color from their final value toward inputs.
@@ -574,11 +573,11 @@ pub(crate) struct Generator {
     /// PASS-ARC STEP 2: when a whole-body fill emitted its values as virtuals, the
     /// DESCENDING allocation window's top register (r(N+2) for an N-store fill).
     /// `None` keeps the default LinearScan policy.
-    pub(crate) descending_allocation_top: Option<u8>,
+    pub(crate) descending_allocation_top: Option<u32>,
     /// Descending volatile-FPR window used while evaluating one call-free
     /// materialized float assignment. The expression planner sizes the window;
     /// nested operand placement consumes its homes from the outside in.
-    pub(crate) materialized_float_window: Option<(u8, u8)>,
+    pub(crate) materialized_float_window: Option<(u32, u32)>,
     /// Whether selection is currently inside that assignment. This remains set
     /// after the last window home is consumed because operand scheduling still
     /// follows the materialized-polynomial convention.
@@ -593,10 +592,10 @@ pub(crate) struct Generator {
     pub(crate) structured_loop_carried_names: HashSet<String>,
     /// Volatile homes reserved by a structured branch whose returned float
     /// parameter remains live across mutually exclusive member-store arms.
-    pub(crate) structured_branch_float_work_home: Option<u8>,
+    pub(crate) structured_branch_float_work_home: Option<u32>,
     /// Scoped preference for a pooled constant's general address base. Body
     /// planners set this when MWCC continues the incoming argument-home run.
-    pub(crate) structured_constant_address_home: Option<u8>,
+    pub(crate) structured_constant_address_home: Option<u32>,
     /// Skipped inline definitions' names — a body calling one defers after
     /// the exact-match templates decline (mwcc inlines; a bl would be wrong).
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
@@ -628,7 +627,7 @@ pub(crate) struct Generator {
     /// instruction has been emitted since (so the value is provably still there).
     /// The resolved version policy decides whether the compiler generation takes
     /// advantage of that live value.
-    pub(crate) stored_globals: HashMap<String, (u8, usize)>,
+    pub(crate) stored_globals: HashMap<String, (u32, usize)>,
     /// Nonvolatile pointer globals retained while one side-effect-free branch
     /// condition reads several of their members. The scope owner restores this
     /// map before emitting the guarded body, so reuse cannot cross a call.
@@ -654,7 +653,7 @@ pub(crate) struct Generator {
     /// home. Overlapping high halves still need MWCC's multi-base look-ahead
     /// schedule and therefore defer. Zero-high accesses use r0-as-zero directly
     /// and are not recorded.
-    pub(crate) const_address_bases: HashMap<i16, u8>,
+    pub(crate) const_address_bases: HashMap<i16, u32>,
     /// Set once a VARIABLE-index subscript store with an already-materialized
     /// value (`a[i] = v`, i not constant) has scaled its index through r0.
     /// mwcc pre-scales the indices of an uninterrupted RUN of those stores, so a
@@ -672,11 +671,11 @@ pub(crate) struct Generator {
     /// distinct FPR (`lfs f1,@a; lfs f0,@b; stfs f1,gf; stfs f0,gg`), so `place_store_value`
     /// reuses the pre-loaded FPR by the literal's f64 bits instead of re-pooling/re-loading.
     /// `(FloatLiteral f64 bits, FPR)`; empty outside a run (runs are homogeneous float/double).
-    pub(crate) prematerialized_float_constants: Vec<(u64, u8)>,
+    pub(crate) prematerialized_float_constants: Vec<(u64, u32)>,
     /// Pool literals deliberately issued before their comparisons. A
     /// reservation records how many source comparisons reuse the live value.
     pub(crate) preloaded_float_compare_literals: Vec<PreloadedFloatCompareLiteral>,
-    pub(crate) released_float_compare_literal_register: Option<u8>,
+    pub(crate) released_float_compare_literal_register: Option<u32>,
     /// Build-163 alias split for a local whose first compare uses its f2
     /// initializer while later mutation/call uses consume a preserved f1 copy.
     pub(crate) structured_float_handoff: Option<StructuredFloatHandoff>,
@@ -764,11 +763,11 @@ pub(crate) struct Generator {
     /// Constants pre-materialized into specific registers ahead of a run of
     /// distinct-constant stores, so each store reuses its register rather than
     /// re-materializing (mwcc materializes both values up front, then stores).
-    pub(crate) prematerialized_constants: Vec<(i32, u8)>,
+    pub(crate) prematerialized_constants: Vec<(i32, u32)>,
     /// Callee-saved general registers this function uses (r31 first, descending) to
     /// hold values live across a call. They are saved high-to-low in the prologue
     /// and reloaded in the epilogue, and drive the unwind table's saved-GPR count.
-    pub(crate) callee_saved: Vec<u8>,
+    pub(crate) callee_saved: Vec<u32>,
     /// Incoming EABI argument footprint in 32-bit words. Build 163 retains this
     /// frontend bookkeeping when it sizes a frame containing entry-materialized
     /// callee-saved values: every pair of argument words occupies one 8-byte lane,
@@ -840,7 +839,7 @@ pub(crate) struct Generator {
     pub(crate) canonical_boolean_locals: std::collections::HashSet<String>,
     /// Large assertion strings whose address high halves remain live in saved
     /// registers across a structured loop.
-    pub(crate) loop_assertion_string_highs: Vec<(Vec<u8>, u8)>,
+    pub(crate) loop_assertion_string_highs: Vec<(Vec<u8>, u32)>,
     pub(crate) loop_assertion_string_highs_emitted: bool,
 }
 
@@ -901,9 +900,9 @@ impl Generator {
         declared.is_signed()
     }
 
-    /// A fresh general-purpose virtual register, as the u8 field value selection
+    /// A fresh general-purpose virtual register, as the selected field value selection
     /// emits. The allocation pass resolves it to a physical register from liveness.
-    pub(crate) fn fresh_virtual_general(&mut self) -> u8 {
+    pub(crate) fn fresh_virtual_general(&mut self) -> u32 {
         Reg::Virtual(self.virtual_cursors.next(Class::General)).to_field()
     }
 
@@ -950,14 +949,14 @@ impl Generator {
     /// A fresh floating-point virtual register. The allocator draws float homes
     /// from the FPR pool, kept distinct from the general pool by the class the
     /// machine description reports for each operand.
-    pub(crate) fn fresh_virtual_float(&mut self) -> u8 {
+    pub(crate) fn fresh_virtual_float(&mut self) -> u32 {
         Reg::Virtual(self.virtual_cursors.next(Class::Float)).to_field()
     }
 
     /// A fresh floating virtual carrying the same consumer-placement preference
     /// used by general virtuals. Liveness still wins when the preferred FPR is
     /// occupied; otherwise this pins MWCC's short conversion schedules.
-    pub(crate) fn fresh_virtual_float_preferring(&mut self, register: u8) -> u8 {
+    pub(crate) fn fresh_virtual_float_preferring(&mut self, register: u32) -> u32 {
         let virtual_register = self.virtual_cursors.next(Class::Float);
         self.register_prefer.insert(virtual_register, register);
         Reg::Virtual(virtual_register).to_field()
@@ -966,7 +965,7 @@ impl Generator {
     /// Update the allocator preference of an existing floating virtual. This is
     /// used by whole-loop layout recognizers whose retained roles are only
     /// apparent after instruction selection has emitted the complete CFG.
-    pub(crate) fn prefer_virtual_float(&mut self, register: u8, preferred: u8) {
+    pub(crate) fn prefer_virtual_float(&mut self, register: u32, preferred: u32) {
         if let Reg::Virtual(register) = Reg::from_field(register, Class::Float) {
             self.register_prefer.insert(register, preferred);
         }
@@ -983,7 +982,7 @@ impl Generator {
 
     /// A fresh general virtual register carrying a consumer-tree PREFERENCE — the
     /// register the value's consumer wants it in (taken when free at allocation).
-    pub(crate) fn fresh_virtual_general_preferring(&mut self, register: u8) -> u8 {
+    pub(crate) fn fresh_virtual_general_preferring(&mut self, register: u32) -> u32 {
         let virtual_register = self.virtual_cursors.next(Class::General);
         self.register_prefer.insert(virtual_register, register);
         Reg::Virtual(virtual_register).to_field()
@@ -992,7 +991,7 @@ impl Generator {
     /// Update the allocator preference of an existing general virtual. Whole-body
     /// liveness passes use this when extending a temporary's live range changes
     /// MWCC's coloring order after instruction selection created the value.
-    pub(crate) fn prefer_virtual_general(&mut self, register: u8, preferred: u8) {
+    pub(crate) fn prefer_virtual_general(&mut self, register: u32, preferred: u32) {
         if let Reg::Virtual(register) = Reg::from_field(register, Class::General) {
             self.register_prefer.insert(register, preferred);
         }
@@ -1000,7 +999,7 @@ impl Generator {
 
     /// Add a local consumer preference without replacing a whole-function
     /// lifetime/layout decision already attached to the value.
-    pub(crate) fn prefer_virtual_general_if_unset(&mut self, register: u8, preferred: u8) {
+    pub(crate) fn prefer_virtual_general_if_unset(&mut self, register: u32, preferred: u32) {
         if let Reg::Virtual(register) = Reg::from_field(register, Class::General) {
             self.register_prefer.entry(register).or_insert(preferred);
         }
@@ -1009,7 +1008,7 @@ impl Generator {
     /// Prevent an existing general virtual from occupying any of `avoid`.
     /// Whole-body owners use this after they discover a retained value whose
     /// measured home must outrank otherwise independent locals.
-    pub(crate) fn avoid_virtual_general(&mut self, register: u8, avoid: &[u8]) {
+    pub(crate) fn avoid_virtual_general(&mut self, register: u32, avoid: &[u32]) {
         if let Reg::Virtual(register) = Reg::from_field(register, Class::General) {
             let existing = self.register_avoid.entry(register).or_default();
             for avoided in avoid {
@@ -1022,7 +1021,7 @@ impl Generator {
 
     /// A fresh general virtual register that the allocator must not place in any
     /// of `avoid` — a placement hint recorded for the allocation pass.
-    pub(crate) fn fresh_virtual_general_avoiding(&mut self, avoid: Vec<u8>) -> u8 {
+    pub(crate) fn fresh_virtual_general_avoiding(&mut self, avoid: Vec<u32>) -> u32 {
         let register = self.virtual_cursors.next(Class::General);
         self.register_avoid.insert(register, avoid);
         Reg::Virtual(register).to_field()
@@ -1174,7 +1173,7 @@ impl Generator {
     /// relocation owned by that address. Small-data addressing relocates the
     /// following load itself. Absolute addressing relocates `lis; addi`, then
     /// leaves the width-specific load at displacement zero.
-    fn pooled_constant_load_address(&mut self, index: usize) -> u8 {
+    fn pooled_constant_load_address(&mut self, index: usize) -> u32 {
         if self.behavior.read_only_global_addressing == GlobalAddressing::SmallData {
             self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
             return 0;
@@ -1204,7 +1203,7 @@ impl Generator {
     /// Emit a load of a single-precision pooled constant. Read-only small data
     /// uses one SDA21 load; `-sdata2 0` places the entry in `.rodata` and uses
     /// the measured `lis @ha; addi @lo; lfs 0(base)` sequence.
-    pub(crate) fn load_float_constant(&mut self, destination: u8, value: f32) {
+    pub(crate) fn load_float_constant(&mut self, destination: u32, value: f32) {
         let index = self.output.intern_constant(value.to_bits() as u64, 4);
         let base = self.pooled_constant_load_address(index);
         self.output.instructions.push(Instruction::LoadFloatSingle {
@@ -1217,7 +1216,7 @@ impl Generator {
     /// Emit a load of an auto-array's pooled WORD IMAGE: like
     /// [`Self::load_word_constant`] but the entry numbers at the function's
     /// STATIC-LOCAL slot (measured: mbstring's first_byte_mark at `@4`).
-    pub(crate) fn load_word_constant_static_slot(&mut self, destination: u8, bits: u32) {
+    pub(crate) fn load_word_constant_static_slot(&mut self, destination: u32, bits: u32) {
         let index = self.output.intern_constant_static_slot(bits as u64, 4);
         let base = self.pooled_constant_load_address(index);
         self.output.instructions.push(Instruction::LoadWord {
@@ -1229,7 +1228,7 @@ impl Generator {
 
     /// Emit an auto-array image load that numbers in the POOL BLOCK but whose
     /// symbol leads the owning static function (ww's mbstring variant).
-    pub(crate) fn load_word_constant_image(&mut self, destination: u8, bits: u32) {
+    pub(crate) fn load_word_constant_image(&mut self, destination: u32, bits: u32) {
         let index = self.output.intern_constant_image(bits as u64, 4);
         let base = self.pooled_constant_load_address(index);
         self.output.instructions.push(Instruction::LoadWord {
@@ -1240,7 +1239,7 @@ impl Generator {
     }
 
     /// Emit a pooled word load using SDA21 or an absolute high/low pair.
-    pub(crate) fn load_word_constant(&mut self, destination: u8, bits: u32) {
+    pub(crate) fn load_word_constant(&mut self, destination: u32, bits: u32) {
         let index = self.output.intern_constant(bits as u64, 4);
         let base = self.pooled_constant_load_address(index);
         self.output.instructions.push(Instruction::LoadWord {
@@ -1251,7 +1250,7 @@ impl Generator {
     }
 
     /// Emit a pooled double load using SDA21 or an absolute high/low pair.
-    pub(crate) fn load_double_constant(&mut self, destination: u8, bits: u64) {
+    pub(crate) fn load_double_constant(&mut self, destination: u32, bits: u64) {
         let index = self.output.intern_constant(bits, 8);
         let base = self.pooled_constant_load_address(index);
         self.output.instructions.push(Instruction::LoadFloatDouble {
@@ -1263,7 +1262,7 @@ impl Generator {
 
     /// Emit a pooled-double load against a SPECIFIC pool slot (a capture that
     /// interned twin slots for one value — strtold's zero doubles @296/@297).
-    pub(crate) fn load_double_constant_at(&mut self, destination: u8, index: usize) {
+    pub(crate) fn load_double_constant_at(&mut self, destination: u32, index: usize) {
         let base = self.pooled_constant_load_address(index);
         self.output.instructions.push(Instruction::LoadFloatDouble {
             d: destination,
@@ -1274,7 +1273,7 @@ impl Generator {
 
     /// Load a float-literal operand, choosing 8-byte `lfd` in a double context and
     /// 4-byte `lfs` (the value rounded to single) otherwise.
-    pub(crate) fn load_float_literal(&mut self, destination: u8, value: f64, double: bool) {
+    pub(crate) fn load_float_literal(&mut self, destination: u32, value: f64, double: bool) {
         if double {
             self.load_double_constant(destination, value.to_bits());
         } else {
@@ -1282,7 +1281,7 @@ impl Generator {
         }
     }
 
-    pub(crate) fn lookup_general(&self, name: &str) -> Option<u8> {
+    pub(crate) fn lookup_general(&self, name: &str) -> Option<u32> {
         // Once a variable has addressable storage, its register is only an
         // incoming/initial value. A call through the escaped address may replace
         // the object, so all later value consumers must go through `evaluate`
@@ -1302,7 +1301,7 @@ impl Generator {
     /// operand shape that participates in mwcc's additive-chain reassociation.
     /// Narrow leaves (which need width extension) and pointers (scaled
     /// arithmetic) return `None`.
-    pub(crate) fn plain_integer_leaf_register(&self, expression: &Expression) -> Option<u8> {
+    pub(crate) fn plain_integer_leaf_register(&self, expression: &Expression) -> Option<u32> {
         let name = leaf_name(expression)?;
         let location = self.locations.get(name)?;
         (location.class == ValueClass::General
@@ -1617,7 +1616,7 @@ impl Generator {
     }
 
     /// (register, width-bits, signed) for a general-register leaf variable.
-    pub(crate) fn leaf_info(&self, expression: &Expression) -> Compilation<(u8, u8, bool)> {
+    pub(crate) fn leaf_info(&self, expression: &Expression) -> Compilation<(u32, u8, bool)> {
         if let Expression::Variable(name) = expression {
             // An addressable object is no longer a register leaf. Its incoming
             // register may initialize the frame slot, but an escaped pointer can
@@ -1636,7 +1635,7 @@ impl Generator {
         Err(Diagnostic::error("expected a general-register leaf"))
     }
 
-    pub(crate) fn general_register_of(&self, name: &str) -> Compilation<u8> {
+    pub(crate) fn general_register_of(&self, name: &str) -> Compilation<u32> {
         let location = self
             .locations
             .get(name)
@@ -1647,7 +1646,7 @@ impl Generator {
         Ok(location.register)
     }
 
-    pub(crate) fn float_register_of(&self, name: &str) -> Compilation<u8> {
+    pub(crate) fn float_register_of(&self, name: &str) -> Compilation<u32> {
         let location = self
             .locations
             .get(name)
@@ -1658,7 +1657,7 @@ impl Generator {
         Ok(location.register)
     }
 
-    pub(crate) fn general_register_of_leaf(&self, expression: &Expression) -> Compilation<u8> {
+    pub(crate) fn general_register_of_leaf(&self, expression: &Expression) -> Compilation<u32> {
         match expression {
             Expression::Variable(name) => self.general_register_of(name),
             _ => Err(Diagnostic::error(format!(
@@ -1667,7 +1666,7 @@ impl Generator {
         }
     }
 
-    pub(crate) fn float_register_of_leaf(&self, expression: &Expression) -> Compilation<u8> {
+    pub(crate) fn float_register_of_leaf(&self, expression: &Expression) -> Compilation<u32> {
         match expression {
             Expression::Variable(name) => self.float_register_of(name),
             _ => Err(Diagnostic::error(format!(
@@ -1678,7 +1677,7 @@ impl Generator {
 
     /// Load a 32-bit integer constant the way mwcc does: `li`, or `lis` + `addi`
     /// with a high-adjusted upper half to absorb `addi`'s sign extension.
-    pub(crate) fn load_integer_constant(&mut self, destination: u8, value: i64) {
+    pub(crate) fn load_integer_constant(&mut self, destination: u32, value: i64) {
         let value = value as i32;
         if (-0x8000..=0x7fff).contains(&value) {
             self.output

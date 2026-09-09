@@ -112,7 +112,7 @@ impl Generator {
     }
 }
 
-fn set_float_load_destination(instruction: &mut Instruction, destination: u8) {
+fn set_float_load_destination(instruction: &mut Instruction, destination: u32) {
     match instruction {
         Instruction::LoadFloatSingle { d, .. } => *d = destination,
         _ => unreachable!("the complete acceleration-select region was recognized"),

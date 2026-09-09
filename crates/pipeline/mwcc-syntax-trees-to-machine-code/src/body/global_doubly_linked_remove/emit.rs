@@ -19,7 +19,7 @@ impl Generator {
         let Some(shape) = recognize(function) else {
             return Ok(false);
         };
-        if self.lookup_general(shape.item) != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+        if self.lookup_general(shape.item) != Some(Eabi::FIRST_GENERAL_ARGUMENT.into())
             || [shape.current, shape.head, shape.tail]
                 .into_iter()
                 .any(|name| !self.globals.get(name).copied().is_some_and(pointer_word))

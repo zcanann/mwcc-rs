@@ -124,16 +124,16 @@ impl Generator {
             return Ok(false);
         }
         let base = self.general_register_of(plan.base)?;
-        let first_argument = Eabi::FIRST_GENERAL_ARGUMENT;
+        let first_argument: u32 = (Eabi::FIRST_GENERAL_ARGUMENT) as u32;
         let callback_argument = first_argument + 3;
-        let base_is_first_argument = base == first_argument;
+        let base_is_first_argument = base == first_argument.into();
         if !base_is_first_argument {
             self.avoid_virtual_general(
                 base,
                 &[
-                    first_argument,
-                    first_argument + 1,
-                    first_argument + 2,
+                    first_argument.into(),
+                    (first_argument + 1).into(),
+                    u32::from(first_argument + 2),
                     callback_argument,
                 ],
             );
@@ -144,11 +144,11 @@ impl Generator {
         } else {
             first_argument
         };
-        self.emit_address_high(callback_high, plan.callback);
+        self.emit_address_high(callback_high.into(), plan.callback);
         self.record_relocation(RelocationKind::Addr16Lo, plan.callback);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: callback_argument,
-            a: callback_high,
+            d: u32::from(callback_argument),
+            a: u32::from(callback_high),
             immediate: 0,
         });
 
@@ -162,24 +162,24 @@ impl Generator {
         } else {
             first_argument
         };
-        self.evaluate_general(plan.repeated, repeated)?;
-        self.evaluate_general(plan.first, first)?;
+        self.evaluate_general(plan.repeated, repeated.into())?;
+        self.evaluate_general(plan.first, first.into())?;
         self.evaluate_general(plan.third, GENERAL_SCRATCH)?;
         if base_is_first_argument {
-            self.evaluate_general(plan.middle, first_argument + 1)?;
+            self.evaluate_general(plan.middle, (first_argument + 1).into())?;
         }
         self.output.instructions.push(Instruction::Add {
-            d: first_argument,
-            a: first,
-            b: repeated,
+            d: u32::from(first_argument),
+            a: u32::from(first),
+            b: u32::from(repeated),
         });
         if !base_is_first_argument {
-            self.evaluate_general(plan.middle, first_argument + 1)?;
+            self.evaluate_general(plan.middle, (first_argument + 1).into())?;
         }
         self.output.instructions.push(Instruction::Add {
-            d: first_argument + 2,
+            d: u32::from(first_argument + 2),
             a: GENERAL_SCRATCH,
-            b: repeated,
+            b: u32::from(repeated),
         });
         Ok(true)
     }

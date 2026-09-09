@@ -448,7 +448,7 @@ fn rewrite_stack_offset(instruction: &mut Instruction, replacement: i16) {
     }
 }
 
-fn rewrite_float_destination(instruction: &mut Instruction, replacement: u8) {
+fn rewrite_float_destination(instruction: &mut Instruction, replacement: u32) {
     let Instruction::LoadFloatSingle { d, .. } = instruction else {
         unreachable!();
     };

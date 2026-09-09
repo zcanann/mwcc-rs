@@ -75,7 +75,7 @@ impl Generator {
         let source = self.place_store_value(value, pointee)?;
         self.output
             .instructions
-            .push(displacement_store(pointee, source, 1, offset)?);
+            .push(displacement_store(pointee, source.into(), 1, offset)?);
         self.written_slots.insert(offset);
         Ok(true)
     }

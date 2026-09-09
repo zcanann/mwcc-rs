@@ -141,7 +141,7 @@ impl Generator {
             self.output.instructions.push(Instruction::StoreFloatDouble {
                 s: register,
                 a: 1,
-                offset: 32 + i16::from(register) * 8,
+                offset: 32 + i16::try_from(register).expect("register-derived offset") * 8,
             });
         }
         self.bind_label(skip_float_saves);
@@ -188,7 +188,7 @@ impl Generator {
             self.output.instructions.push(Instruction::StoreWord {
                 s: register,
                 a: 1,
-                offset: -4 + i16::from(register) * 4,
+                offset: -4 + i16::try_from(register).expect("register-derived offset") * 4,
             });
         }
         self.output.instructions.push(Instruction::StoreWord {

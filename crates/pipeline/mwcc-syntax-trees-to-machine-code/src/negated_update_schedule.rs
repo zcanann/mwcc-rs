@@ -141,7 +141,7 @@ impl Generator {
 /// consumer. CFG occupancy includes uses reached through branches and calls.
 fn dead_after_subtraction(
     liveness: &mwcc_vreg::Liveness,
-    register: u8,
+    register: u32,
     subtraction: usize,
 ) -> bool {
     let slots = match Reg::from_field(register, Class::General) {
@@ -153,7 +153,7 @@ fn dead_after_subtraction(
         Reg::Physical(register) => liveness
             .pinned
             .iter()
-            .find(|p| p.class == Class::General && p.register == register)
+            .find(|p| p.class == Class::General && u32::from(p.register) == u32::from(register))
             .and_then(|p| p.live_slots.as_ref()),
     };
     slots.is_some_and(|slots| slots.binary_search(&(2 * subtraction + 1)).is_err())

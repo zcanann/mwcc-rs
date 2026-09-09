@@ -8,6 +8,28 @@ learned about that allocator empirically (every rule is backed by oracle diffs),
 the IR we will introduce to give those decisions a home, and a migration that
 keeps all builds byte-exact at every step.
 
+## Wide selected register fields, 2026-09-08
+
+`mwcc-machine-code::RegisterField` is a `u32`. Fields 0–31 name physical
+registers; larger values carry `VIRTUAL_BASE + id`, interpreted using the
+operand's register class. Instruction register operands, frame saves, DAG
+placement, selection caches, and liveness keys preserve that field width.
+Instruction immediates, shift/mask fields, condition-register bits, and physical
+allocator pools keep their existing types. All versions share this representation;
+version policies continue to select schedules and allocation independently.
+
+`Reg::to_field` checks addition at the representation boundary, and encoding
+asserts that every register operand has been allocated to 0–31. Physical
+preferences and exclusions cross into the allocator explicitly; virtual-to-virtual
+preferences still use the separate affinity map. Float-snapshot capacity checks
+use wider arithmetic so the capacity itself does not overflow.
+
+The former 224-ID ceiling blocked Dolphin `MD5Transform`. A 1,024-temporary
+liveness test and the 64-round corpus sample now exercise allocation beyond that
+ceiling. Full MD5 digest execution also exposed destructive indexed-address
+construction. Derived load/store addresses use their own virtual homes and keep
+physical bases available for subsequent uses, including implicit return values.
+
 ## Current implementation: consumer-first groups, 2026-09-08
 
 The backend now has a separate virtual-register allocator. The original design
@@ -189,9 +211,8 @@ The risk is a big-bang rewrite. Avoid it:
    resolves it. The machine description (`for_each_register`, all 75 variants) and
    precise per-definition liveness with half-open interference (a result reuses a
    source that dies at its definition) reproduce the inline allocator's choices.
-   Virtuals ride in the existing `Instruction`'s u8 fields via the `VIRTUAL_BASE`
-   convention (transitional; parameterize `Instruction<Reg>` if a function needs
-   >224 virtuals/class).
+   The initial byte-sized `VIRTUAL_BASE` convention has since been widened to
+   `RegisterField`; see the current representation above.
 3. **Migrate sites one at a time, byte-exact.** — **IN PROGRESS.** First site:
    `place_general_operands`' both-complex temporary (`(a+b)*(c+d)`) — the allocator
    reproduces it exactly (temp -> r3 / r5 as the inline code chose). Then the

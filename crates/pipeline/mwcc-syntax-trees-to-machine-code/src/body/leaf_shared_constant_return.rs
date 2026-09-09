@@ -40,8 +40,8 @@ fn shared_constant_guard(
     Some((
         result_index,
         result,
-        options,
-        condition_bit,
+        options.into(),
+        condition_bit.into(),
         instructions.len() - 1,
     ))
 }

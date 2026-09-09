@@ -1,11 +1,11 @@
 use super::*;
 
 pub(super) fn emit(generator: &mut Generator, plan: &GlobalStructArrayInitialization<'_>) {
-    const INDEX: u8 = 27;
-    const OWNER: u8 = 28;
-    const ELEMENT: u8 = 29;
-    const ARRAY: u8 = 30;
-    const BYTE_OFFSET: u8 = 31;
+    const INDEX: u32 = 27;
+    const OWNER: u32 = 28;
+    const ELEMENT: u32 = 29;
+    const ARRAY: u32 = 30;
+    const BYTE_OFFSET: u32 = 31;
 
     generator.non_leaf = true;
     generator.frame_size = 32;

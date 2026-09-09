@@ -102,7 +102,7 @@ impl Generator {
         let destination_base = self.general_register_of_leaf(destination)?;
         let source_base = self.general_register_of_leaf(source)?;
         let first_word = self.fresh_virtual_general_preferring(if source_size >= 8 {
-            Eabi::FIRST_GENERAL_ARGUMENT
+            Eabi::FIRST_GENERAL_ARGUMENT.into()
         } else {
             GENERAL_SCRATCH
         });

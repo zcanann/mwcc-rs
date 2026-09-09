@@ -17,7 +17,7 @@ impl Generator {
         function: &Function,
         initializer: &Expression,
         value_type: Type,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<()> {
         if !has_inline_assignment_prefix(initializer) {
             return self.evaluate(initializer, value_type, destination);

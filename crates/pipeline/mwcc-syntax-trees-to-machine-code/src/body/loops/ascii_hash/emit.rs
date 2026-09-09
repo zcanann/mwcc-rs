@@ -3,9 +3,9 @@ use super::*;
 impl Generator {
     fn emit_ascii_hash_iteration(
         &mut self,
-        byte: u8,
-        accumulator: u8,
-        folded_byte: u8,
+        byte: u32,
+        accumulator: u32,
+        folded_byte: u32,
         after_shift: Option<Instruction>,
         after_and: Option<Instruction>,
     ) {
@@ -81,7 +81,7 @@ impl Generator {
                 else {
                     return Ok(false);
                 };
-                if pointer != Eabi::FIRST_GENERAL_ARGUMENT {
+                if pointer != Eabi::FIRST_GENERAL_ARGUMENT.into() {
                     return Ok(false);
                 }
                 let byte = pointer + 1;
@@ -116,7 +116,7 @@ impl Generator {
                     });
                 self.emit_branch_conditional_to(4, 2, iteration);
                 self.output.instructions.push(Instruction::move_register(
-                    Eabi::FIRST_GENERAL_ARGUMENT,
+                    Eabi::FIRST_GENERAL_ARGUMENT.into(),
                     accumulator,
                 ));
             }
@@ -132,7 +132,7 @@ impl Generator {
                 else {
                     return Ok(false);
                 };
-                if pointer != Eabi::FIRST_GENERAL_ARGUMENT || bound != pointer + 1 {
+                if pointer != Eabi::FIRST_GENERAL_ARGUMENT.into() || bound != pointer + 1 {
                     return Ok(false);
                 }
                 let byte = bound + 1;
@@ -179,7 +179,7 @@ impl Generator {
                 self.emit_branch_conditional_to(4, 2, iteration);
                 self.bind_label(exit);
                 self.output.instructions.push(Instruction::move_register(
-                    Eabi::FIRST_GENERAL_ARGUMENT,
+                    Eabi::FIRST_GENERAL_ARGUMENT.into(),
                     accumulator,
                 ));
             }
@@ -194,7 +194,7 @@ impl Generator {
                 else {
                     return Ok(false);
                 };
-                if seed != Eabi::FIRST_GENERAL_ARGUMENT || pointer != seed + 1 {
+                if seed != Eabi::FIRST_GENERAL_ARGUMENT.into() || pointer != seed + 1 {
                     return Ok(false);
                 }
                 let byte = pointer + 1;

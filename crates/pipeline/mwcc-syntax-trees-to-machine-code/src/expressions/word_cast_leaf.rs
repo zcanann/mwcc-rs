@@ -12,7 +12,7 @@ impl Generator {
     pub(crate) fn transparent_word_cast_register(
         &self,
         expression: &Expression,
-    ) -> Option<u8> {
+    ) -> Option<u32> {
         let variable = match expression {
             Expression::Variable(name) => name,
             Expression::Cast {

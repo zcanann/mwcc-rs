@@ -42,7 +42,7 @@ impl Generator {
         }
     }
 
-    pub(crate) fn emit_unsigned_word_clock_high(&mut self, clock: ClockRead<'_>, register: u8) {
+    pub(crate) fn emit_unsigned_word_clock_high(&mut self, clock: ClockRead<'_>, register: u32) {
         if let ClockRead::Absolute(address) = clock {
             let (high, _) = crate::expressions::split_address(address);
             self.output
@@ -51,7 +51,7 @@ impl Generator {
         }
     }
 
-    pub(crate) fn emit_unsigned_word_clock_load(&mut self, clock: ClockRead<'_>, register: u8) {
+    pub(crate) fn emit_unsigned_word_clock_load(&mut self, clock: ClockRead<'_>, register: u32) {
         match clock {
             ClockRead::Absolute(address) => {
                 let (_, low) = crate::expressions::split_address(address);

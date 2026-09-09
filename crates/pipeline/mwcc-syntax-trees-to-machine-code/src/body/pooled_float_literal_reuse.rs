@@ -103,7 +103,7 @@ enum PoolFloatWidth {
 struct AbsolutePoolLoad {
     high: usize,
     low: usize,
-    destination: u8,
+    destination: u32,
     width: PoolFloatWidth,
 }
 
@@ -196,7 +196,7 @@ fn absolute_pool_load(
     None
 }
 
-fn writes_general_register(instruction: &Instruction, register: u8) -> bool {
+fn writes_general_register(instruction: &Instruction, register: u32) -> bool {
     mwcc_vreg::register_operands(instruction)
         .iter()
         .any(|operand| {

@@ -1357,7 +1357,7 @@ impl Generator {
         self.callee_saved = vec![virtual_temp, virtual_sig];
         let plan = mwcc_vreg::FramePlan::sized_for(vec![virtual_temp, virtual_sig]);
         self.output.instructions.extend(plan.prologue());
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         let legacy_raise =
             self.behavior.raise_family_style == RaiseFamilyStyle::StagedLoadLinkRegister;
         self.output.instructions.push(if legacy_raise {

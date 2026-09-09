@@ -36,7 +36,7 @@ fn jump_table_successors(
                 .insert(table);
         }
     }
-    let mut registers = HashMap::<u8, HashSet<usize>>::new();
+    let mut registers = HashMap::<mwcc_machine_code::RegisterField, HashSet<usize>>::new();
     let mut count_register = HashSet::new();
     let mut successors = HashMap::new();
     for (index, instruction) in instructions.iter().enumerate() {

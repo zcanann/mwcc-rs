@@ -87,7 +87,7 @@ impl Generator {
     pub(crate) fn try_emit_spr_instruction_encoding(
         &mut self,
         expression: &Expression,
-        destination: u8,
+        destination: u32,
     ) -> Compilation<bool> {
         let Some(encoding) = classify(expression) else {
             return Ok(false);

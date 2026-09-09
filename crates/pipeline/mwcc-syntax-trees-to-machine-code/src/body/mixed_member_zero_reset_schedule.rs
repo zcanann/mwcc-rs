@@ -38,7 +38,7 @@ impl Generator {
     }
 }
 
-fn is_zero(instruction: &Instruction, register: u8) -> bool {
+fn is_zero(instruction: &Instruction, register: u32) -> bool {
     matches!(instruction, Instruction::AddImmediate { d, a: 0, immediate: 0 } if *d == register)
 }
 

@@ -14,7 +14,7 @@ struct PhysicalPlan {
     condition: usize,
     shifted_or_pairs: Vec<usize>,
     spr_else_constant: Option<usize>,
-    spr_packets: Vec<(usize, u8)>,
+    spr_packets: Vec<(usize, u32)>,
 }
 
 fn relocation_target(
@@ -39,7 +39,7 @@ fn has_incoming_branch(instructions: &[Instruction], target: usize) -> bool {
     })
 }
 
-fn spr_packets(instructions: &[Instruction]) -> Vec<(usize, u8)> {
+fn spr_packets(instructions: &[Instruction]) -> Vec<(usize, u32)> {
     instructions
         .windows(7)
         .enumerate()

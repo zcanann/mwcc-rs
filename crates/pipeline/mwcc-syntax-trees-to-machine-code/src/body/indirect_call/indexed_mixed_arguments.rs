@@ -33,9 +33,9 @@ impl Generator {
         self.evaluate(target, Type::UnsignedInt, 12)?;
         self.evaluate_float(
             &Expression::Variable(shape.float_argument.to_owned()),
-            Eabi::FIRST_FLOAT_ARGUMENT,
+            Eabi::FIRST_FLOAT_ARGUMENT.into(),
         )?;
-        self.evaluate_general(shape.general_argument, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        self.evaluate_general(shape.general_argument, Eabi::FIRST_GENERAL_ARGUMENT.into())?;
         self.emit_indirect_branch_and_link(12);
         Ok(true)
     }

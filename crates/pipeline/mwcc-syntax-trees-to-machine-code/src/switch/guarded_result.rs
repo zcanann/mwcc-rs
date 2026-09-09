@@ -115,7 +115,7 @@ impl Generator {
             return Ok(true);
         }
 
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         let (outer_options, outer_bit) = self.emit_condition_test(outer_condition)?;
         let outer_skip = self.output.instructions.len();
         self.output

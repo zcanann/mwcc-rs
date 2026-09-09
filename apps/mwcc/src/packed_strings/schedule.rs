@@ -337,7 +337,7 @@ fn schedule_terminated_label_compare(function: &mut MachineFunction) {
     remap_instruction_owners(function, &permutation);
 }
 
-fn rewrite_lis(instruction: &Instruction, d: u8) -> Instruction {
+fn rewrite_lis(instruction: &Instruction, d: u32) -> Instruction {
     let Instruction::AddImmediateShifted { a, immediate, .. } = instruction else {
         unreachable!("the packed-format high half was matched above");
     };
@@ -348,7 +348,7 @@ fn rewrite_lis(instruction: &Instruction, d: u8) -> Instruction {
     }
 }
 
-fn rewrite_addi(instruction: &Instruction, d: u8, a: u8) -> Instruction {
+fn rewrite_addi(instruction: &Instruction, d: u32, a: u32) -> Instruction {
     let Instruction::AddImmediate { immediate, .. } = instruction else {
         unreachable!("the packed-format address adjustment was matched above");
     };
@@ -359,14 +359,14 @@ fn rewrite_addi(instruction: &Instruction, d: u8, a: u8) -> Instruction {
     }
 }
 
-fn rewrite_add(instruction: &Instruction, d: u8, a: u8, b: u8) -> Instruction {
+fn rewrite_add(instruction: &Instruction, d: u32, a: u32, b: u32) -> Instruction {
     let Instruction::Add { .. } = instruction else {
         unreachable!("the packed-format indexed address was matched above");
     };
     Instruction::Add { d, a, b }
 }
 
-fn rewrite_load_byte(instruction: &Instruction, d: u8, a: u8) -> Instruction {
+fn rewrite_load_byte(instruction: &Instruction, d: u32, a: u32) -> Instruction {
     let Instruction::LoadByteZero { offset, .. } = instruction else {
         unreachable!("the packed-format table load was matched above");
     };

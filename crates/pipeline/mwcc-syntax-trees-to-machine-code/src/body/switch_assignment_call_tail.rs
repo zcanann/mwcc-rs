@@ -120,7 +120,7 @@ impl Generator {
             offset: 28,
         });
         self.output.instructions.push(Instruction::StoreWord {
-            s: Eabi::FIRST_GENERAL_ARGUMENT,
+            s: 3,
             a: 1,
             offset: 8,
         });

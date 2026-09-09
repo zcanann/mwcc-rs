@@ -60,7 +60,7 @@ impl Generator {
         let Some(return_expression) = function.return_expression.as_ref() else {
             return Ok(false);
         };
-        let result = Eabi::general_result().number;
+        let result = u32::from(Eabi::general_result().number);
         if self.general_register_of_leaf(return_expression).ok() != Some(result) {
             return Ok(false);
         }
@@ -178,14 +178,14 @@ impl Generator {
         }
         if constants.len() == 2 {
             // Two distinct constants: the first into a free register, the second into the scratch.
-            let base_registers: Vec<u8> = statements
+            let base_registers: Vec<u32> = statements
                 .iter()
                 .filter_map(|statement| match statement {
                     Statement::Store { target, .. } => self.store_base_register(target),
                     _ => None,
                 })
                 .collect();
-            let first_register = (3u8..=12).find(|r| {
+            let first_register = (3u32..=12).find(|r| {
                 *r != GENERAL_SCRATCH && !base_registers.contains(r) && !self.reserved.contains(r)
             })?;
             return Some(ConstStoreRun::Distinct(vec![
@@ -217,7 +217,7 @@ impl Generator {
             .enumerate()
             .map(|(index, &constant)| {
                 let register = if index + 1 < count {
-                    (count + 1 - index) as u8
+                    (count + 1 - index) as u32
                 } else {
                     GENERAL_SCRATCH
                 };
@@ -242,7 +242,7 @@ impl Generator {
                     return self.emit_legacy_distinct_constant_store_run(statements, &assignments);
                 }
                 for &(constant, register) in &assignments {
-                    self.load_integer_constant(register, constant as i64);
+                    self.load_integer_constant(register.into(), constant as i64);
                 }
                 self.prematerialized_constants = assignments;
                 for statement in statements {
@@ -759,7 +759,7 @@ impl Generator {
         let result = if is_void {
             GENERAL_SCRATCH
         } else {
-            Eabi::general_result().number
+            u32::from(Eabi::general_result().number)
         };
         // The store address must be a general parameter plus a FIXED displacement so it
         // never touches the value's register: a bare deref (`*p`), a member (`p->field`),
@@ -998,7 +998,7 @@ impl Generator {
     }
 
     /// The register holding the base pointer of a scratch-safe store target.
-    pub(crate) fn store_base_register(&self, target: &Expression) -> Option<u8> {
+    pub(crate) fn store_base_register(&self, target: &Expression) -> Option<u32> {
         let name = match target {
             Expression::Member { base, .. } | Expression::Index { base, .. } => leaf_name(base),
             Expression::Dereference { pointer } => leaf_name(pointer),
