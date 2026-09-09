@@ -114,6 +114,8 @@ enum Operation {
         value: Value,
     },
     Binary {
+        /// Keep the low pair instruction after high-word demand pruning.
+        retain_pair_carry: bool,
         result: Value,
         operator: BinaryOperator,
         left: Value,
@@ -457,6 +459,7 @@ impl<'a> Graph<'a> {
                     return None;
                 }
                 self.operations.push(Operation::Binary {
+                    retain_pair_carry: false,
                     result,
                     operator: *operator,
                     left,
@@ -1127,12 +1130,20 @@ impl Generator {
                     }
                 }
                 Operation::Binary {
+                    retain_pair_carry,
                     result,
                     operator,
                     left,
                     right,
                 } => {
-                    self.emit_wide_graph_arithmetic(result, operator, left, right, registers)?;
+                    self.emit_wide_graph_arithmetic(
+                        result,
+                        operator,
+                        left,
+                        right,
+                        retain_pair_carry,
+                        registers,
+                    )?;
                 }
                 Operation::Call {
                     target,

@@ -1,5 +1,6 @@
 //! Arithmetic policy and selection for typed word/pair graph values.
 use super::*;
+use mwcc_vreg::{Class, Reg};
 
 pub(super) fn fold(operator: BinaryOperator, ty: Type, left: u64, right: u64) -> Option<u64> {
     let signed = |bits| {
@@ -57,6 +58,7 @@ impl Generator {
         operator: BinaryOperator,
         left: Value,
         right: Value,
+        retain_pair_carry: bool,
         registers: &mut [Option<Registers>],
     ) -> Compilation<()> {
         if !wide(left.ty)
@@ -79,6 +81,14 @@ impl Generator {
         let left = self.wide_graph_operand(left, registers);
         let right = self.wide_graph_operand(right, registers);
         let destination = self.wide_graph_destination(result, registers);
+        if retain_pair_carry && self.behavior.narrowed_pair_keeps_left_home {
+            if let (Some(destination), Some(source)) = (
+                Reg::from_field(destination.low, Class::General).virtual_register(),
+                Reg::from_field(left.low, Class::General).virtual_register(),
+            ) {
+                self.register_affinity.insert(destination, source);
+            }
+        }
         if is_comparison(operator) {
             let truth = self.fresh_label();
             let done = self.fresh_label();
@@ -279,12 +289,12 @@ impl Generator {
         }
         let instruction = |d, a, b, high| match operator {
             BinaryOperator::Add if high => Instruction::AddExtended { d, a, b },
-            BinaryOperator::Add if destination.high.is_some() => {
+            BinaryOperator::Add if destination.high.is_some() || retain_pair_carry => {
                 Instruction::AddCarrying { d, a, b }
             }
             BinaryOperator::Add => Instruction::Add { d, a, b },
             BinaryOperator::Subtract if high => Instruction::SubtractFromExtended { d, a: b, b: a },
-            BinaryOperator::Subtract if destination.high.is_some() => {
+            BinaryOperator::Subtract if destination.high.is_some() || retain_pair_carry => {
                 Instruction::SubtractFromCarrying { d, a: b, b: a }
             }
             BinaryOperator::Subtract => Instruction::SubtractFrom { d, a: b, b: a },
@@ -509,6 +519,7 @@ impl Graph<'_> {
         }
         let result = self.fresh(result_type);
         self.operations.push(Operation::Binary {
+            retain_pair_carry: false,
             result,
             operator,
             left,

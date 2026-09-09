@@ -1601,6 +1601,11 @@ pub trait CodegenProfile: core::fmt::Debug {
         WordSubtrahendExtension::FullWidth
     }
 
+    /// Keep a narrowed pair add/subtract in the left operand's low home.
+    fn narrowed_pair_keeps_left_home(&self) -> bool {
+        false
+    }
+
     /// General pruning of unused pair words starts at O2 in the middle line.
     /// Earlier and modern builds already prune ordinary pair loads/adds at O1.
     fn wide_word_demand_starts_at_o2(&self) -> bool {
@@ -2151,6 +2156,10 @@ pub trait CodegenProfile: core::fmt::Debug {
 #[derive(Debug)]
 pub struct Mainline;
 impl CodegenProfile for Mainline {
+    fn narrowed_pair_keeps_left_home(&self) -> bool {
+        true
+    }
+
     fn wide_word_demand_starts_at_o2(&self) -> bool {
         true
     }
@@ -2173,6 +2182,10 @@ impl CodegenProfile for Mainline {
 #[derive(Debug)]
 pub struct MainlineEarlyAggregateLoads;
 impl CodegenProfile for MainlineEarlyAggregateLoads {
+    fn narrowed_pair_keeps_left_home(&self) -> bool {
+        true
+    }
+
     fn wide_word_demand_starts_at_o2(&self) -> bool {
         true
     }
@@ -2812,6 +2825,10 @@ impl CodegenProfile for Wii43Build145 {
 #[derive(Debug)]
 pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
+    fn narrowed_pair_keeps_left_home(&self) -> bool {
+        true
+    }
+
     fn wide_word_demand_starts_at_o2(&self) -> bool {
         true
     }
@@ -2907,6 +2924,10 @@ impl CodegenProfile for Gc13Build53 {
 #[derive(Debug)]
 pub struct Gc132Build81;
 impl CodegenProfile for Gc132Build81 {
+    fn narrowed_pair_keeps_left_home(&self) -> bool {
+        true
+    }
+
     fn wide_word_demand_starts_at_o2(&self) -> bool {
         true
     }
@@ -3565,6 +3586,10 @@ impl CodegenProfile for Gc233Build163 {
 #[derive(Debug)]
 pub struct Gc20Patch1;
 impl CodegenProfile for Gc20Patch1 {
+    fn narrowed_pair_keeps_left_home(&self) -> bool {
+        true
+    }
+
     fn wide_word_demand_starts_at_o2(&self) -> bool {
         true
     }

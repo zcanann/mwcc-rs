@@ -41,6 +41,7 @@ impl Graph<'_> {
         if bytes != 1 {
             let result = self.fresh(Type::Int);
             self.operations.push(Operation::Binary {
+                retain_pair_carry: false,
                 result,
                 operator: BinaryOperator::Multiply,
                 left: offset,
@@ -53,6 +54,7 @@ impl Graph<'_> {
         }
         let result = self.fresh(pointer.ty);
         self.operations.push(Operation::Binary {
+            retain_pair_carry: false,
             result,
             operator: if subtract {
                 BinaryOperator::Subtract

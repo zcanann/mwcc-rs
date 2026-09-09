@@ -77,6 +77,7 @@ fn propagate(operations: &[Operation], high: &mut HashSet<usize>) {
                 operator,
                 left,
                 right,
+                ..
             } => {
                 if !low_word_arithmetic(*operator) || needed(*result, high) {
                     demand(*left, high);
@@ -134,7 +135,10 @@ fn narrow(operations: &mut [Operation], high: &HashSet<usize>) {
                 operator,
                 left,
                 right,
+                retain_pair_carry,
             } if wide(result.ty) && low_word_arithmetic(*operator) && !needed(*result, high) => {
+                *retain_pair_carry =
+                    matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract);
                 low(result);
                 low(left);
                 low(right);

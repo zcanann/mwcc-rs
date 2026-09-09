@@ -42,6 +42,7 @@ impl Graph<'_> {
         }
         let result = self.fresh(Type::Int);
         self.operations.push(Operation::Binary {
+            retain_pair_carry: false,
             result,
             operator: BinaryOperator::NotEqual,
             left: value,
@@ -131,6 +132,7 @@ impl Graph<'_> {
         let value = self.expression(right)?;
         let result = self.fresh(Type::Int);
         self.operations.push(Operation::Binary {
+            retain_pair_carry: false,
             result,
             operator: BinaryOperator::NotEqual,
             left: value,

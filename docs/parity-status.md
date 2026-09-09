@@ -4,13 +4,57 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, incoming argument homes in the word/pair graph (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, carry selection after high-word pruning (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `532b20df06572423f283a113fd302d32ccb09f320a90e03f85d9c9937ced1ab7:1c371159a5cd6eea189b4722994f322f554d54a54c9f8ecd811f644a65e36fcd`
+Latest measured compiler + harness fingerprint: `74a05d1e1a2f97053176cdb5b2e078ff365981515c62d45ad85e9ebff3ef844b:fa51fa2361695c7ac6d9c0da3e580259a0ecc977e71d9f44eb893b14aea1dfc4`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Carry selection after high-word pruning, 2026-09-09
+
+Sample **2312** improves **89 → 171/1,365** exact function instruction/relocation
+matches across its 105 configurations, adding **82 low_add** outputs. All
+baseline/candidate/reference objects compile and no measured exact match is
+lost. The previous 82 low_mul and seven low_mask matches remain intact.
+
+High-word pruning now records that an addition/subtraction originated as a
+pair operation. Selection retains `addc`/`subfc` when the high consumer is
+removed, instead of silently selecting ordinary word arithmetic. Full pairs
+continue selecting the carry producer/consumer together; source-level word
+arithmetic is unchanged. A separate profile rule records GC/1.3–2.7's preference
+for the left operand's low register. The existing allocator affinity mechanism
+honors that home when legal, preserving the reference's final return move.
+Earlier and modern profiles can write the result directly. No physical register
+is pinned, and normal interference/call survival constraints still apply.
+
+All 90 original audio objects remain unchanged, retaining the 2,140-byte O4
+decoder and **142/270** exact functions. The Dolphin frontier stays **201/302**.
+Only OSTime in GC/1.2.5n and GC/1.3 changes: OSTicksToCalendarTime selects the
+retained carry form while remaining 812 bytes. Neither object loses an exact
+function match.
+
+Validation binds **13,350** object artifacts to this compiler:
+
+- **322,958 candidate executions pass**: 174,720 sample-2312 cases, 134,400
+  affected prior-sample cases, 2,048 full calendar cases and 11,790 unchanged
+  full audio cases reused after matching every object hash.
+- All **174,720 baseline** sample executions pass. Of **186,510 reference**
+  executions, the same 256 GC/1.1p1 O0 low_shift/call_pair shared-spill failures
+  remain explicitly recorded; there are no new failures.
+- The **2,865-row** regression panel preserves 2,589 objects and 276 diagnostics.
+  The **3,420-row** recent panel preserves 3,188 objects. Its 232 changes are
+  confined to samples 2281, 2303 and 2312, all covered by native execution.
+  Exact functions in those objects improve **164 → 246**, with no losses.
+- **2,703 Rust tests pass**, with the same 12 documented pre-existing exclusions
+  and eight ignored tests. Original project sources and DOL remain unchanged.
+
+Evidence: `target/pair-carry-{canaries,project,frontier,regressions,recent}/results.json`,
+the corresponding native JSON files, `target/pair-carry-verified-tests.log`,
+and `target/pair-carry-final-verification.json`. Recheck with
+`python3 target/verify_pair_carry_final.py`. Further graph-copy removal,
+retained conversion instructions and decoder address folding remain open.
 
 ## Incoming argument homes in the word/pair graph, 2026-09-09
 

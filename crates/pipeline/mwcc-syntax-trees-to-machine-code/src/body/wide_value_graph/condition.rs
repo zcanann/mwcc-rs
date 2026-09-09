@@ -20,6 +20,7 @@ impl Graph<'_> {
             operator,
             left,
             right,
+            ..
         }) = self.operations.last()
         {
             if *result == value
@@ -229,6 +230,7 @@ mod tests {
         let right = graph.fresh(Type::Int);
         let result = graph.fresh(Type::Int);
         graph.operations.push(Operation::Binary {
+            retain_pair_carry: false,
             result,
             operator: BinaryOperator::Less,
             left,
