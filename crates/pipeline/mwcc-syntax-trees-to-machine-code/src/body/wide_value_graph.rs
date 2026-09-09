@@ -7,10 +7,13 @@
 //! remain operands until use, avoiding artificial survivors.
 
 use super::*;
+use mwcc_vreg::Label;
 use std::collections::HashMap;
 
 #[path = "wide_value_graph/arithmetic.rs"]
 mod arithmetic;
+#[path = "wide_value_graph/control.rs"]
+mod control;
 
 fn supported(ty: Type) -> bool {
     matches!(
@@ -39,6 +42,16 @@ enum Source {
 }
 #[derive(Debug)]
 enum Operation {
+    Local {
+        result: Value,
+    },
+    Label(usize),
+    Jump(usize),
+    BranchIfZero {
+        condition: Value,
+        target: usize,
+    },
+    Return(Option<Value>),
     Branch {
         condition: Value,
         then_body: Vec<Operation>,
@@ -96,6 +109,10 @@ struct Graph<'a> {
     returns: &'a HashMap<String, Type>,
     parameters: &'a HashMap<String, Vec<Type>>,
     returned: Option<Value>,
+    return_type: Type,
+    fixed_bindings: bool,
+    labels: usize,
+    loop_targets: Vec<(usize, usize)>,
 }
 
 /// The word/pair-only EABI subset. A pair starts at an odd GPR. Reject overflow
@@ -157,7 +174,7 @@ impl<'a> Graph<'a> {
 
     fn address(&mut self, name: &str) -> Option<Value> {
         let ty = *self.globals.get(name)?;
-        if !supported(ty) || self.types.contains_key(name) {
+        if !(supported(ty) || matches!(ty, Type::Struct { .. })) || self.types.contains_key(name) {
             return None;
         }
         // The pointee identity is supplied by the load/store, so this internal
@@ -187,6 +204,9 @@ impl<'a> Graph<'a> {
                     return Some(*value);
                 }
                 let ty = *self.globals.get(name)?;
+                if !supported(ty) {
+                    return None;
+                }
                 let pointer = self.address(name)?;
                 let result = self.fresh(ty);
                 self.operations.push(Operation::Load { result, pointer });
@@ -240,6 +260,10 @@ impl<'a> Graph<'a> {
                 self.operations.push(Operation::Load { result, pointer });
                 Some(result)
             }
+            Expression::Assign { target, value } => {
+                let value = self.expression(value)?;
+                self.store(target, value)
+            }
             Expression::Call { name, arguments } => self.call(name, arguments, true)?,
             Expression::Binary {
                 operator,
@@ -276,7 +300,9 @@ impl<'a> Graph<'a> {
                     let left = self.expression(left)?;
                     (left, self.expression(right)?)
                 };
-                if matches!(left.ty, Type::Pointer(_)) || matches!(right.ty, Type::Pointer(_)) {
+                let pointers = matches!(left.ty, Type::Pointer(_) | Type::StructPointer { .. })
+                    || matches!(right.ty, Type::Pointer(_) | Type::StructPointer { .. });
+                if pointers && !is_comparison(*operator) {
                     return None;
                 }
                 let shift = matches!(
@@ -285,6 +311,8 @@ impl<'a> Graph<'a> {
                 );
                 let ty = if shift {
                     left.ty
+                } else if pointers {
+                    Type::UnsignedInt
                 } else if left.ty == Type::UnsignedLongLong || right.ty == Type::UnsignedLongLong {
                     Type::UnsignedLongLong
                 } else if wide(left.ty) || wide(right.ty) {
@@ -381,12 +409,66 @@ impl<'a> Graph<'a> {
         let ty = *self.types.get(name)?;
         let value = self.expression(expression)?;
         let value = self.convert(value, ty)?;
-        self.bindings.insert(name.into(), value);
+        if self.fixed_bindings {
+            self.operations.push(Operation::Copy {
+                result: *self.bindings.get(name)?,
+                value,
+            });
+        } else {
+            self.bindings.insert(name.into(), value);
+        }
         Some(())
     }
 
+    fn store(&mut self, target: &Expression, value: Value) -> Option<Value> {
+        if let Expression::Variable(name) = target {
+            if let Some(ty) = self.types.get(name).copied() {
+                let value = self.convert(value, ty)?;
+                if self.fixed_bindings {
+                    self.operations.push(Operation::Copy {
+                        result: *self.bindings.get(name)?,
+                        value,
+                    });
+                } else {
+                    self.bindings.insert(name.clone(), value);
+                }
+                return Some(value);
+            }
+        }
+        let (pointer, ty) = match target {
+            Expression::Variable(name) => (self.address(name)?, *self.globals.get(name)?),
+            Expression::Dereference { pointer } => {
+                let pointer = self.expression(pointer)?;
+                let Type::Pointer(pointee) = pointer.ty else {
+                    return None;
+                };
+                (pointer, pointee.element())
+            }
+            Expression::Member {
+                base,
+                offset,
+                member_type,
+                ..
+            } => (self.member_address(base, *offset)?, *member_type),
+            _ => return None,
+        };
+        let value = self.convert(value, ty)?;
+        self.operations.push(Operation::Store { pointer, value });
+        Some(value)
+    }
+
     fn member_address(&mut self, base: &Expression, bytes: u32) -> Option<Value> {
-        let pointer = self.expression(base)?;
+        let pointer = if let Expression::Variable(name) = base {
+            if !self.types.contains_key(name)
+                && matches!(self.globals.get(name), Some(Type::Struct { .. }))
+            {
+                self.address(name)?
+            } else {
+                self.expression(base)?
+            }
+        } else {
+            self.expression(base)?
+        };
         if !matches!(pointer.ty, Type::Pointer(_) | Type::StructPointer { .. }) {
             return None;
         }
@@ -403,38 +485,44 @@ impl<'a> Graph<'a> {
         for statement in statements {
             match statement {
                 Statement::Assign { name, value } => self.assign(name, value)?,
-                Statement::Expression(Expression::Assign { target, value }) => {
-                    let Expression::Variable(name) = target.as_ref() else {
-                        return None;
-                    };
-                    self.assign(name, value)?;
-                }
-                Statement::Expression(Expression::Call { name, arguments }) => {
-                    self.call(name, arguments, false)?;
+                Statement::Expression(expression) => {
+                    self.effect(expression)?;
                 }
                 Statement::Store { target, value } => {
                     let value = self.expression(value)?;
-                    let (pointer, ty) = match target {
-                        Expression::Variable(name) => {
-                            (self.address(name)?, *self.globals.get(name)?)
+                    self.store(target, value)?;
+                }
+                Statement::Loop {
+                    kind,
+                    initializer,
+                    condition,
+                    step,
+                    body,
+                } => {
+                    self.loop_body(
+                        *kind,
+                        initializer.as_ref(),
+                        condition.as_ref(),
+                        step.as_ref(),
+                        body,
+                    )?;
+                }
+                Statement::Break => self
+                    .operations
+                    .push(Operation::Jump(self.loop_targets.last()?.0)),
+                Statement::Continue => self
+                    .operations
+                    .push(Operation::Jump(self.loop_targets.last()?.1)),
+                Statement::Return(value) => {
+                    let value = match (self.return_type, value) {
+                        (Type::Void, None) => None,
+                        (Type::Void, Some(_)) | (_, None) => return None,
+                        (ty, Some(expression)) => {
+                            let value = self.expression(expression)?;
+                            Some(self.convert(value, ty)?)
                         }
-                        Expression::Dereference { pointer } => {
-                            let pointer = self.expression(pointer)?;
-                            let Type::Pointer(pointee) = pointer.ty else {
-                                return None;
-                            };
-                            (pointer, pointee.element())
-                        }
-                        Expression::Member {
-                            base,
-                            offset,
-                            member_type,
-                            ..
-                        } => (self.member_address(base, *offset)?, *member_type),
-                        _ => return None,
                     };
-                    let value = self.convert(value, ty)?;
-                    self.operations.push(Operation::Store { pointer, value });
+                    self.operations.push(Operation::Return(value));
                 }
                 Statement::If {
                     condition,
@@ -442,9 +530,7 @@ impl<'a> Graph<'a> {
                     else_body,
                 } => {
                     let condition = self.expression(condition)?;
-                    if wide(condition.ty) {
-                        return None;
-                    }
+                    let condition = self.truth(condition);
                     let before = self.bindings.clone();
                     let outer = std::mem::take(&mut self.operations);
                     self.statements(then_body)?;
@@ -494,7 +580,6 @@ impl<'a> Graph<'a> {
         parameters: &'a HashMap<String, Vec<Type>>,
     ) -> Option<Self> {
         if !(supported(function.return_type) || function.return_type == Type::Void)
-            || !function.guards.is_empty()
             || function.locals.iter().any(|l| {
                 !supported(l.declared_type)
                     || l.is_volatile
@@ -504,6 +589,24 @@ impl<'a> Graph<'a> {
         {
             return None;
         }
+        // The parser extracts terminal guarded returns after the statement
+        // prefix. Restore that position before building control-flow edges.
+        let guarded_statements;
+        let source_statements = if function.guards.is_empty() {
+            function.statements.as_slice()
+        } else {
+            guarded_statements = function
+                .statements
+                .iter()
+                .cloned()
+                .chain(function.guards.iter().map(|guard| Statement::If {
+                    condition: guard.condition.clone(),
+                    then_body: vec![Statement::Return(Some(guard.value.clone()))],
+                    else_body: Vec::new(),
+                }))
+                .collect::<Vec<_>>();
+            guarded_statements.as_slice()
+        };
         let incoming = abi_registers(function.parameters.iter().map(|p| p.parameter_type))?;
         let mut graph = Self {
             operations: Vec::new(),
@@ -524,11 +627,22 @@ impl<'a> Graph<'a> {
             returns,
             parameters,
             returned: None,
+            return_type: function.return_type,
+            fixed_bindings: control::requires_homes(source_statements, false),
+            labels: 0,
+            loop_targets: Vec::new(),
         };
         for (parameter, high) in function.parameters.iter().zip(incoming) {
             let result = graph.fresh(parameter.parameter_type);
             graph.operations.push(Operation::Parameter { result, high });
             graph.bindings.insert(parameter.name.clone(), result);
+        }
+        if graph.fixed_bindings {
+            for local in &function.locals {
+                let result = graph.fresh(local.declared_type);
+                graph.operations.push(Operation::Local { result });
+                graph.bindings.insert(local.name.clone(), result);
+            }
         }
         for local in &function.locals {
             if let Some(value) = &local.initializer {
@@ -536,7 +650,7 @@ impl<'a> Graph<'a> {
             }
         }
         let mut returned = function.return_expression.as_ref();
-        let mut statements = function.statements.as_slice();
+        let mut statements = source_statements;
         if let Some((Statement::Return(value), prefix)) = statements.split_last() {
             if returned.is_some() {
                 return None;
@@ -549,9 +663,11 @@ impl<'a> Graph<'a> {
             if returned.is_some() {
                 return None;
             }
-        } else {
-            let value = graph.expression(returned?)?;
+        } else if let Some(expression) = returned {
+            let value = graph.expression(expression)?;
             graph.returned = Some(graph.convert(value, function.return_type)?);
+        } else if control::falls_through(statements) {
+            return None;
         }
         Some(graph)
     }
@@ -614,7 +730,9 @@ impl Generator {
                 },
             ]);
         }
-        self.emit_wide_graph_operations(operations, &mut registers)?;
+        let labels: Vec<_> = (0..graph.labels).map(|_| self.fresh_label()).collect();
+        let exit = self.fresh_label();
+        self.emit_wide_graph_operations(operations, &mut registers, &labels, exit)?;
         if let Some(value) = returned {
             if let Source::Constant(bits) = value.source {
                 // The return ABI is the destination of a terminal constant;
@@ -636,6 +754,7 @@ impl Generator {
                 }
             }
         }
+        self.bind_label(exit);
         self.emit_epilogue_and_return();
         Ok(true)
     }
@@ -644,9 +763,41 @@ impl Generator {
         &mut self,
         operations: Vec<Operation>,
         registers: &mut [Option<Registers>],
+        labels: &[Label],
+        exit: Label,
     ) -> Compilation<()> {
         for operation in operations {
             match operation {
+                Operation::Local { result } => {
+                    self.wide_graph_destination(result, registers);
+                }
+                Operation::Label(label) => self.bind_label(labels[label]),
+                Operation::Jump(label) => self.emit_branch_to(labels[label]),
+                Operation::BranchIfZero { condition, target } => {
+                    let condition = self.wide_graph_operand(condition, registers).low;
+                    self.output
+                        .instructions
+                        .push(Instruction::CompareWordImmediate {
+                            a: condition,
+                            immediate: 0,
+                        });
+                    self.emit_branch_conditional_to(12, 2, labels[target]);
+                }
+                Operation::Return(value) => {
+                    if let Some(value) = value {
+                        let value = self.wide_graph_operand(value, registers);
+                        self.output.instructions.push(Instruction::move_register(
+                            if value.high.is_some() { 4 } else { 3 },
+                            value.low,
+                        ));
+                        if let Some(high) = value.high {
+                            self.output
+                                .instructions
+                                .push(Instruction::move_register(3, high));
+                        }
+                    }
+                    self.emit_branch_to(exit);
+                }
                 Operation::Branch {
                     condition,
                     then_body,
@@ -662,10 +813,10 @@ impl Generator {
                             immediate: 0,
                         });
                     self.emit_branch_conditional_to(12, 2, otherwise);
-                    self.emit_wide_graph_operations(then_body, registers)?;
+                    self.emit_wide_graph_operations(then_body, registers, labels, exit)?;
                     self.emit_branch_to(join);
                     self.bind_label(otherwise);
-                    self.emit_wide_graph_operations(else_body, registers)?;
+                    self.emit_wide_graph_operations(else_body, registers, labels, exit)?;
                     self.bind_label(join);
                 }
                 Operation::Copy { result, value } => {
@@ -915,6 +1066,10 @@ mod tests {
             returns: &returns,
             parameters: &parameters,
             returned: None,
+            return_type: Type::Void,
+            fixed_bindings: false,
+            labels: 0,
+            loop_targets: Vec::new(),
         };
         for (ty, expected) in [(Type::Int, u64::MAX), (Type::UnsignedInt, 0xffff_ffff)] {
             let input = Value {

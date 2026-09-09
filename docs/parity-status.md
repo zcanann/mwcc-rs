@@ -4,13 +4,70 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, struct-definition globals and Dolphin alarm initialization (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, wide loop control and Dolphin alarm queue operations (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `0ee7f70e1a88390fd8959d9c4bae73309869b78ff360125908cf6aa231576719:0c1e823c838951488bc9ff0814a9dc4603f5561483d4a7a4add1d18cf97a9675`
+Latest measured compiler + harness fingerprint: `fae467532e7bb7bbb6895beecd347cf39e49ba33623985fad7254259792bb347:c1630389279a720ca8e67ed2213e9f4688fcafeb28784407ef7b947bc2194d06`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Wide loop control and Dolphin alarm queues, 2026-09-09
+
+The original Battle for Bikini Bottom alarm source now gets through
+**InsertAlarm, OSSetAlarm, OSSetPeriodicAlarm and OSCancelAlarm**. Its exact prefix
+through cancellation compiles in **90/90** candidate configurations, up from
+**0**, with **72** compiling references and **60/432** exact function
+instruction/relocation matches. The full `os/OSAlarm.c` next stops at
+`DecrementerExceptionCallback`, whose narrow parameter, stack-resident OSContext
+and indirect handler call remain outside this word/pair path. The Dolphin
+frontier remains **197/302**; all 197 previously compiling objects are unchanged.
+This is progress in alarm routine coverage, not full alarm-unit parity.
+
+The typed word/pair graph now carries explicit labels, jumps, conditional exits
+and returns. Bodies with loops or early exits assign each local a stable virtual
+register home and emit copies on assignment. Ordinary allocation handles
+back-edge liveness and values retained across calls; acyclic bodies retain their
+existing value bindings and conditional merges. The separate control module
+lowers while/for/do loops, nested break/continue targets and 64-bit truth tests.
+Returns branch to one epilogue, and parser-extracted terminal guards regain
+their position after the statement prefix. Aggregate global member addresses,
+pointer comparisons and assignment expressions allow the original alarm list
+updates and chained head/tail stores to use the same graph.
+
+Samples **2300–2301** compile in **180/180** candidate and reference configurations,
+up from **0** candidate configurations. Their **810** function outputs are not
+yet exact matches. All **103,680 candidate and reference** executions pass
+accumulation, skip/break, list-search returns, do-loop continue conditions, nested
+loops, pair truth tests, call sequencing and rotating pair assignments. Reference
+runtime shifts and register-save helpers execute from the original project DOL.
+
+The four newly compiling original alarm routines pass **46,080 candidate**
+executions covering periodic deadline calculation, stable ordered insertion,
+head/middle/tail cancellation, interrupt state, timer saturation, service-call
+arguments and both halves of each stored timestamp. The original signed division
+helper executes; OS services are modeled. Of **36,864 reference** executions,
+**256** GC/1.1p1 O0 setter calls overlap argument slots with saved r30/r31 and with
+other arguments. This corrupts time inputs/deadlines as well as the preserved
+registers. The candidate currently preserves those values, so these are
+remaining original-behavior fidelity gaps. The reference instructions are
+retained in `target/wide-control-reference-frames.dis`.
+
+The **2,865** established cases retain **2,589** identical objects and **276**
+identical diagnostics. Of **2,130** recent objects, **2,100** are identical.
+Only `elapsed` changes in the 30 version/mode objects of samples 1948/1949: its
+frame-based 164/168-byte sequence becomes a 136-byte register-based sequence.
+Neither implementation matches the 104/132-byte references exactly. All
+**15,360 baseline, candidate and reference** elapsed-clock executions pass
+return-value, timestamp-store, call-count and ABI checks; the other five functions
+in each object remain identical.
+
+**2,691 tests** pass with the same 12 verified baseline exclusions and eight
+already-ignored virtual-register tests. Total execution coverage is **165,120
+candidate**, **155,904 reference** and **15,360 baseline** calls, with the 256
+reference setter failures above. `target/wide-control-final-verification.json`
+binds the compiler/harness fingerprints, original source and DOL, exact prefix,
+execution results and **10,677** output objects.
 
 ## Struct-definition globals and Dolphin alarm initialization, 2026-09-09
 
