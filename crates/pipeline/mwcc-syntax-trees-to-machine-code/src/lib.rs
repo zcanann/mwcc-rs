@@ -43,6 +43,7 @@ mod dag_emitter;
 mod debug_provenance;
 mod division;
 mod fixed_address_division;
+mod fixed_address_division_entry;
 mod expressions;
 mod float;
 mod float_abs_pair_condition;
@@ -1452,6 +1453,7 @@ fn lower_function_body(
     generator.schedule_linkage_first_post_asm_function_address();
     generator.schedule_linkage_first_post_asm_variadic_store();
     generator.schedule_structured_repeated_value_inlined_byte_appends();
+    generator.schedule_fixed_address_division_entry();
     generator.schedule_pointer_table_index_cursor_prologue();
     generator.schedule_indexed_allocation_pair();
     generator.schedule_pointer_table_index_cursor_publication();

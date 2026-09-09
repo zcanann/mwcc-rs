@@ -4,13 +4,69 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, fixed-address unsigned division (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, fixed-division entry scheduling (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `1001e56cd11bee2cc64de1d47836c7334786a1db44e776649f2abb2066d15b72:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `136901113306a49779774a278b4ffa741f1172db12043b855d3f4799a5dafc42:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Fixed-division entry scheduling, 2026-09-08
+
+A separate entry planner now fills linkage-first prologue latency slots with a
+leading fixed-address division's multiplier and address constants. After the
+multiply, an optional retained section base reuses the dead multiplier register.
+This produces the reference's first **48 bytes and relocations** of the real
+`__AXVPBInit` in **GC/1.1, 1.1p1, 1.2.5, and 1.2.5n**: prefix matches improve
+**0 → 4/15**. All bytes and relocations after that prefix remain unchanged on
+every build. The eleven later-version objects are entirely unchanged, complete
+initializer matches remain **0/15**, and `__AXSetPBDefault` stays **15/15** exact.
+
+The planner runs after frame normalization and uses the existing frame-convention
+policy. It requires O2 or higher, performance optimization, and scheduling enabled.
+It validates the complete entry before changing it: linkage and saved-register
+stores, constant-address load, multiplier pair, multiply, quotient, and optional
+owned section relocation pair. Interior branch entries, unowned instructions or
+relocations, displacement fixups, indirect jump tables, and assembly block the
+rewrite. Saved homes must precede both initialization and the memory load.
+A shared permutation helper keeps instruction-index owners attached to their
+instructions. No division selection or later body schedule changes.
+
+Register reuse requires liveness proof. The general allocator conservatively
+counts every materialized argument lane as an input to a following call. A known
+non-variadic void callee with scalar word arguments can instead prove a staging
+lane unused; the planner models that call as a definition of the lane only in
+the liveness analysis. Unknown, wide, floating, and variadic signatures retain
+the conservative check. Unit tests cover partially scheduled prefixes, relocation
+movement, interior entries, effects, live temporaries, late saves, and this call
+prototype boundary.
+
+Canaries **2210–2215** add twelve functions in six modes across fifteen builds.
+All **90 objects / 1,080 functions** compile on baseline, candidate, and reference.
+They cover several divisors, declared and cast absolute addresses, nonzero and
+zero high halves, incoming arguments, a preceding-call barrier, and three/four
+cursor clearing loops. **108 functions** change without changing size; exact
+matches improve **35 → 119**, with no losses. All **17,280** native cases pass
+volatile-read, callback mutation, guarded-memory, register, and stack checks.
+
+The previous division slice adds **36** exact functions (**780 → 816/2,340**),
+with **64** functions changed and all **37,440** native cases passing. The other
+**1,920** preceding objects remain byte-identical. These are diagnostic slices,
+not a corpus parity estimate. The wider older arithmetic panel and full corpus
+were not rerun.
+
+All **240** real initializer execution cases pass against reference and original
+game models. All **24 AX/GX units** compile; AXVPB alone changes, while the other
+23 units remain byte-identical. Backend tests pass **1,676**, with the existing
+nested-asm exclusion. Fresh native coverage totals **54,960 cases**. Final objects
+were rebuilt after the last validation-guard change and their hashes checked
+against those native executions.
+
+`target/divide-entry-final-verification.json` binds the final compiler/harness,
+source and model hashes, original DOL, **585 native-tested object entries**, and
+measured comparisons. The next initializer gaps include zero/count/store ordering
+around the first clear and the later compiler versions' quotient homes.
 
 ## Fixed-address unsigned division, 2026-09-08
 
