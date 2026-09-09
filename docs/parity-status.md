@@ -4,13 +4,64 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, disjoint member reads and modern THP helper matching (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, modern member-read scheduling and THP helper matching (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `2491ee056fbba0117da1f804e396c5d8c4b9c94a1147070a9c3d3f9e9b73bb94:64e3cb3be7931f860f067241f67b607de72127f75919e8dbb23f99c6407dd148`
+Latest measured compiler + harness fingerprint: `d48143d7b1557f2b60c7872d5daac5eacb56140385ddbf871eabd89781cff79c:4e229dbd413efcd652e7a388737e21bbfc24e3029d1c2cf4a240023a8267f0ba`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Modern member-read scheduling and THP helper matching, 2026-09-09
+
+Exact function instruction/relocation matches on the complete original
+`thp/THPAudio.c` improve **130 → 142/270** across 15 versions and six modes.
+Both helpers now match GC/3.0a3, GC/3.0a3p1 and Wii/1.0 in all five optimized
+modes tested, adding **12** exact O4/size outputs. The main decoder remains
+unchanged in all 90 configurations. Compilation stays **90/90** and the
+Dolphin frontier stays **201/302**, with every compiling frontier object
+unchanged. No exact function match is lost in the measured panels.
+
+A separate preallocation scheduler recognizes retained cursor reads feeding
+narrow member stores, plus independent cursor and optional counter updates.
+It gives simultaneously live values distinct virtual homes and schedules pure
+updates into the measured latency slots. Byte reads retain their order relative
+to preceding narrow stores because their targets may alias those fields. The
+existing member-value issue-width policy selects the final disjoint store order:
+GC 4.1 can issue a ready cursor store before a narrow store waiting on its final
+transform; Wii keeps source store order. One-, two- and three-field cases use
+the same rule. Volatile provenance, overlapping ranges, interior control-flow
+entries and live scratch results reject the schedule. Incoming branches to an
+initialization block execute its hoisted constant. Scheduling remains separate
+from load reuse, which also now forwards an adjacent ordinary word store to its
+reload; this removes the initial reload in the one-field initialization sample.
+
+New committed sample **2309** adds six functions with one/three fields, seeded
+cursors, guarded counter increments and an overlapping final store. Together
+with sample 2308, all **180** baseline/candidate/reference configurations compile,
+and their **1,260** function outputs improve **977 → 1,046** exact matches.
+The new sample alone improves **358 → 397/540**. Older versions and O0 keep their
+function outputs. Both volatile probes and both overlapping-store probes retain
+their baseline output; volatile-member scheduling remains a separate gap.
+
+All **150,528 baseline, candidate and reference** targeted sample executions
+pass. Coverage includes all 90 configurations of the new sample and all six
+changed configurations of sample 2308, with aliased input bytes, changing
+volatile cursors and ABI/memory checks. The full original audio objects pass
+**11,790 candidate and reference** cases against the independent decoder model,
+for **162,318 candidate and reference** executions with zero failures.
+
+Validation: **2,702 Rust tests pass**, with the same 12 known exclusions and eight
+existing ignored tests. The established 2,865-case panel retains 2,589 identical
+objects and 276 identical diagnostics. The recent panel retains **2,934/2,940**
+identical objects; its six changes are precisely the newly matching modern
+O4/size configurations of sample 2308, also covered by native execution.
+The final verifier binds **12,563 object artifacts** to the compiler and native
+results. Evidence is in ignored
+`target/member-schedule-{canaries,project,frontier,regressions,recent}/results.json`,
+`target/member-schedule-{native,audio-native}.json`,
+`target/member-schedule-verified-tests.log` and
+`target/member-schedule-final-verification.json`.
 
 ## Disjoint member reads and modern THP helper matching, 2026-09-09
 

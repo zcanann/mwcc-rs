@@ -19,6 +19,7 @@ mod arithmetic;
 mod load_field_merge;
 mod packed_cursor_read;
 mod member_read_values;
+mod member_read_schedule;
 mod register_value_liveness;
 mod call_liveness;
 mod asm;
@@ -1128,6 +1129,7 @@ fn lower_function_body(
     generator.hoist_structured_loop_float_zero();
     generator.retain_packed_read_cursors(function.return_type);
     generator.retain_disjoint_member_reads(function.return_type);
+    generator.schedule_member_reads(function.return_type);
     schedule_instructions(&mut generator);
     generator.schedule_dense_counted_loop_entry();
     generator.schedule_dense_counted_loop_state();

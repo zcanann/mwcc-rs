@@ -112,7 +112,7 @@ fn plan(code: &[I], at: usize, bases: &[u32]) -> Option<Plan> {
                     return disjoint_store.then_some((n, *d, true));
                 }
                 I::StoreWord { s, a, offset: o } if *a == base && *o == offset => {
-                    return disjoint_store.then_some((n, *s, false));
+                    return Some((n, *s, false));
                 }
                 I::BranchConditionalForward { target, .. } if *target > at => continue,
                 _ if !region_instruction(i) => return None,
