@@ -8,6 +8,29 @@ learned about that allocator empirically (every rule is backed by oracle diffs),
 the IR we will introduce to give those decisions a home, and a migration that
 keeps all builds byte-exact at every step.
 
+## Implicit ABI return uses, 2026-09-08
+
+Final allocation now passes the function's result registers into liveness.
+`analyze_with_return_registers` adds uses at `blr` and conditional `bclr`;
+`analyze_with_jump_tables_and_return_registers` combines those uses with recovered
+indirect CFG edges. Existing instruction-only analysis APIs retain their empty
+ABI context. The instruction descriptor continues to describe explicit fields,
+while the caller supplies signature-dependent ABI facts.
+
+Scalar integer and pointer returns consume r3, 64-bit integer returns consume
+r3:r4, and floating returns consume f1. Void and aggregate-memory returns add no
+register result. These uses participate in ordinary CFG slots and physical
+redefinition boundaries, rather than reserving result registers for the whole
+function. This prevents a packing/store temporary or epilogue temporary from
+clobbering an otherwise implicit result, while preserving dead-value reuse.
+
+The regression was exposed by storing packed bytes before returning the original
+pointer. Native checks also verify fixes in Dolphin DVD queue pop/check and
+endian unpacking. Implicit call arguments still have a separate coverage gap:
+DVD queue push retains an interrupt-state result in r3 without an explicit move
+before its later restore call, allowing intervening address work to overwrite
+it. Extending precise call-site ABI use metadata is the next related task.
+
 ## Wide selected register fields, 2026-09-08
 
 `mwcc-machine-code::RegisterField` is a `u32`. Fields 0–31 name physical

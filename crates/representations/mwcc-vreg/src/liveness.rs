@@ -53,6 +53,17 @@ pub fn analyze_with_indirect_successors(
     instructions: &[Instruction],
     indirect_successors: &HashMap<usize, Vec<usize>>,
 ) -> Liveness {
+    analyze_with_return_registers(instructions, indirect_successors, &[])
+}
+
+/// Add the function ABI's implicit uses at ordinary and conditional returns.
+/// Return registers come from the selected function signature, not from the
+/// branch opcode: void functions must not keep an unused r3/f1 live.
+pub fn analyze_with_return_registers(
+    instructions: &[Instruction],
+    indirect_successors: &HashMap<usize, Vec<usize>>,
+    return_registers: &[(Class, u8)],
+) -> Liveness {
     let nonzero_bases: HashSet<_> = instructions
         .iter()
         .filter_map(crate::description::nonzero_base)
@@ -70,7 +81,16 @@ pub fn analyze_with_indirect_successors(
         if is_call {
             calls.push(index);
         }
-        let operands = register_operands(instruction);
+        let mut operands = register_operands(instruction);
+        if matches!(instruction, Instruction::BranchToLinkRegister | Instruction::BranchConditionalToLinkRegister { .. }) {
+            operands.extend(return_registers.iter().map(|&(class, register)| {
+                crate::description::RegisterOperand {
+                    role: RegisterRole::Use,
+                    class,
+                    register: u32::from(register),
+                }
+            }));
+        }
         let mut uses = operands
             .iter()
             .filter(|operand| operand.role == RegisterRole::Use)
@@ -328,6 +348,49 @@ mod tests {
     /// A virtual register's field value (id 0 -> VIRTUAL_BASE).
     fn v(id: u32) -> RegisterField {
         Reg::general(id).to_field()
+    }
+
+    #[test]
+    fn implicit_result_uses_protect_incoming_values_at_returns() {
+        for (class, register) in [(Class::General, 3), (Class::General, 4), (Class::Float, 1)] {
+            let stream = match class {
+                Class::General => vec![
+                    Instruction::load_immediate(v(0), 7),
+                    Instruction::StoreWord { s: v(0), a: 5, offset: 0 },
+                    Instruction::BranchToLinkRegister,
+                ],
+                Class::Float => vec![
+                    Instruction::FloatMove { d: v(0), b: 2 },
+                    Instruction::StoreFloatDouble { s: v(0), a: 5, offset: 0 },
+                    Instruction::BranchToLinkRegister,
+                ],
+            };
+            for result_uses in [vec![], vec![(class, register)]] {
+                let mut live = analyze_with_return_registers(&stream, &HashMap::new(), &result_uses);
+                live.intervals[0].prefer = Some(register);
+                let allocation = LinearScan.allocate(
+                    &live.intervals, &live.pinned, &live.calls, &RegisterConstraints::gekko(),
+                ).unwrap();
+                assert_eq!(allocation.physical(live.intervals[0].vreg) == Some(register), result_uses.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn conditional_result_use_does_not_extend_past_a_new_definition() {
+        let stream = [
+            Instruction::BranchConditionalToLinkRegister { options: 12, condition_bit: 0 },
+            Instruction::load_immediate(v(0), 7),
+            Instruction::StoreWord { s: v(0), a: 5, offset: 0 },
+            Instruction::load_immediate(3, 9),
+            Instruction::BranchToLinkRegister,
+        ];
+        let live = analyze_with_return_registers(&stream, &HashMap::new(), &[(Class::General, 3)]);
+        let slots: Vec<_> = live.pinned.iter().filter(|p| p.class == Class::General && p.register == 3)
+            .flat_map(|p| p.live_slots.as_ref().unwrap().iter().copied()).collect();
+        assert!(slots.contains(&0));
+        assert!(slots.contains(&8));
+        assert!(!slots.contains(&3), "a dead incoming result must remain reusable");
     }
 
     #[test]

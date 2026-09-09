@@ -3061,6 +3061,9 @@ fn compile(
 
 #[cfg(test)]
 mod tests {
+    #[path = "load_field_merge.rs"]
+    mod load_field_merge;
+
     #[path = "asm_symbol_creation.rs"]
     mod asm_symbol_creation;
 

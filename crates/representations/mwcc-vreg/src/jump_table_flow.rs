@@ -17,6 +17,17 @@ pub fn analyze_with_jump_tables(
     analyze_with_indirect_successors(instructions, &successors)
 }
 
+/// Include both indirect CFG edges and the function's ABI result uses.
+pub fn analyze_with_jump_tables_and_return_registers(
+    instructions: &[Instruction],
+    relocations: &[Relocation],
+    tables: &[JumpTable],
+    return_registers: &[(Class, u8)],
+) -> Liveness {
+    let successors = jump_table_successors(instructions, relocations, tables);
+    crate::analyze_with_return_registers(instructions, &successors, return_registers)
+}
+
 fn jump_table_successors(
     instructions: &[Instruction],
     relocations: &[Relocation],

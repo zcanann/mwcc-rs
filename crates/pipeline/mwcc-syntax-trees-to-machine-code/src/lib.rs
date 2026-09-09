@@ -16,6 +16,7 @@ mod allocation_diagnostics;
 mod allocation_frame;
 mod incoming_parameters;
 mod arithmetic;
+mod load_field_merge;
 mod asm;
 mod automatic_rodata;
 mod body;
@@ -1128,7 +1129,7 @@ fn lower_function_body(
     }
     generator.retain_split_address_stores(function.return_type);
     generator.expand_fixed_fill_loops(function.return_type, globals);
-    let allocated_float_saves = allocate_registers(&mut generator).map_err(|mut diagnostic| {
+    let allocated_float_saves = allocate_registers(&mut generator, function.return_type).map_err(|mut diagnostic| {
         let context = format!("function '{}'", function.name);
         if !diagnostic.message.contains(&context) {
             diagnostic.message.push_str(&format!(" (in {context})"));
@@ -1602,11 +1603,20 @@ pub(crate) fn allocation_operator_returns_pointer(name: &str) -> bool {
 /// emit virtuals, this pass becomes where their physical registers are decided —
 /// each migration step verified byte-exact against the oracle. Running it
 /// unconditionally keeps one pipeline (no fork between a legacy and a vreg path).
-fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u32>> {
-    let mut liveness = mwcc_vreg::analyze_with_jump_tables(
+fn allocate_registers(generator: &mut Generator, return_type: mwcc_syntax_trees::Type) -> Compilation<Vec<u32>> {
+    use mwcc_syntax_trees::Type;
+    use mwcc_vreg::Class;
+    let return_registers: &[(Class, u8)] = match return_type {
+        Type::Void | Type::Struct { .. } => &[],
+        Type::Float | Type::Double => &[(Class::Float, 1)],
+        Type::LongLong | Type::UnsignedLongLong => &[(Class::General, 3), (Class::General, 4)],
+        _ => &[(Class::General, 3)],
+    };
+    let mut liveness = mwcc_vreg::analyze_with_jump_tables_and_return_registers(
         &generator.output.instructions,
         &generator.output.relocations,
         &generator.output.jump_tables,
+        return_registers,
     );
     if liveness.intervals.is_empty() {
         return Ok(Vec::new()); // no virtuals — selection chose physical registers directly

@@ -4,15 +4,81 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, wide virtual IDs and full Dolphin MD5 (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, load-field insertion and implicit return liveness (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `f551c24bb192f0cc729229028dd49ccdda1e7496fd9f6265debbd841aa199e3e:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `9bdb4a997d9e9460be021c15d53dc8110136c8ab820c5be06a77b74585397833:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
 
+## Load-field insertion and implicit return liveness, 2026-09-08
+
+A separate expression owner proves which bits unsigned loads, integer casts,
+constant shifts, masks, and OR trees can set. Disjoint fields use `rlwimi`
+instead of separate shift/OR instructions at O2–O4. Load reordering requires
+frontend evidence of a nonvolatile pointer; volatile and unknown addresses keep
+their existing owner. Overlapping fields and widening casts of signed loads do
+not acquire an invalid zero-extension proof. Register placement remains separate
+from mask analysis, leaving version-specific scheduling work independently
+replaceable.
+
+Canaries **2273–2275** add **27 functions**, measured across fifteen releases and
+six modes: O4, O3, O2, schedule off, optimize for size, and O0. Complete sample
+compilation improves **180 → 255/270**; exact function matches improve
+**60 → 396/2,430**, with **336 gains and no exact losses**. The remaining fifteen
+compilation failures are the masked-load sample at O0, where the existing
+compound-load guard still defers. Native execution passes **153,600 candidate
+function scenarios** and **155,520 reference scenarios**, including truncating
+shifts, signed inputs, narrow casts, overlapping fields, aliasing stores, retained
+pointers, and memory/ABI guards. Volatile controls preserve the baseline's access
+traces; this does not claim their traces match every reference version.
+
+A retained-pointer control exposed missing implicit ABI return uses in liveness.
+Allocation now receives result registers from the function signature: integer
+`r3`, integer-pair `r3:r4`, or floating `f1`. Ordinary and conditional returns
+consume those values through the same CFG analysis as explicit operands. Void
+functions gain no artificial result occupancy, and subsequent definitions still
+allow reuse. Tests cover both classes, pair-result homes, conditional returns,
+and reuse after the incoming value dies. All **5,760** baseline retained-pointer
+failures in the new panel are fixed, including O0.
+
+The same fix corrects returned values in the real Dolphin DVD queue pop/check
+functions. **256 queue scenarios** pass against the reference and an independent
+priority/FIFO model on GC/1.2.5n and GC/1.3; the baseline fails all 256. Queues are
+constructed independently to isolate those changed functions. A broader probe
+found a separate, unchanged defect in `__DVDPushWaitingQueue`: an address
+temporary overwrites the implicit `OSRestoreInterrupts` argument. That remains a
+next target; this checkpoint does not claim full DVD queue correctness.
+
+The preceding MD5/canary panel retains **6,720 passing candidate scenarios**,
+including all **960 MD5 digest cases**. Full MD5 still compiles on **15/15**
+versions; its fourteen accepted reference units remain **0/84** byte-exact.
+Field insertion reduces each measured MD5 unit by twelve text bytes, but loop
+unrolling, scheduling, and placement remain substantial matching work. The Wii
+reference still rejects the project's duplicate `s8` declaration.
+
+Of **2,865** existing canary combinations, **2,575** successful objects and **276**
+failure diagnostics are unchanged. The remaining fourteen objects are endian
+stack unpacking, with no exact losses. Its 16/32-bit helpers pass **1,920 native
+scenarios**, fixing **448** baseline return-value failures. The source's 64-bit
+helper has an undersized scratch array and is excluded from native assertions;
+all three helpers are included in byte comparisons. The 302-unit Dolphin panel
+retains **191** compiled units; only MD5 and DVD queue objects change, on both
+versions. All **187** other successful objects remain identical.
+
+Validation passes **2,166 tests** (351 app, 1,697 backend, 118 allocator), with
+the previously established nine app failures and one nested-assembly backend
+failure excluded; eight allocator search tests remain ignored. No full corpus or
+holdout claim is made. `target/load-field-final-verification.json` binds the
+compiler/harness fingerprints, sources, comparison objects, and **995 native
+object entries**. Measurements and execution records are under
+`target/load-field-{canaries,parity,regressions,frontier,unpack}/` and
+`target/load-field-queue-execution.json`.
+
 ## Wide virtual IDs and full Dolphin MD5, 2026-09-08
+
+Compiler fingerprint: `f551c24bb192f0cc729229028dd49ccdda1e7496fd9f6265debbd841aa199e3e`.
 
 Selected GPR/FPR fields now retain 32-bit virtual IDs through instruction
 selection, frame planning, liveness, and scheduling. Physical allocator homes
@@ -60,7 +126,7 @@ the final pass, alongside the known nested-inline-assembly backend test. Eight
 allocator search tests retain their existing ignored status. No full corpus or
 holdout claim is made by this checkpoint.
 
-The compiler fingerprint above binds the final objects. The local manifest
+The compiler fingerprint for this checkpoint binds its objects. The local manifest
 `target/vreg-wide-final-verification.json` verifies all comparison hashes and
 **239 native object bindings**, with source, native-harness, and original helper
 DOL hashes. Measurements are in `target/vreg-wide-parity/`,

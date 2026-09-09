@@ -1035,10 +1035,11 @@ impl Generator {
                 {
                     return Ok(());
                 }
-                // The same merge where the operands are memory loads (the pointer-pun
-                // `__HI`/`__LO` merge): load both, then rlwimi.
+                // Memory fields may be explicit complementary masks (the pointer-pun
+                // `__HI`/`__LO` merge), or disjoint bits proven from load widths.
                 if matches!(operator, BinaryOperator::BitOr)
-                    && self.try_emit_field_merge_loads(left, right, destination)?
+                    && (self.try_emit_field_merge_loads(left, right, destination)?
+                        || self.try_emit_load_field_merge(left, right, destination)?)
                 {
                     return Ok(());
                 }
