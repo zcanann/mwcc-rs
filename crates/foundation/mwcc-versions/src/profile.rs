@@ -1584,6 +1584,11 @@ pub trait CodegenProfile: core::fmt::Debug {
         FixedFillLoopStyle::DivisorTen
     }
 
+    /// Reuse ordinary word fields across stores to disjoint member ranges.
+    fn retain_disjoint_member_reads(&self) -> bool {
+        false
+    }
+
     fn member_value_schedule(&self) -> MemberValueSchedule {
         MemberValueSchedule::TwoValues
     }
@@ -2158,6 +2163,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn retain_disjoint_member_reads(&self) -> bool {
+        true
+    }
+
     fn asm_absolute_branches_are_relative(&self) -> bool {
         true
     }
@@ -2453,6 +2462,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn retain_disjoint_member_reads(&self) -> bool {
+        true
+    }
+
     fn retain_guarded_globals_across_calls(&self) -> bool {
         true
     }

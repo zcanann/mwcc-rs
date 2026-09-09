@@ -1,6 +1,7 @@
 //! Retain a nonvolatile member cursor across a signed packed-byte extraction.
 //! The independent cursor update can fill the extraction's latency slots.
 use crate::generator::Generator;
+use crate::register_value_liveness::dead_after;
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::Type;
 use mwcc_versions::Optimization;
@@ -155,56 +156,6 @@ fn recognize(instructions: &[Instruction], start: usize, bases: &[u32]) -> Optio
         pointer: *pointer,
         result: *result,
     })
-}
-
-// A removed temporary definition must be dead along every successor path.
-// Stop at a new definition; do not infer targets for an indirect branch.
-fn dead_after(instructions: &[Instruction], start: usize, register: u32) -> bool {
-    use mwcc_vreg::{Class, RegisterRole};
-    if register == 3 {
-        return false;
-    }
-    let mut pending = vec![start];
-    let mut visited = std::collections::HashSet::new();
-    while let Some(at) = pending.pop() {
-        if at >= instructions.len() || !visited.insert(at) {
-            continue;
-        }
-        let instruction = &instructions[at];
-        let operands = mwcc_vreg::register_operands(instruction);
-        if operands.iter().any(|operand| {
-            operand.class == Class::General
-                && operand.register == register
-                && operand.role == RegisterRole::Use
-        }) {
-            return false;
-        }
-        if operands.iter().any(|operand| {
-            operand.class == Class::General
-                && operand.register == register
-                && operand.role == RegisterRole::Define
-        }) {
-            continue;
-        }
-        match instruction {
-            Instruction::Branch { target } => pending.push(*target),
-            Instruction::BranchConditionalForward { target, .. } => {
-                pending.push(*target);
-                pending.push(at + 1);
-            }
-            Instruction::BranchToLinkRegister => {}
-            Instruction::BranchToCountRegister
-            | Instruction::BranchToCountRegisterAndLink
-            | Instruction::BranchToLinkRegisterAndLink
-            | Instruction::BranchAndLink { .. }
-            | Instruction::BranchImmediate { link: true, .. }
-            | Instruction::BranchExternal { .. } => {
-                return false
-            }
-            _ => pending.push(at + 1),
-        }
-    }
-    true
 }
 
 #[cfg(test)]

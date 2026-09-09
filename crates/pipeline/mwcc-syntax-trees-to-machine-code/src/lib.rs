@@ -18,6 +18,8 @@ mod incoming_parameters;
 mod arithmetic;
 mod load_field_merge;
 mod packed_cursor_read;
+mod member_read_values;
+mod register_value_liveness;
 mod call_liveness;
 mod asm;
 mod automatic_rodata;
@@ -1125,6 +1127,7 @@ fn lower_function_body(
     generator.schedule_leading_int_to_float_argument();
     generator.hoist_structured_loop_float_zero();
     generator.retain_packed_read_cursors(function.return_type);
+    generator.retain_disjoint_member_reads(function.return_type);
     schedule_instructions(&mut generator);
     generator.schedule_dense_counted_loop_entry();
     generator.schedule_dense_counted_loop_state();

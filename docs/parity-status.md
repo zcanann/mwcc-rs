@@ -4,13 +4,63 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, packed cursor reuse and THP helper matching (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, disjoint member reads and modern THP helper matching (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `d4fb7d9bcb977a8bc716108f2be05a882b6b7aeddc819753489eff98ba0eb1dd:45bc08cf25f7c6f36f7ac330526abe099c348722a728ca590c8d4710f7f87332`
+Latest measured compiler + harness fingerprint: `2491ee056fbba0117da1f804e396c5d8c4b9c94a1147070a9c3d3f9e9b73bb94:64e3cb3be7931f860f067241f67b607de72127f75919e8dbb23f99c6407dd148`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Disjoint member reads and modern THP helper matching, 2026-09-09
+
+Exact function instruction/relocation matches on the complete original
+`thp/THPAudio.c` improve **112 → 130/270** across 15 versions and six modes.
+Both helpers now match GC/3.0a3, GC/3.0a3p1 and Wii/1.0 at O2, O3 and with
+scheduling disabled: **18** additional exact outputs. Their optimized outputs
+change in 15 configurations; the main decoder is unchanged in all 90.
+Compilation remains **90/90**, and all 201 compiling objects on the **201/302**
+Dolphin frontier are unchanged. No measured exact function match is lost.
+
+A separate version policy enables ordinary word-field reuse in the 4.1/4.3
+optimizer. The preallocation pass proves byte-range disjointness for intervening
+member stores, reuses either an earlier load or a stored register value, and
+retains a scratch-loaded value in a virtual home when a guard overwrites the
+scratch. Unknown stores, overlapping ranges, alternate control-flow entries,
+changed base registers and escaping values stop the proof. Pointed-to bytes
+remain separate loads because they can alias fields written between the reads.
+The existing source provenance excludes volatile receivers and structs with
+volatile members. No parser change was needed. The pass currently admits
+relocation-free leaf int/unsigned/void functions at O2–O4; return ABI restrictions
+keep the implicit return-register proof valid. A shared conservative register
+lifetime helper serves this pass and packed cursor reuse, rejecting opaque
+instructions and unknown successors. O4 instruction scheduling remains a
+separate matching gap; this pass does not reorder instructions. The modern O4
+probes now have the reference instruction counts. GC 4.1 issues the final cursor
+store before the second narrow-field store, while Wii keeps those stores in
+source order; both schedule independent updates earlier and use different homes.
+
+Committed sample **2308** has eight functions covering initialization, guarded
+updates, alternate layouts, unknown-pointer stores, overlapping union members,
+volatile receivers and volatile pointer members. Its **720** function outputs
+improve **574 → 619** exact matches. All **90** baseline/candidate/reference
+configurations compile. Older versions and O0 retain their function outputs,
+as do both volatile cases and the overlapping-store case in every configuration.
+All **184,320 baseline, candidate and reference** executions pass, including
+pointed bytes that alias written fields and volatile cursors changed between
+three reads. The unchanged full audio source also passes **11,790 candidate
+and reference** cases against the independent decoder model, for **196,110
+candidate and reference** executions with zero failures.
+
+Validation: **2,699 Rust tests pass**, with the same 12 known exclusions and eight
+existing ignored tests. The established 2,865-case panel retains 2,589 identical
+objects and 276 identical diagnostics; all **2,850** recent objects are identical.
+The final verifier binds **12,113 object artifacts** to the compiler and native
+results. Evidence is in ignored
+`target/member-read-{canaries,project,frontier,regressions,recent}/results.json`,
+`target/member-read-{native,audio-native}.json`,
+`target/member-read-verified-tests.log` and
+`target/member-read-final-verification.json`.
 
 ## Packed cursor reuse and THP helper matching, 2026-09-09
 
