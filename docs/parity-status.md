@@ -4,13 +4,70 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, C and C++ narrow comparison returns (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, broader Dolphin probe and shifted expressions (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `caf647b0a3d35b1eabb2946cb9509709d825569f4d42a804e1b03f71b4edf90b:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `4ca846102a2d34a93364a8ad2a17c528502019308a2e8a2a3a66841cc01e16bb:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Broader Dolphin probe and shifted expressions, 2026-09-08
+
+A fresh probe covers **151 Dolphin C sources × two compiler versions**
+(GC/1.2.5n and GC/1.3), using the existing Battle for Bikini Bottom include and
+compiler configuration. The references accept **293/302** combinations. The
+candidate initially compiled **187/302**, including two GXStubs combinations
+that the reference rejects for a missing header. Among reference-supported
+combinations, compilation improves **185 → 187/293**; total candidate compilation
+improves **187 → 189/302**. Both gains are the complete `dsp/dsp.c` unit. All
+**187** previously compiling project objects remain byte-identical.
+
+The complete DSP source now compiles on **15/15** versions, up from **0/15**.
+Its mailbox reader passes **3,840** native cases against reference and original
+GQPE78 game models, checking both halfword reads in order, all input memory,
+saved registers, stack, and return state. It remains **0/15** byte-exact: the
+reference shares the register-bank base, retains halfword masks, and merges the
+fields with `rlwimi`. Compilation progress does not imply full DSP matching.
+
+A recursive pre-selection rejection had hidden existing field-merge and virtual
+operand-placement implementations whenever a constant shift appeared on the
+left of a commutative expression. Removing it lets those owners lower constant
+rotates, shifted arithmetic and logic, and mailbox assembly. Two shifted load
+operands also use the existing virtual homes, keeping the left result live while
+the right uses scratch. Other compound-load forms retain their existing guard.
+Address-of lowering now resolves constant elements of absolute register-bank
+arrays without treating the bank as an unknown scalar or reading its contents;
+this also supports word stores through a cast halfword-array address.
+
+Canaries **2264–2269** exercise eighteen functions in six modes across fifteen
+builds. Complete sample units improve **0 → 90/90**. Individual baseline probes
+compile **90/1,620** functions; all **1,620** candidate and reference functions
+compile. Exact function matches improve **0 → 761/1,620** with no exact losses.
+The samples cover constant rotates, arithmetic-right-shift controls, shifted
+arithmetic and bitwise combinations, halfword packing, shared-pointer loads,
+volatile and fixed-address mailbox reads, masking, separate field sources,
+absolute element addresses, and punned register-bank writes. All **103,680**
+native cases pass reference results, volatile access traces, memory guards,
+saved registers, stack, and return-state checks.
+
+Two preceding sample panels cover **2,775 objects**. All **2,499** successful
+objects remain byte-identical, and all **276** failures preserve their diagnostics.
+Backend tests pass **1,697** with the existing nested-asm exclusion. The checkpoint
+has **107,520** distinct native cases; final recompilation reproduces all **210**
+execution-tested object entries. `target/shift-combine-final-verification.json`
+binds the compiler and harness, sample and project sources, compilation objects,
+native harnesses and objects, and original DOL fingerprint.
+
+The broader probe leaves **106** reference-supported compilation failures.
+OS audio initialization advances past shifted reads and the absolute bank address
+to a call-bearing tick comparison. MD5 advances to a panic at the current
+224-virtual-register ID ceiling; it remains uncompiled. Other measured work
+includes global/member address handling, callback arguments, inline expansion,
+and long-long operations. The nine reference failures are configuration or
+source limitations in this probe, including missing declarations/headers and a
+GC/1.3 assembly-frame rejection. These are targeted measurements, not a full
+project-build or whole-corpus parity claim.
 
 ## C and C++ narrow comparison returns, 2026-09-08
 

@@ -2622,6 +2622,16 @@ impl Generator {
             // address computation), NOT the pointer arithmetic below — `a` is an array, so
             // `load(a)+i` would be wrong bytes. Route it to the array-base path.
             if let Expression::Variable(name) = base.as_ref() {
+                // Absolute register banks have an address but no emitted
+                // global storage. Taking &bank[k] must not read the bank.
+                if let (Some(&(address, element_type)), Some(index)) = (
+                    self.fixed_address_arrays.get(name.as_str()),
+                    constant_value(index),
+                ) {
+                    let offset = (index as u32).wrapping_mul(u32::from(element_type.width()) / 8);
+                    self.load_integer_constant(destination, i64::from(address.wrapping_add(offset)));
+                    return Ok(());
+                }
                 if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
                     return self.emit_global_array_element_address(
                         name,

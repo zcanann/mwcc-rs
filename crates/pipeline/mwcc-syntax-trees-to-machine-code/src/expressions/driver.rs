@@ -353,12 +353,6 @@ impl Generator {
                 return Err(Diagnostic::error("a product of two addend-carrying products needs the keystone allocator (roadmap)"));
             }
         }
-        // mwcc keeps a constant-amount shift as the FIRST operand of a commutative op (`(a<<2)+b` ->
-        // `add d, shift, b`), but our placement swaps it to second (like `(a*4)+b`). Defer the
-        // ordering rather than emit swapped bytes; matching it is the keystone allocator's job.
-        if crate::analysis::contains_commutative_shift_left(expression) {
-            return Err(Diagnostic::error("a commutative op with a constant-shift left operand orders operands differently (roadmap)"));
-        }
         match expression {
             Expression::IndexedUpdateValue { value } => {
                 self.evaluate_general(value, destination)
@@ -1102,7 +1096,11 @@ impl Generator {
                 // loads (`*(p+1)+*(p+2)`) stay byte-exact (loads adjacent). mwcc hoists both loads to
                 // the top with an allocator-chosen register assignment; the generic combine
                 // interleaves load/op/load/op — same result, different schedule. Defer, don't ship.
-                if is_compound_load(left) && is_compound_load(right) {
+                // Constant shifts use the ordinary virtual operand homes:
+                // the left value survives while the right load uses r0.
+                if is_compound_load(left) && is_compound_load(right)
+                    && !(is_constant_shift(left) && is_constant_shift(right))
+                {
                     return Err(Diagnostic::error("a binary over two compound-load operands needs the allocator (roadmap)"));
                 }
                 // A variable shift of a constant still needs a source register
