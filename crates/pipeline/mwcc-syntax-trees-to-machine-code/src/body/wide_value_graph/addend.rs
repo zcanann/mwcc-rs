@@ -1,12 +1,16 @@
 //! GC/1.3 drops a single promoted addend's sign word beside an unsigned
-//! arithmetic or call expression. A subsequent computation materializes the
-//! pending wide expression first; thus `(u+v)+a[i]` differs from `a[i]+(u+v)`.
+//! arithmetic or call expression. Dynamic address or two-word computation
+//! materializes the pending expression; `(u+v)+a[i]` differs from `a[i]+(u+v)`.
 //! Named wide values, shifts, signed computations and word-valued calls keep
 //! their full pair. Track these boundaries before address folding and demand.
 use super::*;
 use std::collections::HashSet;
 
-fn word_call_results(operations: &[Operation], values: &mut HashSet<usize>) {
+fn materialized_word_results(
+    operations: &[Operation],
+    named: &HashSet<usize>,
+    values: &mut HashSet<usize>,
+) {
     for op in operations {
         match op {
             Operation::Call {
@@ -19,32 +23,79 @@ fn word_call_results(operations: &[Operation], values: &mut HashSet<usize>) {
             } if !wide(*ty) => {
                 values.insert(*id);
             }
+            Operation::Binary {
+                operator: BinaryOperator::Multiply,
+                result:
+                    Value {
+                        ty,
+                        source: Source::Register(id),
+                    },
+                left,
+                right,
+                ..
+            } if !wide(*ty)
+                && !matches!(left.source, Source::Constant(_))
+                && !matches!(right.source, Source::Constant(_))
+                && !named.contains(id) =>
+            {
+                values.insert(*id);
+            }
             Operation::Branch {
                 then_body,
                 else_body,
                 ..
             } => {
-                word_call_results(then_body, values);
-                word_call_results(else_body, values);
+                materialized_word_results(then_body, named, values);
+                materialized_word_results(else_body, named, values);
             }
             _ => {}
         }
     }
 }
 
+// These remain expression operands until promotion, even when their selected
+// instructions need multiple registers. A source multiply is different from
+// the equivalent shift or negation; only multiplication by one disappears.
+fn transparent_word_operation(
+    operator: BinaryOperator,
+    result: Value,
+    left: Value,
+    right: Value,
+) -> bool {
+    if !matches!(result.ty, Type::Int | Type::UnsignedInt) {
+        return false;
+    }
+    if operator == BinaryOperator::Multiply {
+        return matches!(left.source, Source::Constant(1))
+            || matches!(right.source, Source::Constant(1));
+    }
+    matches!(
+        operator,
+        BinaryOperator::Add
+            | BinaryOperator::Subtract
+            | BinaryOperator::Divide
+            | BinaryOperator::Modulo
+            | BinaryOperator::BitAnd
+            | BinaryOperator::BitOr
+            | BinaryOperator::BitXor
+            | BinaryOperator::ShiftLeft
+            | BinaryOperator::ShiftRight
+    ) && (matches!(left.source, Source::Constant(_)) || matches!(right.source, Source::Constant(_)))
+}
+
 impl Graph<'_> {
     pub(super) fn lower_word_addends(&mut self, uses: &HashMap<usize, usize>) {
-        let mut calls = HashSet::new();
-        word_call_results(&self.operations, &mut calls);
+        let mut materialized = HashSet::new();
+        materialized_word_results(&self.operations, &self.named_values, &mut materialized);
         let operations = std::mem::take(&mut self.operations);
-        self.operations = self.rewrite_addends(operations, uses, &calls);
+        self.operations = self.rewrite_addends(operations, uses, &materialized);
     }
 
     fn rewrite_addends(
         &mut self,
         operations: Vec<Operation>,
         uses: &HashMap<usize, usize>,
-        calls: &HashSet<usize>,
+        materialized: &HashSet<usize>,
     ) -> Vec<Operation> {
         let mut rewritten = Vec::new();
         let mut pending = None;
@@ -55,8 +106,10 @@ impl Graph<'_> {
                     else_body,
                     ..
                 } => {
-                    *then_body = self.rewrite_addends(std::mem::take(then_body), uses, calls);
-                    *else_body = self.rewrite_addends(std::mem::take(else_body), uses, calls);
+                    *then_body =
+                        self.rewrite_addends(std::mem::take(then_body), uses, materialized);
+                    *else_body =
+                        self.rewrite_addends(std::mem::take(else_body), uses, materialized);
                     pending = None;
                 }
                 Operation::Binary {
@@ -70,7 +123,7 @@ impl Graph<'_> {
                         |v: Value| matches!(v.source, Source::Register(id) if Some(id) == pending);
                     let single = |v: Value| {
                         self.single_word_promotion(v, uses)
-                            && !matches!(v.source, Source::Register(id) if self.signed_word_promotions.get(&id).is_some_and(|input| calls.contains(input)))
+                            && !matches!(v.source, Source::Register(id) if self.signed_word_promotions.get(&id).is_some_and(|input| materialized.contains(input)))
                     };
                     if *operator == BinaryOperator::Add && result.ty == Type::UnsignedLongLong {
                         if is_pending(*left) && single(*right) {
@@ -85,7 +138,9 @@ impl Graph<'_> {
                         matches!(result.ty, Type::Pointer(_) | Type::StructPointer { .. })
                             && matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
                             && matches!(right.source, Source::Constant(_));
-                    pending = if displacement {
+                    pending = if displacement
+                        || transparent_word_operation(*operator, *result, *left, *right)
+                    {
                         pending
                     } else if matches!(
                         operator,
@@ -120,7 +175,7 @@ impl Graph<'_> {
             Value {
                 ty: Type::UnsignedLongLong,
                 source: Source::Register(id),
-            } if !self.named_wide_values.contains(&id) => Some(id),
+            } if !self.named_values.contains(&id) => Some(id),
             _ => None,
         }
     }

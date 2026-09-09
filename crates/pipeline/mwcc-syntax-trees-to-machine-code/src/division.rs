@@ -23,6 +23,14 @@ impl Generator {
         // A constant divisor — a literal or a folded constant expression like
         // `1 << 3` or `2 + 2` — selects the shift/magic lowering.
         if let Some(divisor) = constant_value(right) {
+            if divisor == 1 {
+                return self.evaluate_general(left, d);
+            }
+            if divisor == -1 && signed && self.behavior.optimization != Optimization::O0 {
+                let source = self.place_operand_or_scratch(left, d)?;
+                self.output.instructions.push(Instruction::Negate { d, a: source });
+                return Ok(());
+            }
             if divisor >= 2 && (divisor as u64).is_power_of_two() {
                 if self.behavior.signed_power_of_two_division_style
                     == SignedPowerOfTwoDivisionStyle::CarryCorrectedQuotient
@@ -164,9 +172,13 @@ impl Generator {
                     return self.emit_unsigned_magic_divide(left, divisor as u32, d);
                 }
             }
-            return Err(Diagnostic::error(
-                "division by this constant needs magic-number lowering (roadmap)",
-            ));
+            // O0 retains an actual signed divide by -1. Use the ordinary
+            // register-divide placement below, including computed dividends.
+            if divisor != -1 || !signed {
+                return Err(Diagnostic::error(
+                    "division by this constant needs magic-number lowering (roadmap)",
+                ));
+            }
         }
 
         // A narrowed memory value shifted by a constant is a split divisor

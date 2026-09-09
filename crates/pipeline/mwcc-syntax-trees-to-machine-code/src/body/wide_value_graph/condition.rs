@@ -212,7 +212,7 @@ mod tests {
             optimization: mwcc_versions::Optimization::O4,
             wide_word_demand_starts_at_o2: false,
             materialized_word_promotions: Default::default(),
-            named_wide_values: Default::default(),
+            named_values: Default::default(),
             bindings: HashMap::new(),
             types: HashMap::new(),
             globals: &empty,

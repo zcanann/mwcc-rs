@@ -46,13 +46,11 @@ fn visit_uses(operations: &[Operation], visit: &mut impl FnMut(Value)) {
 }
 
 impl Graph<'_> {
-    pub(super) fn retain_named_promotion(&mut self, value: Value) {
-        if wide(value.ty) {
-            if let Source::Register(id) = value.source {
-                self.named_wide_values.insert(id);
-                if self.optimization < mwcc_versions::Optimization::O3 {
-                    self.materialized_word_promotions.insert(id);
-                }
+    pub(super) fn retain_named_value(&mut self, value: Value) {
+        if let Source::Register(id) = value.source {
+            self.named_values.insert(id);
+            if wide(value.ty) && self.optimization < mwcc_versions::Optimization::O3 {
+                self.materialized_word_promotions.insert(id);
             }
         }
     }

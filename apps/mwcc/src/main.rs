@@ -3099,6 +3099,8 @@ mod tests {
     mod narrow_to_wide_store;
     #[path = "wide_call_sequence.rs"]
     mod wide_call_sequence;
+    #[path = "division_identities.rs"]
+    mod division_identities;
 
     #[path = "computed_record_condition.rs"]
     mod computed_record_condition;

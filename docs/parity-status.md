@@ -4,13 +4,79 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, GC/1.3 unsigned-wide addend promotions (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, computed-word addends and identity division (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `db505e7f9974ec7b695225d3749d2db70eac123a9656f9fb632d0d8927b78f8d:5eabb62939bc079858b21f21c69ce7594d0c4f7f5ba4e305d34b843215efa9f1`
+Latest measured compiler + harness fingerprint: `a8b152aaf79a9ce45fac20fc1d42cc0b733abf5344d6cf9baa3c1bd801ae760c:120008741161debfcfa207cf02ecab49347d3f4860aa04b1e882f5eca2c6333c`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Computed-word addends and identity division, 2026-09-09
+
+The new **76-function** `2315_wide_computed_word_addends.c` now compiles in all
+**105 configurations**, up from zero with the previous compiler. The blocking
+case was word division by one. Signed and unsigned `/1` now evaluate the
+operand directly; signed `/-1` selects negation when optimized and retains an
+actual register divide at O0, matching every reference build. A new Rust test
+checks all **90 function outputs** for three identity/negation functions across
+15 builds × O0/O4 against measured reference bytes.
+
+The GC/1.3 promotion pass now distinguishes constant-word expression operands
+from computations that materialize a value. Constant add/subtract, division,
+modulo, bit operations and shifts retain the pending unsigned-wide expression.
+Source multiplication remains distinct, except multiplication by one. For
+example, with zero unsigned-wide `u` and `v` and signed `n=-1`, GC/1.3 returns
+`0x00000000fffffffe` for `(u+v)+(n^1)` but `0xfffffffffffffffe` for
+`(u+v)+(n*2)`. The pass follows source operations before strength reduction;
+instruction count or final opcode shape cannot explain this difference.
+
+A direct product of two variable words retains its sign extension in either
+operand order. A named scalar holding the product is treated as a variable
+operand instead. The graph therefore retains named scalar identities as well
+as named wide identities, and the addend pass records materialized word results
+separately from pending wide expressions. Lowering uses typed graph operations
+and source-binding identities.
+
+The new corpus exercises 38 word expressions in both operand orders, including
+nested expressions, constant placement, variable arithmetic, named products and
+division. All 105 reference/candidate objects compile; exact function matching
+is still **0/7,980**, so these are compilation and behavior gains rather than
+full-function byte parity. Native execution covers **170,240 cases per compiler
+with zero candidate or reference mismatches**: all 15 builds at O0/O4 plus the
+other five modes for GC/1.3. These 35 configurations check edge values, seeded
+random inputs, return values, stack restoration and callee-saved registers.
+
+Only `word_sum_chain` changes in the prior corpus, in seven GC/1.3 objects.
+Fresh execution of those complete objects covers **21,504 cases per compiler**
+and improves **800 → 625 mismatches**; the reference has none. The remaining
+625 are the existing O2-and-later mixed add/subtract sharing and repeated-update
+quirks. The address corpus is byte-identical and retains its 175 `saved_base`
+mismatches. Together the two previous corpora improve **975 → 800**, with the
+remaining cases kept as explicit parity work. Prior native evidence for
+**368,256 unchanged candidate cases** is reused only after checking exact
+object hashes. Previously recorded GC/1.1p1 O0 reference failures remain outside
+this fix and are not counted as passing candidate/reference comparisons.
+
+Focused regressions preserve **2,589 objects and 276 diagnostics** unchanged.
+Of **3,630 recent configurations**, 3,623 objects are unchanged; the seven
+changed objects have no exact-function losses. All **90 full THP audio objects**
+are unchanged, retaining **142/270 exact functions**. The Dolphin frontier
+remains **201/302**, with all compiling objects unchanged. **2,704 Rust tests
+pass**, using the same 12 previously documented exclusions and eight ignored
+allocator tests. Reference project sources remain unchanged; no full corpus
+run was performed.
+
+Evidence: `target/word-addend-{canaries,recent,regressions,project,frontier}/results.json`,
+`target/word-addend-native.json`, `target/word-addend-prior-native.json`,
+`target/word-addend-policy-gc13.json`, `target/word-addend-identities.json`,
+`target/word-addend-verified-tests.log`, and
+`target/word-addend-final-verification.json`. The verifier binds fresh native
+objects to this compiler, checks reused object identities, and retains the
+known failure boundaries explicitly.
+
+Compiler/harness fingerprint: `a8b152aaf79a9ce45fac20fc1d42cc0b733abf5344d6cf9baa3c1bd801ae760c:120008741161debfcfa207cf02ecab49347d3f4860aa04b1e882f5eca2c6333c`.
+The final manifest binds **13,673 object artifacts**.
 
 ## GC/1.3 unsigned-wide addend promotions, 2026-09-09
 

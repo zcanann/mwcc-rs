@@ -143,7 +143,7 @@ struct Graph<'a> {
     optimization: mwcc_versions::Optimization,
     wide_word_demand_starts_at_o2: bool,
     materialized_word_promotions: std::collections::HashSet<usize>,
-    named_wide_values: std::collections::HashSet<usize>,
+    named_values: std::collections::HashSet<usize>,
     bindings: HashMap<String, Value>,
     types: HashMap<String, Type>,
     globals: &'a HashMap<String, Type>,
@@ -551,7 +551,7 @@ impl<'a> Graph<'a> {
         let ty = *self.types.get(name)?;
         let value = self.expression(expression)?;
         let value = self.convert(value, ty)?;
-        self.retain_named_promotion(value);
+        self.retain_named_value(value);
         if self.fixed_bindings {
             self.operations.push(Operation::Copy {
                 result: *self.bindings.get(name)?,
@@ -567,7 +567,7 @@ impl<'a> Graph<'a> {
         if let Expression::Variable(name) = target {
             if let Some(ty) = self.types.get(name).copied() {
                 let value = self.convert(value, ty)?;
-                self.retain_named_promotion(value);
+                self.retain_named_value(value);
                 if self.fixed_bindings {
                     self.operations.push(Operation::Copy {
                         result: *self.bindings.get(name)?,
@@ -761,7 +761,7 @@ impl<'a> Graph<'a> {
             optimization,
             wide_word_demand_starts_at_o2,
             materialized_word_promotions: Default::default(),
-            named_wide_values: Default::default(),
+            named_values: Default::default(),
             bindings: HashMap::new(),
             types: function
                 .locals
@@ -1295,7 +1295,7 @@ mod tests {
             optimization: mwcc_versions::Optimization::O4,
             wide_word_demand_starts_at_o2: false,
             materialized_word_promotions: Default::default(),
-            named_wide_values: Default::default(),
+            named_values: Default::default(),
             bindings: HashMap::new(),
             types: HashMap::new(),
             globals: &globals,
