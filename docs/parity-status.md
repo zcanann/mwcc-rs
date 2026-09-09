@@ -4,13 +4,71 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, first fixed-fill setup scheduling (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, successive fixed-fill scheduling (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `1f7e03484922194f211fd51f04da5f0c8c7fb4b9fe39fbc50d2c896db5e65f7b:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `8922d2986a416edbe4e59e28e431e61b5fb9fa474c161f060265f28e6f43c5b8:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Successive fixed-fill scheduling, 2026-09-08
+
+The real `__AXVPBInit` now matches through all three clear loops: **228 bytes
+and relocations** on GC/1.1, 1.1p1, 1.2.5, and 1.2.5n. These prefix matches
+improve **0 → 4/15**, extending the previously matching 112-byte prefix. Only
+the second and third clear loops change; the first 112 bytes and everything
+after byte 228 remain identical. The eleven later-version objects remain
+unchanged. Complete initializer matches remain **0/15**, while
+`__AXSetPBDefault` remains **15/15** exact.
+
+A layout-stage planner schedules complete BSS addresses after their wide
+high/low halves exist. The backend carries an optional, index-free policy for
+linkage-first O3/O4 performance builds with scheduling enabled. Narrow addresses
+follow `mtctr` except in GC/1.1p1, where they precede it. Wide addresses put their
+high half between the count literal and `mtctr`, then finish the low half after
+the fill literal. This reuses the measured early scheduler profile choice.
+
+The planner recognizes an owned address followed by a complete word-store CTR
+packet immediately after another CTR loop. It reuses r3 for a disposable pointer
+only when both the old pointer and r3 are overwritten before any later use on
+all reachable paths. Calls, indirect transfers, returns, system exits, side
+entries, inline assembly, jump tables, relocations, and extra displacement
+owners prevent unsafe rewrites. The address owner's index moves with the low
+half; store order, packet size, and backedge positions are preserved. Seven new
+unit tests exercise both schedules, metadata ownership, idempotence, live
+values, malformed packets, branching lifetime proofs, and implicit-use barriers.
+
+Canaries **2222–2227** add ten functions in six modes across fifteen builds.
+Their four 4,096-word arrays exercise both narrow and signed-low wide offsets;
+a separate clear pointer models the real initializer's temporary lifetime.
+Counts, loaded/register/literal inputs, nonzero fills, a call barrier, and an
+observed final pointer vary independently. All **90 objects / 900 functions**
+compile on baseline, candidate, and reference. **72 functions / 208 loop packets**
+change without changing size; the changed packets improve **0 → 208** exact
+matches, including registers, instructions, and relocation-relative positions.
+Whole-function matches remain **0/900**; subsequent cursor setup still differs.
+
+All **14,400** sample execution cases pass memory, input-read, callback,
+saved-register, stack, and return-state models. GC/1.1p1's O0 `argument` now uses
+a 40-byte frame, so its parameter home does not overlap the saved registers.
+A sixteen-case rerun removes the inherited 32-byte-frame exception and verifies
+ordinary register preservation; all other checks and cases remain unchanged.
+This does not resolve the earlier sample's reference parameter-overlap bug.
+All **240** full initializer cases pass against reference and original game
+models, for **14,640** distinct native cases in this checkpoint.
+
+All **2,190** preceding objects remain identical. All **24 AX/GX units** compile,
+with AXVPB alone changed. Backend tests pass **1,680** with the existing nested-asm
+exclusion; object-stage tests pass **18**. The final compiler was rebuilt and
+all 105 sample/initializer objects recompiled; their hashes equal the executed
+objects, so execution was not repeated solely for the rebuild.
+
+`target/fill-following-final-verification.json` binds the final compiler/harness,
+315 native object entries, sample sources and execution harnesses, preceding
+objects, and original DOL fingerprint. Targeted measurements do not estimate
+full-corpus parity. Next differences in the real initializer begin with retained
+cursor setup, followed by reset-store scheduling and register selection.
 
 ## First fixed-fill setup scheduling, 2026-09-08
 

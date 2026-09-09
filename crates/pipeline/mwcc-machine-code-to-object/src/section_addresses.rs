@@ -103,6 +103,9 @@ pub fn finalize_bss_addresses(
             })
             .collect();
         expand(function, &resolved)?;
+        // Only complete addresses owned by this layout pass are candidates.
+        let address_owners: Vec<_> = resolved.iter().map(|&(fixup, _)| fixup).collect();
+        super::fixed_fill_schedule::schedule(function, &address_owners);
     }
     Ok(())
 }

@@ -110,6 +110,14 @@ pub struct DebugVariable {
     pub location: DebugVariableLocation,
 }
 
+/// Placement of a narrow section address while setting up a following CTR fill.
+/// Wide addresses straddle the count setup, once their halves exist after layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedFillAddressSchedule {
+    AfterCountRegister,
+    BeforeCountRegister,
+}
+
 /// A function's worth of machine code.
 #[derive(Debug, Clone, Default)]
 pub struct MachineFunction {
@@ -130,6 +138,8 @@ pub struct MachineFunction {
     pub share_wide_bss_cursor_bases: bool,
     /// Reuse high-page expressions in temporary or complete cursor registers.
     pub share_bss_page_expressions: bool,
+    /// Optional target policy for disposable pointers in successive fixed fills.
+    pub following_fixed_fill_schedule: Option<FixedFillAddressSchedule>,
     /// Optimized source-variable homes retained for exact debug information.
     /// Debug lowering decides which declarations receive DIEs for a measured
     /// compiler generation; this list only reports physical allocation.
@@ -371,6 +381,7 @@ impl MachineFunction {
             temporary_bss_address_groups: Vec::new(),
             share_wide_bss_cursor_bases: false,
             share_bss_page_expressions: false,
+            following_fixed_fill_schedule: None,
             debug_variables: Vec::new(),
             constants: Vec::new(),
             string_literals: Vec::new(),

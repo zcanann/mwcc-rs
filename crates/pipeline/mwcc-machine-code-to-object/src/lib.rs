@@ -5,6 +5,7 @@
 //! relocations, and the Metrowerks metadata records).
 
 mod section_addresses;
+mod fixed_fill_schedule;
 mod temporary_bss_addresses;
 pub use section_addresses::finalize_bss_addresses;
 

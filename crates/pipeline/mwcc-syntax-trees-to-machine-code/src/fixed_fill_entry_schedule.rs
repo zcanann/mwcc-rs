@@ -21,6 +21,18 @@ impl Generator {
         {
             return;
         }
+        // Layout expands wide address halves after this stage. Carry the
+        // selected early scheduler policy without retaining instruction indices.
+        self.output.following_fixed_fill_schedule = Some(
+            match self.behavior.fixed_fill_address_placement {
+                FixedFillAddressPlacement::AfterCountRegister => {
+                    mwcc_machine_code::FixedFillAddressSchedule::AfterCountRegister
+                }
+                FixedFillAddressPlacement::BeforePublishedValues => {
+                    mwcc_machine_code::FixedFillAddressSchedule::BeforeCountRegister
+                }
+            },
+        );
         let Some(anchor) = &self.data_section_anchor else {
             return;
         };
