@@ -7,6 +7,17 @@
 //! existing one is "add a profile struct, override one method", never a fork of
 //! the whole code generator.
 
+/// Extension of a single-use signed word consumed by wide subtraction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WordSubtrahendExtension {
+    /// Preserve the signed promotion in both signed and unsigned arithmetic.
+    FullWidth,
+    /// GC/1.3.2 through 2.7 lose the sign word in signed arithmetic.
+    ZeroExtendSigned,
+    /// GC/1.3 also loses it in unsigned wide arithmetic.
+    ZeroExtendAll,
+}
+
 /// Issue windows for independent global accumulators using a shared r0 lane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccumulatorIssueStyle {
@@ -1584,6 +1595,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         FixedFillLoopStyle::DivisorTen
     }
 
+    /// Middle-generation optimizers discard the sign high word of a promoted
+    /// signed word used as a 64-bit subtrahend, including explicit wide casts.
+    fn word_subtrahend_extension(&self) -> WordSubtrahendExtension {
+        WordSubtrahendExtension::FullWidth
+    }
+
     /// Reuse ordinary word fields across stores to disjoint member ranges.
     fn retain_disjoint_member_reads(&self) -> bool {
         false
@@ -2128,6 +2145,10 @@ pub trait CodegenProfile: core::fmt::Debug {
 #[derive(Debug)]
 pub struct Mainline;
 impl CodegenProfile for Mainline {
+    fn word_subtrahend_extension(&self) -> WordSubtrahendExtension {
+        WordSubtrahendExtension::ZeroExtendSigned
+    }
+
     fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
         FixedBankStreamStyle::MainlineImmediateMask
     }
@@ -2142,6 +2163,10 @@ impl CodegenProfile for Mainline {
 #[derive(Debug)]
 pub struct MainlineEarlyAggregateLoads;
 impl CodegenProfile for MainlineEarlyAggregateLoads {
+    fn word_subtrahend_extension(&self) -> WordSubtrahendExtension {
+        WordSubtrahendExtension::ZeroExtendSigned
+    }
+
     fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
         FixedBankStreamStyle::MainlineImmediateMask
     }
@@ -2773,6 +2798,10 @@ impl CodegenProfile for Wii43Build145 {
 #[derive(Debug)]
 pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
+    fn word_subtrahend_extension(&self) -> WordSubtrahendExtension {
+        WordSubtrahendExtension::ZeroExtendAll
+    }
+
     fn fixed_fill_cursor_copy_style(&self) -> MaterializationCopyStyle {
         MaterializationCopyStyle::LogicalOr
     }
@@ -2860,6 +2889,10 @@ impl CodegenProfile for Gc13Build53 {
 #[derive(Debug)]
 pub struct Gc132Build81;
 impl CodegenProfile for Gc132Build81 {
+    fn word_subtrahend_extension(&self) -> WordSubtrahendExtension {
+        WordSubtrahendExtension::ZeroExtendSigned
+    }
+
     fn computed_constant_equality_style(&self) -> ComputedConstantEqualityStyle {
         ComputedConstantEqualityStyle::LegacyMaskedAdd
     }
@@ -3510,6 +3543,10 @@ impl CodegenProfile for Gc233Build163 {
 #[derive(Debug)]
 pub struct Gc20Patch1;
 impl CodegenProfile for Gc20Patch1 {
+    fn word_subtrahend_extension(&self) -> WordSubtrahendExtension {
+        WordSubtrahendExtension::ZeroExtendSigned
+    }
+
     fn fixed_bank_stream_style(&self) -> FixedBankStreamStyle {
         FixedBankStreamStyle::MainlineImmediateMask
     }

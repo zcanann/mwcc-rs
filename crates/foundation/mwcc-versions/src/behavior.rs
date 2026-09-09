@@ -12,6 +12,7 @@
 //! constant buried in instruction selection.
 
 use crate::config::CompilerConfig;
+use crate::profile::WordSubtrahendExtension;
 use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal, SchedulingModel};
 use crate::profile::{
     SmallConstantMultiplyStyle, MemberValueSchedule, FixedFillLoopStyle,
@@ -822,6 +823,7 @@ pub struct Behavior {
     pub constant_store_schedule_style: ConstantStoreScheduleStyle,
     pub member_value_schedule: MemberValueSchedule,
     pub retain_disjoint_member_reads: bool,
+    pub word_subtrahend_extension: WordSubtrahendExtension,
     /// Constant-trip pointer-fill expansion policy.
     pub fixed_fill_loop_style: FixedFillLoopStyle,
     /// A ready low-half store may precede its high-half partner in a leaf.
@@ -1393,6 +1395,7 @@ impl Behavior {
             constant_store_schedule_style: config.build.profile.constant_store_schedule_style(),
             member_value_schedule: config.build.profile.member_value_schedule(),
             retain_disjoint_member_reads: config.build.profile.retain_disjoint_member_reads(),
+            word_subtrahend_extension: config.build.profile.word_subtrahend_extension(),
             fixed_fill_loop_style: config.build.profile.fixed_fill_loop_style(),
             split_address_low_store_first: config.build.profile.split_address_low_store_first(),
             computed_store_issue_style: config.build.profile.computed_store_issue_style(),

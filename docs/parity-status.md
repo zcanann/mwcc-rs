@@ -4,13 +4,80 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, modern member-read scheduling and THP helper matching (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, direct graph conditions and versioned wide subtraction (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `d48143d7b1557f2b60c7872d5daac5eacb56140385ddbf871eabd89781cff79c:4e229dbd413efcd652e7a388737e21bbfc24e3029d1c2cf4a240023a8267f0ba`
+Latest measured compiler + harness fingerprint: `65c467929767af506616e741131600fc2f649b940054e9e73a66ca49e74be23b:2c1f190c8fda394228dd7731b941e389bf9e36c15708b0393a22c7541d9eaf7d`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Direct graph conditions and versioned wide subtraction, 2026-09-09
+
+The typed word/pair graph now branches directly on word comparisons and lowers
+short-circuit conditions to ordered edges when locals have fixed homes.
+Comparisons still materialize a boolean when a local owns the result. Signed,
+unsigned, reversed-operand and immediate comparisons share one condition
+selector; wide comparisons keep their existing lowering. Calls, assignments
+and null guards preserve source evaluation order.
+
+New sample **2310** compiles in **24 → 90/90** configurations across 15 versions
+and six modes. Its 720 function outputs improve **20 → 75** exact matches
+because previously rejected objects now include the matching ordinary helper;
+the branch-bearing functions are not yet instruction exact. The complete
+original THP audio decoder shrinks from **2,460–2,472 → 2,188 bytes** at O4.
+All 90 audio objects compile, and exact helper/function matching stays
+**142/270**. The main decoder still exceeds the reference's 1,080–1,176 bytes.
+
+Native reference execution exposed a separate historical subtraction bug.
+GC/1.3 through GC/2.7 can discard the sign high word of a signed word promoted
+to a wide subtrahend, including explicit casts and narrow signed loads.
+GC/1.3 also does this in unsigned wide arithmetic; GC/1.3.2 fixes that case.
+A version profile selects the affected arithmetic domain. A separate graph
+pass applies the measured use-site coercion without changing normal signed
+conversion or a shared full-width value. Repeated promotions share their sign
+word from O2 onward; named wide locals retain it through O2 and can lose it at
+O3/O4. Older 1.1/1.2 builds and modern 3.0/Wii builds preserve full width.
+
+New sample **2311** covers argument/load/cast/short/char operands, pair and
+unsigned controls, constants, compound subtraction, computed words, explicit
+unsigned wide casts, shared promotions, repeated promotions and named locals.
+All **105** configurations compile, including O1; its **190/1,470** exact
+function matches are unchanged. Across both new samples, compilation improves
+**129 → 195/195** and exact functions **210 → 265/2,190**, with no exact losses.
+The subtraction probe's **23,134** baseline execution mismatches against the
+version-aware reference model become **zero** candidate mismatches.
+
+Validation binds **12,812** object artifacts to the measured compiler:
+
+- **622,094 candidate** and **384,270 reference** native executions pass.
+  These include 184,320 condition cases, 188,160 subtraction cases and 11,790
+  full audio cases on each candidate/reference side. An additional 234,240
+  candidate loop/call/index/logical/clock executions and 3,584 full alarm/
+  calendar executions cover the affected prior samples and project functions.
+  Prior execution results were reused only after verifying identical final
+  candidate object hashes. The baseline executes 237,312 cases; its only
+  failures are the 23,134 measured subtraction-quirk differences.
+- The **2,865-row** regression panel preserves 2,589 object files and 276
+  diagnostics. The **3,120-row** recent panel preserves 2,730 objects; its 390
+  changes are confined to samples 2300, 2301, 2305, 2306, 1948 and 1949 and
+  have candidate native coverage.
+- The Dolphin frontier stays **201/302**, with no compile or exact-function
+  losses. Only OSAlarm, OSTime and THPAudio change in the two probed versions.
+  InsertAlarm shrinks 948 → 936 bytes, DecrementerExceptionCallback 812 → 772,
+  OSCancelAlarm 432 → 388, and OSTicksToCalendarTime 844/824 → 820.
+- **2,703 Rust tests pass**, with the same 12 documented pre-existing
+  exclusions and eight ignored tests. The new condition unit test guards
+  against removing a comparison result still owned by a local.
+
+Evidence lives in `target/graph-condition-{canaries,project,frontier,regressions,recent}/results.json`,
+the corresponding native JSON files, `target/graph-condition-verified-tests.log`,
+and `target/graph-condition-final-verification.json`. Run
+`python3 target/verify_graph_condition_final.py` to recheck fingerprints,
+object bindings, native coverage and counts. Reference sources remain unchanged.
+The next code-size work is eliminating unused high-word computations and
+redundant pair copies; this checkpoint establishes the measured behavior,
+not exact code generation for the wide graph or full compiler parity.
 
 ## Modern member-read scheduling and THP helper matching, 2026-09-09
 

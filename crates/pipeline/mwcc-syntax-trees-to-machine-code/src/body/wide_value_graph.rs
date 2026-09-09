@@ -12,8 +12,13 @@ use std::collections::HashMap;
 
 #[path = "wide_value_graph/arithmetic.rs"]
 mod arithmetic;
+#[path = "wide_value_graph/condition.rs"]
+mod condition;
 #[path = "wide_value_graph/control.rs"]
 mod control;
+#[path = "wide_value_graph/subtrahend.rs"]
+mod subtrahend;
+use condition::Condition;
 #[path = "wide_value_graph/memory.rs"]
 mod memory;
 #[path = "wide_value_graph/storage.rs"]
@@ -61,13 +66,14 @@ enum Operation {
     },
     Label(usize),
     Jump(usize),
-    BranchIfZero {
-        condition: Value,
+    BranchIf {
+        condition: Condition,
         target: usize,
+        on_true: bool,
     },
     Return(Option<Value>),
     Branch {
-        condition: Value,
+        condition: Condition,
         then_body: Vec<Operation>,
         else_body: Vec<Operation>,
     },
@@ -120,6 +126,10 @@ enum Operation {
 struct Graph<'a> {
     operations: Vec<Operation>,
     values: usize,
+    signed_word_promotions: HashMap<usize, usize>,
+    word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension,
+    optimization: mwcc_versions::Optimization,
+    materialized_word_promotions: std::collections::HashSet<usize>,
     bindings: HashMap<String, Value>,
     types: HashMap<String, Type>,
     globals: &'a HashMap<String, Type>,
@@ -191,6 +201,11 @@ impl<'a> Graph<'a> {
             return Some(Value { ty, ..value });
         }
         let result = self.fresh(ty);
+        if wide(ty) && !wide(value.ty) && value.ty.is_signed() {
+            if let (Source::Register(id), Source::Register(input)) = (result.source, value.source) {
+                self.signed_word_promotions.insert(id, input);
+            }
+        }
         self.operations.push(Operation::Convert { result, value });
         Some(result)
     }
@@ -509,6 +524,7 @@ impl<'a> Graph<'a> {
         let ty = *self.types.get(name)?;
         let value = self.expression(expression)?;
         let value = self.convert(value, ty)?;
+        self.retain_named_promotion(value);
         if self.fixed_bindings {
             self.operations.push(Operation::Copy {
                 result: *self.bindings.get(name)?,
@@ -524,6 +540,7 @@ impl<'a> Graph<'a> {
         if let Expression::Variable(name) = target {
             if let Some(ty) = self.types.get(name).copied() {
                 let value = self.convert(value, ty)?;
+                self.retain_named_promotion(value);
                 if self.fixed_bindings {
                     self.operations.push(Operation::Copy {
                         result: *self.bindings.get(name)?,
@@ -616,8 +633,11 @@ impl<'a> Graph<'a> {
                     then_body,
                     else_body,
                 } => {
-                    let condition = self.expression(condition)?;
-                    let condition = self.truth(condition);
+                    if self.fixed_bindings {
+                        self.fixed_if(condition, then_body, else_body)?;
+                        continue;
+                    }
+                    let condition = self.condition(condition)?;
                     let before = self.bindings.clone();
                     let outer = std::mem::take(&mut self.operations);
                     self.statements(then_body)?;
@@ -667,6 +687,8 @@ impl<'a> Graph<'a> {
         parameters: &'a HashMap<String, Vec<Type>>,
         indirects: &'a HashMap<String, mwcc_syntax_trees::SourceFunctionType>,
         allow_implicit_calls: bool,
+        word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension,
+        optimization: mwcc_versions::Optimization,
     ) -> Option<Self> {
         if !(supported(function.return_type) || function.return_type == Type::Void)
             || function.locals.iter().any(|l| {
@@ -701,6 +723,10 @@ impl<'a> Graph<'a> {
         let mut graph = Self {
             operations: Vec::new(),
             values: 0,
+            signed_word_promotions: Default::default(),
+            word_subtrahend_extension,
+            optimization,
+            materialized_word_promotions: Default::default(),
             bindings: HashMap::new(),
             types: function
                 .locals
@@ -777,6 +803,7 @@ impl<'a> Graph<'a> {
         } else if control::falls_through(statements) {
             return None;
         }
+        graph.lower_word_subtrahends();
         Some(graph)
     }
 }
@@ -800,6 +827,8 @@ impl Generator {
             &self.call_parameter_types,
             &self.indirect_call_types,
             !self.source_is_cxx,
+            self.behavior.word_subtrahend_extension,
+            self.behavior.optimization,
         ) else {
             return Ok(false);
         };
@@ -904,15 +933,12 @@ impl Generator {
                 }
                 Operation::Label(label) => self.bind_label(labels[label]),
                 Operation::Jump(label) => self.emit_branch_to(labels[label]),
-                Operation::BranchIfZero { condition, target } => {
-                    let condition = self.wide_graph_operand(condition, registers).low;
-                    self.output
-                        .instructions
-                        .push(Instruction::CompareWordImmediate {
-                            a: condition,
-                            immediate: 0,
-                        });
-                    self.emit_branch_conditional_to(12, 2, labels[target]);
+                Operation::BranchIf {
+                    condition,
+                    target,
+                    on_true,
+                } => {
+                    self.emit_wide_graph_condition(condition, on_true, labels[target], registers);
                 }
                 Operation::Return(value) => {
                     if let Some(value) = value {
@@ -934,16 +960,9 @@ impl Generator {
                     then_body,
                     else_body,
                 } => {
-                    let condition = self.wide_graph_operand(condition, registers).low;
                     let otherwise = self.fresh_label();
                     let join = self.fresh_label();
-                    self.output
-                        .instructions
-                        .push(Instruction::CompareWordImmediate {
-                            a: condition,
-                            immediate: 0,
-                        });
-                    self.emit_branch_conditional_to(12, 2, otherwise);
+                    self.emit_wide_graph_condition(condition, false, otherwise, registers);
                     self.emit_wide_graph_operations(then_body, registers, labels, exit)?;
                     self.emit_branch_to(join);
                     self.bind_label(otherwise);
@@ -1214,6 +1233,10 @@ mod tests {
         let mut graph = Graph {
             operations: Vec::new(),
             values: 0,
+            signed_word_promotions: Default::default(),
+            word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension::FullWidth,
+            optimization: mwcc_versions::Optimization::O4,
+            materialized_word_promotions: Default::default(),
             bindings: HashMap::new(),
             types: HashMap::new(),
             globals: &globals,

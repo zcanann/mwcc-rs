@@ -53,7 +53,7 @@ impl Graph<'_> {
         result
     }
 
-    fn label(&mut self) -> usize {
+    pub(super) fn label(&mut self) -> usize {
         let label = self.labels;
         self.labels += 1;
         label
@@ -109,12 +109,7 @@ impl Graph<'_> {
 
     fn loop_condition(&mut self, condition: Option<&Expression>, end: usize) -> Option<()> {
         if let Some(expression) = condition {
-            let condition = self.expression(expression)?;
-            let condition = self.truth(condition);
-            self.operations.push(Operation::BranchIfZero {
-                condition,
-                target: end,
-            });
+            self.conditional_jump(expression, end, false)?;
         }
         Some(())
     }
@@ -130,7 +125,7 @@ impl Graph<'_> {
         right: &Expression,
     ) -> Option<Value> {
         let left = self.expression(left)?;
-        let condition = self.truth(left);
+        let condition = self.predicate(left);
         let before = self.bindings.clone();
         let outer = std::mem::take(&mut self.operations);
         let value = self.expression(right)?;
