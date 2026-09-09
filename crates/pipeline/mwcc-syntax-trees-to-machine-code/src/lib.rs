@@ -773,6 +773,7 @@ fn lower_function_body(
             .map(|global| global.name.clone())
             .collect(),
         behavior,
+        source_is_cxx: source_facts.is_cxx,
         return_source_fundamental: call_return_fundamentals.get(&function.name).copied(),
         call_return_fundamentals: call_return_fundamentals.clone(),
         parameter_source_fundamentals: source_facts.parameter_fundamentals

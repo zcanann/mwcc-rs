@@ -5226,6 +5226,12 @@ impl Generator {
         if self.behavior.narrow_computed_return_style == NarrowComputedReturnStyle::FullWidthResult
             && is_narrow_int(value_type)
         {
+            // C comparisons produce a word-sized truth value before the
+            // declared narrow conversion. This legacy policy omits conversion
+            // for arithmetic and C++ comparisons; source bool was handled above.
+            if !self.source_is_cxx && canonical_boolean {
+                return self.evaluate_narrow_return(expression, value_type, result);
+            }
             if let Expression::Cast {
                 target_type,
                 operand,

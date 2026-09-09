@@ -4,13 +4,61 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, narrow booleans and AX/GX compilation (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, C and C++ narrow comparison returns (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `f1489050c9110fa5a299fdbdec0835fc679611c7acef0c2420d3a9db44c130b8:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `caf647b0a3d35b1eabb2946cb9509709d825569f4d42a804e1b03f71b4edf90b:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## C and C++ narrow comparison returns, 2026-09-08
+
+The real `GXGetTexObjMipMap` now matches all bytes on GC/1.1, 1.1p1, 1.2.5,
+and 1.2.5n, improving complete matches **3 → 7/15**. All **3,840** exhaustive
+flag-byte execution cases pass against baseline, reference, and original GQPE78
+models. The AX/GX two-version library panel remains **48/48** compiling and
+changes only GC/1.2.5n's texture unit. The three-unit, fifteen-version project
+panel remains **45/45** compiling; the four early versions change only the
+mipmap getter and `GXGetTexObjEdgeLOD`. The latter also gains the final byte
+conversion but retains a different bit-extraction sequence. Its **3,840** native
+cases pass reference and original game models.
+All fifteen complete AXVPB objects remain identical.
+
+Early MWCC distinguishes the source languages here: C comparisons produce an
+integer truth value followed by the declared byte/halfword conversion, while
+C++ comparisons keep their existing boolean result path. Lowering now retains
+the existing source-language fact independently of symbol linkage and uses it
+inside the legacy full-width return policy. C++ `extern "C"` functions therefore
+retain C++ behavior. Ordinary narrow arithmetic and explicit casts keep their
+existing paths. The unsigned return owner also reuses a terminal one-bit carry
+chain mask in the result register, avoiding an extra narrow mask.
+
+Canaries **2252–2263** pair eighteen C/C++ functions in six modes across fifteen
+builds. All **180 objects / 3,240 functions** compile on baseline, candidate, and
+reference. Exact function matches improve **1,758 → 1,882/3,240**, with no exact
+losses. All C++ candidate objects retain the same function bytes and relocations.
+The controls cover signed and unsigned byte/halfword returns, comparisons and
+logical not, explicit casts, arithmetic returns, word returns, source `bool`, and
+unmangled C++ linkage. All **103,680** native cases pass, respecting the declared
+low-bit ABI for ordinary narrow arithmetic returns.
+
+The preceding boolean samples **2246–2251** improve **214 → 314/1,080** exact
+functions, with no exact losses. All **34,560** native cases pass against the
+references, including promoted operands, shared pointers, callback order and
+clobbers, memory guards, saved registers, and return state. The two sample panels
+gain **224** exact functions in total. An additional **1,605** earlier objects
+preserve all **1,260** successful objects byte-for-byte and all **345** failure
+diagnostics. The checkpoint has **145,920** distinct native cases.
+
+Backend tests pass **1,697** with the existing nested-asm exclusion. Two new
+unit tests exercise language provenance independently of linkage and reuse of
+the carry-chain result mask. Final recompilation reproduces all **810** native
+object entries. `target/boolean-tail-final-verification.json` binds the compiler,
+harness, sources, compilation objects, native harnesses and objects, and original
+DOL fingerprint. These targeted results do not establish whole-project parity;
+other versions of the getter and scheduling in the newly compiling AX/GX units
+remain follow-up work.
 
 ## Narrow booleans and AX/GX compilation, 2026-09-08
 

@@ -490,6 +490,8 @@ pub(crate) struct Generator {
     /// computed once from the build's profile and flags — never re-derived in
     /// instruction selection.
     pub(crate) behavior: Behavior,
+    /// Source language, retained independently of symbol linkage.
+    pub(crate) source_is_cxx: bool,
     /// Source spelling of this function's return type when compact executable
     /// types have merged it with a storage-equivalent scalar.
     pub(crate) return_source_fundamental: Option<mwcc_syntax_trees::SourceFundamentalType>,

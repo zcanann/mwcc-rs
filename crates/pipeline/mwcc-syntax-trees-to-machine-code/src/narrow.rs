@@ -149,6 +149,20 @@ impl Generator {
         if is_boolean_result(expression) {
             self.evaluate_general(expression, GENERAL_SCRATCH)?;
             if !signed {
+                // The legacy signed-ordering carry chain already masks its
+                // result to one bit. Keep that mask in the ABI result home;
+                // a second byte/halfword mask would change the reference idiom.
+                if let [.., Instruction::AddToZeroExtended { d, .. },
+                    Instruction::ClearLeftImmediate { a, s, clear: 31 }]
+                    = self.output.instructions.as_mut_slice()
+                {
+                    if *d == GENERAL_SCRATCH && *a == GENERAL_SCRATCH && *s == GENERAL_SCRATCH {
+                        *d = result;
+                        *a = result;
+                        *s = result;
+                        return Ok(());
+                    }
+                }
                 if let Some(last) = self.output.instructions.last_mut() {
                     if let Instruction::ShiftRightLogicalImmediate { a, s, shift } = *last {
                         if a == GENERAL_SCRATCH {

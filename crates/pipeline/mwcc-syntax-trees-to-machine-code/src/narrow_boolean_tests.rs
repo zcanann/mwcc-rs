@@ -44,6 +44,12 @@ fn function(result: Type, value: E) -> Function {
     }
 }
 fn lower(f: &Function) -> MachineFunction {
+    let mut config = CompilerConfig::new(GC_1_3);
+    config.flags.optimization = Optimization::O4;
+    config.flags.cpp_exceptions = false;
+    lower_with_language(f, config, false)
+}
+fn lower_with_language(f: &Function, config: CompilerConfig, is_cxx: bool) -> MachineFunction {
     let returns = HashMap::from([
         ("first".into(), Type::UnsignedInt),
         ("second".into(), Type::UnsignedInt),
@@ -54,10 +60,7 @@ fn lower(f: &Function) -> MachineFunction {
         ("second".into(), vec![]),
         ("sink2".into(), vec![Type::UnsignedChar; 2]),
     ]);
-    let mut config = CompilerConfig::new(GC_1_3);
-    config.flags.optimization = Optimization::O4;
-    config.flags.cpp_exceptions = false;
-    crate::lower_function(
+    crate::lower_function_with_source_facts(
         f,
         &[],
         &HashMap::new(),
@@ -75,6 +78,13 @@ fn lower(f: &Function) -> MachineFunction {
         Default::default(),
         &HashMap::new(),
         &HashMap::new(),
+        crate::SourceFunctionFacts {
+            is_cxx,
+            nonvolatile_pointer_bindings: &Default::default(),
+            parameter_fundamentals: &Default::default(),
+            local_fundamentals: &Default::default(),
+            variable_reference_counts: &Default::default(),
+        },
         config,
     )
     .expect("narrow boolean should lower")
@@ -270,4 +280,68 @@ fn boolean_range_recognition_does_not_classify_arithmetic_or_pointer_casts() {
         E::IntegerLiteral(1)
     )));
     assert!(!crate::analysis::is_boolean_result(&E::IntegerLiteral(2)));
+}
+
+#[test]
+fn legacy_c_truth_return_converts_while_cxx_keeps_its_word() {
+    let mut function = function(
+        Type::UnsignedChar,
+        binary(B::Equal, E::Variable("a".into()), E::IntegerLiteral(1)),
+    );
+    // The same unmangled symbol tests language provenance independently of linkage.
+    function.parameters = vec![Parameter {
+        name: "a".into(),
+        parameter_type: Type::Int,
+    }];
+    let mut config = CompilerConfig::new(mwcc_versions::GC_1_2_5N);
+    config.flags.optimization = Optimization::O4;
+    config.flags.cpp_exceptions = false;
+    let c = lower_with_language(&function, config, false);
+    let cxx = lower_with_language(&function, config, true);
+    assert!(c.instructions.iter().any(|i| matches!(
+        i,
+        I::RotateAndMask {
+            a: 3,
+            shift: 27,
+            begin: 24,
+            end: 31,
+            ..
+        }
+    )));
+    assert!(cxx
+        .instructions
+        .iter()
+        .any(|i| matches!(i, I::ShiftRightLogicalImmediate { a: 3, shift: 5, .. })));
+    assert_eq!(c.instructions.len(), cxx.instructions.len());
+}
+
+#[test]
+fn legacy_unsigned_truth_return_reuses_the_carry_chain_mask() {
+    let mut function = function(
+        Type::UnsignedShort,
+        binary(B::Less, E::Variable("a".into()), E::IntegerLiteral(0)),
+    );
+    function.parameters = vec![Parameter {
+        name: "a".into(),
+        parameter_type: Type::Int,
+    }];
+    let mut config = CompilerConfig::new(mwcc_versions::GC_1_2_5N);
+    config.flags.optimization = Optimization::O4;
+    config.flags.cpp_exceptions = false;
+    let lowered = lower_with_language(&function, config, false);
+    assert!(lowered.instructions.windows(2).any(|pair| matches!(
+        pair,
+        [
+            I::AddToZeroExtended { d: 3, .. },
+            I::ClearLeftImmediate {
+                a: 3,
+                s: 3,
+                clear: 31
+            }
+        ]
+    )));
+    assert!(!lowered
+        .instructions
+        .iter()
+        .any(|i| matches!(i, I::ClearLeftImmediate { clear: 16, .. })));
 }
