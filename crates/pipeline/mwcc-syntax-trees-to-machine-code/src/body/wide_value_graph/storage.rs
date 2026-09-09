@@ -32,27 +32,33 @@ impl Generator {
         });
     }
 
-    pub(super) fn wide_graph_scalar_load(&mut self, ty: Type, destination: u32, pointer: u32) {
+    pub(super) fn wide_graph_scalar_load(
+        &mut self,
+        ty: Type,
+        destination: u32,
+        pointer: u32,
+        offset: i16,
+    ) {
         self.output.instructions.push(match ty {
             Type::Char | Type::UnsignedChar => Instruction::LoadByteZero {
                 d: destination,
                 a: pointer,
-                offset: 0,
+                offset,
             },
             Type::Short => Instruction::LoadHalfwordAlgebraic {
                 d: destination,
                 a: pointer,
-                offset: 0,
+                offset,
             },
             Type::UnsignedShort => Instruction::LoadHalfwordZero {
                 d: destination,
                 a: pointer,
-                offset: 0,
+                offset,
             },
             _ => Instruction::LoadWord {
                 d: destination,
                 a: pointer,
-                offset: 0,
+                offset,
             },
         });
         if ty == Type::Char {

@@ -1601,6 +1601,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         WordSubtrahendExtension::FullWidth
     }
 
+    /// General pruning of unused pair words starts at O2 in the middle line.
+    /// Earlier and modern builds already prune ordinary pair loads/adds at O1.
+    fn wide_word_demand_starts_at_o2(&self) -> bool {
+        false
+    }
+
     /// Reuse ordinary word fields across stores to disjoint member ranges.
     fn retain_disjoint_member_reads(&self) -> bool {
         false
@@ -2145,6 +2151,10 @@ pub trait CodegenProfile: core::fmt::Debug {
 #[derive(Debug)]
 pub struct Mainline;
 impl CodegenProfile for Mainline {
+    fn wide_word_demand_starts_at_o2(&self) -> bool {
+        true
+    }
+
     fn word_subtrahend_extension(&self) -> WordSubtrahendExtension {
         WordSubtrahendExtension::ZeroExtendSigned
     }
@@ -2163,6 +2173,10 @@ impl CodegenProfile for Mainline {
 #[derive(Debug)]
 pub struct MainlineEarlyAggregateLoads;
 impl CodegenProfile for MainlineEarlyAggregateLoads {
+    fn wide_word_demand_starts_at_o2(&self) -> bool {
+        true
+    }
+
     fn word_subtrahend_extension(&self) -> WordSubtrahendExtension {
         WordSubtrahendExtension::ZeroExtendSigned
     }
@@ -2798,6 +2812,10 @@ impl CodegenProfile for Wii43Build145 {
 #[derive(Debug)]
 pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
+    fn wide_word_demand_starts_at_o2(&self) -> bool {
+        true
+    }
+
     fn word_subtrahend_extension(&self) -> WordSubtrahendExtension {
         WordSubtrahendExtension::ZeroExtendAll
     }
@@ -2889,6 +2907,10 @@ impl CodegenProfile for Gc13Build53 {
 #[derive(Debug)]
 pub struct Gc132Build81;
 impl CodegenProfile for Gc132Build81 {
+    fn wide_word_demand_starts_at_o2(&self) -> bool {
+        true
+    }
+
     fn word_subtrahend_extension(&self) -> WordSubtrahendExtension {
         WordSubtrahendExtension::ZeroExtendSigned
     }
@@ -3543,6 +3565,10 @@ impl CodegenProfile for Gc233Build163 {
 #[derive(Debug)]
 pub struct Gc20Patch1;
 impl CodegenProfile for Gc20Patch1 {
+    fn wide_word_demand_starts_at_o2(&self) -> bool {
+        true
+    }
+
     fn word_subtrahend_extension(&self) -> WordSubtrahendExtension {
         WordSubtrahendExtension::ZeroExtendSigned
     }

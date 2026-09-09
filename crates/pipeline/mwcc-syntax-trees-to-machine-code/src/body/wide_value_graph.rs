@@ -16,6 +16,8 @@ mod arithmetic;
 mod condition;
 #[path = "wide_value_graph/control.rs"]
 mod control;
+#[path = "wide_value_graph/demand.rs"]
+mod demand;
 #[path = "wide_value_graph/subtrahend.rs"]
 mod subtrahend;
 use condition::Condition;
@@ -101,6 +103,7 @@ enum Operation {
     Load {
         result: Value,
         pointer: Value,
+        offset: i16,
     },
     Store {
         pointer: Value,
@@ -129,6 +132,7 @@ struct Graph<'a> {
     signed_word_promotions: HashMap<usize, usize>,
     word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension,
     optimization: mwcc_versions::Optimization,
+    wide_word_demand_starts_at_o2: bool,
     materialized_word_promotions: std::collections::HashSet<usize>,
     bindings: HashMap<String, Value>,
     types: HashMap<String, Type>,
@@ -253,7 +257,11 @@ impl<'a> Graph<'a> {
                 }
                 let pointer = self.address(name)?;
                 let result = self.fresh(ty);
-                self.operations.push(Operation::Load { result, pointer });
+                self.operations.push(Operation::Load {
+                    result,
+                    pointer,
+                    offset: 0,
+                });
                 Some(result)
             }
             Expression::Cast {
@@ -283,7 +291,11 @@ impl<'a> Graph<'a> {
                         return None;
                     }
                     let result = self.fresh(ty);
-                    self.operations.push(Operation::Load { result, pointer });
+                    self.operations.push(Operation::Load {
+                        result,
+                        pointer,
+                        offset: 0,
+                    });
                     Some(result)
                 } else {
                     Some(pointer)
@@ -310,7 +322,11 @@ impl<'a> Graph<'a> {
                     return None;
                 }
                 let result = self.fresh(ty);
-                self.operations.push(Operation::Load { result, pointer });
+                self.operations.push(Operation::Load {
+                    result,
+                    pointer,
+                    offset: 0,
+                });
                 Some(result)
             }
             Expression::Member {
@@ -324,7 +340,11 @@ impl<'a> Graph<'a> {
                     return None;
                 }
                 let result = self.fresh(*member_type);
-                self.operations.push(Operation::Load { result, pointer });
+                self.operations.push(Operation::Load {
+                    result,
+                    pointer,
+                    offset: 0,
+                });
                 Some(result)
             }
             Expression::Assign { target, value } => {
@@ -689,6 +709,7 @@ impl<'a> Graph<'a> {
         allow_implicit_calls: bool,
         word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension,
         optimization: mwcc_versions::Optimization,
+        wide_word_demand_starts_at_o2: bool,
     ) -> Option<Self> {
         if !(supported(function.return_type) || function.return_type == Type::Void)
             || function.locals.iter().any(|l| {
@@ -726,6 +747,7 @@ impl<'a> Graph<'a> {
             signed_word_promotions: Default::default(),
             word_subtrahend_extension,
             optimization,
+            wide_word_demand_starts_at_o2,
             materialized_word_promotions: Default::default(),
             bindings: HashMap::new(),
             types: function
@@ -804,6 +826,7 @@ impl<'a> Graph<'a> {
             return None;
         }
         graph.lower_word_subtrahends();
+        graph.narrow_unobserved_high_words();
         Some(graph)
     }
 }
@@ -829,6 +852,7 @@ impl Generator {
             !self.source_is_cxx,
             self.behavior.word_subtrahend_extension,
             self.behavior.optimization,
+            self.behavior.wide_word_demand_starts_at_o2,
         ) else {
             return Ok(false);
         };
@@ -1035,22 +1059,26 @@ impl Generator {
                         immediate: 0,
                     });
                 }
-                Operation::Load { result, pointer } => {
+                Operation::Load {
+                    result,
+                    pointer,
+                    offset,
+                } => {
                     let pointer = self.wide_graph_operand(pointer, registers).low;
                     let destination = self.wide_graph_destination(result, registers);
                     if let Some(high) = destination.high {
                         self.output.instructions.push(Instruction::LoadWord {
                             d: high,
                             a: pointer,
-                            offset: 0,
+                            offset,
                         });
                         self.output.instructions.push(Instruction::LoadWord {
                             d: destination.low,
                             a: pointer,
-                            offset: 4,
+                            offset: offset + 4,
                         });
                     } else {
-                        self.wide_graph_scalar_load(result.ty, destination.low, pointer);
+                        self.wide_graph_scalar_load(result.ty, destination.low, pointer, offset);
                     }
                 }
                 Operation::Store { pointer, value } => {
@@ -1236,6 +1264,7 @@ mod tests {
             signed_word_promotions: Default::default(),
             word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension::FullWidth,
             optimization: mwcc_versions::Optimization::O4,
+            wide_word_demand_starts_at_o2: false,
             materialized_word_promotions: Default::default(),
             bindings: HashMap::new(),
             types: HashMap::new(),

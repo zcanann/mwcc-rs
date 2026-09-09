@@ -4,13 +4,76 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, direct graph conditions and versioned wide subtraction (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, high-word demand and reference load-width pruning (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `65c467929767af506616e741131600fc2f649b940054e9e73a66ca49e74be23b:2c1f190c8fda394228dd7731b941e389bf9e36c15708b0393a22c7541d9eaf7d`
+Latest measured compiler + harness fingerprint: `6437836f31a8c18683eed49f7e8b4135ba273d5c20045139e04b4a2dd78aaad3:ae34613b54d3a893e7edf34ecd83acde5f4f53389d46e30dba3b98cc8ab26190`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## High-word demand and reference load-width pruning, 2026-09-09
+
+A separate demand pass now removes unobserved high words from the typed
+word/pair graph. It propagates requirements to a fixed point across all
+definitions, branch arms and loop backedges before narrowing copies,
+conversions, add/subtract/multiply and bitwise operations. Full-width returns,
+stores, call arguments and comparisons retain both words. Shifts conservatively
+retain both input words. Incoming narrowed parameters still read the low word
+from their original pair ABI slot, and calls retain their pair ABI.
+
+O0 keeps the existing graph. General word pruning begins at O1 in the old
+1.1/1.2 and modern 3.0/Wii profiles, and at O2 in GC/1.3–2.7. Those middle
+builds retain unused high loads/additions at O1, although some isolated
+multiplications already narrow there; that narrower O1 selection is still a
+gap. Reference execution also confirms that an unobserved high load disappears
+even through a volatile pair pointer in the enabled modes. The graph now
+retains just the low read at byte displacement four, matching that historical
+behavior. Load operations carry an explicit displacement; narrowing does not
+change the pointer stride or move the remaining read across other operations.
+
+On the complete original THP audio source, the O4 decoder shrinks
+**2,188 → 2,140 bytes** in all 15 versions. All 90 objects compile and exact
+function matches stay **142/270**. In the Dolphin frontier,
+OSTicksToCalendarTime shrinks **820 → 812 bytes** in GC/1.2.5n and GC/1.3.
+Compilation stays **201/302**; only those two calendar objects and two audio
+objects change, with no exact-function losses.
+
+New sample **2312** contains 13 functions covering low add/subtract/multiply,
+masks and chains, a right shift requiring high input bits, loop-carried values,
+branch merges, shared observable pairs, volatile pair reads and indirect calls.
+All **105** baseline/candidate/reference configurations compile across 15
+versions and seven modes. These **1,365** function outputs remain nonmatching:
+unused-word removal improves code size and access fidelity, while redundant
+parameter moves and instruction selection still prevent exact matches.
+
+Validation binds **13,138** object artifacts to this compiler:
+
+- **476,558 candidate executions pass**: 174,720 new sample cases, 288,000
+  affected prior-sample cases, 11,790 complete audio cases and 2,048 complete
+  calendar cases. Checks include whole memory images, ABI preservation,
+  callback arguments/effects and actual volatile read addresses.
+- The reference executes **186,510** cases; **186,254 pass**. The remaining
+  256 are the existing GC/1.1p1 O0 shared-parameter-spill corruption in
+  `low_shift` and `call_pair`, 128 each. The raw reference overwrites saved
+  state and/or its indirect target; this graph still does not reproduce those
+  failures. They are recorded explicitly, not counted as successful parity.
+- Baseline execution has **10,496** extra-high-read mismatches against the
+  reference access model; the candidate has zero. O0 and middle-generation O1
+  continue reading both words, matching their references.
+- The **2,865-row** regression panel preserves 2,589 objects and 276 diagnostics.
+  The **3,315-row** recent panel preserves 3,085 objects. All 230 changes are in
+  samples 2281, 2303, 2310 and 2311 and have native coverage. Their 195 exact
+  function matches are retained.
+- **2,703 Rust tests pass**, with the same 12 documented pre-existing exclusions
+  and eight ignored tests. Reference sources and the original DOL are unchanged.
+
+Evidence: `target/word-demand-{canaries,project,frontier,regressions,recent}/results.json`,
+the corresponding native JSON files, `target/word-demand-verified-tests.log`,
+and `target/word-demand-final-verification.json`. Recheck with
+`python3 target/verify_word_demand_final.py`. This is a demand/behavior
+checkpoint; parameter-copy coalescing, carry instruction selection and exact
+wide-graph output remain open.
 
 ## Direct graph conditions and versioned wide subtraction, 2026-09-09
 
