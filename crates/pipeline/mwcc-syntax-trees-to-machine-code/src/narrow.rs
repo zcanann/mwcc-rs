@@ -130,6 +130,44 @@ impl Generator {
             return Ok(());
         }
 
+        // Boolean results fit every narrow return type, but MWCC still keeps
+        // signed extension and fuses unsigned truncation into its final shift.
+        // Their operands require full promotion before producing that result.
+        if let Expression::Binary {
+            operator: operator @ (BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr),
+            left,
+            right,
+        } = expression
+        {
+            let accumulator = self.fresh_virtual_general();
+            self.emit_short_circuit_with_accumulator(
+                *operator, left, right, accumulator, accumulator,
+            )?;
+            self.emit_widen(result, accumulator, width, signed);
+            return Ok(());
+        }
+        if is_boolean_result(expression) {
+            self.evaluate_general(expression, GENERAL_SCRATCH)?;
+            if !signed {
+                if let Some(last) = self.output.instructions.last_mut() {
+                    if let Instruction::ShiftRightLogicalImmediate { a, s, shift } = *last {
+                        if a == GENERAL_SCRATCH {
+                            *last = Instruction::RotateAndMask {
+                                a: result,
+                                s,
+                                shift: (32 - shift) % 32,
+                                begin: (32 - width).max(shift),
+                                end: 31,
+                            };
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            self.emit_widen(result, GENERAL_SCRATCH, width, signed);
+            return Ok(());
+        }
+
         if let Expression::Variable(name) = expression {
             // A file-scope narrow object is already loaded at its declared
             // width. It has no register location for `leaf_info`, so route it

@@ -1929,6 +1929,29 @@ pub(crate) fn flip_comparison(operator: BinaryOperator) -> Option<BinaryOperator
     })
 }
 
+/// Whether evaluation itself yields the canonical integer truth values 0 or 1.
+/// This is a result-range fact; it never permits skipping operand promotion.
+pub(crate) fn is_boolean_result(expression: &Expression) -> bool {
+    match expression {
+        Expression::IntegerLiteral(value) => matches!(value, 0 | 1),
+        Expression::Binary { operator, .. } => {
+            is_comparison(*operator)
+                || matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr)
+        }
+        Expression::Unary { operator: UnaryOperator::LogicalNot, .. } => true,
+        Expression::Conditional { when_true, when_false, .. } => {
+            is_boolean_result(when_true) && is_boolean_result(when_false)
+        }
+        Expression::Cast { target_type, operand }
+            if matches!(target_type, Type::Char | Type::UnsignedChar | Type::Short
+                | Type::UnsignedShort | Type::Int | Type::UnsignedInt) =>
+        {
+            is_boolean_result(operand)
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn is_comparison(operator: BinaryOperator) -> bool {
     matches!(
         operator,

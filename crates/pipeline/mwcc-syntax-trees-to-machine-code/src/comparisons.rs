@@ -1989,6 +1989,22 @@ impl Generator {
             self.evaluate_general(right, GENERAL_SCRATCH)?;
             return Ok((left_register, GENERAL_SCRATCH));
         }
+        // Computed or memory operands have no leaf home. Keep the left value
+        // live in a virtual register while evaluating the right, including its
+        // integer promotions, then let the equality idiom consume both values.
+        // Two call-bearing operands follow MWCC's right-before-left order.
+        if self.leaf_info(left).is_err() || self.leaf_info(right).is_err() {
+            if expression_has_call(left) && expression_has_call(right) {
+                let right_register = self.fresh_virtual_general();
+                self.evaluate_general(right, right_register)?;
+                self.evaluate_general(left, GENERAL_SCRATCH)?;
+                return Ok((GENERAL_SCRATCH, right_register));
+            }
+            let left_register = self.fresh_virtual_general();
+            self.evaluate_general(left, left_register)?;
+            self.evaluate_general(right, GENERAL_SCRATCH)?;
+            return Ok((left_register, GENERAL_SCRATCH));
+        }
         let (left_register, left_width, left_signed) = self.leaf_info(left)?;
         let (right_register, right_width, right_signed) = self.leaf_info(right)?;
         let left_narrow = left_width < 32;
@@ -2047,8 +2063,9 @@ impl Generator {
         let optimized = self.behavior.optimization >= mwcc_versions::Optimization::O3;
         use mwcc_versions::ComputedConstantEqualityStyle;
         let style = self.behavior.computed_constant_equality_style;
-        let matching_mask =
-            as_masked_leaf(value).filter(|(_, mask)| i64::from(*mask) == i64::from(constant));
+        let matching_mask = as_masked_leaf(value)
+            .or_else(|| as_masked_load(value))
+            .filter(|(_, mask)| i64::from(*mask) == i64::from(constant));
         if optimized && style != ComputedConstantEqualityStyle::LegacyMaskedAdd {
             if let Some((operand, mask)) = matching_mask {
                 if mask.is_power_of_two() {

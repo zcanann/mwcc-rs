@@ -4,13 +4,71 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, later quotient and first-fill scheduling (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, narrow booleans and AX/GX compilation (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `f3049b3d11a2495789f740dba5e0f52156b8140c7611c028b19ab75e8bbf18af:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `f1489050c9110fa5a299fdbdec0835fc679611c7acef0c2420d3a9db44c130b8:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Narrow booleans and AX/GX compilation, 2026-09-08
+
+The three GC/1.3 failures from the preceding checkpoint now compile: `AXOut`,
+`GXInit`, and `GXTexture`. The 24-unit AX/GX panel across GC/1.2.5n and GC/1.3
+improves **45 → 48/48**. Across all fifteen compiler versions, those three
+translation units improve **12 → 45/45**, with all references also compiling.
+The only changed function in previously compiling project objects is
+`GXGetTexObjMipMap`; its exact matches improve **0 → 3/15** on GC/1.3, 1.3.2,
+and 1.3.2r. `__AXOutInitDSP` compiles and executes correctly but remains
+**0/15** exact. This is compilation and targeted code-generation progress,
+not complete project matching.
+
+A shared result-range predicate identifies canonical integer booleans without
+skipping promotion of their operands. Narrow returns retain signed extension
+and fold unsigned truncation into the final logical shift where possible.
+Computed comparisons hold one operand in a virtual register; two call-bearing
+operands follow the reference's right-before-left order. Short-circuit values
+can use an independent virtual accumulator, preserving a shared pointer needed
+by the second test. The existing dependency-ordered argument planner now accepts
+pure conditionals and proven narrow boolean or same-type member arguments.
+Allocation can add the first saved register to an existing canonical call frame,
+fixing DSP initialization and values held across comparison calls. Masked loads
+use the existing version-specific computed-equality policy.
+
+Canaries **2246–2251** cover twelve functions in six modes across fifteen builds:
+byte and halfword returns, signed extension, promoted arithmetic, wrapping word
+arithmetic, shared-pointer short circuits, narrow call arguments, and two calls
+inside equality. Complete sample translation units improve **0 → 90/90**;
+individual-function baseline probes compile **96/1,080**, and the candidate
+compiles all **1,080**. Whole-function exact matches improve **0 → 214/1,080**.
+All **34,560** native sample cases pass against the references, including
+callback order, volatile register clobbers, memory guards, argument values,
+saved registers, stack, and return state.
+
+The preceding 68-sample panel has **1,020** objects: **942** successful objects
+remain identical, **71** failures retain identical diagnostics, and seven
+successful objects change only `volatile_bit`. Those seven functions remain
+nonmatching but pass **3,584** execution cases, including exact volatile access
+traces. There are no compilation or exact-match losses in the measured panels.
+The complete real DSP initializer passes **240** cases, and the real texture
+mipmap getter passes **3,840** cases covering every byte flag. Both run against
+reference and original GQPE78 game models, with baseline comparisons where
+compilation was already supported. Total distinct native cases: **42,224**.
+
+Backend tests pass **1,695**, with the existing nested-asm exclusion. Six new
+unit tests cover return coercion, call order and frame ownership, shared-pointer
+lifetimes, narrow arguments, and boolean range rejection. Final recompilation
+reproduces all **262** execution-tested object entries. All fifteen full AXVPB
+objects remain identical to the preceding checkpoint, preserving its initializer
+matches. GC/1.2.5n's library panel changes only the mipmap getter; GC/1.3's only
+changes are the three newly compiling units.
+
+`target/narrow-bool-final-verification.json` binds the final compiler and harness,
+canary sources, compilation objects, execution harnesses, native object entries,
+and original DOL fingerprint. These are targeted results, not a full-corpus
+parity estimate. Remaining work includes scheduling and register choices in the
+newly compiling functions and the successive clear loops of later AXVPB builds.
 
 ## Later quotient and first-fill scheduling, 2026-09-08
 

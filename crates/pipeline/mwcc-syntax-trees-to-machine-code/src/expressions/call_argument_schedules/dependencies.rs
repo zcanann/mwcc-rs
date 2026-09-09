@@ -17,6 +17,11 @@ fn pure_general_argument(expression: &Expression) -> bool {
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
             pure_general_argument(base)
         }
+        Expression::Conditional { condition, when_true, when_false, .. } => {
+            pure_general_argument(condition)
+                && pure_general_argument(when_true)
+                && pure_general_argument(when_false)
+        }
         Expression::Binary { left, right, .. } => {
             pure_general_argument(left) && pure_general_argument(right)
         }
@@ -227,9 +232,13 @@ impl Generator {
             || !arguments.iter().all(pure_general_argument)
             || !self.call_parameter_types.get(name).is_some_and(|types| {
                 types.len() >= arguments.len()
-                    && types[..arguments.len()].iter().all(|ty| {
-                        ty.width() == 32
-                            && !matches!(ty, Type::Float | Type::Double | Type::Struct { .. })
+                    && types[..arguments.len()].iter().zip(arguments).all(|(ty, argument)| {
+                        !matches!(ty, Type::Float | Type::Double | Type::Struct { .. } | Type::Void)
+                            && (ty.width() == 32
+                                || (ty.width() < 32
+                                    && (crate::analysis::is_boolean_result(argument)
+                                        || matches!(argument, Expression::Member { member_type, .. }
+                                            if member_type == ty))))
                     })
             })
         {

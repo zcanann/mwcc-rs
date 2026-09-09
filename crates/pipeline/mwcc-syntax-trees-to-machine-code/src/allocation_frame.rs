@@ -73,7 +73,10 @@ impl Generator {
         if declared_covers_required && !declared_has_late_virtual_save {
             return Ok(());
         }
-        if self.frame_size == 0 || declared.is_empty() {
+        // A call frame can begin without named saved homes. Allocation may
+        // discover the first call-crossing temporary later; the canonical LR
+        // frame below owns its save/restore slots just as it owns extra homes.
+        if self.frame_size == 0 {
             return Err(Diagnostic::error(
                 "allocated callee-saved values need a canonical frame owner",
             ));

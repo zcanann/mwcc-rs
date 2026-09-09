@@ -97,8 +97,8 @@ impl Generator {
         // If evaluating the RIGHT operand reads the RESULT register — as a value or through a load
         // base (`a && a`; `p && p[0]` where p is in `result`) — the accumulator (`li result,…`)
         // clobbers a value the right operand still needs, and the scratch-register fallback (r0)
-        // then collides with a load through that pointer. mwcc reuses the compare or uses a third
-        // register; neither is modeled, so defer rather than emit wrong bytes. (A `(a==c1)||(a==c2)`
+        // then collides with a load through that pointer. Give the accumulator a
+        // virtual home so allocation preserves it across the right test. (A `(a==c1)||(a==c2)`
         // comparison form, whose operands only TEST the register, still uses the scratch path.)
         let names_in_result: std::collections::HashSet<&str> = self
             .locations
@@ -123,7 +123,10 @@ impl Generator {
             && !right_is_comparison
             && crate::analysis::reads_register(right, &names_in_result)
         {
-            return Err(mwcc_core::Diagnostic::error("a short-circuit whose right operand reuses the result register is not modeled yet (roadmap)"));
+            let accumulator = self.fresh_virtual_general();
+            return self.emit_short_circuit_with_accumulator(
+                operator, left, right, result, accumulator,
+            );
         }
         if self.registers_used_by(right).contains(&result) {
             return self.emit_short_circuit_via_scratch(operator, left, right, result);
@@ -213,7 +216,18 @@ impl Generator {
         right: &Expression,
         result: u8,
     ) -> Compilation<()> {
-        let scratch = GENERAL_SCRATCH;
+        self.emit_short_circuit_with_accumulator(operator, left, right, result, GENERAL_SCRATCH)
+    }
+
+    /// Keep the truth accumulator distinct from a right operand's load scratch.
+    pub(crate) fn emit_short_circuit_with_accumulator(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        result: u8,
+        scratch: u8,
+    ) -> Compilation<()> {
         // `(a == c1) || (a == c2)` for CONSECUTIVE constants is, as a VALUE, mwcc's unsigned
         // range check `(unsigned)(a - min) <= 1` — a branchless idiom (`addi; subfic; orc;
         // srwi; subf; srwi.; bnelr`) not reproduced here. Defer rather than emit our

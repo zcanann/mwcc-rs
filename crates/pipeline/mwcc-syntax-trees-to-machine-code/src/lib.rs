@@ -2624,3 +2624,6 @@ mod instruction_index_tests {
         assert_eq!(function.implicit_external_callees, ["undeclared_helper"]);
     }
 }
+
+#[cfg(test)]
+mod narrow_boolean_tests;
