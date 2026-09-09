@@ -1,35 +1,58 @@
-//! Typed straight-line values shared by scalar and pair-register operations.
+//! Typed word/pair values with explicit conditional merges.
 //!
 //! The graph fixes memory/call ordering and assignment identities before
 //! selection. A 64-bit value always has two explicit virtual-register words;
 //! ordinary liveness, scheduling and frame allocation preserve both across
-//! calls. Constants remain operands until use, avoiding artificial survivors.
+//! calls. Both incoming edges define a branch merge explicitly. Constants
+//! remain operands until use, avoiding artificial survivors.
 
 use super::*;
 use std::collections::HashMap;
 
+#[path = "wide_value_graph/arithmetic.rs"]
+mod arithmetic;
+
 fn supported(ty: Type) -> bool {
     matches!(
         ty,
-        Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::LongLong | Type::UnsignedLongLong
+        Type::Int
+            | Type::UnsignedInt
+            | Type::Pointer(_)
+            | Type::StructPointer { .. }
+            | Type::LongLong
+            | Type::UnsignedLongLong
     )
 }
 fn wide(ty: Type) -> bool {
     matches!(ty, Type::LongLong | Type::UnsignedLongLong)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Value {
     ty: Type,
     source: Source,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Source {
     Constant(u64),
     Register(usize),
 }
 #[derive(Debug)]
 enum Operation {
+    Branch {
+        condition: Value,
+        then_body: Vec<Operation>,
+        else_body: Vec<Operation>,
+    },
+    Copy {
+        result: Value,
+        value: Value,
+    },
+    Offset {
+        result: Value,
+        pointer: Value,
+        bytes: u32,
+    },
     Parameter {
         result: Value,
         high: u32,
@@ -57,6 +80,7 @@ enum Operation {
         right: Value,
     },
     Call {
+        runtime: bool,
         name: String,
         arguments: Vec<(u32, Value)>,
         result: Option<Value>,
@@ -202,6 +226,20 @@ impl<'a> Graph<'a> {
                 self.operations.push(Operation::Load { result, pointer });
                 Some(result)
             }
+            Expression::Member {
+                base,
+                offset,
+                member_type,
+                ..
+            } => {
+                let pointer = self.member_address(base, *offset)?;
+                if !supported(*member_type) {
+                    return None;
+                }
+                let result = self.fresh(*member_type);
+                self.operations.push(Operation::Load { result, pointer });
+                Some(result)
+            }
             Expression::Call { name, arguments } => self.call(name, arguments, true)?,
             Expression::Binary {
                 operator,
@@ -214,6 +252,17 @@ impl<'a> Graph<'a> {
                     | BinaryOperator::BitAnd
                     | BinaryOperator::BitOr
                     | BinaryOperator::BitXor
+                    | BinaryOperator::Multiply
+                    | BinaryOperator::Divide
+                    | BinaryOperator::Modulo
+                    | BinaryOperator::ShiftLeft
+                    | BinaryOperator::ShiftRight
+                    | BinaryOperator::Equal
+                    | BinaryOperator::NotEqual
+                    | BinaryOperator::Less
+                    | BinaryOperator::LessEqual
+                    | BinaryOperator::Greater
+                    | BinaryOperator::GreaterEqual
             ) =>
             {
                 // Call-bearing RHS first matches the time-adjust transaction:
@@ -230,8 +279,13 @@ impl<'a> Graph<'a> {
                 if matches!(left.ty, Type::Pointer(_)) || matches!(right.ty, Type::Pointer(_)) {
                     return None;
                 }
-                let ty = if left.ty == Type::UnsignedLongLong || right.ty == Type::UnsignedLongLong
-                {
+                let shift = matches!(
+                    operator,
+                    BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight
+                );
+                let ty = if shift {
+                    left.ty
+                } else if left.ty == Type::UnsignedLongLong || right.ty == Type::UnsignedLongLong {
                     Type::UnsignedLongLong
                 } else if wide(left.ty) || wide(right.ty) {
                     Type::LongLong
@@ -241,24 +295,46 @@ impl<'a> Graph<'a> {
                     Type::Int
                 };
                 let left = self.convert(left, ty)?;
-                let right = self.convert(right, ty)?;
+                let right = self.convert(right, if shift { Type::UnsignedInt } else { ty })?;
                 if let (Source::Constant(left), Source::Constant(right)) =
                     (left.source, right.source)
                 {
-                    let bits = match operator {
-                        BinaryOperator::Add => left.wrapping_add(right),
-                        BinaryOperator::Subtract => left.wrapping_sub(right),
-                        BinaryOperator::BitAnd => left & right,
-                        BinaryOperator::BitOr => left | right,
-                        BinaryOperator::BitXor => left ^ right,
-                        _ => unreachable!(),
-                    };
-                    return Some(Value {
-                        ty,
-                        source: Source::Constant(if wide(ty) { bits } else { bits & 0xffff_ffff }),
-                    });
+                    if let Some(bits) = arithmetic::fold(*operator, ty, left, right) {
+                        return Some(Value {
+                            ty: if is_comparison(*operator) {
+                                Type::Int
+                            } else {
+                                ty
+                            },
+                            source: Source::Constant(bits),
+                        });
+                    }
                 }
-                let result = self.fresh(ty);
+                let result = self.fresh(if is_comparison(*operator) {
+                    Type::Int
+                } else {
+                    ty
+                });
+                if wide(ty) && matches!(operator, BinaryOperator::Divide | BinaryOperator::Modulo) {
+                    let name = match (*operator, ty.is_signed()) {
+                        (BinaryOperator::Divide, true) => "__div2i",
+                        (BinaryOperator::Divide, false) => "__div2u",
+                        (BinaryOperator::Modulo, true) => "__mod2i",
+                        _ => "__mod2u",
+                    };
+                    self.operations.push(Operation::Call {
+                        runtime: true,
+                        name: name.into(),
+                        arguments: vec![(3, left), (5, right)],
+                        result: Some(result),
+                    });
+                    return Some(result);
+                }
+                // Variable pair shifts have a different runtime ABI and are
+                // kept outside this graph until their lowering is measured.
+                if wide(ty) && shift && !matches!(right.source, Source::Constant(n) if n < 64) {
+                    return None;
+                }
                 self.operations.push(Operation::Binary {
                     result,
                     operator: *operator,
@@ -293,6 +369,7 @@ impl<'a> Graph<'a> {
         }
         let result = used.then(|| self.fresh(ty));
         self.operations.push(Operation::Call {
+            runtime: false,
             name: name.into(),
             arguments: inputs,
             result,
@@ -305,6 +382,108 @@ impl<'a> Graph<'a> {
         let value = self.expression(expression)?;
         let value = self.convert(value, ty)?;
         self.bindings.insert(name.into(), value);
+        Some(())
+    }
+
+    fn member_address(&mut self, base: &Expression, bytes: u32) -> Option<Value> {
+        let pointer = self.expression(base)?;
+        if !matches!(pointer.ty, Type::Pointer(_) | Type::StructPointer { .. }) {
+            return None;
+        }
+        let result = self.fresh(Type::Pointer(Pointee::UnsignedInt));
+        self.operations.push(Operation::Offset {
+            result,
+            pointer,
+            bytes,
+        });
+        Some(result)
+    }
+
+    fn statements(&mut self, statements: &[Statement]) -> Option<()> {
+        for statement in statements {
+            match statement {
+                Statement::Assign { name, value } => self.assign(name, value)?,
+                Statement::Expression(Expression::Assign { target, value }) => {
+                    let Expression::Variable(name) = target.as_ref() else {
+                        return None;
+                    };
+                    self.assign(name, value)?;
+                }
+                Statement::Expression(Expression::Call { name, arguments }) => {
+                    self.call(name, arguments, false)?;
+                }
+                Statement::Store { target, value } => {
+                    let value = self.expression(value)?;
+                    let (pointer, ty) = match target {
+                        Expression::Variable(name) => {
+                            (self.address(name)?, *self.globals.get(name)?)
+                        }
+                        Expression::Dereference { pointer } => {
+                            let pointer = self.expression(pointer)?;
+                            let Type::Pointer(pointee) = pointer.ty else {
+                                return None;
+                            };
+                            (pointer, pointee.element())
+                        }
+                        Expression::Member {
+                            base,
+                            offset,
+                            member_type,
+                            ..
+                        } => (self.member_address(base, *offset)?, *member_type),
+                        _ => return None,
+                    };
+                    let value = self.convert(value, ty)?;
+                    self.operations.push(Operation::Store { pointer, value });
+                }
+                Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => {
+                    let condition = self.expression(condition)?;
+                    if wide(condition.ty) {
+                        return None;
+                    }
+                    let before = self.bindings.clone();
+                    let outer = std::mem::take(&mut self.operations);
+                    self.statements(then_body)?;
+                    let mut then_ops = std::mem::take(&mut self.operations);
+                    let then_values = std::mem::replace(&mut self.bindings, before.clone());
+                    self.statements(else_body)?;
+                    let mut else_ops = std::mem::take(&mut self.operations);
+                    let else_values = std::mem::take(&mut self.bindings);
+                    // A merge is explicit in both predecessor blocks. Ignore
+                    // locals without a definition on both incoming paths.
+                    let mut names: Vec<_> = then_values
+                        .keys()
+                        .filter(|n| else_values.contains_key(*n))
+                        .cloned()
+                        .collect();
+                    names.sort();
+                    for name in names {
+                        let yes = then_values[&name];
+                        let no = else_values[&name];
+                        let value = if yes == no {
+                            yes
+                        } else {
+                            let result = self.fresh(self.types[&name]);
+                            then_ops.push(Operation::Copy { result, value: yes });
+                            else_ops.push(Operation::Copy { result, value: no });
+                            result
+                        };
+                        self.bindings.insert(name, value);
+                    }
+                    self.operations = outer;
+                    self.operations.push(Operation::Branch {
+                        condition,
+                        then_body: then_ops,
+                        else_body: else_ops,
+                    });
+                }
+                _ => return None,
+            }
+        }
         Some(())
     }
 
@@ -357,42 +536,15 @@ impl<'a> Graph<'a> {
             }
         }
         let mut returned = function.return_expression.as_ref();
-        for (index, statement) in function.statements.iter().enumerate() {
-            match statement {
-                Statement::Assign { name, value } => graph.assign(name, value)?,
-                Statement::Expression(Expression::Assign { target, value }) => {
-                    let Expression::Variable(name) = target.as_ref() else {
-                        return None;
-                    };
-                    graph.assign(name, value)?;
-                }
-                Statement::Expression(Expression::Call { name, arguments }) => {
-                    graph.call(name, arguments, false)?;
-                }
-                Statement::Store { target, value } => {
-                    let value = graph.expression(value)?;
-                    let (pointer, ty) = match target {
-                        Expression::Variable(name) => (graph.address(name)?, *globals.get(name)?),
-                        Expression::Dereference { pointer } => {
-                            let pointer = graph.expression(pointer)?;
-                            let Type::Pointer(pointee) = pointer.ty else {
-                                return None;
-                            };
-                            (pointer, pointee.element())
-                        }
-                        _ => return None,
-                    };
-                    let value = graph.convert(value, ty)?;
-                    graph.operations.push(Operation::Store { pointer, value });
-                }
-                Statement::Return(value)
-                    if index + 1 == function.statements.len() && returned.is_none() =>
-                {
-                    returned = value.as_ref()
-                }
-                _ => return None,
+        let mut statements = function.statements.as_slice();
+        if let Some((Statement::Return(value), prefix)) = statements.split_last() {
+            if returned.is_some() {
+                return None;
             }
+            returned = value.as_ref();
+            statements = prefix;
         }
+        graph.statements(statements)?;
         if function.return_type == Type::Void {
             if returned.is_some() {
                 return None;
@@ -432,10 +584,18 @@ impl Generator {
         // still owns survivors and their frame; do not reschedule split loads
         // across calls or separate a carry producer from its consumer.
         self.output.pre_scheduled = true;
-        if operations
-            .iter()
-            .any(|op| matches!(op, Operation::Call { .. }))
-        {
+        fn has_call(operations: &[Operation]) -> bool {
+            operations.iter().any(|op| match op {
+                Operation::Call { .. } => true,
+                Operation::Branch {
+                    then_body,
+                    else_body,
+                    ..
+                } => has_call(then_body) || has_call(else_body),
+                _ => false,
+            })
+        }
+        if has_call(&operations) {
             // Allocation grows this canonical frame and then applies the
             // generation's linkage-first/predecrement convention.
             self.non_leaf = true;
@@ -454,177 +614,7 @@ impl Generator {
                 },
             ]);
         }
-        for operation in operations {
-            match operation {
-                Operation::Parameter { result, high } => {
-                    let destination = self.wide_graph_destination(result, &mut registers);
-                    if let Some(d) = destination.high {
-                        self.output
-                            .instructions
-                            .push(Instruction::move_register(destination.low, high + 1));
-                        self.output
-                            .instructions
-                            .push(Instruction::move_register(d, high));
-                    } else {
-                        self.output
-                            .instructions
-                            .push(Instruction::move_register(destination.low, high));
-                    }
-                }
-                Operation::Address { result, symbol } => {
-                    let destination = self.wide_graph_destination(result, &mut registers).low;
-                    self.emit_address_high(destination, &symbol);
-                    self.record_relocation(RelocationKind::Addr16Lo, &symbol);
-                    self.output.instructions.push(Instruction::AddImmediate {
-                        d: destination,
-                        a: destination,
-                        immediate: 0,
-                    });
-                }
-                Operation::Load { result, pointer } => {
-                    let pointer = self.wide_graph_operand(pointer, &registers).low;
-                    let destination = self.wide_graph_destination(result, &mut registers);
-                    if let Some(high) = destination.high {
-                        self.output.instructions.push(Instruction::LoadWord {
-                            d: high,
-                            a: pointer,
-                            offset: 0,
-                        });
-                        self.output.instructions.push(Instruction::LoadWord {
-                            d: destination.low,
-                            a: pointer,
-                            offset: 4,
-                        });
-                    } else {
-                        self.output.instructions.push(Instruction::LoadWord {
-                            d: destination.low,
-                            a: pointer,
-                            offset: 0,
-                        });
-                    }
-                }
-                Operation::Store { pointer, value } => {
-                    let pointer = self.wide_graph_operand(pointer, &registers).low;
-                    let value = self.wide_graph_operand(value, &registers);
-                    self.output.instructions.push(Instruction::StoreWord {
-                        s: value.low,
-                        a: pointer,
-                        offset: if value.high.is_some() { 4 } else { 0 },
-                    });
-                    if let Some(high) = value.high {
-                        self.output.instructions.push(Instruction::StoreWord {
-                            s: high,
-                            a: pointer,
-                            offset: 0,
-                        });
-                    }
-                }
-                Operation::Convert { result, value } => {
-                    let source = self.wide_graph_operand(value, &registers);
-                    let destination = self.wide_graph_destination(result, &mut registers);
-                    self.output
-                        .instructions
-                        .push(Instruction::move_register(destination.low, source.low));
-                    if let Some(high) = destination.high {
-                        if value.ty.is_signed() {
-                            self.output.instructions.push(
-                                Instruction::ShiftRightAlgebraicImmediate {
-                                    a: high,
-                                    s: source.low,
-                                    shift: 31,
-                                },
-                            );
-                        } else {
-                            self.load_integer_constant(high, 0);
-                        }
-                    }
-                }
-                Operation::Binary {
-                    result,
-                    operator,
-                    left,
-                    right,
-                } => {
-                    let left = self.wide_graph_operand(left, &registers);
-                    let right = self.wide_graph_operand(right, &registers);
-                    let destination = self.wide_graph_destination(result, &mut registers);
-                    let instruction = |d, a, b, high| match operator {
-                        BinaryOperator::Add if high => Instruction::AddExtended { d, a, b },
-                        BinaryOperator::Add if destination.high.is_some() => {
-                            Instruction::AddCarrying { d, a, b }
-                        }
-                        BinaryOperator::Add => Instruction::Add { d, a, b },
-                        BinaryOperator::Subtract if high => {
-                            Instruction::SubtractFromExtended { d, a: b, b: a }
-                        }
-                        BinaryOperator::Subtract if destination.high.is_some() => {
-                            Instruction::SubtractFromCarrying { d, a: b, b: a }
-                        }
-                        BinaryOperator::Subtract => Instruction::SubtractFrom { d, a: b, b: a },
-                        BinaryOperator::BitAnd => Instruction::And { a: d, s: a, b },
-                        BinaryOperator::BitOr => Instruction::Or { a: d, s: a, b },
-                        BinaryOperator::BitXor => Instruction::Xor { a: d, s: a, b },
-                        _ => unreachable!(),
-                    };
-                    self.output.instructions.push(instruction(
-                        destination.low,
-                        left.low,
-                        right.low,
-                        false,
-                    ));
-                    if let Some(high) = destination.high {
-                        self.output.instructions.push(instruction(
-                            high,
-                            left.high.unwrap(),
-                            right.high.unwrap(),
-                            true,
-                        ));
-                    }
-                }
-                Operation::Call {
-                    name,
-                    arguments,
-                    result,
-                } => {
-                    // Materialize every operand before starting the ABI copy
-                    // group; constants must not clobber already filled inputs.
-                    let arguments: Vec<_> = arguments
-                        .into_iter()
-                        .map(|(high, value)| (high, self.wide_graph_operand(value, &registers)))
-                        .collect();
-                    for (high, value) in arguments.into_iter().rev() {
-                        if let Some(source) = value.high {
-                            self.output
-                                .instructions
-                                .push(Instruction::move_register(high + 1, value.low));
-                            self.output
-                                .instructions
-                                .push(Instruction::move_register(high, source));
-                        } else {
-                            self.output
-                                .instructions
-                                .push(Instruction::move_register(high, value.low));
-                        }
-                    }
-                    self.record_relocation(RelocationKind::Rel24, &name);
-                    self.output
-                        .instructions
-                        .push(Instruction::BranchAndLink { target: name });
-                    if let Some(result) = result {
-                        let destination = self.wide_graph_destination(result, &mut registers);
-                        self.output.instructions.push(Instruction::move_register(
-                            destination.low,
-                            if destination.high.is_some() { 4 } else { 3 },
-                        ));
-                        if let Some(high) = destination.high {
-                            self.output
-                                .instructions
-                                .push(Instruction::move_register(high, 3));
-                        }
-                    }
-                }
-            }
-        }
+        self.emit_wide_graph_operations(operations, &mut registers)?;
         if let Some(value) = returned {
             if let Source::Constant(bits) = value.source {
                 // The return ABI is the destination of a terminal constant;
@@ -650,6 +640,216 @@ impl Generator {
         Ok(true)
     }
 
+    fn emit_wide_graph_operations(
+        &mut self,
+        operations: Vec<Operation>,
+        registers: &mut [Option<Registers>],
+    ) -> Compilation<()> {
+        for operation in operations {
+            match operation {
+                Operation::Branch {
+                    condition,
+                    then_body,
+                    else_body,
+                } => {
+                    let condition = self.wide_graph_operand(condition, registers).low;
+                    let otherwise = self.fresh_label();
+                    let join = self.fresh_label();
+                    self.output
+                        .instructions
+                        .push(Instruction::CompareWordImmediate {
+                            a: condition,
+                            immediate: 0,
+                        });
+                    self.emit_branch_conditional_to(12, 2, otherwise);
+                    self.emit_wide_graph_operations(then_body, registers)?;
+                    self.emit_branch_to(join);
+                    self.bind_label(otherwise);
+                    self.emit_wide_graph_operations(else_body, registers)?;
+                    self.bind_label(join);
+                }
+                Operation::Copy { result, value } => {
+                    let source = self.wide_graph_operand(value, registers);
+                    let destination = self.wide_graph_destination(result, registers);
+                    self.output
+                        .instructions
+                        .push(Instruction::move_register(destination.low, source.low));
+                    if let Some(high) = destination.high {
+                        self.output
+                            .instructions
+                            .push(Instruction::move_register(high, source.high.unwrap()));
+                    }
+                }
+                Operation::Offset {
+                    result,
+                    pointer,
+                    bytes,
+                } => {
+                    let pointer = self.wide_graph_operand(pointer, registers).low;
+                    let destination = self.wide_graph_destination(result, registers).low;
+                    if let Ok(immediate) = i16::try_from(bytes) {
+                        self.output.instructions.push(Instruction::AddImmediate {
+                            d: destination,
+                            a: pointer,
+                            immediate,
+                        });
+                    } else {
+                        let offset = self.fresh_virtual_general();
+                        self.load_integer_constant(offset, i64::from(bytes));
+                        self.output.instructions.push(Instruction::Add {
+                            d: destination,
+                            a: pointer,
+                            b: offset,
+                        });
+                    }
+                }
+                Operation::Parameter { result, high } => {
+                    let destination = self.wide_graph_destination(result, registers);
+                    if let Some(d) = destination.high {
+                        self.output
+                            .instructions
+                            .push(Instruction::move_register(destination.low, high + 1));
+                        self.output
+                            .instructions
+                            .push(Instruction::move_register(d, high));
+                    } else {
+                        self.output
+                            .instructions
+                            .push(Instruction::move_register(destination.low, high));
+                    }
+                }
+                Operation::Address { result, symbol } => {
+                    let destination = self.wide_graph_destination(result, registers).low;
+                    self.emit_address_high(destination, &symbol);
+                    self.record_relocation(RelocationKind::Addr16Lo, &symbol);
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: destination,
+                        a: destination,
+                        immediate: 0,
+                    });
+                }
+                Operation::Load { result, pointer } => {
+                    let pointer = self.wide_graph_operand(pointer, registers).low;
+                    let destination = self.wide_graph_destination(result, registers);
+                    if let Some(high) = destination.high {
+                        self.output.instructions.push(Instruction::LoadWord {
+                            d: high,
+                            a: pointer,
+                            offset: 0,
+                        });
+                        self.output.instructions.push(Instruction::LoadWord {
+                            d: destination.low,
+                            a: pointer,
+                            offset: 4,
+                        });
+                    } else {
+                        self.output.instructions.push(Instruction::LoadWord {
+                            d: destination.low,
+                            a: pointer,
+                            offset: 0,
+                        });
+                    }
+                }
+                Operation::Store { pointer, value } => {
+                    let pointer = self.wide_graph_operand(pointer, registers).low;
+                    let value = self.wide_graph_operand(value, registers);
+                    self.output.instructions.push(Instruction::StoreWord {
+                        s: value.low,
+                        a: pointer,
+                        offset: if value.high.is_some() { 4 } else { 0 },
+                    });
+                    if let Some(high) = value.high {
+                        self.output.instructions.push(Instruction::StoreWord {
+                            s: high,
+                            a: pointer,
+                            offset: 0,
+                        });
+                    }
+                }
+                Operation::Convert { result, value } => {
+                    let source = self.wide_graph_operand(value, registers);
+                    let destination = self.wide_graph_destination(result, registers);
+                    self.output
+                        .instructions
+                        .push(Instruction::move_register(destination.low, source.low));
+                    if let Some(high) = destination.high {
+                        if value.ty.is_signed() {
+                            self.output.instructions.push(
+                                Instruction::ShiftRightAlgebraicImmediate {
+                                    a: high,
+                                    s: source.low,
+                                    shift: 31,
+                                },
+                            );
+                        } else {
+                            self.load_integer_constant(high, 0);
+                        }
+                    }
+                }
+                Operation::Binary {
+                    result,
+                    operator,
+                    left,
+                    right,
+                } => {
+                    self.emit_wide_graph_arithmetic(result, operator, left, right, registers)?;
+                }
+                Operation::Call {
+                    runtime,
+                    name,
+                    arguments,
+                    result,
+                } => {
+                    if runtime {
+                        self.call_parameter_types
+                            .insert(name.clone(), vec![Type::LongLong, Type::LongLong]);
+                        self.call_return_types.insert(name.clone(), Type::LongLong);
+                        if !self.compiler_generated_symbols.contains(&name) {
+                            self.compiler_generated_symbols.push(name.clone());
+                        }
+                    }
+                    // Materialize every operand before starting the ABI copy
+                    // group; constants must not clobber already filled inputs.
+                    let arguments: Vec<_> = arguments
+                        .into_iter()
+                        .map(|(high, value)| (high, self.wide_graph_operand(value, registers)))
+                        .collect();
+                    for (high, value) in arguments.into_iter().rev() {
+                        if let Some(source) = value.high {
+                            self.output
+                                .instructions
+                                .push(Instruction::move_register(high + 1, value.low));
+                            self.output
+                                .instructions
+                                .push(Instruction::move_register(high, source));
+                        } else {
+                            self.output
+                                .instructions
+                                .push(Instruction::move_register(high, value.low));
+                        }
+                    }
+                    self.record_relocation(RelocationKind::Rel24, &name);
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchAndLink { target: name });
+                    if let Some(result) = result {
+                        let destination = self.wide_graph_destination(result, registers);
+                        self.output.instructions.push(Instruction::move_register(
+                            destination.low,
+                            if destination.high.is_some() { 4 } else { 3 },
+                        ));
+                        if let Some(high) = destination.high {
+                            self.output
+                                .instructions
+                                .push(Instruction::move_register(high, 3));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn wide_graph_destination(
         &mut self,
         value: Value,
@@ -658,6 +858,9 @@ impl Generator {
         let Source::Register(id) = value.source else {
             unreachable!()
         };
+        if let Some(destination) = registers[id] {
+            return destination;
+        }
         let destination = Registers {
             low: self.fresh_virtual_general(),
             high: wide(value.ty).then(|| self.fresh_virtual_general()),

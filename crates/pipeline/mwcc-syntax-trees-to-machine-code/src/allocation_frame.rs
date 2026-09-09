@@ -289,6 +289,16 @@ impl Generator {
                 },
             );
         }
+        if restored_stack_link_reload {
+            // A body branch can enter the shared epilogue at its stack
+            // restore. That edge must execute the newly inserted GPR loads
+            // too; ordinary insertion preserves the old instruction target.
+            crate::retarget_instruction_destinations(
+                self,
+                restore_insertion + required.len(),
+                restore_insertion,
+            );
+        }
         self.callee_saved = required;
         Ok(())
     }

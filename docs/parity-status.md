@@ -4,13 +4,71 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, scoped integer values and Dolphin calendar conversion (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, complete Dolphin time conversion and conditional wide values (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `7187f7a8c7d5bf0b4d193b0f30a327a35ca1dc6a4517128ba45ba35b5a723ed6:64ab8feefe483434605d5d7ddfa351dc8ed4953c0a4ba9c641764b98e1b29409`
+Latest measured compiler + harness fingerprint: `70e10a37547244f3b576d0121aa11149bb6d15390c18c2afbd142462e262b22d:2d92205037fa15cb551aa42c519bc20daf8ab9e519907dbab69653647ed5f64b`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Complete Dolphin time conversion and conditional wide values, 2026-09-09
+
+The typed word/pair graph now represents conditional blocks and explicit merge
+copies on both predecessor edges. It supports struct-pointer parameters,
+word/pair member loads and stores, signed/unsigned pair comparisons, full low
+64-bit multiplication, and constant pair shifts. Arithmetic selection and
+constant folding live in a separate module. Scalar divisions and shifts reuse
+the existing integer selector; wide division/remainder use the measured
+`__div2i`, `__div2u`, `__mod2i` and `__mod2u` runtime ABI, registered explicitly
+with call liveness and symbol discovery. Variable pair shifts, loops and early
+returns within branches remain outside this graph.
+
+The original, complete Battle for Bikini Bottom `os/OSTime.c` now compiles in
+**90/90** candidate configurations: 15 releases × six optimization/scheduling
+modes, up from **0/90**. All **92,160** candidate calendar cases pass, including
+negative ticks, two timer frequencies, subsecond/day boundaries and dates across
+an 800-year interval. Tests execute the original DOL division/remainder helpers
+and check every calendar field, adjacent memory and saved registers. The
+**72** reference configurations accepting the unmodified project headers pass
+all **73,728** corresponding cases. The two GC/3.0 releases and Wii retain their
+existing header diagnostics. The two asm readers account for **144/432** exact
+functions in accepted reference objects; the complete calendar conversion is
+not byte-exact yet.
+
+New samples **2284–2285** exercise pair arithmetic, signed and unsigned ordering,
+cross-word shifts, normalized remainders, calendar-field stores, nested merges
+and values retained across calls. Their **180/180** complete units compile,
+up from **0**, with **240/1,170** exact functions: 60 configurations each of the
+four quotient/remainder functions. All **599,040** candidate native cases pass.
+References run the same cases, with **3,584** original GC/1.1p1 O0 source/ABI
+failures across seven functions. For example, `signed_quotient` stores both
+incoming pairs at the same SP+8/SP+12 locations, overwriting saved LR as well as
+the first operand. These are recorded candidate fidelity gaps, not passing
+reference-equivalence cases; disassembly is retained in
+`target/wide-calendar-oracle-alias.dis`.
+
+Native testing also found and fixed a candidate frame-reconciliation bug:
+when saved-GPR restores are inserted before a shared stack-restoration epilogue,
+branches entering that epilogue must be retargeted to the first inserted load.
+Without that correction, GC/1.1p1 conditional calls skipped all restores.
+The recent panel preserves **1,084** exact functions across **690** objects;
+**570** objects are identical and only conditional forwarding and four wide
+boolean functions change in the other **120**. Their **36,480** candidate and
+reference cases pass, retaining **64** previously modeled reference stack-alias
+cases in the conditional-forwarding harness.
+
+The established **2,865**-case panel remains at **2,589** identical objects and
+**276** identical diagnostics. The **302**-unit Dolphin frontier improves
+**191 → 193** compiled units; the two complete `OSTime.c` builds are the gains
+and all 191 previously compiled objects remain identical. This is still a
+partial project frontier, not a complete build or project-wide parity claim.
+**2,489 tests** pass (352 app, 14 lexer, 1,710 backend, 413 parser), retaining the
+12 verified baseline exclusions. In total **727,680 candidate** executions pass;
+references cover **709,248** cases with the failures and modeled aliases above.
+`target/wide-calendar-final-verification.json` binds fingerprints, the original
+source hash, result artifacts and **762** native object entries. All reused
+execution results are bound to byte-identical current output objects.
 
 ## Scoped integer values and Dolphin calendar conversion, 2026-09-09
 
