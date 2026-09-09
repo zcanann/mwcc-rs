@@ -2514,6 +2514,11 @@ impl Parser {
                 })?;
                 layout.source_tag = Some(tag.clone());
                 let qualified = self.qualify_cxx_class_name(&tag);
+                let object_tag = if self.cplusplus {
+                    qualified.clone()
+                } else {
+                    tag.clone()
+                };
                 if self.cplusplus && self.cxx_classes.contains_key(&qualified) {
                     // The C++ declaration pass already recovered vptrs, bases,
                     // and special members. The generic C aggregate parser still
@@ -2521,6 +2526,9 @@ impl Parser {
                     // must not overwrite that richer layout.
                     self.struct_typedefs.insert(tag.clone(), qualified);
                 } else {
+                    // Preserve the qualified layout even when the C++ declaration
+                    // pass did not recover this definition with trailing objects.
+                    self.structs.insert(object_tag.clone(), layout.clone());
                     self.structs.insert(tag.clone(), layout);
                 }
                 if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
@@ -2539,19 +2547,27 @@ impl Parser {
                     self.advance();
                     return Ok(());
                 }
-                let struct_type = self.struct_value_type(&tag).ok_or_else(|| {
+                let struct_type = self.struct_value_type(&object_tag).ok_or_else(|| {
                     Diagnostic::error(format!("struct '{tag}' value layout is not declared"))
                 })?;
                 loop {
-                    let name = self.parse_identifier()?;
+                    let source_name = self.parse_identifier()?;
+                    let name = if self.cplusplus {
+                        self.register_cxx_data_object(&source_name)?
+                    } else {
+                        source_name.clone()
+                    };
                     // Only a scalar, uninitialized struct global is in the subset; an
                     // array or initializer defers honestly (no miscompile).
                     if !matches!(self.peek(), Token::Semicolon | Token::Comma) {
                         return Err(Diagnostic::error("an initialized or array struct-definition global is not supported yet (roadmap)"));
                     }
-                    self.variable_structs.insert(name.clone(), tag.clone());
+                    // The following declarator is a file-scope object. Its
+                    // identity must survive the per-function local reset.
+                    self.global_structs.insert(source_name, object_tag.clone());
+                    self.global_structs.insert(name.clone(), object_tag.clone());
                     globals.push(GlobalDeclaration {
-                        is_weak: false,
+                        is_weak,
                         force_active: self.force_active,
                         non_static_functions_before: functions
                             .iter()
@@ -2563,11 +2579,11 @@ impl Parser {
                         name,
                         is_extern,
                         is_static,
-                        is_volatile: false,
+                        is_volatile: declaration_volatile,
                         array_length: None,
                         array_length_inferred: false,
                         initializer: None,
-                        is_const: false,
+                        is_const: declaration_const,
                         pointer_pointee_const: false,
                         address_initializer: None,
                         data_bytes: None,

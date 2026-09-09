@@ -12302,6 +12302,65 @@ blr\n\
     }
 
     #[test]
+    fn keeps_struct_definition_objects_and_layouts_in_their_namespaces() {
+        let source = r#"
+            namespace A { struct State { unsigned head, tail; } state; }
+            namespace B { struct State { unsigned pad, head, tail; } state; }
+            extern "C" unsigned read_a(void) { return A::state.head; }
+            extern "C" unsigned read_b(void) { return B::state.head; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        use mwcc_syntax_trees::{Expression, Type};
+        assert_eq!(unit.globals[0].name, "state__1A");
+        assert_eq!(unit.globals[0].declared_type, Type::Struct { size: 8, align: 4 });
+        assert_eq!(unit.globals[1].name, "state__1B");
+        assert_eq!(unit.globals[1].declared_type, Type::Struct { size: 12, align: 4 });
+        assert!(matches!(unit.functions[0].return_expression,
+            Some(Expression::Member { offset: 0, .. })));
+        assert!(matches!(unit.functions[1].return_expression,
+            Some(Expression::Member { offset: 4, .. })));
+    }
+
+    #[test]
+    fn retains_storage_and_qualifiers_after_struct_definitions() {
+        let source = r#"
+            static volatile struct Registers { unsigned value; } first, second;
+            const struct Constants { unsigned value; } constants;
+            __declspec(weak) struct Weak { unsigned value; } weak_object;
+            unsigned first_read(void) { return first.value; }
+            unsigned second_read(void) { return second.value; }
+            unsigned const_read(void) { return constants.value; }
+            unsigned weak_read(void) { return weak_object.value; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions.len(), 4);
+        assert_eq!(unit.globals.len(), 4);
+        for global in &unit.globals[..2] {
+            assert!(global.is_static);
+            assert!(global.is_volatile);
+            assert!(!global.is_const);
+            assert!(!global.is_weak);
+        }
+        assert!(unit.globals[2].is_const);
+        assert!(!unit.globals[2].is_volatile);
+        assert!(unit.globals[3].is_weak);
+    }
+
+    #[test]
     fn retains_volatile_on_file_scope_objects() {
         let source = "static volatile int status; int plain;";
         let unit = parse_translation_unit(

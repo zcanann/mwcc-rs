@@ -4,13 +4,67 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, absolute assembly branches and complete Dolphin OS.c compilation (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, struct-definition globals and Dolphin alarm initialization (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `f4ac77008e58c4b2b123e3153faa7598239889da673835445da05e223d00f38a:95eea7fd694526702aacb11121b6468503c11a1c358e41a3965d374b1be6c0ad`
+Latest measured compiler + harness fingerprint: `0ee7f70e1a88390fd8959d9c4bae73309869b78ff360125908cf6aa231576719:0c1e823c838951488bc9ff0814a9dc4603f5561483d4a7a4add1d18cf97a9675`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Struct-definition globals and Dolphin alarm initialization, 2026-09-09
+
+File-scope objects declared immediately after a struct definition now retain
+aggregate identity across function boundaries. This fixes the declaration form
+used by `AlarmQueue` in Battle for Bikini Bottom's unchanged `os/OSAlarm.c`.
+The parser registers these objects with global metadata, propagates storage
+qualifiers and weak binding, and uses C++ data-object naming. Namespace layouts
+also retain qualified identities when the preliminary C++ declaration pass did
+not recover the definition: two namespaces' `State` objects can have different
+member offsets without one overwriting the other's layout. Rich layouts already
+recovered by the C++ pass remain authoritative.
+
+Samples **2297–2299** compile in **270/270** candidate configurations, up from
+**0**, with **1,232/1,350** exact function instruction/relocation matches against
+all 270 compiling references. The namespace sample matches **360/360** functions;
+the volatile/weak sample matches **270/270**. All **172,800 candidate and reference**
+executions pass field access, address-taking, queue updates, local shadowing,
+namespace separation and repeated volatile-write checks. The parser tests also
+check const qualification; emitting an uninitialized const aggregate remains
+unsupported. Repeated volatile member reads in one arithmetic expression still
+reach an existing backend limitation.
+
+The exact original `OSAlarm.c` prefix through **OSInitAlarm** and **OSCreateAlarm**,
+plus a declared wrapper calling its original inline **SetTimer**, compiles in
+**90/90** candidate configurations, up from **0**. **72** references accept the
+project headers, with **60/216** exact function matches. All **69,120 candidate**
+executions pass handler comparison/installation, queue and alarm-field updates,
+64-bit timer subtraction and saturation, service-call order and ABI checks.
+External OS services are modeled. Of **55,296 reference** executions, **256**
+GC/1.1p1 O0 timer calls overwrite saved r30 with the incoming alarm pointer;
+the candidate preserves r30. This is a remaining original-behavior fidelity gap,
+not a passing equivalence result. The disassembly is retained in
+`target/aggregate-globals-reference-frame.dis`.
+
+The full alarm unit now gets past `AlarmQueue` member resolution and stops at
+unsupported wide `InsertAlarm`; this checkpoint does **not** claim full alarm
+compilation. The Dolphin frontier remains **197/302**, with every previously
+compiling object unchanged. The original **OSExceptionInit** in both full OS.c
+objects additionally passes **512 candidate/reference** execution cases covering
+vector copying, debugger skips and patches, integrator installation, handler
+tables, restored template opcodes and ABI preservation. The harness executes the
+original save/restore-register helpers and models external services. These checks
+extend the previous OSInit boot-body validation; they do not establish hardware
+boot parity.
+
+The **2,865** established regression cases retain **2,589** identical objects and
+**276** identical diagnostics; all **1,860** recent objects are identical.
+**2,691 tests** pass, retaining the same 12 verified baseline exclusions and eight
+already-ignored virtual-register tests. Total native coverage for this checkpoint
+is **242,432 candidate** and **228,608 reference** executions, with the 256 reference
+ABI failures above. `target/aggregate-globals-final-verification.json` binds the
+compiler/harness fingerprints, original sources, exact extraction, execution
+objects and regression artifacts (**10,287** object bindings).
 
 ## Absolute assembly branches and complete Dolphin OS.c, 2026-09-09
 
