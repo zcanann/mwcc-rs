@@ -4,15 +4,77 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, load-field insertion and implicit return liveness (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, declared call inputs and Dolphin interrupt state (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `9bdb4a997d9e9460be021c15d53dc8110136c8ab820c5be06a77b74585397833:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `ef90ea6aae1d069598ddf120e8a9b1e78bfbbdd98a41c6531c19542860ac25cf:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
 
+## Declared call inputs and Dolphin interrupt state, 2026-09-08
+
+Final allocation now includes explicit ABI uses for declared direct-call
+parameters. This keeps incoming parameters and forwarded call results live even
+when argument setup emits no copy. The declaration adapter resolves call targets
+after scheduling, avoiding stale instruction indices. It accounts for separate
+GPR/FPR cursors, aligned wide-integer pairs, aggregate-copy pointers, hidden
+result pointers, and register overflow. Variadic declarations contribute their
+fixed prefix; unresolved inputs retain the existing materialization inference.
+Indirect and unprototyped calls still need fuller call-site type metadata.
+
+This fixes interrupt-state corruption in the unchanged Battle for Bikini Bottom
+Dolphin sources: `__DVDPushWaitingQueue`, `DSPAssertTask`, and
+`GXDisableBreakPt`. Address and load temporaries had reused r3 while a preceding
+`OSDisableInterrupts` result remained an implicit restore-call argument. All
+three complete translation units compile on **15/15 candidate versions**.
+**12/15 references** accept each unit under the project flags; the two GC/3.0
+releases reject a header's parameter-scope struct declaration, and Wii rejects
+redeclared header types. These configurations retain independent candidate
+execution checks without claiming reference equivalence.
+
+Across fifteen versions, **1,920 queue sequences** pass clear, push, check,
+valid/invalid dequeue, and FIFO/priority pop behavior with interrupt restoration.
+The baseline fails **1,800** sequences. **3,840 DSP/GX scenarios** pass return and
+memory results, nested interrupt traces, hardware read/write traces, and ABI
+checks, fixing **2,070** baseline failures. The twelve accepted references pass
+the corresponding **4,608 project scenarios**. Exact function counts across all
+accepted units remain **75/396**; the three corrected functions still require
+register-placement and scheduling work for byte parity.
+
+Canary **2276** covers five functions across six modes and fifteen builds.
+All **90** candidate/reference units compile; exact matches remain **24/450**,
+with no losses. **28,800 candidate scenarios** pass, fixing **17,280** baseline
+call-input failures. Reference execution records a remaining fidelity gap:
+GC/1.1p1 O0's `forward_parameter` aliases parameter spills and saved r30 at SP+8,
+passes priority instead of state, and restores r30 from that priority. All **64**
+reference cases exhibit that specific behavior. The candidate currently preserves
+the source value and saved register in this shape; the existing version-specific
+source-home model does not cover it yet. The native harness distinguishes the
+observed reference bug from the independent candidate result.
+
+Canary **2277** retains the related wide-result work-queue case. Both baseline
+and candidate defer it on **30/30 O4/O0 combinations**, while every reference
+compiles it. This is an explicit remaining compilation gap, not a passing case.
+
+All **2,589** successful objects and **276** diagnostics in the existing canary
+panel remain identical. The 302-unit Dolphin probe retains **191** compiled
+units; only the three corrected units change on its two versions, preserving
+**185** other objects. Fresh compilation reproduces all **105** preceding
+MD5/packing/retained-base objects, so their existing native evidence—including
+**960 MD5 digests**—remains bound to the same bytes.
+
+Validation passes **2,169 tests** (351 app, 1,699 backend, 119 allocator), with
+the established nine app and one backend exclusions and eight ignored allocator
+search tests. `target/forwarded-call-final-verification.json` binds the compiler,
+harness, sources, comparison objects, and **501 native object entries**.
+Project measurements are in `target/forwarded-call-projects/`; new canary records
+are in `target/call-input-canaries/results.json` and `execution-results.json`.
+This checkpoint makes no full corpus or whole-project matching claim.
+
 ## Load-field insertion and implicit return liveness, 2026-09-08
+
+Compiler fingerprint: `9bdb4a997d9e9460be021c15d53dc8110136c8ab820c5be06a77b74585397833`.
 
 A separate expression owner proves which bits unsigned loads, integer casts,
 constant shifts, masks, and OR trees can set. Disjoint fields use `rlwimi`

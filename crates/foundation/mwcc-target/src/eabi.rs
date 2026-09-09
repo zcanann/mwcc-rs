@@ -15,6 +15,8 @@ impl Eabi {
     pub const LAST_GENERAL_ARGUMENT: u8 = 10;
     /// First float argument register (f1).
     pub const FIRST_FLOAT_ARGUMENT: u8 = 1;
+    /// Last float argument register (f8).
+    pub const LAST_FLOAT_ARGUMENT: u8 = 8;
 
     /// Caller-SP offset for a word argument beyond r3..r10.
     pub fn general_stack_offset(argument_register: u8) -> Option<i16> {

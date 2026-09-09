@@ -17,6 +17,7 @@ mod allocation_frame;
 mod incoming_parameters;
 mod arithmetic;
 mod load_field_merge;
+mod call_liveness;
 mod asm;
 mod automatic_rodata;
 mod body;
@@ -1612,11 +1613,13 @@ fn allocate_registers(generator: &mut Generator, return_type: mwcc_syntax_trees:
         Type::LongLong | Type::UnsignedLongLong => &[(Class::General, 3), (Class::General, 4)],
         _ => &[(Class::General, 3)],
     };
-    let mut liveness = mwcc_vreg::analyze_with_jump_tables_and_return_registers(
+    let call_inputs = generator.declared_call_inputs();
+    let mut liveness = mwcc_vreg::analyze_with_jump_tables_and_abi_uses(
         &generator.output.instructions,
         &generator.output.relocations,
         &generator.output.jump_tables,
         return_registers,
+        &call_inputs,
     );
     if liveness.intervals.is_empty() {
         return Ok(Vec::new()); // no virtuals — selection chose physical registers directly

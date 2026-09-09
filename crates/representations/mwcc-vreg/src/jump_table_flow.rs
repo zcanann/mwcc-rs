@@ -28,6 +28,18 @@ pub fn analyze_with_jump_tables_and_return_registers(
     crate::analyze_with_return_registers(instructions, &successors, return_registers)
 }
 
+/// Combine recovered indirect CFG edges with explicit ABI input uses.
+pub fn analyze_with_jump_tables_and_abi_uses(
+    instructions: &[Instruction],
+    relocations: &[Relocation],
+    tables: &[JumpTable],
+    return_registers: &[(Class, u8)],
+    instruction_uses: &HashMap<usize, Vec<(Class, u8)>>,
+) -> Liveness {
+    let successors = jump_table_successors(instructions, relocations, tables);
+    crate::analyze_with_abi_uses(instructions, &successors, return_registers, instruction_uses)
+}
+
 fn jump_table_successors(
     instructions: &[Instruction],
     relocations: &[Relocation],

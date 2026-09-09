@@ -64,6 +64,18 @@ pub fn analyze_with_return_registers(
     indirect_successors: &HashMap<usize, Vec<usize>>,
     return_registers: &[(Class, u8)],
 ) -> Liveness {
+    analyze_with_abi_uses(instructions, indirect_successors, return_registers, &HashMap::new())
+}
+
+/// Signature- and call-site-dependent ABI uses, supplied separately from the
+/// explicit instruction fields. An entry may describe a call's fixed prefix;
+/// the existing materialized-argument inference covers unresolved inputs.
+pub fn analyze_with_abi_uses(
+    instructions: &[Instruction],
+    indirect_successors: &HashMap<usize, Vec<usize>>,
+    return_registers: &[(Class, u8)],
+    instruction_uses: &HashMap<usize, Vec<(Class, u8)>>,
+) -> Liveness {
     let nonzero_bases: HashSet<_> = instructions
         .iter()
         .filter_map(crate::description::nonzero_base)
@@ -84,6 +96,15 @@ pub fn analyze_with_return_registers(
         let mut operands = register_operands(instruction);
         if matches!(instruction, Instruction::BranchToLinkRegister | Instruction::BranchConditionalToLinkRegister { .. }) {
             operands.extend(return_registers.iter().map(|&(class, register)| {
+                crate::description::RegisterOperand {
+                    role: RegisterRole::Use,
+                    class,
+                    register: u32::from(register),
+                }
+            }));
+        }
+        if let Some(inputs) = instruction_uses.get(&index) {
+            operands.extend(inputs.iter().map(|&(class, register)| {
                 crate::description::RegisterOperand {
                     role: RegisterRole::Use,
                     class,
@@ -348,6 +369,34 @@ mod tests {
     /// A virtual register's field value (id 0 -> VIRTUAL_BASE).
     fn v(id: u32) -> RegisterField {
         Reg::general(id).to_field()
+    }
+
+    #[test]
+    fn a_forwarded_call_result_is_live_without_an_argument_copy() {
+        for class in [Class::General, Class::Float] {
+            let result = if class == Class::General { 3 } else { 1 };
+            let mut stream = vec![Instruction::BranchAndLink { target: "produce".into() }];
+            stream.extend(match class {
+                Class::General => vec![
+                    Instruction::load_immediate(v(0), 7),
+                    Instruction::StoreWord { s: v(0), a: 5, offset: 0 },
+                ],
+                Class::Float => vec![
+                    Instruction::FloatMove { d: v(0), b: 2 },
+                    Instruction::StoreFloatDouble { s: v(0), a: 5, offset: 0 },
+                ],
+            });
+            stream.push(Instruction::BranchAndLink { target: "consume".into() });
+            stream.push(Instruction::BranchToLinkRegister);
+            for inputs in [HashMap::new(), HashMap::from([(3, vec![(class, result)])])] {
+                let mut live = analyze_with_abi_uses(&stream, &HashMap::new(), &[], &inputs);
+                live.intervals[0].prefer = Some(result);
+                let allocation = LinearScan.allocate(
+                    &live.intervals, &live.pinned, &live.calls, &RegisterConstraints::gekko(),
+                ).unwrap();
+                assert_eq!(allocation.physical(live.intervals[0].vreg) == Some(result), inputs.is_empty());
+            }
+        }
     }
 
     #[test]

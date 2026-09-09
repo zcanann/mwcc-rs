@@ -8,6 +8,29 @@ learned about that allocator empirically (every rule is backed by oracle diffs),
 the IR we will introduce to give those decisions a home, and a migration that
 keeps all builds byte-exact at every step.
 
+## Declared call input uses, 2026-09-08
+
+`analyze_with_abi_uses` accepts instruction-indexed physical input uses in
+addition to the function's return registers. Uses are processed before call
+clobbers, so a prior call result or incoming parameter remains live through its
+consuming call even without a materialization copy. Ordinary CFG slots and
+redefinition boundaries remain the interference model.
+
+The backend's `call_liveness` adapter resolves declarations against named calls
+after scheduling. It supplies the fixed prototype's ABI registers: independent
+GPR/FPR cursors, odd-GPR alignment for wide integers, one address for each
+aggregate copy, and an initial hidden pointer for memory results. Stack arguments
+add no branch register use. This adapter is separate from allocation policy and
+can be extended with actual call-site facts for indirect, unprototyped, and
+variadic-tail arguments. Existing materialized-input inference remains available
+for those unresolved inputs.
+
+The change fixes the previously recorded DVD queue push interrupt-state bug, as
+well as DSP task assertion's nested restore and GX breakpoint disable. Tests
+cover forwarding an unmaterialized result in either register class, mixed and
+wide argument layout, hidden results, and overflow. Native checks validate all
+three real project paths across fifteen candidate versions.
+
 ## Implicit ABI return uses, 2026-09-08
 
 Final allocation now passes the function's result registers into liveness.
@@ -26,10 +49,9 @@ clobbering an otherwise implicit result, while preserving dead-value reuse.
 
 The regression was exposed by storing packed bytes before returning the original
 pointer. Native checks also verify fixes in Dolphin DVD queue pop/check and
-endian unpacking. Implicit call arguments still have a separate coverage gap:
-DVD queue push retains an interrupt-state result in r3 without an explicit move
-before its later restore call, allowing intervening address work to overwrite
-it. Extending precise call-site ABI use metadata is the next related task.
+endian unpacking. This checkpoint also exposed the implicit call-input gap in DVD queue push,
+addressed by the subsequent declared-call-input work above. Indirect calls and
+other inputs lacking type facts remain a related extension.
 
 ## Wide selected register fields, 2026-09-08
 
