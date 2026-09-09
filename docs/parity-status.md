@@ -4,13 +4,79 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, computed-word addends and identity division (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, GC/1.3 shared word promotions (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `a8b152aaf79a9ce45fac20fc1d42cc0b733abf5344d6cf9baa3c1bd801ae760c:120008741161debfcfa207cf02ecab49347d3f4860aa04b1e882f5eca2c6333c`
+Latest measured compiler + harness fingerprint: `7b8e3a4426b019565a127388ed0638567503b7a63880033cb87e21e9ec03aced:45bd6a7ae346982d484e293705afbc2a62cce569c4726db4c5f68cb0bb60d4a1`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GC/1.3 shared word promotions, 2026-09-09
+
+The remaining **800 GC/1.3 execution mismatches** in the prior addend and
+address corpora are closed: 625 repeated and mixed updates, plus 175
+`saved_base` cases. At O2 and later, distinct conversions of the same signed
+word can share a materialized wide value while the first arithmetic use loses
+its sign word. A single named wide conversion, conversions in one source
+expression, and explicit word casts have different reference behavior.
+
+A separate sharing analysis records source-expression boundaries and cast
+provenance. It uses control-flow dominance and cycle checks to distinguish an
+unconditional first conversion from one inside a branch or loop. Value
+numbering follows copies and constant pointer displacements, invalidating
+mutable register homes at joins. Repeated loads share only in functions with
+no stores or calls and only through proven nonvolatile pointer parameters.
+The parser conservatively invalidates ordinary-pointer facts for functions
+containing volatile pointer casts, including typedef and C++ named casts.
+Native volatile checks supply a different value on each read and verify read
+counts as well as returned values and memory.
+
+The new **43-function** `2316_wide_shared_word_promotions.c` covers nested and
+separate expressions, named conversions, stores, mixed arithmetic, stable and
+moving loads, branches, loops, and volatile accesses. All **105 configurations**
+compile in the baseline, candidate, and reference: 15 builds across seven
+optimization/scheduling modes. Exact matching remains **0/4,515 functions**;
+this checkpoint improves behavior without gaining full-function byte matches.
+
+| Fresh native panel | Cases per compiler | Baseline mismatches | Candidate mismatches | Reference mismatches |
+| --- | ---: | ---: | ---: | ---: |
+| New sharing corpus | 96,320 | 4,168 | 33 | 0 |
+| Prior addend corpus, changed GC/1.3 modes | 15,360 | 625 | 0 | 0 |
+| Prior address corpus, changed GC/1.3 modes | 3,200 | 175 | 0 | 0 |
+| Total | 114,880 | 4,968 | 33 | 0 |
+
+The **33 remaining candidate mismatches** are negative inputs to GC/1.3 O1
+`nested_twice`, whose source is `return u+n+n;`. The reference drops both sign
+words at O1, while the candidate drops only the second. O0 and O2-and-later
+behavior match. This is the next promotion gap; the table does not count it as
+a pass. The new native panel covers all 15 builds at O0/O4 and the other five
+GC/1.3 modes, checking edge and seeded random values, full output memory,
+stack restoration, and callee-saved registers.
+
+Of **3,735 recent configurations**, 3,725 objects remain unchanged. Only the
+five O2-and-later GC/1.3 modes change for each prior corpus, without exact-match
+losses. Focused regressions preserve **2,589 objects and 276 diagnostics**.
+All **90 THP audio objects** remain unchanged, retaining **142/270 exact
+functions**; the Dolphin frontier remains **201/302**, with all compiling
+objects unchanged. **2,707 Rust tests pass**, with the same 12 documented
+exclusions and eight ignored allocator tests. Reference project files remain
+unchanged. No full corpus run was performed.
+
+Prior execution evidence for **541,440 candidate cases** is reused only after
+checking exact object hashes. The previously recorded **512 GC/1.1p1 O0
+reference frame failures** remain outside this fix. The address corpus's
+volatile read order is unchanged, including its known reference differences.
+
+Evidence: `target/shared-promotion-{canaries,recent,regressions,project,frontier}/results.json`,
+`target/shared-promotion-{native,prior-native,address-native}.json`,
+`target/shared-promotion-policy-gc13.json`, `target/shared-promotion-model.json`,
+`target/shared-promotion-verified-tests.log`, and
+`target/shared-promotion-final-verification.json`. The final manifest binds
+**13,958 object artifacts**, fresh and reused execution evidence, and unchanged
+reference-project hashes.
+
+Compiler/harness fingerprint: `7b8e3a4426b019565a127388ed0638567503b7a63880033cb87e21e9ec03aced:45bd6a7ae346982d484e293705afbc2a62cce569c4726db4c5f68cb0bb60d4a1`.
 
 ## Computed-word addends and identity division, 2026-09-09
 

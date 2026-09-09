@@ -227,6 +227,19 @@ pub(crate) fn truncate_to_integer(value: i64, integer_type: Type) -> i64 {
 }
 
 impl Parser {
+    // Executable pointer types erase qualifiers. Until each memory expression
+    // carries them, a volatile pointer cast invalidates ordinary-pointer facts
+    // for the containing function, including locals declared after the cast.
+    fn retain_pointer_cast_qualification(&mut self, target_type: Type) {
+        if matches!(target_type, Type::Pointer(_) | Type::StructPointer { .. })
+            && (self.last_type_was_volatile || self.last_struct_tag.as_deref()
+                .is_some_and(|tag| self.aggregate_has_volatile_fields(tag))) {
+            if let Some(function) = &self.current_debug_function_name {
+                self.volatile_pointer_cast_functions.insert(function.clone());
+            }
+        }
+    }
+
     fn sizeof_type_bytes(value_type: Type) -> u32 {
         match value_type {
             Type::Struct { size, .. } => size,
@@ -780,6 +793,7 @@ impl Parser {
                     || starts_scalar_typedef_conversion)
             {
                 let target_type = self.parse_type()?;
+                self.retain_pointer_cast_qualification(target_type);
                 self.expect(Token::ParenOpen)?;
                 // `T()` value-initializes a scalar. Represent it as the ordinary conversion
                 // of integer zero so the existing cast lowering chooses the target lane.
@@ -797,6 +811,7 @@ impl Parser {
                 self.advance();
                 self.expect(Token::Less)?;
                 let target_type = self.parse_type()?;
+                self.retain_pointer_cast_qualification(target_type);
                 if matches!(target_type, Type::StructPointer { .. }) {
                     explicit_cast_struct_tag = self.last_struct_tag.take();
                 }
@@ -1270,6 +1285,7 @@ impl Parser {
                     // `(type) expr` is a cast; otherwise a parenthesised expression.
                     if self.starts_parenthesized_cast() {
                         let mut target_type = self.parse_type()?;
+                        self.retain_pointer_cast_qualification(target_type);
                         // `parse_type` retains the aggregate base even when it
                         // collapses `Struct**` to the executable word-pointer
                         // representation. Capture it before any operand type

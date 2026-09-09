@@ -77,7 +77,7 @@ fn merged_attribute_alignment(before: Option<u16>, after: Option<u16>) -> u32 {
 }
 
 impl Parser {
-    pub(super) fn aggregate_has_volatile_fields(&self, tag: &str) -> bool {
+    pub(crate) fn aggregate_has_volatile_fields(&self, tag: &str) -> bool {
         fn visit(parser: &Parser, tag: &str, seen: &mut std::collections::HashSet<String>) -> bool {
             if !seen.insert(tag.to_owned()) {
                 return false;

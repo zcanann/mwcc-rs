@@ -22,6 +22,8 @@ mod demand;
 mod subtrahend;
 #[path = "wide_value_graph/promotion.rs"]
 mod promotion;
+#[path = "wide_value_graph/sharing.rs"]
+mod sharing;
 #[path = "wide_value_graph/addend.rs"]
 mod addend;
 use condition::Condition;
@@ -138,6 +140,9 @@ struct Graph<'a> {
     operations: Vec<Operation>,
     values: usize,
     signed_word_promotions: HashMap<usize, usize>,
+    promotion_sites: sharing::Sites,
+    shared_promotions: sharing::Sharing,
+    nonvolatile_pointer_values: std::collections::HashSet<usize>,
     word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension,
     computed_unsigned_addend_zero_extends: bool,
     optimization: mwcc_versions::Optimization,
@@ -218,6 +223,7 @@ impl<'a> Graph<'a> {
         if wide(ty) && !wide(value.ty) && value.ty.is_signed() {
             if let (Source::Register(id), Source::Register(input)) = (result.source, value.source) {
                 self.signed_word_promotions.insert(id, input);
+                self.promotion_sites.record(id);
             }
         }
         self.operations.push(Operation::Convert { result, value });
@@ -278,7 +284,9 @@ impl<'a> Graph<'a> {
                 operand,
             } => {
                 let value = self.expression(operand)?;
-                self.convert(value, *target_type)
+                let value = self.convert(value, *target_type)?;
+                self.mark_word_cast_promotion(value, sharing::word_cast(operand));
+                Some(value)
             }
             Expression::AddressOf { operand } => self.lvalue(operand).map(|(pointer, _)| pointer),
             Expression::MemberAddress {
@@ -382,6 +390,8 @@ impl<'a> Graph<'a> {
                     | BinaryOperator::GreaterEqual
             ) =>
             {
+                let left_cast = sharing::word_cast(left);
+                let right_cast = sharing::word_cast(right);
                 // Call-bearing RHS first matches the time-adjust transaction:
                 // obtain the current clock, then read the adjustment memory.
                 // Separate statements and explicit comma expressions never
@@ -421,6 +431,8 @@ impl<'a> Graph<'a> {
                 };
                 let left = self.convert(left, ty)?;
                 let right = self.convert(right, if shift { Type::UnsignedInt } else { ty })?;
+                self.mark_word_cast_promotion(left, left_cast);
+                self.mark_word_cast_promotion(right, right_cast);
                 if let (Source::Constant(left), Source::Constant(right)) =
                     (left.source, right.source)
                 {
@@ -551,6 +563,7 @@ impl<'a> Graph<'a> {
         let ty = *self.types.get(name)?;
         let value = self.expression(expression)?;
         let value = self.convert(value, ty)?;
+        self.mark_word_cast_promotion(value, sharing::word_cast(expression));
         self.retain_named_value(value);
         if self.fixed_bindings {
             self.operations.push(Operation::Copy {
@@ -617,14 +630,17 @@ impl<'a> Graph<'a> {
 
     fn statements(&mut self, statements: &[Statement]) -> Option<()> {
         for statement in statements {
+            self.promotion_sites.expression += 1;
             match statement {
                 Statement::Assign { name, value } => self.assign(name, value)?,
                 Statement::Expression(expression) => {
                     self.effect(expression)?;
                 }
                 Statement::Store { target, value } => {
+                    let cast = sharing::word_cast(value);
                     let value = self.expression(value)?;
-                    self.store(target, value)?;
+                    let value = self.store(target, value)?;
+                    self.mark_word_cast_promotion(value, cast);
                 }
                 Statement::Loop {
                     kind,
@@ -653,7 +669,9 @@ impl<'a> Graph<'a> {
                         (Type::Void, Some(_)) | (_, None) => return None,
                         (ty, Some(expression)) => {
                             let value = self.expression(expression)?;
-                            Some(self.convert(value, ty)?)
+                            let value = self.convert(value, ty)?;
+                            self.mark_word_cast_promotion(value, sharing::word_cast(expression));
+                            Some(value)
                         }
                     };
                     self.operations.push(Operation::Return(value));
@@ -717,6 +735,7 @@ impl<'a> Graph<'a> {
         parameters: &'a HashMap<String, Vec<Type>>,
         indirects: &'a HashMap<String, mwcc_syntax_trees::SourceFunctionType>,
         allow_implicit_calls: bool,
+        nonvolatile_pointer_bindings: &std::collections::HashSet<String>,
         word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension,
         computed_unsigned_addend_zero_extends: bool,
         optimization: mwcc_versions::Optimization,
@@ -756,6 +775,9 @@ impl<'a> Graph<'a> {
             operations: Vec::new(),
             values: 0,
             signed_word_promotions: Default::default(),
+            promotion_sites: Default::default(),
+            shared_promotions: Default::default(),
+            nonvolatile_pointer_values: Default::default(),
             word_subtrahend_extension,
             computed_unsigned_addend_zero_extends,
             optimization,
@@ -790,6 +812,9 @@ impl<'a> Graph<'a> {
         for (parameter, high) in function.parameters.iter().zip(incoming) {
             let result = graph.fresh(parameter.parameter_type);
             graph.operations.push(Operation::Parameter { result, high });
+            if nonvolatile_pointer_bindings.contains(&parameter.name) {
+                if let Source::Register(id) = result.source { graph.nonvolatile_pointer_values.insert(id); }
+            }
             graph.bindings.insert(parameter.name.clone(), result);
         }
         for local in &function.locals {
@@ -815,6 +840,7 @@ impl<'a> Graph<'a> {
         }
         for local in &function.locals {
             if let Some(value) = &local.initializer {
+                graph.promotion_sites.expression += 1;
                 graph.assign(&local.name, value)?;
             }
         }
@@ -833,8 +859,11 @@ impl<'a> Graph<'a> {
                 return None;
             }
         } else if let Some(expression) = returned {
+            graph.promotion_sites.expression += 1;
             let value = graph.expression(expression)?;
-            graph.returned = Some(graph.convert(value, function.return_type)?);
+            let value = graph.convert(value, function.return_type)?;
+            graph.mark_word_cast_promotion(value, sharing::word_cast(expression));
+            graph.returned = Some(value);
         } else if control::falls_through(statements) {
             return None;
         }
@@ -864,6 +893,7 @@ impl Generator {
             &self.call_parameter_types,
             &self.indirect_call_types,
             !self.source_is_cxx,
+            &self.nonvolatile_pointer_bindings,
             self.behavior.word_subtrahend_extension,
             self.behavior.computed_unsigned_addend_zero_extends,
             self.behavior.optimization,
@@ -1290,6 +1320,9 @@ mod tests {
             operations: Vec::new(),
             values: 0,
             signed_word_promotions: Default::default(),
+            promotion_sites: Default::default(),
+            shared_promotions: Default::default(),
+            nonvolatile_pointer_values: Default::default(),
             word_subtrahend_extension: mwcc_versions::WordSubtrahendExtension::FullWidth,
             computed_unsigned_addend_zero_extends: false,
             optimization: mwcc_versions::Optimization::O4,

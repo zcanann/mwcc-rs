@@ -369,6 +369,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         function_parameter_fundamentals: HashMap::new(),
         function_parameter_pointee_const: HashSet::new(),
         function_nonvolatile_pointer_bindings: HashSet::new(),
+        volatile_pointer_cast_functions: HashSet::new(),
         function_local_fundamentals: HashMap::new(),
         function_local_pointee_const: HashSet::new(),
         current_variable_reference_sites: HashMap::new(),
@@ -2166,6 +2167,33 @@ void invoke(void) {\n\
                     row.source_fundamental,
                     Some(mwcc_syntax_trees::SourceFundamentalType::UnsignedLong)
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn volatile_pointer_casts_invalidate_function_memory_facts() {
+        for cplusplus in [false, true] {
+            let mut source = String::from("typedef volatile int VI;
+                int plain(int* p) { return *(int*)p; }
+                int qualified(int* p) { return *(volatile int*)p; }
+                int alias(int* p) { return *(VI*)p; }
+                int local(int* p) { int v=*(volatile int*)p; int* q=p; return v+*q; }
+                int qualified(int* p);");
+            if cplusplus {
+                source.push_str("int named(int* p) { return *reinterpret_cast<volatile int*>(p); }");
+            }
+            let unit = parse_translation_unit(
+                mwcc_source_to_tokens::tokenize(&source).unwrap(), cplusplus, true, 1, 3,
+            ).unwrap();
+            for (index, function) in unit.functions.iter().enumerate() {
+                assert_eq!(unit.function_nonvolatile_pointer_bindings.contains(
+                    &(function.name.clone(), "p".into())), index == 0,
+                    "C++={cplusplus}: {}", function.name);
+                if index != 0 {
+                    assert!(!unit.function_nonvolatile_pointer_bindings.iter()
+                        .any(|(name, _)| name == &function.name));
+                }
             }
         }
     }

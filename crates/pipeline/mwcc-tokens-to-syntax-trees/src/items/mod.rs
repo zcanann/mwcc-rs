@@ -1380,7 +1380,9 @@ impl Parser {
             ),
             function_nonvolatile_pointer_bindings: std::mem::take(
                 &mut self.function_nonvolatile_pointer_bindings,
-            ),
+            ).into_iter().filter(|(function, _)| {
+                !self.volatile_pointer_cast_functions.contains(function)
+            }).collect(),
             function_parameter_pointee_const: std::mem::take(
                 &mut self.function_parameter_pointee_const,
             ),

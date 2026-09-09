@@ -61,20 +61,15 @@ impl Graph<'_> {
         {
             return;
         }
+        self.shared_promotions = self.find_shared_word_promotions();
         // Count the original graph once: rewriting one use must not make a
         // promotion shared by addition and subtraction appear single-use.
         let mut uses = HashMap::<usize, usize>::new();
         let mut count = |value: Value| {
             if let Source::Register(id) = value.source {
                 if wide(value.ty) {
-                    if let Some(input) = self.signed_word_promotions.get(&id) {
-                        *uses
-                            .entry(if self.optimization >= mwcc_versions::Optimization::O2 {
-                                *input
-                            } else {
-                                id
-                            })
-                            .or_default() += 1;
+                    if let Some(key) = self.word_promotion_key(id) {
+                        *uses.entry(key).or_default() += 1;
                     }
                 }
             }
@@ -89,20 +84,35 @@ impl Graph<'_> {
         self.lower_word_subtrahends(&uses);
     }
 
+    fn word_promotion_key(&self, id: usize) -> Option<usize> {
+        let input = *self.signed_word_promotions.get(&id)?;
+        Some(
+            if self.optimization >= mwcc_versions::Optimization::O2
+                && !(self.computed_unsigned_addend_zero_extends
+                    && self.promotion_sites.explicit_word_cast(id))
+            {
+                input
+            } else {
+                id
+            },
+        )
+    }
+
     pub(super) fn single_word_promotion(&self, value: Value, uses: &HashMap<usize, usize>) -> bool {
         match value.source {
             Source::Register(id) => {
-                !self.materialized_word_promotions.contains(&id)
-                    && self.signed_word_promotions.get(&id).is_some_and(|input| {
-                        uses.get(if self.optimization >= mwcc_versions::Optimization::O2 {
-                            input
-                        } else {
-                            &id
-                        }) == Some(&1)
-                    })
+                !self.shared_promotions.full.contains(&id)
+                    && !self.materialized_word_promotions.contains(&id)
+                    && self
+                        .word_promotion_key(id)
+                        .is_some_and(|key| uses.get(&key) == Some(&1))
             }
             _ => false,
         }
+    }
+
+    pub(super) fn first_shared_promotion(&self, value: Value) -> bool {
+        matches!(value.source, Source::Register(id) if self.shared_promotions.zero.contains(&id))
     }
 
     pub(super) fn zero_extend_word_at_use(

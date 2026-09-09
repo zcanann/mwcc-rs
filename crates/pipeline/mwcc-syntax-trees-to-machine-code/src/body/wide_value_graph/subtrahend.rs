@@ -36,7 +36,9 @@ impl Graph<'_> {
                         || self.word_subtrahend_extension
                             == mwcc_versions::WordSubtrahendExtension::ZeroExtendAll) =>
                 {
-                    if self.single_word_promotion(*right, uses) {
+                    if self.first_shared_promotion(*right)
+                        || self.single_word_promotion(*right, uses)
+                    {
                         self.zero_extend_word_at_use(right, &mut rewritten);
                     }
                 }

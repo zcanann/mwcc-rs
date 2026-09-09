@@ -126,7 +126,11 @@ impl Graph<'_> {
                             && !matches!(v.source, Source::Register(id) if self.signed_word_promotions.get(&id).is_some_and(|input| materialized.contains(input)))
                     };
                     if *operator == BinaryOperator::Add && result.ty == Type::UnsignedLongLong {
-                        if is_pending(*left) && single(*right) {
+                        if self.first_shared_promotion(*right) {
+                            self.zero_extend_word_at_use(right, &mut rewritten);
+                        } else if self.first_shared_promotion(*left) {
+                            self.zero_extend_word_at_use(left, &mut rewritten);
+                        } else if is_pending(*left) && single(*right) {
                             self.zero_extend_word_at_use(right, &mut rewritten);
                         } else if is_pending(*right) && single(*left) {
                             self.zero_extend_word_at_use(left, &mut rewritten);
