@@ -4,13 +4,70 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, wide BSS cursor bases (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, fixed-address unsigned division (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `1fd1df62a4b52dfd560c226288666885f0ed45f2f854ecab5beb8f7172c2f3d3:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `1001e56cd11bee2cc64de1d47836c7334786a1db44e776649f2abb2066d15b72:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Fixed-address unsigned division, 2026-09-08
+
+A separate operand selector now keeps an absolute-address word dividend in r0
+and materializes the unsigned magic multiplier in another register. The existing
+constant-address cache owns base lifetimes and carry-adjusted address splitting;
+the division selector owns the multiply operands and scheduler-dependent load
+order. It applies at O2 and above to the no-add magic sequence. Integer casts
+that preserve all 32 bits are recognized, including the `(u32)__OSBusClock`
+macro in the real AX initializer. Narrow, floating, wide, signed-division,
+computed-dividend, and add-form division paths retain their existing selection.
+
+Native checks exposed an older correctness bug: a fixed-address base or computed
+division operand could overwrite an incoming argument before a later identity
+call argument used it. Both now honor explicit register reservations, including
+cache hits. Canaries **2204–2209** cover 26 functions in six modes and fifteen
+builds: direct and declared absolute loads, signed-to-unsigned casts, narrowing,
+several divisors and address pages, callbacks, retained inputs, and clearing and
+cursor loops. All **90 objects / 2,340 functions** compile on baseline, candidate,
+and reference. **1,440 functions** change without changing size. Whole-function
+exact matches improve **0 → 780**, with no exact losses. The improvement is local
+to this diagnostic slice, not a corpus parity estimate.
+
+All **37,440** new candidate and reference execution cases pass arithmetic,
+volatile-read counts, callback mutation, guarded memory, saved registers, and
+stack checks. Baseline fails **1,440** retained-argument cases; candidate fixes
+all of them, including O0. The reference's GC/1.1p1 O0 parameter home at caller
+SP is checked explicitly against the input value; candidate still keeps that
+input in a register. This preserves the distinction between correct execution
+and exact version-specific stack behavior.
+
+The preceding **1,920 objects** remain byte-identical. A separate older arithmetic
+and absolute-address panel attempts **660 configurations**: baseline and candidate
+both compile the same **556**, all byte-identical; reference compiles **657**.
+The **553** jointly compiled objects retain **507/1,519** exact functions. Existing
+unsupported constructs, source-encoding failures, and three reference tool/flag
+failures are outside those paired measurements. No broader corpus run was made.
+
+All fifteen real AXVPB objects compile; only `__AXVPBInit` changes. The loaded
+dividend now occupies the reference's r0 on all builds, and the entire multiply
+register tuple matches the four oldest builds. Later references use r4 for the
+multiplier/result. All **240** initializer cases pass against reference and
+original-game models. Complete initializer matches remain **0/15**, while
+`__AXSetPBDefault` remains **15/15** exact. Constant hoisting through the prologue,
+section-address placement, and later-build quotient homes still need work.
+
+All **24 AX/GX library units** compile. AXVPB, GXInit, and GXPixel change; the other
+21 units remain identical. The real `GXInit` passes **512** native comparisons
+with reference and original game code, including clock-changing callbacks.
+`GXSetPixelFmt` uses a different FIFO base temporary after reservation handling;
+all **1,024** native comparisons preserve context, FIFO writes, and ABI state.
+Neither complete GX function becomes exact. Backend tests pass **1,671**, with
+the existing nested-asm exclusion. Fresh native coverage totals **39,216 cases**.
+
+`target/fixed-divide-final-verification.json` binds the final compiler/harness,
+canary and native-model source hashes, original DOL, **319 native-tested object
+entries**, preserved objects, and measured comparisons.
 
 ## Wide BSS cursor bases, 2026-09-08
 

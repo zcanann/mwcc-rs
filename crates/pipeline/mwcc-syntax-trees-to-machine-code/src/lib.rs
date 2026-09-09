@@ -42,6 +42,7 @@ mod cxx_temporary_arguments;
 mod dag_emitter;
 mod debug_provenance;
 mod division;
+mod fixed_address_division;
 mod expressions;
 mod float;
 mod float_abs_pair_condition;

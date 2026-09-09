@@ -403,6 +403,9 @@ impl Generator {
         destination: u8,
     ) -> Compilation<()> {
         let (magic, add, shift) = unsigned_magic(divisor);
+        if !add && self.try_emit_fixed_address_unsigned_divide(dividend, magic, shift, destination)? {
+            return Ok(());
+        }
         let dividend_register = self.place_retained_division_operand(dividend)?;
         let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
         else {
@@ -654,7 +657,7 @@ impl Generator {
         {
             return Ok(register);
         }
-        let register = self.fresh_virtual_general();
+        let register = self.fresh_virtual_general_avoiding(self.reserved.iter().copied().collect());
         self.evaluate_general(operand, register)?;
         Ok(register)
     }

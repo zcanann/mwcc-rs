@@ -332,9 +332,14 @@ impl Generator {
     pub(crate) fn claim_const_address_base_avoiding(
         &mut self,
         high: i16,
-        avoid: Vec<u8>,
+        mut avoid: Vec<u8>,
     ) -> Option<(u8, bool)> {
+        // Incoming argument homes can remain live through an identity call
+        // argument that emits no move. Preserve those explicit reservations
+        // even when the virtual stream has no intervening read of the home.
+        avoid.extend(self.reserved.iter().copied().filter(|r| (3..=31).contains(r)));
         if let Some(&base) = self.const_address_bases.get(&high) {
+            self.avoid_virtual_general(base, &avoid);
             return Some((base, false));
         }
         if !self.const_address_bases.is_empty() {
