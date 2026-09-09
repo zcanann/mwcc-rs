@@ -4,13 +4,71 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, assembler integer expressions and Dolphin FPR initialization (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, nested word call arguments and guarded global values (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `a9357c2ee927b4640cce1b0d184eaca92e43e91235f27af99558e3eadba95e60:8bbfa46b60a2ed607c0df120c5e927e4376bc65450fc9442df35b26e4fe87dc7`
+Latest measured compiler + harness fingerprint: `be14e635704a290bd33c16b727e8afac6083b9b272c2007c7a61f94e3a7292a7:714c01532fbe19abb8b259190af410efa935a1590c970073513c54ac09f10423`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Nested word call arguments and guarded global values, 2026-09-09
+
+Nested word arguments now stage typed intermediate values in virtual registers
+before assigning ABI argument registers. This composes calls in arithmetic,
+comparisons and pointer expressions, preserves source register inputs and
+pointer element sizes, and keeps constants out of call-surviving homes.
+Existing measured argument schedules retain first refusal. Repeated global
+inputs of computed arguments have explicit captures; O0 keeps its reloads.
+
+The function router now admits guarded scalar-global bodies to structured
+lowering, preserving the existing aggregate-frame owner. A separate source-tree
+pass exposes condition-value captures and their selected argument uses. The
+version profile records GC 3.0/Wii retention across nested condition calls,
+including differences between entry/late captures and optimization levels.
+Older releases reload around these calls. The ordinary condition cache no
+longer hoists direct scalar reads across calls merely because another condition
+reads the same name. Volatile globals and embedded updates are excluded from
+the capture rewrite.
+
+Samples **2288–2289** cover changing globals, nested guards, aliased writes,
+volatile reads, multiple call results, signed division, comparisons, retained
+parameters and pointer scaling versus integer casts. They compile in
+**180/180** configurations (15 releases × six modes), up from **0/180**, with
+**239/1,350** exact instruction/relocation matches. All **172,800 candidate**
+executions complete with preserved ABI. Reference comparisons have **128**
+original GC/1.1p1 O0 caller-frame violations in `aliased_body`: its eight-byte
+frame stores the incoming pointer at SP+8, overwriting the caller's backchain.
+These remain candidate fidelity gaps, not passing reference-equivalence cases.
+The disassembly is retained in `target/arena-globals-reference-frame.dis`.
+
+The unchanged source prefix and original `ClearArena` extracted from Battle
+for Bikini Bottom's `os/OS.c` compile in **90/90** candidate configurations,
+up from **0**. All **46,080** candidate executions pass clearing-range, saved
+global, call-order and ABI checks. The **72** references accepting the original
+project headers pass **36,864** corresponding cases. `ClearArena` is not yet
+byte-exact. Full `OS.c` now reaches `OSInit` and stops at `_db_stack_end` address
+handling; no complete `OS.c` build is claimed.
+
+The complete original **`ar/arq.c`** now compiles on GC/1.2.5n and GC/1.3.
+All seven functions pass **3,584** candidate/reference cases covering queue
+service, callbacks, initialization, posting, removal and flushing. Only the
+empty callback and flush function are exact so far. The Dolphin frontier
+improves **193 → 195/302** compiled units with no losses. Of the 193 previously
+compiled units, **191** objects are identical; only `GXCPInterruptHandler`
+changes in the other two. Its **4,096** candidate/reference executions pass,
+including breakpoint callbacks, context handling and a callback that changes
+the global GX-data pointer. No prior exact function match is lost.
+
+The established **2,865** cases retain **2,589** identical objects and **276**
+identical diagnostics; all **1,050** recent objects are identical. **2,558 tests**
+pass (352 app, 14 lexer, 1,711 backend, 416 parser, 65 version-policy tests),
+retaining the 12 verified baseline exclusions. In total **226,560 candidate**
+executions pass; references cover **217,344** cases with the 128 caller-frame
+violations above. `target/arena-globals-final-verification.json` binds the
+compiler/harness fingerprints, source extraction, result artifacts and
+**8,481** output objects. This remains targeted progress, not project-wide
+compiler parity.
 
 ## Assembler integer expressions and Dolphin FPR initialization, 2026-09-09
 

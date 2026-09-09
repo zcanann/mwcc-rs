@@ -55,6 +55,14 @@ impl Generator {
         followup: Option<&Expression>,
         reusable: Option<&HashMap<String, ConditionGlobalValue>>,
     ) -> HashMap<String, ConditionGlobalValue> {
+        // A call can change a direct scalar global just as it can change a
+        // pointer base. Do not hoist a later read above that call or carry a
+        // condition value into another condition containing a call.
+        if crate::analysis::expression_has_call(condition)
+            || followup.is_some_and(crate::analysis::expression_has_call)
+        {
+            return HashMap::new();
+        }
         let mut counts = cacheable_member_pointer_bases(condition);
         collect_direct_global_values(condition, &mut counts);
         if let Some(followup) = followup {

@@ -1023,6 +1023,8 @@ pub struct Behavior {
     pub scheduler_enabled: bool,
     /// Whether this invocation may reverse volatile loads while placing call inputs.
     pub reorder_volatile_call_inputs: bool,
+    /// Optimized 4.1/4.3 guard chains retain scalar globals across nested calls.
+    pub retain_guarded_globals_across_calls: bool,
     /// Issue an independent step before a counted loop latch comparison.
     pub interleave_loop_latch_steps: bool,
     /// Share full-width section offsets during temporary cursor setup.
@@ -1676,6 +1678,8 @@ impl Behavior {
             interleave_loop_latch_steps: config.flags.optimization == Optimization::O4
                 && config.flags.scheduler_enabled
                 && config.build.profile.interleave_loop_latch_steps(config.flags.processor),
+            retain_guarded_globals_across_calls: config.flags.optimization >= Optimization::O2
+                && config.build.profile.retain_guarded_globals_across_calls(),
             reorder_volatile_call_inputs: config.flags.scheduler_enabled
                 && config.flags.optimization != Optimization::O0
                 && config.build.profile.reorder_volatile_call_inputs(),
@@ -2069,6 +2073,17 @@ mod tests {
                         else { processor != Processor::Default };
                     assert_eq!(Behavior::resolve(&config).interleave_loop_latch_steps, expected);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn guarded_global_retention_tracks_the_optimizer_generation() {
+        for (build, retained) in [(build::GC_1_2_5N, false), (build::GC_2_7, false), (build::GC_3_0A3, true), (build::GC_3_0A3P1, true), (build::WII_1_0, true)] {
+            for optimization in [Optimization::O0, Optimization::O2, Optimization::O4] {
+                let mut config = CompilerConfig::new(build);
+                config.flags.optimization = optimization;
+                assert_eq!(Behavior::resolve(&config).retain_guarded_globals_across_calls, retained && optimization != Optimization::O0);
             }
         }
     }

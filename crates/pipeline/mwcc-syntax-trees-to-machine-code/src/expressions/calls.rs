@@ -1273,6 +1273,9 @@ impl Generator {
                 return Ok(());
             }
         }
+        if self.try_nested_word_arguments(arguments, name)? {
+            return Ok(());
+        }
         if arguments.iter().skip(1).any(expression_has_call) {
             let index = arguments
                 .iter()

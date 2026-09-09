@@ -1781,6 +1781,10 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn interleave_loop_latch_steps(&self, processor: crate::Processor) -> bool {
         processor != crate::Processor::Default
     }
+    /// 4.1/4.3 retain scalar guard inputs through nested condition calls.
+    fn retain_guarded_globals_across_calls(&self) -> bool {
+        false
+    }
     /// Early 2.3.3 schedulers may reverse volatile argument loads to resolve
     /// ABI dependencies. Later profiles retain their source order.
     fn reorder_volatile_call_inputs(&self) -> bool {
@@ -2146,6 +2150,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn retain_guarded_globals_across_calls(&self) -> bool {
+        true
+    }
+
     fn split_address_low_store_first(&self) -> bool {
         true
     }
@@ -2429,6 +2437,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn retain_guarded_globals_across_calls(&self) -> bool {
+        true
+    }
+
     fn split_address_low_store_first(&self) -> bool {
         true
     }

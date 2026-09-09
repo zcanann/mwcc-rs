@@ -330,7 +330,7 @@ pub(in crate::body) fn rewrite_statement(
     }
 }
 
-pub(in crate::body) fn rewrite_expression(
+pub(crate) fn rewrite_expression(
     expression: &Expression,
     rewrite: &mut impl FnMut(&Expression) -> Option<Expression>,
 ) -> Expression {

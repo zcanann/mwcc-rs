@@ -299,3 +299,7 @@ pub(crate) use mwcc_versions::{
     NestedGlobalDispatchSchedule, PlainLinkageEpilogueStyle, PointerCallStoreEpilogueStyle,
     PointerWalkerScheduleStyle, RaiseFamilyStyle, WideConstantAddSchedule,
 };
+
+mod guarded_global_values;
+
+pub(crate) use callee_saved::rewrite_structured_expression;

@@ -2729,9 +2729,8 @@ impl Generator {
                         }),
                     });
                 if body_reads_condition_global {
-                    // An inlined automatic aggregate requires real frame
-                    // storage. Let that allocator handle calls which can change
-                    // the guarded global before it is read again in the arm.
+                    // Aggregate locals already have a measured frame owner.
+                    // Preserve its layout before trying register-only captures.
                     if function.locals.iter().any(|local| {
                         !local.is_static && matches!(local.declared_type, Type::Struct { .. })
                     }) {
@@ -2740,6 +2739,26 @@ impl Generator {
                             *self = trial;
                             return Ok(());
                         }
+                    }
+                    // Give the structured value/CFG owner first refusal before
+                    // the legacy reload-only path. Optimize explicit captures
+                    // using the measured version's call-boundary policy.
+                    let captured = (self.behavior.optimization != mwcc_versions::Optimization::O0)
+                        .then(|| super::guarded_global_values::capture(
+                            function, &self.globals, &self.volatile_globals,
+                            &self.call_return_types, &self.behavior,
+                        ))
+                        .flatten();
+                    let structured = captured.as_ref().unwrap_or(function);
+                    let mut trial = self.clone();
+                    if trial.try_callee_saved_structured_body(structured)? {
+                        *self = trial;
+                        return Ok(());
+                    }
+                    let mut trial = self.clone();
+                    if trial.try_callee_saved_structured_frame_body(structured)? {
+                        *self = trial;
+                        return Ok(());
                     }
                     return Err(Diagnostic::error(format!(
                         "a global read in both an if-condition and its body needs value reuse across the branch (roadmap; function '{}')",

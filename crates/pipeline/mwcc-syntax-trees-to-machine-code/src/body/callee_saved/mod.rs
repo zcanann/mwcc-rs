@@ -215,7 +215,6 @@ mod structured_guarded_mutating_inline_schedule;
 pub(super) mod structured_expression_visit;
 mod structured_global_assignments;
 pub(in crate::body) use structured_expression_visit::{
-    rewrite_expression as rewrite_structured_expression,
     rewrite_statement as rewrite_structured_statement,
     statements_assign_name as structured_statements_assign_name,
     visit_expression as visit_structured_expression,
@@ -2588,3 +2587,5 @@ impl Generator {
         Ok(true)
     }
 }
+
+pub(crate) use structured_expression_visit::rewrite_expression as rewrite_structured_expression;
