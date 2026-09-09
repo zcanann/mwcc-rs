@@ -319,7 +319,17 @@ impl Generator {
         let mut bindings = Vec::new();
         let mut operands = Vec::new();
         for value in [left, right] {
-            if let Source::Constant(bits) = value.source {
+            // Scalar comparison idioms accept signed 16-bit immediates. Wider
+            // constants need an ordinary virtual operand, just like a load.
+            let immediate = match value.source {
+                Source::Constant(bits)
+                    if !is_comparison(operator) || i16::try_from(bits as i32).is_ok() =>
+                {
+                    Some(bits)
+                }
+                _ => None,
+            };
+            if let Some(bits) = immediate {
                 let literal = Expression::IntegerLiteral(if value.ty.is_signed() {
                     bits as i32 as i64
                 } else {
@@ -443,5 +453,67 @@ mod tests {
             fold(BinaryOperator::ShiftLeft, Type::UnsignedInt, 1, 32),
             None
         );
+    }
+}
+
+impl Graph<'_> {
+    pub(super) fn unary(&mut self, operator: UnaryOperator, operand: &Expression) -> Option<Value> {
+        let value = self.expression(operand)?;
+        let ty = if value.ty.width() < 32 {
+            Type::Int
+        } else {
+            value.ty
+        };
+        let value = self.convert(value, ty)?;
+        if matches!(ty, Type::Pointer(_) | Type::StructPointer { .. })
+            && operator != UnaryOperator::LogicalNot
+        {
+            return None;
+        }
+        let (operator, left, right) = match operator {
+            UnaryOperator::Negate => (
+                BinaryOperator::Subtract,
+                Value {
+                    ty,
+                    source: Source::Constant(0),
+                },
+                value,
+            ),
+            UnaryOperator::BitNot => (
+                BinaryOperator::BitXor,
+                value,
+                Value {
+                    ty,
+                    source: Source::Constant(if wide(ty) { u64::MAX } else { u32::MAX as u64 }),
+                },
+            ),
+            UnaryOperator::LogicalNot => (
+                BinaryOperator::Equal,
+                value,
+                Value {
+                    ty,
+                    source: Source::Constant(0),
+                },
+            ),
+        };
+        let result_type = if is_comparison(operator) {
+            Type::Int
+        } else {
+            ty
+        };
+        if let (Source::Constant(left), Source::Constant(right)) = (left.source, right.source) {
+            return Some(Value {
+                ty: result_type,
+                source: Source::Constant(fold(operator, ty, left, right)?),
+            });
+        }
+        let result = self.fresh(result_type);
+        self.operations.push(Operation::Binary {
+            result,
+            operator,
+            left,
+            right,
+        });
+        Some(result)
     }
 }

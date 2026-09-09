@@ -4,13 +4,65 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, wide callbacks and the full Dolphin alarm unit (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, indexed wide values and the full THP audio decoder (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `d9ed2789ed538a5e03e40bd078f7b6b3679478266e0b6548f2c09a945767fdd5:df9354f206a82b380e29eb1a2eb6148ad6f1e4fc9e8bc2ecdb6b82433f1ecc62`
+Latest measured compiler + harness fingerprint: `74780a70a6e73e3923e04797103c24f47cc57478e565d726fc334cc268c26945:4eca4edddbe9448750a6801ea7c5e8617b63010d4cd0c62dc727dbcf59bfcf45`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Indexed wide values and the full THP audio decoder, 2026-09-09
+
+The **unchanged, complete Battle for Bikini Bottom `thp/THPAudio.c`** now compiles
+in **90/90** candidate and reference configurations, up from **0** candidate
+configurations. Its **60/270** exact function instruction/relocation matches are
+helper outputs; the main decoder does not yet match instruction output. The
+Dolphin frontier improves **199 → 201/302**, gaining this unit under GC/1.2.5n and
+GC/1.3. All 199 previously compiling objects remain byte-for-byte unchanged.
+
+Address calculation is separated from scalar storage in the word/pair graph's
+new memory module. Pointer addition/subtraction by integer offsets, scalar
+subscripts, indexed struct members, two-dimensional member-array strides and
+member/element addresses now feed the existing word/pair loads and stores.
+Unary negation, complement and logical-not preserve integer promotions. Logical
+AND/OR emit conditional edges, merge assignment results and evaluate the right
+operand only when required. Scalar comparisons materialize constants outside
+the signed 16-bit immediate range into ordinary virtual operands before using
+the existing version-specific comparison selection. This handles the decoder's
+coefficient indexing, stepped output pointers, null-input guard and wide rounding
+and saturation through the same graph. Pointer differences, general array
+layouts and compound indexed updates requiring one shared lvalue evaluation
+remain outside this addition.
+
+Committed samples **2305–2306** compile **180/180** candidate and reference
+configurations, up from **0** candidate configurations. None of their **900**
+function outputs are exact matches yet. All **115,200 candidate** executions pass
+pair-array reads/writes, coefficient-row strides, signed pointer steps, member
+addresses, short-circuit calls and assignments, unary operations and loop exits.
+The references have **256 failures**, all in GC/1.1p1 `-O0` logical-call samples:
+argument stores overlap each other and saved r31. Disassembly and execution
+retain this original behavior as a fidelity gap rather than counting it as a
+candidate regression.
+
+The full original audio objects pass **11,790 candidate and reference** native
+cases against an independent decoder model. These cover mono/stereo channels,
+interleaved and planar output, packet boundaries, predictor coefficients, scale
+factors, signed histories, rounding, saturation, zero samples and null-input
+returns. Checks include output guards, unchanged encoded input and preserved
+callee-saved registers. Both sample helpers execute from the compiled objects;
+reference shift and register-save helpers execute directly from the original
+project DOL. In total **126,990 candidate** cases pass; the 256 reference failures
+above are the only failures among **126,990 reference** cases.
+
+Validation: **2,693 Rust tests pass**, with the same 12 known exclusions and eight
+existing ignored tests. The established 2,865-case panel retains 2,589 identical
+objects and 276 identical diagnostics; all **2,580** recent objects are identical.
+The verifier binds **11,571 object artifacts** to the compiler and native results,
+reusing native results only when the final objects retain their measured hashes.
+Evidence is in ignored `target/wide-index-{canaries,project,frontier,regressions,recent}/results.json`,
+`target/wide-index-{native,audio-native}.json`, `target/wide-index-reference-frames.dis`,
+`target/wide-index-verified-tests.log` and `target/wide-index-final-verification.json`.
 
 ## Wide callbacks and the full Dolphin alarm unit, 2026-09-09
 

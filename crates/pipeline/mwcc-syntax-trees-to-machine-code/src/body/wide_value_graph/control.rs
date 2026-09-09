@@ -119,3 +119,76 @@ impl Graph<'_> {
         Some(())
     }
 }
+
+impl Graph<'_> {
+    /// The right operand executes only on its incoming edge. Explicit copies
+    /// merge both the boolean result and any local assignments on that edge.
+    pub(super) fn logical(
+        &mut self,
+        is_or: bool,
+        left: &Expression,
+        right: &Expression,
+    ) -> Option<Value> {
+        let left = self.expression(left)?;
+        let condition = self.truth(left);
+        let before = self.bindings.clone();
+        let outer = std::mem::take(&mut self.operations);
+        let value = self.expression(right)?;
+        let result = self.fresh(Type::Int);
+        self.operations.push(Operation::Binary {
+            result,
+            operator: BinaryOperator::NotEqual,
+            left: value,
+            right: Value {
+                ty: value.ty,
+                source: Source::Constant(0),
+            },
+        });
+        let mut right_ops = std::mem::take(&mut self.operations);
+        let mut shortcut_ops = vec![Operation::Copy {
+            result,
+            value: Value {
+                ty: Type::Int,
+                source: Source::Constant(u64::from(is_or)),
+            },
+        }];
+        let after = std::mem::replace(&mut self.bindings, before.clone());
+        let mut names: Vec<_> = before
+            .keys()
+            .filter(|name| after.contains_key(*name))
+            .cloned()
+            .collect();
+        names.sort();
+        for name in names {
+            let old = before[&name];
+            let new = after[&name];
+            if old != new {
+                let merged = self.fresh(self.types[&name]);
+                right_ops.push(Operation::Copy {
+                    result: merged,
+                    value: new,
+                });
+                shortcut_ops.push(Operation::Copy {
+                    result: merged,
+                    value: old,
+                });
+                self.bindings.insert(name, merged);
+            }
+        }
+        self.operations = outer;
+        self.operations.push(if is_or {
+            Operation::Branch {
+                condition,
+                then_body: shortcut_ops,
+                else_body: right_ops,
+            }
+        } else {
+            Operation::Branch {
+                condition,
+                then_body: right_ops,
+                else_body: shortcut_ops,
+            }
+        });
+        Some(result)
+    }
+}

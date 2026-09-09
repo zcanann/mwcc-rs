@@ -14,6 +14,8 @@ use std::collections::HashMap;
 mod arithmetic;
 #[path = "wide_value_graph/control.rs"]
 mod control;
+#[path = "wide_value_graph/memory.rs"]
+mod memory;
 #[path = "wide_value_graph/storage.rs"]
 mod storage;
 
@@ -246,23 +248,43 @@ impl<'a> Graph<'a> {
                 let value = self.expression(operand)?;
                 self.convert(value, *target_type)
             }
-            Expression::AddressOf { operand } => {
-                let Expression::Variable(name) = operand.as_ref() else {
-                    return None;
-                };
-                let address = self.address(name)?;
-                let ty = match self.types.get(name).or_else(|| self.globals.get(name))? {
-                    Type::Struct { size, .. } => Type::StructPointer {
-                        element_size: *size,
-                    },
-                    Type::LongLong => Type::Pointer(Pointee::LongLong),
-                    Type::UnsignedLongLong => Type::Pointer(Pointee::UnsignedLongLong),
-                    Type::Int => Type::Pointer(Pointee::Int),
-                    Type::UnsignedInt => Type::Pointer(Pointee::UnsignedInt),
-                    _ => return None,
-                };
-                Some(Value { ty, ..address })
+            Expression::AddressOf { operand } => self.lvalue(operand).map(|(pointer, _)| pointer),
+            Expression::MemberAddress {
+                base,
+                offset,
+                element,
+                index_stride: None,
+            } => {
+                let pointer = self.member_address(base, *offset)?;
+                Some(Value {
+                    ty: Type::Pointer(*element),
+                    ..pointer
+                })
             }
+            Expression::Index { base, index } => {
+                let (pointer, element) = self.index_address(base, index)?;
+                if let Some(ty) = element {
+                    if !supported(ty) {
+                        return None;
+                    }
+                    let result = self.fresh(ty);
+                    self.operations.push(Operation::Load { result, pointer });
+                    Some(result)
+                } else {
+                    Some(pointer)
+                }
+            }
+            Expression::Unary { operator, operand } => self.unary(*operator, operand),
+            Expression::Binary {
+                operator: BinaryOperator::LogicalAnd,
+                left,
+                right,
+            } => self.logical(false, left, right),
+            Expression::Binary {
+                operator: BinaryOperator::LogicalOr,
+                left,
+                right,
+            } => self.logical(true, left, right),
             Expression::Dereference { pointer } => {
                 let pointer = self.expression(pointer)?;
                 let Type::Pointer(pointee) = pointer.ty else {
@@ -333,7 +355,7 @@ impl<'a> Graph<'a> {
                 let pointers = matches!(left.ty, Type::Pointer(_) | Type::StructPointer { .. })
                     || matches!(right.ty, Type::Pointer(_) | Type::StructPointer { .. });
                 if pointers && !is_comparison(*operator) {
-                    return None;
+                    return self.pointer_arithmetic(*operator, left, right);
                 }
                 let shift = matches!(
                     operator,
@@ -513,23 +535,7 @@ impl<'a> Graph<'a> {
                 return Some(value);
             }
         }
-        let (pointer, ty) = match target {
-            Expression::Variable(name) => (self.address(name)?, *self.globals.get(name)?),
-            Expression::Dereference { pointer } => {
-                let pointer = self.expression(pointer)?;
-                let Type::Pointer(pointee) = pointer.ty else {
-                    return None;
-                };
-                (pointer, pointee.element())
-            }
-            Expression::Member {
-                base,
-                offset,
-                member_type,
-                ..
-            } => (self.member_address(base, *offset)?, *member_type),
-            _ => return None,
-        };
+        let (pointer, ty) = self.lvalue(target)?;
         let value = self.convert(value, ty)?;
         self.operations.push(Operation::Store { pointer, value });
         Some(value)
@@ -545,6 +551,8 @@ impl<'a> Graph<'a> {
             } else {
                 self.expression(base)?
             }
+        } else if let Expression::Index { base, index } = base {
+            self.index_address(base, index)?.0
         } else {
             self.expression(base)?
         };
