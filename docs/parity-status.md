@@ -4,15 +4,58 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, declared call inputs and Dolphin interrupt state (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, forwarding retained wide frame values (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `ef90ea6aae1d069598ddf120e8a9b1e78bfbbdd98a41c6531c19542860ac25cf:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `a3e42323575c9489bfb2bf674b78d4dc2f6ee80010805c5ea8fe99e271fc19b8:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
 
+## Forwarding retained wide frame values, 2026-09-09
+
+The existing `wide_frame_values` fallback now forwards its eight-byte local
+images to declared 64-bit call parameters. It exposes a typed native load at the
+original argument site, leaving pair placement to the EABI marshaler and frame
+lifetime to the ordinary structured allocator. It does not hoist word loads
+into statement preludes. A prototype check prevents interpreting a narrow or
+unknown formal as a register pair. Specialized wide emitters retain first
+refusal, and unsupported wide expressions retain their diagnostic path.
+
+The preceding work-queue sample **2277** now compiles on all fifteen releases.
+New sample **2278** covers intervening calls, repeated use, two independent
+pairs, mixed scalar/pair arguments, signed values, and conditional consumption.
+Across O4, O3, O2, scheduling off, size optimization, and O0, complete sample
+compilation improves **0 → 180/180**. All **630** candidate/reference functions
+compile, but **none is byte-exact**: the frame fallback still differs from the
+reference's register-pair schedules. This is compilation progress toward those
+schedules, not a claim that frame materialization is the final implementation.
+
+All **40,320 candidate scenarios** pass high/low-word forwarding, call order and
+arguments, memory guards, saved GPRs, stack restoration, and completion checks.
+Reference execution covers the same scenarios, with **192** specifically modeled
+GC/1.1p1 O0 spill-alias cases. In `forward_wide`, the priority spill overwrites
+saved r28. In `mixed_arguments`, tail overwrites the key spill and saved r30; both
+scalar arguments consequently receive tail. In `conditional`, flag overwrites
+saved r30. These remain candidate fidelity gaps; the candidate currently retains
+correct source values and saved registers in these shapes.
+
+All **60** preceding wide-call-store/frame-value objects remain identical. The
+existing canary panel retains **2,589** identical objects and **276** identical
+failure diagnostics. The 302-unit Dolphin probe retains **191** compiled units,
+with every object and diagnostic unchanged. Its remaining wide-parameter,
+wide-return, and complex-expression failures still block real-project progress;
+this checkpoint does not claim a newly compiled complete project unit.
+
+Validation passes **2,051 tests** (351 app, 1,700 backend), with the established
+nine app and one backend exclusions. `target/wide-forward-final-verification.json`
+binds compiler/harness fingerprints, sources, comparisons, and **360 native
+object entries**. Measurements are under `target/wide-forward-{canaries,prior,
+regressions,frontier}/`. No full corpus or project-matching claim is made.
+
 ## Declared call inputs and Dolphin interrupt state, 2026-09-08
+
+Compiler fingerprint: `ef90ea6aae1d069598ddf120e8a9b1e78bfbbdd98a41c6531c19542860ac25cf`.
 
 Final allocation now includes explicit ABI uses for declared direct-call
 parameters. This keeps incoming parameters and forwarded call results live even

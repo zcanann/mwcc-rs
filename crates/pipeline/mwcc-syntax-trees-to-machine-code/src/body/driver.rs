@@ -2809,6 +2809,7 @@ impl Generator {
                 &self.globals,
                 &self.volatile_globals,
                 &self.call_return_types,
+                &self.call_parameter_types,
             ) {
                 let mut trial = self.clone();
                 if trial.try_callee_saved_structured_frame_body(&lowered)? {

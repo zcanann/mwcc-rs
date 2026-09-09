@@ -56,6 +56,7 @@ fn field(base: E, offset: u32) -> E {
 struct Lowering<'a> {
     types: HashMap<String, Type>,
     calls: &'a HashMap<String, Type>,
+    parameters: HashMap<String, Vec<Type>>,
     volatile: &'a HashSet<String>,
     frames: HashSet<String>,
     bindings: HashSet<String>,
@@ -69,6 +70,7 @@ pub(crate) fn materialize(
     globals: &HashMap<String, Type>,
     volatile: &HashSet<String>,
     calls: &HashMap<String, Type>,
+    parameters: &HashMap<String, Vec<Type>>,
 ) -> Option<Function> {
     if wide(function.return_type) || function.parameters.iter().any(|p| wide(p.parameter_type)) {
         return None;
@@ -114,6 +116,7 @@ pub(crate) fn materialize(
     let mut lowering = Lowering {
         types,
         calls,
+        parameters: parameters.clone(),
         volatile,
         frames,
         bindings,
@@ -357,6 +360,31 @@ impl Lowering<'_> {
     fn scalar(&mut self, e: &E) -> Option<E> {
         if !self.mentions_wide(e) {
             return Some(e.clone());
+        }
+        if let E::Call { name, arguments } = e {
+            if self.ty(e).is_some_and(wide) {
+                return None;
+            }
+            let parameters = self.parameters.get(name)?;
+            let arguments = arguments.iter().enumerate().map(|(index, argument)| {
+                if !self.mentions_wide(argument) {
+                    return Some(argument.clone());
+                }
+                // Keep the load at its argument evaluation site. Capturing pair
+                // words in a statement prelude could move it across a sibling
+                // argument's call or assignment.
+                let E::Variable(local) = argument else { return None };
+                if !self.frames.contains(local) || !parameters.get(index).copied().is_some_and(wide) {
+                    return None;
+                }
+                Some(E::Dereference {
+                    pointer: Box::new(cast(
+                        Type::Pointer(Pointee::UnsignedLongLong),
+                        addr(argument.clone()),
+                    )),
+                })
+            }).collect::<Option<Vec<_>>>()?;
+            return Some(E::Call { name: name.clone(), arguments });
         }
         if crate::analysis::expression_has_side_effect(e) {
             return None;
@@ -604,6 +632,7 @@ mod tests {
                 ("real".into(), Type::Float),
             ]),
             calls,
+            parameters: HashMap::new(),
             volatile,
             frames: HashSet::from(["stamp".into()]),
             bindings: HashSet::from(["stamp".into(), "limit".into()]),
@@ -611,6 +640,27 @@ mod tests {
             temporaries: Vec::new(),
             pending: Vec::new(),
         }
+    }
+
+    #[test]
+    fn forwards_a_frame_pair_at_the_original_argument_site() {
+        let calls = HashMap::from([("consume".into(), Type::Void)]);
+        let volatile = HashSet::new();
+        let mut lowering = test_lowering(&calls, &volatile);
+        lowering.parameters.insert("consume".into(), vec![Type::Int, Type::LongLong]);
+        let expression = E::Call {
+            name: "consume".into(),
+            arguments: vec![var("limit"), var("stamp")],
+        };
+        let lowered = lowering.scalar(&expression).unwrap();
+        let E::Call { arguments, .. } = lowered else { panic!("retained call") };
+        assert!(matches!(&arguments[1], E::Dereference { pointer }
+            if matches!(pointer.as_ref(), E::Cast { target_type: Type::Pointer(Pointee::UnsignedLongLong), .. })));
+        assert!(lowering.pending.is_empty(), "argument reads must not become statement preludes");
+        lowering.parameters.insert("consume".into(), vec![Type::Int, Type::Int]);
+        assert!(lowering.scalar(&expression).is_none(), "a narrow formal needs an explicit conversion");
+        lowering.parameters.clear();
+        assert!(lowering.scalar(&expression).is_none(), "an unknown prototype needs call-site ABI facts");
     }
 
     #[test]
@@ -695,6 +745,7 @@ mod tests {
         let mut lowering = Lowering {
             types: HashMap::from([("stamp".into(), Type::LongLong)]),
             calls: &calls,
+            parameters: HashMap::new(),
             volatile: &volatile,
             frames: HashSet::from(["stamp".into()]),
             bindings: HashSet::from(["stamp".into()]),

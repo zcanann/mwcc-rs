@@ -1,4 +1,4 @@
-// Work-queue case: a wide call result retained across address construction.
+// A wide call result retained across address construction and forwarded intact.
 typedef struct Node { struct Node* next; struct Node* prev; } Node;
 static Node queues[4];
 extern unsigned long long begin_wide(void);
