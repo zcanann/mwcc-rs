@@ -4,13 +4,67 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, typed wide arithmetic and Dolphin time helpers (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, scoped integer values and Dolphin calendar conversion (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `1ceff220a9d327f565ed3d2a0e170912865832ed338b1d9c7fb5a4a4a7bac39a:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `7187f7a8c7d5bf0b4d193b0f30a327a35ca1dc6a4517128ba45ba35b5a723ed6:64ab8feefe483434605d5d7ddfa351dc8ed4953c0a4ba9c641764b98e1b29409`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Scoped integer values and Dolphin calendar conversion, 2026-09-09
+
+Expression-scoped integer sharing gives repeated register-only arithmetic a
+virtual home, with shared children selected before shared parents. The original
+inputs remain reserved while those homes are built. Casts retain their types;
+loads, calls, pointers and short-circuit boundaries cannot enter the shared
+scope. Composed inline comma operands can materialize their pure integer
+results separately, and two computed operands containing a constant division
+now retain independent virtual results. This is a bounded selection facility,
+not a cross-statement optimizer or a claim of complete MWCC CSE parity.
+
+Executing the original Dolphin `GetDates` exposed two existing selector bugs:
+a right condition could overwrite the pending 0/1 accumulator, and later-version
+signed power-of-two remainder could replace a still-live dividend with its sign.
+Short-circuit selection now restores a clobbered default after testing CR0 and
+reserves the right condition's inputs while testing the left. Remainder selection
+uses a separate sign home when its dividend is reserved. References confirm the
+correct calendar behavior, including century and leap-century boundaries.
+
+New samples **2282–2283** cover nested shared values, casts, signed remainders,
+leap-day arithmetic, computed boolean values and guarded volatile reads. Across
+15 releases and six modes, complete units increase **90 → 180/180**, with
+**219/1,170** exact function byte/relocation matches and no exact losses. The
+new CSE schedules are not generally byte-exact, including the O0 reuse policy;
+version-specific sharing, allocation and scheduling remain work to do.
+All **299,520** candidate and corresponding reference native cases pass. Running
+the compilable boolean sample against the baseline reproduces **44,964** failing
+executions; the candidate fixes all of them.
+
+An unchanged prefix of Battle for Bikini Bottom's `os/OSTime.c`, extending
+through `GetDates`, compiles on **15/15** candidate releases (baseline **0/15**).
+An appended wrapper exercises it over **15,360** calendar cases, with **12,288**
+passing reference cases on the 12 releases accepting the original project
+headers. Calendar fields, neighboring memory and ABI preservation are checked.
+`GetDates` is not byte-exact yet. The full file now reaches the wide arithmetic
+in `OSTicksToCalendarTime` on GC/1.2.5n and GC/1.3; no newly compiled complete
+project unit is claimed.
+
+The established **2,865**-case panel retains **2,589** identical objects and
+**276** identical diagnostics. Of **510** recent wide objects, **480** are
+identical; three boolean functions change in each of 30 objects. Their **23,040**
+candidate and reference native cases pass, preserving all prior exact matches.
+The **302**-unit Dolphin panel remains at **191** compiled units: **189** objects
+are identical and only `GXSetTevOrder` changes in two objects. Both versions pass
+**2,048** native FIFO/context/ABI cases against references and original DOL
+fixtures; no exact function match is lost.
+
+In total **339,968 candidate** and **336,896 reference** native cases pass.
+**2,487 tests** pass (352 app, 14 lexer, 1,708 backend, 413 parser), retaining the
+12 previously verified baseline exclusions. `target/expression-cse-final-verification.json`
+binds the compiler/harness fingerprints, result artifacts and **543** native
+object entries. Targeted measurements and execution harnesses use the
+`target/expression-cse-*` and `target/*expression_cse*.py` prefixes.
 
 ## Typed wide arithmetic and Dolphin time helpers, 2026-09-09
 

@@ -259,10 +259,20 @@ impl Generator {
                 Operands::ordered(left_register, GENERAL_SCRATCH)
             }
             (true, true) => {
-                // A constant-divide alongside another complex operand needs liveness-aware
-                // temp allocation and result-first ordering that isn't modeled; defer.
+                // Quotient lowering uses multiple temporaries. Give both results
+                // explicit virtual homes so neither can overwrite the other.
                 if is_constant_divide(left) || is_constant_divide(right) {
-                    return Err(Diagnostic::error("a constant-divide operand alongside another complex operand needs the register allocator (roadmap)"));
+                    let left_register = self.with_reserved_inputs(right, |generator| {
+                        let home = generator.fresh_virtual_general();
+                        generator.evaluate_general(left, home)?;
+                        Ok(home)
+                    })?;
+                    self.reserved.insert(left_register);
+                    let right_register = self.fresh_virtual_general();
+                    let result = self.evaluate_general(right, right_register);
+                    self.reserved.remove(&left_register);
+                    result?;
+                    return Operands::ordered(left_register, right_register);
                 }
                 // A subtraction of two computed nodes evaluates the RIGHT subtree
                 // first into a virtual home, then the left into r0.  This lets the

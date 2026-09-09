@@ -630,10 +630,11 @@ impl Generator {
                     return Err(Diagnostic::error("a shift-left or bitwise-and of a comparison value uses a fused rlwinm / dropped mask not modeled (roadmap)"));
                 }
                 // A repeated NON-LEAF sub-expression (`(a+1)+(a+1)`, `(a + (a>>31)) ^ (a>>31)`) is a
-                // common sub-expression mwcc computes ONCE and reuses; our straight-line codegen
-                // recomputes it — a byte-different sequence. Defer until the register allocator does
-                // CSE. (Leaf repeats like `a + a` are cheap re-reads and stay byte-exact.)
-                if crate::analysis::has_repeated_nonleaf_subexpression(expression) {
+                // common sub-expression mwcc computes ONCE and reuses. Register-only trees
+                // can share virtual homes within this expression; other trees still need
+                // memory/effect-aware CSE. Leaf repeats remain ordinary register reads.
+                if super::common_integer_values::has_repeated_values(expression) {
+                    if self.try_common_integer_values(expression, destination)? { return Ok(()); }
                     return Err(Diagnostic::error("a repeated common sub-expression needs the register allocator's CSE (roadmap)"));
                 }
                 // A repeated GLOBAL variable leaf (`gi + gi`, `gi * gi`): unlike a register-resident
@@ -745,9 +746,15 @@ impl Generator {
                         }
                         _ => false,
                     };
+                    if !matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr)
+                        && (!is_simple(&peeled_left) || !is_simple(&peeled_right))
+                        && self.scoped_integer_value(&peeled_left)
+                        && self.scoped_integer_value(&peeled_right)
+                    {
+                        return self.emit_scoped_integer_pair(*operator, &peeled_left, &peeled_right, destination);
+                    }
                     if matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr)
-                        || !is_simple(&peeled_left)
-                        || !is_simple(&peeled_right)
+                        || !is_simple(&peeled_left) || !is_simple(&peeled_right)
                     {
                         return Err(Diagnostic::error(format!(
                             "a comma operand in this expression is not supported yet (roadmap): left={peeled_left:?}, right={peeled_right:?}"

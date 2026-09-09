@@ -219,6 +219,32 @@ impl Generator {
         self.emit_short_circuit_with_accumulator(operator, left, right, result, GENERAL_SCRATCH)
     }
 
+    /// A condition may use the same scratch as the pending 0/1 result.
+    /// Restore the default after its computation, before branching on CR0;
+    /// loading an immediate does not modify the condition register.
+    fn emit_condition_with_truth_default(
+        &mut self,
+        condition: &Expression,
+        accumulator: u32,
+        value: i16,
+    ) -> Compilation<(u8, u8)> {
+        let start = self.output.instructions.len();
+        let test = self.emit_condition_test(condition)?;
+        let overwritten = self.output.instructions[start..].iter().any(|instruction| {
+            mwcc_vreg::register_operands(instruction).iter().any(|operand| {
+                operand.class == mwcc_vreg::Class::General
+                    && operand.role == mwcc_vreg::RegisterRole::Define
+                    && operand.register == accumulator
+            })
+        });
+        if overwritten || (accumulator <= 12 && expression_has_call(condition)) {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(accumulator, value));
+        }
+        Ok(test)
+    }
+
     /// Keep the truth accumulator distinct from a right operand's load scratch.
     pub(crate) fn emit_short_circuit_with_accumulator(
         &mut self,
@@ -241,13 +267,15 @@ impl Generator {
         }
         match operator {
             BinaryOperator::LogicalAnd => {
-                let (left_skip, left_bit) = self.emit_condition_test(left)?;
+                let (left_skip, left_bit) = self.with_reserved_inputs(right, |generator| {
+                    generator.emit_condition_test(left)
+                })?;
                 self.output
                     .instructions
                     .push(Instruction::load_immediate(scratch, 0));
                 let exit = self.fresh_label();
                 self.emit_branch_conditional_to(left_skip, left_bit, exit);
-                let (right_skip, right_bit) = self.emit_condition_test(right)?;
+                let (right_skip, right_bit) = self.emit_condition_with_truth_default(right, scratch, 0)?;
                 self.emit_branch_conditional_to(right_skip, right_bit, exit);
                 self.output
                     .instructions
@@ -266,7 +294,9 @@ impl Generator {
                     let accumulator = self
                         .legacy_short_circuit_accumulator(left)?
                         .unwrap_or(scratch);
-                    let (left_skip, left_bit) = self.emit_condition_test(left)?;
+                    let (left_skip, left_bit) = self.with_reserved_inputs(right, |generator| {
+                    generator.emit_condition_test(left)
+                })?;
                     let preload = Instruction::load_immediate(accumulator.into(), 1);
                     if accumulator == scratch
                         || !self.insert_before_terminal_compare(preload.clone())
@@ -276,7 +306,7 @@ impl Generator {
                     let exit = self.fresh_label();
                     self.emit_branch_conditional_to(left_skip ^ 8, left_bit, exit);
                     let restore = accumulator != scratch && self.reserved.insert(accumulator.into());
-                    let right_test = self.emit_condition_test(right);
+                    let right_test = self.emit_condition_with_truth_default(right, accumulator, 1);
                     if restore {
                         self.reserved.remove(&accumulator);
                     }
@@ -293,13 +323,15 @@ impl Generator {
                     }
                     return Ok(());
                 }
-                let (left_skip, left_bit) = self.emit_condition_test(left)?;
+                let (left_skip, left_bit) = self.with_reserved_inputs(right, |generator| {
+                    generator.emit_condition_test(left)
+                })?;
                 self.output
                     .instructions
                     .push(Instruction::load_immediate(scratch, 0));
                 let set_one = self.fresh_label();
                 self.emit_branch_conditional_to(left_skip ^ 8, left_bit, set_one);
-                let (right_skip, right_bit) = self.emit_condition_test(right)?;
+                let (right_skip, right_bit) = self.emit_condition_with_truth_default(right, scratch, 0)?;
                 let exit = self.fresh_label();
                 self.emit_branch_conditional_to(right_skip, right_bit, exit);
                 self.bind_label(set_one);

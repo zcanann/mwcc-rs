@@ -18,6 +18,7 @@ mod call_input_dependencies;
 mod call_indexed_member;
 mod calls;
 mod constructed_new;
+mod common_integer_values;
 mod constructor_initializers;
 mod computed_index_subscript;
 mod computed_indexed_rmw;

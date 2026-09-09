@@ -838,9 +838,14 @@ impl Generator {
                         });
                     } else {
                         // slwi r0,x,32-k; srwi x,x,31; subf r0,x,r0; rotlwi r0,r0,k; add d,r0,x
-                        // The sign goes in the dividend register x (free after the slwi), not
-                        // the result — which would clobber r0's slwi value when the result is
-                        // r0 (a store). The return case has d==x, so this is identical there.
+                        // A sibling condition can still need the dividend. Its
+                        // reservation requires an independent sign value; a dying
+                        // dividend retains MWCC's destructive return idiom.
+                        let sign = if destination != x && self.reserved.contains(&x) {
+                            self.fresh_virtual_general()
+                        } else {
+                            x
+                        };
                         self.output
                             .instructions
                             .push(Instruction::ShiftLeftImmediate {
@@ -851,13 +856,13 @@ impl Generator {
                         self.output
                             .instructions
                             .push(Instruction::ShiftRightLogicalImmediate {
-                                a: x,
+                                a: sign,
                                 s: x,
                                 shift: 31,
                             });
                         self.output.instructions.push(Instruction::SubtractFrom {
                             d: GENERAL_SCRATCH,
-                            a: x,
+                            a: sign,
                             b: GENERAL_SCRATCH,
                         });
                         self.output.instructions.push(Instruction::RotateAndMask {
@@ -870,7 +875,7 @@ impl Generator {
                         self.output.instructions.push(Instruction::Add {
                             d: destination,
                             a: GENERAL_SCRATCH,
-                            b: x,
+                            b: sign,
                         });
                     }
                     return Ok(());
