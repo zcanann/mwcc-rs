@@ -461,7 +461,7 @@ impl Generator {
         let global_array_cursors = (self.behavior.optimization >= mwcc_versions::Optimization::O2)
             .then(|| super::structured_global_array_cursors::reduce(function, &self.global_arrays, &self.globals))
             .flatten();
-        let function = global_array_cursors.as_ref().unwrap_or(function);
+        let function = global_array_cursors.as_ref().map_or(function, |r| &r.function);
         let reduced_pointer_table_indices =
             super::structured_pointer_table_index_cursor::strength_reduce_pointer_table_indices(
                 function,
@@ -1994,9 +1994,19 @@ impl Generator {
                 sequenced_callback_wait_starter(function).map(str::to_owned);
             self.structured_cfg_cleanup_owner = true;
         }
+        let global_cursor_preferences = (self.behavior.optimization >= mwcc_versions::Optimization::O3
+            && self.behavior.optimization_goal == mwcc_versions::OptimizationGoal::Performance)
+            .then(|| global_array_cursors.as_ref().and_then(|reduction| {
+                super::structured_global_array_cursor_homes::plan(
+                    reduction, eager_saved_locals.len(), saved_parameters.len(),
+                    &deferred_home_plan, &parameter_home_reuse, count, saved_home_slot_base,
+                )
+            })).flatten();
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
-                if loop_assertion_strings.is_some() {
+                if let Some(preferences) = &global_cursor_preferences {
+                    self.fresh_virtual_general_preferring(preferences[home_index])
+                } else if loop_assertion_strings.is_some() {
                     let preferred = match home_index {
                         0 => 26,
                         1 => 27,

@@ -390,3 +390,28 @@ builds. Omitted processor selection compares immediately except in GC/1.1p1.
 Disabled scheduling uses immediate comparison. Canaries 2170–2175 and the
 processor panel distinguish these policies from unoptimized source order,
 dynamic bounds, pointer termination, and the original O0 shared-slot bugs.
+
+
+## Source roles for global-array cursor homes
+
+Strength reduction should return both the rewritten executable function and the
+source roles needed by later allocation: logical index and cursor locals in
+leading binding order. Preserve those identities when address calculations move
+from the body into loop initializers and updates. Consumers such as section-base
+analysis can use the rewritten function without interpreting the role facts.
+
+For the measured O3/O4 performance layout, rank cursor homes in binding order,
+then eager scalars, the logical index, and surviving parameters. Keep retained
+section bases above that range. Declaration order and later use multiplicity do
+not substitute for leading binding order. A separate planner translates roles
+through deferred-home groups and parameter-home reuse; it requires one cursor
+group, unique non-shared homes, a complete mapping, and an available saved-register
+range. It supplies preferences to ordinary virtual allocation, leaving interference,
+frames, initialization, and statement emission with their existing owners.
+
+Canaries 2176–2181 distinguish binding order from declaration/use order, eager
+versus incoming values, post-loop uses, and explicitly initialized cursors.
+O2 and size mode retain their current owners pending distinct address-representation
+work. Extra retained section anchors are a separate lifetime issue: assigning
+cursor priorities does not make a live base disappear or alias it with a moving
+cursor.

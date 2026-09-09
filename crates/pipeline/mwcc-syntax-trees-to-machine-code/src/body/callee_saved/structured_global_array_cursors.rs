@@ -8,13 +8,26 @@
 use super::structured_expression_visit::{visit_expression, visit_statement};
 use super::*;
 
+/// Source identities retained when leading address definitions become loop
+/// induction values. Allocation consumes these roles without reverse-matching
+/// the rewritten comma expressions.
+pub(super) struct CursorGroup {
+    pub(super) index: String,
+    pub(super) cursors: Vec<String>,
+}
+
+pub(super) struct Reduction {
+    pub(super) function: Function,
+    pub(super) groups: Vec<CursorGroup>,
+}
+
 pub(super) fn reduce(
     function: &Function,
     arrays: &std::collections::HashSet<String>,
     globals: &std::collections::HashMap<String, Type>,
-) -> Option<Function> {
+) -> Option<Reduction> {
     let mut result = function.clone();
-    let mut changed = false;
+    let mut groups = Vec::new();
     for (position, statement) in function.statements.iter().enumerate() {
         let Statement::Loop {
             kind: LoopKind::For,
@@ -149,9 +162,12 @@ pub(super) fn reduce(
             step: Some(next),
             body: tail.to_vec(),
         };
-        changed = true;
+        groups.push(CursorGroup {
+            index: index.clone(),
+            cursors: cursors.into_iter().map(|(name, _)| name).collect(),
+        });
     }
-    changed.then_some(result)
+    (!groups.is_empty()).then_some(Reduction { function: result, groups })
 }
 
 fn private_local(function: &Function, name: &str) -> bool {
@@ -344,7 +360,7 @@ mod tests {
             function,
             &std::collections::HashSet::from(["words".into()]),
             &std::collections::HashMap::from([("words".into(), Type::UnsignedInt)]),
-        )
+        ).map(|reduction| reduction.function)
     }
     fn body(function: &mut Function) -> &mut Vec<Statement> {
         let Statement::Loop { body, .. } = &mut function.statements[0] else {

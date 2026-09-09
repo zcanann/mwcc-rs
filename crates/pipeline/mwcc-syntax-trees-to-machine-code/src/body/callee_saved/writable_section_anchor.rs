@@ -95,8 +95,8 @@ fn plan_cursor_bss_anchor(
         globals,
         behavior.global_addressing == GlobalAddressing::SmallData,
     );
-    let (referenced, count) = referenced_symbols(&reduced, &symbols);
-    ((referenced.len() >= 2 || count >= 4) && references_span_call(&reduced, &referenced)).then(
+    let (referenced, count) = referenced_symbols(&reduced.function, &symbols);
+    ((referenced.len() >= 2 || count >= 4) && references_span_call(&reduced.function, &referenced)).then(
         || DataSectionAnchorPlan {
             symbols: referenced,
             anchor_symbol: "...bss.0".into(),

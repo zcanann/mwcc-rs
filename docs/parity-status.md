@@ -4,13 +4,68 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, counted-loop latch scheduling (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, global-array cursor home priorities (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `67d90aa260006f82c78df959dfe09149d5111b8923564ecdcb5d8b62e0640a76:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `266f9d64ba89c8e5eb494b6a5db3e836c793aeca8a0895b7c2087a9e799de1bc:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Global-array cursor home priorities, 2026-09-08
+
+AXVPB's retained pointers previously followed the logical index in saved-register
+allocation. The global-array strength reducer now retains source-role facts:
+which local is the logical index and the leading binding order of the cursor
+locals. Its rewritten executable function remains separate from those facts.
+The writable-section anchor analysis consumes the same rewritten function as
+before. A separate home-priority planner uses the roles after ordinary liveness
+and deferred-home planning, without reconstructing them from lowered comma
+expressions or changing register interference.
+
+For O3/O4 performance mode, cursors rank first in leading source-binding order,
+followed by eager scalars, the logical index, and surviving parameters. Retained
+section bases keep their preceding saved homes. Reversing declarations, later
+use order, or use counts does not reorder the cursors; reversing their leading
+bindings does. The planner requires one reduced cursor group, distinct deferred
+homes, a complete role mapping, and no parameter-home sharing. Other plans
+retain their existing preferences. O2 and size mode still need their different
+indexed-address representations.
+
+Canaries **2176–2181** contain nine functions in six modes across fifteen builds:
+all **90 objects / 810 functions** compile on all three sides. They vary binding
+and declaration order, use order/counts, incoming and eager scalar values,
+post-loop uses, and explicitly initialized cursors. **360 functions** change,
+with unchanged instruction counts. Capturing the saved GPRs at the first callback
+shows **0 → 243 complete reference home-map matches**. The other 117 changed
+cases retain an extra section anchor: early builds in ordinary loops, and later
+builds when arrays are referenced after the loop. Whole-function exact matches
+remain **0/810**; these home-map matches are not byte-exact function matches.
+
+All **12,960 new execution cases** pass against the reference and independent
+memory/callback models. Checks include scalar overflow values, callback
+arguments, mutation/clobbers, guarded arrays, callee-saved GPRs/FPRs, SP, and LR.
+Of **1,500** preceding objects, **1,215** remain identical; **285 objects / 1,605
+functions** change register allocation without changing instruction counts or
+losing exact matches. All **28,560** affected earlier execution cases pass.
+The older **1,110** and recent **2,626** objects remain identical, with **89**
+unchanged recent failures. All **1,674** indexed outcomes remain unchanged
+(1,114 compiled, 972 known exact).
+
+Full AXVPB changes only `__AXVPBInit` across fifteen builds. Its retained home map
+and its **28-byte loop tail now match exactly in 12/15 builds**, up from zero.
+This advances the preceding checkpoint's register-normalized tail matches to
+actual tail bytes. The three newest builds still need a different synthesized
+offset representation. All **240** initializer cases pass against the reference
+compilers and original game binary. The complete initializer remains **0/15
+byte-exact**; instruction counts are unchanged. All 24 AX/GX translation units
+compile, and the other 23 objects are identical.
+
+Total native coverage is **41,760 cases**. Backend tests pass **1,669**, retaining
+the existing nested-asm inline exclusion. The full corpus was not rerun.
+`target/cursor-rank-final-verification.json` binds the final compiler/harness
+fingerprint to **1,170 native-tested object entries**, the captured home maps,
+and preceding-object hashes.
 
 ## Counted-loop latch scheduling, 2026-09-08
 
