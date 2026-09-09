@@ -425,6 +425,10 @@ pub struct TranslationUnit {
     /// uses their parameter types and variadic convention; legacy DWARF emits
     /// a callable type DIE before the object that references it.
     pub global_function_types: std::collections::HashMap<String, crate::SourceFunctionType>,
+    /// Callable signatures for function-pointer parameters and local typedef
+    /// declarations, keyed by emitted function and variable name.
+    pub function_variable_function_types:
+        std::collections::HashMap<(String, String), crate::SourceFunctionType>,
     /// Source aggregate identity for function parameters, keyed by emitted
     /// function name and parameter name. Executable lowering only needs the
     /// resolved pointer width/stride; legacy DWARF needs the declaration graph.

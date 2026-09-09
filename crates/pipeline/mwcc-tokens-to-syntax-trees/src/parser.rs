@@ -567,6 +567,8 @@ pub(crate) struct Parser {
     pub(crate) global_structs: HashMap<String, String>,
     /// Declaration-only signatures for file-scope function-pointer objects.
     pub(crate) global_function_types: HashMap<String, mwcc_syntax_trees::SourceFunctionType>,
+    pub(crate) function_variable_function_types:
+        HashMap<(String, String), mwcc_syntax_trees::SourceFunctionType>,
     /// Function/parameter source aggregate identities retained for debug-info
     /// lowering after the executable type has collapsed to a sized pointer.
     pub(crate) function_parameter_structs: HashMap<(String, String), String>,

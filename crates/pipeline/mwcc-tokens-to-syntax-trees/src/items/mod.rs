@@ -1365,6 +1365,9 @@ impl Parser {
             enumeration_definitions: std::mem::take(&mut self.enumeration_definitions),
             global_aggregate_tags: std::mem::take(&mut self.global_structs),
             global_function_types: std::mem::take(&mut self.global_function_types),
+            function_variable_function_types: std::mem::take(
+                &mut self.function_variable_function_types,
+            ),
             function_parameter_aggregate_tags: std::mem::take(&mut self.function_parameter_structs),
             function_local_aggregate_tags: std::mem::take(&mut self.function_local_structs),
             function_return_aggregate_tags: std::mem::take(&mut self.function_return_structs),
@@ -2132,7 +2135,7 @@ impl Parser {
             // error-recovery path), never emitted. (The `static`/`__declspec(weak)`
             // qualifiers already ran.)
             if *self.peek() == Token::Asm && !is_inline {
-                let (name, function) = self.parse_asm_function(is_static, is_weak, false)?;
+                let (name, function) = self.parse_asm_function(is_static, is_weak, false, prototypes)?;
                 if let Some(mut function) = function {
                     function.section = declspec_section
                         .clone()
@@ -2170,7 +2173,7 @@ impl Parser {
                     })
                     .any(|token| *token == Token::Asm);
             if asm_follows_return_type {
-                let (name, function) = self.parse_asm_function(is_static, is_weak, true)?;
+                let (name, function) = self.parse_asm_function(is_static, is_weak, true, prototypes)?;
                 if let Some(mut function) = function {
                     function.section = declspec_section
                         .clone()
@@ -3570,6 +3573,15 @@ impl Parser {
                 || source_function_name.clone(),
                 |scope| format!("{scope}::{source_function_name}"),
             );
+            let parameter_function_types = parameters
+                .iter()
+                .zip(&cxx_parameters)
+                .filter_map(|(parameter, identity)| {
+                    identity
+                        .function_source_identity()
+                        .map(|signature| (parameter.name.clone(), signature))
+                })
+                .collect::<Vec<_>>();
             let declared_parameter_types = parameters
                 .iter()
                 .map(|parameter| parameter.parameter_type)
@@ -3742,6 +3754,12 @@ impl Parser {
                 if !parameter.is_empty() {
                     self.function_parameter_row_arrays
                         .insert((name.clone(), parameter), row);
+                }
+            }
+            for (parameter, signature) in parameter_function_types {
+                if !parameter.is_empty() {
+                    self.function_variable_function_types
+                        .insert((name.clone(), parameter), signature);
                 }
             }
             for (parameter, fundamental) in source_parameter_fundamentals {
@@ -5081,6 +5099,10 @@ impl Parser {
                 break;
             }
             let declared_type = self.parse_type_with_prefix_const(declaration_const)?;
+            let local_function_type = self
+                .last_cxx_function_type
+                .take()
+                .map(|signature| signature.source_identity());
             // Capture object constness before an initializer parses another type.
             // `static const char* p` is a writable pointer to const characters.
             let static_pointer_const = (is_static
@@ -5232,6 +5254,12 @@ impl Parser {
                     }
                 }
                 let name = self.parse_identifier()?;
+                if let Some(signature) = &local_function_type {
+                    self.function_variable_function_types.insert(
+                        (debug_function_name.clone(), name.clone()),
+                        signature.clone(),
+                    );
+                }
                 let mut attribute_alignment = self.skip_attributes()?;
                 self.retain_function_local_pointer_memory(
                     &name,

@@ -4,13 +4,71 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, wide loop control and Dolphin alarm queue operations (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, wide callbacks and the full Dolphin alarm unit (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `fae467532e7bb7bbb6895beecd347cf39e49ba33623985fad7254259792bb347:c1630389279a720ca8e67ed2213e9f4688fcafeb28784407ef7b947bc2194d06`
+Latest measured compiler + harness fingerprint: `d9ed2789ed538a5e03e40bd078f7b6b3679478266e0b6548f2c09a945767fdd5:df9354f206a82b380e29eb1a2eb6148ad6f1e4fc9e8bc2ecdb6b82433f1ecc62`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Wide callbacks and the full Dolphin alarm unit, 2026-09-09
+
+The **unchanged, complete Battle for Bikini Bottom `os/OSAlarm.c`** now compiles
+in **90/90** candidate configurations (15 versions × six optimization modes),
+up from **0**. The references compile **72/90**; 18 reject the project headers.
+There are **132/576** exact function instruction/relocation matches. The Dolphin
+frontier improves **197 → 199/302**, gaining this unit under GC/1.2.5n and GC/1.3;
+all 197 previously compiling objects remain byte-for-byte unchanged. Complete
+compilation does not yet imply matching full object output.
+
+The word/pair graph now accepts typed indirect calls, narrow integer values and
+addresses of uninitialized local aggregates. Callable signatures survive parsing
+for function-pointer parameters and typedef-based locals, keyed by owning
+function. Call lowering converts formal arguments, aligns pair registers and
+keeps the target live across argument setup. Byte/halfword loads, stores, casts,
+parameters and call results share scalar-width selection in a separate storage
+module. Aggregate frame slots carry an explicit lower bound for register-save
+placement, preventing older frame conventions from overlapping a live context
+buffer. Bodyless asm declarations now retain their callable prototypes. Missing
+C declarations use default promotions and an implicit int result; this is required
+by the original source's undeclared `OSLoadContext` call. Missing typed indirect
+signatures, variadic callbacks and unsupported floating/aggregate-value operations
+still defer rather than guessing an ABI.
+
+Committed samples **2302–2304** cover full 712-byte context buffers, parameter
+and local callbacks, narrow fields and conversions, asm prototypes, implicit C
+calls and narrow callback results. They compile **270/270** candidate and reference
+configurations, up from **0** candidate configurations; **0/900** function outputs
+are exact matches. Their **115,200 candidate** executions pass. On the complete
+original alarm objects, insertion/setters/cancellation pass **46,080 candidate**
+cases; direct exception dispatch and the assembly entry pass another **23,040**.
+The dispatch checks cover empty/future/expired queues, periodic reinsertion,
+timer clamps, scheduler order, temporary-context clearing, callback arguments
+and terminal context handoff. Original DOL division and register-save helpers
+execute directly. The harness models Gekko GQR reads and OS services;
+`OSLoadContext` terminates execution, so these dispatch checks do not claim to
+execute its context-restoration implementation.
+
+Across these probes, **184,320 candidate** cases pass. Of **170,496 reference**
+cases, **1,022** fail, all at GC/1.1p1 `-O0`: 256 in context/narrow samples,
+510 in callable-declaration samples and 256 in alarm setters. Saved disassembly
+confirms overlapping parameter/local/save slots, including a callback pointer
+overwritten by context storage and a pair argument overwriting the saved LR.
+These original behaviors remain explicit fidelity gaps; the candidate does not
+yet reproduce them. Narrow callback arguments are checked at their declared
+width because unused upper register bits need not be canonical.
+
+Validation: **2,693 Rust tests pass**, with the same 12 known exclusions and eight
+existing ignored tests. The established 2,865-case panel retains 2,589 identical
+objects and 276 identical diagnostics; all 2,310 recent objects and all 900 older
+assembly-panel results are unchanged. The final verifier binds **12,905 object
+artifacts** to the measured compiler and native results. Unchanged native objects
+were reused only after checking their hashes. Evidence is in ignored
+`target/wide-callback-{canaries,project,frontier,regressions,recent,asm-prior}/results.json`,
+`target/wide-callback-{native,declarations-native,lifecycle-project-native,dispatch-native}.json`,
+`target/wide-callback-reference-frames.dis`, `target/wide-callback-verified-tests.log`
+and `target/wide-callback-final-verification.json`.
 
 ## Wide loop control and Dolphin alarm queues, 2026-09-09
 

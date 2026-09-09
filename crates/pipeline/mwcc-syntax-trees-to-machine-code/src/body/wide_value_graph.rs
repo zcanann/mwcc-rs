@@ -14,11 +14,17 @@ use std::collections::HashMap;
 mod arithmetic;
 #[path = "wide_value_graph/control.rs"]
 mod control;
+#[path = "wide_value_graph/storage.rs"]
+mod storage;
 
 fn supported(ty: Type) -> bool {
     matches!(
         ty,
-        Type::Int
+        Type::Char
+            | Type::UnsignedChar
+            | Type::Short
+            | Type::UnsignedShort
+            | Type::Int
             | Type::UnsignedInt
             | Type::Pointer(_)
             | Type::StructPointer { .. }
@@ -40,6 +46,12 @@ enum Source {
     Constant(u64),
     Register(usize),
 }
+#[derive(Debug)]
+enum CallTarget {
+    Direct { name: String, runtime: bool },
+    Indirect(Value),
+}
+
 #[derive(Debug)]
 enum Operation {
     Local {
@@ -74,6 +86,10 @@ enum Operation {
         result: Value,
         symbol: String,
     },
+    FrameAddress {
+        result: Value,
+        offset: i16,
+    },
     Load {
         result: Value,
         pointer: Value,
@@ -93,8 +109,7 @@ enum Operation {
         right: Value,
     },
     Call {
-        runtime: bool,
-        name: String,
+        target: CallTarget,
         arguments: Vec<(u32, Value)>,
         result: Option<Value>,
     },
@@ -108,11 +123,15 @@ struct Graph<'a> {
     globals: &'a HashMap<String, Type>,
     returns: &'a HashMap<String, Type>,
     parameters: &'a HashMap<String, Vec<Type>>,
+    indirects: &'a HashMap<String, mwcc_syntax_trees::SourceFunctionType>,
     returned: Option<Value>,
     return_type: Type,
     fixed_bindings: bool,
     labels: usize,
     loop_targets: Vec<(usize, usize)>,
+    aggregate_slots: HashMap<String, (i16, Type)>,
+    stack_end: u32,
+    allow_implicit_calls: bool,
 }
 
 /// The word/pair-only EABI subset. A pair starts at an odd GPR. Reject overflow
@@ -152,7 +171,9 @@ impl<'a> Graph<'a> {
             return None;
         }
         if let Source::Constant(bits) = value.source {
-            let bits = if !wide(ty) {
+            let bits = if ty.width() < 32 {
+                storage::narrow_constant(bits, ty)
+            } else if !wide(ty) {
                 bits & 0xffff_ffff
             } else if !wide(value.ty) && value.ty.is_signed() {
                 (bits as i32 as i64) as u64
@@ -164,7 +185,7 @@ impl<'a> Graph<'a> {
                 source: Source::Constant(bits),
             });
         }
-        if wide(ty) == wide(value.ty) {
+        if wide(ty) == wide(value.ty) && (ty.width() >= 32 || ty == value.ty) {
             return Some(Value { ty, ..value });
         }
         let result = self.fresh(ty);
@@ -173,6 +194,12 @@ impl<'a> Graph<'a> {
     }
 
     fn address(&mut self, name: &str) -> Option<Value> {
+        if let Some((offset, Type::Struct { size, .. })) = self.aggregate_slots.get(name).copied() {
+            let result = self.fresh(Type::StructPointer { element_size: size });
+            self.operations
+                .push(Operation::FrameAddress { result, offset });
+            return Some(result);
+        }
         let ty = *self.globals.get(name)?;
         if !(supported(ty) || matches!(ty, Type::Struct { .. })) || self.types.contains_key(name) {
             return None;
@@ -224,7 +251,10 @@ impl<'a> Graph<'a> {
                     return None;
                 };
                 let address = self.address(name)?;
-                let ty = match self.globals.get(name)? {
+                let ty = match self.types.get(name).or_else(|| self.globals.get(name))? {
+                    Type::Struct { size, .. } => Type::StructPointer {
+                        element_size: *size,
+                    },
                     Type::LongLong => Type::Pointer(Pointee::LongLong),
                     Type::UnsignedLongLong => Type::Pointer(Pointee::UnsignedLongLong),
                     Type::Int => Type::Pointer(Pointee::Int),
@@ -310,7 +340,11 @@ impl<'a> Graph<'a> {
                     BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight
                 );
                 let ty = if shift {
-                    left.ty
+                    if left.ty.width() < 32 {
+                        Type::Int
+                    } else {
+                        left.ty
+                    }
                 } else if pointers {
                     Type::UnsignedInt
                 } else if left.ty == Type::UnsignedLongLong || right.ty == Type::UnsignedLongLong {
@@ -351,8 +385,10 @@ impl<'a> Graph<'a> {
                         _ => "__mod2u",
                     };
                     self.operations.push(Operation::Call {
-                        runtime: true,
-                        name: name.into(),
+                        target: CallTarget::Direct {
+                            runtime: true,
+                            name: name.into(),
+                        },
                         arguments: vec![(3, left), (5, right)],
                         result: Some(result),
                     });
@@ -376,29 +412,71 @@ impl<'a> Graph<'a> {
     }
 
     fn call(&mut self, name: &str, arguments: &[Expression], used: bool) -> Option<Option<Value>> {
-        if self.types.contains_key(name) || self.globals.contains_key(name) {
+        let (target, formals, ty) =
+            if self.types.contains_key(name) || self.globals.contains_key(name) {
+                let signature = self.indirects.get(name)?.clone();
+                if signature.variadic {
+                    return None;
+                }
+                let pointer = self.expression(&Expression::Variable(name.into()))?;
+                if !matches!(pointer.ty, Type::Pointer(_) | Type::StructPointer { .. }) {
+                    return None;
+                }
+                (
+                    CallTarget::Indirect(pointer),
+                    Some(
+                        signature
+                            .parameters
+                            .iter()
+                            .map(|p| p.declared_type)
+                            .collect::<Vec<_>>(),
+                    ),
+                    signature.return_type.declared_type,
+                )
+            } else {
+                let formals = self.parameters.get(name).cloned();
+                if formals.is_none() && !self.allow_implicit_calls {
+                    return None;
+                }
+                (
+                    CallTarget::Direct {
+                        runtime: false,
+                        name: name.into(),
+                    },
+                    formals,
+                    self.returns.get(name).copied().unwrap_or(Type::Int),
+                )
+            };
+        if formals
+            .as_ref()
+            .is_some_and(|types| types.len() != arguments.len())
+        {
             return None;
         }
-        let formals = self.parameters.get(name)?.clone();
-        if formals.len() != arguments.len() {
-            return None;
-        }
-        let registers = abi_registers(formals.iter().copied())?;
-        let mut inputs = Vec::new();
-        // Evaluate all arguments before touching ABI destinations. Physical
-        // parallel-copy constraints are then visible to the normal allocator.
-        for ((argument, ty), high) in arguments.iter().zip(formals).zip(registers) {
+        let mut values = Vec::new();
+        // Undeclared C functions return int and use default argument promotions.
+        // Typed pointer calls require their retained declaration; do not infer it.
+        for (index, argument) in arguments.iter().enumerate() {
             let value = self.expression(argument)?;
-            inputs.push((high, self.convert(value, ty)?));
+            let ty =
+                formals
+                    .as_ref()
+                    .map(|types| types[index])
+                    .unwrap_or(if value.ty.width() < 32 {
+                        Type::Int
+                    } else {
+                        value.ty
+                    });
+            values.push(self.convert(value, ty)?);
         }
-        let ty = *self.returns.get(name)?;
+        let registers = abi_registers(values.iter().map(|value| value.ty))?;
+        let inputs = registers.into_iter().zip(values).collect();
         if !(supported(ty) || ty == Type::Void) || (used && ty == Type::Void) {
             return None;
         }
         let result = used.then(|| self.fresh(ty));
         self.operations.push(Operation::Call {
-            runtime: false,
-            name: name.into(),
+            target,
             arguments: inputs,
             result,
         });
@@ -459,8 +537,9 @@ impl<'a> Graph<'a> {
 
     fn member_address(&mut self, base: &Expression, bytes: u32) -> Option<Value> {
         let pointer = if let Expression::Variable(name) = base {
-            if !self.types.contains_key(name)
-                && matches!(self.globals.get(name), Some(Type::Struct { .. }))
+            if self.aggregate_slots.contains_key(name)
+                || (!self.types.contains_key(name)
+                    && matches!(self.globals.get(name), Some(Type::Struct { .. })))
             {
                 self.address(name)?
             } else {
@@ -578,10 +657,13 @@ impl<'a> Graph<'a> {
         globals: &'a HashMap<String, Type>,
         returns: &'a HashMap<String, Type>,
         parameters: &'a HashMap<String, Vec<Type>>,
+        indirects: &'a HashMap<String, mwcc_syntax_trees::SourceFunctionType>,
+        allow_implicit_calls: bool,
     ) -> Option<Self> {
         if !(supported(function.return_type) || function.return_type == Type::Void)
             || function.locals.iter().any(|l| {
-                !supported(l.declared_type)
+                !(supported(l.declared_type) || matches!(l.declared_type, Type::Struct { .. }))
+                    || (matches!(l.declared_type, Type::Struct { .. }) && l.initializer.is_some())
                     || l.is_volatile
                     || l.is_static
                     || l.array_length.is_some()
@@ -626,19 +708,37 @@ impl<'a> Graph<'a> {
             globals,
             returns,
             parameters,
+            indirects,
             returned: None,
             return_type: function.return_type,
             fixed_bindings: control::requires_homes(source_statements, false),
             labels: 0,
             loop_targets: Vec::new(),
+            aggregate_slots: HashMap::new(),
+            stack_end: 8,
+            allow_implicit_calls,
         };
         for (parameter, high) in function.parameters.iter().zip(incoming) {
             let result = graph.fresh(parameter.parameter_type);
             graph.operations.push(Operation::Parameter { result, high });
             graph.bindings.insert(parameter.name.clone(), result);
         }
-        if graph.fixed_bindings {
-            for local in &function.locals {
+        for local in &function.locals {
+            if let Type::Struct { size, align } = local.declared_type {
+                let alignment = u32::from(align)
+                    .max(u32::from(local.attribute_alignment.unwrap_or(1)))
+                    .max(1);
+                if alignment > 16 || size == 0 {
+                    return None;
+                }
+                let offset = graph.stack_end.div_ceil(alignment).checked_mul(alignment)?;
+                graph.stack_end = offset.checked_add(size)?;
+                i16::try_from(graph.stack_end.checked_add(31)?).ok()?;
+                graph.aggregate_slots.insert(
+                    local.name.clone(),
+                    (i16::try_from(offset).ok()?, local.declared_type),
+                );
+            } else if graph.fixed_bindings {
                 let result = graph.fresh(local.declared_type);
                 graph.operations.push(Operation::Local { result });
                 graph.bindings.insert(local.name.clone(), result);
@@ -690,6 +790,8 @@ impl Generator {
             &self.globals,
             &self.call_return_types,
             &self.call_parameter_types,
+            &self.indirect_call_types,
+            !self.source_is_cxx,
         ) else {
             return Ok(false);
         };
@@ -711,24 +813,45 @@ impl Generator {
                 _ => false,
             })
         }
-        if has_call(&operations) {
-            // Allocation grows this canonical frame and then applies the
-            // generation's linkage-first/predecrement convention.
-            self.non_leaf = true;
-            self.frame_size = 16;
-            self.output.instructions.extend([
-                Instruction::StoreWordWithUpdate {
+        for (name, (offset, value_type)) in &graph.aggregate_slots {
+            let Type::Struct { size, .. } = value_type else {
+                unreachable!()
+            };
+            self.frame_slots.insert(
+                name.clone(),
+                crate::generator::FrameSlot {
+                    offset: *offset,
+                    size: *size,
+                    value_type: *value_type,
+                    class: crate::generator::ValueClass::General,
+                    parameter_register: None,
+                    is_array: false,
+                },
+            );
+        }
+        if !graph.aggregate_slots.is_empty() {
+            self.minimum_general_save_offset = graph.stack_end as i16;
+        }
+        self.non_leaf = has_call(&operations);
+        if self.non_leaf || !graph.aggregate_slots.is_empty() {
+            self.frame_size = graph.stack_end.max(16).div_ceil(16) as i16 * 16;
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
                     s: 1,
                     a: 1,
-                    offset: -16,
-                },
-                Instruction::MoveFromLinkRegister { d: 0 },
-                Instruction::StoreWord {
-                    s: 0,
-                    a: 1,
-                    offset: 20,
-                },
-            ]);
+                    offset: -self.frame_size,
+                });
+            if self.non_leaf {
+                self.output.instructions.extend([
+                    Instruction::MoveFromLinkRegister { d: 0 },
+                    Instruction::StoreWord {
+                        s: 0,
+                        a: 1,
+                        offset: self.frame_size + 4,
+                    },
+                ]);
+            }
         }
         let labels: Vec<_> = (0..graph.labels).map(|_| self.fresh_label()).collect();
         let exit = self.fresh_label();
@@ -864,10 +987,16 @@ impl Generator {
                             .instructions
                             .push(Instruction::move_register(d, high));
                     } else {
-                        self.output
-                            .instructions
-                            .push(Instruction::move_register(destination.low, high));
+                        self.wide_graph_narrow(result.ty, destination.low, high);
                     }
+                }
+                Operation::FrameAddress { result, offset } => {
+                    let destination = self.wide_graph_destination(result, registers).low;
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: destination,
+                        a: 1,
+                        immediate: offset,
+                    });
                 }
                 Operation::Address { result, symbol } => {
                     let destination = self.wide_graph_destination(result, registers).low;
@@ -894,21 +1023,19 @@ impl Generator {
                             offset: 4,
                         });
                     } else {
-                        self.output.instructions.push(Instruction::LoadWord {
-                            d: destination.low,
-                            a: pointer,
-                            offset: 0,
-                        });
+                        self.wide_graph_scalar_load(result.ty, destination.low, pointer);
                     }
                 }
                 Operation::Store { pointer, value } => {
                     let pointer = self.wide_graph_operand(pointer, registers).low;
+                    let ty = value.ty;
                     let value = self.wide_graph_operand(value, registers);
-                    self.output.instructions.push(Instruction::StoreWord {
-                        s: value.low,
-                        a: pointer,
-                        offset: if value.high.is_some() { 4 } else { 0 },
-                    });
+                    self.wide_graph_scalar_store(
+                        ty,
+                        value.low,
+                        pointer,
+                        if value.high.is_some() { 4 } else { 0 },
+                    );
                     if let Some(high) = value.high {
                         self.output.instructions.push(Instruction::StoreWord {
                             s: high,
@@ -920,9 +1047,7 @@ impl Generator {
                 Operation::Convert { result, value } => {
                     let source = self.wide_graph_operand(value, registers);
                     let destination = self.wide_graph_destination(result, registers);
-                    self.output
-                        .instructions
-                        .push(Instruction::move_register(destination.low, source.low));
+                    self.wide_graph_narrow(result.ty, destination.low, source.low);
                     if let Some(high) = destination.high {
                         if value.ty.is_signed() {
                             self.output.instructions.push(
@@ -946,12 +1071,15 @@ impl Generator {
                     self.emit_wide_graph_arithmetic(result, operator, left, right, registers)?;
                 }
                 Operation::Call {
-                    runtime,
-                    name,
+                    target,
                     arguments,
                     result,
                 } => {
-                    if runtime {
+                    if let CallTarget::Direct {
+                        name,
+                        runtime: true,
+                    } = &target
+                    {
                         self.call_parameter_types
                             .insert(name.clone(), vec![Type::LongLong, Type::LongLong]);
                         self.call_return_types.insert(name.clone(), Type::LongLong);
@@ -961,6 +1089,12 @@ impl Generator {
                     }
                     // Materialize every operand before starting the ABI copy
                     // group; constants must not clobber already filled inputs.
+                    let indirect = match &target {
+                        CallTarget::Indirect(value) => {
+                            Some(self.wide_graph_operand(*value, registers).low)
+                        }
+                        _ => None,
+                    };
                     let arguments: Vec<_> = arguments
                         .into_iter()
                         .map(|(high, value)| (high, self.wide_graph_operand(value, registers)))
@@ -979,16 +1113,28 @@ impl Generator {
                                 .push(Instruction::move_register(high, value.low));
                         }
                     }
-                    self.record_relocation(RelocationKind::Rel24, &name);
-                    self.output
-                        .instructions
-                        .push(Instruction::BranchAndLink { target: name });
+                    match target {
+                        CallTarget::Direct { name, .. } => {
+                            self.record_relocation(RelocationKind::Rel24, &name);
+                            self.output
+                                .instructions
+                                .push(Instruction::BranchAndLink { target: name });
+                        }
+                        CallTarget::Indirect(_) => {
+                            self.output.instructions.extend([
+                                Instruction::move_register(12, indirect.unwrap()),
+                                Instruction::MoveToCountRegister { s: 12 },
+                                Instruction::BranchToCountRegisterAndLink,
+                            ]);
+                        }
+                    }
                     if let Some(result) = result {
                         let destination = self.wide_graph_destination(result, registers);
-                        self.output.instructions.push(Instruction::move_register(
+                        self.wide_graph_narrow(
+                            result.ty,
                             destination.low,
                             if destination.high.is_some() { 4 } else { 3 },
-                        ));
+                        );
                         if let Some(high) = destination.high {
                             self.output
                                 .instructions
@@ -1065,11 +1211,15 @@ mod tests {
             globals: &globals,
             returns: &returns,
             parameters: &parameters,
+            indirects: &HashMap::new(),
             returned: None,
             return_type: Type::Void,
             fixed_bindings: false,
             labels: 0,
             loop_targets: Vec::new(),
+            aggregate_slots: HashMap::new(),
+            stack_end: 8,
+            allow_implicit_calls: false,
         };
         for (ty, expected) in [(Type::Int, u64::MAX), (Type::UnsignedInt, 0xffff_ffff)] {
             let input = Value {

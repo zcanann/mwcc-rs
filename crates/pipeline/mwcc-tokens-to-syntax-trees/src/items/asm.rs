@@ -56,6 +56,7 @@ impl Parser {
         is_static: bool,
         is_weak: bool,
         asm_after_return_type: bool,
+        prototypes: &mut Vec<(String, Type, Vec<Type>)>,
     ) -> Compilation<(String, Option<Function>)> {
         let mut is_static = is_static;
         let return_type = if asm_after_return_type {
@@ -92,6 +93,8 @@ impl Parser {
         if *self.peek() == Token::Semicolon {
             self.advance();
             self.asm_parameters.clear();
+            prototypes.push((name.clone(), return_type,
+                source_parameters.iter().map(|parameter| parameter.parameter_type).collect()));
             return Ok((name, None));
         }
         let body_start_line = self.current_location().line;

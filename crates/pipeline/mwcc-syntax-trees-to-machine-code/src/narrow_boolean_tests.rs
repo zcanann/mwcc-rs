@@ -83,6 +83,7 @@ fn lower_with_language(f: &Function, config: CompilerConfig, is_cxx: bool) -> Ma
             nonvolatile_pointer_bindings: &Default::default(),
             parameter_fundamentals: &Default::default(),
             local_fundamentals: &Default::default(),
+            variable_function_types: &Default::default(),
             variable_reference_counts: &Default::default(),
         },
         config,

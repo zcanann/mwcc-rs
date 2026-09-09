@@ -577,6 +577,10 @@ impl CxxParameterType {
         self
     }
 
+    pub(crate) fn function_source_identity(&self) -> Option<mwcc_syntax_trees::SourceFunctionType> {
+        self.function_type.as_deref().map(CxxFunctionType::source_identity)
+    }
+
     pub(crate) fn with_function_type(mut self, function_type: Option<CxxFunctionType>) -> Self {
         self.function_type = function_type.map(Box::new);
         self

@@ -383,6 +383,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         global_array_inner_dimensions: HashMap::new(),
         global_types: HashMap::new(),
         global_function_types: HashMap::new(),
+        function_variable_function_types: HashMap::new(),
         function_parameter_structs: HashMap::new(),
         function_local_structs: HashMap::new(),
         last_struct_tag: None,
@@ -1825,7 +1826,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unit.section_prototypes, ["early", "later"]);
-        assert_eq!(unit.prototypes.len(), 0);
+        assert_eq!(
+            unit.prototypes,
+            [
+                ("early".into(), Type::Void, vec![]),
+                ("later".into(), Type::Void, vec![Type::Pointer(Pointee::Int)]),
+            ]
+        );
         assert_eq!(unit.functions.len(), 1);
     }
 
@@ -12326,6 +12333,51 @@ blr\n\
             Some(Expression::Member { offset: 0, .. })));
         assert!(matches!(unit.functions[1].return_expression,
             Some(Expression::Member { offset: 4, .. })));
+    }
+
+    #[test]
+    fn retains_callable_signatures_in_function_variable_scope() {
+        let source = r#"
+            typedef long long (*Wide)(unsigned char);
+            typedef void (*Notice)(int);
+            long long first(Wide callback) {
+                Wide selected;
+                selected = callback;
+                return selected(3);
+            }
+            void second(Notice callback) {
+                Notice selected;
+                selected = callback;
+                selected(4);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), false, true, 1, 3,
+        ).unwrap();
+        use mwcc_syntax_trees::Type;
+        for name in ["callback", "selected"] {
+            let first = &unit.function_variable_function_types[&("first".into(), name.into())];
+            assert_eq!(first.return_type.declared_type, Type::LongLong);
+            assert_eq!(first.parameters[0].declared_type, Type::UnsignedChar);
+            assert!(!first.variadic);
+            let second = &unit.function_variable_function_types[&("second".into(), name.into())];
+            assert_eq!(second.return_type.declared_type, Type::Void);
+            assert_eq!(second.parameters[0].declared_type, Type::Int);
+        }
+    }
+
+    #[test]
+    fn retains_both_asm_prototype_spellings_as_callable_declarations() {
+        let source = "asm unsigned long long clock(unsigned char tag); void asm restore(void *context);";
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), false, true, 1, 3,
+        ).unwrap();
+        use mwcc_syntax_trees::{Pointee, Type};
+        assert!(unit.functions.is_empty());
+        assert_eq!(unit.prototypes, vec![
+            ("clock".into(), Type::UnsignedLongLong, vec![Type::UnsignedChar]),
+            ("restore".into(), Type::Void, vec![Type::Pointer(Pointee::Int)]),
+        ]);
     }
 
     #[test]

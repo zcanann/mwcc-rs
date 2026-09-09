@@ -180,6 +180,7 @@ pub fn lower_function(
             nonvolatile_pointer_bindings: &HashSet::new(),
             parameter_fundamentals: &HashMap::new(),
             local_fundamentals: &HashMap::new(),
+            variable_function_types: &HashMap::new(),
             variable_reference_counts: &HashMap::new(),
         },
         config,
@@ -191,6 +192,8 @@ pub fn lower_function(
 /// call boundary each time. Keys use emitted function names and source locals.
 #[derive(Clone, Copy)]
 pub struct SourceFunctionFacts<'a> {
+    pub variable_function_types:
+        &'a HashMap<(String, String), mwcc_syntax_trees::SourceFunctionType>,
     pub variable_reference_counts: &'a HashMap<String, HashMap<String, usize>>,
     /// Source language, independent of C++ name mangling or extern-C linkage.
     pub is_cxx: bool,
@@ -764,6 +767,7 @@ fn lower_function_body(
         reserved: HashSet::new(),
         prepared_general_argument_end: 3,
         frame_size: 0,
+        minimum_general_save_offset: 0,
         float: generator::FloatContext::default(),
         double_tables: globals
             .iter()
@@ -779,6 +783,10 @@ fn lower_function_body(
         source_is_cxx: source_facts.is_cxx,
         return_source_fundamental: call_return_fundamentals.get(&function.name).copied(),
         call_return_fundamentals: call_return_fundamentals.clone(),
+        indirect_call_types: source_facts.variable_function_types.iter()
+            .filter(|((owner, _), _)| owner == &function.name)
+            .map(|((_, name), signature)| (name.clone(), signature.clone()))
+            .collect(),
         parameter_source_fundamentals: source_facts.parameter_fundamentals
             .iter()
             .filter(|((owner, _), _)| owner == &function.name)

@@ -682,7 +682,15 @@ impl Generator {
         } else {
             0
         };
+        let addressable_local_size = if self.minimum_general_save_offset != 0 {
+            self.minimum_general_save_offset
+                .saturating_add(i16::try_from(physical_saved.len() * 4).unwrap_or(i16::MAX))
+                .saturating_add(7) & !7
+        } else {
+            0
+        };
         let new_size = base_size
+            .max(addressable_local_size)
             .max(conversion_size)
             .max(outgoing_size)
             .max(planned_conversion_size);

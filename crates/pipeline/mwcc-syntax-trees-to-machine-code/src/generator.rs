@@ -479,6 +479,9 @@ pub(crate) struct Generator {
     /// Stack frame size in bytes (0 = leaf function, no frame). Set when an
     /// operation needs scratch stack space (e.g. an int/float conversion).
     pub(crate) frame_size: i16,
+    /// Lower bound for the allocated GPR save range when selection reserves
+    /// an addressable local region that must survive calls intact.
+    pub(crate) minimum_general_save_offset: i16,
     /// The float-composition CHANNEL: everything an arm sets around a claim
     /// (and must restore afterward). One struct so a single
     /// `std::mem::take`/restore covers the whole set — missed per-field
@@ -615,6 +618,7 @@ pub(crate) struct Generator {
     /// register its parameter requires (a float parameter takes f1.., an integer
     /// takes r3..) and a type mismatch is detected rather than silently mis-passed.
     pub(crate) call_parameter_types: HashMap<String, Vec<Type>>,
+    pub(crate) indirect_call_types: HashMap<String, mwcc_syntax_trees::SourceFunctionType>,
     /// Retained skipped-inline bodies eligible for conservative statement-level
     /// composition after whole-function captures have declined.
     pub(crate) inline_bodies: InlineBodySet,
