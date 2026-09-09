@@ -1789,6 +1789,10 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn omit_nested_variadic_marker(&self) -> bool {
         false
     }
+    /// GC 4.1 encodes `ba` / `bla` with AA clear and REL24 symbol relocations.
+    fn asm_absolute_branches_are_relative(&self) -> bool {
+        false
+    }
     /// Early 2.3.3 schedulers may reverse volatile argument loads to resolve
     /// ABI dependencies. Later profiles retain their source order.
     fn reorder_volatile_call_inputs(&self) -> bool {
@@ -2154,6 +2158,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn asm_absolute_branches_are_relative(&self) -> bool {
+        true
+    }
+
     fn omit_nested_variadic_marker(&self) -> bool {
         true
     }

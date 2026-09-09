@@ -2261,6 +2261,8 @@ impl Generator {
                 } else if let Some((source, _, _)) = downward_word_copy {
                     self.emit_integer_materialization_copy(next_general.into(), source);
                 } else {
+                    let previous_argument_end = self.prepared_general_argument_end;
+                    self.prepared_general_argument_end = next_general;
                     let evaluated = match reference_argument {
                         Some(ReferenceArgumentSource::Lvalue(lvalue)) => {
                             self.emit_address_of(lvalue, next_general.into())
@@ -2270,6 +2272,7 @@ impl Generator {
                         }
                         _ => self.evaluate_general(general_argument, next_general.into()),
                     };
+                    self.prepared_general_argument_end = previous_argument_end;
                     evaluated
                         .map_err(|mut diagnostic| {
                             diagnostic.message.push_str(&format!(

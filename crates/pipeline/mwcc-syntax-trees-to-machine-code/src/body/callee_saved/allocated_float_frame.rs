@@ -612,12 +612,7 @@ fn paired_single_restore(register: u32, offset: i16) -> Vec<Instruction> {
 }
 
 fn instruction_links(instruction: &Instruction) -> bool {
-    matches!(
-        instruction,
-        Instruction::BranchAndLink { .. }
-            | Instruction::BranchToLinkRegisterAndLink
-            | Instruction::BranchToCountRegisterAndLink
-    )
+    instruction.is_call()
 }
 
 fn instruction_is_gpr_restore(instruction: &Instruction) -> bool {

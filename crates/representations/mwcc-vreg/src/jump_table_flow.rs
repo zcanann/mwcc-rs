@@ -92,6 +92,7 @@ fn jump_table_successors(
                 successors.insert(index, targets);
             }
             Instruction::BranchAndLink { .. }
+            | Instruction::BranchImmediate { link: true, .. }
             | Instruction::BranchToCountRegisterAndLink
             | Instruction::BranchToLinkRegisterAndLink => {
                 for register in [0].into_iter().chain(3..=12) {

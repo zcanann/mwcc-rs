@@ -1166,7 +1166,7 @@ pub(crate) fn statement_has_call(statement: &Statement) -> bool {
                 mwcc_syntax_trees::AsmItem::Instruction(instruction)
                     if matches!(
                         instruction.mnemonic.as_str(),
-                        "bl" | "blrl" | "bctrl"
+                        "bl" | "bla" | "blrl" | "bctrl"
                     )
             )
         }),

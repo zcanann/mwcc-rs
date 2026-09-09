@@ -27,12 +27,7 @@ impl Generator {
             .instructions
             .iter()
             .position(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::BranchAndLink { .. }
-                        | Instruction::BranchToLinkRegisterAndLink
-                        | Instruction::BranchToCountRegisterAndLink
-                )
+                instruction.is_call()
             })
             .unwrap_or(self.output.instructions.len());
         let Some(link_store) = self.output.instructions[..first_call]

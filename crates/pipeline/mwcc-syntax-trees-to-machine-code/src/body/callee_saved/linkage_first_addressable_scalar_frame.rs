@@ -78,10 +78,7 @@ fn initializer_address_pair(instructions: &[Instruction], slot: i16) -> Option<(
     let first_call = instructions
         .iter()
         .position(|instruction| {
-            matches!(instruction,
-                Instruction::BranchAndLink { .. }
-                    | Instruction::BranchToLinkRegisterAndLink
-                    | Instruction::BranchToCountRegisterAndLink)
+            instruction.is_call()
         })
         .unwrap_or(instructions.len());
     instructions[..first_call]

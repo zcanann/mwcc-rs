@@ -251,7 +251,7 @@ fn guarded_indirect_callback_reload(
             || instructions[reload + 1..mtlr].iter().any(|instruction| {
                 matches!(
                     instruction,
-                    Instruction::BranchAndLink { .. }
+                    Instruction::BranchAndLink { .. } | Instruction::BranchImmediate { link: true, .. }
                         | Instruction::BranchToLinkRegisterAndLink
                         | Instruction::BranchToCountRegisterAndLink
                         | Instruction::BranchConditionalForward { .. }

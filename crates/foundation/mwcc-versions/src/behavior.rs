@@ -1027,6 +1027,8 @@ pub struct Behavior {
     pub retain_guarded_globals_across_calls: bool,
     /// Reproduce GC 4.1's missing variadic marker after nested argument calls.
     pub omit_nested_variadic_marker: bool,
+    /// Preserve the GC 4.1 assembler's relative encoding of `ba` / `bla`.
+    pub asm_absolute_branches_are_relative: bool,
     /// Issue an independent step before a counted loop latch comparison.
     pub interleave_loop_latch_steps: bool,
     /// Share full-width section offsets during temporary cursor setup.
@@ -1683,6 +1685,7 @@ impl Behavior {
             retain_guarded_globals_across_calls: config.flags.optimization >= Optimization::O2
                 && config.build.profile.retain_guarded_globals_across_calls(),
             omit_nested_variadic_marker: config.build.profile.omit_nested_variadic_marker(),
+            asm_absolute_branches_are_relative: config.build.profile.asm_absolute_branches_are_relative(),
             reorder_volatile_call_inputs: config.flags.scheduler_enabled
                 && config.flags.optimization != Optimization::O0
                 && config.build.profile.reorder_volatile_call_inputs(),

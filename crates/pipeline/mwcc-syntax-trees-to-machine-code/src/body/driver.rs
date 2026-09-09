@@ -3111,6 +3111,16 @@ impl Generator {
                 return Ok(());
             }
         }
+        // A direct call written in embedded assembly has the same volatile
+        // register boundary as a C call. Expose its source position before
+        // selecting a leaf local-value path that cannot preserve live inputs.
+        if let Some(lowered) = crate::inline_expansion::materialize_embedded_call_statements(function) {
+            let mut trial = self.clone();
+            if trial.try_callee_saved_structured_body(&lowered)? {
+                *self = trial;
+                return Ok(());
+            }
+        }
         if self.try_callee_saved_structured_frame_body(function)? {
             return Ok(());
         }

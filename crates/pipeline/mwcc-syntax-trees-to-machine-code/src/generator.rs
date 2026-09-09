@@ -473,6 +473,9 @@ pub(crate) struct Generator {
     /// sub-expression is being evaluated. The allocator draws temporaries from
     /// the registers outside this set.
     pub(crate) reserved: HashSet<u32>,
+    /// Ordinary argument evaluation has already filled r3 up to this endpoint.
+    /// Temporary address bases must preserve those values through the call.
+    pub(crate) prepared_general_argument_end: u32,
     /// Stack frame size in bytes (0 = leaf function, no frame). Set when an
     /// operation needs scratch stack space (e.g. an int/float conversion).
     pub(crate) frame_size: i16,

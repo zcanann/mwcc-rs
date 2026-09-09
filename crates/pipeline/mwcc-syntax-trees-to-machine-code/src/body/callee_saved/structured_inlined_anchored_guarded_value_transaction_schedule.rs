@@ -86,7 +86,7 @@ fn anchored_guarded_value_transaction(
             .any(|instruction| {
                 matches!(
                     instruction,
-                    Instruction::BranchAndLink { .. }
+                    Instruction::BranchAndLink { .. } | Instruction::BranchImmediate { link: true, .. }
                         | Instruction::BranchToCountRegisterAndLink
                         | Instruction::BranchToLinkRegisterAndLink
                         | Instruction::Branch { .. }

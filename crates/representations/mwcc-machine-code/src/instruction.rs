@@ -359,6 +359,10 @@ pub enum Instruction {
     /// an `R_PPC_REL24` relocation to `target`, so the `.text` word is the
     /// placeholder `0x48000001`.
     BranchAndLink { target: String },
+    /// I-form branch with a byte-valued LI field, optional AA and LK bits.
+    /// Unlike `Branch`, `value` is not an instruction index and is never
+    /// retargeted when instructions move. A symbol relocation may patch it.
+    BranchImmediate { value: i32, absolute: bool, link: bool },
     /// `b target` — external sibling/tail call. The 24-bit displacement is filled
     /// by an `R_PPC_REL24` relocation, so the `.text` word is `0x48000000`.
     BranchExternal { target: String },
@@ -410,6 +414,14 @@ pub enum Instruction {
 }
 
 impl Instruction {
+    /// Calls define the ABI volatile registers and preserve fallthrough flow.
+    pub fn is_call(&self) -> bool {
+        matches!(self, Self::BranchAndLink { .. }
+            | Self::BranchImmediate { link: true, .. }
+            | Self::BranchToLinkRegisterAndLink
+            | Self::BranchToCountRegisterAndLink)
+    }
+
     /// `li rD, SIMM`
     pub fn load_immediate(d: RegisterField, immediate: i16) -> Self {
         Instruction::AddImmediate { d, a: 0, immediate }

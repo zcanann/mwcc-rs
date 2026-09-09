@@ -123,7 +123,7 @@ fn uses_entry_r3_before_definition(instructions: &[Instruction]) -> bool {
             return false;
         }
         if matches!(instruction, Instruction::Branch { .. } | Instruction::BranchConditionalForward { .. }
-            | Instruction::BranchAndLink { .. } | Instruction::BranchExternal { .. }
+            | Instruction::BranchAndLink { .. } | Instruction::BranchImmediate { link: true, .. } | Instruction::BranchExternal { .. }
             | Instruction::BranchToCountRegister | Instruction::BranchToCountRegisterAndLink
             | Instruction::BranchToLinkRegister | Instruction::BranchToLinkRegisterAndLink
             | Instruction::BranchConditionalToLinkRegister { .. }) {

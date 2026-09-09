@@ -351,6 +351,7 @@ fn is_memory_or_call_barrier(instruction: &Instruction) -> bool {
             | Instruction::BranchExternal { .. }
             | Instruction::BranchToCountRegisterAndLink
             | Instruction::BranchToLinkRegisterAndLink
+            | Instruction::BranchImmediate { .. }
     )
 }
 

@@ -89,7 +89,7 @@ pub fn analyze_with_abi_uses(
 
     let mut calls: Vec<usize> = Vec::new();
     for (index, instruction) in instructions.iter().enumerate() {
-        let is_call = matches!(instruction, Instruction::BranchAndLink { .. } | Instruction::BranchToLinkRegisterAndLink | Instruction::BranchToCountRegisterAndLink);
+        let is_call = instruction.is_call();
         if is_call {
             calls.push(index);
         }
@@ -338,6 +338,7 @@ fn successors(instructions: &[Instruction], index: usize) -> Vec<usize> {
         Instruction::BranchToLinkRegister
         | Instruction::BranchToCountRegister
         | Instruction::BranchExternal { .. }
+        | Instruction::BranchImmediate { link: false, .. }
         | Instruction::ReturnFromInterrupt => Vec::new(),
         _ => vec![fallthrough],
     }
@@ -369,6 +370,28 @@ mod tests {
     /// A virtual register's field value (id 0 -> VIRTUAL_BASE).
     fn v(id: u32) -> RegisterField {
         Reg::general(id).to_field()
+    }
+
+    #[test]
+    fn immediate_calls_preserve_live_values_and_unlinked_branches_end_flow() {
+        for absolute in [false, true] {
+            let mut stream = vec![
+                Instruction::load_immediate(v(0), 7),
+                Instruction::BranchImmediate { value: 0x60, absolute, link: true },
+                Instruction::move_register(3, v(0)),
+                Instruction::BranchToLinkRegister,
+            ];
+            let live = analyze(&stream);
+            assert_eq!(live.calls, [1]);
+            let allocation = LinearScan.allocate(
+                &live.intervals, &live.pinned, &live.calls, &RegisterConstraints::gekko(),
+            ).unwrap();
+            assert!(allocation.physical(live.intervals[0].vreg).unwrap() >= 14);
+            assert_eq!(successors(&stream, 1), [2]);
+            stream[1] = Instruction::BranchImmediate { value: 0x60, absolute, link: false };
+            assert!(analyze(&stream).calls.is_empty());
+            assert!(successors(&stream, 1).is_empty());
+        }
     }
 
     #[test]

@@ -734,7 +734,19 @@ impl Generator {
                         displacement,
                     )?);
                 } else {
-                    let base = self.address_base_for_load_destination(destination)?;
+                    // A scratch result still needs a nonzero address base.
+                    // Give it a virtual lifetime when earlier ABI arguments
+                    // are live, preserving the usual leaf address schedule.
+                    let base = if destination == GENERAL_SCRATCH
+                        && self.prepared_general_argument_end > 3
+                    {
+                        let register = self.fresh_virtual_general_preferring(3);
+                        self.avoid_virtual_general(register,
+                            &(3..self.prepared_general_argument_end).collect::<Vec<_>>());
+                        register
+                    } else {
+                        self.address_base_for_load_destination(destination)?
+                    };
                     self.emit_global_load_value(name, base.into())?;
                     let displacement = self.emit_member_base_adjustment(base.into(), offset);
                     self.output.instructions.push(displacement_load(

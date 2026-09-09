@@ -502,7 +502,7 @@ fn is_result_schedule_barrier(instruction: &Instruction) -> bool {
             | Instruction::BranchConditionalToLinkRegister { .. }
             | Instruction::BranchToLinkRegister
             | Instruction::BranchToLinkRegisterAndLink
-            | Instruction::BranchAndLink { .. }
+            | Instruction::BranchAndLink { .. } | Instruction::BranchImmediate { link: true, .. }
             | Instruction::BranchExternal { .. }
             | Instruction::BranchToCountRegister
             | Instruction::BranchToCountRegisterAndLink

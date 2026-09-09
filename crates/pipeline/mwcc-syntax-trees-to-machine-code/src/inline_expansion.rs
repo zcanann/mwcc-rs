@@ -2520,11 +2520,35 @@ fn is_empty_padding_loop(statement: &Statement) -> bool {
 /// semantic position. Parameterized blocks remain outside this subset because
 /// their symbolic operands require C-local register binding, not textual
 /// substitution.
+pub(crate) fn materialize_embedded_call_statements(function: &Function) -> Option<Function> {
+    if !embedded_asm_only_direct_calls(function) { return None; }
+    materialize_embedded_asm_statements(function)
+}
+
+fn embedded_asm_only_direct_calls(function: &Function) -> bool {
+    !function.inline_asm_blocks.is_empty() && function.inline_asm_blocks.iter().all(|block| {
+        !block.items.is_empty() && block.items.iter().all(|item| {
+            let mwcc_syntax_trees::AsmItem::Instruction(line) = item else { return false; };
+            if !matches!(line.mnemonic.as_str(), "bl" | "bla") { return false; }
+            match line.operands.as_slice() {
+                [mwcc_syntax_trees::AsmOperand::Immediate(_)] => true,
+                [mwcc_syntax_trees::AsmOperand::Label(name)] => {
+                    !function.parameters.iter().any(|parameter| parameter.name == *name)
+                        && !function.locals.iter().any(|local| local.name == *name)
+                }
+                _ => false,
+            }
+        })
+    })
+}
+
 fn materialize_embedded_asm_statements(function: &Function) -> Option<Function> {
     if function.inline_asm_blocks.is_empty() {
         return None;
     }
-    if !function.parameters.is_empty() || !function.locals.is_empty() {
+    if (!function.parameters.is_empty() || !function.locals.is_empty())
+        && !embedded_asm_only_direct_calls(function)
+    {
         return None;
     }
     if function

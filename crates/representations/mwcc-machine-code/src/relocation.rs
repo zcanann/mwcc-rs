@@ -11,6 +11,8 @@ pub enum RelocationKind {
     EmbSda21,
     /// `R_PPC_REL24` (10) — the 24-bit branch displacement of a `bl` (a call).
     Rel24,
+    /// `R_PPC_ADDR24` (2) — the absolute LI field of `ba` / `bla`.
+    Addr24,
     /// `R_PPC_REL14` (11) — the 14-bit displacement of a conditional branch.
     Rel14,
     /// `R_PPC_ADDR16_HA` (6) — the high-adjusted 16 bits of an absolute address,
@@ -30,6 +32,7 @@ impl RelocationKind {
         match self {
             RelocationKind::EmbSda21 => 109,
             RelocationKind::Rel24 => 10,
+            RelocationKind::Addr24 => 2,
             RelocationKind::Rel14 => 11,
             RelocationKind::Addr16Ha => 6,
             RelocationKind::Addr16Hi => 5,
@@ -43,7 +46,8 @@ impl RelocationKind {
     pub fn field_offset(self) -> u32 {
         match self {
             RelocationKind::Addr16Ha | RelocationKind::Addr16Hi | RelocationKind::Addr16Lo => 2,
-            RelocationKind::EmbSda21 | RelocationKind::Rel24 | RelocationKind::Rel14 => 0,
+            RelocationKind::EmbSda21 | RelocationKind::Rel24 | RelocationKind::Rel14
+                | RelocationKind::Addr24 => 0,
         }
     }
 }

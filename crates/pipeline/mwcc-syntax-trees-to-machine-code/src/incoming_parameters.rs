@@ -119,6 +119,7 @@ fn entry_load_position(instructions: &[Instruction], register: u32) -> Option<us
             | Instruction::BranchToCountRegister
             | Instruction::BranchToCountRegisterAndLink
             | Instruction::BranchToLinkRegisterAndLink
+            | Instruction::BranchImmediate { .. }
             | Instruction::BranchConditionalToLinkRegister { .. } => true,
             _ => false,
         })

@@ -186,7 +186,7 @@ fn physical_handoff_shape(instructions: &[Instruction]) -> Option<PhysicalHandof
             matches!(
                 instruction,
                 Instruction::FloatMove { .. }
-                    | Instruction::BranchAndLink { .. }
+                    | Instruction::BranchAndLink { .. } | Instruction::BranchImmediate { link: true, .. }
                     | Instruction::BranchToLinkRegisterAndLink
                     | Instruction::BranchToCountRegisterAndLink
             )

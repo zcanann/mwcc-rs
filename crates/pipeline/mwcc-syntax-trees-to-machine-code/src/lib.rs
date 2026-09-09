@@ -762,6 +762,7 @@ fn lower_function_body(
             .map(|global| global.name.clone())
             .collect(),
         reserved: HashSet::new(),
+        prepared_general_argument_end: 3,
         frame_size: 0,
         float: generator::FloatContext::default(),
         double_tables: globals

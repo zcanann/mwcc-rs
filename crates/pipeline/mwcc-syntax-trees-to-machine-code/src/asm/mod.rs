@@ -100,6 +100,7 @@ pub(crate) fn append_embedded_asm(
             instruction_index,
             &mut output.relocations,
             &mut output.symbol_order,
+            &behavior,
         );
     }
     Ok(())
@@ -185,6 +186,7 @@ pub(crate) fn assemble_inline_block(
             instruction_index,
             &mut relocations,
             &mut symbol_order,
+            &behavior,
         );
     }
     if behavior.asm_branch_optimization_style
@@ -228,7 +230,7 @@ pub(crate) fn assemble_asm_function(
             matches!(
                 item,
                 AsmItem::Instruction(line)
-                    if matches!(line.mnemonic.as_str(), "bl" | "blrl" | "bctrl")
+                    if matches!(line.mnemonic.as_str(), "bl" | "bla" | "blrl" | "bctrl")
             )
         });
 
@@ -296,6 +298,7 @@ pub(crate) fn assemble_asm_function(
                     instruction_index,
                     &mut relocations,
                     &mut symbol_order,
+                    &behavior,
                 );
             }
         }
@@ -407,7 +410,7 @@ fn order_asm_symbols(
             };
             (target == &name).then_some(matches!(
                 relocation.kind,
-                RelocationKind::Rel24 | RelocationKind::Rel14
+                RelocationKind::Rel24 | RelocationKind::Rel14 | RelocationKind::Addr24
             ))
         });
         if is_call == Some(true) {
@@ -497,6 +500,7 @@ fn is_terminator(instruction: &Instruction) -> bool {
         instruction,
         Instruction::BranchToLinkRegister
             | Instruction::Branch { .. }
+            | Instruction::BranchImmediate { link: false, .. }
             | Instruction::BranchConditionalToLinkRegister { .. }
             // `mtctr r12; bctr` — the ptmf tail dispatch ends the function.
             | Instruction::BranchToCountRegister
@@ -522,6 +526,7 @@ fn record_external_branch_relocation(
     instruction_index: usize,
     relocations: &mut Vec<Relocation>,
     symbol_order: &mut Vec<String>,
+    behavior: &Behavior,
 ) {
     let mnemonic = line
         .mnemonic
@@ -530,6 +535,8 @@ fn record_external_branch_relocation(
         .unwrap_or(line.mnemonic.as_str());
     let kind = match mnemonic {
         "b" | "bl" => RelocationKind::Rel24,
+        "ba" | "bla" if behavior.asm_absolute_branches_are_relative => RelocationKind::Rel24,
+        "ba" | "bla" => RelocationKind::Addr24,
         "beq" | "bne" | "blt" | "bge" | "bgt" | "ble" | "bdnz" | "bc" => {
             RelocationKind::Rel14
         }
@@ -617,6 +624,7 @@ mod tests {
             7,
             &mut relocations,
             &mut symbols,
+            &Behavior::resolve(&mwcc_versions::CompilerConfig::new(mwcc_versions::GC_1_2_5N)),
         );
         assert_eq!(relocations.len(), 1);
         assert_eq!(relocations[0].instruction_index, 7);

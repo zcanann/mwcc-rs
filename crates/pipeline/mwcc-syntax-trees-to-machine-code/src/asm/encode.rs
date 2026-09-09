@@ -29,6 +29,11 @@ pub(super) fn assemble_configured_line(
         }
     }
     let mut instruction = assemble_line(line, labels, instruction_index)?;
+    if behavior.asm_absolute_branches_are_relative {
+        if let Some(Instruction::BranchImmediate { absolute, .. }) = instruction.as_mut() {
+            *absolute = false;
+        }
+    }
     if behavior.asm_negative_quantized_displacement_overwrites_fields {
         match instruction.as_mut() {
             Some(Instruction::PairedSingleQuantizedLoad { offset, w, i, .. })
@@ -987,6 +992,24 @@ pub(super) fn assemble_line(
         }
         // Direct call to an external symbol. A local-label `bl` needs a position-resolved linked
         // branch variant; no measured source uses it yet, so keep that distinct shape deferred.
+        "ba" | "bla" => {
+            expect_operand_count(mnemonic, operands, 1)?;
+            if raw != mnemonic {
+                return Err(Diagnostic::error("unexpected sign after absolute branch mnemonic"));
+            }
+            let value = match &operands[0] {
+                AsmOperand::Immediate(value) => *value as i32,
+                AsmOperand::Label(name) if !labels.contains_key(name.as_str()) => 0,
+                AsmOperand::Label(_) => {
+                    return Err(Diagnostic::error("illegal local label in an absolute branch"));
+                }
+                _ => return Err(Diagnostic::error("absolute branch expected a number or symbol")),
+            };
+            if !(-0x0200_0000..0x0200_0000).contains(&value) {
+                return Err(Diagnostic::error("absolute branch address is out of range"));
+            }
+            Instruction::BranchImmediate { value, absolute: true, link: mnemonic == "bla" }
+        }
         "bl" => {
             expect_operand_count(mnemonic, operands, 1)?;
             match &operands[0] {

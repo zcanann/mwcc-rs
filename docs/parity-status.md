@@ -4,13 +4,81 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, symbol alignment and nested variadic calls (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, absolute assembly branches and complete Dolphin OS.c compilation (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `619dbdcfac3aa7a5accd5adede51527a1a23c6d73c46c139a68dcb9759c7a4de:c3440e0ac3b434266701b36941f86879a28f4a9b69301f6670ba2d869833e06b`
+Latest measured compiler + harness fingerprint: `f4ac77008e58c4b2b123e3153faa7598239889da673835445da05e223d00f38a:95eea7fd694526702aacb11121b6468503c11a1c358e41a3965d374b1be6c0ad`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Absolute assembly branches and complete Dolphin OS.c, 2026-09-09
+
+The complete, unchanged Battle for Bikini Bottom **`os/OS.c`** now compiles on
+GC/1.2.5n and GC/1.3, raising the Dolphin frontier **195 → 197/302**. All 195
+previously compiling objects remain identical. Across the full version/mode
+panel, the unit compiles in **90/90** candidate configurations, up from **0**;
+**72** references accept the project headers. There are **448/1,080** exact
+function instruction/relocation matches. Each project's O4 configuration matches
+six of 15 functions exactly: the debugger integrator and jump, exception vector,
+FPR initializer, default exception handler and DI configuration reader. This is
+complete unit compilation, not whole-project or whole-object parity.
+
+Assembly branches now use a first-class I-form instruction carrying the byte
+value, AA and LK fields, distinct from instruction-index CFG branches. Absolute
+symbol targets emit **R_PPC_ADDR24**. Shared call classification, liveness,
+volatile-register definitions, scheduling barriers and frame handling recognize
+linked immediate branches; unlinked branches end control flow. A version policy
+reproduces GC/3.0a3 and GC/3.0a3p1 encoding `ba`/`bla` as relative branches with
+REL24 relocations. The other 13 releases retain AA and ADDR24. All discard the
+low two address bits and check the signed 26-bit range. **570/570** syntax probes
+match acceptance and emitted instructions/relocations, including wrapped wide
+literals, grouped negative operands and symbol references. Diagnostic wording
+is not claimed exact. `addi`/`addis` also accept literal zero in the RA position;
+ordinary numeric register spellings remain rejected.
+
+Direct call-only embedded assembly can now enter the ordered statement tree
+without symbolic C-register binding. Structured lowering preserves parameters
+and computed locals across these calls. The full OS boot check also exposed a
+format-string clobber: computing `BootInfo->memorySize >> 20` used r3 as a
+scratch address after the format pointer had been placed there. Ordinary
+argument evaluation now exposes its completed register prefix; that member
+load's temporary address gets a virtual home avoiding the prepared arguments.
+Existing leaf and pooled-array schedules retain their previous behavior.
+
+Samples **2293–2296** compile in **360/360** candidate configurations, up from
+**90/360**, with **1,556/1,740** exact function matches among **340** compiling
+references. The other 20 references report internal compiler errors for the
+embedded-call sample. All **184,320 candidate** sample executions pass branch
+PC/LR, call/frame, preserved-value, zero-base and report-argument checks. The
+member-report sample fails all **46,080** executions on the frozen candidate
+baseline and passes all of them after the fix.
+
+Reference native runs retain **1,536** fidelity gaps. GC/1.1p1 O0 writes outside
+its frame in the embedded-call controls (256 cases) and in the member report
+with an incoming argument (256). Eight GC/1.3–2.7 releases at O0 omit the saved
+LR around `retain_input`'s embedded call and loop at its return (1,024 cases).
+The candidate currently preserves these frames and returns normally; these are
+not passing reference-equivalence results. The disassemblies are retained in
+`target/absolute-branch-reference-link.dis` and `-reference-frame.dis`.
+
+The full objects' **OSInit** bodies pass **1,024 candidate/reference** boot cases
+across both project configurations. The harness compares report text/arguments,
+arena and clearing bounds, service-call order, debug flags, initialization state
+and ABI preservation. External services and `OSExceptionInit` are stubbed;
+`ClearArena` and `OSRegisterVersion` execute from the actual objects (including
+inlined bodies). This is controlled boot-body validation, not hardware boot or
+validation of every OS subsystem. Total native coverage is **185,344 candidate**
+and **177,664 reference** executions with the 1,536 reference failures above.
+
+The established **2,865** cases retain **2,589** identical objects and **276**
+identical diagnostics. All **1,500** recent objects are identical; **900** prior
+assembler cases retain **858** identical objects and **42** identical diagnostics.
+**2,689 tests** pass (352 app, 10 machine-code, 14 lexer, 1,711 backend, 416 parser,
+66 version-policy and 120 virtual-register tests), retaining the 12 verified
+baseline exclusions and eight already-ignored virtual-register tests.
+`target/absolute-branch-final-verification.json` binds compiler/harness
+fingerprints, original source, result artifacts and **11,531** output objects.
 
 ## Symbol alignment and nested variadic calls, 2026-09-09
 

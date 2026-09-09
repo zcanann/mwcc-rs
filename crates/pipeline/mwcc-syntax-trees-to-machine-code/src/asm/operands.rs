@@ -157,7 +157,13 @@ pub(super) fn rri_symbolic(
 ) -> Compilation<(u32, u32, i16)> {
     expect_operand_count(mnemonic, operands, 3)?;
     let d = gpr(mnemonic, &operands[0])?;
-    let a = gpr(mnemonic, &operands[1])?;
+    // `addi` / `addis` accept literal 0 for their zero-base RA field.
+    // Numeric register spellings in ordinary GPR positions remain invalid.
+    let a = if matches!(operands[1], AsmOperand::Immediate(0)) {
+        0
+    } else {
+        gpr(mnemonic, &operands[1])?
+    };
     let immediate = signed_immediate_or_symbol(mnemonic, &operands[2])?;
     Ok((d, a, immediate))
 }

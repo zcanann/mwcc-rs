@@ -1887,6 +1887,7 @@ fn normalize_individual_saved_gpr_order(
                     | Instruction::BranchConditionalToLinkRegister { .. }
                     | Instruction::BranchToLinkRegister
                     | Instruction::BranchToLinkRegisterAndLink
+                    | Instruction::BranchImmediate { .. }
                     | Instruction::BranchExternal { .. }
                     | Instruction::BranchToCountRegister
                     | Instruction::BranchToCountRegisterAndLink
@@ -2460,6 +2461,7 @@ fn plain_linkage_control_transfer(instruction: &Instruction) -> bool {
             | Instruction::BranchConditionalToLinkRegister { .. }
             | Instruction::BranchToLinkRegister
             | Instruction::BranchToLinkRegisterAndLink
+                    | Instruction::BranchImmediate { .. }
             | Instruction::BranchAndLink { .. }
             | Instruction::BranchExternal { .. }
             | Instruction::BranchToCountRegister

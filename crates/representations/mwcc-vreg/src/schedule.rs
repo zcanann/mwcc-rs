@@ -63,6 +63,7 @@ fn is_barrier(instruction: &Instruction) -> bool {
             | BranchConditionalToLinkRegister { .. }
             | Branch { .. }
             | BranchExternal { .. }
+            | BranchImmediate { .. }
             | BranchToLinkRegister
             | BranchToLinkRegisterAndLink
             | BranchToCountRegister
@@ -184,12 +185,7 @@ pub fn hoist_link_register_reload(
         return identity;
     }
     let Some(call) = instructions[..reload].iter().rposition(|instruction| {
-        matches!(
-            instruction,
-            Instruction::BranchAndLink { .. }
-                | Instruction::BranchToLinkRegisterAndLink
-                | Instruction::BranchToCountRegisterAndLink
-        )
+        instruction.is_call()
     }) else {
         return identity;
     };
@@ -410,7 +406,7 @@ pub fn hoist_simple_later_call_argument(instructions: &mut Vec<Instruction>) -> 
             .rposition(|instruction| {
                 matches!(
                     instruction,
-                    Instruction::BranchAndLink { .. }
+                    Instruction::BranchAndLink { .. } | Instruction::BranchImmediate { link: true, .. }
                         | Instruction::BranchToLinkRegisterAndLink
                         | Instruction::BranchToCountRegisterAndLink
                         | Instruction::Branch { .. }
@@ -580,12 +576,7 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
         // the very next instruction. (Only the run is moved; the trailing work stays.)
         if run == 0
             || !instructions[next..].iter().any(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::BranchAndLink { .. }
-                        | Instruction::BranchToLinkRegisterAndLink
-                        | Instruction::BranchToCountRegisterAndLink
-                )
+                instruction.is_call()
             })
         {
             return identity;

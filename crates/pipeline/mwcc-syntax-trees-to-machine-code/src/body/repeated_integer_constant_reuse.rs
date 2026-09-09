@@ -220,7 +220,7 @@ fn is_control_flow(instruction: &Instruction) -> bool {
             | Instruction::BranchConditionalToLinkRegister { .. }
             | Instruction::BranchToLinkRegister
             | Instruction::BranchToLinkRegisterAndLink
-            | Instruction::BranchAndLink { .. }
+            | Instruction::BranchAndLink { .. } | Instruction::BranchImmediate { link: true, .. }
             | Instruction::BranchExternal { .. }
             | Instruction::BranchToCountRegister
             | Instruction::BranchToCountRegisterAndLink
