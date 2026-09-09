@@ -4,13 +4,59 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, global-array cursor home priorities (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, cursor section-base lifetimes (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `266f9d64ba89c8e5eb494b6a5db3e836c793aeca8a0895b7c2087a9e799de1bc:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `f99526f0b5837740bd7097b0c1d78906c5d22bee2dd9a3103ffc5e7f867b2be9:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Cursor section-base lifetimes, 2026-09-08
+
+The four early builds previously planned a saved BSS section base from source
+array bindings inside the loop, even when strength reduction moved every such
+binding into one-time loop setup. Their O3/O4 anchor analysis now consumes the
+same reduced function already used by the modern planner. A shared helper owns
+that reduction; path-sensitive call-span analysis still retains bases needed by
+loop-body references or by accesses before and after calls. Initialized-data
+planning, unreduced functions, O0/O2, and modern-build output are unchanged.
+
+Canaries **2182–2187** add fourteen functions in six modes across fifteen builds:
+**90 objects / 1,260 functions**, all compiling on baseline, candidate, and
+reference. They cover public and file-local arrays, two and three cursors,
+setup-only addresses, calls before the loop, accesses in and after the loop,
+and arrays separated by 32 KiB. **80 functions** change in the four early
+builds. Complete saved-register home maps at the first loop callback improve
+**351 → 411**, with no losses. Whole-function exact matches remain **0/1,260**.
+All **10,080** native cases pass callback, mutation, guarded-memory, volatile
+clobber, saved GPR/FPR, caller-stack, SP, and LR checks.
+
+Of **1,590** preceding objects, **1,506** remain identical and **84 objects /
+384 functions** change, with no exact-function gains or losses. All **8,640**
+affected preceding native cases pass. On the affected prior cursor-home panel,
+complete register-map matches improve **12 → 96**, closing its 84 early-build
+performance-mode mismatches. These are register-map gains, not exact functions.
+
+The reference uses a temporary section base for three nearby setup addresses;
+that sharing remains unimplemented. Removing the saved anchor therefore shrinks
+32 new functions by eight bytes but grows 48 by twenty or twenty-eight bytes,
+including changes between helper-based and individual register saves. Public
+and static arrays show the same behavior in these probes. Modern two-array
+post-loop cases still retain an unnecessary base in the candidate; address
+sharing profitability needs separate analysis from anchor lifetime.
+
+All fifteen full AXVPB objects and all 24 AX/GX translation units compile and
+remain byte-identical to the preceding compiler. AXVPB retains its **12/15**
+matching home maps and exact 28-byte loop tails, with **0/15** exact complete
+initializers. The prior **240** initializer executions are reused after object
+hash verification. Fresh native coverage totals **18,720 cases**. Backend tests
+pass **1,669**, retaining the existing nested-asm exclusion. Broader older and
+indexed panels and the full corpus were not rerun.
+
+`target/anchor-span-final-verification.json` binds the final compiler/harness
+fingerprint to source and object hashes, **552 native-tested object entries**
+(including the unchanged initializer evidence), and the measured comparisons.
 
 ## Global-array cursor home priorities, 2026-09-08
 

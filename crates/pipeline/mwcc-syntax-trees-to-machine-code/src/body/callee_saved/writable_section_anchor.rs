@@ -60,6 +60,11 @@ pub(crate) fn plan(
         globals,
         behavior.global_addressing == GlobalAddressing::SmallData,
     );
+    // Leading array bindings become one-time cursor setup during lowering.
+    // Their source position inside a loop must not make the section base
+    // appear live across every callback. Retain genuine body and later uses.
+    let reduced = cursor_reduction(function, globals, behavior);
+    let function = reduced.as_ref().map_or(function, |r| &r.function);
     let (bss_references, bss_reference_count) = referenced_symbols(function, &bss_symbols);
     ((bss_references.len() >= 2 || bss_reference_count >= 4)
         && references_span_call(function, &bss_references))
@@ -78,19 +83,7 @@ fn plan_cursor_bss_anchor(
     globals: &[GlobalDeclaration],
     behavior: Behavior,
 ) -> Option<DataSectionAnchorPlan> {
-    if behavior.optimization < mwcc_versions::Optimization::O3 {
-        return None;
-    }
-    let arrays = globals
-        .iter()
-        .filter(|global| global.array_length.is_some() || global.array_length_inferred)
-        .map(|global| global.name.clone())
-        .collect();
-    let types = globals
-        .iter()
-        .map(|global| (global.name.clone(), global.declared_type))
-        .collect();
-    let reduced = super::structured_global_array_cursors::reduce(function, &arrays, &types)?;
+    let reduced = cursor_reduction(function, globals, behavior)?;
     let symbols = full_bss_symbols(
         globals,
         behavior.global_addressing == GlobalAddressing::SmallData,
@@ -103,6 +96,26 @@ fn plan_cursor_bss_anchor(
             register: None,
         },
     )
+}
+
+fn cursor_reduction(
+    function: &Function,
+    globals: &[GlobalDeclaration],
+    behavior: Behavior,
+) -> Option<super::structured_global_array_cursors::Reduction> {
+    if behavior.optimization < mwcc_versions::Optimization::O3 {
+        return None;
+    }
+    let arrays = globals
+        .iter()
+        .filter(|global| global.array_length.is_some() || global.array_length_inferred)
+        .map(|global| global.name.clone())
+        .collect();
+    let types = globals
+        .iter()
+        .map(|global| (global.name.clone(), global.declared_type))
+        .collect();
+    super::structured_global_array_cursors::reduce(function, &arrays, &types)
 }
 
 fn referenced_symbols(
