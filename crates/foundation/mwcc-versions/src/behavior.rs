@@ -1025,6 +1025,8 @@ pub struct Behavior {
     pub reorder_volatile_call_inputs: bool,
     /// Optimized 4.1/4.3 guard chains retain scalar globals across nested calls.
     pub retain_guarded_globals_across_calls: bool,
+    /// Reproduce GC 4.1's missing variadic marker after nested argument calls.
+    pub omit_nested_variadic_marker: bool,
     /// Issue an independent step before a counted loop latch comparison.
     pub interleave_loop_latch_steps: bool,
     /// Share full-width section offsets during temporary cursor setup.
@@ -1680,6 +1682,7 @@ impl Behavior {
                 && config.build.profile.interleave_loop_latch_steps(config.flags.processor),
             retain_guarded_globals_across_calls: config.flags.optimization >= Optimization::O2
                 && config.build.profile.retain_guarded_globals_across_calls(),
+            omit_nested_variadic_marker: config.build.profile.omit_nested_variadic_marker(),
             reorder_volatile_call_inputs: config.flags.scheduler_enabled
                 && config.flags.optimization != Optimization::O0
                 && config.build.profile.reorder_volatile_call_inputs(),
@@ -2084,6 +2087,20 @@ mod tests {
                 let mut config = CompilerConfig::new(build);
                 config.flags.optimization = optimization;
                 assert_eq!(Behavior::resolve(&config).retain_guarded_globals_across_calls, retained && optimization != Optimization::O0);
+            }
+        }
+    }
+
+    #[test]
+    fn nested_variadic_marker_omission_is_confined_to_gc_41() {
+        for (build, omitted) in [(build::GC_1_1, false), (build::GC_2_7, false), (build::GC_3_0A3, true), (build::GC_3_0A3P1, true), (build::WII_1_0, false)] {
+            for optimization in [Optimization::O0, Optimization::O2, Optimization::O4] {
+                let mut config = CompilerConfig::new(build);
+                config.flags.optimization = optimization;
+                for scheduler in [false, true] {
+                    config.flags.scheduler_enabled = scheduler;
+                    assert_eq!(Behavior::resolve(&config).omit_nested_variadic_marker, omitted);
+                }
             }
         }
     }

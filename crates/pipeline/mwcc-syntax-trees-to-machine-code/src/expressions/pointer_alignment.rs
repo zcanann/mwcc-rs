@@ -81,7 +81,13 @@ impl Generator {
         let Some((source, bias, cleared_bits)) = round_up_parts(expression) else {
             return Ok(false);
         };
-        let source = self.general_register_of_leaf(source)?;
+        let source = if let Ok((register, 32, _)) = self.leaf_info(source) {
+            register
+        } else {
+            let register = self.fresh_virtual_general_preferring(3);
+            self.evaluate_general(source, register)?;
+            register
+        };
         self.output.instructions.push(Instruction::AddImmediate {
             d: GENERAL_SCRATCH,
             a: source,

@@ -31,6 +31,7 @@ pub(crate) fn shared_computed_global(arguments: &[Expression], name: &str) -> bo
 impl Generator {
     fn nested_word_expression(&self, expression: &Expression) -> bool {
         match expression {
+            Expression::StringLiteral(_) => true,
             Expression::Call { name, arguments } => {
                 self.call_return_types.get(name).copied().is_some_and(word)
                     && !self.globals.contains_key(name)

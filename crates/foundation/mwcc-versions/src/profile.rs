@@ -1785,6 +1785,10 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn retain_guarded_globals_across_calls(&self) -> bool {
         false
     }
+    /// GC 4.1 loses the variadic CR1 marker when an argument contains a call.
+    fn omit_nested_variadic_marker(&self) -> bool {
+        false
+    }
     /// Early 2.3.3 schedulers may reverse volatile argument loads to resolve
     /// ABI dependencies. Later profiles retain their source order.
     fn reorder_volatile_call_inputs(&self) -> bool {
@@ -2150,6 +2154,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn omit_nested_variadic_marker(&self) -> bool {
+        true
+    }
+
     fn retain_guarded_globals_across_calls(&self) -> bool {
         true
     }

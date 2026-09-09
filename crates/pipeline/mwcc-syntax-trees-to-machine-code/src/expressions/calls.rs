@@ -1000,6 +1000,13 @@ impl Generator {
     }
 
     fn emit_variadic_condition(&mut self, name: &str, arguments: &[Expression]) {
+        // Both GC 4.1 releases omit even a floating-argument marker here.
+        // The callee observes whatever CR1.EQ the nested call left behind.
+        if self.behavior.omit_nested_variadic_marker
+            && arguments.iter().any(expression_has_call)
+        {
+            return;
+        }
         let instruction = if arguments.iter().enumerate().any(|(index, argument)| {
             match super::call_argument_types::source_parameter_type(
                 self.call_parameter_types.get(name).map(Vec::as_slice),

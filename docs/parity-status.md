@@ -4,13 +4,63 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, nested word call arguments and guarded global values (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, symbol alignment and nested variadic calls (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `be14e635704a290bd33c16b727e8afac6083b9b272c2007c7a61f94e3a7292a7:714c01532fbe19abb8b259190af410efa935a1590c970073513c54ac09f10423`
+Latest measured compiler + harness fingerprint: `619dbdcfac3aa7a5accd5adede51527a1a23c6d73c46c139a68dcb9759c7a4de:c3440e0ac3b434266701b36941f86879a28f4a9b69301f6670ba2d869833e06b`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Symbol alignment and nested variadic calls, 2026-09-09
+
+Pointer rounding now evaluates symbol addresses and global pointer/word values
+through the ordinary expression selector before adding and masking. Register
+inputs keep their existing path. Global-pointer dereferences reuse a captured
+condition value when available, preserving that pointer if the result would
+overwrite it. Loads requested in r0 use a distinct address register: PowerPC
+D-form RA=0 means address zero, not the contents of r0.
+
+String addresses now participate in the typed word-argument staging path, so
+format strings compose with multiple nested call results. The shared variadic
+marker emitter has a separate version policy for a measured GC/3.0a3 and
+GC/3.0a3p1 bug: an argument containing a call suppresses the CR1.EQ marker.
+References show this for both integer and floating argument calls, at O0 and
+O4; older releases and Wii emit the marker. The policy preserves this original
+behavior rather than imposing the usual ABI marker on these releases. Mixed
+floating/nested argument staging remains outside this milestone.
+
+Samples **2290–2292** compile in **270/270** configurations (15 releases × six
+modes), up from **0/270**, with **870/1,530** exact instruction/relocation matches.
+They cover symbol addresses versus pointee loads, 32-bit alignment wraparound,
+local shadowing, guarded pointer loads, nested report arguments and variadic
+marker controls. All **377,280 candidate** executions pass. Native comparison
+observes both possible marker values left by nested calls and reproduces the
+GC 3.0 omission. References have **128** original GC/1.1p1 O0 failures in the
+plain floating-argument control: an eight-byte frame stores f1 at SP+8,
+overwriting the caller's backchain and saved LR, then returns through the
+floating value's low word. This remains a candidate fidelity gap, not a passing
+reference-equivalence result. The full failure set and disassembly are retained
+in `target/align-symbols-reference-frame.json` and `.dis`.
+
+The unchanged declaration prefix and arena-initialization condition extracted
+from Battle for Bikini Bottom's original `OSInit` now compile in **90/90**
+candidate configurations, up from **0**. All **46,080 candidate** and **36,864
+reference** executions pass condition, alignment, call and ABI checks; **72**
+references accept the original project headers. The extracted function is not
+byte-exact. Full `OS.c` advances through this condition and its nested variadic
+reports to the unsupported absolute `bla` instruction in `__OSDBJump`.
+
+The full Dolphin frontier remains **195/302** compiling, with all **195** existing
+objects identical and no gains or losses. The established **2,865** cases retain
+**2,589** identical objects and **276** identical diagnostics; all **1,230** recent
+objects are identical. **2,559 tests** pass (352 app, 14 lexer, 1,711 backend,
+416 parser, 66 version-policy tests), retaining the 12 verified baseline
+exclusions. Total native coverage is **423,360 candidate** and **414,144 reference**
+executions, with the 128 reference frame failures above.
+`target/align-symbols-final-verification.json` binds the compiler and harness
+fingerprints, original source extraction, result artifacts and **9,023** output
+objects. This checkpoint remains targeted progress, not full project parity.
 
 ## Nested word call arguments and guarded global values, 2026-09-09
 

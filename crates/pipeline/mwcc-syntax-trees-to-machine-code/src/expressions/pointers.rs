@@ -148,20 +148,42 @@ impl Generator {
             )?);
             return Ok(());
         }
-        // A global pointer: load the pointer value into the destination (an SDA21
-        // word load), then dereference it from there, as mwcc does.
+        // A global pointer can reuse its condition capture. Otherwise load its
+        // value with SDA21 before dereferencing it through a nonzero base.
         if let Expression::Variable(name) = pointer {
             if !self.locations.contains_key(name) {
                 if let Some(Type::Pointer(pointee)) = self.globals.get(name).copied() {
-                    // The pointer and the integer result share the destination, so a
-                    // float pointee (which needs a separate general register for the
-                    // address) is deferred rather than miscompiled.
+                    // This path emits an integer load. Floating pointees need
+                    // a separate FPR result and keep their existing lowering.
                     if !matches!(pointee, Pointee::Float | Pointee::Double) {
-                        self.emit_global_load(name, destination)?;
+                        let address = if let Some(cached) = self.condition_global_base(name)? {
+                            if cached == destination || cached == GENERAL_SCRATCH {
+                                let base = self.fresh_virtual_general_preferring(3);
+                                self.output.instructions.push(Instruction::move_register(base, cached));
+                                self.condition_global_values.insert(
+                                    name.clone(),
+                                    crate::condition_global_cache::ConditionGlobalValue::Register(base),
+                                );
+                                base
+                            } else {
+                                cached
+                            }
+                        } else {
+                            let address = if destination == GENERAL_SCRATCH {
+                                self.fresh_virtual_general_preferring(3)
+                            } else {
+                                destination
+                            };
+                            self.emit_global_load(name, address)?;
+                            address
+                        };
+                        // D-form RA=0 denotes address zero, not the value in r0.
+                        // A comparison may request its loaded value in r0, but
+                        // the pointer must keep a distinct nonzero base.
                         self.output.instructions.push(displacement_load(
                             pointee,
                             destination,
-                            destination,
+                            address,
                             0,
                         )?);
                         return Ok(());
