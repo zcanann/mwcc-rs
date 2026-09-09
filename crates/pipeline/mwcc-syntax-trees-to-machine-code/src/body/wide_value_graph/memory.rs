@@ -39,18 +39,22 @@ impl Graph<'_> {
         }
         let mut offset = self.convert(index, Type::Int)?;
         if bytes != 1 {
-            let result = self.fresh(Type::Int);
-            self.operations.push(Operation::Binary {
-                retain_pair_carry: false,
-                result,
-                operator: BinaryOperator::Multiply,
-                left: offset,
-                right: Value {
-                    ty: Type::Int,
-                    source: Source::Constant(u64::from(bytes)),
-                },
-            });
-            offset = result;
+            if let Source::Constant(value) = offset.source {
+                offset.source = Source::Constant(u64::from((value as u32).wrapping_mul(bytes)));
+            } else {
+                let result = self.fresh(Type::Int);
+                self.operations.push(Operation::Binary {
+                    retain_pair_carry: false,
+                    result,
+                    operator: BinaryOperator::Multiply,
+                    left: offset,
+                    right: Value {
+                        ty: Type::Int,
+                        source: Source::Constant(u64::from(bytes)),
+                    },
+                });
+                offset = result;
+            }
         }
         let result = self.fresh(pointer.ty);
         self.operations.push(Operation::Binary {

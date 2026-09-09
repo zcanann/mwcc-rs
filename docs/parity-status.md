@@ -4,13 +4,79 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, carry selection after high-word pruning (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, graph address folding in audio/alarm/calendar code (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `74a05d1e1a2f97053176cdb5b2e078ff365981515c62d45ad85e9ebff3ef844b:fa51fa2361695c7ac6d9c0da3e580259a0ecc977e71d9f44eb893b14aea1dfc4`
+Latest measured compiler + harness fingerprint: `172ac486a6a237f8a8cdc6e3ac62a26344b380fa6c9ce3dbb70f2daa596b68da:6a678e40a916446ca168105e21184d847366545605e38acfc039bd7f856e138a`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Graph address folding in audio/alarm/calendar code, 2026-09-09
+
+The complete original THP decoder shrinks **2,140 → 1,976 bytes** at O4 in all
+15 versions. All 90 audio objects compile, and exact function matching remains
+**142/270**. The Dolphin frontier stays **201/302** with no compile or
+exact-function losses. In GC/1.2.5n and GC/1.3, the affected full project
+functions shrink as follows:
+
+| Function | Previous bytes | Current bytes |
+| --- | ---: | ---: |
+| InsertAlarm | 936 | 840 |
+| DecrementerExceptionCallback | 772 | 736 |
+| OSSetAlarm | 152 | 148 |
+| OSSetPeriodicAlarm | 188 | 180 |
+| OSCancelAlarm | 388 | 344 |
+| OSTicksToCalendarTime | 812 | 792 |
+
+Graph memory operands now contain a value/frame base and signed displacement.
+A separate pass resolves member offsets, constant pointer arithmetic and frame
+addresses at each load/store, then removes unused pure address definitions.
+Constant index scaling folds in the graph. Facts retain the original base
+identity and are invalidated when that fixed home is overwritten; joins discard
+facts. The pass preserves escaped addresses and memory-operation order.
+Both words of a pair must fit the signed displacement field, so a pair starting
+at 32,764 retains its address arithmetic. Address selection also applies at O0,
+where reference member accesses use direct displacements.
+
+New sample **2313** adds ten functions for member reads/stores, indexed records,
+positive/negative displacement limits, pair boundaries, a saved pointer whose
+base is reassigned, stack aggregates passed to callbacks, branch-selected bases,
+volatile fields and escaping addresses. All **105** baseline/candidate/reference
+configurations compile. Its **1,050** function outputs remain nonmatching;
+this checkpoint improves address generation and project code size, not full
+instruction schedules.
+
+Validation binds **13,568** object artifacts:
+
+- **842,894 candidate executions pass**: 67,200 new sample cases, 760,320
+  affected prior-sample cases, 11,790 full audio cases and 3,584 full alarm/
+  calendar cases. Checks cover memory guards, ABI/callback effects, saved-base
+  identity, stack addresses, displacement boundaries and actual volatile reads.
+- All **67,200 baseline** sample executions pass the same arithmetic/memory
+  model. Of **78,990 reference** executions, **77,623 pass**. There are 128
+  existing GC/1.1p1 O0 shared-spill failures in frame_members/address_escape.
+  Another **1,239** expose a GC/1.3 signed-promotion bug in chained unsigned
+  wide additions: later word addends can lose their sign high word. The
+  optimized saved-base loop also exposes it in the initial addition. Both
+  baseline and candidate still differ from that original behavior; this is
+  recorded as the next fidelity task, not accepted as successful parity.
+- Candidate volatile-read traces equal the baseline in all **6,720** cases.
+  All differ in order from the raw reference, although they read the same
+  field bytes. This existing scheduling gap is recorded separately.
+- The **2,865-row** regression panel preserves 2,589 objects and 276 diagnostics.
+  The **3,420-row** recent panel preserves 2,970 objects. Its 450 changes are
+  confined to samples 2284, 2285, 2300, 2303 and 2305, with native coverage.
+  All 240 existing exact function matches in those objects are retained.
+- **2,703 Rust tests pass**, with the same 12 documented pre-existing exclusions
+  and eight ignored tests. Original project sources and DOL remain unchanged.
+
+Evidence: `target/graph-address-{canaries,project,frontier,regressions,recent}/results.json`,
+the corresponding native JSON files, `target/graph-address-verified-tests.log`,
+and `target/graph-address-final-verification.json`. Recheck with
+`python3 target/verify_graph_address_final.py`. The next probe work should
+isolate GC/1.3's chained unsigned-addition promotion rule; main-decoder matching
+and complete compiler parity remain open.
 
 ## Carry selection after high-word pruning, 2026-09-09
 

@@ -21,6 +21,9 @@ mod demand;
 #[path = "wide_value_graph/subtrahend.rs"]
 mod subtrahend;
 use condition::Condition;
+#[path = "wide_value_graph/address.rs"]
+mod address;
+use address::MemoryAddress;
 #[path = "wide_value_graph/memory.rs"]
 mod memory;
 #[path = "wide_value_graph/storage.rs"]
@@ -102,11 +105,10 @@ enum Operation {
     },
     Load {
         result: Value,
-        pointer: Value,
-        offset: i16,
+        address: MemoryAddress,
     },
     Store {
-        pointer: Value,
+        address: MemoryAddress,
         value: Value,
     },
     Convert {
@@ -261,8 +263,7 @@ impl<'a> Graph<'a> {
                 let result = self.fresh(ty);
                 self.operations.push(Operation::Load {
                     result,
-                    pointer,
-                    offset: 0,
+                    address: MemoryAddress::new(pointer),
                 });
                 Some(result)
             }
@@ -295,8 +296,7 @@ impl<'a> Graph<'a> {
                     let result = self.fresh(ty);
                     self.operations.push(Operation::Load {
                         result,
-                        pointer,
-                        offset: 0,
+                        address: MemoryAddress::new(pointer),
                     });
                     Some(result)
                 } else {
@@ -326,8 +326,7 @@ impl<'a> Graph<'a> {
                 let result = self.fresh(ty);
                 self.operations.push(Operation::Load {
                     result,
-                    pointer,
-                    offset: 0,
+                    address: MemoryAddress::new(pointer),
                 });
                 Some(result)
             }
@@ -344,8 +343,7 @@ impl<'a> Graph<'a> {
                 let result = self.fresh(*member_type);
                 self.operations.push(Operation::Load {
                     result,
-                    pointer,
-                    offset: 0,
+                    address: MemoryAddress::new(pointer),
                 });
                 Some(result)
             }
@@ -577,7 +575,10 @@ impl<'a> Graph<'a> {
         }
         let (pointer, ty) = self.lvalue(target)?;
         let value = self.convert(value, ty)?;
-        self.operations.push(Operation::Store { pointer, value });
+        self.operations.push(Operation::Store {
+            address: MemoryAddress::new(pointer),
+            value,
+        });
         Some(value)
     }
 
@@ -830,6 +831,7 @@ impl<'a> Graph<'a> {
         }
         graph.lower_word_subtrahends();
         graph.narrow_unobserved_high_words();
+        graph.fold_memory_addresses();
         Some(graph)
     }
 }
@@ -1071,12 +1073,8 @@ impl Generator {
                         immediate: 0,
                     });
                 }
-                Operation::Load {
-                    result,
-                    pointer,
-                    offset,
-                } => {
-                    let pointer = self.wide_graph_operand(pointer, registers).low;
+                Operation::Load { result, address } => {
+                    let (pointer, offset) = self.wide_graph_memory_address(address, registers);
                     let destination = self.wide_graph_destination(result, registers);
                     if let Some(high) = destination.high {
                         self.output.instructions.push(Instruction::LoadWord {
@@ -1093,21 +1091,21 @@ impl Generator {
                         self.wide_graph_scalar_load(result.ty, destination.low, pointer, offset);
                     }
                 }
-                Operation::Store { pointer, value } => {
-                    let pointer = self.wide_graph_operand(pointer, registers).low;
+                Operation::Store { address, value } => {
+                    let (pointer, offset) = self.wide_graph_memory_address(address, registers);
                     let ty = value.ty;
                     let value = self.wide_graph_operand(value, registers);
                     self.wide_graph_scalar_store(
                         ty,
                         value.low,
                         pointer,
-                        if value.high.is_some() { 4 } else { 0 },
+                        offset + if value.high.is_some() { 4 } else { 0 },
                     );
                     if let Some(high) = value.high {
                         self.output.instructions.push(Instruction::StoreWord {
                             s: high,
                             a: pointer,
-                            offset: 0,
+                            offset,
                         });
                     }
                 }

@@ -115,8 +115,8 @@ fn narrow(operations: &mut [Operation], high: &HashSet<usize>) {
                 *argument += 1;
                 low(result);
             }
-            Operation::Load { result, offset, .. } if wide(result.ty) && !needed(*result, high) => {
-                *offset += 4;
+            Operation::Load { result, address } if wide(result.ty) && !needed(*result, high) => {
+                address.offset += 4;
                 low(result);
             }
             Operation::Local { result } => {
