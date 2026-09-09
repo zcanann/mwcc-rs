@@ -4,13 +4,63 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, indexed wide values and the full THP audio decoder (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, packed cursor reuse and THP helper matching (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `74780a70a6e73e3923e04797103c24f47cc57478e565d726fc334cc268c26945:4eca4edddbe9448750a6801ea7c5e8617b63010d4cd0c62dc727dbcf59bfcf45`
+Latest measured compiler + harness fingerprint: `d4fb7d9bcb977a8bc716108f2be05a882b6b7aeddc819753489eff98ba0eb1dd:45bc08cf25f7c6f36f7ac330526abe099c348722a728ca590c8d4710f7f87332`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Packed cursor reuse and THP helper matching, 2026-09-09
+
+Exact function instruction/relocation matches on the complete original
+`thp/THPAudio.c` improve **60 → 112/270** across 15 versions and six modes.
+`__THPAudioGetNewSample` gains **52** exact matches; its output changes in 75
+optimized configurations. The main decoder and initialization helper are
+unchanged in all 90 configurations. Full compilation remains **90/90**, and the
+Dolphin frontier remains **201/302**. Only the two THP objects change on that
+frontier, and only the packed-sample helper changes within them. No previously
+exact function output is lost in the measured panels.
+
+A separate preallocation pass recognizes a byte load and signed bit extraction
+followed by an update of the same member cursor. It retains the cursor instead
+of reloading it, gives the byte and result their measured register preferences,
+and interleaves the independent update when scheduling is enabled. Plain shifts
+and masked rotates share the rule. Source provenance must prove the receiver's
+storage nonvolatile. The pass rejects interior branch entries, live discarded
+temporaries, unknown indirect successors, jump tables and unsupported return
+ABIs; it currently handles leaf int/unsigned/void functions at O2–O4. O0 keeps its
+existing selected form. Control-flow liveness checks and allocator constraints
+remain separate from the measured issue-order choice.
+
+The volatile probe uncovered a frontend bug: normalization discarded an east
+`volatile` qualifier immediately before `*`. It now retains that qualifier with
+an internal marker, like east `const`, so memory facts cannot authorize sharing
+those reads. The parser test covers the suffix spelling in C and C++. Committed
+sample **2307** varies cursor offsets, increments, extraction widths, branch
+merges and volatile access. Its **360** function outputs improve **0 → 169** exact
+matches; all 90 baseline/candidate/reference configurations compile. Volatile
+function instructions and relocations remain identical to the baseline.
+
+All **92,160 baseline, candidate and reference** sample executions pass. The
+volatile cases change the stored cursor between its two reads, checking that
+the byte comes from the first cursor while the increment uses the second.
+The full original audio objects also pass **11,790 candidate and reference**
+cases against the independent decoder model, including output guards, source
+immutability and ABI preservation. Thus **103,950 candidate and reference**
+executions pass with no failures in this checkpoint. This improves helper
+instruction matching; the main decoder still differs from the reference output.
+
+Validation: **2,695 Rust tests pass**, with the same 12 known exclusions and eight
+existing ignored tests. The established 2,865-case panel retains 2,589 identical
+objects and 276 identical diagnostics; all **2,760** recent objects are identical.
+The final verifier binds **11,933 object artifacts** to the measured compiler and
+native results. Evidence is in ignored
+`target/packed-cursor-{canaries,project,frontier,regressions,recent}/results.json`,
+`target/packed-cursor-{native,audio-native}.json`,
+`target/packed-cursor-verified-tests.log` and
+`target/packed-cursor-final-verification.json`.
 
 ## Indexed wide values and the full THP audio decoder, 2026-09-09
 

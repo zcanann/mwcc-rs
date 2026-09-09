@@ -30,6 +30,7 @@ use parser::Parser;
 pub use cxx_rtti::materialize as materialize_cxx_rtti;
 
 pub(crate) const CXX_POINTEE_CONST_MARKER: &str = "__mwcc_cxx_pointee_const";
+pub(crate) const CXX_POINTEE_VOLATILE_MARKER: &str = "__mwcc_cxx_pointee_volatile";
 
 /// Parse a token stream into a translation unit (file-scope globals + the
 /// function definition).
@@ -178,9 +179,8 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
     anonymous_namespace_scope: Option<String>,
     enum_min: bool,
 ) -> Compilation<TranslationUnit> {
-    // East pointee qualifiers are codegen-transparent, but `const` remains
-    // part of the source declaration identity (C debug types and C++ ABI
-    // names). Move that fact after the star as a parser-internal marker:
+    // Preserve east pointee qualifiers in declaration identity and memory facts.
+    // Move them after the star as parser-internal markers:
     // declaration lookahead keeps seeing canonical `T*`, while parse_type
     // consumes the marker before the declarator name.
     let mut tokens = cxx::normalize_linkage_specifications(tokens);
@@ -203,13 +203,12 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
             _ => None,
         };
         if qualifier.is_some() && tokens[index + 1].token == Token::Star {
-            if qualifier == Some(true) {
-                tokens.swap(index, index + 1);
-                tokens[index + 1].token = Token::Identifier(CXX_POINTEE_CONST_MARKER.to_string());
-                index += 2;
-            } else {
-                tokens.remove(index);
-            }
+            tokens.swap(index, index + 1);
+            tokens[index + 1].token = Token::Identifier(
+                if qualifier == Some(true) { CXX_POINTEE_CONST_MARKER }
+                else { CXX_POINTEE_VOLATILE_MARKER }.to_string(),
+            );
+            index += 2;
         } else {
             index += 1;
         }
@@ -2176,7 +2175,7 @@ void invoke(void) {\n\
         let source = "typedef volatile float VF; typedef float Row[4];
             struct V { volatile float x; }; struct P { float x; };
             void f(float* ordinary, const float* constant, volatile float* qualified,
-                VF* alias, struct V* member, struct P* plain, Row row) {}";
+                VF* alias, struct V* member, struct P* plain, struct P volatile* east, Row row) {}";
         for cplusplus in [false, true] {
             let unit = parse_translation_unit(
                 mwcc_source_to_tokens::tokenize(source).unwrap(), cplusplus, true, 1, 3,

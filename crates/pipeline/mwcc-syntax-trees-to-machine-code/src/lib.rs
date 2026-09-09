@@ -17,6 +17,7 @@ mod allocation_frame;
 mod incoming_parameters;
 mod arithmetic;
 mod load_field_merge;
+mod packed_cursor_read;
 mod call_liveness;
 mod asm;
 mod automatic_rodata;
@@ -1123,6 +1124,7 @@ fn lower_function_body(
     generator.prefer_structured_array_pool_parsed_hour();
     generator.schedule_leading_int_to_float_argument();
     generator.hoist_structured_loop_float_zero();
+    generator.retain_packed_read_cursors(function.return_type);
     schedule_instructions(&mut generator);
     generator.schedule_dense_counted_loop_entry();
     generator.schedule_dense_counted_loop_state();
