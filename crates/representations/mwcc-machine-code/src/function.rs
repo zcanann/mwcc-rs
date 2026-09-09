@@ -118,6 +118,16 @@ pub enum FixedFillAddressSchedule {
     BeforeCountRegister,
 }
 
+/// Source-validated ownership for a later quotient/fill layout candidate.
+#[derive(Debug, Clone)]
+pub struct LaterFillEntrySchedule {
+    pub anchor_symbol: String,
+    pub published_globals: [String; 2],
+    pub add_immediate_copy: bool,
+    /// Known nonvariadic void calls with scalar register arguments.
+    pub scalar_void_calls: Vec<(String, u8)>,
+}
+
 /// A function's worth of machine code.
 #[derive(Debug, Clone, Default)]
 pub struct MachineFunction {
@@ -145,6 +155,8 @@ pub struct MachineFunction {
     pub share_bss_page_expressions: bool,
     /// Optional target policy for disposable pointers in successive fixed fills.
     pub following_fixed_fill_schedule: Option<FixedFillAddressSchedule>,
+    /// First-fill scheduling whose address and volatile cursor are layout-owned.
+    pub later_fill_entry_schedule: Option<LaterFillEntrySchedule>,
     /// Optimized source-variable homes retained for exact debug information.
     /// Debug lowering decides which declarations receive DIEs for a measured
     /// compiler generation; this list only reports physical allocation.
@@ -389,6 +401,7 @@ impl MachineFunction {
             share_wide_bss_cursor_bases: false,
             share_bss_page_expressions: false,
             following_fixed_fill_schedule: None,
+            later_fill_entry_schedule: None,
             debug_variables: Vec::new(),
             constants: Vec::new(),
             string_literals: Vec::new(),

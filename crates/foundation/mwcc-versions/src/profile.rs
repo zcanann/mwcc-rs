@@ -1802,6 +1802,10 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn early_reset_comparison(&self) -> bool {
         false
     }
+    /// Copy form for the first anchored fill cursor.
+    fn fixed_fill_cursor_copy_style(&self) -> MaterializationCopyStyle {
+        MaterializationCopyStyle::AddImmediateZero
+    }
     fn materialization_copy_style(&self) -> MaterializationCopyStyle {
         MaterializationCopyStyle::LogicalOr
     }
@@ -2728,6 +2732,9 @@ impl CodegenProfile for Wii43Build145 {
 #[derive(Debug)]
 pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
+    fn fixed_fill_cursor_copy_style(&self) -> MaterializationCopyStyle {
+        MaterializationCopyStyle::LogicalOr
+    }
     fn share_wide_bss_cursor_bases(&self) -> bool {
         true
     }

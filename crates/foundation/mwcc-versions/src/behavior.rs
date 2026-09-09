@@ -896,6 +896,8 @@ pub struct Behavior {
     pub trig_dispatcher_ipa_label_bump: u8,
     /// Encoding of generation-specific integer value materializations.
     pub materialization_copy_style: MaterializationCopyStyle,
+    /// Copy form for a later anchored first-fill cursor.
+    pub fixed_fill_cursor_copy_style: MaterializationCopyStyle,
     /// Scheduling of unequal constant words in a 64-bit add/subtract.
     pub wide_constant_add_schedule: WideConstantAddSchedule,
     /// AST traversal used to assign referenced symbol indices.
@@ -1456,6 +1458,7 @@ impl Behavior {
                 .trig_parity_tail_hidden_label_bump(),
             trig_dispatcher_ipa_label_bump: config.build.profile.trig_dispatcher_ipa_label_bump(),
             materialization_copy_style: config.build.profile.materialization_copy_style(),
+            fixed_fill_cursor_copy_style: config.build.profile.fixed_fill_cursor_copy_style(),
             wide_constant_add_schedule: config.build.profile.wide_constant_add_schedule(),
             symbol_traversal_style: config.build.profile.symbol_traversal_style(),
             deferred_function_emission_style: config
@@ -2139,6 +2142,17 @@ mod tests {
                 Behavior::resolve(&CompilerConfig::new(build)).member_value_schedule,
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn first_fill_cursor_copy_has_an_independent_version_policy() {
+        for label in ["GC/1.1", "GC/1.1p1", "GC/1.2.5", "GC/1.2.5n", "GC/1.3",
+            "GC/1.3.2", "GC/1.3.2r", "GC/2.0", "GC/2.0p1", "GC/2.5", "GC/2.6",
+            "GC/2.7", "GC/3.0a3", "GC/3.0a3p1", "Wii/1.0"] {
+            let build=build::by_label_experimental(label).unwrap();
+            assert_eq!(Behavior::resolve(&CompilerConfig::new(build)).fixed_fill_cursor_copy_style,
+                if label=="GC/1.3" {MaterializationCopyStyle::LogicalOr} else {MaterializationCopyStyle::AddImmediateZero}, "{label}");
         }
     }
 

@@ -1,0 +1,14 @@
+// flags: -O3
+typedef unsigned u32;
+u32 result,zero,clock_word;u32 a[160],b[160],c[160],d[160];
+extern void consume(u32);extern void observe4(u32*,u32*,u32*,u32*,u32);extern void flush(u32*,u32);
+#define CLOCK (*(volatile u32*)0x800000f8)
+volatile u32 vresult,vzero;
+void clock80(void){u32 i;u32*p;u32*q;u32*r;u32*s;result=CLOCK/400;zero=0;p=a;for(i=80;i!=0;i--){*p=0;p++;}p=b;for(i=80;i!=0;i--){*p=0;p++;}p=c;for(i=80;i!=0;i--){*p=0;p++;}p=d;for(i=80;i!=0;i--){*p=0;p++;}for(i=0;i<64;i++){p=&a[i];q=&b[i];r=&c[i];s=&d[i];*p=i;*q=i+1;*r=i+2;*s=i+3;observe4(p,q,r,s,i);}flush(a,64);}
+void thousand(void){u32 i;u32*p;u32*q;u32*r;u32*s;result=CLOCK/1000;zero=0;p=a;for(i=80;i!=0;i--){*p=0;p++;}p=b;for(i=80;i!=0;i--){*p=0;p++;}p=c;for(i=80;i!=0;i--){*p=0;p++;}p=d;for(i=80;i!=0;i--){*p=0;p++;}for(i=0;i<64;i++){p=&a[i];q=&b[i];r=&c[i];s=&d[i];*p=i;*q=i+1;*r=i+2;*s=i+3;observe4(p,q,r,s,i);}flush(a,64);}
+void offset(void){u32 i;u32*p;u32*q;u32*r;u32*s;result=(*(volatile u32*)0x800000fc)/400;zero=0;p=a;for(i=80;i!=0;i--){*p=0;p++;}p=b;for(i=80;i!=0;i--){*p=0;p++;}p=c;for(i=80;i!=0;i--){*p=0;p++;}p=d;for(i=80;i!=0;i--){*p=0;p++;}for(i=0;i<64;i++){p=&a[i];q=&b[i];r=&c[i];s=&d[i];*p=i;*q=i+1;*r=i+2;*s=i+3;observe4(p,q,r,s,i);}flush(a,64);}
+void seven(void){u32 i;u32*p;u32*q;u32*r;u32*s;result=CLOCK/400;zero=7;p=a;for(i=80;i!=0;i--){*p=7;p++;}p=b;for(i=80;i!=0;i--){*p=7;p++;}p=c;for(i=80;i!=0;i--){*p=7;p++;}p=d;for(i=80;i!=0;i--){*p=7;p++;}for(i=0;i<64;i++){p=&a[i];q=&b[i];r=&c[i];s=&d[i];*p=i;*q=i+1;*r=i+2;*s=i+3;observe4(p,q,r,s,i);}flush(a,64);}
+void reversed(void){u32 i;u32*p;u32*q;u32*r;u32*s;zero=0;result=CLOCK/400;p=a;for(i=80;i!=0;i--){*p=0;p++;}p=b;for(i=80;i!=0;i--){*p=0;p++;}p=c;for(i=80;i!=0;i--){*p=0;p++;}p=d;for(i=80;i!=0;i--){*p=0;p++;}for(i=0;i<64;i++){p=&a[i];q=&b[i];r=&c[i];s=&d[i];*p=i;*q=i+1;*r=i+2;*s=i+3;observe4(p,q,r,s,i);}flush(a,64);}
+void volatile_targets(void){u32 i;u32*p;u32*q;u32*r;u32*s;vresult=CLOCK/400;vzero=0;p=a;for(i=80;i!=0;i--){*p=0;p++;}p=b;for(i=80;i!=0;i--){*p=0;p++;}p=c;for(i=80;i!=0;i--){*p=0;p++;}p=d;for(i=80;i!=0;i--){*p=0;p++;}for(i=0;i<64;i++){p=&a[i];q=&b[i];r=&c[i];s=&d[i];*p=i;*q=i+1;*r=i+2;*s=i+3;observe4(p,q,r,s,i);}flush(a,64);}
+void alias(void){u32 i;u32*p;u32*q;u32*r;u32*s;result=CLOCK/400;result=0;p=a;for(i=80;i!=0;i--){*p=0;p++;}p=b;for(i=80;i!=0;i--){*p=0;p++;}p=c;for(i=80;i!=0;i--){*p=0;p++;}p=d;for(i=80;i!=0;i--){*p=0;p++;}for(i=0;i<64;i++){p=&a[i];q=&b[i];r=&c[i];s=&d[i];*p=i;*q=i+1;*r=i+2;*s=i+3;observe4(p,q,r,s,i);}flush(a,64);}
+void barrier(void){u32 i;u32*p;u32*q;u32*r;u32*s;result=CLOCK/400;zero=0;consume(77);p=a;for(i=80;i!=0;i--){*p=0;p++;}p=b;for(i=80;i!=0;i--){*p=0;p++;}p=c;for(i=80;i!=0;i--){*p=0;p++;}p=d;for(i=80;i!=0;i--){*p=0;p++;}for(i=0;i<64;i++){p=&a[i];q=&b[i];r=&c[i];s=&d[i];*p=i;*q=i+1;*r=i+2;*s=i+3;observe4(p,q,r,s,i);}flush(a,64);}

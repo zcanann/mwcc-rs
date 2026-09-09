@@ -4,13 +4,83 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, complete early AX voice initializer matching (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, later quotient and first-fill scheduling (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `11132d43ecdf60caa2bb9aed72f105b73afeaf08f544644ab6a85bf91b8fc170:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `f3049b3d11a2495789f740dba5e0f52156b8140c7611c028b19ab75e8bbf18af:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Later quotient and first-fill scheduling, 2026-09-08
+
+The real `__AXVPBInit` now matches through its first clear loop, **116 bytes and
+relocations**, on GC/1.3, 1.3.2, 1.3.2r, 2.0, 2.0p1, 2.5, 2.6, and 2.7. Together
+with the four already-complete early versions, this prefix improves **4 → 12/15**.
+All eleven later-version initializers change only within those first 116 bytes;
+the newest three retain different frames and anchor registers. Complete matches
+remain **4/15**, and `__AXSetPBDefault` remains **15/15** exact. All **240** real
+initializer execution cases pass baseline, candidate, reference, and original
+GQPE78 game models.
+
+A backend nomination preserves the identities of two distinct nonvolatile
+published globals, the section anchor, and known scalar void-call signatures.
+The layout-stage planner then proves a zero-offset BSS address, the fixed-load
+unsigned quotient, and a complete eight- or ten-store CTR fill. It interleaves
+address setup and publication with the quotient, retains the quotient in r4,
+and uses r5 for the fill cursor. The prior cursor may be a saved home or a
+volatile temporary. Its old value and the replaced scratch values must be dead
+on the loop's fallthrough exit; the backedge intentionally carries the recolored
+cursor. Known nonvariadic void calls kill scratch lanes beyond their declared
+arguments, while unknown calls retain conservative ABI liveness.
+
+`fixed_fill_cursor_copy_style` independently records GC/1.3's logical copy and
+the later builds' add-zero copy. A logical copy drops its displacement owner only
+when the source symbol-order stream independently owns that array. Layout
+refreshes fixup indices after cursor scheduling, and the final permutation
+preserves relocation and displacement owners. Volatile or aliased publications,
+nonzero/unresolved addresses, live cursor values, side entries, opaque code,
+additional owners, and malformed loops prevent the rewrite. Selection is limited
+to predecrement O3/O4 performance builds with scheduling on.
+
+Canaries **2240–2245** add eight variations across six modes and fifteen builds:
+fixed loads at two addresses, divisors 400 and 1000, zero and nonzero fills,
+reversed publications, volatile outputs, an aliased output, and a call barrier.
+All **90 objects / 720 functions** compile on baseline, candidate, and reference.
+**64 functions** change at identical sizes and gain **0 → 64** exact first-fill
+packets. Whole-function matches remain **0/720**. All **11,520** native cases pass
+memory guards, fixed-load counts, callback-visible publications and mutations,
+argument values, saved registers, stack, and return-state checks.
+
+Of **2,460** preceding objects, **2,380** remain identical. The other **80 objects /
+352 functions** gain **0 → 156** exact first-fill packets. The remaining 196
+functions retain earlier BSS-base selection differences: the reference uses
+separate array addresses where the candidate retains a section anchor. Whole
+matches across the 1,056 functions in these objects remain **216/1,056**, with
+no exact losses or function-size changes. All **5,632** affected earlier execution
+cases pass using their existing models and cached reference objects. This gives
+**17,392** distinct native cases for the checkpoint.
+
+The AX/GX probe still compiles **24/24 units** on GC/1.2.5n with identical objects.
+An additional GC/1.3 probe compiles **21/24 units**, with AXVPB alone changed.
+Three failures reproduce identical baseline diagnostics: `__AXOutInitDSP` needs
+a canonical frame owner, `__GXInitGX` rejects a conditional narrow argument to
+`GXSetFieldMode`, and `GXGetTexObjMipMap` rejects a narrow return expression.
+These are open project-compilation work, not regressions from this change.
+
+Backend tests pass **1,689** with the existing nested-asm exclusion, object-stage
+tests pass **33**, and version tests pass **64**. Seven new object tests cover
+both fill widths, copy forms, metadata, idempotence, ownership, alias/volatility
+proofs, address layout, saved and volatile cursor lifetimes, call argument counts,
+and malformed/interior-entry barriers. The new profile test checks all fifteen
+builds. Final recompilation reproduces every execution-tested candidate hash.
+
+`target/later-fill-final-verification.json` binds the final compiler/harness,
+555 native object entries, sample sources, execution harnesses, preceding objects,
+library outcomes, and the original DOL fingerprint. These are targeted results,
+not a full-corpus parity estimate. The next initializer differences are its
+successive clear-loop setup; the three newly measured GC/1.3 compile failures
+also provide concrete project-driven follow-up work.
 
 ## Complete early AX voice initializer matching, 2026-09-08
 

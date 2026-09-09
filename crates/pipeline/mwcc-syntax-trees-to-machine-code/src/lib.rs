@@ -45,6 +45,7 @@ mod division;
 mod fixed_address_division;
 mod fixed_address_division_entry;
 mod fixed_fill_entry_schedule;
+mod later_fill_entry;
 mod reset_call_schedule;
 mod expressions;
 mod float;
@@ -1457,6 +1458,7 @@ fn lower_function_body(
     generator.schedule_structured_repeated_value_inlined_byte_appends();
     generator.schedule_fixed_address_division_entry();
     generator.schedule_fixed_fill_entry();
+    generator.schedule_later_fill_entry();
     generator.schedule_pointer_table_index_cursor_prologue();
     generator.schedule_indexed_allocation_pair();
     generator.schedule_pointer_table_index_cursor_publication();

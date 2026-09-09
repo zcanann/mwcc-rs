@@ -17,7 +17,7 @@ pub fn finalize_bss_addresses(
     small_data: bool,
 ) -> Compilation<()> {
     if !functions.iter().any(|f| {
-        !f.temporary_bss_address_groups.is_empty() || f.deferred_displacements
+        !f.temporary_bss_address_groups.is_empty() || f.later_fill_entry_schedule.is_some() || f.deferred_displacements
             .iter()
             .any(|d| matches!(d.target, Target::SymbolAddress(_)))
     }) {
@@ -107,6 +107,16 @@ pub fn finalize_bss_addresses(
         let address_owners: Vec<_> = resolved.iter().map(|&(fixup, _)| fixup).collect();
         super::fixed_fill_schedule::schedule(function, &address_owners);
         super::cursor_setup_schedule::schedule(function, &resolved);
+        if function.later_fill_entry_schedule.is_some() {
+            // Cursor scheduling can remove completed-address fixups. Rebuild
+            // their indices before the first-fill pass consumes its layout proof.
+            let fill_addresses: Vec<_> = function.deferred_displacements.iter().enumerate()
+                .filter_map(|(fixup, d)| {
+                    let (Target::SymbolAddress(name) | Target::Symbol(name)) = &d.target else { return None; };
+                    offsets.get(&link_name(index, name)).map(|offset| (fixup, *offset))
+                }).collect();
+            super::later_fill_entry::schedule(function, &fill_addresses);
+        }
     }
     Ok(())
 }
