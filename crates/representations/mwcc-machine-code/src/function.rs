@@ -134,6 +134,11 @@ pub struct MachineFunction {
     /// layout may share their address materialization using a dead volatile
     /// register; these are candidates, not retained section-anchor lifetimes.
     pub temporary_bss_address_groups: Vec<Vec<String>>,
+    /// Strength-reduced cursors initialized together from a retained BSS anchor.
+    /// Layout schedules their complete addresses once high halves are available.
+    pub anchored_cursor_address_groups: Vec<Vec<String>>,
+    /// Target ready-list order for those anchored cursor packets.
+    pub patched_cursor_setup_order: bool,
     /// Target policy for full-width offsets in those temporary groups.
     pub share_wide_bss_cursor_bases: bool,
     /// Reuse high-page expressions in temporary or complete cursor registers.
@@ -379,6 +384,8 @@ impl MachineFunction {
             relocations: Vec::new(),
             deferred_displacements: Vec::new(),
             temporary_bss_address_groups: Vec::new(),
+            anchored_cursor_address_groups: Vec::new(),
+            patched_cursor_setup_order: false,
             share_wide_bss_cursor_bases: false,
             share_bss_page_expressions: false,
             following_fixed_fill_schedule: None,

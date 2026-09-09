@@ -1027,6 +1027,8 @@ pub struct Behavior {
     pub share_wide_bss_cursor_bases: bool,
     /// Reuse high-page expressions, including later complete page cursors.
     pub share_bss_page_expressions: bool,
+    /// Use the patched early scheduler's anchored-cursor ready-list order.
+    pub patched_cursor_setup_order: bool,
     /// Whether floating multiply/add and multiply/subtract expressions may
     /// contract into fused instructions.
     pub contract_floating_point: bool,
@@ -1674,6 +1676,7 @@ impl Behavior {
                 && config.build.profile.reorder_volatile_call_inputs(),
             share_wide_bss_cursor_bases: config.build.profile.share_wide_bss_cursor_bases(),
             share_bss_page_expressions: config.build.profile.share_bss_page_expressions(),
+            patched_cursor_setup_order: config.build.profile.patched_cursor_setup_order(),
             contract_floating_point: config.flags.fp_contract,
             simplify_negated_float_arithmetic: config.flags.optimization != Optimization::O0
                 && config.build.profile.simplify_negated_float_arithmetic(),
@@ -2133,6 +2136,17 @@ mod tests {
                 Behavior::resolve(&CompilerConfig::new(build)).member_value_schedule,
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn patched_cursor_setup_order_is_independent_of_address_fill_policy() {
+        for label in ["GC/1.1", "GC/1.1p1", "GC/1.2.5", "GC/1.2.5n", "GC/1.3",
+            "GC/1.3.2", "GC/1.3.2r", "GC/2.0", "GC/2.0p1", "GC/2.5", "GC/2.6",
+            "GC/2.7", "GC/3.0a3", "GC/3.0a3p1", "Wii/1.0"] {
+            let build = build::by_label_experimental(label).unwrap();
+            assert_eq!(Behavior::resolve(&CompilerConfig::new(build)).patched_cursor_setup_order,
+                label == "GC/1.1p1", "{label}");
         }
     }
 

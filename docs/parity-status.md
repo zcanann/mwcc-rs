@@ -4,13 +4,77 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, successive fixed-fill scheduling (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, anchored cursor setup scheduling (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `8922d2986a416edbe4e59e28e431e61b5fb9fa474c161f060265f28e6f43c5b8:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `1422d568ee558fe843f460251200dd643e48d4fd997bb00abab3b901380e0153:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Anchored cursor setup scheduling, 2026-09-08
+
+The real `__AXVPBInit` now matches through cursor setup and its first voice-index
+store: **256 bytes and relocations** on GC/1.1, 1.1p1, 1.2.5, and 1.2.5n.
+These prefix matches improve **0 → 4/15**, extending the previously matching
+228-byte prefix. Only the six cursor-setup instructions move; the preceding
+clear loops and every instruction from byte 252 onward remain identical. The
+eleven later-version objects remain unchanged. Complete initializer matches
+remain **0/15**, and `__AXSetPBDefault` remains **15/15** exact.
+
+Source strength reduction nominates array groups initialized from a retained
+BSS anchor. The layout-stage planner consumes those symbolic groups after full
+address expansion, validates independent saved-register destinations, and
+schedules high halves before complete addresses, the zero index, and pending
+low halves. The zero-offset cursor leads other complete addresses even when
+source binding order puts it last. A separate `patched_cursor_setup_order`
+profile policy records GC/1.1p1's measured ready-list order; permuting stores,
+cursor binds, and callback arguments disproves first-use ordering as its cause.
+The pass applies to linkage-first O3/O4 performance builds with scheduling on;
+narrow-only groups retain their existing path.
+
+A page-aligned wide address is already complete after `addis`. Its redundant
+low add and displacement owner are removed only when the source symbol-order
+stream independently retains that array. Such completed addresses participate
+in the ready list rather than pending high/low pairs. The patched completed-page
+packet also delays the index past the remaining low half when a preceding call
+or save helper changes its ready-list context. Plans are validated together and
+applied from the end, preserving surviving fixup/relocation owners and branch
+boundaries as packets shrink. Interior entries, aliasing registers, mismatched
+anchors, extra owners, opaque code, and unowned symbols prevent the rewrite.
+
+Canaries **2228–2233** add nine functions in six modes across fifteen builds.
+Their arrays produce one wide and three narrow addresses while source store,
+binding, and argument orders vary. All **90 objects / 810 functions** compile
+on baseline, candidate, and reference. **72 functions** change at identical
+sizes, gaining **0 → 72** exact cursor-setup packets. Whole-function matches
+remain **0/810**. All **12,960** execution cases pass guarded-memory, callback,
+input-read, saved-register, stack, and return-state checks.
+
+Of **2,280** preceding objects, **2,248** remain identical. The other **32 objects /
+120 functions** contain the same anchored setup. The completed-page case removes
+one instruction from **32 functions** in canaries 2121–2123 and 2127, and their
+setup packets improve **0 → 32** exact matches. Eight `far_tail3` functions gain
+**0 → 8** exact setups. Eighty following-fill functions gain reference setup
+order; **72** also match registers exactly, while eight callback-barrier samples
+retain earlier saved-home differences. No exact function matches are lost.
+All **1,600** affected earlier execution cases pass; unrelated functions were
+not re-executed. All **240** real initializer cases pass against reference and
+original game models, for **14,800** distinct native cases in this checkpoint.
+
+All **24 AX/GX units** compile, with AXVPB alone changed. Backend tests pass
+**1,680** with the existing nested-asm exclusion, object-stage tests pass **26**,
+and version tests pass **62**. Eight new object-stage tests cover profile order,
+metadata remapping, completed-page ownership, multiple shrinking packets,
+idempotence, dependencies, side entries, and malformed candidates. The final
+compiler's newly compiled objects were checked against execution hashes; only
+the changed completed-page objects needed another execution run after refinement.
+
+`target/cursor-setup-final-verification.json` binds the final compiler/harness,
+411 native object entries, sample sources, execution harnesses, preceding objects,
+and original DOL fingerprint. These are targeted measurements, not a full-corpus
+parity estimate. The next real-initializer differences are the callback argument's
+live range, reset-store register selection, and instruction scheduling.
 
 ## Successive fixed-fill scheduling, 2026-09-08
 

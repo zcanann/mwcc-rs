@@ -1794,6 +1794,10 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn share_bss_page_expressions(&self) -> bool {
         false
     }
+    /// Patched 2.3.3 ready-list order for an anchored cursor setup packet.
+    fn patched_cursor_setup_order(&self) -> bool {
+        false
+    }
     fn materialization_copy_style(&self) -> MaterializationCopyStyle {
         MaterializationCopyStyle::LogicalOr
     }
@@ -2832,6 +2836,7 @@ pub struct Gc233Build163 {
     member_value_schedule: MemberValueSchedule,
     division_address_schedule: DivisionAddressSchedule,
     fixed_fill_address_placement: FixedFillAddressPlacement,
+    patched_cursor_setup_order: bool,
     global_load_pair_style: GlobalLoadPairStyle,
     byte_word_transfer_style: ByteWordTransferStyle,
     fixed_bank_stream_style: FixedBankStreamStyle,
@@ -2850,6 +2855,7 @@ pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
     member_value_schedule: MemberValueSchedule::FirstStore,
     division_address_schedule: DivisionAddressSchedule::CompleteBeforeDividend,
     fixed_fill_address_placement: FixedFillAddressPlacement::AfterCountRegister,
+    patched_cursor_setup_order: false,
     global_load_pair_style: GlobalLoadPairStyle::SerialExplicit,
     saved_call_token_style: SavedCallTokenStyle::LegacyInterleaved,
     packet_publication_style: PacketPublicationStyle::LegacyLateResult,
@@ -2868,6 +2874,7 @@ pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
     member_value_schedule: MemberValueSchedule::FirstStore,
     division_address_schedule: DivisionAddressSchedule::CompleteBeforeDividend,
     fixed_fill_address_placement: FixedFillAddressPlacement::AfterCountRegister,
+    patched_cursor_setup_order: false,
     global_load_pair_style: GlobalLoadPairStyle::SerialExplicit,
     saved_call_token_style: SavedCallTokenStyle::LegacyInterleaved,
     packet_publication_style: PacketPublicationStyle::LegacyLateResult,
@@ -2886,6 +2893,7 @@ pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
     member_value_schedule: MemberValueSchedule::FirstStore,
     division_address_schedule: DivisionAddressSchedule::CompleteBeforeDividend,
     fixed_fill_address_placement: FixedFillAddressPlacement::AfterCountRegister,
+    patched_cursor_setup_order: false,
     global_load_pair_style: GlobalLoadPairStyle::SerialExplicit,
     saved_call_token_style: SavedCallTokenStyle::LegacyStackLast,
     packet_publication_style: PacketPublicationStyle::LegacyEarlyResult,
@@ -2904,6 +2912,7 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
     member_value_schedule: MemberValueSchedule::AddressEarly,
     division_address_schedule: DivisionAddressSchedule::LowAfterQuotient,
     fixed_fill_address_placement: FixedFillAddressPlacement::BeforePublishedValues,
+    patched_cursor_setup_order: true,
     global_load_pair_style: GlobalLoadPairStyle::ParallelExplicit,
     saved_call_token_style: SavedCallTokenStyle::LegacyPatched,
     packet_publication_style: PacketPublicationStyle::LegacyPatched,
@@ -2929,6 +2938,9 @@ impl CodegenProfile for Gc233Build163 {
 
     fn fixed_fill_address_placement(&self) -> FixedFillAddressPlacement {
         self.fixed_fill_address_placement
+    }
+    fn patched_cursor_setup_order(&self) -> bool {
+        self.patched_cursor_setup_order
     }
 
 
