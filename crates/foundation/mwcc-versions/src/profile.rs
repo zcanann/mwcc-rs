@@ -734,6 +734,13 @@ pub enum DivisionAddressSchedule {
     LowAfterQuotient,
 }
 
+/// Address readiness when a leading quotient is published before a fixed fill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedFillAddressPlacement {
+    AfterCountRegister,
+    BeforePublishedValues,
+}
+
 /// Placement of a pending negated delta beside a scalar global update.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NegatedUpdateScheduleStyle {
@@ -1596,6 +1603,11 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn division_address_schedule(&self) -> DivisionAddressSchedule {
         DivisionAddressSchedule::CompleteBeforeDividend
     }
+
+    fn fixed_fill_address_placement(&self) -> FixedFillAddressPlacement {
+        FixedFillAddressPlacement::AfterCountRegister
+    }
+
 
     fn negated_update_schedule_style(&self) -> NegatedUpdateScheduleStyle {
         NegatedUpdateScheduleStyle::BeforeSubtract
@@ -2819,6 +2831,7 @@ impl CodegenProfile for Gc132Build81 {
 pub struct Gc233Build163 {
     member_value_schedule: MemberValueSchedule,
     division_address_schedule: DivisionAddressSchedule,
+    fixed_fill_address_placement: FixedFillAddressPlacement,
     global_load_pair_style: GlobalLoadPairStyle,
     byte_word_transfer_style: ByteWordTransferStyle,
     fixed_bank_stream_style: FixedBankStreamStyle,
@@ -2836,6 +2849,7 @@ pub struct Gc233Build163 {
 pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
     member_value_schedule: MemberValueSchedule::FirstStore,
     division_address_schedule: DivisionAddressSchedule::CompleteBeforeDividend,
+    fixed_fill_address_placement: FixedFillAddressPlacement::AfterCountRegister,
     global_load_pair_style: GlobalLoadPairStyle::SerialExplicit,
     saved_call_token_style: SavedCallTokenStyle::LegacyInterleaved,
     packet_publication_style: PacketPublicationStyle::LegacyLateResult,
@@ -2853,6 +2867,7 @@ pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
 pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
     member_value_schedule: MemberValueSchedule::FirstStore,
     division_address_schedule: DivisionAddressSchedule::CompleteBeforeDividend,
+    fixed_fill_address_placement: FixedFillAddressPlacement::AfterCountRegister,
     global_load_pair_style: GlobalLoadPairStyle::SerialExplicit,
     saved_call_token_style: SavedCallTokenStyle::LegacyInterleaved,
     packet_publication_style: PacketPublicationStyle::LegacyLateResult,
@@ -2870,6 +2885,7 @@ pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
 pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
     member_value_schedule: MemberValueSchedule::FirstStore,
     division_address_schedule: DivisionAddressSchedule::CompleteBeforeDividend,
+    fixed_fill_address_placement: FixedFillAddressPlacement::AfterCountRegister,
     global_load_pair_style: GlobalLoadPairStyle::SerialExplicit,
     saved_call_token_style: SavedCallTokenStyle::LegacyStackLast,
     packet_publication_style: PacketPublicationStyle::LegacyEarlyResult,
@@ -2887,6 +2903,7 @@ pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
 pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
     member_value_schedule: MemberValueSchedule::AddressEarly,
     division_address_schedule: DivisionAddressSchedule::LowAfterQuotient,
+    fixed_fill_address_placement: FixedFillAddressPlacement::BeforePublishedValues,
     global_load_pair_style: GlobalLoadPairStyle::ParallelExplicit,
     saved_call_token_style: SavedCallTokenStyle::LegacyPatched,
     packet_publication_style: PacketPublicationStyle::LegacyPatched,
@@ -2909,6 +2926,11 @@ impl CodegenProfile for Gc233Build163 {
     fn division_address_schedule(&self) -> DivisionAddressSchedule {
         self.division_address_schedule
     }
+
+    fn fixed_fill_address_placement(&self) -> FixedFillAddressPlacement {
+        self.fixed_fill_address_placement
+    }
+
 
     fn negated_update_schedule_style(&self) -> NegatedUpdateScheduleStyle {
         NegatedUpdateScheduleStyle::AfterSubtract

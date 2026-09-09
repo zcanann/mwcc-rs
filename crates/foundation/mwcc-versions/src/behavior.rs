@@ -15,7 +15,7 @@ use crate::config::CompilerConfig;
 use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal, SchedulingModel};
 use crate::profile::{
     SmallConstantMultiplyStyle, MemberValueSchedule, FixedFillLoopStyle,
-    NegatedUpdateScheduleStyle, DivisionAddressSchedule,
+    NegatedUpdateScheduleStyle, DivisionAddressSchedule, FixedFillAddressPlacement,
     AccumulatorIssueStyle,
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CallDispatcherStyle, ClearedLowBitPowerSelectStyle, CoefficientTableRelocationStyle,
@@ -814,6 +814,8 @@ pub struct Behavior {
     pub negated_update_schedule_style: NegatedUpdateScheduleStyle,
     /// Completion point for a retained address beside a constant quotient.
     pub division_address_schedule: DivisionAddressSchedule,
+    /// Address placement around the first fixed-fill publication packet.
+    pub fixed_fill_address_placement: FixedFillAddressPlacement,
     /// Placement of the containing-unit load for source-level bit-field reads.
     pub bit_field_load_placement: BitFieldLoadPlacement,
     /// Scheduling of distinct constant values consumed by consecutive stores.
@@ -1365,6 +1367,7 @@ impl Behavior {
             small_constant_multiply_style: config.build.profile.small_constant_multiply_style(),
             negated_update_schedule_style: config.build.profile.negated_update_schedule_style(),
             division_address_schedule: config.build.profile.division_address_schedule(),
+            fixed_fill_address_placement: config.build.profile.fixed_fill_address_placement(),
             constant_multiply_store_conversion_style: if config.flags.optimization == Optimization::O0
                 && config.build.profile.narrow_store_conversion_style()
                     == NarrowStoreConversionStyle::ElideRedundantConversion
@@ -2130,6 +2133,21 @@ mod tests {
                 Behavior::resolve(&CompilerConfig::new(build)).member_value_schedule,
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn patched_fixed_fill_address_readiness_has_its_own_policy() {
+        for label in ["GC/1.1", "GC/1.1p1", "GC/1.2.5", "GC/1.2.5n", "GC/1.3",
+            "GC/1.3.2", "GC/1.3.2r", "GC/2.0", "GC/2.0p1", "GC/2.5", "GC/2.6",
+            "GC/2.7", "GC/3.0a3", "GC/3.0a3p1", "Wii/1.0"] {
+            let build = build::by_label_experimental(label).unwrap();
+            let expected = if label == "GC/1.1p1" {
+                FixedFillAddressPlacement::BeforePublishedValues
+            } else {
+                FixedFillAddressPlacement::AfterCountRegister
+            };
+            assert_eq!(Behavior::resolve(&CompilerConfig::new(build)).fixed_fill_address_placement, expected, "{label}");
         }
     }
 

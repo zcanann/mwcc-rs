@@ -4,13 +4,73 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-08, fixed-division entry scheduling (fingerprint below)
+Latest targeted checkpoint: 2026-09-08, first fixed-fill setup scheduling (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `136901113306a49779774a278b4ffa741f1172db12043b855d3f4799a5dafc42:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
+Latest measured compiler + harness fingerprint: `1f7e03484922194f211fd51f04da5f0c8c7fb4b9fe39fbc50d2c896db5e65f7b:5e4ca1ddc460f4d86cd15e9e7a834f5b2a572a7e0c80e09279a629da4eac0806`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## First fixed-fill setup scheduling, 2026-09-08
+
+The real `__AXVPBInit` now matches the reference through its entire first clear
+loop: **112 bytes and relocations** on GC/1.1, 1.1p1, 1.2.5, and 1.2.5n. These
+prefix matches improve **0 → 4/15**, extending the previously matching 48-byte
+prologue. Only the six setup instructions between byte offsets 48 and 72 move;
+the prologue and every instruction after setup remain unchanged. The eleven
+later-version objects remain identical. Complete initializer matches are still
+**0/15**, and `__AXSetPBDefault` remains **15/15** exact.
+
+A dedicated fixed-fill entry planner distinguishes a memory-dependent unsigned
+quotient, an incoming-register quotient, and a literal publication. It traces
+the quotient's selected multiply operands rather than relying on source names
+or magic constants. Ready values and loaded quotients use different count,
+address, and publication orders. A separate `FixedFillAddressPlacement` profile
+policy captures GC/1.1p1's earlier quotient-dependent address setup; literal
+publications keep the ordinary ready-value order. This policy has a fifteen-build
+test and is independent of the existing division-address policy.
+
+The pass requires a linkage-first frame, O3/O4 performance optimization, enabled
+scheduling, an owned section-relative array address, and the first CTR fill.
+It validates the two global stores, distinct value/pointer/count lanes, complete
+word-store packet, pointer step, and loop backedge. Side entries, preceding
+control flow or calls, unknown instructions, and unowned relocation/displacement
+state prevent the rewrite. Only setup instructions are permuted; global stores
+retain source order, and shared remapping preserves their relocations and the
+array address's deferred displacement. Unit tests cover value origins, operand
+and store dependencies, metadata movement, malformed fills, aliases, and barriers.
+
+Canaries **2216–2221** add nine functions in six modes across fifteen builds.
+All **90 objects / 810 functions** compile on baseline, candidate, and reference.
+They vary counts (64, 80, 96, 128), source values, nonzero fill values, and a call
+barrier. **64 functions** change without changing size. Their six setup operations
+now appear in reference order (**0 → 64**), abstracting the differing clear-pointer
+home. Whole-function exact matches remain **0/810**; saved clear-pointer placement
+and later-loop schedules are still different. All **12,960** candidate cases pass
+arithmetic, read-count, callback, guarded-memory, saved-register, and stack models.
+
+Reference validation exposes GC/1.1p1's O0 parameter/save-slot overlap in the
+`argument` sample: `_savegpr_26` stores r26 at new SP+8, then the parameter home
+overwrites that slot. The reference restores the input into r26. A targeted
+sixteen-case rerun verifies this exact outcome; other checks remain strict and
+pass. Candidate preserves r26, so reproducing this reference bug in this frame
+shape remains a parity task. The final execution record names the correction
+and retains the unchanged cases' earlier verified results.
+
+Of **2,100** preceding objects, **2,084** remain identical. The other **16 objects /
+24 functions** gain the same reference setup order (**0 → 24**) with no exact
+function losses; all **384** affected native cases pass. Only those affected
+functions were rerun. All **240** real initializer cases pass against reference
+and original game models. All **24 AX/GX units** compile, with AXVPB alone changed.
+Backend tests pass **1,680**, with the existing nested-asm exclusion; version tests
+pass **61**. Fresh distinct native coverage totals **13,584 cases**. These targeted
+measurements do not estimate full-corpus parity; broader panels were not rerun.
+
+`target/fill-entry-final-verification.json` binds the final compiler/harness,
+source/model hashes, original DOL, **363 native-tested object entries**, and all
+measured comparisons. Subsequent clears still differ in pointer homes and count/
+address ordering; later compiler versions also need their quotient homes matched.
 
 ## Fixed-division entry scheduling, 2026-09-08
 
