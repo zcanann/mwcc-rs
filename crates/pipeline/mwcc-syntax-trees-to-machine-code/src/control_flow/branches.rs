@@ -1488,7 +1488,7 @@ impl Generator {
                 // Integer immediates are encoded on the right by `cmpwi`/`cmplwi`.
                 // Normalize a side-effect-free constant written on the left so
                 // `0 <= result` shares the same lowering as `result >= 0`.
-                if (constant_value(left) == Some(0) || as_small_integer(left).is_some())
+                if constant_value(left).is_some()
                     && constant_value(right).is_none()
                 {
                     let swapped_operator = match operator {
@@ -1523,6 +1523,11 @@ impl Generator {
                 {
                     return Ok(false_branch_bo_bi(*operator)
                         .expect("is_comparison restricts the operator"));
+                }
+                if let Some(branch) =
+                    self.try_emit_boundary_constant_compare(*operator, left, right)?
+                {
+                    return Ok(branch);
                 }
                 if let Some(branch) =
                     self.try_emit_large_equality_compare(*operator, left, right)?

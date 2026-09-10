@@ -3107,6 +3107,8 @@ mod tests {
     mod global_record_stride_loads;
     #[path = "shared_spill_return_guards.rs"]
     mod shared_spill_return_guards;
+    #[path = "constant_compare_domain.rs"]
+    mod constant_compare_domain;
 
     #[path = "computed_record_condition.rs"]
     mod computed_record_condition;

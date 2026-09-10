@@ -4,13 +4,68 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, GC/1.1p1 shared spills through return guards (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, integer comparison boundaries and CARDCreate (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `7a7a8a4a6cd27b4e3703546a197a7b8bce0748dda25b7bed2a9d3ea502133538:4b9f760576911e20cb90aff823d13fe75dd0332b6165fb6878976bc442babf39`
+Latest measured compiler + harness fingerprint: `1ae246ecf0ad69f5ca8a52d7b6a440bc0ec9278553edc7bc95ce6d8c0623a1ae:dd84435678c697fddc622d19bdb3765024bdc7f5b86b11f354dfdac457409d17`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Integer comparison boundaries and CARDCreate, 2026-09-09
+
+Constant comparison lowering now selects signed and unsigned immediate ranges
+separately, promotes narrow operands, and retains full-width negative constants
+in unsigned word comparisons. In particular, `u16 freeNo == (u16)-1` emits a
+zero extension and `cmplwi 65535`; `unsigned x < -1` compares against the full
+word `0xffffffff`. Constants written on the left normalize to the same owner.
+Comparisons already handled by the existing full-word register path retain
+that path, including its version-dependent scheduling.
+
+The **82-function** canaries 2322 and 2323 cover all six comparison operators,
+constants around the signed/unsigned 16-bit boundaries, signed and unsigned
+byte/halfword/word parameters, pointer and member loads, and reversed operands.
+Across 15 builds and seven modes, **210/210 candidate and reference rows compile**,
+against 105 baseline rows. Exact function matches rise from **648 to 4,343 of
+8,610**, with no losses. Native checks run **172,200 cases per candidate and
+reference**, with zero mismatches; the baseline runs 100,800 cases and has
+**9,240 mismatches**. Narrow argument inputs use their ABI-required sign or zero
+extension. The checks verify stores, unchanged input and surrounding memory,
+return control, restored SP, preserved registers, and the caller back chain.
+
+The unmodified Dolphin `card/CARDCreate.c` now compiles under the original
+project flags in both frontier builds, moving the frontier from **207 to
+209/302**. It also compiles in **30/30** version/O0/O4 matrix rows, up from zero.
+The reference accepts 24 rows; six modern-build header diagnostics remain.
+This is a compilation and execution milestone: only **1/72 comparable function
+outputs** is byte-exact, and the full file still has scheduling differences.
+
+Full-source execution covers `CARDCreateAsync` and its synchronous wrapper:
+name limits, control-block errors, invalid sizes, duplicate and full directories,
+first-free selection, insufficient space, allocation failures, callback fallback,
+file-info updates, and synchronous completion. **2,880 candidate transactions**
+pass, including **2,304 reference-comparable transactions** with matching call
+traces and complete guarded memory images. External calls clobber volatile
+registers. GC/1.1p1 O0's wrapper aliases the filename, size, and file-info
+arguments in SP+8 and overwrites saved r30; **48 cases explicitly reproduce
+that reference bug**, including the altered arguments, results, memory, and
+restored r30. The six reference-rejected rows provide another 576 candidate
+model checks, not reference-parity evidence. The asynchronous completion
+callback's body is compiled but is outside this native execution panel.
+
+All **4,365 recent objects**, **2,589 focused regression objects**, and
+**276 diagnostics** remain unchanged, as do every previously compiling frontier
+object and all **90 THP audio objects** (142/270 exact functions). **2,711 Rust
+tests pass**, including eight measured comparison instruction fixtures in one
+new test. The same 12 documented exclusions and eight ignored allocator tests
+remain. Reference project files are unchanged; no full corpus run was performed.
+
+The compiler/object/source bindings, native object hashes, original-file hashes,
+and harness fingerprint are verified in
+`target/compare-immediate-final-verification.json`. Raw panels and native
+results are under `target/compare-immediate-*`. Remaining boundary differences
+include newer compilers eliding redundant narrow-parameter extensions and
+version-specific placement of full-word comparison constants.
 
 ## GC/1.1p1 shared spills through return guards, 2026-09-09
 
