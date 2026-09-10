@@ -198,6 +198,9 @@ pub(super) fn statements_carry_local(
                         .any(|statement| statement_reads_name(statement, name));
                 if carried_read
                     && (statements_assign_name(body, name)
+                        || condition
+                            .as_ref()
+                            .is_some_and(|condition| expression_assigns_name(condition, name))
                         || step
                             .as_ref()
                             .is_some_and(|step| expression_assigns_name(step, name)))
@@ -245,12 +248,17 @@ fn statements_assign_name(statements: &[Statement], name: &str) -> bool {
         Statement::Assign { name: assigned, .. } => assigned == name,
         Statement::Expression(expression) => expression_assigns_name(expression, name),
         Statement::If {
+            condition,
             then_body,
             else_body,
-            ..
-        } => statements_assign_name(then_body, name) || statements_assign_name(else_body, name),
-        Statement::Loop { body, step, .. } => {
+        } => expression_assigns_name(condition, name)
+            || statements_assign_name(then_body, name)
+            || statements_assign_name(else_body, name),
+        Statement::Loop { body, condition, step, .. } => {
             statements_assign_name(body, name)
+                || condition
+                    .as_ref()
+                    .is_some_and(|condition| expression_assigns_name(condition, name))
                 || step
                     .as_ref()
                     .is_some_and(|step| expression_assigns_name(step, name))

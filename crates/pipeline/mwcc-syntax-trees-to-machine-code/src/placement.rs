@@ -732,11 +732,16 @@ impl Generator {
         };
         let (anchor_register, other_register) =
             if let Some((base, offset, member_type)) = as_member(anchor) {
-                // The member anchor loads into its base register; the global -> scratch.
-                let base_register = self.member_base_register(base)?;
-                self.emit_member_load(base, offset, member_type, None, base_register.into())?;
+                // A retained base remains live after this expression (for
+                // example, permission = entry->permission & global_mask,
+                // followed by a call receiving entry). Only a dying base can
+                // also hold the loaded member value.
+                // Let liveness coalesce a dying base with this value instead
+                // of overwriting a fixed source home during operand placement.
+                let anchor_register = self.fresh_virtual_general();
+                self.emit_member_load(base, offset, member_type, None, anchor_register.into())?;
                 self.emit_global_load(leaf_name(other).unwrap(), GENERAL_SCRATCH)?;
-                (base_register, GENERAL_SCRATCH)
+                (anchor_register, GENERAL_SCRATCH)
             } else {
                 // The global anchor loads into a free register; the member -> scratch.
                 let (base, offset, member_type) = as_member(other).unwrap();

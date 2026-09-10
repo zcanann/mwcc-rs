@@ -281,7 +281,17 @@ impl Generator {
         {
             return Ok(false);
         }
-        let claimed = self.try_callee_saved_structured_body(function)?;
+        // Compact trailing guards are continuation blocks of the loop, just
+        // like source-level early returns. Expose them before CFG planning.
+        let mut normalized = function.clone();
+        normalized
+            .statements
+            .extend(normalized.guards.drain(..).map(|guard| Statement::If {
+                condition: guard.condition,
+                then_body: vec![Statement::Return(Some(guard.value))],
+                else_body: Vec::new(),
+            }));
+        let claimed = self.try_callee_saved_structured_body(&normalized)?;
         if claimed
             && self.frame_slots.is_empty()
             && self.callee_saved.is_empty()

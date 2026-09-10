@@ -1525,6 +1525,11 @@ impl Generator {
                         .expect("is_comparison restricts the operator"));
                 }
                 if let Some(branch) =
+                    self.try_emit_assigned_operand_compare(*operator, left, right)?
+                {
+                    return Ok(branch);
+                }
+                if let Some(branch) =
                     self.try_emit_boundary_constant_compare(*operator, left, right)?
                 {
                     return Ok(branch);

@@ -4,13 +4,93 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, integer comparison boundaries and CARDCreate (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, condition-mutating leaf loops and CARDOpen (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `1ae246ecf0ad69f5ca8a52d7b6a440bc0ec9278553edc7bc95ce6d8c0623a1ae:dd84435678c697fddc622d19bdb3765024bdc7f5b86b11f354dfdac457409d17`
+Latest measured compiler + harness fingerprint: `9616fdec39f099875ee0601db363b6ea356f575452a164218b6553f888e4911b:559890ef1368fc0e733f2fb65b5335ba5cd52d2093542ac1bbae94c19fe3272a`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Condition-mutating leaf loops and CARDOpen, 2026-09-09
+
+The shared leaf-loop admission policy now recognizes mutations in loop and
+`if` conditions, including predecrement counters and assignment-valued byte
+loads. Compact trailing guards become ordinary continuation blocks before
+structured CFG planning. Comparing two assignment expressions gives the first
+value a separate lifetime while evaluating the second, then promotes both
+according to their target types. This compiles the bounded name-comparison
+helper without relying on its old whole-function capture.
+
+Full-source execution also exposed a separate operand-placement bug:
+`entry->permission & global_mask` overwrote the entry pointer before later calls
+used it. Member/global operations now give the member value a virtual home;
+liveness can coalesce a dying base instead of instruction selection overwriting
+a retained source home.
+
+Canaries **2324** and **2325** add **16 functions** covering bounded byte
+comparisons, condition assignments, trailing guards, retained byte/halfword/word
+members, reversed operands, subtraction, and calls after masked loads. Across
+15 builds and seven modes, **210 candidate and reference rows compile**, versus
+105 baseline rows. Exact matches rise from **0 to 60 of 1,680 function outputs**.
+The loop samples still have register and instruction-scheduling differences.
+
+| Native corpus | Candidate/reference cases each | Baseline cases | Baseline mismatches | Candidate mismatches |
+| --- | ---: | ---: | ---: | ---: |
+| Condition-mutating leaf loops | 107,520 | 0 | Not compiled | 0 |
+| Retained member/global operands | 107,520 | 107,520 | 34,545 | 0 |
+
+The execution checks cover high-bit bytes, embedded NULs, fixed and variable
+bounds, negative/zero bounds, mask boundaries, call traces, full guarded memory,
+return control, restored SP, callee-saved registers, and the caller back chain.
+
+Unmodified `card/CARDOpen.c` now compiles in both frontier builds, taking the
+Dolphin frontier from **209 to 211/302**, and in **30/30** version/O0/O4 matrix
+rows, up from zero. The reference accepts 24 rows; six modern-build header
+failures remain. Only **24/216 comparable function outputs** are byte-exact
+(the constant `__CARDIsOpened` stub).
+
+All nine functions in the real CARDOpen object are executed: name comparison,
+access/writable/readable checks, directory search, fast/open/close operations,
+and the opened stub. The harness runs **19,200 candidate cases** and **15,360
+reference cases**, comparing results, return/SP state, preserved registers,
+caller memory, full input/output memory, and observable control-block calls.
+**15,192/15,360 comparable cases match**. The other 3,840 candidate cases belong
+to reference-rejected rows and supply model checks only.
+
+All **168 remaining native parity differences** are GC/1.1p1 O0:
+
+| Function | Differing cases |
+| --- | ---: |
+| `__CARDAccess` | 64 |
+| `__CARDIsReadable` | 64 |
+| `CARDFastOpen` | 16 |
+| `__CARDGetFileNo` | 12 |
+| `CARDOpen` | 12 |
+
+These remain active frame/stack-slot parity work, not exclusions or passes.
+The original `__CARDAccess` aliases its card parameter with saved r30; the
+candidate does not reproduce that placement. Its `__CARDIsReadable` instead
+corrupts preserved state that the reference retains. The differences propagate
+to caller control flow, results, and memory. Against the independent C model,
+the candidate has 80 failing cases and the reference 88; those counts are
+separate from the 168 direct reference differences.
+
+All **4,575 recent objects**, **2,589 focused regression objects**, and
+**276 diagnostics** remain unchanged. The member/global placement change also
+changes three functions in each of the two previously compiling `ar/arq.c`
+frontier objects. There are no exact-match losses; **3,584 ARQ cases per
+baseline/candidate/reference** agree on calls, queues, request memory, and
+interrupt state. Every other previously compiling frontier object is unchanged.
+All **90 THP audio objects** remain unchanged (142/270 exact functions).
+
+**2,713 Rust tests pass**, including a measured exact member-mask fixture and a
+loop/guard compilation regression. The same 12 documented exclusions and eight
+ignored allocator tests remain. No reference project files were edited and no
+full corpus run was performed. The final compiler, source, object, native
+result, and harness bindings are checked by
+`target/loop-guard-final-verification.json`; raw measurements are under
+`target/loop-guard-*`.
 
 ## Integer comparison boundaries and CARDCreate, 2026-09-09
 

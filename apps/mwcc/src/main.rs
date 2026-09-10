@@ -3109,6 +3109,8 @@ mod tests {
     mod shared_spill_return_guards;
     #[path = "constant_compare_domain.rs"]
     mod constant_compare_domain;
+    #[path = "loop_guard_operands.rs"]
+    mod loop_guard_operands;
 
     #[path = "computed_record_condition.rs"]
     mod computed_record_condition;
