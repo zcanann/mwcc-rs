@@ -384,6 +384,17 @@ mod tests {
     }
 
     #[test]
+    fn an_inline_early_exit_and_fallthrough_copy_share_the_join_home() {
+        let statements = [
+            branch(vec![set("result"), Statement::Goto("done".into())], vec![]),
+            Statement::Assign { name: "result".into(), value: Expression::Variable("data".into()) },
+            Statement::Label("done".into()),
+            read("result"),
+        ];
+        assert!(live(&statements).requires_shared_home("result"));
+    }
+
+    #[test]
     fn independent_return_arms_cannot_inherit_each_others_definition() {
         let statements = [
             set("result"),

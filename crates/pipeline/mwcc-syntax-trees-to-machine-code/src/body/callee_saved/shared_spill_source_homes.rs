@@ -1,4 +1,4 @@
-//! Source value homes for GC/1.1p1 O0 loops, word calls, and guarded returns.
+//! Source value homes for GC/1.1p1 O0 loops, scalar calls, and guarded returns.
 //!
 //! Values with multiple source uses occupy descending saved registers. Single-use parameters share
 //! SP+8, including overlaps with saved registers; unused parameters have no
@@ -33,7 +33,6 @@ impl Uses {
                     self.define(name);
                 }
             }
-            Expression::AddressOf { .. } => self.unsupported = true,
             _ => {}
         });
     }
@@ -102,6 +101,9 @@ impl Generator {
         if !self.behavior.unoptimized_shared_parameter_spills
             || !(function.return_type == Type::Void || word(function.return_type))
             || !self.frame_slots.is_empty()
+            // Global addresses require no automatic frame slots. Only escaping
+            // automatic storage prevents the shared SP+8 source-home plan.
+            || !crate::frame::collect_address_taken(function).is_empty()
             || self.data_section_anchor.is_some()
             || !function_makes_call(function)
             || !function.inline_asm_blocks.is_empty()
@@ -109,9 +111,18 @@ impl Generator {
             || function.parameters.len() > 8
             || function.parameters.iter().any(|p| !word(p.parameter_type))
             || function.locals.iter().any(|l| {
-                !word(l.declared_type) || l.is_static || l.is_volatile || l.array_length.is_some()
+                !(word(l.declared_type)
+                    || matches!(l.declared_type,
+                        Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort))
+                    || l.is_static || l.is_volatile || l.array_length.is_some()
             })
             || function_calls_any(function, &self.skipped_inline_names)
+            // Composition owns the call's locals and return joins before homes
+            // are selected; source counts describe only the unexpanded tree.
+            || self.inline_bodies.expanded_function_for_planning(
+                function,
+                self.behavior.repeatable_scalar_member_setter_inlining,
+            ).is_some()
         {
             return Ok(false);
         }

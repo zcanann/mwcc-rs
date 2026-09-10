@@ -4,13 +4,77 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, condition-mutating leaf loops and CARDOpen (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, guarded scalar inlining and shared address spills (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `9616fdec39f099875ee0601db363b6ea356f575452a164218b6553f888e4911b:559890ef1368fc0e733f2fb65b5335ba5cd52d2093542ac1bbae94c19fe3272a`
+Latest measured compiler + harness fingerprint: `a888b88614a8cd503efb6a831a8aa0d39a8396dc0b77b21baff4e47c370e01b2:11448297707e856be6b11178a699d3f86097e798e2b09874c1dc23d23fc32344`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Guarded scalar inlining and shared address spills, 2026-09-09
+
+Guarded scalar helpers can now publish early-return values into their caller's
+inline destination and jump to a private continuation. Declaration initializers
+using these helpers enter the same statement composition path as assignments,
+while preserving initializer order. Named-value flow prevents a fallthrough
+copy from changing the result register when a forward join can still receive an
+earlier arm's value. Later size optimizers retain repeated guarded helpers as
+calls; semantic eligibility and version/optimization policy remain separate.
+
+GC/1.1p1 O0 source-home planning now distinguishes addresses of globals from
+escaping automatic storage and admits narrow integer locals. This reproduces
+the original shared SP+8 overwrite even when a guarded helper compares a pointer
+against a global address. Source-home planning defers to pending inline
+composition rather than applying unexpanded source counts to its locals.
+
+Measured against milestone `74526db2`:
+
+- Added `2326_guarded_status_inline.c`: five functions covering early returns,
+  initialized and assigned call results, caller continuations, and global
+  addresses. All 105 version/mode rows compile in baseline, candidate, and
+  reference. Exact function bytes and relocations remain **36/525**, with no
+  exact losses.
+- **134,400 native cases per compiler**: candidate and reference agree on every
+  return, preserved register, stack restoration, caller backchain, call trace,
+  and guarded memory outcome. Baseline differs on **256** cases: the original
+  GC/1.1p1 O0 shared-address helper corrupts saved r30, which the candidate now
+  reproduces. These are intentional differences from the independent C model.
+- Full unmodified `CARDOpen.c`: all **30** candidate configurations compile;
+  **24** references compile (six later compiler/header failures remain).
+  All nine functions run for **19,200 candidate** and **15,360 reference** cases.
+  Direct reference outcome differences fall from **168 to 13**: **15,347/15,360**
+  comparable outcomes match. All remaining differences are GC/1.1p1 O0:
+  six `__CARDIsReadable`, three `CARDFastOpen`, and four `__CARDGetFileNo` cases.
+  The last group includes termination and restored-state differences; these
+  are not merely byte mismatches. Independent C-model checks report **97**
+  candidate and **88** reference failures, including the original compiler's
+  saved-register corruption. Full-function byte matches remain **24/216**.
+- Recent panel: **4,784/4,785** objects unchanged. One GC/1.1p1 O0 mask canary
+  changes three narrow-local function layouts, loses no exact matches, and
+  passes **1,024** native cases per baseline/candidate/reference.
+- Focused regression panel: **2,589** objects and **276** diagnostics unchanged.
+  THP audio: **90** configurations unchanged, **142/270** exact functions.
+- Dolphin compilation remains **211/302**. At GC/1.2.5n and GC/1.3, changed
+  functions are `__CARDIsReadable`, `CARDFastOpen`, and `GXGetYScaleFactor`.
+  The scale function's shared result homes change under the control-flow fix;
+  **2,048** native cases per baseline/candidate/reference agree with the existing
+  DOL-derived fixtures, including float and paired-single register preservation.
+  None of these changed functions loses an exact match.
+- **2,717 Rust tests passed**, with the same 12 documented exclusions and eight
+  allocator tests ignored. Four new tests cover early-return publication,
+  discarded return side effects, forward-join homes, and measured later size
+  output.
+
+Reproduction artifacts are local under `target/`: `run_shared_address_final.py`,
+`run_shared_address_tests.py`, `check_shared_address_scale_native.py`, and
+`verify_shared_address_final.py`. The manifest
+`shared-address-final-verification.json` binds the compiler, harness, unchanged
+originals, panel artifacts, and **15,952** object paths. The remaining CARD
+frontier needs allocation parity after inline expansion: the reference places
+its disk pointer outside r30 before calling the helper that corrupts r30.
+This checkpoint improves execution parity; it does not establish full compiler
+or project parity.
 
 ## Condition-mutating leaf loops and CARDOpen, 2026-09-09
 

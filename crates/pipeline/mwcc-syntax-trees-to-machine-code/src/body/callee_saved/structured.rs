@@ -6064,6 +6064,9 @@ impl Generator {
                         && remaining.iter().any(statement_has_call);
                     let terminal_volatile = matches!(declared_type, Type::Int | Type::UnsignedInt)
                         && !self.structured_loop_carried_names.contains(name)
+                        // A forward join can read an earlier arm's definition.
+                        // Rebinding the fallthrough copy would discard that value.
+                        && !value_flow.requires_shared_home(name)
                         && value_read_before_redefinition(remaining, name)
                         && !read_after_possible_call(remaining, name, false).read_after_call
                         && !returned_after_later_call

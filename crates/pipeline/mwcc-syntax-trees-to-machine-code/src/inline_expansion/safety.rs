@@ -403,30 +403,34 @@ pub(super) fn retained_scalar_loop_value_function(function: &Function) -> bool {
         && loops > 0
 }
 
-/// A source-visible scalar helper may keep its result in one initialized local
-/// and select later values through a nested `if`/`else if` tree. Keeping this
-/// as statements preserves the local's single captured image and avoids
-/// duplicating parameter/member reads while converting the tree to a value
-/// expression.
-fn automatic_conditional_local_value_function(function: &Function) -> bool {
-    let [result] = function.locals.as_slice() else {
+/// A source-visible scalar helper captures a result before a guarded call
+/// transaction. Keep its locals and early returns as statements so neither
+/// parameter/member reads nor calls are duplicated by expression substitution.
+pub(super) fn automatic_conditional_local_value_function(function: &Function) -> bool {
+    let Some(Expression::Variable(result_name)) = function.return_expression.as_ref() else {
         return false;
     };
+    if !function.locals.iter().any(|local| local.name == *result_name) {
+        return false;
+    }
+    let guarded_body = matches!(function.statements.as_slice(), [Statement::If { .. }])
+        || matches!(function.statements.as_slice(),
+            [Statement::Assign { name, value: Expression::Call { .. } }, Statement::If { .. }]
+                if name == result_name);
     if matches!(function.return_type, Type::Void | Type::Struct { .. })
-        || !matches!(
-            function.return_expression.as_ref(),
-            Some(Expression::Variable(name)) if name == &result.name
-        )
-        || result.initializer.is_none()
-        || result.is_static
-        || result.is_volatile
-        || !automatic_local_has_composable_storage(result)
-        || matches!(result.declared_type, Type::Void | Type::Struct { .. })
+        || function.locals.len() > 4
+        || function.locals.iter().any(|local| {
+            local.is_static
+                || local.is_volatile
+                || !automatic_local_has_composable_storage(local)
+                || matches!(local.declared_type, Type::Void | Type::Struct { .. })
+        })
+        || !uninitialized_local_reads_are_dominated(function)
         || !function.guards.is_empty()
         || function.asm_body.is_some()
         || !function.inline_asm_blocks.is_empty()
         || statement_weight(&function.statements) > 16
-        || !matches!(function.statements.as_slice(), [Statement::If { .. }])
+        || !guarded_body
         || function
             .parameters
             .iter()
@@ -434,7 +438,7 @@ fn automatic_conditional_local_value_function(function: &Function) -> bool {
     {
         return false;
     }
-    let local_names = HashSet::from([result.name.as_str()]);
+    let local_names = function.locals.iter().map(|local| local.name.as_str()).collect();
     statement_value_statements_are_composable(&function.statements, &local_names)
         && multi_call_transaction_callee(function)
 }
@@ -644,7 +648,8 @@ fn statement_value_statements_are_composable(
                 mwcc_syntax_trees::ArmBody::Return(_) => false,
             })
         }
-        Statement::Return(_)
+        Statement::Return(Some(_)) => true,
+        Statement::Return(None)
         | Statement::Break
         | Statement::Continue
         | Statement::Goto(_)

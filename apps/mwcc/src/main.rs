@@ -940,6 +940,7 @@ fn compile(
             automatic_definitions,
             &unit.skipped_inline_definitions,
         )
+        .with_optimization_policy(config)
         .with_nesting_budget(inline_nesting_budget)
         .with_overwritten_vptr_elision(config.flags.whole_file_optimization_enabled())
     } else {
@@ -3111,6 +3112,7 @@ mod tests {
     mod constant_compare_domain;
     #[path = "loop_guard_operands.rs"]
     mod loop_guard_operands;
+    mod guarded_status_inline;
 
     #[path = "computed_record_condition.rs"]
     mod computed_record_condition;

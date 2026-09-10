@@ -646,6 +646,22 @@ impl InlineBodySet {
         self
     }
 
+    /// Later size optimizers retain repeated guarded scalar transactions as
+    /// calls. Keep this policy separate from whether their AST is composable.
+    pub fn with_optimization_policy(mut self, config: mwcc_versions::CompilerConfig) -> Self {
+        if config.build.version >= (4, 1, 0)
+            && config.flags.optimization_goal == mwcc_versions::OptimizationGoal::Size
+        {
+            let keep = |name: &String, function: &mut Function| {
+                self.definition_call_counts.get(name).copied().unwrap_or(0) <= 1
+                    || !safety::automatic_conditional_local_value_function(function)
+            };
+            self.statement_value_bodies.retain(keep);
+            self.source_visible_statement_value_bodies.retain(keep);
+        }
+        self
+    }
+
     pub fn with_nesting_budget(mut self, budget: InlineNestingBudget) -> Self {
         self.nesting_budget = budget;
         self
@@ -1364,6 +1380,28 @@ impl InlineBodySet {
         function: &Function,
         allow_changing_scalar_arguments: bool,
     ) -> Option<ExpandedCalls> {
+        // Statement-valued helpers used by declaration initializers need the
+        // same call-site destination as assignment statements. Move the whole
+        // executable initializer prefix together to retain declaration order.
+        let initialized = function.locals.iter().any(|local| {
+            matches!(local.initializer.as_ref(), Some(Expression::Call { name, .. })
+                if !local.is_static && self.statement_value_bodies.get(name)
+                    .is_some_and(safety::automatic_conditional_local_value_function))
+        }).then(|| {
+            let mut lowered = function.clone();
+            let mut prefix = Vec::new();
+            for local in &mut lowered.locals {
+                if !local.is_static {
+                    if let Some(value) = local.initializer.take() {
+                        prefix.push(Statement::Assign { name: local.name.clone(), value });
+                    }
+                }
+            }
+            prefix.append(&mut lowered.statements);
+            lowered.statements = prefix;
+            lowered
+        });
+        let function = initialized.as_ref().unwrap_or(function);
         let exposed = constant_result::expose_values(function, &self.statement_value_bodies);
         let function = exposed.as_ref().unwrap_or(function);
         let loop_return = self.expose_retained_scalar_loop_return(function);
@@ -1829,7 +1867,7 @@ impl InlineBodySet {
         substituted = fold_constant_inline_branches(substituted);
         // A return exits the callee instance, not its caller. Give every
         // expansion a private forward boundary before recursive composition.
-        has_early_exit |= rewrite_inline_returns(&mut substituted, &return_boundary);
+        has_early_exit |= rewrite_inline_returns(&mut substituted, &return_boundary, destination);
         if has_early_exit {
             substituted.push(Statement::Label(return_boundary));
         }
