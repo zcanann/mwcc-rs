@@ -2322,10 +2322,8 @@ impl Generator {
             {
                 return Ok(phi);
             }
-            if leaf_name(when_true).is_some()
-                && leaf_name(when_false).is_some()
-                && constant_value(when_true).is_none()
-                && constant_value(when_false).is_none()
+            if self.leaf_info(when_true).is_ok()
+                && self.leaf_info(when_false).is_ok()
             {
                 let false_register = self.general_register_of_leaf(when_false)?;
                 self.emit_conditional(

@@ -271,6 +271,16 @@ impl Generator {
         let Some(return_index) = lr_index.checked_sub(1) else {
             return;
         };
+        // An early return can enter directly at the LR reload with a different
+        // value already in r3. Hoisting across that entry would both skip the
+        // reload and execute the fallthrough path's result copy on that edge.
+        if self.output.instructions.iter().any(|instruction| {
+            matches!(instruction, Instruction::Branch { target }
+                | Instruction::BranchConditionalForward { target, .. } if *target == lr_index)
+        }) {
+            return;
+        }
+
         let return_source = match self.output.instructions[return_index] {
             Instruction::Or { a: 3, s, b } if s == b => s,
             _ => return,

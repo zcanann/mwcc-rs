@@ -3101,6 +3101,8 @@ mod tests {
     mod wide_call_sequence;
     #[path = "division_identities.rs"]
     mod division_identities;
+    #[path = "framed_result_guards.rs"]
+    mod framed_result_guards;
 
     #[path = "computed_record_condition.rs"]
     mod computed_record_condition;

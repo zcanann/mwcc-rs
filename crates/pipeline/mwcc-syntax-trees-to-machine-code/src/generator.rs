@@ -1443,6 +1443,8 @@ impl Generator {
                     Ok(global_type.is_signed())
                 } else if let Some((_, element_type)) = self.fixed_address_arrays.get(name) {
                     Ok(element_type.is_signed())
+                } else if self.is_direct_function_symbol(name) {
+                    Ok(false)
                 } else {
                     Err(Diagnostic::error(format!("unknown variable '{name}'")))
                 }

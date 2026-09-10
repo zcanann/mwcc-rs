@@ -4,13 +4,83 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, GC/1.3 nested word addends (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, CARD callback selections and framed early returns (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `221db5297633ebac26ab34814e46c2f75e97a496f6e949c78d22c83b7107d1b5:fa4412895f30010a0e3217f1d044effcbb22341249b7c1a330d3677364612992`
+Latest measured compiler + harness fingerprint: `9607ab23a32d671e605dc37118f2ecc97226a9efef9f80a72162f4a371f21205:b186dad9c7ff4cde333ab8ef1407ccd026192fe037db4a82ec1a41619268573a`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## CARD callback selections and framed early returns, 2026-09-09
+
+The Dolphin compilation frontier advances from **201 to 205 of 302** file/build
+pairs. `CARDDelete.c` and `CARDWrite.c` now compile for GC/1.2.5n and GC/1.3
+with their original project flags and headers. Their callback selections combine
+a pointer value with a function designator. Conditional stores now require actual
+register homes before using the register-only shortcut; selected function symbols
+use the existing address-relocation emitter. Pointer signedness and local name
+shadowing are handled consistently with other function-address expressions.
+
+Executing these newly compiled functions exposed two early-return defects.
+Conditional returns of a value already in r3 now use the shared epilogue whenever
+a frame or call requires restoration. The epilogue scheduler also preserves an
+existing branch entry at the saved-LR reload, preventing it from skipping that
+reload or overwriting the early result with the fallthrough result.
+
+Two new canaries provide **20 callback-selection functions and nine framed-return
+functions**. Across 15 compiler builds and seven optimization/scheduling modes,
+all **210 candidate and reference configurations compile**, versus 105 baseline
+configurations. Exact matches rise from **0 to 550 of 3,045 function outputs**;
+the baseline cannot compile the callback-selection translation unit. Coverage
+includes function addresses, casts, null arms, globals, local shadowing, stores,
+calls, and multiple early-return paths.
+
+| Fresh native panel | Candidate cases | Baseline failures | Candidate failures | Reference failures |
+| --- | ---: | ---: | ---: | ---: |
+| New callback and return canaries | 97,440 | 12,180 | 0 | 80 |
+| Full-project CARD delete/write transactions | 2,304 | Not compilable | 0 | 0 |
+| Existing CARD error returns | 224 | 224 | 0 | 0 |
+
+The baseline executes **30,240 framed-return cases** in the first row; candidate
+and reference each execute all 97,440 cases. Callback checks use two external
+address layouts, including high addresses and relocation carry boundaries, and
+verify selected pointers, memory, call arguments, stack restoration, and preserved
+registers. Call mocks clobber volatile registers. The **80 reference failures**
+are GC/1.1p1 O0 frame/register failures in `conjunction` (32), `nested` (32),
+and `frame_guard` (16). These remain parity work; candidate passes against the
+independent model are not counted as matching those faulty reference executions.
+
+The full-project matrix compiles both CARD sources in **60 candidate
+configurations**: all 15 builds at O0/O4. The reference accepts **48**; the
+remaining 12 encounter original project-header diagnostics in GC/3.0a3,
+GC/3.0a3p1, and Wii/1.0. The transaction panel executes `CARDDeleteAsync` and
+`CARDWriteAsync` directly from the 48 comparable project objects. It checks
+success and failure stages, callback defaults, alignment rejection, control-block
+and directory updates, call order, full memory guards, and ABI restoration.
+
+Eight previously compiling frontier objects also change: `CARDNet.c`,
+`CARDRename.c`, `CARDStat.c`, and `CARDStatEx.c` in both GC/1.2.5n and GC/1.3.
+Their 224 native checks cover negative error returns in seven affected functions
+per build, including wrappers, and eliminate all 224 baseline failures. This
+panel establishes error-path behavior, not complete coverage of those functions.
+No previously exact frontier function loses its match.
+
+All **3,945 recent objects**, **2,589 focused regression objects**, and **276
+regression diagnostics** remain unchanged. The **90 THP audio objects** are
+unchanged, retaining **142/270 exact functions**. **2,708 Rust tests pass**, with
+the same 12 documented exclusions and eight ignored allocator tests. Reference
+project files remain unchanged; no full corpus run was performed.
+
+Evidence: `target/function-select-{canaries,recent,regressions,project,frontier,card-matrix-project}/results.json`,
+`target/function-select-native.json`, `target/function-select-card-matrix-native.json`,
+`target/function-select-existing-card-native.json`,
+`target/function-select-verified-tests.log`, `target/function-select-final-runs.json`,
+and `target/function-select-final-verification.json`. The manifest verifies
+**14,490 object bindings**, compiler identity, source and evidence hashes, and
+the explicit reference-failure boundaries.
+
+Compiler/harness fingerprint: `9607ab23a32d671e605dc37118f2ecc97226a9efef9f80a72162f4a371f21205:b186dad9c7ff4cde333ab8ef1407ccd026192fe037db4a82ec1a41619268573a`.
 
 ## GC/1.3 nested word addends, 2026-09-09
 

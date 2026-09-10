@@ -1022,6 +1022,11 @@ impl Generator {
             self.load_integer_constant(destination, constant);
             return Ok(());
         }
+        if let Expression::Variable(name) = value {
+            if self.is_direct_function_symbol(name) {
+                return self.emit_global_load(name, destination);
+            }
+        }
         let register = self.general_register_of_leaf(value)?;
         if register != destination {
             self.output

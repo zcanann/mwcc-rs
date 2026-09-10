@@ -1,4 +1,4 @@
-//! Tail guards that return a value already in the ABI result register.
+//! Frameless tail guards that return a value already in the ABI result register.
 //!
 //! A terminal `if (a && b) return result;` does not need a body block when
 //! `result` is still in r3. MWCC branches around the early terms and turns the
@@ -15,6 +15,13 @@ impl Generator {
         then_body: &[Statement],
         function: &Function,
     ) -> Compilation<bool> {
+        // A direct conditional return bypasses the shared epilogue. In a
+        // framed function it would leave r1/callee-saves unrestored, and after
+        // a call LR still points inside this function. Let ordinary structured
+        // return lowering target the epilogue in those cases.
+        if self.frame_size != 0 || self.non_leaf {
+            return Ok(false);
+        }
         let [Statement::Return(Some(value))] = then_body else {
             return Ok(false);
         };

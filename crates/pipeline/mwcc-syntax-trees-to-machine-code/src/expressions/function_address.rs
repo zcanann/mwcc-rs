@@ -7,6 +7,8 @@ impl Generator {
         self.call_return_types.contains_key(name)
             && !self.globals.contains_key(name)
             && !self.locations.contains_key(name)
+            && !self.frame_slots.contains_key(name)
+            && !self.known_locals.contains(name)
     }
 
     /// Materialize a bare function designator directly in an ABI value lane.
