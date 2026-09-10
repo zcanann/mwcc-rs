@@ -4,13 +4,78 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, global record strides and CARD transfer counts (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, GC/1.1p1 shared spills through return guards (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `e9e00d2745236a4d803eab4b0d15d7af8a1b568f68a4380fdeb46ce7b96eda3f:2e0f5c2313692b6b19e1a211f6f56e889b3be4605be453fab40663ad35c3820e`
+Latest measured compiler + harness fingerprint: `7a7a8a4a6cd27b4e3703546a197a7b8bce0748dda25b7bed2a9d3ea502133538:4b9f760576911e20cb90aff823d13fe75dd0332b6165fb6878976bc442babf39`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## GC/1.1p1 shared spills through return guards, 2026-09-09
+
+The existing GC/1.1p1 O0 source-home policy now reproduces shared-parameter
+images through structured word returns and indexed global-field call arguments.
+Single-use parameters still share SP+8, even when that overwrites saved r30 or
+the caller's back chain. Multiple-use values retain their ranked saved-register
+homes. The planner includes return expressions in source-use counts and expands
+compact guards into the shared statement representation. Return edges resolve
+to the common epilogue, which deliberately reloads overwritten saved state.
+Retained call results use the reference's `mr` copy spelling.
+
+The new **14-function** `2321_shared_spill_return_guards.c` covers nested and
+short-circuit guards, repeated calls, single- and multiple-use parameters,
+constant calls, aliased guard/limit inputs, and indexed-field arguments. All
+**105 baseline, candidate, and reference configurations compile** across 15
+builds and seven modes. Only GC/1.1p1 O0 changes. Exact matches rise from
+**22 to 33 of 1,470 function outputs**, with no losses. Seven affected functions
+in the preceding canaries also become exact, giving **18 new exact matches**.
+
+| Fresh native panel | Cases per compiler | Baseline mismatches | Candidate mismatches |
+| --- | ---: | ---: | ---: |
+| New shared-spill return corpus | 94,080 | 512 | 0 |
+| Nine affected functions in preceding corpora | 576 | 192 | 0 |
+| Total | 94,656 | 704 | 0 |
+
+The **704 original-bug cases are reproduced**, including overwritten saved
+registers, an overwritten caller back chain, and changed call/control flow when
+two parameters alias. These are reference matches, not exclusions from the
+execution denominator. The harness compares return values, call traces, restored
+SP, preserved-register contents including corruption, the caller back chain,
+and guarded global memory directly with the reference. Two address layouts
+exercise global relocations. The callee-owned LR linkage slot is outside the
+caller-memory invariant; tail calls may legitimately leave it untouched.
+
+This closes the measured `conjunction` and `nested` saved-r30 differences from
+canary 2319 and the `argument` back-chain difference from canary 2320. The
+array/parameter alias in `frame_guard` and the previously recorded wide-parameter
+frame failures remain outside this extension. Address-taking, automatic arrays,
+wide parameters, and preexisting frame slots retain their separate owners.
+
+Of **4,260 recent configurations**, 4,258 objects remain unchanged. Only
+GC/1.1p1 O0 canaries 2319 and 2320 change; their nine changed functions are
+covered above, without exact-match losses. All **2,589 focused regression
+objects** and **276 diagnostics** remain unchanged. The Dolphin frontier stays
+at **207/302**, with every compiling object unchanged. All **30 CARDRdwr
+matrix objects** and **90 THP audio objects** are unchanged; audio retains
+**142/270 exact functions**. The CARD matrix retains its six reference-header
+failures in the three modern builds.
+
+**2,710 Rust tests pass**, including an exact reference fixture that intentionally
+overwrites saved r30. The earlier frame test now recognizes both direct return
+branches and conditional branches around explicit return blocks, while checking
+the actual return edges for LR restoration and result preservation. The same
+12 documented exclusions and eight ignored allocator tests remain. Reference
+project files are unchanged; no full corpus run was performed.
+
+Evidence: `target/shared-return-{canaries,recent,regressions,project,frontier,card-matrix-project}/results.json`,
+`target/shared-return-native.json`, `target/shared-return-prior-native.json`,
+`target/shared-return-verified-tests.log`, `target/shared-return-final-runs.json`,
+and `target/shared-return-final-verification.json`. The manifest verifies
+**14,894 object bindings**, compiler identity, source/evidence hashes, and all
+704 reproduced original-bug cases.
+
+Compiler/harness fingerprint: `7a7a8a4a6cd27b4e3703546a197a7b8bce0748dda25b7bed2a9d3ea502133538:4b9f760576911e20cb90aff823d13fe75dd0332b6165fb6878976bc442babf39`.
 
 ## Global record strides and CARD transfer counts, 2026-09-09
 

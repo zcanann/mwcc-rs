@@ -1,4 +1,4 @@
-//! Source value homes for GC/1.1p1 O0 loops and direct word calls.
+//! Source value homes for GC/1.1p1 O0 loops, word calls, and guarded returns.
 //!
 //! Values with multiple source uses occupy descending saved registers. Single-use parameters share
 //! SP+8, including overlaps with saved registers; unused parameters have no
@@ -14,6 +14,7 @@ struct Uses {
     counts: HashMap<String, usize>,
     definitions: Vec<String>,
     has_loop: bool,
+    has_return: bool,
     unsupported: bool,
 }
 
@@ -49,6 +50,12 @@ impl Uses {
                     self.expression(value);
                 }
                 Statement::Expression(value) => self.expression(value),
+                Statement::Return(value) => {
+                    self.has_return = true;
+                    if let Some(value) = value {
+                        self.expression(value);
+                    }
+                }
                 Statement::If {
                     condition,
                     then_body,
@@ -93,9 +100,7 @@ impl Generator {
         function: &Function,
     ) -> Compilation<bool> {
         if !self.behavior.unoptimized_shared_parameter_spills
-            || function.return_type != Type::Void
-            || function.return_expression.is_some()
-            || !function.guards.is_empty()
+            || !(function.return_type == Type::Void || word(function.return_type))
             || !self.frame_slots.is_empty()
             || self.data_section_anchor.is_some()
             || !function_makes_call(function)
@@ -110,6 +115,20 @@ impl Generator {
         {
             return Ok(false);
         }
+        let mut normalized;
+        let function = if function.guards.is_empty() {
+            function
+        } else {
+            normalized = function.clone();
+            normalized.statements.extend(normalized.guards.drain(..).map(
+                |guard| Statement::If {
+                    condition: guard.condition,
+                    then_body: vec![Statement::Return(Some(guard.value))],
+                    else_body: Vec::new(),
+                },
+            ));
+            &normalized
+        };
         let mut uses = Uses::default();
         for local in &function.locals {
             if let Some(value) = &local.initializer {
@@ -118,12 +137,16 @@ impl Generator {
             }
         }
         uses.statements(&function.statements);
+        if let Some(tail) = &function.return_expression {
+            uses.expression(tail);
+        }
+        let returning_body = word(function.return_type) && uses.has_return && !uses.has_loop;
         let direct_word_call = function.locals.is_empty()
             && matches!(function.statements.as_slice(), [Statement::Expression(Expression::Call { name, arguments })]
                 if arguments.len() <= 8
                     && self.call_parameter_types.get(name).is_some_and(|types| types.len() == arguments.len()
-                    && arguments.iter().zip(types).all(|(arg, ty)| self.call_input_is_word_argument(arg, Some(*ty)))));
-        if uses.unsupported || (!uses.has_loop && !direct_word_call) {
+                    && arguments.iter().zip(types).all(|(arg, ty)| self.shared_spill_word_argument(arg, *ty))));
+        if uses.unsupported || (!uses.has_loop && !direct_word_call && !returning_body) {
             return Ok(false);
         }
         let source_counts = self
@@ -163,7 +186,7 @@ impl Generator {
             .filter(|p| count(&p.name) == 1)
             .collect();
         let homes = locals.len() + retained.len();
-        if ((!direct_word_call && (spilled.is_empty() || homes == 0))
+        if ((!direct_word_call && !returning_body && (spilled.is_empty() || homes == 0))
             || (spilled.is_empty() && homes == 0))
             || homes > 18
         {
@@ -299,6 +322,31 @@ impl Generator {
             }
         }
         self.schedule_shared_spill_store_literals();
+        if let Some(tail) = &lowered.return_expression {
+            self.evaluate(tail, lowered.return_type, 3)?;
+        }
+        if returning_body {
+            // These retained source results use mr, even though ordinary
+            // materializations in the inherited profile use addi d,r3,0.
+            for at in 1..self.output.instructions.len() {
+                if self.output.instructions[at - 1].is_call()
+                    && !self.output.relocations.iter().any(|r| r.instruction_index == at)
+                {
+                    if let Instruction::AddImmediate { d, a: 3, immediate: 0 } =
+                        self.output.instructions[at]
+                    {
+                        if saved.contains(&d) {
+                            self.output.instructions[at] = Instruction::move_register(d, 3);
+                        }
+                    }
+                }
+            }
+        }
+        let epilogue = self.output.instructions.len();
+        super::structured_early_return_schedule::resolve_structured_epilogue_branches(
+            &mut self.output.instructions,
+            epilogue,
+        );
         if helpers {
             self.emit_restgpr_frame_epilogue_with_convention(first.into(), FrameConvention::LinkageFirst);
         } else {
@@ -317,6 +365,24 @@ impl Generator {
         }
         Ok(true)
     }
+    fn shared_spill_word_argument(&self, value: &Expression, parameter_type: Type) -> bool {
+        if self.call_input_is_word_argument(value, Some(parameter_type)) {
+            return true;
+        }
+        let Expression::Member {
+            base, member_type, index_stride: Some(_), ..
+        } = value else {
+            return false;
+        };
+        let Expression::Index { base, index } = base.as_ref() else {
+            return false;
+        };
+        word(parameter_type) && word(*member_type)
+            && matches!(base.as_ref(), Expression::Variable(name)
+                if self.global_array_sizes.contains_key(name))
+            && self.call_input_is_word_expression(index)
+    }
+
     fn schedule_shared_spill_store_literals(&mut self) {
         for at in 0..self.output.instructions.len().saturating_sub(2) {
             if !matches!(&self.output.instructions[at..at + 3], [

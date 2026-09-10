@@ -55,10 +55,29 @@ fn call_result_guards_return_through_the_frame_epilogue() {
                     optimization
                 );
                 if name == "twice" {
-                    for (index, instruction) in
-                        words.iter().enumerate().filter(|(_, w)| *w >> 26 == 16)
+                    let plain_branch = |word: u32| word >> 26 == 18 && word & 3 == 0;
+                    for (index, instruction) in words
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, w)| *w >> 26 == 16 || plain_branch(**w))
                     {
-                        let displacement = (*instruction & 0xfffc) as u16 as i16 as isize / 4;
+                        let conditional = instruction >> 26 == 16;
+                        // A conditional branch can skip `mr r3,result; b epilogue`.
+                        // That edge continues the function; the explicit b is
+                        // the early return and is checked on its own iteration.
+                        if conditional
+                            && words.get(index + 2).is_some_and(|w| plain_branch(*w))
+                            && words
+                                .get(index + 1)
+                                .is_some_and(|w| w & 0xfc1f07ff == 0x7c030378)
+                        {
+                            continue;
+                        }
+                        let displacement = if conditional {
+                            (*instruction & 0xfffc) as u16 as i16 as isize / 4
+                        } else {
+                            (((*instruction & 0x03fffffc) as i32) << 6 >> 6) as isize / 4
+                        };
                         let target = (index as isize + displacement) as usize;
                         let tail = &words[target..];
                         assert!(
