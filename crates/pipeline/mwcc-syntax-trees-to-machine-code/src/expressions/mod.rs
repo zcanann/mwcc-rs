@@ -78,6 +78,7 @@ mod nested_member_array_load;
 mod nested_member_array_store;
 mod nested_pointer_table;
 mod non_power_struct_member_store;
+mod non_power_global_member_load;
 mod operands;
 mod passes;
 mod pointer_alignment;

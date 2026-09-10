@@ -3103,6 +3103,8 @@ mod tests {
     mod division_identities;
     #[path = "framed_result_guards.rs"]
     mod framed_result_guards;
+    #[path = "global_record_stride_loads.rs"]
+    mod global_record_stride_loads;
 
     #[path = "computed_record_condition.rs"]
     mod computed_record_condition;

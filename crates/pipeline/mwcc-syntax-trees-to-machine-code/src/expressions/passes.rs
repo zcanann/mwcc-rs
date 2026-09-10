@@ -3,6 +3,23 @@
 #[allow(unused_imports)]
 use super::*;
 
+/// The index of a scalar subscript or a field loaded from an indexed record.
+/// Both forms compute an address; neither is a resident register leaf.
+pub(crate) fn indexed_load_index(expression: &Expression) -> Option<&Expression> {
+    match expression {
+        Expression::Index { index, .. } => Some(index),
+        Expression::Member {
+            base,
+            index_stride: Some(_),
+            ..
+        } => match base.as_ref() {
+            Expression::Index { index, .. } => Some(index),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The base variable a memory load addresses through — `a` for `a[i]`, `s` for
 /// `s->x`, `p` for `*p`. Used to recognize two loads that share a base register.
 pub(crate) fn load_base_name(expression: &Expression) -> Option<&str> {

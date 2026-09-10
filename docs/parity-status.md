@@ -4,13 +4,73 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-09-09, CARD callback selections and framed early returns (fingerprint below)
+Latest targeted checkpoint: 2026-09-09, global record strides and CARD transfer counts (fingerprint below)
 
-Latest measured compiler + harness fingerprint: `9607ab23a32d671e605dc37118f2ecc97226a9efef9f80a72162f4a371f21205:b186dad9c7ff4cde333ab8ef1407ccd026192fe037db4a82ec1a41619268573a`
+Latest measured compiler + harness fingerprint: `e9e00d2745236a4d803eab4b0d15d7af8a1b568f68a4380fdeb46ce7b96eda3f:2e0f5c2313692b6b19e1a211f6f56e889b3be4605be453fab40663ad35c3820e`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary and work-queue counts are
 labeled diagnostics; neither is a corpus parity estimate.
+
+## Global record strides and CARD transfer counts, 2026-09-09
+
+The Dolphin compilation frontier advances from **205 to 207 of 302** file/build
+pairs. `CARDRdwr.c` now compiles for GC/1.2.5n and GC/1.3 with the original
+project flags and headers. `CARDGetXferredBytes` matches the reference's bytes
+and relocations exactly in both builds: multiply the channel by the 272-byte
+record size, materialize `__CARDBlock`, and load the field at offset 184.
+All 205 previously compiling frontier objects remain byte-identical.
+
+A separate global-record load emitter handles non-power-of-two strides. It
+consumes the index before materializing the global base, and keeps the address
+in a separate GPR when the result is r0 or an FPR. Strides outside the signed
+16-bit immediate range use a register multiply; field offsets use the existing
+base-adjustment helper. A shared indexed-load classifier routes indexed record
+fields through the existing arithmetic operand placement and virtual-register
+fallback, preserving the index and other live operands.
+
+The new **29-function** `2320_global_record_stride_loads.c` compiles in all
+**105 candidate and reference configurations**: 15 builds across seven modes.
+The baseline rejects every configuration at the first non-power-stride load.
+The candidate matches **851 of 3,045 function outputs** exactly. Coverage
+includes 3-, 6-, 12-, 24-, 272-, and 32,772-byte records; small-data arrays;
+zero and nonzero field offsets; signed and unsigned narrow fields; float and
+double fields; computed indices; paired loads; stores; and values held across
+calls. Large-stride coverage here is for scalar fields; nested array-subobject
+address formation retains its separate scaling limit.
+
+Fresh execution checks **194,880 cases per candidate/reference compiler** with
+edge values, seeded memory, two relocation layouts, call traces, memory guards,
+stack restoration, and callee-saved registers. The candidate has **zero failures**.
+The reference has **64 GC/1.1p1 O0 failures** in `argument`: its eight-byte frame
+stores the incoming index at `8(r1)`, overwriting the caller's back chain. This
+original behavior remains parity work; candidate passes against the independent
+model are not counted as matching those faulty reference executions.
+
+The full `CARDRdwr.c` matrix compiles in **30 candidate configurations**, all
+15 builds at O0/O4. The reference accepts **24**; six GC/3.0a3, GC/3.0a3p1, and
+Wii/1.0 configurations retain original project-header diagnostics. The getter
+matches exactly in all **12 comparable O4 configurations**. Direct execution
+from the full project objects passes **3,072 cases per candidate/reference**,
+covering both channels, relocation layouts, signed word boundaries, and unchanged
+control-block memory. These checks validate the getter, not the other four
+functions in the newly compiling translation unit.
+
+All **4,155 recent objects**, **2,589 focused regression objects**, and **276
+regression diagnostics** remain unchanged. The **90 THP audio objects** remain
+unchanged, retaining **142/270 exact functions**. **2,709 Rust tests pass**,
+including a cross-version CARD stride regression, with the same 12 documented
+exclusions and eight ignored allocator tests. Reference project files remain
+unchanged; no full corpus run was performed.
+
+Evidence: `target/struct-stride-{canaries,recent,regressions,project,frontier,card-matrix-project}/results.json`,
+`target/struct-stride-native.json`, `target/struct-stride-card-native.json`,
+`target/struct-stride-verified-tests.log`, `target/struct-stride-final-runs.json`,
+and `target/struct-stride-final-verification.json`. The manifest verifies
+**14,547 object bindings**, compiler identity, source and evidence hashes, and
+the explicit reference-failure boundaries.
+
+Compiler/harness fingerprint: `e9e00d2745236a4d803eab4b0d15d7af8a1b568f68a4380fdeb46ce7b96eda3f:2e0f5c2313692b6b19e1a211f6f56e889b3be4605be453fab40663ad35c3820e`.
 
 ## CARD callback selections and framed early returns, 2026-09-09
 

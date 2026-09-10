@@ -1143,8 +1143,8 @@ impl Generator {
                 // the legacy single-scratch operand placer. Constant-index
                 // schedules above have already had first refusal.
                 if !fits_single_scratch(expression, destination == GENERAL_SCRATCH)
-                    || matches!(left.as_ref(), Expression::Index { .. })
-                    || matches!(right.as_ref(), Expression::Index { .. })
+                    || indexed_load_index(left).is_some()
+                    || indexed_load_index(right).is_some()
                 {
                     if matches!(
                         operator,

@@ -1124,8 +1124,8 @@ impl Generator {
     /// same base/scale interleave as [`Self::emit_global_array_subscript`] (the scale
     /// goes to the scratch before the base lands in `destination`; a large array's
     /// high half avoids the index register) and ends in `lwzx` (offset 0) or
-    /// `add; lwz offset`. Power-of-two struct strides only — a non-power stride needs
-    /// `mulli`, whose interleave is a follow-up.
+    /// `add; lwz offset`. Non-power strides use their measured multiply-first
+    /// schedule through a separate address-placement helper.
     pub(crate) fn emit_global_indexed_member_load(
         &mut self,
         name: &str,
@@ -1183,7 +1183,9 @@ impl Generator {
             return Ok(());
         }
         if !stride.is_power_of_two() {
-            return Err(Diagnostic::error("a global struct-array member with a non-power-of-two stride is not supported yet (roadmap)"));
+            return self.emit_non_power_global_member_load(
+                name, total_size, index, stride, offset, pointee, destination,
+            );
         }
         let needs_distinct_address = destination == GENERAL_SCRATCH
             || matches!(pointee, Pointee::Float | Pointee::Double);

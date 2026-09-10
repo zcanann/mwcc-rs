@@ -440,8 +440,8 @@ impl Generator {
         Ok(true)
     }
 
-    /// `a[k] op x` — a constant-index subscript word-load combined with a wide
-    /// integer leaf. The subscript loads into the scratch (`lwz r0,off(base)`) and
+    /// `a[k] op x` or `records[k].field op x` — an indexed word load combined
+    /// with a wide integer leaf. The subscript loads into the scratch (`lwz r0,off(base)`) and
     /// the leaf stays in its register, like the dereference/member + leaf paths
     /// (subscripts just were not routed there). Source operand order is kept.
     pub(crate) fn try_emit_subscript_leaf_binary(
@@ -464,7 +464,7 @@ impl Generator {
         // the binary then reads the wide leaf in place — matching mwcc's
         // `…; add d,leaf,r0`.
         let is_word_subscript = |me: &Self, expression: &Expression| {
-            matches!(expression, Expression::Index { .. }) && me.is_word_load(expression)
+            indexed_load_index(expression).is_some() && me.is_word_load(expression)
         };
         // Exactly one operand is the subscript load; the other a wide integer leaf.
         let (load, leaf, load_is_left) = match (
@@ -482,8 +482,8 @@ impl Generator {
         // canonicalizes it to the SECOND operand of a commutative op (leaf first),
         // regardless of source order — `add d,leaf,r0`. A plain (constant-index)
         // subscript keeps source order. Subtract is non-commutative either way.
-        let variable_index =
-            matches!(load, Expression::Index { index, .. } if constant_value(index).is_none());
+        let variable_index = indexed_load_index(load)
+            .is_some_and(|index| constant_value(index).is_none());
         let commutative = !matches!(operator, BinaryOperator::Subtract);
         self.evaluate_general(load, GENERAL_SCRATCH)?;
         let (a, b) = if commutative && variable_index {
