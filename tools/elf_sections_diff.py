@@ -33,4 +33,5 @@ def main():
             first = next((k for k in range(min(len(x[2]), len(y[2]))) if x[2][k] != y[2][k]), min(len(x[2]), len(y[2])))
             print(f"     first byte diff at +0x{first:x}: ref {x[2][first:first+16].hex()} our {y[2][first:first+16].hex()}")
 
-main()
+if __name__ == "__main__":
+    main()

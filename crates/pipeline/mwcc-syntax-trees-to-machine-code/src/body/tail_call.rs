@@ -186,6 +186,7 @@ impl Generator {
             let allocator_tail_call = self.behavior.terminal_indirect_tail_call
                 && allocator_pointer_return_is_compatible(name, function.return_type);
             if (!self.behavior.tail_call_optimization && !allocator_tail_call)
+                || crate::intrinsics::is_intrinsic_call(name, arguments.len())
                 || self.locations.contains_key(name)
                 || self.globals.contains_key(name)
                 || (self.call_return_types.get(name) != Some(&function.return_type)
@@ -218,6 +219,8 @@ impl Generator {
             if !self.behavior.tail_call_optimization
                 || self.locations.contains_key(name)
                 || self.globals.contains_key(name)
+                // Intrinsics such as `__sync()` lower to instructions, not calls.
+                || crate::intrinsics::is_intrinsic_call(name, arguments.len())
                 // A scalar result may be discarded by the void caller.  Its
                 // EABI result register does not participate in a sibling
                 // transfer, so requiring an exactly-void callee needlessly

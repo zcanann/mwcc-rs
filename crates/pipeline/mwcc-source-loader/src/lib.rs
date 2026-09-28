@@ -392,12 +392,15 @@ fn encode_source(
         return Ok(source);
     }
     if let Ok(utf8) = std::str::from_utf8(&source) {
+        // sjiswrap warns and substitutes an HTML numeric character reference
+        // (`&#8212;`) for each unencodable character; encoding_rs produces the
+        // identical replacement, so continue exactly as the wrapped compiler does.
         let (encoded, _, had_errors) = encoding_rs::SHIFT_JIS.encode(utf8);
         if had_errors {
-            return Err(Diagnostic::error(format!(
-                "{} contains characters that Shift-JIS cannot encode",
+            eprintln!(
+                "mwcc: warning: {} contains Shift JIS encoding errors",
                 path.display()
-            )));
+            );
         }
         return Ok(encoded.into_owned());
     }
@@ -898,21 +901,21 @@ mod tests {
     }
 
     #[test]
-    fn sjis_wrapper_policy_rejects_unencodable_unicode() {
+    fn sjis_wrapper_policy_substitutes_character_references_for_unencodable_unicode() {
+        // Measured against sjiswrap: it warns, then emits `&#NNNN;` for each
+        // character outside Shift JIS, so a string literal keeps those bytes.
         let scratch = Scratch::new();
         std::fs::write(
             scratch.0.join("unit.c"),
-            "char *message = \"🦀\";\n".as_bytes(),
+            "char *message = \"a\u{2014}b\";\n".as_bytes(),
         )
         .unwrap();
 
-        let error = SourceLoader::default()
+        let loaded = SourceLoader::default()
             .with_source_encoding(SourceEncoding::Utf8OrShiftJis)
             .load(&scratch.0.join("unit.c"))
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("contains characters that Shift-JIS cannot encode"));
+            .unwrap();
+        assert_eq!(loaded, b"char *message = \"a&#8212;b\";\n");
     }
 
     #[test]

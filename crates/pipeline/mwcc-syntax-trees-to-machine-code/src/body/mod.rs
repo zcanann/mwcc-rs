@@ -110,6 +110,7 @@ mod memory_map_validation;
 mod extended_register_access;
 mod support_file_request;
 mod driver;
+pub(crate) use driver::trace_owner;
 mod wide_call_sequence;
 mod wide_value_graph;
 mod enum_remap_member_update;

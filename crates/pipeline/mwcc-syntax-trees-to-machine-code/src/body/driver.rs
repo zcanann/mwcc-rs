@@ -295,12 +295,15 @@ impl Generator {
             }
         }
         if self.try_volatile_long_long_wait(function)? {
+            trace_owner("try_volatile_long_long_wait");
             return Ok(());
         }
         if self.try_long_long_serial_fold(function)? {
+            trace_owner("try_long_long_serial_fold");
             return Ok(());
         }
         if self.try_fp_register_transfer(function)? {
+            trace_owner("try_fp_register_transfer");
             return Ok(());
         }
         // Other long-long LOCALS (which need pair spills), guards, and statements are not modeled yet.
@@ -1293,15 +1296,18 @@ impl Generator {
         // four-home call schedule. Claim the expanded tree before any broader
         // loop owner can discard that helper-specific liveness shape.
         if self.try_inlined_short_circuit_call_loop(function)? {
+            trace_owner("try_inlined_short_circuit_call_loop");
             return Ok(());
         }
         // Integer-quantized float arithmetic with an optional second scale
         // owns one shared conversion frame and a cross-expression schedule.
         // Claim it before broad float/local lowering splits those images.
         if self.try_conditional_float_requantize(function)? {
+            trace_owner("try_conditional_float_requantize");
             return Ok(());
         }
         if self.try_inlined_quadratic_float_map_loop(function)? {
+            trace_owner("try_inlined_quadratic_float_map_loop");
             return Ok(());
         }
         // Recursive body transforms can introduce hygienic inline locals after
@@ -1310,80 +1316,105 @@ impl Generator {
         self.known_locals
             .extend(function.locals.iter().map(|local| local.name.clone()));
         if self.try_free_indexed_global_buffer(function)? {
+            trace_owner("try_free_indexed_global_buffer");
             return Ok(());
         }
         if self.try_indexed_global_object_initialization(function)? {
+            trace_owner("try_indexed_global_object_initialization");
             return Ok(());
         }
         if self.try_release_to_global_manager(function)? {
+            trace_owner("try_release_to_global_manager");
             return Ok(());
         }
         if self.try_allocate_from_global_pool(function)? {
+            trace_owner("try_allocate_from_global_pool");
             return Ok(());
         }
         if self.try_wait_queue_drain(function)? {
+            trace_owner("try_wait_queue_drain");
             return Ok(());
         }
         if self.try_fixed_list_bank_transfer(function)? {
+            trace_owner("try_fixed_list_bank_transfer");
             return Ok(());
         }
         if self.try_dsp_channel_parameter_update(function)? {
+            trace_owner("try_dsp_channel_parameter_update");
             return Ok(());
         }
         if self.try_release_list_bank_to_global(function)? {
+            trace_owner("try_release_list_bank_to_global");
             return Ok(());
         }
         if self.try_intrusive_list_pop(function)? {
+            trace_owner("try_intrusive_list_pop");
             return Ok(());
         }
         if self.try_audio_manager_defaults(function)? {
+            trace_owner("try_audio_manager_defaults");
             return Ok(());
         }
         if self.try_audio_channel_defaults(function)? {
+            trace_owner("try_audio_channel_defaults");
             return Ok(());
         }
         if self.try_global_struct_array_initialization(function)? {
+            trace_owner("try_global_struct_array_initialization");
             return Ok(());
         }
         if self.try_bounded_global_ring_enqueue(function)? {
+            trace_owner("try_bounded_global_ring_enqueue");
             return Ok(());
         }
         if self.try_global_ring_service(function)? {
+            trace_owner("try_global_ring_service");
             return Ok(());
         }
         if self.try_bounded_global_ring_remove(function)? {
+            trace_owner("try_bounded_global_ring_remove");
             return Ok(());
         }
         if self.try_fixed_triplet_float_dispatch(function)? {
+            trace_owner("try_fixed_triplet_float_dispatch");
             return Ok(());
         }
         if self.try_global_object_array_repair(function)? {
+            trace_owner("try_global_object_array_repair");
             return Ok(());
         }
         // Inline expansion exposes member-index searches before broad loop
         // lowering can discard their explicit pointer induction variable.
         if self.try_counted_member_pointer_search(function)? {
+            trace_owner("try_counted_member_pointer_search");
             return Ok(());
         }
         if self.try_global_status_snapshot_access(function)? {
+            trace_owner("try_global_status_snapshot_access");
             return Ok(());
         }
         if self.try_memory_access_transaction(function)? {
+            trace_owner("try_memory_access_transaction");
             return Ok(());
         }
         if self.try_memory_map_validation(function)? {
+            trace_owner("try_memory_map_validation");
             return Ok(());
         }
         if self.try_extended_register_access(function)? {
+            trace_owner("try_extended_register_access");
             return Ok(());
         }
         if self.try_fp_register_access(function)? {
+            trace_owner("try_fp_register_access");
             return Ok(());
         }
         if self.try_paired_single_register_access(function)? {
+            trace_owner("try_paired_single_register_access");
             return Ok(());
         }
         if self.try_support_file_request(function)? {
+            trace_owner("try_support_file_request");
             return Ok(());
         }
         // A default-initialized result conditionally replaced by switch arms is
@@ -1391,6 +1422,7 @@ impl Generator {
         // retain the local and shared return before broad branch/value owners
         // rewrite the assignments into independent expression trees.
         if self.try_guarded_result_switch(function)? {
+            trace_owner("try_guarded_result_switch");
             return Ok(());
         }
         // EABI startup walks the ROM-copy and BSS linker tables as one
@@ -1398,18 +1430,21 @@ impl Generator {
         // and validate both inline helper bodies before generic inlining splits
         // their shared cursor/register plan apart.
         if self.try_linker_table_initialization(function)? {
+            trace_owner("try_linker_table_initialization");
             return Ok(());
         }
         // Dolphin's display-list base operations share cross-expression values
         // whose measured schedules are obscured once generic stores and calls
         // are lowered independently.
         if self.try_display_list_base_operation(function)? {
+            trace_owner("try_display_list_base_operation");
             return Ok(());
         }
         // A 32-byte display-list padding loop is fully determined after its
         // one-byte write helper has been expanded. Claim that unrolled CTR
         // transaction before generic local/structured-loop routing.
         if self.try_display_list_padding_loop(function)? {
+            trace_owner("try_display_list_padding_loop");
             return Ok(());
         }
         // A range-guarded global-array element consumed by several calls owns
@@ -1417,6 +1452,7 @@ impl Generator {
         // AST form, so give this exact semantic owner first refusal before any
         // broad body handler can partially lower the surrounding conditional.
         if self.try_guarded_indexed_call_sequence(function)? {
+            trace_owner("try_guarded_indexed_call_sequence");
             return Ok(());
         }
         if let Some(lowered) = super::aggregate_local_return::lower_local_aggregate_return(function)
@@ -1438,27 +1474,35 @@ impl Generator {
         // dispatch. Claim them before generic frame planning tries to materialize
         // the source array or lower the switch statement independently.
         if self.try_fixed_port_matrix_packets(function)? {
+            trace_owner("try_fixed_port_matrix_packets");
             return Ok(());
         }
         if self.try_fixed_port_mask_accumulation(function)? {
+            trace_owner("try_fixed_port_mask_accumulation");
             return Ok(());
         }
         if self.try_fixed_port_global_replay(function)? {
+            trace_owner("try_fixed_port_global_replay");
             return Ok(());
         }
         if self.try_fixed_port_order_switch(function)? {
+            trace_owner("try_fixed_port_order_switch");
             return Ok(());
         }
         if self.try_fixed_port_scale_switch(function)? {
+            trace_owner("try_fixed_port_scale_switch");
             return Ok(());
         }
         if self.try_conditional_integer_call_arguments(function)? {
+            trace_owner("try_conditional_integer_call_arguments");
             return Ok(());
         }
         if self.try_global_bitfield_dirty_update(function)? {
+            trace_owner("try_global_bitfield_dirty_update");
             return Ok(());
         }
         if self.try_zero_call_forward(function)? {
+            trace_owner("try_zero_call_forward");
             return Ok(());
         }
         // InlineBodySet is the authoritative distinction between skipped
@@ -1506,22 +1550,26 @@ impl Generator {
         // the owning object has two distinct live values. Claim it before
         // immutable-alias inlining can collapse both onto the call register.
         if self.try_leading_bitfield_clear_call(function)? {
+            trace_owner("try_leading_bitfield_clear_call");
             return Ok(());
         }
         // A loaded float selector and its sign-selected derivatives must not
         // overwrite a float parameter that remains an argument of the final call.
         if self.try_conditional_float_call_arguments(function)? {
+            trace_owner("try_conditional_float_call_arguments");
             return Ok(());
         }
         // Preserve the member-alias split that determines MWCC's base register
         // and offset spelling before generic pointer copy propagation erases it.
         if self.try_conditional_friction_select(function)? {
+            trace_owner("try_conditional_friction_select");
             return Ok(());
         }
         // The display-list transaction's measured register schedule depends on
         // distinguishing the typed actor alias from the entry parameter. Claim
         // it before generic immutable-pointer propagation erases that identity.
         if self.try_guarded_display_list_packet(function)? {
+            trace_owner("try_guarded_display_list_packet");
             return Ok(());
         }
         if let Some(inlined) = inline_immutable_pointer_aliases(function) {
@@ -1536,6 +1584,7 @@ impl Generator {
         // copy-propagated into the condition; the original object stays in r3
         // and feeds either call arm without a callee-saved live range.
         if self.try_local_member_call_dispatch(function)? {
+            trace_owner("try_local_member_call_dispatch");
             return Ok(());
         }
         if let Some(scalarized) = scalarize_in_place_aggregate_local(function) {
@@ -1582,6 +1631,7 @@ impl Generator {
         // three unrelated expressions: constructor-expanded vptr stores and
         // destructor registration share one measured address schedule.
         if self.try_cxx_global_startup(function)? {
+            trace_owner("try_cxx_global_startup");
             return Ok(());
         }
         // The exact-match whole-function captures (src/captures/) claim FIRST
@@ -1590,139 +1640,177 @@ impl Generator {
         // decline with no side effects — a generic template mid-emission
         // defer must not shadow an exact capture (ac __StringWrite).
         if self.try_captures(function)? {
+            trace_owner("try_captures");
             return Ok(());
         }
         if self.try_global_pointer_table_link_search(function)? {
+            trace_owner("try_global_pointer_table_link_search");
             return Ok(());
         }
         if self.try_float_friction_select(function)? {
+            trace_owner("try_float_friction_select");
             return Ok(());
         }
         // SDK vector installers retain one fixed destination across a copy,
         // cache flush, ordering barrier, and instruction-cache invalidate.  The
         // destination and the symbol-range operands share one measured schedule.
         if self.try_fixed_address_copy_barrier(function)? {
+            trace_owner("try_fixed_address_copy_barrier");
             return Ok(());
         }
         if self.try_guarded_virtual_forwarder(function)? {
+            trace_owner("try_guarded_virtual_forwarder");
             return Ok(());
         }
         if self.try_guarded_global_address_call(function)? {
+            trace_owner("try_guarded_global_address_call");
             return Ok(());
         }
         if !calls_inline_candidate && self.try_call_boolean(function)? {
+            trace_owner("try_call_boolean");
             return Ok(());
         }
         // A callback nested in a large global aggregate, with a by-value aggregate second
         // argument and a ninth stack argument. Claim the complete EABI transaction before
         // broad statement handlers split its address-taken parameter and callback apart.
         if self.try_nested_global_indirect_call(function)? {
+            trace_owner("try_nested_global_indirect_call");
             return Ok(());
         }
         if self.try_global_call_store_guard_tail(function)? {
+            trace_owner("try_global_call_store_guard_tail");
             return Ok(());
         }
         if self.try_indexed_call_store_return(function)? {
+            trace_owner("try_indexed_call_store_return");
             return Ok(());
         }
         if self.try_global_pointer_fallback_getter(function)? {
+            trace_owner("try_global_pointer_fallback_getter");
             return Ok(());
         }
         // Whole-file IPA expansion must claim a verified wrapper before the
         // ordinary sibling-call pass turns its sole call into an external
         // branch. The composed walker owns the caller's complete schedule.
         if self.try_ipa_inlined_pointer_walker(function)? {
+            trace_owner("try_ipa_inlined_pointer_walker");
             return Ok(());
         }
         // A skipped inline has no callable symbol. Let the retained-body gate
         // below compose it instead of allowing this broad sibling-call path to
         // emit an undefined `bl`/`b` target.
         if !calls_inline_candidate && self.try_tail_call(function)? {
+            trace_owner("try_tail_call");
             return Ok(());
         }
         if !calls_inline_candidate && self.try_non_tail_call_forward(function)? {
+            trace_owner("try_non_tail_call_forward");
             return Ok(());
         }
         if !calls_inline_candidate && self.try_conditional_member_select_tail(function)? {
+            trace_owner("try_conditional_member_select_tail");
             return Ok(());
         }
         if self.try_legacy_comma_parameter_homes(function)? {
+            trace_owner("try_legacy_comma_parameter_homes");
             return Ok(());
         }
         // A leaf `fixed_regs[k] |= C` / `&= C`: one shared materialized base,
         // load/update/store through r0. This is the single-node fixed-RMW schedule.
         if self.try_byte_word_transfer(function)? {
+            trace_owner("try_byte_word_transfer");
             return Ok(());
         }
         if self.try_fixed_bank_transaction(function)? {
+            trace_owner("try_fixed_bank_transaction");
             return Ok(());
         }
         if self.try_bank_retry_transport(function)? {
+            trace_owner("try_bank_retry_transport");
             return Ok(());
         }
         if self.try_fixed_address_immediate_rmw(function)? {
+            trace_owner("try_fixed_address_immediate_rmw");
             return Ok(());
         }
         if self.try_fixed_address_masked_narrow_return(function)? {
+            trace_owner("try_fixed_address_masked_narrow_return");
             return Ok(());
         }
         // A seven-field DMA program followed by verified busy-wait and local-RMW
         // helpers is one inlined leaf DAG in mwcc. The interprocedural summaries
         // prove those helper semantics before this call-site schedule can claim.
         if self.try_fixed_rmw_with_inline_tail(function)? {
+            trace_owner("try_fixed_rmw_with_inline_tail");
             return Ok(());
         }
         if self.try_conditional_global_array_publication(function)? {
+            trace_owner("try_conditional_global_array_publication");
             return Ok(());
         }
         if self.try_global_queue_pop_transaction(function)? {
+            trace_owner("try_global_queue_pop_transaction");
             return Ok(());
         }
         if self.try_global_chunked_queue_service(function)? {
+            trace_owner("try_global_chunked_queue_service");
             return Ok(());
         }
         // A queue interrupt routine composes two callback-consume arms with
         // verified queue-pop and chunk-service helpers that mwcc inlines.
         if self.try_inlined_queue_interrupt_service(function)? {
+            trace_owner("try_inlined_queue_interrupt_service");
             return Ok(());
         }
         if self.try_guarded_queue_initialization(function)? {
+            trace_owner("try_guarded_queue_initialization");
             return Ok(());
         }
         if self.try_guarded_pointer_pair_initialization(function)? {
+            trace_owner("try_guarded_pointer_pair_initialization");
             return Ok(());
         }
         if self.try_conditional_member_callback(function)? {
+            trace_owner("try_conditional_member_callback");
             return Ok(());
         }
         if self.try_dual_conditional_member_callbacks(function)? {
+            trace_owner("try_dual_conditional_member_callbacks");
             return Ok(());
         }
         if self.try_global_function_table_selection(function)? {
+            trace_owner("try_global_function_table_selection");
             return Ok(());
         }
         if self.try_global_aggregate_call_initialization(function)? {
+            trace_owner("try_global_aggregate_call_initialization");
             return Ok(());
         }
         if self.try_global_state_initialization(function)? {
+            trace_owner("try_global_state_initialization");
             return Ok(());
         }
         if self.try_global_call_result_guard(function)? {
+            trace_owner("try_global_call_result_guard");
             return Ok(());
         }
         if self.try_global_aggregate_pop(function)? {
+            trace_owner("try_global_aggregate_pop");
             return Ok(());
         }
         if self.try_global_aggregate_post(function)? {
+            trace_owner("try_global_aggregate_post");
             return Ok(());
         }
         if self.try_inlined_queue_post_transaction(function)? {
+            trace_owner("try_inlined_queue_post_transaction");
             return Ok(());
         }
         // The allocator-free critical transaction contains both a conditional
         // pointer store and a global-return reload, so it must claim before the
         // conservative cross-statement address-reuse prechecks below.
         if self.try_interrupt_protected_allocator_free(function)? {
+            trace_owner("try_interrupt_protected_allocator_free");
             return Ok(());
         }
         // SDK one-time initialization combines an early-return guard, values
@@ -1730,6 +1818,7 @@ impl Generator {
         // RMW. It owns that cross-statement schedule before the generic
         // address-reuse and live-across-call prechecks can reject its pieces.
         if self.try_interrupt_protected_guarded_initialization(function)? {
+            trace_owner("try_interrupt_protected_guarded_initialization");
             return Ok(());
         }
         // A context-switching interrupt handler owns a large address-taken
@@ -1737,128 +1826,165 @@ impl Generator {
         // callback. Claim it before generic frame-resident lowering splits the
         // cross-call and conditional-call schedule apart.
         if self.try_context_callback_handler(function)? {
+            trace_owner("try_context_callback_handler");
             return Ok(());
         }
         // The TRIG DISPATCHER template claims before the general statement
         // walkers (its leading Assigns would otherwise hit the value-tracking
         // defer).
         if self.try_trig_dispatcher(function)? {
+            trace_owner("try_trig_dispatcher");
             return Ok(());
         }
         // A byte-class tokenizer owns one stack bitmap and three dependent
         // loops. Lower it as one transaction so their shared registers and
         // frame schedule remain coherent.
         if self.try_byte_class_tokenizer(function)? {
+            trace_owner("try_byte_class_tokenizer");
             return Ok(());
         }
         if self.try_ascii_pointer_compare(function)? {
+            trace_owner("try_ascii_pointer_compare");
             return Ok(());
         }
         if self.try_ascii_uppercase_loop(function)? {
+            trace_owner("try_ascii_uppercase_loop");
             return Ok(());
         }
         if self.try_guarded_payload_membership(function)? {
+            trace_owner("try_guarded_payload_membership");
             return Ok(());
         }
         if self.try_payload_object_free(function)? {
+            trace_owner("try_payload_object_free");
             return Ok(());
         }
         if self.try_inlined_callback_open(function)? {
+            trace_owner("try_inlined_callback_open");
             return Ok(());
         }
         if self.try_inlined_object_make(function)? {
+            trace_owner("try_inlined_object_make");
             return Ok(());
         }
         if self.try_global_list_teardown(function)? {
+            trace_owner("try_global_list_teardown");
             return Ok(());
         }
         if self.try_inlined_payload_event(function)? {
+            trace_owner("try_inlined_payload_event");
             return Ok(());
         }
         if self.try_inlined_list_append(function)? {
+            trace_owner("try_inlined_list_append");
             return Ok(());
         }
         if self.try_inlined_doubly_linked_list_transfer(function)? {
+            trace_owner("try_inlined_doubly_linked_list_transfer");
             return Ok(());
         }
         if self.try_linked_list_remove(function)? {
+            trace_owner("try_linked_list_remove");
             return Ok(());
         }
         if self.try_linked_list_append(function)? {
+            trace_owner("try_linked_list_append");
             return Ok(());
         }
         // The ROTATED LOOP likewise (initialized locals route into value
         // tracking otherwise).
         if self.try_ascii_case_fold_hash_loop(function)? {
+            trace_owner("try_ascii_case_fold_hash_loop");
             return Ok(());
         }
         if self.try_dual_index_call_compare_loop(function)? {
+            trace_owner("try_dual_index_call_compare_loop");
             return Ok(());
         }
         if self.try_float_list_parser(function)? {
+            trace_owner("try_float_list_parser");
             return Ok(());
         }
         if self.try_counted_pointer_search(function)? {
+            trace_owner("try_counted_pointer_search");
             return Ok(());
         }
         if self.try_rotated_loop(function)? {
+            trace_owner("try_rotated_loop");
             return Ok(());
         }
         if self.try_pipelined_copy(function)? {
+            trace_owner("try_pipelined_copy");
             return Ok(());
         }
         if self.try_guarded_byte_copy(function)? {
+            trace_owner("try_guarded_byte_copy");
             return Ok(());
         }
         if self.try_ctr_loop(function)? {
+            trace_owner("try_ctr_loop");
             return Ok(());
         }
         if self.try_ctr_pair_loop(function)? {
+            trace_owner("try_ctr_pair_loop");
             return Ok(());
         }
         if self.try_bit_reverse_loop(function)? {
+            trace_owner("try_bit_reverse_loop");
             return Ok(());
         }
         if self.try_xnor_feedback_loop(function)? {
+            trace_owner("try_xnor_feedback_loop");
             return Ok(());
         }
         if self.try_norm_loop(function)? {
+            trace_owner("try_norm_loop");
             return Ok(());
         }
         if self.try_ilogb_diamond(function)? {
+            trace_owner("try_ilogb_diamond");
             return Ok(());
         }
         if self.try_early_ladder(function)? {
+            trace_owner("try_early_ladder");
             return Ok(());
         }
         if self.try_indexed_double_return(function)? {
+            trace_owner("try_indexed_double_return");
             return Ok(());
         }
         if self.try_punned_pair_ladder(function)? {
+            trace_owner("try_punned_pair_ladder");
             return Ok(());
         }
         if self.try_align_diamond(function)? {
+            trace_owner("try_align_diamond");
             return Ok(());
         }
         if self.try_unoptimized_integer_round_up(function)? {
+            trace_owner("try_unoptimized_integer_round_up");
             return Ok(());
         }
         if self.try_writeback_norm(function)? {
+            trace_owner("try_writeback_norm");
             return Ok(());
         }
         // Body-bearing variadic helpers compose the EABI register-save area
         // with a frame-resident formatting buffer. Each complete structural
         // owner runs before the side-effect-free family and conservative gate.
         if self.try_variadic_buffer_print(function)? {
+            trace_owner("try_variadic_buffer_print");
             return Ok(());
         }
         if self.try_variadic_buffer_sink(function)? {
+            trace_owner("try_variadic_buffer_sink");
             return Ok(());
         }
         // Even a side-effect-free variadic definition receives the EABI
         // parameter-save area. Its self-contained owner runs before the broader
         // variadic gate.
         if self.try_simple_variadic_definition(function)? {
+            trace_owner("try_simple_variadic_definition");
             return Ok(());
         }
         // A non-empty VARIADIC definition only a capture may claim — composing
@@ -1898,15 +2024,19 @@ impl Generator {
         // its body); the general paths must never emit a bl to the undefined
         // local (wrong bytes — mwcc inlines it).
         if self.try_inlined_byte_append_loop(function)? {
+            trace_owner("try_inlined_byte_append_loop");
             return Ok(());
         }
         if self.try_inlined_list_wipe(function)? {
+            trace_owner("try_inlined_list_wipe");
             return Ok(());
         }
         if self.try_inlined_list_membership(function)? {
+            trace_owner("try_inlined_list_membership");
             return Ok(());
         }
         if self.try_status_indexed_call_loop(function)? {
+            trace_owner("try_status_indexed_call_loop");
             return Ok(());
         }
         // A mask-selected exception-vector walk expands both its copy helper
@@ -1915,6 +2045,7 @@ impl Generator {
         // portions of two calls, so one owner must plan their saved homes
         // together.
         if self.try_interrupt_vector_copy_loop(function)? {
+            trace_owner("try_interrupt_vector_copy_loop");
             return Ok(());
         }
         // `return live * local_call(argument) + C;` either preserves the live
@@ -1922,6 +2053,7 @@ impl Generator {
         // the same-TU body. This boundary must precede generic inline-body
         // composition, which otherwise cannot distinguish IPA from noauto.
         if self.try_call_result_product_return(function)? {
+            trace_owner("try_call_result_product_return");
             return Ok(());
         }
         if let Some(mut expanded) = self.inline_bodies.expand_selective_calls(
@@ -2240,12 +2372,14 @@ impl Generator {
         // Compose source-visible callees before selecting the packet snapshot
         // schedule, so future deeper helper expansion keeps its opportunity.
         if self.try_packet_publication(function)? {
+            trace_owner("try_packet_publication");
             return Ok(());
         }
         // Give retained helper effects a chance to compose before selecting
         // an out-of-line boolean wrapper. Optional expansion may still decline,
         // in which case the measured linked-call schedule remains available.
         if calls_inline_candidate && self.try_call_boolean(function)? {
+            trace_owner("try_call_boolean");
             return Ok(());
         }
         // A NATIVE caller of a WEAK-MATERIALIZED plain inline defers the same
@@ -2259,6 +2393,7 @@ impl Generator {
             ));
         }
         if self.try_fpclassify_switch(function)? {
+            trace_owner("try_fpclassify_switch");
             return Ok(());
         }
         // `F t = gf; t();` — a pure fn-pointer alias feeding only the first call's target
@@ -2267,6 +2402,7 @@ impl Generator {
             return self.evaluate_body(&folded);
         }
         if self.try_aggregate_return_forwarder(function)? {
+            trace_owner("try_aggregate_return_forwarder");
             return Ok(());
         }
         // Other struct BY VALUE returns still need an explicit hidden-result
@@ -2280,9 +2416,11 @@ impl Generator {
         // A whole-array float/double constant-init run (`g[0]=1.0f; g[1]=2.0f; …`) uses mwcc's
         // shared-base `stfsu` schedule, so claim its exact form before general lowering.
         if self.try_float_array_store_fill(function)? {
+            trace_owner("try_float_array_store_fill");
             return Ok(());
         }
         if self.try_global_aggregate_constant_initialization(function)? {
+            trace_owner("try_global_aggregate_constant_initialization");
             return Ok(());
         }
         // A store to a global AGGREGATE that addresses through a base register (a struct value's
@@ -2685,15 +2823,19 @@ impl Generator {
         // (loaded once into r3, tested, then passed to the call). See
         // body/callee_saved/conditional.rs.
         if self.try_guarded_global_reuse_call(function)? {
+            trace_owner("try_guarded_global_reuse_call");
             return Ok(());
         }
         if self.try_toggled_guarded_global_callback(function)? {
+            trace_owner("try_toggled_guarded_global_callback");
             return Ok(());
         }
         if self.try_stored_guarded_global_callback(function)? {
+            trace_owner("try_stored_guarded_global_callback");
             return Ok(());
         }
         if self.try_guarded_global_callback(function)? {
+            trace_owner("try_guarded_global_callback");
             return Ok(());
         }
         // `if (gi) f(gi);` — a global read in BOTH an if-condition and its then-body. mwcc loads the
@@ -2768,36 +2910,46 @@ impl Generator {
             }
         }
         if self.try_long_long_member_initialize(function)? {
+            trace_owner("try_long_long_member_initialize");
             return Ok(());
         }
         if self.try_control_block_unique_copy(function)? {
+            trace_owner("try_control_block_unique_copy");
             return Ok(());
         }
         if self.try_conditional_member_copy(function)? {
+            trace_owner("try_conditional_member_copy");
             return Ok(());
         }
         if self.try_guarded_aggregate_update(function)? {
+            trace_owner("try_guarded_aggregate_update");
             return Ok(());
         }
         if self.try_inlined_guarded_aggregate_update(function)? {
+            trace_owner("try_inlined_guarded_aggregate_update");
             return Ok(());
         }
         if self.try_endian_probe(function)? {
+            trace_owner("try_endian_probe");
             return Ok(());
         }
         // Endian scalar wrappers intentionally take the address of a 16/32/64-bit
         // parameter, select its frame image or a reversed stack array, then tail
         // into a byte-buffer call. Claim all widths before the long-long router.
         if self.try_endian_stack_pack(function)? {
+            trace_owner("try_endian_stack_pack");
             return Ok(());
         }
         if self.try_endian_stack_unpack(function)? {
+            trace_owner("try_endian_stack_unpack");
             return Ok(());
         }
         if self.try_wide_call_result_mask_chain(function)? {
+            trace_owner("try_wide_call_result_mask_chain");
             return Ok(());
         }
         if self.try_wide_call_sequence(function)? {
+            trace_owner("try_wide_call_sequence");
             return Ok(());
         }
         if let Some(scalarized) = self.lower_wide_mask_local_for_version(function) {
@@ -2848,12 +3000,15 @@ impl Generator {
             return native_result;
         }
         if self.try_saved_global_exchange(function)? {
+            trace_owner("try_saved_global_exchange");
             return Ok(());
         }
         if self.try_display_list_framebuffer_setup(function)? {
+            trace_owner("try_display_list_framebuffer_setup");
             return Ok(());
         }
         if self.try_display_list_coveredge(function)? {
+            trace_owner("try_display_list_coveredge");
             return Ok(());
         }
         // A non-volatile terminal global store/read pair is one value operation.
@@ -2887,6 +3042,7 @@ impl Generator {
         // The guarded scalar sibling has a measured store/return schedule and
         // must claim before the conservative general-family defer below.
         if self.try_guarded_global_constant_store_return(function)? {
+            trace_owner("try_guarded_global_constant_store_return");
             return Ok(());
         }
         // `global = const; return <const or global>` — mwcc's scheduler computes the return value
@@ -2918,18 +3074,23 @@ impl Generator {
             // The measured store+product cluster (the __va_arg diamond arm reduced)
             // is handled before this pre-check defers it. See body/conditional.rs.
             if self.try_store_product_return(function)? {
+                trace_owner("try_store_product_return");
                 return Ok(());
             }
             if self.try_prefixed_store_product_return(function)? {
+                trace_owner("try_prefixed_store_product_return");
                 return Ok(());
             }
             if self.try_align_store_arm(function)? {
+                trace_owner("try_align_store_arm");
                 return Ok(());
             }
             if self.try_const_align_store_return(function)? {
+                trace_owner("try_const_align_store_return");
                 return Ok(());
             }
             if self.try_va_arg_diamond(function)? {
+                trace_owner("try_va_arg_diamond");
                 return Ok(());
             }
             if super::return_store_schedule::has_terminal_store_return_hazard(
@@ -2952,43 +3113,52 @@ impl Generator {
         // claims ahead of the frame families: its x-spill frame form and the
         // float DAG tail are one measured unit.
         if self.try_punned_guard_float_return(function)? {
+            trace_owner("try_punned_guard_float_return");
             return Ok(());
         }
         // The DUAL-TAIL float return (`if (c) return A; else return B;`) —
         // two independent float DAGs behind one compare.
         if self.try_dual_tail_float_return(function)? {
+            trace_owner("try_dual_tail_float_return");
             return Ok(());
         }
         // The conditional-local diamond (`if (c) qx = A; else qx = B;` +
         // float tail) — the k_cos qx form, register variant.
         if self.try_conditional_local_float_return(function)? {
+            trace_owner("try_conditional_local_float_return");
             return Ok(());
         }
         if self.try_frexp_family(function)? {
+            trace_owner("try_frexp_family");
             return Ok(());
         }
         // THE COMPOSER: the full three-arm s_floor ladder.
         if self.try_punned_ladder_writeback(function)? {
+            trace_owner("try_punned_ladder_writeback");
             return Ok(());
         }
         // THE MODF LADDER: pointer stores + integral/fraction returns.
         if self.try_punned_modf_ladder(function)? {
+            trace_owner("try_punned_modf_ladder");
             return Ok(());
         }
         // The SHIFT-WRITEBACK family (s_floor arm2's core) parses the
         // un-normalized leading assigns itself — its mutations reassign
         // punned locals, which the initializer normalizer refuses.
         if self.try_punned_shift_writeback(function)? {
+            trace_owner("try_punned_shift_writeback");
             return Ok(());
         }
         // The punned-guard WRITEBACK (the s_floor tail) binds its punned
         // locals to scratch registers — ahead of the inline-away pass that
         // would dissolve them into repeated frame reads.
         if self.try_punned_guard_writeback(function)? {
+            trace_owner("try_punned_guard_writeback");
             return Ok(());
         }
         // The raise family (a fn-pointer local live across calls) likewise.
         if self.try_raise_family(function)? {
+            trace_owner("try_raise_family");
             return Ok(());
         }
         // Register locals feeding a frame-resident body (`int hx = *(int*)&x; return
@@ -3000,18 +3170,22 @@ impl Generator {
             return self.evaluate_body(&inlined.function);
         }
         if self.try_aggregate_parameter_forwarder(function)? {
+            trace_owner("try_aggregate_parameter_forwarder");
             return Ok(());
         }
         // A struct-image local passed by address to one call (`GXColor c = {…}; g(&c);`).
         if self.try_struct_image_init_call(function)? {
+            trace_owner("try_struct_image_init_call");
             return Ok(());
         }
         // Constant member stores into a small struct local, then its address to one call.
         if self.try_struct_member_stores_call(function)? {
+            trace_owner("try_struct_member_stores_call");
             return Ok(());
         }
         // One call with an integer literal and a 4-byte compound-literal argument.
         if self.try_compound_literal_call(function)? {
+            trace_owner("try_compound_literal_call");
             return Ok(());
         }
         // `int out=0; read(&out); if(out) use(saved); else use(saved);` combines
@@ -3019,6 +3193,7 @@ impl Generator {
         // Its owner composes the frame slot and callee-saved allocation before
         // the ordinary frame path claims the function.
         if self.try_frame_call_then_branch(function)? {
+            trace_owner("try_frame_call_then_branch");
             return Ok(());
         }
         if self.try_guarded_computed_survivor_return(function)?
@@ -3027,6 +3202,7 @@ impl Generator {
             return Ok(());
         }
         if self.try_float_call_guard_return(function)? {
+            trace_owner("try_float_call_guard_return");
             return Ok(());
         }
         // A nested sign/quadrant tree around one verified guarded float-table
@@ -3034,38 +3210,45 @@ impl Generator {
         // conversion frame, so claim it before the general structured-frame
         // compiler treats the source calls as surviving calls.
         if self.try_float_octant_table_dispatch(function)? {
+            trace_owner("try_float_octant_table_dispatch");
             return Ok(());
         }
         // A narrow angle-code call followed by unsigned conversion and float
         // scaling owns its linkage-first argument swaps and conversion frame.
         if self.try_scaled_angle_call(function)? {
+            trace_owner("try_scaled_angle_call");
             return Ok(());
         }
         if self.try_float_intrinsic_leaf(function)? {
+            trace_owner("try_float_intrinsic_leaf");
             return Ok(());
         }
         // A nested owner chase reuses the cursor register for `p`, then
         // `p->owner`, before advancing through `p->owner->next`. Its one
         // scalar local is register-only, so claim it before frame fallbacks.
         if self.try_nested_pointer_search_loop(function)? {
+            trace_owner("try_nested_pointer_search_loop");
             return Ok(());
         }
         // The DummyLen call-heavy counted loop is one measured scheduling
         // region. Claim it before the general structured frame owner, which
         // cannot lower the nested tick-call shift as an ordinary expression.
         if self.try_call_live_counter_loop(function)? {
+            trace_owner("try_call_live_counter_loop");
             return Ok(());
         }
         // The legacy serial-device switch owns its linkage frame, jump table,
         // and guarded transfer calls. Keep this exact semantic owner ahead of
         // the general structured frame compiler.
         if self.try_masked_transfer_command_switch(function)? {
+            trace_owner("try_masked_transfer_command_switch");
             return Ok(());
         }
         // The aligned chunk reader owns five call-live homes and the complete
         // callback/direct-read loop schedule. It must precede the broad framed
         // structured emitter, which cannot recover that allocation afterward.
         if self.try_chunked_callback_read(function)? {
+            trace_owner("try_chunked_callback_read");
             return Ok(());
         }
         // Split private floating fields before committing an aggregate to a
@@ -3122,6 +3305,7 @@ impl Generator {
             }
         }
         if self.try_callee_saved_structured_frame_body(function)? {
+            trace_owner("try_callee_saved_structured_frame_body");
             return Ok(());
         }
         // A single call-bearing `if (a && b)` is already a complete structured
@@ -3134,71 +3318,84 @@ impl Generator {
             return Ok(());
         }
         if self.try_frame_resident(function)? {
+            trace_owner("try_frame_resident");
             return Ok(());
         }
         // A counting `for (i = 0; i < bound; i++)` loop owns its single local
         // counter, so it is checked before the value-tracking path claims it.
         if self.try_for_counter(function)? {
+            trace_owner("try_for_counter");
             return Ok(());
         }
         // A leaf non-counting `while`/`do-while` whose body is pure in-place increments
         // (`while (*p) p++;`) lowers to the rotated form; claimed before value-tracking since the
         // loop-carried increment must emit in place.
         if self.try_emit_increment_while(function)? {
+            trace_owner("try_emit_increment_while");
             return Ok(());
         }
         // A mutex/list walk retains one running scalar minimum while chasing
         // two nested pointers. It is leaf but loop-carried, so claim it before
         // straight-line value tracking sees the conditional reassignment.
         if self.try_pointer_walk_running_minimum(function)? {
+            trace_owner("try_pointer_walk_running_minimum");
             return Ok(());
         }
         // `while (p) { if (…) return p; p = p->next; }` — a linked-list search: the
         // rotated chase loop with an in-body early return (`bclr`).
         if self.try_list_search_loop(function)? {
+            trace_owner("try_list_search_loop");
             return Ok(());
         }
         // `if (!thread->active) return 0; for (p = *FIXED_HEAD; p;
         // p = p->next) if (p == thread) return 1;` — SDK thread-list
         // membership with a fixed-address sentinel head.
         if self.try_fixed_head_list_membership(function)? {
+            trace_owner("try_fixed_head_list_membership");
             return Ok(());
         }
         // Intrusive-list extraction retains each tested neighbor across its
         // corresponding back-link repair.
         if self.try_doubly_linked_list_extract(function)? {
+            trace_owner("try_doubly_linked_list_extract");
             return Ok(());
         }
         // A queue held by current/head/tail globals removes its head, tail, or
         // middle node through three distinct early-return transactions.
         if self.try_global_doubly_linked_remove(function)? {
+            trace_owner("try_global_doubly_linked_remove");
             return Ok(());
         }
         // A global queue append followed by a terminal variadic trace is one
         // frameless schedule: the retained tail load feeds the append arm and
         // the string high half overlaps the final state publication.
         if self.try_global_doubly_linked_append_trace(function)? {
+            trace_owner("try_global_doubly_linked_append_trace");
             return Ok(());
         }
         // Dolphin heap cells are inserted by address and coalesced with either
         // adjacent neighbor in one scheduled link-repair region.
         if self.try_coalescing_free_list_insert(function)? {
+            trace_owner("try_coalescing_free_list_insert");
             return Ok(());
         }
         // The Revolution DSP queue spells the same priority-sorted intrusive
         // insertion as a leading empty-list return, a `while`/`break` search,
         // and a trailing append.
         if self.try_sorted_intrusive_global_insert(function)? {
+            trace_owner("try_sorted_intrusive_global_insert");
             return Ok(());
         }
         // SDK callback queues insert one intrusive node into a priority-sorted doubly linked
         // list. The empty-tail and predecessor repairs form one scheduled control-flow owner.
         if self.try_sorted_intrusive_insert(function)? {
+            trace_owner("try_sorted_intrusive_insert");
             return Ok(());
         }
         // A callback queue folds the logical-not of every indirect result, then one direct
         // synchronization result, into a saved accumulator before returning its boolean inverse.
         if self.try_queue_callback_fold(function)? {
+            trace_owner("try_queue_callback_fold");
             return Ok(());
         }
         // MWCC may retain a small static selector out of line while expanding
@@ -3206,31 +3403,37 @@ impl Generator {
         // caller's source locals before the ordinary call path treats it as a
         // genuine non-leaf call.
         if self.try_inlined_local_select_access(function)? {
+            trace_owner("try_inlined_local_select_access");
             return Ok(());
         }
         // At -O0, named register locals survive the frontend and occupy descending
         // callee-saved homes even in a leaf. Keep that source-level allocation
         // distinct from the optimized conditional-expression family below.
         if self.try_unoptimized_local_select(function)? {
+            trace_owner("try_unoptimized_local_select");
             return Ok(());
         }
         // A bounded global-array lookup keeps the null fallback in r0 and
         // materializes the selected element address into the same candidate.
         if self.try_range_guarded_array_address(function)? {
+            trace_owner("try_range_guarded_array_address");
             return Ok(());
         }
         // A bounded cursor update is a nested leaf diamond: the error local
         // stays in the first free argument register while the success arm
         // updates a position and conditionally raises a high-water member.
         if self.try_bounded_member_cursor(function)? {
+            trace_owner("try_bounded_member_cursor");
             return Ok(());
         }
         if self.try_bounded_member_assignment(function)? {
+            trace_owner("try_bounded_member_assignment");
             return Ok(());
         }
         // `T y; if (c) y = A; else y = B; return y;` — both arms assign the returned
         // local, so the whole body is the select `return (c) ? A : B`.
         if self.try_conditional_assign(function)? {
+            trace_owner("try_conditional_assign");
             return Ok(());
         }
         // `T y = INIT; if (c) y = NEW; return y;` (no else) where INIT is a variable ALREADY
@@ -3238,6 +3441,7 @@ impl Generator {
         // form `<test c>; b<!c>lr; <NEW into result>; blr` (min/max/abs/clamp). NEW may be any
         // evaluable expression (neg/mr/li/add/…), unlike the leaf-only initialized handler below.
         if self.try_conditional_overwrite_inplace(function)? {
+            trace_owner("try_conditional_overwrite_inplace");
             return Ok(());
         }
         // `T y = INIT; if (c) y = NEW; return y;` (no else), constant arms — mwcc lowers the
@@ -3245,70 +3449,86 @@ impl Generator {
         // TWO const-init locals under one narrow guard, returned as their sum — the
         // 2-local init-interleave slice. See body/conditional.rs.
         if self.try_conditional_deref_tail(function)? {
+            trace_owner("try_conditional_deref_tail");
             return Ok(());
         }
         if self.try_narrow_guard_inner_bittest(function)? {
+            trace_owner("try_narrow_guard_inner_bittest");
             return Ok(());
         }
         if self.try_narrow_interleave_load_first(function)? {
+            trace_owner("try_narrow_interleave_load_first");
             return Ok(());
         }
         if self.try_narrow_chained_blocks(function)? {
+            trace_owner("try_narrow_chained_blocks");
             return Ok(());
         }
         if self.try_narrow_interleave_two_locals(function)? {
+            trace_owner("try_narrow_interleave_two_locals");
             return Ok(());
         }
         if self.try_narrow_interleave_three_locals(function)? {
+            trace_owner("try_narrow_interleave_three_locals");
             return Ok(());
         }
         if self.try_conditional_assign_initialized(function)? {
+            trace_owner("try_conditional_assign_initialized");
             return Ok(());
         }
         // `if (c) { [g = w;] [v = NEW;] } return v;` over a PARAMETER — the in-place
         // diamond with the merge `mr r3,v`, folding to a conditional return when v is r3.
         if self.try_guard_block_mutations(function)? {
+            trace_owner("try_guard_block_mutations");
             return Ok(());
         }
         if self.try_conditional_reassign_return(function)? {
+            trace_owner("try_conditional_reassign_return");
             return Ok(());
         }
         // Two bitfield updates through a global-state alias, followed by a command/data pair on a
         // fixed port and a narrow dirty-flag clear. This must precede local folding: the alias is
         // what identifies the shared state word and its retained load schedule.
         if self.try_fixed_port_bitfield_update(function)? {
+            trace_owner("try_fixed_port_bitfield_update");
             return Ok(());
         }
         // The indexed sibling computes two copies of a state-array element address and schedules
         // two narrow bit inserts around its loads before writing the updated word to a fixed port.
         if self.try_fixed_port_indexed_bitfield_update(function)? {
+            trace_owner("try_fixed_port_indexed_bitfield_update");
             return Ok(());
         }
         // A full-width local packet accumulator has its own stack-argument and
         // fixed-port schedule.  Claim it before generic value tracking folds
         // away the field-by-field provenance.
         if self.try_fixed_port_packet_accumulator(function)? {
+            trace_owner("try_fixed_port_packet_accumulator");
             return Ok(());
         }
         // A two-bit enum remap feeds one state-word field and then ORs a dirty bit in another
         // member. Keep the named remap local intact until its register schedule is recognized.
         if self.try_enum_remap_member_update(function)? {
+            trace_owner("try_enum_remap_member_update");
             return Ok(());
         }
         // An MWCC absolute-address aggregate carries scheduler provenance that an explicit cast
         // to the same integer address does not. Preserve that distinction through TU metadata and
         // claim the SDK command/data/dirty-clear schedule before generic constant-address stores.
         if self.try_fixed_address_object_flush(function)? {
+            trace_owner("try_fixed_address_object_flush");
             return Ok(());
         }
         // A single state-field insert followed by command/constant and command/state replay pairs
         // on one fixed port. The repeated command materially changes the build-163 schedule.
         if self.try_fixed_port_replay_update(function)? {
+            trace_owner("try_fixed_port_replay_update");
             return Ok(());
         }
         // An SDK flush primitive writes a header to a fixed port, emits a modulo-scheduled
         // eight-word zero-fill loop, then marks the owning global structure flushed.
         if self.try_fixed_port_zero_fill(function)? {
+            trace_owner("try_fixed_port_zero_fill");
             return Ok(());
         }
         // Residual frameless leaf loops can still require a persistent local
@@ -3317,6 +3537,7 @@ impl Generator {
         // the general structured CFG emitter before value tracking dissolves
         // their iteration boundary.
         if self.try_loop_carried_structured_leaf_body(function)? {
+            trace_owner("try_loop_carried_structured_leaf_body");
             return Ok(());
         }
         // A function's value-tracked locals are folded into its stores and trailing return,
@@ -3325,6 +3546,7 @@ impl Generator {
         // (or the un-schedulable-store deferral) own the cleaned body. Checked before the
         // value-tracking path, which cannot fold a void function's store-feeding locals.
         if self.try_materialized_store_pointer_locals(function)? {
+            trace_owner("try_materialized_store_pointer_locals");
             return Ok(());
         }
         if let Some(inlined) = inline_store_bearing_locals(function) {
@@ -3343,9 +3565,11 @@ impl Generator {
         // A single ordered early-return guard over a value-tracked continuation, where the
         // constant fold does not apply — the real forward-branch form.
         if self.try_guarded_member_initialization(function)? {
+            trace_owner("try_guarded_member_initialization");
             return Ok(());
         }
         if self.try_ordered_early_return_branch(function)? {
+            trace_owner("try_ordered_early_return_branch");
             return Ok(());
         }
         // The vec3 square-sum arm owns the measured single-precision latency
@@ -3368,36 +3592,46 @@ impl Generator {
             return Ok(());
         }
         if self.try_float_param_reassign(function)? {
+            trace_owner("try_float_param_reassign");
             return Ok(());
         }
         if self.try_live_across_branches(function)? {
+            trace_owner("try_live_across_branches");
             return Ok(());
         }
         // `int t = <single-op>; *p = t; return t;` — a computed local kept in r3 and
         // stored from there, rather than inlined (recomputed) by value_tracking. See
         // body/store_fill.rs.
         if self.try_computed_local_stored_returned(function)? {
+            trace_owner("try_computed_local_stored_returned");
             return Ok(());
         }
         if self.try_cached_member_guard(function)? {
+            trace_owner("try_cached_member_guard");
             return Ok(());
         }
         if self.try_constructor_constant_store_fill(function)? {
+            trace_owner("try_constructor_constant_store_fill");
             return Ok(());
         }
         if self.try_parameter_member_setup(function)? {
+            trace_owner("try_parameter_member_setup");
             return Ok(());
         }
         if self.try_masked_word_store_switch(function)? {
+            trace_owner("try_masked_word_store_switch");
             return Ok(());
         }
         if self.try_unoptimized_source_home_leaf_body(function)? {
+            trace_owner("try_unoptimized_source_home_leaf_body");
             return Ok(());
         }
         if self.try_value_tracking(function)? {
+            trace_owner("try_value_tracking");
             return Ok(());
         }
         if self.try_materialized_float_assignment_body(function)? {
+            trace_owner("try_materialized_float_assignment_body");
             return Ok(());
         }
         // Fold single-assignment, return-only locals (no call in their initializers)
@@ -3421,34 +3655,42 @@ impl Generator {
         // A leaf void body that is purely constant stores of one repeated value
         // (struct/array zeroing) materializes the value once and reuses it.
         if self.try_constant_store_fill(function)? {
+            trace_owner("try_constant_store_fill");
             return Ok(());
         }
         if self.try_member_parameter_two_constant_fill(function)? {
+            trace_owner("try_member_parameter_two_constant_fill");
             return Ok(());
         }
         if self.try_member_copy_then_call(function)? {
+            trace_owner("try_member_copy_then_call");
             return Ok(());
         }
         if self.try_ipa_member_parameter_constant_initialization(function)? {
+            trace_owner("try_ipa_member_parameter_constant_initialization");
             return Ok(());
         }
         if self.try_narrow_member_initialization(function)? {
+            trace_owner("try_narrow_member_initialization");
             return Ok(());
         }
         // The float sibling: a leaf void body of float-literal stores to `float` globals
         // (`gf=1.0f; gg=2.0f;`) pre-loads each into a distinct FPR, then stores.
         if self.try_float_constant_store_fill(function)? {
+            trace_owner("try_float_constant_store_fill");
             return Ok(());
         }
         // The member sibling: float-literal stores to consecutive members through one pointer base
         // (`p->x=1.0f; p->y=2.0f; p->z=3.0f;`) run mwcc's two-FPR software pipeline, staying two
         // loads ahead of the stores rather than the naive load/store/load/store.
         if self.try_float_member_store_fill(function)? {
+            trace_owner("try_float_member_store_fill");
             return Ok(());
         }
         // The mixed sibling: exactly one integer-member and one float-member store through one base
         // (`p->i=0; p->f=1.0f;`) — mwcc materializes both values (r0 + f0) then both stores.
         if self.try_mixed_member_store_fill(function)? {
+            trace_owner("try_mixed_member_store_fill");
             return Ok(());
         }
         // LEAK GUARD: a leaf void body of 2+ literal member stores through ONE base
@@ -3509,6 +3751,7 @@ impl Generator {
         // A whole-body `if (c) { <constant run> } else { <constant run> }`: branch over the then-arm
         // to the else, each arm the batched constant store run then its own `blr`.
         if self.try_constant_store_if_else(function)? {
+            trace_owner("try_constant_store_if_else");
             return Ok(());
         }
         // Two computed-value stores to distinct SDA globals: mwcc overlaps the two value
@@ -3516,26 +3759,31 @@ impl Generator {
         // does not. The allocator places the first value off the scratch (live across the
         // second), the second into r0.
         if self.try_computed_store_fill(function)? {
+            trace_owner("try_computed_store_fill");
             return Ok(());
         }
         // The same overlap with one computed value and one register-leaf value (`gi=a+1;
         // gj=b;`): the leaf is stored first (ready), the computed second.
         if self.try_mixed_store_fill(function)? {
+            trace_owner("try_mixed_store_fill");
             return Ok(());
         }
         // Three+ stores of register leaves with a single constant interspersed (`gi=a;
         // gj=b; gk=5;`): the constant's `li` is hoisted and the stores keep source order
         // (a leading constant swaps off the latency slot).
         if self.try_leaf_constant_fill(function)? {
+            trace_owner("try_leaf_constant_fill");
             return Ok(());
         }
         if self.try_legacy_delayed_result_store_run(function)? {
+            trace_owner("try_legacy_delayed_result_store_run");
             return Ok(());
         }
         // Leaf multi-store bodies of COMPUTED int values through the measured
         // models — the DAG emitter (linearize + assign_registers). Runs after
         // the proven store-fill arms, catching what they defer.
         if self.try_dag_store_fill(function)? {
+            trace_owner("try_dag_store_fill");
             return Ok(());
         }
         // Multiple stores where a value loads a float/double global reschedule the loads
@@ -3703,95 +3951,114 @@ impl Generator {
         // (callee-saved), the body branches back, and the decrement-and-test is a
         // single `addic.`/`bne`.
         if self.try_do_while_counter(function)? {
+            trace_owner("try_do_while_counter");
             return Ok(());
         }
         // The C++ ctor/dtor runner: a local pointer walks a NULL-terminated global
         // function-pointer table, calling each entry (`while (*p) { (**p)(); p++; }`).
         if self.try_pointer_walker_call_loop(function)? {
+            trace_owner("try_pointer_walker_call_loop");
             return Ok(());
         }
         // An empty-body hardware-register poll (`while (__EXIRegs[13] & 1);`):
         // element address materialized once, then load → `rlwinm.`/`cmplwi` → branch back.
         if self.try_emit_busy_wait(function)? {
+            trace_owner("try_emit_busy_wait");
             return Ok(());
         }
         // A byte-table search loop with one call per candidate, followed by a
         // constant call/return guard chain. The cursor and index occupy r31/r30
         // across every call and all exits share one epilogue.
         if self.try_counted_table_search_with_call_guards(function)? {
+            trace_owner("try_counted_table_search_with_call_guards");
             return Ok(());
         }
         // A fixed-count walk over a global object array which reuses each
         // element address across a run of calls. Both the element cursor and
         // integer counter are allocator-owned loop-carried survivors.
         if self.try_indexed_call_sequence_loop(function)? {
+            trace_owner("try_indexed_call_sequence_loop");
             return Ok(());
         }
         // A counted call loop (`for (i = 0; i < N; i++) g(i);`): counter in the r31
         // home, bottom-tested backward branch.
         if self.try_counted_call_loop(function)? {
+            trace_owner("try_counted_call_loop");
             return Ok(());
         }
         // A small constant-trip constant fill (`for (i = 0; i < N; i++) A[i] = k;`,
         // N <= 32) unrolls completely — no loop structure at all.
         if self.try_unrolled_fill_loop(function)? {
+            trace_owner("try_unrolled_fill_loop");
             return Ok(());
         }
         // A dynamic-bound zero fill (`for (i = 0; i < n; i++) A[i] = 0;`) emits
         // the measured modulo-scheduled 8-way + tail structure.
         if self.try_dynamic_fill_loop(function)? {
+            trace_owner("try_dynamic_fill_loop");
             return Ok(());
         }
         // The iota fill (`for (i = 0; i < n; i++) A[i] = i;`): the pipelined
         // 8-way rotation body.
         if self.try_dynamic_iota_loop(function)? {
+            trace_owner("try_dynamic_iota_loop");
             return Ok(());
         }
         // A dynamic-bound bare call loop: the counter and bound homes cross the
         // call, so the allocator derives r31/r30.
         if self.try_dynamic_call_loop(function)? {
+            trace_owner("try_dynamic_call_loop");
             return Ok(());
         }
         // A global-flag while loop over a bare call: the flag reloads each
         // iteration (no register crossing).
         if self.try_flag_while_loop(function)? {
+            trace_owner("try_flag_while_loop");
             return Ok(());
         }
         // A two-case switch that selects a narrow local, followed by a call tail.
         // The selected value occupies r31 while the incoming argument spills.
         if self.try_switch_assignment_call_tail(function)? {
+            trace_owner("try_switch_assignment_call_tail");
             return Ok(());
         }
         if self.try_resource_event_switch(function)? {
+            trace_owner("try_resource_event_switch");
             return Ok(());
         }
         if self.try_device_registration_event_switch(function)? {
+            trace_owner("try_device_registration_event_switch");
             return Ok(());
         }
         // A dense switch whose arms forward the same arguments through virtual
         // slots owns its compact linkage frame and jump-table layout.
         if self.try_dense_virtual_switch_dispatch(function)? {
+            trace_owner("try_dense_virtual_switch_dispatch");
             return Ok(());
         }
         // A dense table dispatcher whose arms assign one callee result while
         // preserving both the forwarded parameter and result across calls.
         if self.try_switch_call_dispatcher(function)? {
+            trace_owner("try_switch_call_dispatcher");
             return Ok(());
         }
         // A two-case member dispatcher forwards two pointer parameters to one
         // call per arm and returns an arm-specific constant through a shared
         // callee-saved epilogue (NW4R TagProcessorBase::Process).
         if self.try_switch_call_return(function)? {
+            trace_owner("try_switch_call_return");
             return Ok(());
         }
         // A leaf state machine commonly guards the entire update with an early
         // return, then dispatches terminal case arms containing nested ifs.
         if self.try_leading_return_statement_switch(function)? {
+            trace_owner("try_leading_return_statement_switch");
             return Ok(());
         }
         // Empty case arms that all leave the switch and reach one trailing
         // return share a single result block; the default owns the other result.
         if self.try_shared_result_switch(function)? {
+            trace_owner("try_shared_result_switch");
             return Ok(());
         }
         // A function whose body is a single `switch` lowers to the dispatch tree:
@@ -3934,12 +4201,14 @@ impl Generator {
         // A member tested then decremented retains the loaded value and splits
         // its pointer live range before a global-member receiver overwrites r3.
         if self.try_guarded_member_decrement_if_else(function)? {
+            trace_owner("try_guarded_member_decrement_if_else");
             return Ok(());
         }
         // A leading call result can discriminate two single-call arms without
         // crossing either arm's call. This narrower liveness owner keeps the
         // result in r3 and emits the measured LR-only diamond.
         if self.try_call_result_if_else(function)? {
+            trace_owner("try_call_result_if_else");
             return Ok(());
         }
         // A non-leaf `if (c) { then } else { else }` with straight-line bodies: the
@@ -4036,15 +4305,18 @@ impl Generator {
         // arms. Claim it before the broad leaf if/else owner lowers each arm
         // independently and loses those shared values.
         if self.try_symmetric_float_decay(function)? {
+            trace_owner("try_symmetric_float_decay");
             return Ok(());
         }
         if self.try_symmetric_float_decay_return(function)? {
+            trace_owner("try_symmetric_float_decay_return");
             return Ok(());
         }
         // A LEAF if/else diamond (both arms store) with a return continuation — the JOIN
         // (materialized return) and TWO-EXIT (return value already in r3) forms. See
         // body/if_else.rs.
         if self.try_leaf_ifelse_diamond(function)? {
+            trace_owner("try_leaf_ifelse_diamond");
             return Ok(());
         }
         // A non-leaf function led by `if (c) { …calls…; return X; }` with a
@@ -4052,12 +4324,14 @@ impl Generator {
         // test into the prologue, the early return materializes X and branches to a
         // SHARED epilogue, and the continuation falls into that same epilogue.
         if self.try_non_leaf_if_first_early_return(function)? {
+            trace_owner("try_non_leaf_if_first_early_return");
             return Ok(());
         }
         // A shared member-store value, narrow guard, and guarded call form one
         // measured scheduling region. It owns the linkage frame as well as the
         // statements, so claim it before the generic non-leaf prologue below.
         if self.try_leading_store_guarded_call(function)? {
+            trace_owner("try_leading_store_guarded_call");
             return Ok(());
         }
         // A function that calls is non-leaf: save the link register using the
@@ -4066,22 +4340,27 @@ impl Generator {
         if function_makes_call(function) || self.return_needs_float_to_unsigned_helper(function) {
             if !function.guards.is_empty() {
                 if self.try_call_result_member_callback_guard(function)? {
+                    trace_owner("try_call_result_member_callback_guard");
                     return Ok(());
                 }
                 // `if (call()) return C; ... return D;` — a sequence of
                 // call-tested constant exits sharing one LR-only epilogue.
                 if self.try_call_condition_return_chain(function)? {
+                    trace_owner("try_call_condition_return_chain");
                     return Ok(());
                 }
                 if self.try_float_call_short_circuit_guard(function)? {
+                    trace_owner("try_float_call_short_circuit_guard");
                     return Ok(());
                 }
                 // `if (b) return call(); return DEFAULT;` — a guarded early return
                 // whose value is a call (no callee-saved register needed).
                 if self.try_guarded_call_return(function)? {
+                    trace_owner("try_guarded_call_return");
                     return Ok(());
                 }
                 if self.try_callee_saved_structured_guard_body(function)? {
+                    trace_owner("try_callee_saved_structured_guard_body");
                     return Ok(());
                 }
                 return Err(Diagnostic::error(
@@ -4091,12 +4370,15 @@ impl Generator {
             // `while (n) { call(…n…); n--; }` — a counter kept in r31 across a
             // call-containing loop, updated in place.
             if self.try_virtual_collection_scan(function)? {
+                trace_owner("try_virtual_collection_scan");
                 return Ok(());
             }
             if self.try_indexed_member_call_store_loop(function)? {
+                trace_owner("try_indexed_member_call_store_loop");
                 return Ok(());
             }
             if self.try_callee_saved_call_loop(function)? {
+                trace_owner("try_callee_saved_call_loop");
                 return Ok(());
             }
             // (guard-less call handlers continue below)
@@ -4104,99 +4386,121 @@ impl Generator {
             // Runs before the general callee-saved path, which would otherwise emit the stores
             // through the raw (clobbered) argument registers and defer/miscompile.
             if self.try_stores_through_pointers(function)? {
+                trace_owner("try_stores_through_pointers");
                 return Ok(());
             }
             // `int t = gi; g(); return t;` — a memory-loaded local carried across calls in r31.
             if self.try_callee_saved_memory_local(function)? {
+                trace_owner("try_callee_saved_memory_local");
                 return Ok(());
             }
             // A guarded dirty-bit dispatcher, flush test, and fixed-width port writes. Three
             // parameters plus the dirty word survive calls in a linkage-first r28..r31 frame.
             if self.try_guarded_bitmask_call_sequence(function)? {
+                trace_owner("try_guarded_bitmask_call_sequence");
                 return Ok(());
             }
             // `flags = state->dirty; if (flags & A) callA(); ...; state->dirty = 0;` — one
             // memory-loaded bitmask retained in r31 across a chain of conditional SDK calls.
             if self.try_callee_saved_bitmask_call_chain(function)? {
+                trace_owner("try_callee_saved_bitmask_call_chain");
                 return Ok(());
             }
             // `F t = gf; if (!t) return; t();` — a guarded call through a global fn-pointer.
             if self.try_guarded_global_pointer_call(function)? {
+                trace_owner("try_guarded_global_pointer_call");
                 return Ok(());
             }
             // Parameters live across the call go in callee-saved registers (r31
             // descending), saved in the prologue and reloaded in the epilogue.
             if self.try_frsqrte_sqrt(function)? {
+                trace_owner("try_frsqrte_sqrt");
                 return Ok(());
             }
             if self.try_float_callee_saved(function)? {
+                trace_owner("try_float_callee_saved");
                 return Ok(());
             }
             if self.try_callee_saved(function)? {
+                trace_owner("try_callee_saved");
                 return Ok(());
             }
             if self.try_callee_saved_call_result(function)? {
+                trace_owner("try_callee_saved_call_result");
                 return Ok(());
             }
             // `int x = g(); int y = h(); return x OP y;` — two call-result locals with NO
             // trailing call: only the first parks in a callee-saved register, the second
             // stays in r3. See callee_saved/combine.rs.
             if self.try_callee_saved_two_call_result_combine(function)? {
+                trace_owner("try_callee_saved_two_call_result_combine");
                 return Ok(());
             }
             // `int x = g(a); return x OP a;` — a call-result local combined with the
             // parameter that crossed the call.
             if self.try_callee_saved_result_param_combine(function)? {
+                trace_owner("try_callee_saved_result_param_combine");
                 return Ok(());
             }
             // `int x = g(a); return x + a + b;` / `int x = g(a); int y = g(x);
             // return y + a + x;` — a call result added to TWO saved values: mwcc
             // reassociates, parking the result in r0 and combining the homes first.
             if self.try_callee_saved_result_park_combine(function)? {
+                trace_owner("try_callee_saved_result_park_combine");
                 return Ok(());
             }
             // `int x = <expr>; int y = g(x); return y OP x;` — a computed local
             // crossing the call that consumes it, combined with the result.
             if self.try_callee_saved_computed_then_call(function)? {
+                trace_owner("try_callee_saved_computed_then_call");
                 return Ok(());
             }
             // `*p = g();` — a call's result stored through a pointer parameter saved in r31.
             if self.try_store_call_through_pointer(function)? {
+                trace_owner("try_store_call_through_pointer");
                 return Ok(());
             }
             if self.try_callee_saved_computed_local(function)? {
+                trace_owner("try_callee_saved_computed_local");
                 return Ok(());
             }
             // A parameter passed to several calls in turn (`g(x); h(x);`) — saved in r31,
             // the first call uses the incoming register, later calls restore from r31.
             if self.try_callee_saved_call_args(function)? {
+                trace_owner("try_callee_saved_call_args");
                 return Ok(());
             }
             // `return f(...) + x;` — a live parameter combined with a call's result in the return.
             if self.try_callee_saved_call_combine(function)? {
+                trace_owner("try_callee_saved_call_combine");
                 return Ok(());
             }
             // `p(x); q(y);` — two params passed to two calls in turn; the later param is preserved.
             if self.try_callee_saved_call_sequence(function)? {
+                trace_owner("try_callee_saved_call_sequence");
                 return Ok(());
             }
             // `x = f(); g(x); h(x);` — a call result live across the calls that consume it.
             if self.try_callee_saved_result_call_sequence(function)? {
+                trace_owner("try_callee_saved_result_call_sequence");
                 return Ok(());
             }
             // `x = f(); g(<literals>); return x;` — a call result live across one call, returned.
             if self.try_callee_saved_result_across_call_return(function)? {
+                trace_owner("try_callee_saved_result_across_call_return");
                 return Ok(());
             }
             // `x = parameter->member; g(x, integer, float);` — a computed
             // local that dies as the first argument of its only call.
             if self.try_computed_local_call_forward(function)? {
+                trace_owner("try_computed_local_call_forward");
                 return Ok(());
             }
             // A producer result forwarded as the third argument of a trace-like
             // consumer dies at that call; stage it directly into r5 while the
             // consumer's split string address is in flight.
             if self.try_result_trace_forward_constant_return(function)? {
+                trace_owner("try_result_trace_forward_constant_return");
                 return Ok(());
             }
             // `x = f(parameters...); g(x, constants...);` — all parameters die
@@ -4204,38 +4508,47 @@ impl Generator {
             // needs a callee-saved home. The mixed GPR/FPR tail lives separately
             // from the older integer-only, parameterless result-feed schedule.
             if self.try_result_call_forward_with_live_ins(function)? {
+                trace_owner("try_result_call_forward_with_live_ins");
                 return Ok(());
             }
             // `x = f(); g(…, x, …);` void — the result feeds the next call and dies (no home).
             if self.try_result_feeds_call(function)? {
+                trace_owner("try_result_feeds_call");
                 return Ok(());
             }
             // `g(x); return x OP y;` — two params both live across one call, combined in the return.
             if self.try_callee_saved_param_pair_combine(function)? {
+                trace_owner("try_callee_saved_param_pair_combine");
                 return Ok(());
             }
             // `g(a); h(b); return a OP b;` — two params passed to two calls in turn, then combined.
             if self.try_callee_saved_call_sequence_combine(function)? {
+                trace_owner("try_callee_saved_call_sequence_combine");
                 return Ok(());
             }
             // `void f(int a){ g(); h(a); }` — one param live across leading bare calls, then passed.
             if self.try_callee_saved_param_across_calls(function)? {
+                trace_owner("try_callee_saved_param_across_calls");
                 return Ok(());
             }
             // `void f(struct S *s){ s->cb(7); }` — a bare indirect call with constant arguments,
             // through a memory-resident function pointer (the base collides with the first arg reg).
             if self.try_indirect_call_with_constant_args(function)? {
+                trace_owner("try_indirect_call_with_constant_args");
                 return Ok(());
             }
             // `h(g(), p)` — a live parameter passed alongside a nested call that produces another arg.
             if self.try_callee_saved_nested_call_arg(function)? {
+                trace_owner("try_callee_saved_nested_call_arg");
                 return Ok(());
             }
             // `return f() OP g();` — two call results combined in the return.
             if self.try_callee_saved_scaled_two_call_add(function)? {
+                trace_owner("try_callee_saved_scaled_two_call_add");
                 return Ok(());
             }
             if self.try_callee_saved_two_call_combine(function)? {
+                trace_owner("try_callee_saved_two_call_combine");
                 return Ok(());
             }
             // `if (status() == 0) { object->field = ...; call(); }` — the
@@ -4243,6 +4556,7 @@ impl Generator {
             // The semantic owner emits a virtual survivor and lets the shared
             // allocator choose its callee-saved home.
             if self.try_call_condition_live_in_if(function)? {
+                trace_owner("try_call_condition_live_in_if");
                 return Ok(());
             }
             // Byte-exact-or-defer: a value (parameter or register local) read after a
@@ -4252,61 +4566,72 @@ impl Generator {
             // `if (b) call(); return a;` — a value live across a CONDITIONAL call
             // (the #20/#21 intersection). Handled generally before the defer.
             if self.try_callee_saved_conditional_call(function)? {
+                trace_owner("try_callee_saved_conditional_call");
                 return Ok(());
             }
             // The void sibling: `if (cond) { calls } *p = <const>;` — the store's base
             // parameter is live across the conditional call. See callee_saved/conditional.rs.
             if self.try_callee_saved_conditional_call_then_store(function)? {
+                trace_owner("try_callee_saved_conditional_call_then_store");
                 return Ok(());
             }
             // `int x = G; call(); G2 = x;` — the first fully general-allocator
             // crossing shape (virtual home, callee-saved pool, frame builder).
             if self.try_callee_saved_global_round_trip(function)? {
+                trace_owner("try_callee_saved_global_round_trip");
                 return Ok(());
             }
             // SDK callback registrars: swap a callback global while interrupts
             // are disabled, returning the old callback. Both word values cross
             // calls and are colored by the virtual-register allocator.
             if self.try_interrupt_protected_global_swap(function)? {
+                trace_owner("try_interrupt_protected_global_swap");
                 return Ok(());
             }
             // `state=enter(); value=EXPR; leave(state); return value;` — r3
             // carries state while EXPR is parked in a callee-saved virtual.
             if self.try_computed_value_between_calls(function)? {
+                trace_owner("try_computed_value_between_calls");
                 return Ok(());
             }
             // `state=enter(); fixed_regs[k] = (fixed_regs[k]&mask)|param_bits; ...;
             // leave(state);` — saved parameters feed a latency-scheduled hardware-register
             // programming run while r3 retains the critical-section state.
             if self.try_interrupt_protected_fixed_rmw(function)? {
+                trace_owner("try_interrupt_protected_fixed_rmw");
                 return Ok(());
             }
             // Critical-section allocator bump: preserve an input and the old
             // global result while updating a pointer cursor and free count.
             if self.try_interrupt_protected_allocator_bump(function)? {
+                trace_owner("try_interrupt_protected_allocator_bump");
                 return Ok(());
             }
             // Build 163's asynchronous state callback interleaves its outer
             // condition with the linkage prologue and rejoins switch/retry arms.
             if self.try_async_state_callback(function)? {
+                trace_owner("try_async_state_callback");
                 return Ok(());
             }
             // A one-use asynchronous starter expanded into its synchronous
             // wait wrapper has a two-home transaction schedule: block/result
             // and interrupt token.
             if self.try_inlined_async_stream_wait(function)? {
+                trace_owner("try_inlined_async_stream_wait");
                 return Ok(());
             }
             // A retained-inline status helper nests a second interrupt token
             // inside the outer global-state query and reuses the selected
             // object home for the result.
             if self.try_inlined_nested_status_query(function)? {
+                trace_owner("try_inlined_nested_status_query");
                 return Ok(());
             }
             // SDK list walks which snapshot `next` before conditionally calling
             // on the current node. The successor is a genuine loop-carried
             // callee-saved value; keep this beside the other allocator owners.
             if self.try_pointer_state_call_loop(function)? {
+                trace_owner("try_pointer_state_call_loop");
                 return Ok(());
             }
             // Counted resource searches keep a status, counter, acquired
@@ -4314,14 +4639,17 @@ impl Generator {
             // With inline multiple saves, the allocator colors one dense GPR
             // region and this semantic owner emits the measured loop schedule.
             if self.try_counted_resource_search(function)? {
+                trace_owner("try_counted_resource_search");
                 return Ok(());
             }
             // A bounded byte-buffer append keeps its error, transfer length,
             // and buffer base in r31..r29 across the conditional copy call.
             if self.try_bounded_buffer_append(function)? {
+                trace_owner("try_bounded_buffer_append");
                 return Ok(());
             }
             if self.try_bounded_buffer_read(function)? {
+                trace_owner("try_bounded_buffer_read");
                 return Ok(());
             }
             // General structured body with values spanning conditional calls:
@@ -4331,6 +4659,7 @@ impl Generator {
             // first refusal: an unsupported statement can return a diagnostic
             // instead of merely declining the function.
             if self.try_callee_saved_structured_body(function)? {
+                trace_owner("try_callee_saved_structured_body");
                 return Ok(());
             }
             if reads_value_across_call(function) {
@@ -4345,47 +4674,57 @@ impl Generator {
         // A shared-value member-store run followed by a fixed-address pointer
         // clear has a measured cross-statement owner.
         if self.try_leading_store_guard(function)? {
+            trace_owner("try_leading_store_guard");
             return Ok(());
         }
         // A doubly-linked-list front insertion schedules the list null test
         // between the zero value and its member store.
         if self.try_leading_store_trailing_if(function)? {
+            trace_owner("try_leading_store_trailing_if");
             return Ok(());
         }
         // Shared zero stores, a bit-field merge/test, and its guarded
         // initialization tail form one register-liveness schedule.
         if self.try_leading_shared_zero_bitfield_guard(function)? {
+            trace_owner("try_leading_shared_zero_bitfield_guard");
             return Ok(());
         }
         // A two-sided member clamp retains one load and returns directly from
         // the lower arm instead of lowering the nested source ifs separately.
         if self.try_symmetric_float_clamp(function)? {
+            trace_owner("try_symmetric_float_clamp");
             return Ok(());
         }
         // Targeted member acceleration keeps the current value and pooled zero
         // live through both sign-specific overshoot checks.
         if self.try_member_acceleration_clamp(function)? {
+            trace_owner("try_member_acceleration_clamp");
             return Ok(());
         }
         if self.try_friction_limited_acceleration_clamp(function)? {
+            trace_owner("try_friction_limited_acceleration_clamp");
             return Ok(());
         }
         if self.try_member_float_friction_select(function)? {
+            trace_owner("try_member_float_friction_select");
             return Ok(());
         }
         // A one-use +/-1 float local selected from a member condition is an
         // ephemeral f0 value, not an ordinary allocated local.
         if self.try_sign_selected_member_store(function)? {
+            trace_owner("try_sign_selected_member_store");
             return Ok(());
         }
         // An in-place float update followed by a clamp is one scheduling
         // region: the optional bound negation fills the first member-load gap.
         if self.try_leading_float_update_clamp(function)? {
+            trace_owner("try_leading_float_update_clamp");
             return Ok(());
         }
         // A zero-denominator guard followed by a scaled float-to-index table
         // lookup owns the conversion spill frame and cross-arm address schedule.
         if self.try_guarded_float_table_index(function)? {
+            trace_owner("try_guarded_float_table_index");
             return Ok(());
         }
         // Residual stores followed by a guard share the structured CFG owner.
@@ -4459,6 +4798,7 @@ impl Generator {
         // Nested leaf diamonds use the same structured CFG emitter as framed
         // call-bearing bodies, but own no prologue or saved-register policy.
         if self.try_leaf_snapshot_guard_body(function)? || self.try_leaf_structured_body(function)? {
+            trace_owner("try_leaf_snapshot_guard_body");
             return Ok(());
         }
 
@@ -4811,6 +5151,7 @@ impl Generator {
                 }
                 self.account_folded_float_guard_labels(&guard.condition);
                 if self.try_legacy_tracked_guard_return(function, return_expression, result)? {
+                    trace_owner("try_legacy_tracked_guard_return");
                     return Ok(());
                 }
                 // A null-guarded dereference (`if (!p) return CONST; return *p;` or the mirror
@@ -5662,6 +6003,7 @@ impl Generator {
             // A cast after wide arithmetic is not an identity: it selects
             // the low word of the EABI pair before the scalar return path.
             if self.try_emit_truncated_wide_call_difference(operand, destination)? {
+                trace_owner("try_emit_truncated_wide_call_difference");
                 return Ok(());
             }
             let element = match operand.as_ref() {
@@ -5891,4 +6233,11 @@ fn is_single_short_circuit_call_if(function: &Function) -> bool {
             else_body,
         }
     ] if else_body.is_empty() && then_body.iter().any(statement_has_call))
+}
+
+/// `MWCC_TRACE_OWNER=1` reports which lowering owner claimed each function.
+pub(crate) fn trace_owner(owner: &str) {
+    if std::env::var_os("MWCC_TRACE_OWNER").is_some() {
+        eprintln!("mwcc-owner: {owner}");
+    }
 }

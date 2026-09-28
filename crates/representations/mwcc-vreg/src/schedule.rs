@@ -562,7 +562,15 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
                 }
                 Instruction::AddImmediate { a: 0, .. }
                 | Instruction::AddImmediateShifted { a: 0, .. } => true,
-                _ => false,
+                // Any other ready integer ALU operation on argument registers
+                // (`addi r3,r4,1`, `mulli`, `slwi`, `srawi`, `clrlwi`, `add`)
+                // fills the gap too. Memory and compare operations are
+                // barriers, and r0/r1 operands (the saved LR and `&local`
+                // frame addresses) stay behind the save.
+                ref other => {
+                    is_link_save_gap_operation(other)
+                        && !reads_run_result(other, &instructions[save + 1..save + 1 + run])
+                }
             }
         {
             run += 1;
@@ -607,6 +615,29 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
             }
         })
         .collect()
+}
+
+/// A general-register ALU operation that may issue in the `mflr`->`stw r0`
+/// latency gap: not a barrier or call, with every operand in r2 and above.
+fn is_link_save_gap_operation(instruction: &Instruction) -> bool {
+    if is_barrier(instruction) || instruction.is_call() {
+        return false;
+    }
+    let (defs, uses) = defs_and_uses(instruction);
+    !defs.is_empty()
+        && defs
+            .iter()
+            .chain(&uses)
+            .all(|&(class, register)| class == Class::General && register > 1)
+}
+
+/// Whether `instruction` consumes a value produced earlier in `run`: such an
+/// operation is not ready when the gap opens (`li r3,ga@sda; addi r3,r3,8`
+/// keeps the `addi` behind the save).
+fn reads_run_result(instruction: &Instruction, run: &[Instruction]) -> bool {
+    let (_, uses) = defs_and_uses(instruction);
+    run.iter()
+        .any(|earlier| defs_and_uses(earlier).0.iter().any(|def| uses.contains(def)))
 }
 
 /// Whether an instruction reads or writes general register r0 (the scratch).

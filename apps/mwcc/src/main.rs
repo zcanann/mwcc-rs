@@ -650,10 +650,13 @@ fn main() -> ExitCode {
         .and_then(|name| name.to_str())
         .unwrap_or(&input);
 
-    let config = mwcc_versions::CompilerConfig {
-        build,
-        flags: invocation.flags,
-    };
+    let mut flags = invocation.flags;
+    // The 4.x generation (GC/3.0a3 onward, Wii) always packs read-only string
+    // literals into `@stringBase0`; `-str nopool` does not undo it there.
+    if build.version.0 >= 4 && flags.string_literals_read_only {
+        flags.string_literals_packed = true;
+    }
+    let config = mwcc_versions::CompilerConfig { build, flags };
     match compile(
         &source,
         source_name,
@@ -2953,10 +2956,21 @@ fn compile(
         // placeholder section the EABI minimum word alignment.
         4
     } else {
-        config
-            .flags
-            .function_alignment
-            .unwrap_or(u32::from(config.build.code_alignment))
+        config.flags.function_alignment.unwrap_or_else(|| {
+            use mwcc_versions::Optimization;
+            // Wii/1.0 widens function alignment to 16 only at -O0 and -O4;
+            // the intermediate levels keep the EABI word alignment.
+            if config.build.code_alignment > 4
+                && matches!(
+                    config.flags.optimization,
+                    Optimization::O1 | Optimization::O2 | Optimization::O3
+                )
+            {
+                4
+            } else {
+                u32::from(config.build.code_alignment)
+            }
+        })
     };
     let object_format = mwcc_machine_code_to_object::ObjectFormat {
         comment: mwcc_machine_code_to_object::CommentFormat {

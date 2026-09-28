@@ -875,6 +875,7 @@ impl Generator {
             destination,
             float_result,
         )? {
+            crate::body::trace_owner("try_emit_jgeometry_float_utility");
             return Ok(());
         }
         if let Some(fragment) = self.inline_bodies.asm_fragment(name) {
@@ -1122,12 +1123,15 @@ impl Generator {
     ) -> Compilation<()> {
         self.transient_global_index_base = None;
         if self.try_emit_structured_aggregate_copy_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_structured_aggregate_copy_arguments");
             return Ok(());
         }
         if self.try_emit_fixed_clock_wide_callback_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_fixed_clock_wide_callback_arguments");
             return Ok(());
         }
         if self.try_emit_paired_indexed_float_to_unsigned_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_paired_indexed_float_to_unsigned_arguments");
             return Ok(());
         }
         // A CALL in a non-first argument clobbers the argument registers already holding earlier
@@ -1140,51 +1144,66 @@ impl Generator {
         if self
             .try_emit_reloadable_general_prefix_call_bearing_float_tail_arguments(arguments, name)?
         {
+            crate::body::trace_owner("try_emit_reloadable_general_prefix_call_bearing_float_tail_arguments");
             return Ok(());
         }
         if self.try_emit_call_bearing_first_float_with_reloadable_suffix_arguments(
             arguments,
             name,
         )? {
+            crate::body::trace_owner("try_emit_call_bearing_first_float_with_reloadable_suffix_arguments");
             return Ok(());
         }
         if self.try_emit_reloadable_first_nested_second_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_reloadable_first_nested_second_arguments");
             return Ok(());
         }
         if self.try_emit_global_array_string_call_offset_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_global_array_string_call_offset_arguments");
             return Ok(());
         }
         if self.try_emit_nested_general_argument_with_reloadable_siblings(arguments, name)? {
+            crate::body::trace_owner("try_emit_nested_general_argument_with_reloadable_siblings");
             return Ok(());
         }
         if self.try_emit_frame_array_string_nested_tail_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_frame_array_string_nested_tail_arguments");
             return Ok(());
         }
         if self.try_emit_global_array_string_nested_tail_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_global_array_string_nested_tail_arguments");
             return Ok(());
         }
         if self.try_emit_global_array_string_global_word_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_global_array_string_global_word_arguments");
             return Ok(());
         }
         if self.try_emit_global_array_string_global_byte_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_global_array_string_global_byte_arguments");
             return Ok(());
         }
         if self.try_emit_shared_global_pointer_member_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_shared_global_pointer_member_arguments");
             return Ok(());
         }
         if self.try_emit_shared_word_array_triplet_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_shared_word_array_triplet_arguments");
             return Ok(());
         }
         if self.try_emit_constant_global_array_constant_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_constant_global_array_constant_arguments");
             return Ok(());
         }
         if self.try_emit_global_array_constant_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_global_array_constant_arguments");
             return Ok(());
         }
         if self.try_emit_global_array_string_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_global_array_string_arguments");
             return Ok(());
         }
         if self.try_emit_global_array_string_constant_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_global_array_string_constant_arguments");
             return Ok(());
         }
         // Two floating arguments use an independent FPR sequence. When the
@@ -1281,6 +1300,7 @@ impl Generator {
             }
         }
         if self.try_nested_word_arguments(arguments, name)? {
+            crate::body::trace_owner("try_nested_word_arguments");
             return Ok(());
         }
         if arguments.iter().skip(1).any(expression_has_call) {
@@ -1309,39 +1329,51 @@ impl Generator {
         }
         let direct_call = !self.globals.contains_key(name) && !self.locations.contains_key(name);
         if self.try_emit_string_and_endangered_word_arguments(arguments, direct_call)? {
+            crate::body::trace_owner("try_emit_string_and_endangered_word_arguments");
             return Ok(());
         }
         if self.try_emit_repeated_member_add_arguments(arguments, direct_call)? {
+            crate::body::trace_owner("try_emit_repeated_member_add_arguments");
             return Ok(());
         }
         if self.try_emit_split_callback_tail_arguments(arguments, name, direct_call)? {
+            crate::body::trace_owner("try_emit_split_callback_tail_arguments");
             return Ok(());
         }
         if self.try_emit_global_chained_member_constant_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_global_chained_member_constant_arguments");
             return Ok(());
         }
         if self.try_emit_saved_float_tail_arguments(arguments, name, direct_call)? {
+            crate::body::trace_owner("try_emit_saved_float_tail_arguments");
             return Ok(());
         }
         if self.try_emit_reverse_indexed_address_tail_arguments(arguments, name, direct_call)? {
+            crate::body::trace_owner("try_emit_reverse_indexed_address_tail_arguments");
             return Ok(());
         }
         if self.try_emit_member_and_located_float_product_arguments(arguments, name, direct_call)? {
+            crate::body::trace_owner("try_emit_member_and_located_float_product_arguments");
             return Ok(());
         }
         if self.try_emit_mixed_string_line_arguments(arguments, direct_call)? {
+            crate::body::trace_owner("try_emit_mixed_string_line_arguments");
             return Ok(());
         }
         if self.try_emit_large_string_line_arguments(arguments, direct_call)? {
+            crate::body::trace_owner("try_emit_large_string_line_arguments");
             return Ok(());
         }
         if self.try_emit_interleaved_member_float_forward_arguments(arguments, name, direct_call)? {
+            crate::body::trace_owner("try_emit_interleaved_member_float_forward_arguments");
             return Ok(());
         }
         if self.try_emit_member_prefixed_float_shift_arguments(arguments, name, direct_call)? {
+            crate::body::trace_owner("try_emit_member_prefixed_float_shift_arguments");
             return Ok(());
         }
         if self.try_emit_member_float_abs_arguments(arguments, name, direct_call)? {
+            crate::body::trace_owner("try_emit_member_float_abs_arguments");
             return Ok(());
         }
         // With packed `@stringBaseN` literals, MWCC schedules the complete
@@ -1367,18 +1399,23 @@ impl Generator {
             return Ok(());
         }
         if self.try_emit_global_member_and_endangered_member_address(arguments, direct_call)? {
+            crate::body::trace_owner("try_emit_global_member_and_endangered_member_address");
             return Ok(());
         }
         if self.try_emit_shared_base_bitfield_arguments(arguments, direct_call)? {
+            crate::body::trace_owner("try_emit_shared_base_bitfield_arguments");
             return Ok(());
         }
         if self.try_emit_same_base_member_forward_arguments(arguments, direct_call)? {
+            crate::body::trace_owner("try_emit_same_base_member_forward_arguments");
             return Ok(());
         }
         if self.try_emit_member_constant_arguments(arguments, name, direct_call)? {
+            crate::body::trace_owner("try_emit_member_constant_arguments");
             return Ok(());
         }
         if self.try_emit_saved_global_constant_arguments(arguments, name, direct_call)? {
+            crate::body::trace_owner("try_emit_saved_global_constant_arguments");
             return Ok(());
         }
         if self.try_emit_scaled_global_global_constant_arguments(
@@ -1386,15 +1423,19 @@ impl Generator {
             name,
             direct_call,
         )? {
+            crate::body::trace_owner("try_emit_scaled_global_global_constant_arguments");
             return Ok(());
         }
         if self.try_emit_two_leaf_general_argument_swap(arguments, name, direct_call)? {
+            crate::body::trace_owner("try_emit_two_leaf_general_argument_swap");
             return Ok(());
         }
         if self.try_emit_dependency_ordered_general_arguments(arguments, name, direct_call)? {
+            crate::body::trace_owner("try_emit_dependency_ordered_general_arguments");
             return Ok(());
         }
         if self.try_emit_leaf_general_argument_permutation(arguments, name, direct_call)? {
+            crate::body::trace_owner("try_emit_leaf_general_argument_permutation");
             return Ok(());
         }
         if self.try_emit_global_pointer_address_constant_arguments(
@@ -1402,6 +1443,7 @@ impl Generator {
             name,
             direct_call,
         )? {
+            crate::body::trace_owner("try_emit_global_pointer_address_constant_arguments");
             return Ok(());
         }
         // A CONSTANT argument that follows a GLOBAL-LOAD argument: mwcc materializes
@@ -1481,9 +1523,11 @@ impl Generator {
             }
             if constant_after_global {
                 if self.try_emit_unscheduled_global_constant_arguments(arguments, direct_call)? {
+                    crate::body::trace_owner("try_emit_unscheduled_global_constant_arguments");
                     return Ok(());
                 }
                 if self.try_emit_absolute_short_global_constant_arguments(arguments, direct_call)? {
+                    crate::body::trace_owner("try_emit_absolute_short_global_constant_arguments");
                     return Ok(());
                 }
                 let mut global_argument: Option<(usize, String)> = None;
@@ -1753,6 +1797,7 @@ impl Generator {
             }
         }
         if self.try_emit_dependent_word_arguments(arguments, name)? {
+            crate::body::trace_owner("try_emit_dependent_word_arguments");
             return Ok(());
         }
         let by_value_aggregate_call =

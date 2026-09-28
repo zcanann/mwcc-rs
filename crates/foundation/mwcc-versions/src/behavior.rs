@@ -1050,8 +1050,8 @@ pub struct Behavior {
     pub contract_floating_point: bool,
     /// Whether optimized negative sums/products use the 2.x algebraic forms.
     pub simplify_negated_float_arithmetic: bool,
-    /// Whether whole-file IPA may replace a terminal call/return with a sibling
-    /// branch after marshaling its arguments.
+    /// Whether a terminal call/return may become a sibling branch after
+    /// marshaling its arguments: whole-file IPA, or the 4.x optimizer at -O2+.
     pub tail_call_optimization: bool,
     /// Whether the 4.x optimizer at `-O2` or higher turns a terminal indirect
     /// call into an unlinked `bctr` sibling call without requiring whole-file
@@ -1710,7 +1710,11 @@ impl Behavior {
             contract_floating_point: config.flags.fp_contract,
             simplify_negated_float_arithmetic: config.flags.optimization != Optimization::O0
                 && config.build.profile.simplify_negated_float_arithmetic(),
-            tail_call_optimization: config.flags.whole_file_optimization_enabled(),
+            // The 4.x optimizer emits direct sibling calls from -O2 upward
+            // even without whole-file IPA; older builds need `-ipa file`.
+            tail_call_optimization: config.flags.whole_file_optimization_enabled()
+                || (config.build.profile.terminal_indirect_tail_call()
+                    && config.flags.optimization >= Optimization::O2),
             terminal_indirect_tail_call: config.build.profile.terminal_indirect_tail_call()
                 && config.flags.optimization >= Optimization::O2,
         }
