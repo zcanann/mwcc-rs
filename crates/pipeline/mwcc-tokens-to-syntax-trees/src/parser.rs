@@ -5,6 +5,7 @@ use mwcc_syntax_trees::{BinaryOperator, Pointee, SourceFundamentalType, Type};
 use mwcc_tokens::{SourceLocation, Token};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+pub(crate) use crate::shared::Shared;
 
 #[derive(Clone)]
 pub(crate) struct PragmaState {
@@ -312,25 +313,25 @@ pub(crate) struct Parser {
     pub(crate) anonymous_aggregate_definition_label_weight: u8,
     pub(crate) nested_anonymous_aggregate_definition_label_weight: u8,
     /// Declared struct layouts, by tag name.
-    pub(crate) structs: HashMap<String, StructLayout>,
+    pub(crate) structs: Shared<HashMap<String, StructLayout>>,
     /// Unambiguous storage extents proven by generated
     /// `STATIC_ASSERT(sizeof(T) == N)` declarations. These remain separate
     /// from full layouts: they can place an opaque value/base without inventing
     /// fields or leaking a synthetic definition into debug information.
-    pub(crate) asserted_aggregate_sizes: HashMap<String, u32>,
+    pub(crate) asserted_aggregate_sizes: Shared<HashMap<String, u32>>,
     /// Integral constants declared in the C++ class layout currently being
     /// recovered. They are scoped independently from ordinary enum constants
     /// so an unrelated class cannot satisfy an array extent by name alone.
-    pub(crate) cxx_layout_constants: HashMap<String, i64>,
+    pub(crate) cxx_layout_constants: Shared<HashMap<String, i64>>,
     /// C++-specific base and declaration-order information for class layouts.
     pub(crate) cxx_classes: Arc<HashMap<String, crate::cxx::ClassLayout>>,
     /// Fully-qualified C++ class names in first definition order. Late vtable
     /// ownership follows destructor definitions, but ABI helper emission uses
     /// this original class declaration order.
-    pub(crate) cxx_class_declaration_order: Vec<String>,
+    pub(crate) cxx_class_declaration_order: Shared<Vec<String>>,
     /// Single-parameter C++ struct templates whose instance fields can be laid
     /// out when a concrete typedef such as `Vector3<float>` is encountered.
-    pub(crate) struct_templates: HashMap<String, StructTemplate>,
+    pub(crate) struct_templates: Shared<HashMap<String, StructTemplate>>,
     /// Active concrete template-layout keys. Layout recovery is recursive for
     /// nested value members and bases, so malformed or incompletely recovered
     /// cycles must resolve to "layout unavailable" instead of overflowing the
@@ -339,7 +340,7 @@ pub(crate) struct Parser {
     /// `(template class, member)` pairs defined inside a template body. An
     /// out-of-class concrete specialization of one of these remains inline and
     /// emits no code unless used; a merely declared member's specialization does.
-    pub(crate) inline_template_members: std::collections::HashSet<(String, String)>,
+    pub(crate) inline_template_members: Shared<std::collections::HashSet<(String, String)>>,
     /// Arithmetic static member signatures recovered from primary-template
     /// bodies. Concrete typedefs substitute their scalar template argument at
     /// a call site without pretending the primary template emitted code.
@@ -347,10 +348,10 @@ pub(crate) struct Parser {
         HashMap<(String, String), Vec<TemplateStaticMethod>>,
     /// Native anonymous-label cost of each inline primary-template member body,
     /// keyed by `(primary template, ABI member name)`.
-    pub(crate) inline_template_member_control_flow_labels: HashMap<(String, String), usize>,
+    pub(crate) inline_template_member_control_flow_labels: Shared<HashMap<(String, String), usize>>,
     /// Concrete `(specialization, member)` instantiations already charged to
     /// the frontend analysis stream.
-    pub(crate) instantiated_inline_template_members: std::collections::HashSet<(String, String)>,
+    pub(crate) instantiated_inline_template_members: Shared<std::collections::HashSet<(String, String)>>,
     /// Single-return field accessors recovered from primary-template bodies,
     /// keyed by `(template, ABI member name, explicit arity)`. These summaries
     /// let callable objects and ordinary trivial accessors inline after a
@@ -367,37 +368,37 @@ pub(crate) struct Parser {
     /// Primary templates whose nested iterator has a source-proven
     /// `operator->` that subtracts one non-type offset argument from its node
     /// pointer. Value: `(nested iterator name, element arg, offset arg)`.
-    pub(crate) template_iterator_arrow_summaries: HashMap<String, TemplateIteratorArrowSummary>,
+    pub(crate) template_iterator_arrow_summaries: Shared<HashMap<String, TemplateIteratorArrowSummary>>,
     /// Concrete iterator identity -> `(element aggregate, node offset,
     /// pointer-storage offset)`.
-    pub(crate) concrete_template_iterator_arrows: HashMap<String, ConcreteIteratorArrow>,
+    pub(crate) concrete_template_iterator_arrows: Shared<HashMap<String, ConcreteIteratorArrow>>,
     /// Primary template -> nested iterator whose prefix increment is a
     /// source-proven forwarding step.
-    pub(crate) template_iterator_step_summaries: HashMap<String, Vec<String>>,
+    pub(crate) template_iterator_step_summaries: Shared<HashMap<String, Vec<String>>>,
     /// Concrete iterator identity -> `(pointer-storage offset, next-link
     /// offset)`. These facts are attached to postfix syntax without erasing
     /// its old-value result.
-    pub(crate) concrete_template_iterator_steps: HashMap<String, (u32, u32)>,
+    pub(crate) concrete_template_iterator_steps: Shared<HashMap<String, (u32, u32)>>,
     /// `(aggregate, zero-argument member)` -> returned pointer-field offset.
-    pub(crate) source_pointer_accessors: HashMap<(String, String), u32>,
+    pub(crate) source_pointer_accessors: Shared<HashMap<(String, String), u32>>,
     /// `(aggregate, zero-argument member)` -> exact one-word iterator endpoint
     /// construction recovered from the method body.
     pub(crate) source_iterator_endpoints:
         HashMap<(String, String), crate::iterator_semantics::IteratorEndpoint>,
     /// Iterator aggregate -> `(pointer-storage offset, next-link offset)` for
     /// an exact `storage = storage->accessor(); return *this;` prefix step.
-    pub(crate) source_iterator_pointer_steps: HashMap<String, (u32, u32)>,
+    pub(crate) source_iterator_pointer_steps: Shared<HashMap<String, (u32, u32)>>,
     /// One-word iterator wrapper -> aggregate-field offset for an exact
     /// `++field; return *this;` prefix step.
-    pub(crate) source_iterator_step_forwarders: HashMap<String, u32>,
+    pub(crate) source_iterator_step_forwarders: Shared<HashMap<String, u32>>,
     /// Iterator aggregate -> field offset for an exact friend equality body
     /// `return lhs.field == rhs.field;`.
-    pub(crate) source_iterator_equality_fields: HashMap<String, u32>,
+    pub(crate) source_iterator_equality_fields: Shared<HashMap<String, u32>>,
     /// Iterator aggregates whose friend inequality body is exactly
     /// `return !(lhs == rhs);`.
-    pub(crate) source_iterator_inequalities: std::collections::HashSet<String>,
+    pub(crate) source_iterator_inequalities: Shared<std::collections::HashSet<String>>,
     /// Primary template -> nested iterator with source-proven equality.
-    pub(crate) template_iterator_comparison_summaries: HashMap<String, Vec<String>>,
+    pub(crate) template_iterator_comparison_summaries: Shared<HashMap<String, Vec<String>>>,
     /// Concrete iterator identity -> its source-proven pointer comparison.
     pub(crate) concrete_template_iterator_comparisons:
         HashMap<String, crate::iterator_semantics::IteratorComparison>,
@@ -405,19 +406,19 @@ pub(crate) struct Parser {
     /// entry maps a concrete field to the constructor argument copied into it;
     /// value construction is admitted only when the summary covers the entire
     /// instantiated aggregate.
-    pub(crate) template_value_constructors: HashMap<(String, usize), Vec<(String, usize)>>,
+    pub(crate) template_value_constructors: Shared<HashMap<(String, usize), Vec<(String, usize)>>>,
     /// Empty classes declared directly inside a primary class template. Their
     /// value construction has no runtime payload, but remains semantically
     /// distinct from a static member call during expression parsing.
-    pub(crate) empty_nested_template_types: std::collections::HashSet<(String, String)>,
+    pub(crate) empty_nested_template_types: Shared<std::collections::HashSet<(String, String)>>,
     /// Fully-qualified `(class, member)` pairs declared `inline` in a skipped
     /// C++ aggregate body. A later out-of-class definition inherits that
     /// declaration's inline semantics even when it does not repeat `inline`.
-    pub(crate) inline_cxx_members: std::collections::HashSet<(String, String)>,
+    pub(crate) inline_cxx_members: Shared<std::collections::HashSet<(String, String)>>,
     /// Simple in-class virtual bodies whose symbols are referenced by an
     /// emitted vtable. They are appended after ordinary definitions so
     /// deferred-inlining order places their weak out-of-line copies first.
-    pub(crate) cxx_inline_materializations: Vec<mwcc_syntax_trees::Function>,
+    pub(crate) cxx_inline_materializations: Shared<Vec<mwcc_syntax_trees::Function>>,
     /// Physical source provenance for materialized in-class bodies, keyed by
     /// their emitted ABI name. The recovery parser already computes this map;
     /// retaining it lets debug lowering describe compiler-emitted weak bodies.
@@ -426,15 +427,15 @@ pub(crate) struct Parser {
     /// Inline virtual bodies requested by calls in the function currently
     /// being parsed. MWCC emits their weak fallback bodies immediately after
     /// that first caller, rather than at the declaration's header position.
-    pub(crate) cxx_inline_materialization_requests: Vec<String>,
+    pub(crate) cxx_inline_materialization_requests: Shared<Vec<String>>,
     /// Static classes whose inline deleting destructors are ODR-used by a
     /// virtual `delete`. These are ordered separately from ordinary inline
     /// virtual calls because MWCC emits the destructor set in reverse class
     /// declaration order after the caller.
-    pub(crate) cxx_inline_destructor_requests: Vec<String>,
+    pub(crate) cxx_inline_destructor_requests: Shared<Vec<String>>,
     /// Inline template members whose calls were consumed by expansion but for
     /// which MWCC still emits a weak out-of-line fallback in the deferred tail.
-    pub(crate) cxx_deferred_weak_materialization_requests: Vec<String>,
+    pub(crate) cxx_deferred_weak_materialization_requests: Shared<Vec<String>>,
     /// Static class-member overloads recovered from aggregate declarations,
     /// keyed by fully-qualified `(class, member)` name. Calls carry no implicit
     /// `this`, but still require CodeWarrior member-function mangling.
@@ -442,10 +443,10 @@ pub(crate) struct Parser {
         Arc<HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>>,
     /// Class-specific scalar deallocation functions, preserving whether the
     /// explicit object-size argument belongs in deleting-destructor calls.
-    pub(crate) cxx_class_deletes: HashMap<String, (String, usize)>,
+    pub(crate) cxx_class_deletes: Shared<HashMap<String, (String, usize)>>,
     /// ABI names of member declarations recovered outside the ordinary
     /// prototype grammar (currently destructors and class-specific delete).
-    pub(crate) cxx_declared_function_names: std::collections::HashSet<String>,
+    pub(crate) cxx_declared_function_names: Shared<std::collections::HashSet<String>>,
     /// Constructor overloads recovered independently of object layout. Large
     /// headers may contain unsupported unrelated methods while their constructor
     /// signatures and inline bodies remain fully usable.
@@ -467,7 +468,7 @@ pub(crate) struct Parser {
     /// Declaration-only single-primary-base relationships. This is deliberately
     /// independent of class layout: large headers can preserve safe zero-offset
     /// base qualification even when their fields cannot yet be recovered.
-    pub(crate) cxx_primary_bases: HashMap<String, String>,
+    pub(crate) cxx_primary_bases: Shared<HashMap<String, String>>,
     /// Fully qualified declaration identity of the member body being parsed.
     /// Keep this separate from `current_member_scope`: that legacy scope is a
     /// recovered-layout key and may intentionally be only the terminal class
@@ -481,22 +482,22 @@ pub(crate) struct Parser {
     /// template they invoke.  This is declaration recovery, not a general
     /// template instantiator: a call is lowered only when a matching concrete
     /// helper specialization has also been recovered.
-    pub(crate) cxx_member_template_forwarders: HashMap<(String, String), String>,
+    pub(crate) cxx_member_template_forwarders: Shared<HashMap<(String, String), String>>,
     /// Concrete helper-template specializations recovered as direct instance
     /// method calls: helper -> `(template argument, owner class, member)`.
     /// A vector preserves ambiguity instead of allowing source order to choose.
-    pub(crate) cxx_template_forwarder_specializations: HashMap<String, Vec<(Type, String, String)>>,
+    pub(crate) cxx_template_forwarder_specializations: Shared<HashMap<String, Vec<(Type, String, String)>>>,
     /// Recovered primary virtual tables, including inherited entries. Keeping
     /// ABI slot state separate from object layout lets calls through opaque
     /// header-only class declarations resolve without pretending their fields
     /// were parsed.
-    pub(crate) cxx_dispatch_tables: HashMap<String, crate::cxx::RecoveredCxxDispatchTable>,
+    pub(crate) cxx_dispatch_tables: Shared<HashMap<String, crate::cxx::RecoveredCxxDispatchTable>>,
     /// Classes known from their declarations to have a virtual destructor.
     /// Kept separate from recoverable layout so implicit derived declarations
     /// remain observable even when a large header's object layout defers.
-    pub(crate) cxx_virtual_destructor_classes: std::collections::HashSet<String>,
+    pub(crate) cxx_virtual_destructor_classes: Shared<std::collections::HashSet<String>>,
     /// Nested-class token positions already visited by RTTI syntax accounting.
-    pub(crate) counted_nested_virtual_positions: std::collections::HashSet<usize>,
+    pub(crate) counted_nested_virtual_positions: Shared<std::collections::HashSet<usize>>,
     /// Virtual slots declared by primary class templates whose zero-offset
     /// vptr is provable without instantiating a concrete object layout.
     pub(crate) cxx_template_virtual_methods:
@@ -510,117 +511,117 @@ pub(crate) struct Parser {
     /// Concrete template typedef alias -> primary template name. This is kept
     /// separately from layout aliases because nested/multi-argument templates
     /// may be opaque for layout while still carrying inline-member semantics.
-    pub(crate) template_aliases: HashMap<String, String>,
+    pub(crate) template_aliases: Shared<HashMap<String, String>>,
     /// Scalar argument of a simple concrete template typedef, keyed by both
     /// its source and namespace-qualified aliases.
-    pub(crate) template_alias_scalar_arguments: HashMap<String, Type>,
+    pub(crate) template_alias_scalar_arguments: Shared<HashMap<String, Type>>,
     /// In-scope variables that are struct pointers, mapped to their struct tag,
     /// so `variable->field` resolves to the right layout.
-    pub(crate) variable_structs: HashMap<String, String>,
+    pub(crate) variable_structs: Shared<HashMap<String, String>>,
     /// Function-scoped C++ reference parameters. Their EABI storage is a
     /// pointer, but an unadorned use is the referenced aggregate value. This
     /// distinction prevents ordinary `T*` assignments from entering aggregate
     /// field-copy scalarization while preserving `T const&` setters.
-    pub(crate) cxx_reference_variables: std::collections::HashSet<String>,
+    pub(crate) cxx_reference_variables: Shared<std::collections::HashSet<String>>,
     /// Aggregate source objects passed through an implicit EABI pointer. Their
     /// explicit address is the incoming pointer, unlike a declared pointer parameter.
-    pub(crate) aggregate_value_parameters: std::collections::HashSet<String>,
+    pub(crate) aggregate_value_parameters: Shared<std::collections::HashSet<String>>,
     /// Scalar subset of `cxx_reference_variables`, retaining the referenced
     /// value type after the executable parameter has become an ABI pointer.
     /// Bare uses are lvalues loaded and stored through that pointer; aggregate
     /// references keep their existing struct-aware representation.
-    pub(crate) cxx_scalar_reference_pointees: HashMap<String, Pointee>,
+    pub(crate) cxx_scalar_reference_pointees: Shared<HashMap<String, Pointee>>,
     /// Function-scoped aggregate objects whose source declaration makes the
     /// reached object const (`T const&`, `T const*`, or a const aggregate
     /// value). Executable pointer types erase this qualification.
-    pub(crate) cxx_const_object_variables: std::collections::HashSet<String>,
+    pub(crate) cxx_const_object_variables: Shared<std::collections::HashSet<String>>,
     /// Functions that RETURN a struct pointer, mapped to the pointee's struct tag,
     /// so `get()->field` resolves the returned pointer's layout (populated when a
     /// `struct S *get(...)` prototype/definition is parsed).
-    pub(crate) function_return_structs: HashMap<String, String>,
+    pub(crate) function_return_structs: Shared<HashMap<String, String>>,
     /// Source scalar return identity keyed by final emitted function name.
-    pub(crate) function_return_fundamentals: HashMap<String, SourceFundamentalType>,
-    pub(crate) function_source_names: HashMap<String, String>,
+    pub(crate) function_return_fundamentals: Shared<HashMap<String, SourceFundamentalType>>,
+    pub(crate) function_source_names: Shared<HashMap<String, String>>,
     pub(crate) function_parameter_fundamentals:
         HashMap<(String, String), SourceFundamentalType>,
-    pub(crate) function_nonvolatile_pointer_bindings: HashSet<(String, String)>,
-    pub(crate) volatile_pointer_cast_functions: HashSet<String>,
-    pub(crate) function_parameter_pointee_const: HashSet<(String, String)>,
+    pub(crate) function_nonvolatile_pointer_bindings: Shared<HashSet<(String, String)>>,
+    pub(crate) volatile_pointer_cast_functions: Shared<HashSet<String>>,
+    pub(crate) function_parameter_pointee_const: Shared<HashSet<(String, String)>>,
     pub(crate) function_local_fundamentals:
         HashMap<(String, String), SourceFundamentalType>,
-    pub(crate) function_local_pointee_const: HashSet<(String, String)>,
-    pub(crate) current_variable_reference_sites: HashMap<String, HashSet<usize>>,
-    pub(crate) function_variable_reference_counts: HashMap<String, HashMap<String, usize>>,
+    pub(crate) function_local_pointee_const: Shared<HashSet<(String, String)>>,
+    pub(crate) current_variable_reference_sites: Shared<HashMap<String, HashSet<usize>>>,
+    pub(crate) function_variable_reference_counts: Shared<HashMap<String, HashMap<String, usize>>>,
     pub(crate) current_debug_function_name: Option<String>,
     /// Fixed-address globals declared with `AT_ADDRESS` (`Type Name : addr;` — mwcc's `: (addr)`
     /// placement): name -> (address, cast-target POINTER type, struct/union tag). A reference to one
     /// desugars to a const-address deref `*(cast-target)addr` at its use site — a `StructPointer`
     /// for an aggregate (the GX write-gather FIFO `GXWGFifo.u32 = v`, member access via the const-
     /// address path) or a scalar `Pointer` (a hardware register like `__OSBusClock`, direct load/store).
-    pub(crate) fixed_address_globals: HashMap<String, (i64, Type, Option<String>)>,
+    pub(crate) fixed_address_globals: Shared<HashMap<String, (i64, Type, Option<String>)>>,
     /// Fixed-address ARRAY globals (`vu32 __EXIRegs[16] : 0xCC006800;`): name -> (address, element
     /// type). Unlike a scalar/aggregate placement, an array is NOT desugared to a const-address cast
     /// (whose subscript folds differently than mwcc's array `lis; addi; lwzx`); the name stays a
     /// variable and this map is handed to codegen, which lays out the array-form subscript.
-    pub(crate) fixed_address_arrays: HashMap<String, (i64, Type)>,
+    pub(crate) fixed_address_arrays: Shared<HashMap<String, (i64, Type)>>,
     /// Struct-typed GLOBALS by name -> struct tag (`extern FILE_TABLE __files;`),
     /// so `&__files._stdout` in an initializer resolves its member offset.
-    pub(crate) global_structs: HashMap<String, String>,
+    pub(crate) global_structs: Shared<HashMap<String, String>>,
     /// Declaration-only signatures for file-scope function-pointer objects.
-    pub(crate) global_function_types: HashMap<String, mwcc_syntax_trees::SourceFunctionType>,
+    pub(crate) global_function_types: Shared<HashMap<String, mwcc_syntax_trees::SourceFunctionType>>,
     pub(crate) function_variable_function_types:
         HashMap<(String, String), mwcc_syntax_trees::SourceFunctionType>,
     /// Function/parameter source aggregate identities retained for debug-info
     /// lowering after the executable type has collapsed to a sized pointer.
-    pub(crate) function_parameter_structs: HashMap<(String, String), String>,
+    pub(crate) function_parameter_structs: Shared<HashMap<(String, String), String>>,
     /// Function/local source aggregate identities retained for debug-info
     /// lowering after executable lowering keeps only size and alignment.
-    pub(crate) function_local_structs: HashMap<(String, String), String>,
+    pub(crate) function_local_structs: Shared<HashMap<(String, String), String>>,
     /// In-scope variables (parameters and scalar locals) mapped to their declared type, so
     /// `sizeof(var)` folds to a constant. Cleared per function in `function_body`.
-    pub(crate) variable_types: HashMap<String, Type>,
+    pub(crate) variable_types: Shared<HashMap<String, Type>>,
     /// Local array variables mapped to their total byte size (element size * length), so
     /// `sizeof(arr)` folds to a constant. Cleared per function.
-    pub(crate) variable_array_bytes: HashMap<String, u32>,
+    pub(crate) variable_array_bytes: Shared<HashMap<String, u32>>,
     /// File-scope variables mapped to `(total byte size, array element size)`, so `sizeof(g)`
     /// (total) and `sizeof(g[0])` (element) fold to constants. The element size is `Some` ONLY
     /// for an ARRAY global — for a pointer global `sizeof(*p)`/`sizeof(p[0])` wants the pointee,
     /// not the 4-byte pointer, so a non-array keeps element `None` and those forms defer. NOT
     /// cleared per function — globals stay in scope for every function's body.
-    pub(crate) global_sizes: HashMap<String, (u32, Option<u32>)>,
+    pub(crate) global_sizes: Shared<HashMap<String, (u32, Option<u32>)>>,
     /// Inner dimension lengths retained while global storage stays flattened.
-    pub(crate) global_array_inner_dimensions: HashMap<String, Vec<u16>>,
+    pub(crate) global_array_inner_dimensions: Shared<HashMap<String, Vec<u16>>>,
     /// File-scope variables mapped to their declared type. Size alone cannot
     /// distinguish a four-byte scalar from `struct S*`; retaining the type lets
     /// unevaluated expressions such as `sizeof(*global_pointer)` recover the
     /// pointee size without pretending a pointer global is an array.
-    pub(crate) global_types: HashMap<String, Type>,
+    pub(crate) global_types: Shared<HashMap<String, Type>>,
     /// Inner scalar pointee for a flattened multi-level global pointer. The
     /// compact executable type records `T**` as `Pointer(Pointer)`; postfix
     /// parsing uses this side identity to type the intermediate `T*` produced
     /// by `table[index]`, allowing a following subscript/dereference to choose
     /// the correct narrow or floating access.
-    pub(crate) global_nested_pointer_pointees: HashMap<String, Pointee>,
+    pub(crate) global_nested_pointer_pointees: Shared<HashMap<String, Pointee>>,
     /// `typedef`-declared type aliases (e.g. `u32` -> `unsigned int`).
-    pub(crate) typedefs: HashMap<String, Type>,
+    pub(crate) typedefs: Shared<HashMap<String, Type>>,
     /// Typedef names whose aliased object type is volatile. Executable layout
     /// intentionally erases cv-qualification from [`Self::typedefs`], while
     /// declarations still need this side metadata to preserve observable
     /// access semantics through aliases such as `typedef volatile u8 vu8`.
-    pub(crate) volatile_typedefs: HashSet<String>,
+    pub(crate) volatile_typedefs: Shared<HashSet<String>>,
     /// Source scalar identity for typedefs whose storage type has been folded
     /// into the executable IR.
-    pub(crate) typedef_source_fundamentals: HashMap<String, SourceFundamentalType>,
+    pub(crate) typedef_source_fundamentals: Shared<HashMap<String, SourceFundamentalType>>,
     /// Typedef names declared as function pointers, with their declaration-only
     /// C++ ABI signatures. Their executable storage type is still a plain word
     /// pointer; the signature also supplies callable-member identity in C.
-    pub(crate) function_pointer_typedefs: HashMap<String, crate::cxx::CxxFunctionType>,
+    pub(crate) function_pointer_typedefs: Shared<HashMap<String, crate::cxx::CxxFunctionType>>,
     /// Leaf-statement coordinates accumulated for the function being parsed.
-    pub(crate) current_leaf_statement_lines: Vec<u32>,
+    pub(crate) current_leaf_statement_lines: Shared<Vec<u32>>,
     /// Control-node coordinates accumulated for the function being parsed.
-    pub(crate) current_control_flow_lines: Vec<u32>,
+    pub(crate) current_control_flow_lines: Shared<Vec<u32>>,
     /// Names of variadic function declarations/definitions (side-set — never in the hashed AST).
-    pub(crate) variadic_definitions: std::collections::HashSet<String>,
+    pub(crate) variadic_definitions: Shared<std::collections::HashSet<String>>,
     /// A float-array element whose initializer did NOT fold to a constant —
     /// stashed by `parse_scalar_constant` for the caller to attribute to an
     /// element index (mwcc zero-fills the image and synthesizes a `__sinit`
@@ -628,17 +629,17 @@ pub(crate) struct Parser {
     pub(crate) unfolded_float_element: Option<mwcc_syntax_trees::Expression>,
     /// (element index, expression) pairs of the CURRENT initializer that need
     /// startup assignment; drained by the global-declaration parser.
-    pub(crate) initializer_pending: Vec<(usize, mwcc_syntax_trees::Expression)>,
+    pub(crate) initializer_pending: Shared<Vec<(usize, mwcc_syntax_trees::Expression)>>,
     /// Namespace-scope work which requires a startup function, retained in
     /// declaration order. The finalizer turns these source-semantic actions
     /// into one `__sinit` body after the complete class graph is available.
-    pub(crate) pending_global_initializers: Vec<PendingGlobalInitializer>,
+    pub(crate) pending_global_initializers: Shared<Vec<PendingGlobalInitializer>>,
     /// The current inline-`asm` function's REGISTER PARAMETERS: `(name, gpr,
     /// struct tag)` in declaration order (r3, r4, … positional). An asm operand
     /// naming a parameter resolves to its register (`mr r3,val`), and
     /// `param->field` to a displacement memory operand off it (`stw r5,env->pc`).
     /// Set by `parse_asm_function` for the body parse, cleared after.
-    pub(crate) asm_parameters: Vec<(String, u8, Option<String>)>,
+    pub(crate) asm_parameters: Shared<Vec<(String, u8, Option<String>)>>,
     /// Set by [`Parser::parse_type`] when it just parsed a `struct Name*`, so the
     /// declarator parser can associate the variable name with the struct tag.
     pub(crate) last_struct_tag: Option<String>,
@@ -690,7 +691,7 @@ pub(crate) struct Parser {
     /// internal hoisted name like `i@2`). Pushed when a block declaration
     /// shadows an existing local; truncated at the block's close brace.
     /// `factor` resolves bare names through this stack (latest wins).
-    pub(crate) block_renames: Vec<(String, String)>,
+    pub(crate) block_renames: Shared<Vec<(String, String)>>,
     /// Monotonic counter feeding shadow-rename internal names.
     pub(crate) rename_counter: usize,
     /// `#pragma defer_codegen on` is active: functions defined under it are
@@ -698,15 +699,15 @@ pub(crate) struct Parser {
     /// mem_funcs — the whole TU's .text is reversed).
     pub(crate) defer_codegen: bool,
     /// Names of functions defined while defer_codegen was on, in definition order.
-    pub(crate) deferred_function_names: Vec<String>,
+    pub(crate) deferred_function_names: Shared<Vec<String>>,
     /// Names of skipped `static inline` functions with an inline `asm {}` body, in
     /// declaration order; mwcc emits a local undefined symbol for each.
-    pub(crate) inline_asm_symbols: Vec<String>,
+    pub(crate) inline_asm_symbols: Shared<Vec<String>>,
     /// Names of skipped PLAIN (non-static) `inline` functions with an inline `asm {}`
     /// body (OSFastCast's `inline __OSf32tos16`). mwcc materializes each as a GLOBAL
     /// UND symbol from the dropped compilation; the general codegen path does not emit
     /// them, so an object carrying one (with no capture declaring it) must DEFER.
-    pub(crate) plain_inline_asm_helpers: Vec<String>,
+    pub(crate) plain_inline_asm_helpers: Shared<Vec<String>>,
     /// Anonymous-label cost accumulated while mwcc compiles and then drops
     /// inline definitions; the base and body-label weights are generation-aware.
     pub(crate) skipped_inline_functions: usize,
@@ -716,7 +717,7 @@ pub(crate) struct Parser {
     /// reconstructed from `skipped_inline_functions`.
     pub(crate) global_destructor_inline_bump: usize,
     /// Cumulative skipped-inline cost sampled when each real function is parsed.
-    pub(crate) function_inline_prebumps: std::collections::HashMap<String, usize>,
+    pub(crate) function_inline_prebumps: Shared<std::collections::HashMap<String, usize>>,
     /// C++ class/inline syntax retained for version-specific anonymous-symbol
     /// accounting after parsing.
     pub(crate) cxx_inline_ordinal_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts,
@@ -725,22 +726,22 @@ pub(crate) struct Parser {
     pub(crate) discarded_inline_aggregate_images:
         Vec<mwcc_syntax_trees::DiscardedInlineAggregateImage>,
     /// Class identities with a user-declared nonvirtual destructor.
-    pub(crate) cxx_nonvirtual_destructor_classes: std::collections::HashSet<String>,
+    pub(crate) cxx_nonvirtual_destructor_classes: Shared<std::collections::HashSet<String>>,
     /// Constructor targets observed inside dropped in-class inline bodies.
-    pub(crate) cxx_temporary_construction_targets: Vec<String>,
+    pub(crate) cxx_temporary_construction_targets: Shared<Vec<String>>,
     /// Out-of-line constructors selected by executable functional temporary
     /// expressions, in first-use order. Class declarations are recovered
     /// outside the ordinary prototype stream; referenced constructors must be
     /// exported there so ABI lowering knows their implicit `this` parameter.
-    pub(crate) functional_constructor_references: Vec<String>,
+    pub(crate) functional_constructor_references: Shared<Vec<String>>,
     /// Return classes whose reusable automatic-construction analysis has
     /// already been charged by a dropped inline.
-    pub(crate) dropped_inline_class_automatic_groups: std::collections::HashSet<String>,
+    pub(crate) dropped_inline_class_automatic_groups: Shared<std::collections::HashSet<String>>,
     /// Source-written function-parameter names already charged to the anonymous
     /// symbol sequence. Parser recovery deliberately revisits class declarations
     /// and inline bodies, so token identity—not parse-path identity—is the only
     /// safe deduplication key.
-    pub(crate) counted_named_parameter_positions: std::collections::HashSet<usize>,
+    pub(crate) counted_named_parameter_positions: Shared<std::collections::HashSet<usize>>,
     /// Number of unique source-written function-parameter names. The public
     /// translation-unit field retains its historical name for compatibility.
     pub(crate) named_prototype_parameters: usize,
@@ -757,53 +758,53 @@ pub(crate) struct Parser {
         std::collections::HashMap<(String, String), usize>,
     /// Token positions of anonymous-`enum` bodies already counted into the
     /// anonymous-`@N` pre-bump (guards speculative re-parses from double-counting).
-    pub(crate) counted_enum_positions: std::collections::HashSet<usize>,
+    pub(crate) counted_enum_positions: Shared<std::collections::HashSet<usize>>,
     /// Anonymous aggregate bodies already charged during top-level recovery.
-    pub(crate) counted_anonymous_aggregate_positions: std::collections::HashSet<usize>,
+    pub(crate) counted_anonymous_aggregate_positions: Shared<std::collections::HashSet<usize>>,
     /// Materialized static-inline functions with NO prior prototype (the
     /// implicit-declaration shape): their call relocations bind the surviving
     /// UNDEFINED global ghost, and their local symbols order differently.
-    pub(crate) implicitly_materialized: Vec<String>,
+    pub(crate) implicitly_materialized: Shared<Vec<String>>,
     /// Every inline definition parsed as a materialization candidate, including
     /// prototyped static inlines. TU orchestration uses this to model deferred
     /// inlining without confusing them with implicit-declaration ghosts.
-    pub(crate) materialized_inline_candidates: Vec<String>,
+    pub(crate) materialized_inline_candidates: Shared<Vec<String>>,
     /// PLAIN-inline materializations (WEAK globals with the 0x0d comment flag).
-    pub(crate) weak_materialized: Vec<String>,
+    pub(crate) weak_materialized: Shared<Vec<String>>,
     /// Caller/body edges for weak inline definitions requested while parsing a
     /// concrete function body.
-    pub(crate) immediate_weak_materializations: Vec<(String, String)>,
+    pub(crate) immediate_weak_materializations: Shared<Vec<(String, String)>>,
     /// Names declared `__declspec(weak)` — their definitions emit WEAK symbols.
-    pub(crate) weak_functions: std::collections::HashSet<String>,
+    pub(crate) weak_functions: Shared<std::collections::HashSet<String>>,
     /// Names given internal linkage by an earlier `static` function declaration.
     /// A later definition may legally omit `static`; C keeps the prior internal
     /// linkage (`static void f(void); void f(void) {}`).
-    pub(crate) static_functions: std::collections::HashSet<String>,
+    pub(crate) static_functions: Shared<std::collections::HashSet<String>>,
     /// Static function prototype declarations and their position in the
     /// file-scope function-definition stream.
-    pub(crate) static_function_prototype_positions: Vec<(String, usize)>,
+    pub(crate) static_function_prototype_positions: Shared<Vec<(String, usize)>>,
     /// Source names whose prior declaration had C language linkage inside an
     /// otherwise-C++ translation unit. A later definition outside the linkage
     /// block inherits that declaration's unmangled linkage.
-    pub(crate) c_linkage_functions: std::collections::HashSet<String>,
+    pub(crate) c_linkage_functions: Shared<std::collections::HashSet<String>>,
     /// A `__declspec(section "…")` seen on a function PROTOTYPE — mwcc applies it to
     /// the later definition (pikmin's `DECL_SECT(".init")` sits on the memcpy proto).
-    pub(crate) section_functions: std::collections::HashMap<String, String>,
+    pub(crate) section_functions: Shared<std::collections::HashMap<String, String>>,
     /// Section-attributed function prototypes, in first-declaration order.
     /// Build 163 retains otherwise-unused declarations as GLOBAL UND symbols.
-    pub(crate) section_prototype_order: Vec<String>,
+    pub(crate) section_prototype_order: Shared<Vec<String>>,
     /// Plain function prototypes observed so far. This preserves declaration
     /// ordering when a later section-attributed redeclaration is parsed.
-    pub(crate) plain_function_prototypes: std::collections::HashSet<String>,
+    pub(crate) plain_function_prototypes: Shared<std::collections::HashSet<String>>,
     /// Section prototypes preceded by a plain declaration of the same name.
-    pub(crate) section_prototypes_with_prior_plain_declaration: std::collections::HashSet<String>,
+    pub(crate) section_prototypes_with_prior_plain_declaration: Shared<std::collections::HashSet<String>>,
     /// Names of SKIPPED inline definitions — a call to one defers the unit.
-    pub(crate) skipped_inline_names: std::collections::HashSet<String>,
+    pub(crate) skipped_inline_names: Shared<std::collections::HashSet<String>>,
     /// Names whose semantic bodies were captured from in-class definitions.
     /// Kept separately from the general skipped-inline pool because early
     /// frontend ordinal timelines charge member and namespace definitions at
     /// different source phases.
-    pub(crate) cxx_in_class_inline_function_names: std::collections::HashSet<String>,
+    pub(crate) cxx_in_class_inline_function_names: Shared<std::collections::HashSet<String>>,
     /// Fully parsed bodies of skipped inline definitions. These are never
     /// emitted, but downstream interprocedural summaries may prove a call-site
     /// expansion from their semantics instead of inferring it from a name.
@@ -813,7 +814,7 @@ pub(crate) struct Parser {
     pub(crate) skipped_inline_definitions: Arc<Vec<mwcc_syntax_trees::Function>>,
     /// Declared types for skipped inline definitions, retained independently of
     /// whether the speculative semantic-body parser accepts the body.
-    pub(crate) skipped_inline_signatures: Vec<(String, Type, Vec<Type>)>,
+    pub(crate) skipped_inline_signatures: Shared<Vec<(String, Type, Vec<Type>)>>,
     /// A speculative parser clone sets this while recovering one skipped inline
     /// body so the ordinary definition parser does not deliberately reject it.
     pub(crate) recover_skipped_inline_definition: bool,
@@ -825,15 +826,15 @@ pub(crate) struct Parser {
     /// File-scope `#pragma exceptions on/off/reset` override. `None` inherits
     /// the command-line mode; parsed functions snapshot explicit overrides.
     pub(crate) cpp_exceptions_override: Option<bool>,
-    pub(crate) function_cpp_exception_overrides: std::collections::HashMap<String, bool>,
-    pub(crate) pragma_stack: Vec<PragmaState>,
+    pub(crate) function_cpp_exception_overrides: Shared<std::collections::HashMap<String, bool>>,
+    pub(crate) pragma_stack: Shared<Vec<PragmaState>>,
     /// Default code section selected by `#pragma section code_type "…"`.
     /// An explicit declaration attribute still takes precedence.
     pub(crate) code_section: Option<String>,
     /// Active named C++ namespaces, outermost first. Top-level namespace braces
     /// are declaration containers; this stack supplies CodeWarrior's `Qn`
     /// qualification when member symbols are mangled.
-    pub(crate) namespace_stack: Vec<String>,
+    pub(crate) namespace_stack: Shared<Vec<String>>,
     /// CodeWarrior's filename-derived scope component for `namespace { ... }`,
     /// e.g. `@unnamed@zVar_cpp@`. Synthetic parser clients leave this absent
     /// and retain the historical transparent-scope behavior.
@@ -841,15 +842,15 @@ pub(crate) struct Parser {
     /// Fully-qualified namespace names declared in this translation unit. This
     /// distinguishes `N::free_function()` from `Class::static_method()` when
     /// both use the same surface qualification syntax.
-    pub(crate) cxx_namespaces: std::collections::HashSet<String>,
+    pub(crate) cxx_namespaces: Shared<std::collections::HashSet<String>>,
     /// Namespace-qualified source names of C++ data objects mapped to their
     /// CodeWarrior ABI symbols. Semantic lookup stays source-shaped while ELF
     /// declarations and relocations use the mangled boundary name.
-    pub(crate) cxx_data_objects: std::collections::HashMap<String, String>,
+    pub(crate) cxx_data_objects: Shared<std::collections::HashMap<String, String>>,
     /// Static data members declared by each class body. Declaration recovery
     /// records the complete class before parsing any in-class inline body, so
     /// an accessor may name a member declared later in the class.
-    pub(crate) cxx_static_data_members: std::collections::HashMap<(String, String), Type>,
+    pub(crate) cxx_static_data_members: Shared<std::collections::HashMap<(String, String), Type>>,
     /// Lexical class scope used only while recovering one object layout.
     /// Unqualified nested value types must resolve against their containing
     /// class before namespace/global names with the same terminal spelling.
@@ -876,33 +877,33 @@ pub(crate) struct Parser {
         std::collections::HashMap<String, mwcc_syntax_trees::InlineExpansionFacts>,
     /// Literal identities introduced into the function body currently being
     /// parsed by source-proven inline semantics.
-    pub(crate) current_inline_string_symbols: HashMap<Vec<u8>, String>,
+    pub(crate) current_inline_string_symbols: Shared<HashMap<Vec<u8>, String>>,
     /// Completed per-function inline literal identities.
-    pub(crate) function_inline_string_symbols: HashMap<String, HashMap<Vec<u8>, String>>,
+    pub(crate) function_inline_string_symbols: Shared<HashMap<String, HashMap<Vec<u8>, String>>>,
     /// Direct callee of a translation-unit inline scalar `operator delete`
     /// wrapper. Compiler-generated deleting destructors inline this body.
     pub(crate) cxx_delete_forwarder: Option<String>,
     /// `typedef`-declared struct aliases (`typedef struct _FILE {…} FILE;`) mapped
     /// to their struct tag, so `FILE *p` resolves to the right layout.
-    pub(crate) struct_typedefs: HashMap<String, String>,
+    pub(crate) struct_typedefs: Shared<HashMap<String, String>>,
     /// `typedef`-declared struct-POINTER aliases (`typedef struct {…} *VecPtr;`)
     /// mapped to their struct tag — the alias itself is already a struct pointer.
-    pub(crate) struct_pointer_typedefs: HashMap<String, String>,
+    pub(crate) struct_pointer_typedefs: Shared<HashMap<String, String>>,
     /// `typedef`-declared array aliases (`typedef float Mtx[3][4];`) mapped to their
     /// element type, total element count, and INNER-dimension element count (the
     /// product of every dimension after the first; 1 for a 1-D typedef) — the row
     /// stride a decayed parameter subscripts by. The `Type` model has no array
     /// variant of its own, so struct members of this type lay out from the total.
-    pub(crate) array_typedefs: HashMap<String, (Type, u16, u16)>,
+    pub(crate) array_typedefs: Shared<HashMap<String, (Type, u16, u16)>>,
     /// Source declaration identity and row shape, shared by typedef aliases.
-    pub(crate) array_typedef_rows: HashMap<String, mwcc_syntax_trees::SourceRowArray>,
+    pub(crate) array_typedef_rows: Shared<HashMap<String, mwcc_syntax_trees::SourceRowArray>>,
     pub(crate) last_array_typedef_row: Option<mwcc_syntax_trees::SourceRowArray>,
     pub(crate) function_parameter_row_arrays:
         HashMap<(String, String), mwcc_syntax_trees::SourceRowArray>,
     /// `typedef`-declared pointer-to-array aliases (`typedef float (*MtxPtr)[4];`)
     /// mapped to their element type and pointed-to-array length — a value of this
     /// type is a ROW pointer (`p[i][j]` strides by the array length).
-    pub(crate) row_pointer_typedefs: HashMap<String, (Type, u16)>,
+    pub(crate) row_pointer_typedefs: Shared<HashMap<String, (Type, u16)>>,
     /// Set by `parse_type` when the type it just returned was an array typedef
     /// (`(element, total, inner)`; a row-pointer typedef reports `total == 0`).
     /// Callers that must not treat the decayed pointer as the object type — the
@@ -915,24 +916,24 @@ pub(crate) struct Parser {
     /// (`m[i][j]`) desugars to a Member access at `i*stride + j*element`; every OTHER
     /// subscript/deref form on such a variable is an error (defer) — falling through
     /// to the plain `Index` stride would compute the wrong address.
-    pub(crate) decayed_row_pointers: HashMap<String, (Type, u16)>,
+    pub(crate) decayed_row_pointers: Shared<HashMap<String, (Type, u16)>>,
     /// Enumeration constant values, so a bare enumerator resolves to its integer
     /// value in an expression. Storage is tracked separately in `enum_types`.
-    pub(crate) enum_constants: HashMap<String, i64>,
+    pub(crate) enum_constants: Shared<HashMap<String, i64>>,
     /// Named enum types and their configured storage. C++ permits the bare
     /// `Name` spelling; C continues to require `enum Name` or a typedef.
-    pub(crate) enum_types: HashMap<String, Type>,
+    pub(crate) enum_types: Shared<HashMap<String, Type>>,
     /// Enum declarations retained for debug lowering after executable types
     /// have collapsed to their integer storage class.
-    pub(crate) enumeration_definitions: Vec<mwcc_syntax_trees::EnumerationDefinition>,
+    pub(crate) enumeration_definitions: Shared<Vec<mwcc_syntax_trees::EnumerationDefinition>>,
     /// Typedef alias to enumeration parser identity. C needs this side map
     /// because its ordinary typedef map intentionally stores only `Type`.
-    pub(crate) enum_typedefs: HashMap<String, String>,
+    pub(crate) enum_typedefs: Shared<HashMap<String, String>>,
     /// Enum-returning functions keyed by their emitted symbol name.
-    pub(crate) function_return_enums: HashMap<String, String>,
+    pub(crate) function_return_enums: Shared<HashMap<String, String>>,
     /// Whether `-enum min` selects storage from the enumerator value range.
     pub(crate) enum_min: bool,
-    pub(crate) function_sources: Vec<Option<mwcc_syntax_trees::FunctionSource>>,
+    pub(crate) function_sources: Shared<Vec<Option<mwcc_syntax_trees::FunctionSource>>>,
 }
 
 #[derive(Debug, Clone)]

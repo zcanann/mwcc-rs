@@ -63,9 +63,8 @@ pub(super) fn prepare_required(
         }
         let class = &parser.cxx_classes[&scope];
         if !class.declares_destructor && bases_are_trivial(parser, &scope)? {
-            parser
-                .cxx_inline_materializations
-                .push(build(parser, &scope, destructor)?);
+            let built = build(parser, &scope, destructor)?;
+            parser.cxx_inline_materializations.push(built);
         }
     }
     Ok(())
@@ -100,9 +99,8 @@ pub(super) fn prepare_requested(parser: &mut Parser, scope: &str) -> Compilation
     if class.declares_destructor || !bases_are_trivial(parser, scope)? {
         return Ok(None);
     }
-    parser
-        .cxx_inline_materializations
-        .push(build(parser, scope, destructor.clone())?);
+    let built = build(parser, scope, destructor.clone())?;
+    parser.cxx_inline_materializations.push(built);
     Ok(Some(destructor))
 }
 

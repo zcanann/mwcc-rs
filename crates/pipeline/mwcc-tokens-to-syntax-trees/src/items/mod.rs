@@ -481,8 +481,8 @@ impl Parser {
         local_names: &mut std::collections::HashSet<String>,
         block_locals: &mut Vec<LocalDeclaration>,
     ) -> Compilation<Statement> {
-        self.current_control_flow_lines
-            .push(self.current_location().line);
+        let control_flow_line = self.current_location().line;
+        self.current_control_flow_lines.push(control_flow_line);
         self.eat_word("switch");
         self.expect(Token::ParenOpen)?;
         let scrutinee = self.expression()?;
@@ -3865,7 +3865,7 @@ impl Parser {
                 // dolphin headers) are EXTERNAL — excluded, so a heap-init inline
                 // calling only OS* helpers (GCN InitDefaultHeap) stays inlinable.
                 let mut tu_local: std::collections::HashSet<String> =
-                    self.skipped_inline_names.clone();
+                    (*self.skipped_inline_names).clone();
                 for function in functions.iter() {
                     tu_local.insert(function.name.clone());
                 }
@@ -4998,9 +4998,9 @@ impl Parser {
             .filter(|parameter| matches!(parameter.parameter_type, Type::Struct { .. }))
             .map(|parameter| parameter.name.clone())
             .collect();
-        self.cxx_reference_variables = cxx_reference_parameters;
-        self.cxx_scalar_reference_pointees = cxx_scalar_reference_parameters;
-        self.cxx_const_object_variables = cxx_const_object_parameters;
+        self.cxx_reference_variables = crate::shared::Shared::from(cxx_reference_parameters);
+        self.cxx_scalar_reference_pointees = crate::shared::Shared::from(cxx_scalar_reference_parameters);
+        self.cxx_const_object_variables = crate::shared::Shared::from(cxx_const_object_parameters);
         for parameter in &parameters {
             self.variable_types
                 .insert(parameter.name.clone(), parameter.parameter_type);

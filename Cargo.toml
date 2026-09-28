@@ -54,3 +54,8 @@ mwcc-syntax-trees-to-debug-info = { path = "crates/pipeline/mwcc-syntax-trees-to
 
 [profile.release]
 opt-level = 3
+
+# Release codegen with line tables, for sampling profilers (cdb/samply).
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"

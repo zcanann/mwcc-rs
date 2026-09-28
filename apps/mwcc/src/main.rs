@@ -632,7 +632,12 @@ fn main() -> ExitCode {
     for (name, value) in invocation.preprocessor_definitions {
         source_loader.define(name, value);
     }
-    let source = match source_loader.load(std::path::Path::new(&input)) {
+    let load_start = std::time::Instant::now();
+    let loaded = source_loader.load(std::path::Path::new(&input));
+    if std::env::var_os("MWCC_PHASE_TIMES").is_some() {
+        eprintln!("mwcc-phase preprocess: {:.3}s", load_start.elapsed().as_secs_f64());
+    }
+    let source = match loaded {
         Ok(source) => source,
         Err(diagnostic) => {
             eprintln!("mwcc: {diagnostic}");
@@ -740,7 +745,14 @@ fn compile(
     artifacts: Option<&str>,
     parity_keep_going: bool,
 ) -> Compilation<Vec<u8>> {
+    let phase_timer = std::env::var_os("MWCC_PHASE_TIMES").map(|_| std::time::Instant::now());
+    let phase_time = |label: &str| {
+        if let Some(start) = phase_timer {
+            eprintln!("mwcc-phase {label}: {:.3}s", start.elapsed().as_secs_f64());
+        }
+    };
     let located_tokens = mwcc_source_to_tokens::tokenize_bytes_located(source)?;
+    phase_time("tokenize");
     let tokens: Vec<mwcc_tokens::Token> = located_tokens
         .iter()
         .map(|located| located.token.clone())
@@ -773,6 +785,7 @@ fn compile(
             is_cxx.then(|| anonymous_namespace_scope(source_name)),
             config.flags.enum_storage == mwcc_versions::EnumStorage::Minimum,
         )?;
+    phase_time("parse");
     name_translation_unit_startup(&mut unit, source_name);
     if is_cxx && config.flags.rtti {
         mwcc_tokens_to_syntax_trees::materialize_cxx_rtti(
@@ -785,6 +798,7 @@ fn compile(
     if config.flags.inline_enabled {
         inline_fallbacks::materialize_depth_limited(&mut unit, inline_nesting_budget);
     }
+    phase_time("inline-fallbacks");
     let mut disabled_inline_materializations = std::collections::HashSet::new();
     if !config.flags.inline_enabled {
         let referenced = reference_analysis::referenced_disabled_inlines(&unit);

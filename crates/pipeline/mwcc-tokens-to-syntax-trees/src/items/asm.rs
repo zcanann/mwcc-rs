@@ -100,7 +100,7 @@ impl Parser {
         let body_start_line = self.current_location().line;
         self.expect(Token::BraceOpen)?;
         let asm_body = self.parse_asm_body();
-        self.asm_parameters = Vec::new();
+        self.asm_parameters = crate::shared::Shared::from(Vec::new());
         let asm_body = asm_body?;
         let body_end_line = self.locations[self.position.saturating_sub(1)].line;
         self.function_sources

@@ -2203,15 +2203,16 @@ impl Parser {
                         && tokens[5] == Token::ParenClose
                 });
             if has_arrow {
+                let owner_scopes = self
+                    .named_namespace_scopes()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect();
                 self.template_iterator_arrow_summaries.insert(
                     template_name.to_owned(),
                     TemplateIteratorArrowSummary {
                         nested,
-                        owner_scopes: self
-                            .named_namespace_scopes()
-                            .into_iter()
-                            .map(str::to_owned)
-                            .collect(),
+                        owner_scopes,
                         element_index: 0,
                         offset_index: 1,
                         assertion,

@@ -2532,6 +2532,9 @@ impl Parser {
         if parsed.is_ok() && functions.len() == 1 {
             self.merge_generated_inline_definitions_from(&probe);
             let source = probe.function_sources.pop().flatten();
+            // Release the probe's shared handles before mutating the parent's
+            // copy-on-write pools; otherwise each push copies the whole pool.
+            drop(probe);
             let mut function = functions.pop().expect("length checked");
             if matches!(function.return_type, Type::Struct { .. }) {
                 let return_tag = self
