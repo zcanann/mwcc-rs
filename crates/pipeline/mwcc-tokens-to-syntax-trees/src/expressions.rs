@@ -1820,7 +1820,8 @@ impl Parser {
                         .or_else(|| self.structural_aggregate_tag_for_field(&expression, &field))
                         .ok_or_else(|| {
                             Diagnostic::error(format!(
-                                "member '{field}' on a non-struct-pointer base: {expression:?}"
+                                "member '{field}' on a non-struct-pointer base: {expression:?} at {}",
+                                self.diagnostic_position(self.position.saturating_sub(1))
                             ))
                         })?;
                     let is_function_pointer_field = self

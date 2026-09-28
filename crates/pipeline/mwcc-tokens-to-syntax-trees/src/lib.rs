@@ -416,6 +416,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         function_parameter_row_arrays: HashMap::new(),
         row_pointer_typedefs: crate::shared::Shared::from(HashMap::new()),
         last_array_typedef: None,
+        last_array_typedef_extents: None,
         decayed_row_pointers: crate::shared::Shared::from(HashMap::new()),
         enum_constants: crate::shared::Shared::from(HashMap::new()),
         enum_types: crate::shared::Shared::from(HashMap::new()),

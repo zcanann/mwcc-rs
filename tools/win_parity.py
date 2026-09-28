@@ -169,7 +169,8 @@ def reference_diag(log: str) -> str:
     return last_diag(log)
 
 
-def evaluate(tu: dict, mwcc: Path, root: Path, timeout: int, keep: Path | None) -> dict:
+def evaluate(tu: dict, mwcc: Path, root: Path, timeout: int, keep: Path | None,
+             project_functions: bool = True) -> dict:
     result = {"id": tu["configuration_id"], "project": tu["project"],
               "source": tu["source"], "version": tu["mw_version"],
               "language": tu["language"]}
@@ -215,10 +216,25 @@ def evaluate(tu: dict, mwcc: Path, root: Path, timeout: int, keep: Path | None) 
         if rc != 0 or not our_o.is_file():
             result["verdict"] = "DEFER"
             result["detail"] = "TIMEOUT" if rc == -999 else last_diag(log)
+            if rc != -999 and project_functions:
+                # Function-level projection: both compilers without debug
+                # info, ours continuing past unsupported functions.
+                ref_p, our_p = scratch / "ref.p.o", scratch / "our.p.o"
+                prc, _ = run([*ref_prefix, *flags, "-sym", "off", "-c", tu["source"], "-o", str(ref_p)],
+                             project, timeout)
+                orc, _ = run([str(mwcc), "--build", tu["mw_version"], "--parity-keep-going", *flags,
+                              "-sym", "off", "-c", tu["source"], "-o", str(our_p)], project, timeout)
+                if prc == 0 and ref_p.is_file():
+                    rf = elf_functions(ref_p.read_bytes())
+                    of = elf_functions(our_p.read_bytes()) if orc == 0 and our_p.is_file() else {}
+                    result["functions"] = len(rf)
+                    result["functions_exact"] = sum(1 for n, b in rf.items() if of.get(n) == b)
+                    result["functions_missing"] = sum(1 for n in rf if n not in of)
             return result
         ref_bytes, our_bytes = ref_o.read_bytes(), our_o.read_bytes()
         if ref_bytes == our_bytes:
             result["verdict"] = "BYTE"
+            result["functions"] = len(elf_functions(ref_bytes))
             return result
         result["verdict"] = "DIFF"
         rf, of = elf_functions(ref_bytes), elf_functions(our_bytes)
@@ -277,6 +293,7 @@ def main() -> int:
     ap.add_argument("--source-regex")
     ap.add_argument("--verdict", action="append",
                     help="restrict to configurations whose latest cached verdict is this")
+    ap.add_argument("--detail-regex", help="restrict to configurations whose latest cached detail matches")
     ap.add_argument("--sample", type=int, help="random sample size")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit", type=int)
@@ -302,6 +319,10 @@ def main() -> int:
     if args.verdict:
         prev = previous_rows(args.cache)
         tus = [t for t in tus if prev.get(t["configuration_id"], {}).get("verdict") in args.verdict]
+    if args.detail_regex:
+        prev = previous_rows(args.cache)
+        rx = re.compile(args.detail_regex)
+        tus = [t for t in tus if rx.search(prev.get(t["configuration_id"], {}).get("detail", ""))]
     if args.sample is not None and args.sample < len(tus):
         tus = random.Random(args.seed).sample(tus, args.sample)
     if args.limit is not None:
@@ -350,10 +371,17 @@ def summarize(rows: list[dict], prev: dict[str, dict]) -> None:
     if comparable:
         byte = counts.get("BYTE", 0)
         print(f"  BYTE rate over reference-compilable: {byte}/{len(comparable)} = {100 * byte / len(comparable):.1f}%")
-    fn_total = sum(r.get("functions", 0) for r in rows)
-    fn_exact = sum(r.get("functions_exact", 0) for r in rows)
-    if fn_total:
-        print(f"  DIFF function bytes exact: {fn_exact}/{fn_total}")
+    for label, subset in (("DIFF", [r for r in rows if r["verdict"] == "DIFF"]),
+                          ("DEFER (keep-going projection)", [r for r in rows if r["verdict"] == "DEFER"]),
+                          ("ALL comparable", comparable)):
+        fn_total = sum(r.get("functions", 0) for r in subset)
+        fn_exact = sum(r.get("functions_exact", 0) for r in subset)
+        if label == "ALL comparable":
+            # BYTE rows count every function as exact.
+            fn_total += sum(r.get("functions", 0) for r in subset if r["verdict"] == "BYTE")
+            fn_exact += sum(r.get("functions", 0) for r in subset if r["verdict"] == "BYTE")
+        if fn_total:
+            print(f"  {label} function bytes exact: {fn_exact}/{fn_total} = {100 * fn_exact / fn_total:.1f}%")
     moved = collections.Counter()
     for r in rows:
         before = prev.get(r["id"])

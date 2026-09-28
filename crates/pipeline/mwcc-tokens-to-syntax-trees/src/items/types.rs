@@ -235,6 +235,7 @@ impl Parser {
     /// Declaration specifiers can consume const before the type grammar starts.
     /// Restore it before resolving aliases so it qualifies the correct layer.
     pub(crate) fn parse_type_with_prefix_const(&mut self, prefix_const: bool) -> Compilation<Type> {
+        self.last_array_typedef_extents = None;
         let parsed = self.parse_type_base(prefix_const)?;
         // A POSTFIX qualifier — east const: `unsigned char const *jp` (metroid
         // prime's ansi_fp revision) — reads exactly like the prefix form.
@@ -681,14 +682,32 @@ impl Parser {
         // A trailing `*` (`Mtx*`) is a pointer to the whole array — not modeled; defer.
         if let Token::Identifier(name) = self.peek() {
             if let Some(&(element, total, inner)) = self.array_typedefs.get(name) {
-                self.last_array_typedef_row = self.array_typedef_rows.get(name).cloned();
+                let typedef_row = self.array_typedef_rows.get(name).cloned();
                 self.advance();
+                let dimensions: Vec<Option<u64>> = if inner > 1 {
+                    vec![Some(u64::from(total / inner)), Some(u64::from(inner))]
+                } else {
+                    vec![Some(u64::from(total))]
+                };
+                if *self.peek() == Token::Star && *self.peek_at(1) != Token::Star {
+                    // `Mtx*` points at a whole array object. Storage and
+                    // arithmetic treat it as an ordinary pointer; only the
+                    // C++ function type retains the array shape (`PA3_A4_f`).
+                    self.advance();
+                    self.consume_trailing_qualifiers();
+                    let mut extents = vec![None];
+                    extents.extend(dimensions);
+                    self.last_array_typedef_extents = Some((element, extents));
+                    return Ok(Type::Pointer(pointee_of(element)?));
+                }
                 if *self.peek() == Token::Star {
                     return Err(Diagnostic::error(
                         "a pointer to an array-typedef value is not supported yet (roadmap)",
                     ));
                 }
+                self.last_array_typedef_row = typedef_row;
                 self.last_array_typedef = Some((element, total, inner));
+                self.last_array_typedef_extents = Some((element, dimensions));
                 return Ok(Type::Pointer(pointee_of(element)?));
             }
             if let Some(&(element, length)) = self.row_pointer_typedefs.get(name) {
@@ -700,6 +719,7 @@ impl Parser {
                     ));
                 }
                 self.last_array_typedef = Some((element, 0, length));
+                self.last_array_typedef_extents = Some((element, vec![None, Some(u64::from(length))]));
                 return Ok(Type::Pointer(pointee_of(element)?));
             }
         }

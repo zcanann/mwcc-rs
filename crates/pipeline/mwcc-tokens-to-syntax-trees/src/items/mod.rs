@@ -3351,6 +3351,7 @@ impl Parser {
                     // parameter's name below so `m[i][j]` desugars with it.
                     let array_typedef_marker = self.last_array_typedef.take();
                     let array_typedef_row = self.last_array_typedef_row.take();
+                    let array_typedef_extents = self.last_array_typedef_extents.take();
                     // Extra declarator stars — `wchar_t ** end` is a pointer to
                     // pointer; each further `*` deepens to a plain pointer.
                     while *self.peek() == Token::Star {
@@ -3422,7 +3423,7 @@ impl Parser {
                         };
                         // C adjusts an array parameter to a pointer. A trailing
                         // dimension remains observable as its row stride.
-                        let (parameter_type, array_parameter_extents) = self
+                        let (parameter_type, declarator_extents) = self
                             .parse_array_parameter_suffix(
                                 &name,
                                 parameter_type,
@@ -3433,10 +3434,13 @@ impl Parser {
                             cxx_source_type,
                             cxx_source_fundamental,
                             array_typedef_row,
-                            &array_parameter_extents,
+                            &declarator_extents,
                         )? {
                             parameter_row_arrays.push((name.clone(), row));
                         }
+                        // An array-typedef parameter keeps its trailing
+                        // dimensions in the C++ function type (`Mtx` -> `PA4_f`).
+                        let array_parameter_extents = declarator_extents;
                         if matches!(parameter_type, Type::Pointer(_) | Type::StructPointer { .. })
                             && !name.is_empty()
                         {
@@ -3492,6 +3496,7 @@ impl Parser {
                             .with_source_fundamental(cxx_source_fundamental)
                             .with_pointer_shape(cxx_pointer_depth, cxx_pointer_base)
                             .with_array_parameter_extents(array_parameter_extents)
+                            .with_array_typedef_extents(array_typedef_extents)
                             .with_function_type(cxx_function_type),
                         );
                     }
@@ -5468,8 +5473,55 @@ impl Parser {
                 } else {
                     None
                 };
+                // `T x(args);` direct-initializes a class local in place. It
+                // shares copy-initialization's in-place constructor form
+                // (`T x = T(args);`) without the temporary. `T x();` is a
+                // function declaration and is left to the ordinary path.
+                let direct_constructor = if direct_static_constructor.is_none()
+                    && !is_static
+                    && self.cplusplus
+                    && array_length.is_none()
+                    && *self.peek() == Token::ParenOpen
+                    && self.tokens.get(self.position + 1) != Some(&Token::ParenClose)
+                {
+                    let class_name = struct_tag.clone();
+                    match class_name {
+                        Some(class_name) => {
+                            self.record_variable_reference(&name, self.position - 1);
+                            self.expect(Token::ParenOpen)?;
+                            let mut arguments = Vec::new();
+                            loop {
+                                arguments.push(self.expression()?);
+                                if !self.eat_keyword(Token::Comma) {
+                                    break;
+                                }
+                            }
+                            self.expect(Token::ParenClose)?;
+                            let constructor =
+                                self.resolve_placement_constructor(&class_name, &arguments)?;
+                            if !self.recover_skipped_inline_definition
+                                && !self
+                                    .functional_constructor_references
+                                    .iter()
+                                    .any(|reference| reference == &constructor)
+                            {
+                                self.functional_constructor_references
+                                    .push(constructor.clone());
+                            }
+                            Some(Expression::Call {
+                                name: constructor,
+                                arguments,
+                            })
+                        }
+                        None => None,
+                    }
+                } else {
+                    None
+                };
                 let initializer = if direct_static_constructor.is_some() {
                     direct_static_constructor
+                } else if direct_constructor.is_some() {
+                    direct_constructor
                 } else if array_length.is_none() && self.eat_keyword(Token::Equals) {
                     self.record_variable_reference(&name, self.position - 1);
                     if is_static

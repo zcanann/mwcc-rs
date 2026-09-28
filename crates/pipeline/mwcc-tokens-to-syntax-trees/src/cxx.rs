@@ -569,6 +569,23 @@ impl CxxParameterType {
         self
     }
 
+    /// An array-typedef parameter: mangle the element under the typedef's
+    /// retained dimensions instead of the decayed element pointer.
+    pub(crate) fn with_array_typedef_extents(
+        mut self,
+        typedef: Option<(Type, Vec<Option<u64>>)>,
+    ) -> Self {
+        if let Some((element, extents)) = typedef {
+            if self.array_parameter_extents.is_empty() {
+                self.source_type = element;
+                self.pointer_depth = 0;
+                self.pointer_base = None;
+                self.array_parameter_extents = extents;
+            }
+        }
+        self
+    }
+
     pub(crate) fn with_array_parameter_extents(
         mut self,
         extents: Vec<Option<u64>>,
@@ -5196,16 +5213,29 @@ impl Parser {
             // its byte stride for later indexed-member lowering. A true array
             // typedef (`typedef T Rows[N]`) still declares inline storage and
             // must use the dedicated array layout path before it is admitted.
+            let mut array_typedef = None;
             let row_pointer_stride = match self.last_array_typedef.take() {
                 Some((element, 0, length)) => {
                     Some(type_size(element).saturating_mul(u32::from(length)))
                 }
-                Some(_) => {
-                    return Err(Diagnostic::error(
-                        "an array-typedef class member is not supported yet (roadmap)",
-                    ));
+                Some(extent) => {
+                    array_typedef = Some(extent);
+                    None
                 }
                 None => None,
+            };
+            // A true array typedef member (`Mtx m;` for `typedef f32 Mtx[3][4]`)
+            // has the same inline storage as the spelled-out declarator
+            // (`f32 m[3][4];`): lay it out through the ordinary array path.
+            let (field_type, array_typedef_extent) = match array_typedef {
+                Some((element, total, inner)) => {
+                    let element_size = type_size(element);
+                    let total_bytes = element_size.saturating_mul(u32::from(total));
+                    let first_index_stride =
+                        (inner > 1).then(|| element_size.saturating_mul(u32::from(inner)));
+                    (element, Some((total_bytes, first_index_stride)))
+                }
+                None => (field_type, None),
             };
             let struct_tag = self.last_struct_tag.take();
             let attribute_align = self.skip_attributes()?.unwrap_or(1);
@@ -5417,7 +5447,15 @@ impl Parser {
                         "a C++ bit-field member is not supported yet (roadmap)",
                     ));
                 }
-                let array_extent = self.parse_array_declarator_extent(element_size)?;
+                let array_extent = match array_typedef_extent {
+                    Some(_) if *self.peek() == Token::BracketOpen => {
+                        return Err(Diagnostic::error(
+                            "an array of array-typedef class members is not supported yet (roadmap)",
+                        ));
+                    }
+                    Some(extent) => Some(extent),
+                    None => self.parse_array_declarator_extent(element_size)?,
+                };
                 if !matches!(self.peek(), Token::Comma | Token::Semicolon) {
                     return Err(Diagnostic::error(
                         "an unsupported class member declarator follows its name (roadmap)",
@@ -6115,8 +6153,11 @@ impl Parser {
                 let mut parameter_type = self.parse_type()?;
                 let source_type = parameter_type;
                 self.last_array_typedef.take();
+                let array_typedef_extents = self.last_array_typedef_extents.take();
                 let is_reference = self.consume_cxx_reference_declarator();
-                let source_identity = self.take_cxx_type_identity(source_type, is_reference);
+                let source_identity = self
+                    .take_cxx_type_identity(source_type, is_reference)
+                    .with_array_typedef_extents(array_typedef_extents);
                 if is_reference {
                     parameter_type = Type::StructPointer { element_size: 0 };
                 }

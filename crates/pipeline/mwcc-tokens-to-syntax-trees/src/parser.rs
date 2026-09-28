@@ -911,6 +911,10 @@ pub(crate) struct Parser {
     /// the parameter path (records the row stride for subscript desugaring) —
     /// `.take()` this, exactly like `last_struct_tag`.
     pub(crate) last_array_typedef: Option<(Type, u16, u16)>,
+    /// C++ mangling extents of the last array/row-pointer typedef type
+    /// (`Mtx` -> `[3, 4]`, `Mtx*` -> `[ptr, 3, 4]`). Only parameter
+    /// declarations consume it; every `parse_type` call resets it.
+    pub(crate) last_array_typedef_extents: Option<(Type, Vec<Option<u64>>)>,
     /// Variables (parameters) of a decayed array-typedef / row-pointer-typedef type,
     /// mapped to `(element type, row stride in BYTES)`. A two-constant-subscript use
     /// (`m[i][j]`) desugars to a Member access at `i*stride + j*element`; every OTHER
