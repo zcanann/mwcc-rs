@@ -84,6 +84,7 @@ pub fn lower(function: &Function, context: &LoweringContext<'_>) -> Compilation<
         return_register: None,
         hoisted: None,
         extended: HashMap::new(),
+        constants: HashMap::new(),
     };
     lowerer.lower_function(function)?;
     Ok(Lowered { pcode: lowerer.pcode, makes_calls: lowerer.makes_calls })
@@ -169,6 +170,8 @@ struct Lowerer<'a> {
     hoisted: Option<Hoisted>,
     /// Extensions of raw narrow parameters made in the current block.
     extended: HashMap<String, u32>,
+    /// Constants materialized in the current block (reused, as IRO's CSE).
+    constants: HashMap<i64, u32>,
 }
 
 /// One arm of a two-way select, evaluated unconditionally ahead of the
@@ -199,6 +202,7 @@ impl Lowerer<'_> {
         let previous = self.current_block();
         self.pcode.blocks.push(Block { weight: 1, ..Block::default() });
         self.extended.clear();
+        self.constants.clear();
         let block = self.current_block();
         if falls_through {
             self.pcode.blocks[previous].successors.push(block);
@@ -501,7 +505,12 @@ impl Lowerer<'_> {
         let tested = match &idiom {
             SignIdiom::Absolute(tested) | SignIdiom::Masked { tested, .. } => *tested,
         };
-        (self.static_type(tested) == Some(Type::Int)).then_some(idiom)
+        let equality = matches!(
+            idiom,
+            SignIdiom::Masked { relation: BinaryOperator::Equal | BinaryOperator::NotEqual, .. }
+        );
+        let ty = self.static_type(tested)?;
+        (ty == Type::Int || equality && matches!(ty, Type::UnsignedInt | Type::Pointer(_))).then_some(idiom)
     }
 
     /// A sign-mask select (see [`sign_idiom`]).
@@ -534,6 +543,20 @@ impl Lowerer<'_> {
                             Instruction::OrComplement { a: combined, s: a, b: negated }
                         });
                         self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: mask, s: combined, shift: 31 });
+                    }
+                    BinaryOperator::NotEqual => {
+                        let negated = self.temporary();
+                        self.emit_plain(Instruction::Negate { d: negated, a });
+                        let combined = self.temporary();
+                        self.emit_plain(Instruction::Or { a: combined, s: negated, b: a });
+                        self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: mask, s: combined, shift: 31 });
+                    }
+                    BinaryOperator::Equal => {
+                        let zeros = self.temporary();
+                        self.emit_plain(Instruction::CountLeadingZeros { a: zeros, s: a });
+                        let flag = self.temporary();
+                        self.emit_plain(Instruction::RotateAndMask { a: flag, s: zeros, shift: 27, begin: 31, end: 31 });
+                        self.emit_plain(Instruction::Negate { d: mask, a: flag });
                     }
                     BinaryOperator::GreaterEqual => {
                         let sign = self.temporary();
@@ -799,6 +822,32 @@ impl Lowerer<'_> {
             }
             (BinaryOperator::BitAnd, Expression::IntegerLiteral(mask)) => !(*mask as u32),
             _ => 0,
+        }
+    }
+
+    /// The type a store target holds.
+    fn store_type(&self, target: &Expression) -> Option<Type> {
+        match target {
+            Expression::Member { member_type, .. } => Some(*member_type),
+            Expression::Variable(name) => self.context.globals.get(name).map(|global| global.ty),
+            Expression::Dereference { pointer } => {
+                let ty = match pointer.as_ref() {
+                    Expression::Binary { operator: BinaryOperator::Add, left, right } => self
+                        .static_type(left)
+                        .filter(|ty| element_size(*ty).is_some())
+                        .or_else(|| self.static_type(right)),
+                    other => self.static_type(other),
+                };
+                match ty? {
+                    Type::Pointer(pointee) => pointee_type(pointee),
+                    _ => None,
+                }
+            }
+            Expression::Index { base, .. } => match self.static_type(base)? {
+                Type::Pointer(pointee) => pointee_type(pointee),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -1109,6 +1158,15 @@ impl Lowerer<'_> {
         let target = self.target.take();
         match expression {
             Expression::IntegerLiteral(value) => {
+                if target.is_none() && std::env::var_os("MWCC_PCODE_NO_CONSTANT_CSE").is_none() {
+                    if let Some(&register) = self.constants.get(value) {
+                        return Ok((register, Type::Int));
+                    }
+                    let register = self.temporary();
+                    self.load_constant(register, *value)?;
+                    self.constants.insert(*value, register);
+                    return Ok((register, Type::Int));
+                }
                 let register = self.result(target);
                 self.load_constant(register, *value)?;
                 Ok((register, Type::Int))
@@ -1715,6 +1773,67 @@ impl Lowerer<'_> {
     fn store(&mut self, target: &Expression, value: &Expression) -> Compilation<()> {
         let width = store_width(target, self.context.globals);
         let value = strip_narrowing_for_store(value, width);
+        // A literal stored narrow is its truncated, sign-extended low part.
+        let truncated;
+        let value = match (literal_value(value), self.store_type(target)) {
+            (Some(literal), Some(ty)) if is_narrow(ty) => {
+                let bits = if matches!(ty, Type::Char | Type::UnsignedChar) { 8 } else { 16 };
+                let shift = 64 - bits;
+                truncated = Expression::IntegerLiteral((literal << shift) >> shift);
+                &truncated
+            }
+            _ => value,
+        };
+        // `p[i] = v` / `*(p + i) = v`.
+        let element = match target {
+            Expression::Index { base, index } => Some((base.as_ref(), index.as_ref())),
+            Expression::Dereference { pointer } => match pointer.as_ref() {
+                Expression::Binary { operator: BinaryOperator::Add, left, right } => {
+                    if self.static_type(left).and_then(element_size).is_some() {
+                        Some((left.as_ref(), right.as_ref()))
+                    } else {
+                        Some((right.as_ref(), left.as_ref()))
+                    }
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((base, index)) = element {
+            if let (Some(pointer_type @ Type::Pointer(pointee)), None) =
+                (self.static_type(base), self.static_type(index).and_then(element_size))
+            {
+                if let (Some(ty), Some(size)) = (pointee_type(pointee), element_size(pointer_type)) {
+                    let (source, _) = self.expression(value)?;
+                    let (a, _) = self.expression(base)?;
+                    let store = if let Expression::IntegerLiteral(index) = index {
+                        let offset = i16::try_from(index * i64::from(size))
+                            .map_err(|_| unsupported("large element offset"))?;
+                        match ty {
+                            Type::Short | Type::UnsignedShort => Instruction::StoreHalfword { s: source, a, offset },
+                            Type::Char | Type::UnsignedChar => Instruction::StoreByte { s: source, a, offset },
+                            _ => Instruction::StoreWord { s: source, a, offset },
+                        }
+                    } else {
+                        let scaled = scale_index(index, size);
+                        let (b, _) = self.expression(&scaled)?;
+                        match ty {
+                            Type::Short | Type::UnsignedShort => Instruction::StoreHalfwordIndexed { s: source, a, b },
+                            Type::Char | Type::UnsignedChar => Instruction::StoreByteIndexed { s: source, a, b },
+                            _ => Instruction::StoreWordIndexed { s: source, a, b },
+                        }
+                    };
+                    let mut instruction = PInstr::new(store);
+                    instruction.not_r0.push(a);
+                    self.emit(instruction);
+                    self.loaded_globals.clear();
+                    return Ok(());
+                }
+            }
+            if matches!(target, Expression::Index { .. }) {
+                return Err(unsupported("store to an index of a non-pointer"));
+            }
+        }
         let (source, _) = self.expression(value)?;
         let (base, offset, ty, relocation) = match target {
             Expression::Member { base, offset, member_type, index_stride: None } => {
@@ -2187,6 +2306,18 @@ fn sign_idiom<'a>(
     when_true: &'a Expression,
     when_false: &'a Expression,
 ) -> Option<SignIdiom<'a>> {
+    // A bare truth value tests `!= 0`.
+    if let tested @ Expression::Variable(_) = condition {
+        return match (when_true, when_false) {
+            (value @ Expression::Variable(_), Expression::IntegerLiteral(0)) => Some(SignIdiom::Masked {
+                relation: BinaryOperator::NotEqual,
+                tested,
+                value,
+                keep_when_true: true,
+            }),
+            _ => None,
+        };
+    }
     let Expression::Binary { operator, left, right } = condition else { return None };
     let (relation, tested) = match (left.as_ref(), right.as_ref()) {
         (tested @ Expression::Variable(_), Expression::IntegerLiteral(0)) => (*operator, tested),
@@ -2195,17 +2326,23 @@ fn sign_idiom<'a>(
     };
     if !matches!(
         relation,
-        BinaryOperator::Less | BinaryOperator::LessEqual | BinaryOperator::Greater | BinaryOperator::GreaterEqual
+        BinaryOperator::Less
+            | BinaryOperator::LessEqual
+            | BinaryOperator::Greater
+            | BinaryOperator::GreaterEqual
+            | BinaryOperator::Equal
+            | BinaryOperator::NotEqual
     ) {
         return None;
     }
+    let equality = matches!(relation, BinaryOperator::Equal | BinaryOperator::NotEqual);
     let negation_of = |expression: &Expression| {
         matches!(expression, Expression::Unary { operator: UnaryOperator::Negate, operand }
             if same_variable(operand, tested))
     };
     let negative_side = matches!(relation, BinaryOperator::Less | BinaryOperator::LessEqual);
-    if negative_side && negation_of(when_true) && same_variable(when_false, tested)
-        || !negative_side && same_variable(when_true, tested) && negation_of(when_false)
+    if !equality && negative_side && negation_of(when_true) && same_variable(when_false, tested)
+        || !equality && !negative_side && same_variable(when_true, tested) && negation_of(when_false)
     {
         return Some(SignIdiom::Absolute(tested));
     }
@@ -2219,7 +2356,10 @@ fn sign_idiom<'a>(
         (Expression::IntegerLiteral(0), value)
             if leaf(value)
                 && !matches!(value, Expression::IntegerLiteral(_))
-                && matches!(relation, BinaryOperator::Less | BinaryOperator::Greater) =>
+                && matches!(
+                    relation,
+                    BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::Equal | BinaryOperator::NotEqual
+                ) =>
         {
             Some(SignIdiom::Masked { relation, tested, value, keep_when_true: false })
         }
