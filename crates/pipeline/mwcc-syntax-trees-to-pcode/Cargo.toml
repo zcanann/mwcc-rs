@@ -1,0 +1,15 @@
+[package]
+name = "mwcc-syntax-trees-to-pcode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MWCC INITIAL CODE: lowering syntax trees to PCode over virtual registers"
+
+[dependencies]
+mwcc-core.workspace = true
+mwcc-machine-code.workspace = true
+mwcc-pcode.workspace = true
+mwcc-syntax-trees.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

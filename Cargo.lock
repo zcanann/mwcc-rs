@@ -76,6 +76,24 @@ name = "mwcc-oracle"
 version = "0.0.1"
 
 [[package]]
+name = "mwcc-pcode"
+version = "0.0.1"
+dependencies = [
+ "mwcc-machine-code",
+ "mwcc-vreg",
+]
+
+[[package]]
+name = "mwcc-pcode-to-machine-code"
+version = "0.0.1"
+dependencies = [
+ "mwcc-core",
+ "mwcc-machine-code",
+ "mwcc-pcode",
+ "mwcc-vreg",
+]
+
+[[package]]
 name = "mwcc-source-loader"
 version = "0.0.1"
 dependencies = [
@@ -115,10 +133,23 @@ version = "0.0.1"
 dependencies = [
  "mwcc-core",
  "mwcc-machine-code",
+ "mwcc-pcode",
+ "mwcc-pcode-to-machine-code",
  "mwcc-syntax-trees",
+ "mwcc-syntax-trees-to-pcode",
  "mwcc-target",
  "mwcc-versions",
  "mwcc-vreg",
+]
+
+[[package]]
+name = "mwcc-syntax-trees-to-pcode"
+version = "0.0.1"
+dependencies = [
+ "mwcc-core",
+ "mwcc-machine-code",
+ "mwcc-pcode",
+ "mwcc-syntax-trees",
 ]
 
 [[package]]

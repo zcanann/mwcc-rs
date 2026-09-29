@@ -11,6 +11,7 @@ use mwcc_versions::{Behavior, CompilerConfig, FrameConvention};
 use std::collections::{HashMap, HashSet};
 
 mod analysis;
+mod pcode_path;
 mod allocation_debug;
 mod allocation_diagnostics;
 mod allocation_frame;
@@ -314,6 +315,13 @@ fn lower_function_body(
     source_facts: SourceFunctionFacts<'_>,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
+    if let Some(mode) = pcode_path::mode() {
+        match pcode_path::lower(function, globals, call_return_types, &config) {
+            Ok(output) => return Ok(output),
+            Err(diagnostic) if matches!(mode, pcode_path::Mode::Only) => return Err(diagnostic),
+            Err(_) => {}
+        }
+    }
     if source_facts.is_cxx {
         if let Some(output) = static_pointer_initialization::lower_getter(function, globals, config) {
             return Ok(output);

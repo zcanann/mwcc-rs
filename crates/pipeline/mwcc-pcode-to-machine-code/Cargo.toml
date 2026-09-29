@@ -1,0 +1,15 @@
+[package]
+name = "mwcc-pcode-to-machine-code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MWCC backend after INITIAL CODE: coloring, frame layout, prologue/epilogue, final code"
+
+[dependencies]
+mwcc-core.workspace = true
+mwcc-machine-code.workspace = true
+mwcc-pcode.workspace = true
+mwcc-vreg.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

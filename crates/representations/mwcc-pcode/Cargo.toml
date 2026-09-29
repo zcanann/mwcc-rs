@@ -1,0 +1,13 @@
+[package]
+name = "mwcc-pcode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MWCC-style PCode: basic blocks of PowerPC instructions over virtual registers"
+
+[dependencies]
+mwcc-machine-code.workspace = true
+mwcc-vreg.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
