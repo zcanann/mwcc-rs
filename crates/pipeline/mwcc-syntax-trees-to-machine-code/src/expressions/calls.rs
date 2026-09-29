@@ -2195,6 +2195,41 @@ impl Generator {
                                     continue;
                                 }
                             }
+                            // Any other word value is computed in r0 and then
+                            // converted into its ABI home, exactly like the
+                            // memory form above (`addi r0,r3,1; extsh r3,r0`,
+                            // `add r0,r3,r4; clrlwi r3,r0,16`).
+                            // GC/1.2.5n and earlier leave computed arguments
+                            // unconverted (`addi r3,r3,1; bl`); that rule is
+                            // not yet characterized, so they keep deferring.
+                            if self.behavior.frame_convention != FrameConvention::LinkageFirst
+                                && narrow_general_argument(
+                                    parameter_type,
+                                    next_general.into(),
+                                    GENERAL_SCRATCH,
+                                )
+                                .is_some()
+                            {
+                                let newly_reserved: Vec<_> =
+                                    (u32::from(Eabi::FIRST_GENERAL_ARGUMENT)..next_general)
+                                        .filter(|register| self.reserved.insert((*register).into()))
+                                        .collect();
+                                let evaluated =
+                                    self.evaluate_general(general_argument, GENERAL_SCRATCH);
+                                for register in newly_reserved {
+                                    self.reserved.remove(&register);
+                                }
+                                evaluated?;
+                                if let Some(narrow) = narrow_general_argument(
+                                    parameter_type,
+                                    next_general.into(),
+                                    GENERAL_SCRATCH,
+                                ) {
+                                    self.output.instructions.push(narrow);
+                                    next_general += 1;
+                                    continue;
+                                }
+                            }
                             return Err(Diagnostic::error("an argument wider than a narrow parameter needs a narrowing conversion (roadmap)"));
                         }
                     }
