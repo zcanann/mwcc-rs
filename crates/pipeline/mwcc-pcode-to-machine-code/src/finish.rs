@@ -97,11 +97,16 @@ pub fn finish(
 
     // Drop jumps to the next block and return inline from a frameless function.
     for block in 0..pcode.blocks.len() {
-        let Some(Instruction::Branch { target }) = pcode.blocks[block]
-            .instructions
-            .last()
-            .map(|instruction| instruction.instruction.clone())
-        else {
+        let last = pcode.blocks[block].instructions.last().map(|instruction| instruction.instruction.clone());
+        if let Some(Instruction::BranchConditionalForward { options, condition_bit, target }) = last {
+            // A conditional branch to a bare `blr` is a conditional return.
+            if frameless_exit && target == exit_block {
+                pcode.blocks[block].instructions.last_mut().expect("branch").instruction =
+                    Instruction::BranchConditionalToLinkRegister { options, condition_bit };
+            }
+            continue;
+        }
+        let Some(Instruction::Branch { target }) = last else {
             continue;
         };
         if target > block && (block + 1..target).all(|b| pcode.blocks[b].instructions.is_empty()) {

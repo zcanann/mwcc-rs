@@ -82,6 +82,7 @@ pub fn lower(function: &Function, context: &LoweringContext<'_>) -> Compilation<
         labels: Vec::new(),
         exit_label: Label(0),
         return_register: None,
+        hoisted: None,
     };
     lowerer.lower_function(function)?;
     Ok(Lowered { pcode: lowerer.pcode, makes_calls: lowerer.makes_calls })
@@ -160,6 +161,16 @@ struct Lowerer<'a> {
     /// places: each `return` assigns it and jumps to the exit block, which
     /// copies it to r3 (MWCC's single return point).
     return_register: Option<u32>,
+    /// An arm assignment hoisted above the next conditional branch (a select).
+    hoisted: Option<Hoisted>,
+}
+
+/// One arm of a two-way select, evaluated unconditionally ahead of the
+/// branch that skips the other arm.
+#[derive(Clone)]
+enum Hoisted {
+    Return(Expression),
+    Assign(String, Expression),
 }
 
 /// A branch target placed later in layout order.
@@ -214,10 +225,15 @@ impl Lowerer<'_> {
     }
 
     /// Emit a branch to `label`; conditional branches end their block.
-    fn branch(&mut self, instruction: Instruction, label: Label) {
+    fn branch(&mut self, instruction: Instruction, label: Label) -> Compilation<()> {
+        let conditional = !matches!(instruction, Instruction::Branch { .. });
+        if conditional {
+            if let Some(hoisted) = self.hoisted.take() {
+                self.emit_hoisted(hoisted)?;
+            }
+        }
         let block = self.current_block();
         let position = self.pcode.blocks[block].instructions.len();
-        let conditional = !matches!(instruction, Instruction::Branch { .. });
         self.emit_plain(instruction);
         self.pending_branches.push((block, position, label));
         self.loaded_globals.clear();
@@ -227,6 +243,46 @@ impl Lowerer<'_> {
             // An unconditional jump ends the block with no fall-through.
             self.start_block(false);
         }
+        Ok(())
+    }
+
+    fn emit_hoisted(&mut self, hoisted: Hoisted) -> Compilation<()> {
+        match hoisted {
+            Hoisted::Return(value) => self.return_value(&value),
+            Hoisted::Assign(name, value) => self.assign(&name, &value),
+        }
+    }
+
+    /// `if (condition) <then> else <otherwise>` where each arm is one
+    /// assignment of the same destination: MWCC assigns one arm before the
+    /// branch and conditionally overwrites it. The else arm goes first unless
+    /// only the then arm is a constant. Returns false when not a select.
+    fn select(
+        &mut self,
+        condition: &Expression,
+        then_arm: Hoisted,
+        else_arm: Hoisted,
+        join: Label,
+    ) -> Compilation<bool> {
+        // `if (!c) A else B` is `if (c) B else A`.
+        if let Expression::Unary { operator: UnaryOperator::LogicalNot, operand } = condition {
+            return self.select(operand, else_arm, then_arm, join);
+        }
+        let value = |arm: &Hoisted| match arm {
+            Hoisted::Return(value) | Hoisted::Assign(_, value) => value.clone(),
+        };
+        let (then_value, else_value) = (value(&then_arm), value(&else_arm));
+        if !simple_condition(condition) || !speculable(&then_value) || !speculable(&else_value) {
+            return Ok(false);
+        }
+        let constant = |value: &Expression| matches!(value, Expression::IntegerLiteral(_));
+        let then_first = constant(&then_value) && !constant(&else_value);
+        let (first, second) = if then_first { (then_arm, else_arm) } else { (else_arm, then_arm) };
+        self.hoisted = Some(first);
+        self.branch_on(condition, then_first, join)?;
+        self.hoisted = None;
+        self.emit_hoisted(second)?;
+        Ok(true)
     }
 
     /// Resolve pending branches: targets become block indices (flattening
@@ -319,7 +375,7 @@ impl Lowerer<'_> {
                 self.branch(
                     Instruction::BranchConditionalForward { options, condition_bit: bit, target: 0 },
                     label,
-                );
+                )?;
                 Ok(())
             }
             other => {
@@ -330,7 +386,7 @@ impl Lowerer<'_> {
                 self.branch(
                     Instruction::BranchConditionalForward { options, condition_bit: 2, target: 0 },
                     label,
-                );
+                )?;
                 Ok(())
             }
         }
@@ -476,15 +532,44 @@ impl Lowerer<'_> {
         for statement in &function.statements {
             self.statement(statement)?;
         }
-        for guard in &function.guards {
+        let mut final_return = function.return_expression.as_ref();
+        for (index, guard) in function.guards.iter().enumerate() {
+            if index + 1 == function.guards.len() {
+                if let Some(value) = final_return {
+                    let exit = self.exit_label;
+                    if self.select(
+                        &guard.condition,
+                        Hoisted::Return(guard.value.clone()),
+                        Hoisted::Return(value.clone()),
+                        exit,
+                    )? {
+                        final_return = None;
+                        continue;
+                    }
+                }
+            }
             let skip = self.new_label();
             self.branch_unless(&guard.condition, skip)?;
             self.return_value(&guard.value)?;
-            self.branch(Instruction::Branch { target: 0 }, self.exit_label);
+            self.branch(Instruction::Branch { target: 0 }, self.exit_label)?;
             self.place_label(skip);
         }
-        if let Some(value) = &function.return_expression {
-            self.return_value(value)?;
+        if let Some(value) = final_return {
+            if let Expression::Conditional { condition, when_true, when_false, .. } = value {
+                let exit = self.exit_label;
+                let then_arm = Hoisted::Return(when_true.as_ref().clone());
+                let else_arm = Hoisted::Return(when_false.as_ref().clone());
+                if !self.select(condition, then_arm, else_arm, exit)? {
+                    let otherwise = self.new_label();
+                    self.branch_unless(condition, otherwise)?;
+                    self.return_value(when_true)?;
+                    self.branch(Instruction::Branch { target: 0 }, exit)?;
+                    self.place_label(otherwise);
+                    self.return_value(when_false)?;
+                }
+            } else {
+                self.return_value(value)?;
+            }
         }
         // The exit block: the epilogue is generated here after coloring.
         let last = self.current_block();
@@ -514,6 +599,37 @@ impl Lowerer<'_> {
             }
             Statement::Store { target, value } => self.store(target, value),
             Statement::If { condition, then_body, else_body } => {
+                match (then_body.as_slice(), else_body.as_slice()) {
+                    (
+                        [Statement::Assign { name, value }],
+                        [Statement::Assign { name: other, value: other_value }],
+                    ) if name == other && self.variables.contains_key(name) => {
+                        let join = self.new_label();
+                        if self.select(
+                            condition,
+                            Hoisted::Assign(name.clone(), value.clone()),
+                            Hoisted::Assign(name.clone(), other_value.clone()),
+                            join,
+                        )? {
+                            self.place_label(join);
+                            return Ok(());
+                        }
+                    }
+                    ([Statement::Return(Some(value))], [Statement::Return(Some(other_value))])
+                        if self.return_register.is_some() =>
+                    {
+                        let exit = self.exit_label;
+                        if self.select(
+                            condition,
+                            Hoisted::Return(value.clone()),
+                            Hoisted::Return(other_value.clone()),
+                            exit,
+                        )? {
+                            return self.branch(Instruction::Branch { target: 0 }, exit);
+                        }
+                    }
+                    _ => {}
+                }
                 let otherwise = self.new_label();
                 self.branch_unless(condition, otherwise)?;
                 for statement in then_body {
@@ -524,7 +640,7 @@ impl Lowerer<'_> {
                 } else {
                     let join = self.new_label();
                     if !self.block_ends_in_jump(self.current_block()) {
-                        self.branch(Instruction::Branch { target: 0 }, join);
+                        self.branch(Instruction::Branch { target: 0 }, join)?;
                     }
                     self.place_label(otherwise);
                     for statement in else_body {
@@ -539,7 +655,7 @@ impl Lowerer<'_> {
                     self.return_value(value)?;
                 }
                 let exit = self.exit_label;
-                self.branch(Instruction::Branch { target: 0 }, exit);
+                self.branch(Instruction::Branch { target: 0 }, exit)?;
                 Ok(())
             }
             other => Err(unsupported(format!("statement {:?}", std::mem::discriminant(other)))),
@@ -1394,5 +1510,36 @@ fn returns_from_several_places(function: &Function) -> bool {
             _ => false,
         })
     }
-    !function.guards.is_empty() || has_return(&function.statements)
+    !function.guards.is_empty()
+        || has_return(&function.statements)
+        || matches!(function.return_expression, Some(Expression::Conditional { .. }))
+}
+
+/// A branch condition MWCC turns into a single compare-and-branch.
+fn simple_condition(condition: &Expression) -> bool {
+    match condition {
+        Expression::Unary { operator: UnaryOperator::LogicalNot, operand } => simple_condition(operand),
+        Expression::Binary { operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr, .. } => false,
+        _ => true,
+    }
+}
+
+/// An arm value MWCC evaluates unconditionally in a select: no calls, and
+/// nothing that can trap (pointer loads, division).
+fn speculable(expression: &Expression) -> bool {
+    match expression {
+        Expression::IntegerLiteral(_) | Expression::Variable(_) => true,
+        Expression::Binary { operator, left, right } => {
+            !matches!(
+                operator,
+                BinaryOperator::Divide
+                    | BinaryOperator::Modulo
+                    | BinaryOperator::LogicalAnd
+                    | BinaryOperator::LogicalOr
+            ) && speculable(left)
+                && speculable(right)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => speculable(operand),
+        _ => false,
+    }
 }
