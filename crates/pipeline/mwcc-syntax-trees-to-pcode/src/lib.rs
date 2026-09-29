@@ -1062,6 +1062,21 @@ impl Lowerer<'_> {
                 }
                 Err(unsupported(format!("unknown variable '{name}'")))
             }
+            Expression::Binary { operator, left, right }
+                if literal_value(left).is_some() && literal_value(right).is_some() =>
+            {
+                let folded = fold_literals(*operator, literal_value(left).unwrap(), literal_value(right).unwrap());
+                let Some(value) = folded else {
+                    return Err(unsupported("constant expression"));
+                };
+                let register = self.result(target);
+                self.load_constant(register, value)?;
+                Ok((register, Type::Int))
+            }
+            Expression::Binary { operator, left, right } if negation_fold(*operator, left, right).is_some() => {
+                let folded = negation_fold(*operator, left, right).expect("checked");
+                self.expression_with_target(&folded, target)
+            }
             Expression::Binary { operator, left, right } => {
                 match fold_constants(*operator, left, right) {
                     Some(Expression::Binary { operator, left, right }) => {
@@ -1108,7 +1123,23 @@ impl Lowerer<'_> {
                 let offset = i16::try_from(*offset).map_err(|_| unsupported("large member offset"))?;
                 self.load(*member_type, base, offset, None, target)
             }
+            Expression::Index { base, index } => {
+                if let Some(loaded) = self.element_load(base, index, target)? {
+                    return Ok(loaded);
+                }
+                Err(unsupported("index of a non-pointer"))
+            }
             Expression::Dereference { pointer } => {
+                if let Expression::Binary { operator: BinaryOperator::Add, left, right } = pointer.as_ref() {
+                    let (base, index) = if self.static_type(left).and_then(element_size).is_some() {
+                        (left, right)
+                    } else {
+                        (right, left)
+                    };
+                    if let Some(loaded) = self.element_load(base, index, target)? {
+                        return Ok(loaded);
+                    }
+                }
                 let (base, ty) = self.expression(pointer)?;
                 let Type::Pointer(pointee) = ty else {
                     return Err(unsupported("dereference of a non-scalar pointer"));
@@ -1177,6 +1208,52 @@ impl Lowerer<'_> {
             self.emit_based(Instruction::AddImmediate { d: register, a: register, immediate: low }, register);
         }
         Ok(())
+    }
+
+    /// `base[index]` / `*(base + index)` for a pointer `base`: a displacement
+    /// load for a constant index, else an indexed (`lwzx`) load of the
+    /// scaled index. `None` when `base` is not a scalar pointer.
+    fn element_load(
+        &mut self,
+        base: &Expression,
+        index: &Expression,
+        target: Option<u32>,
+    ) -> Compilation<Option<(u32, Type)>> {
+        let Some(pointer_type @ Type::Pointer(pointee)) = self.static_type(base) else {
+            return Ok(None);
+        };
+        if self.static_type(index).and_then(element_size).is_some() {
+            return Ok(None);
+        }
+        let (Some(loaded), Some(size)) = (pointee_type(pointee), element_size(pointer_type)) else {
+            return Ok(None);
+        };
+        if let Expression::IntegerLiteral(value) = index {
+            let Ok(offset) = i16::try_from(value * i64::from(size)) else { return Ok(None) };
+            let (a, _) = self.expression(base)?;
+            return self.load(loaded, a, offset, None, target).map(Some);
+        }
+        let (a, _) = self.expression(base)?;
+        let scaled = scale_index(index, size);
+        let (b, _) = self.expression(&scaled)?;
+        let extends = loaded == Type::Char;
+        let d = if extends { self.temporary() } else { self.result(target) };
+        let instruction = match loaded {
+            Type::Int | Type::UnsignedInt | Type::Pointer(_) => Instruction::LoadWordIndexed { d, a, b },
+            Type::Short => Instruction::LoadHalfwordAlgebraicIndexed { d, a, b },
+            Type::UnsignedShort => Instruction::LoadHalfwordZeroIndexed { d, a, b },
+            Type::Char | Type::UnsignedChar => Instruction::LoadByteZeroIndexed { d, a, b },
+            _ => return Ok(None),
+        };
+        let mut load = PInstr::new(instruction);
+        load.not_r0.push(a);
+        self.emit(load);
+        if extends {
+            let extended = self.result(target);
+            self.emit_plain(Instruction::ExtendSignByte { a: extended, s: d });
+            return Ok(Some((extended, loaded)));
+        }
+        Ok(Some((d, loaded)))
     }
 
     fn load_instruction(ty: Type, d: u32, a: u32, offset: i16) -> Compilation<(Instruction, Option<Instruction>)> {
@@ -2054,4 +2131,65 @@ fn sign_idiom<'a>(
 
 fn same_variable(left: &Expression, right: &Expression) -> bool {
     matches!((left, right), (Expression::Variable(a), Expression::Variable(b)) if a == b)
+}
+
+/// An integer literal, possibly under integer casts (`0x1000UL`).
+fn literal_value(expression: &Expression) -> Option<i64> {
+    match expression {
+        Expression::IntegerLiteral(value) => Some(*value),
+        Expression::Cast { target_type, operand } if is_general_word(*target_type) && !is_narrow(*target_type) => {
+            literal_value(operand)
+        }
+        _ => None,
+    }
+}
+
+/// IRO constant folding of two literals, in 32-bit arithmetic.
+fn fold_literals(operator: BinaryOperator, left: i64, right: i64) -> Option<i64> {
+    let (a, b) = (left as i32, right as i32);
+    let value = match operator {
+        BinaryOperator::Add => a.wrapping_add(b),
+        BinaryOperator::Subtract => a.wrapping_sub(b),
+        BinaryOperator::Multiply => a.wrapping_mul(b),
+        BinaryOperator::BitAnd => a & b,
+        BinaryOperator::BitOr => a | b,
+        BinaryOperator::BitXor => a ^ b,
+        BinaryOperator::ShiftLeft if (0..32).contains(&b) => a.wrapping_shl(b as u32),
+        _ => return None,
+    };
+    Some(i64::from(value))
+}
+
+/// IRO algebra on negations: `a - -b` = `a + b`, `a + -b` = `a - b`,
+/// `-a + b` = `b - a`, `-a - b` = `-(a + b)`.
+fn negation_fold(operator: BinaryOperator, left: &Expression, right: &Expression) -> Option<Expression> {
+    let negated = |expression: &Expression| match expression {
+        Expression::Unary { operator: UnaryOperator::Negate, operand } => Some(operand.as_ref().clone()),
+        _ => None,
+    };
+    let binary = |operator, left: Expression, right: Expression| Expression::Binary {
+        operator,
+        left: Box::new(left),
+        right: Box::new(right),
+    };
+    match operator {
+        BinaryOperator::Subtract => {
+            if let Some(b) = negated(right) {
+                return Some(binary(BinaryOperator::Add, left.clone(), b));
+            }
+            let a = negated(left)?;
+            Some(Expression::Unary {
+                operator: UnaryOperator::Negate,
+                operand: Box::new(binary(BinaryOperator::Add, a, right.clone())),
+            })
+        }
+        BinaryOperator::Add => {
+            if let Some(b) = negated(right) {
+                return Some(binary(BinaryOperator::Subtract, left.clone(), b));
+            }
+            let a = negated(left)?;
+            Some(binary(BinaryOperator::Subtract, right.clone(), a))
+        }
+        _ => None,
+    }
 }
