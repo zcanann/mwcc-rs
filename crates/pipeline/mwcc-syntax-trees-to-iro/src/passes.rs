@@ -554,3 +554,93 @@ pub fn fits_unconverted(value: &Expr, ty: Type) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mwcc_iro::{Pointee, Variable, VariableKind};
+
+    fn var(id: VarId) -> Expr {
+        Expr { kind: ExprKind::Var(id), ty: Type::Int }
+    }
+
+    fn function(body: Vec<Stmt>) -> Function {
+        Function {
+            name: "f".into(),
+            return_type: Type::Int,
+            variables: (0..2)
+                .map(|i| Variable { name: format!("p{i}"), ty: Type::Int, kind: VariableKind::Parameter })
+                .collect(),
+            parameter_count: 2,
+            body,
+        }
+    }
+
+    #[test]
+    fn folds_scaled_pointer_constants_and_chains() {
+        let pointer = Type::Pointer(Pointee::Int);
+        let mut e = Expr::binary(BinaryOp::Add, Expr::typed_int(0x1000, pointer), Expr::int(12), pointer);
+        fold(&mut e);
+        assert_eq!(e.as_int(), Some(0x100c));
+        assert_eq!(e.ty, pointer);
+        let mut chain = Expr::binary(
+            BinaryOp::Subtract,
+            Expr::binary(BinaryOp::Add, var(0), Expr::int(10), Type::Int),
+            Expr::int(3),
+            Type::Int,
+        );
+        fold(&mut chain);
+        assert!(matches!(&chain.kind, ExprKind::Binary(BinaryOp::Add, _, right) if right.as_int() == Some(7)));
+    }
+
+    #[test]
+    fn negation_algebra() {
+        let mut e = Expr::binary(BinaryOp::Subtract, var(0), Expr::unary(UnaryOp::Negate, var(1), Type::Int), Type::Int);
+        algebra(&mut e);
+        assert!(matches!(&e.kind, ExprKind::Binary(BinaryOp::Add, ..)));
+    }
+
+    #[test]
+    fn select_hoists_else_arm_unless_only_then_is_constant() {
+        let condition = Expr::binary(BinaryOp::Less, var(0), var(1), Type::Int);
+        let mut f = function(vec![Stmt::If {
+            condition: condition.clone(),
+            then_body: vec![Stmt::Return(Some(Expr::int(3)))],
+            else_body: vec![],
+        }, Stmt::SetReturn(Expr::binary(BinaryOp::Add, var(0), var(1), Type::Int))]);
+        selects(&mut f);
+        // Then arm constant, else arm computed: the constant goes first and
+        // the else arm is the conditional overwrite.
+        assert!(matches!(&f.body[0], Stmt::SetReturn(value) if value.as_int() == Some(3)));
+        assert!(matches!(&f.body[1], Stmt::If { condition, .. } if matches!(condition.kind, ExprKind::Unary(UnaryOp::LogicalNot, _))));
+    }
+
+    #[test]
+    fn select_into_temporary_when_condition_reads_the_variable() {
+        let mut f = function(vec![Stmt::If {
+            condition: Expr::binary(BinaryOp::Less, var(0), var(1), Type::Int),
+            then_body: vec![Stmt::Assign { variable: 0, value: Expr::binary(BinaryOp::Add, var(0), Expr::int(1), Type::Int) }],
+            else_body: vec![Stmt::Assign { variable: 0, value: var(1) }],
+        }]);
+        selects(&mut f);
+        // v0 is only written by the final copy from the temporary.
+        let writes: Vec<VarId> = f.body.iter().filter_map(|s| match s { Stmt::Assign { variable, .. } => Some(*variable), _ => None }).collect();
+        assert_eq!(writes.last(), Some(&0));
+        assert!(writes[..writes.len() - 1].iter().all(|&v| v != 0));
+    }
+
+    #[test]
+    fn abs_becomes_an_idiom() {
+        let x = var(0);
+        let mut e = Expr {
+            kind: ExprKind::Select {
+                condition: Box::new(Expr::binary(BinaryOp::Less, x.clone(), Expr::int(0), Type::Int)),
+                when_true: Box::new(Expr::unary(UnaryOp::Negate, x.clone(), Type::Int)),
+                when_false: Box::new(x),
+            },
+            ty: Type::Int,
+        };
+        idioms(&mut e, &[Type::Int, Type::Int]);
+        assert!(matches!(e.kind, ExprKind::Idiom(Idiom::Absolute(_))));
+    }
+}
