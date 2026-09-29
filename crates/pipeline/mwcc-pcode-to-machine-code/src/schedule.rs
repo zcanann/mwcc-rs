@@ -152,6 +152,7 @@ fn memory_of(instruction: &PInstr) -> Memory {
 /// Reorder `instructions` (one basic block) as MWCC's scheduler would.
 /// `virtual_registers` enables the final opcode-rank tie-break.
 pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
+    FINAL_PASS.with(|flag| flag.set(!virtual_registers));
     let count = instructions.len();
     if count <= 2 {
         return;
@@ -369,6 +370,20 @@ fn same_cycle_release() -> bool {
     std::env::var_os("MWCC_SCHED_SAME_CYCLE").is_some()
 }
 
+thread_local! {
+    static FINAL_PASS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// In the final (physical) pass every memory access is mutually ordered —
+/// frame code generated after coloring carries no object identity. The first
+/// pass disambiguates named objects. `MWCC_SCHED_ALIAS=pre|both|none`
+/// overrides this for model study.
 fn alias_all() -> bool {
-    std::env::var_os("MWCC_SCHED_ALIAS_ALL").is_some()
+    let final_pass = FINAL_PASS.with(|flag| flag.get());
+    match std::env::var("MWCC_SCHED_ALIAS").as_deref() {
+        Ok("none") => false,
+        Ok("pre") => !final_pass,
+        Ok("both") => true,
+        _ => final_pass,
+    }
 }
