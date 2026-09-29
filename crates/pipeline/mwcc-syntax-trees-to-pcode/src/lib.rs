@@ -152,6 +152,17 @@ struct Lowerer<'a> {
 }
 
 impl Lowerer<'_> {
+    fn expression_with_target(
+        &mut self,
+        expression: &Expression,
+        target: Option<u32>,
+    ) -> Compilation<(u32, Type)> {
+        self.target = target;
+        let evaluated = self.expression(expression);
+        self.target = None;
+        evaluated
+    }
+
     fn result(&mut self, target: Option<u32>) -> u32 {
         target.unwrap_or_else(|| self.temporary())
     }
@@ -281,7 +292,6 @@ impl Lowerer<'_> {
     }
 
     fn statement(&mut self, statement: &Statement) -> Compilation<()> {
-        self.loaded_globals.clear();
         match statement {
             Statement::Assign { name, value } => self.assign(name, value),
             Statement::Expression(Expression::Call { name, arguments }) => {
@@ -304,6 +314,26 @@ impl Lowerer<'_> {
             return Err(unsupported(format!("assignment to non-local '{name}'")));
         };
         let destination = variable.register;
+        let result = self.assign_to(name, destination, value);
+        // A cached global value held in this variable's register is stale
+        // once the variable changes (the new value may itself be cached).
+        let _ = name;
+        result
+    }
+
+    fn assign_to(&mut self, name: &str, destination: u32, value: &Expression) -> Compilation<()> {
+        let before: Vec<String> = self
+            .loaded_globals
+            .iter()
+            .filter(|(_, (register, _))| *register == destination)
+            .map(|(global, _)| global.clone())
+            .collect();
+        for global in before {
+            self.loaded_globals.remove(&global);
+        }
+        let Some(variable) = self.variables.get(name) else {
+            return Err(unsupported(format!("assignment to non-local '{name}'")));
+        };
         let variable_type = variable.ty;
         let narrow = matches!(
             variable_type,
@@ -570,6 +600,37 @@ impl Lowerer<'_> {
             Expression::IntegerLiteral(value) => i16::try_from(*value).ok(),
             _ => None,
         };
+        // IRO algebra: `(x + y) - y` and `(x - y) + y` are `x`.
+        if let Some(simplified) = cancel(operator, left, right) {
+            return self.expression_with_target(simplified, target);
+        }
+        // `a & ~b` / `a | ~b` are single instructions.
+        if let (BinaryOperator::BitAnd | BinaryOperator::BitOr, Expression::Unary { operator: UnaryOperator::BitNot, operand }) =
+            (operator, right)
+        {
+            let (a, ty) = self.expression(left)?;
+            let (b, _) = self.expression(operand)?;
+            let d = self.result(target);
+            self.emit_plain(if operator == BinaryOperator::BitAnd {
+                Instruction::AndComplement { a: d, s: a, b }
+            } else {
+                Instruction::OrComplement { a: d, s: a, b }
+            });
+            return Ok((d, promote(ty)));
+        }
+        // A mask within a narrow load's width does not observe its sign
+        // extension: load zero-extended and mask.
+        if operator == BinaryOperator::BitAnd {
+            if let (Some((begin, end)), Some(width)) = (mask_bounds(right), narrow_load_width(left)) {
+                if begin >= 32 - width {
+                    let widened = zero_extended_load(left);
+                    let (a, _) = self.expression(&widened)?;
+                    let d = self.result(target);
+                    self.emit_plain(Instruction::RotateAndMask { a: d, s: a, shift: 0, begin, end });
+                    return Ok((d, Type::Int));
+                }
+            }
+        }
         if operator == BinaryOperator::BitAnd {
             if let Some((operand, shift, begin, end)) = shift_mask(left, right) {
                 let (a, operand_type) = self.expression(operand)?;
@@ -584,6 +645,16 @@ impl Lowerer<'_> {
             (BinaryOperator::Add, Some(value)) => {
                 let d = self.result(target);
                 self.emit_based(Instruction::AddImmediate { d, a, immediate: value }, a);
+                return Ok((d, result_type));
+            }
+            (BinaryOperator::Add, None) if wide_constant(right).is_some() => {
+                let (high, low) = wide_constant(right).expect("checked");
+                let d = self.result(target);
+                let middle = if low == 0 { d } else { self.temporary() };
+                self.emit_based(Instruction::AddImmediateShifted { d: middle, a, immediate: high }, a);
+                if low != 0 {
+                    self.emit_based(Instruction::AddImmediate { d, a: middle, immediate: low }, middle);
+                }
                 return Ok((d, result_type));
             }
             (BinaryOperator::Subtract, Some(value)) if value != i16::MIN => {
@@ -732,6 +803,14 @@ impl Lowerer<'_> {
         instruction.relocation = relocation;
         self.emit(instruction);
         self.loaded_globals.clear();
+        // A stored word-sized global's value is still in `source`.
+        if let Expression::Variable(name) = target {
+            if let Some(global) = self.context.globals.get(name) {
+                if !global.is_volatile && matches!(ty, Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. }) {
+                    self.loaded_globals.insert(name.clone(), (source, ty));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -888,7 +967,10 @@ fn shift_mask<'a>(left: &'a Expression, right: &Expression) -> Option<(&'a Expre
 fn store_width(target: &Expression, globals: &HashMap<String, GlobalInfo>) -> Option<u32> {
     let ty = match target {
         Expression::Member { member_type, .. } => *member_type,
-        Expression::Dereference { .. } => return None,
+        Expression::Dereference { pointer } => match pointer.as_ref() {
+            Expression::Cast { target_type: Type::Pointer(pointee), .. } => pointee_type(*pointee)?,
+            _ => return None,
+        },
         Expression::Variable(name) => globals.get(name)?.ty,
         _ => return None,
     };
@@ -947,5 +1029,66 @@ fn scale_index(index: &Expression, size: u32) -> Expression {
             left: Box::new(other.clone()),
             right: Box::new(Expression::IntegerLiteral(i64::from(size))),
         },
+    }
+}
+
+/// `(x + y) - y` / `(x - y) + y` -> `x` (matching leaf operands only).
+fn cancel<'a>(
+    operator: BinaryOperator,
+    left: &'a Expression,
+    right: &Expression,
+) -> Option<&'a Expression> {
+    let Expression::Binary { operator: inner, left: x, right: y } = left else { return None };
+    let leaf = |expression: &Expression| {
+        matches!(expression, Expression::Variable(_) | Expression::IntegerLiteral(_))
+    };
+    let inverse = matches!(
+        (inner, operator),
+        (BinaryOperator::Add, BinaryOperator::Subtract) | (BinaryOperator::Subtract, BinaryOperator::Add)
+    );
+    let same = match (y.as_ref(), right) {
+        (Expression::Variable(a), Expression::Variable(b)) => a == b,
+        (Expression::IntegerLiteral(a), Expression::IntegerLiteral(b)) => a == b,
+        _ => false,
+    };
+    (inverse && leaf(y) && same).then_some(x.as_ref())
+}
+
+/// A constant that does not fit `addi`: `(high, low)` for `addis`+`addi`.
+fn wide_constant(expression: &Expression) -> Option<(i16, i16)> {
+    let Expression::IntegerLiteral(value) = expression else { return None };
+    let value = i32::try_from(*value).ok().or_else(|| u32::try_from(*value).ok().map(|v| v as i32))?;
+    if i16::try_from(value).is_ok() {
+        return None;
+    }
+    let low = value as i16;
+    let high = ((value - i32::from(low)) >> 16) as i16;
+    Some((high, low))
+}
+
+/// Bit width of a signed narrow memory load (`char`/`short` member or
+/// dereference), whose sign extension a narrow mask never observes.
+fn narrow_load_width(expression: &Expression) -> Option<u8> {
+    match expression {
+        Expression::Member { member_type: Type::Char, index_stride: None, .. } => Some(8),
+        Expression::Member { member_type: Type::Short, index_stride: None, .. } => Some(16),
+        _ => None,
+    }
+}
+
+/// The same load, zero-extending.
+fn zero_extended_load(expression: &Expression) -> Expression {
+    match expression {
+        Expression::Member { base, offset, member_type, index_stride } => Expression::Member {
+            base: base.clone(),
+            offset: *offset,
+            member_type: match member_type {
+                Type::Char => Type::UnsignedChar,
+                Type::Short => Type::UnsignedShort,
+                other => *other,
+            },
+            index_stride: *index_stride,
+        },
+        other => other.clone(),
     }
 }
