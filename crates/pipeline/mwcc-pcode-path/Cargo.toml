@@ -1,0 +1,18 @@
+[package]
+name = "mwcc-pcode-path"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Drives a function through the staged PCode pipeline (INITIAL CODE through final code)"
+
+[dependencies]
+mwcc-core.workspace = true
+mwcc-machine-code.workspace = true
+mwcc-syntax-trees.workspace = true
+mwcc-versions.workspace = true
+mwcc-syntax-trees-to-pcode.workspace = true
+mwcc-pcode-to-machine-code.workspace = true
+mwcc-syntax-trees-to-machine-code.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -23,6 +23,7 @@ members = [
     "crates/pipeline/mwcc-machine-code-to-object",
     "crates/pipeline/mwcc-syntax-trees-to-pcode",
     "crates/pipeline/mwcc-pcode-to-machine-code",
+    "crates/pipeline/mwcc-pcode-path",
     "crates/pipeline/mwcc-syntax-trees-to-debug-info",
 
     # binaries
@@ -50,6 +51,7 @@ mwcc-machine-code = { path = "crates/representations/mwcc-machine-code" }
 mwcc-vreg = { path = "crates/representations/mwcc-vreg" }
 mwcc-pcode = { path = "crates/representations/mwcc-pcode" }
 mwcc-pcode-to-machine-code = { path = "crates/pipeline/mwcc-pcode-to-machine-code" }
+mwcc-pcode-path = { path = "crates/pipeline/mwcc-pcode-path" }
 mwcc-syntax-trees-to-pcode = { path = "crates/pipeline/mwcc-syntax-trees-to-pcode" }
 mwcc-source-loader = { path = "crates/pipeline/mwcc-source-loader" }
 mwcc-source-to-tokens = { path = "crates/pipeline/mwcc-source-to-tokens" }

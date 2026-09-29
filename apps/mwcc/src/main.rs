@@ -593,6 +593,7 @@ fn resolve_global_destructor_record_names(
 }
 
 fn main() -> ExitCode {
+    mwcc_pcode_path::install();
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let invocation = parse_invocation(&arguments);
 

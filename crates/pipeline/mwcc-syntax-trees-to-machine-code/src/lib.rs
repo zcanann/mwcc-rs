@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 mod analysis;
 mod pcode_path;
+pub use pcode_path::{install_pcode_lowering, PcodeLowering, PcodeRequest};
 mod allocation_debug;
 mod allocation_diagnostics;
 mod allocation_frame;
@@ -316,15 +317,16 @@ fn lower_function_body(
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
     if let Some(mode) = pcode_path::mode() {
-        match pcode_path::lower(
+        match pcode_path::lower(&pcode_path::PcodeRequest {
             function,
             globals,
             call_return_types,
-            variadic_definitions,
-            prototyped_names,
+            variadic_callees: variadic_definitions,
+            prototyped: prototyped_names,
             call_parameter_types,
-            &config,
-        ) {
+            config: &config,
+            is_intrinsic: &intrinsics::is_intrinsic_call,
+        }) {
             Ok(output) => return Ok(output),
             Err(diagnostic) if matches!(mode, pcode_path::Mode::Only) => return Err(diagnostic),
             Err(_) => {}
