@@ -76,6 +76,8 @@ pub(crate) fn lower(
         mwcc_pcode_to_machine_code::FinishOptions {
             schedule: behavior.schedule_latency_slots,
             delete_dead: behavior.optimization != mwcc_versions::Optimization::O0,
+            two_integer_units: behavior.integer_select_style
+                == mwcc_versions::IntegerSelectStyle::Branchless,
         },
     )?;
     output.section = function.section.clone();

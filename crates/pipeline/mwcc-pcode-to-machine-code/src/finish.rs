@@ -19,6 +19,10 @@ pub struct FinishOptions {
     /// Remove dead definitions while building interference (MWCC's
     /// `gDeleteDeadInstructions`).
     pub delete_dead: bool,
+    /// Schedule for two integer units (IU2 takes simple integer operations):
+    /// the machine model after GC/1.2.5, whose single-IU default model the
+    /// decompilation documents.
+    pub two_integer_units: bool,
 }
 
 /// Schedule, color, frame, and flatten `pcode`. The last block is the exit
@@ -29,6 +33,7 @@ pub fn finish(
     options: FinishOptions,
 ) -> Compilation<MachineFunction> {
     prune_unreachable(&mut pcode);
+    schedule::TWO_INTEGER_UNITS.with(|flag| flag.set(options.two_integer_units));
     dump(&pcode, "INITIAL CODE");
     if !toggle("MWCC_PCODE_NO_WEBS") {
         split_webs(&mut pcode);
@@ -242,15 +247,49 @@ fn propagate_physical_copies(pcode: &mut PCodeFunction) -> bool {
                     && reachable_uses.get(v).copied().unwrap_or(0) == total_uses.get(v).copied().unwrap_or(0)
             })
             .collect();
-        if eliminated.is_empty() {
+        // Copies whose register never conflicts with rN (they coalesce with
+        // it anyway): uses in the copy's block read rN; the copy stays for
+        // uses elsewhere.
+        let partial: Vec<(u32, u32)> = if toggle("MWCC_PCODE_NO_PARTIAL_COPYPROP") {
+            Vec::new()
+        } else {
+            let mut seen = std::collections::HashSet::new();
+            pcode
+                .blocks
+                .iter()
+                .flat_map(|block| block.instructions.iter())
+                .filter_map(|instruction| instruction.copy(class))
+                .filter(|&(v, p)| v >= 32 && p < 32 && p != 0 && seen.insert(v))
+                .filter(|copy| !eliminated.contains(copy))
+                .filter(|&(v, p)| {
+                    let definitions = pcode
+                        .blocks
+                        .iter()
+                        .flat_map(|block| block.instructions.iter())
+                        .filter(|instruction| instruction.defs(class).contains(&v))
+                        .count();
+                    definitions == 1 && !interferes_with_physical(pcode, class, v, p)
+                })
+                .collect()
+        };
+        if eliminated.is_empty() && partial.is_empty() {
             continue;
         }
-        changed = true;
+        changed |= !eliminated.is_empty();
         // Pass 2: rewrite the uses and drop the copies.
         for block in &mut pcode.blocks {
             let mut active: Vec<(u32, u32)> = Vec::new();
             for instruction in &mut block.instructions {
-                if !active.is_empty() {
+                // Partially propagated copies leave other copies reading `v`.
+                let skip_partial = instruction.copy(class).is_some();
+                let active_here: Vec<(u32, u32)> = active
+                    .iter()
+                    .copied()
+                    .filter(|copy| !(skip_partial && partial.contains(copy)))
+                    .collect();
+                let active = &mut active;
+                if !active_here.is_empty() {
+                    let active = &active_here;
                     mwcc_vreg::for_each_register(&mut instruction.instruction, |role, operand_class, field| {
                         if role == RegisterRole::Use && operand_class == class {
                             if let Some(&(_, physical)) = active.iter().find(|&&(v, _)| v == *field) {
@@ -273,7 +312,7 @@ fn propagate_physical_copies(pcode: &mut PCodeFunction) -> bool {
                     active.clear();
                 }
                 if let Some(copy) = instruction.copy(class) {
-                    if eliminated.contains(&copy) {
+                    if eliminated.contains(&copy) || partial.contains(&copy) {
                         active.push(copy);
                     }
                 }
@@ -284,6 +323,52 @@ fn propagate_physical_copies(pcode: &mut PCodeFunction) -> bool {
         }
     }
     changed
+}
+
+/// Whether virtual `v` is live where physical `p` is written (other than by
+/// a copy of `v`), so the two cannot share a register.
+fn interferes_with_physical(pcode: &PCodeFunction, class: mwcc_pcode::Class, v: u32, p: u32) -> bool {
+    let blocks = pcode.blocks.len();
+    let mut live_in = vec![false; blocks];
+    let live_out = |live_in: &[bool], block: usize| {
+        pcode.blocks[block].successors.iter().any(|&successor| live_in[successor])
+    };
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in (0..blocks).rev() {
+            let mut live = live_out(&live_in, block);
+            for instruction in pcode.blocks[block].instructions.iter().rev() {
+                if instruction.defs(class).contains(&v) {
+                    live = false;
+                }
+                if instruction.uses(class).contains(&v) {
+                    live = true;
+                }
+            }
+            if live && !live_in[block] {
+                live_in[block] = true;
+                changed = true;
+            }
+        }
+    }
+    for block in 0..blocks {
+        let mut live = live_out(&live_in, block);
+        for instruction in pcode.blocks[block].instructions.iter().rev() {
+            let writes_p = instruction.defs(class).contains(&p)
+                || class == mwcc_pcode::Class::General && instruction.instruction.is_call() && (3..=12).contains(&p);
+            if live && writes_p && instruction.copy(class) != Some((p, v)) {
+                return true;
+            }
+            if instruction.defs(class).contains(&v) {
+                live = false;
+            }
+            if instruction.uses(class).contains(&v) {
+                live = true;
+            }
+        }
+    }
+    false
 }
 
 /// Rename each live-range web (definitions joined by a common use) of a

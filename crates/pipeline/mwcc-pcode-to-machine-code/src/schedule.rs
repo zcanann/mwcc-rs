@@ -67,6 +67,8 @@ type ObjectKeyRef = ObjectKey;
 struct Node {
     latency: u8,
     unit: u8,
+    /// A second unit that can also issue this instruction (IU2).
+    alternate: Option<u8>,
     occupancy: u8,
     rank: u8,
     serialize: bool,
@@ -179,9 +181,14 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
         .iter()
         .map(|instruction| {
             let info = opcode_info(&instruction.instruction);
+            let two_integer_units = (TWO_INTEGER_UNITS.with(|flag| flag.get())
+                || std::env::var_os("MWCC_SCHED_TWO_IU").is_some())
+                && std::env::var_os("MWCC_SCHED_ONE_IU").is_none();
+            let multiply_or_divide = info.mnemonic.starts_with("MUL") || info.mnemonic.starts_with("DIV");
             Node {
                 latency: info.latency,
                 unit: info.unit,
+                alternate: (two_integer_units && info.unit == 1 && !multiply_or_divide).then_some(8),
                 occupancy: info.occupancy.max(1),
                 rank: info.pick_rank,
                 serialize: info.serialize || instruction.instruction.is_call(),
@@ -292,7 +299,7 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
     let mut remaining_predecessors: Vec<usize> = nodes.iter().map(|node| node.predecessors).collect();
     let mut ready_at: Vec<i64> = vec![0; count];
     let mut issued = vec![false; count];
-    let mut unit_busy_until = [0i64; 8];
+    let mut unit_busy_until = [0i64; 9];
     let mut store_stage_until: i64 = -1;
     let mut order = Vec::with_capacity(count);
     let mut cycle: i64 = 0;
@@ -303,7 +310,8 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                 !issued[index]
                     && remaining_predecessors[index] == 0
                     && ready_at[index] <= cycle
-                    && unit_busy_until[nodes[index].unit as usize] <= cycle
+                    && (unit_busy_until[nodes[index].unit as usize] <= cycle
+                        || nodes[index].alternate.is_some_and(|unit| unit_busy_until[unit as usize] <= cycle))
                     && !(nodes[index].is_store && store_stage_until >= cycle)
             };
             let release_count = |index: usize, remaining: &[usize]| {
@@ -351,7 +359,12 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
             order.push(index);
             issued_this_cycle += 1;
             let node = &nodes[index];
-            unit_busy_until[node.unit as usize] = cycle + i64::from(node.occupancy);
+            let unit = if unit_busy_until[node.unit as usize] <= cycle {
+                node.unit
+            } else {
+                node.alternate.expect("issuable on its alternate unit")
+            };
+            unit_busy_until[unit as usize] = cycle + i64::from(node.occupancy);
             if node.is_store {
                 store_stage_until = cycle + 1;
             }
@@ -390,6 +403,8 @@ fn same_cycle_release() -> bool {
 
 thread_local! {
     static FINAL_PASS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The machine model has a second integer unit (post-1.2.5 builds).
+    pub(crate) static TWO_INTEGER_UNITS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// In the final (physical) pass every memory access is mutually ordered —
