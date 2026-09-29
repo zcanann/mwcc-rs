@@ -144,6 +144,11 @@ impl PInstr {
     pub fn has_side_effects(&self) -> bool {
         self.flags.side_effect
             || self.instruction.is_call()
+            // Emitted only for the carry they set, which liveness does not track.
+            || matches!(
+                self.instruction,
+                Instruction::SubtractFromCarrying { .. } | Instruction::AddCarrying { .. }
+            )
             || is_memory_write_or_control(&self.instruction)
     }
 }

@@ -272,6 +272,33 @@ impl Lowerer<'_> {
             Hoisted::Return(value) | Hoisted::Assign(_, value) => value.clone(),
         };
         let (then_value, else_value) = (value(&then_arm), value(&else_arm));
+        if simple_condition(condition) {
+            if let (Expression::IntegerLiteral(1), Expression::IntegerLiteral(0)) = (&then_value, &else_value) {
+                let truth = match condition {
+                    Expression::Binary { operator, .. } if comparison(*operator).is_some() => condition.clone(),
+                    other => Expression::Binary {
+                        operator: BinaryOperator::NotEqual,
+                        left: Box::new(other.clone()),
+                        right: Box::new(Expression::IntegerLiteral(0)),
+                    },
+                };
+                let arm = match then_arm {
+                    Hoisted::Return(_) => Hoisted::Return(truth),
+                    Hoisted::Assign(name, _) => Hoisted::Assign(name, truth),
+                };
+                self.emit_hoisted(arm)?;
+                return Ok(true);
+            }
+            if let (Expression::IntegerLiteral(0), Expression::IntegerLiteral(1)) = (&then_value, &else_value) {
+                let negated = Expression::Unary { operator: UnaryOperator::LogicalNot, operand: Box::new(condition.clone()) };
+                let arm = match then_arm {
+                    Hoisted::Return(_) => Hoisted::Return(negated),
+                    Hoisted::Assign(name, _) => Hoisted::Assign(name, negated),
+                };
+                self.emit_hoisted(arm)?;
+                return Ok(true);
+            }
+        }
         if !simple_condition(condition) || !speculable(&then_value) || !speculable(&else_value) {
             return Ok(false);
         }
@@ -427,6 +454,171 @@ impl Lowerer<'_> {
             }
         }
         Ok(comparison(operator).expect("checked by the caller"))
+    }
+
+    /// A comparison's 0/1 value, branch-free as MWCC generates it.
+    fn comparison_value(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        target: Option<u32>,
+    ) -> Compilation<(u32, Type)> {
+        use BinaryOperator::*;
+        let (operator, left, right) = match (left, right) {
+            (Expression::IntegerLiteral(_), other) if !matches!(other, Expression::IntegerLiteral(_)) => {
+                (mirror(operator), right, left)
+            }
+            _ => (operator, left, right),
+        };
+        let unsigned = self.static_type(left).is_some_and(|ty| is_unsigned(promote(ty)))
+            || self.static_type(right).is_some_and(|ty| is_unsigned(promote(ty)));
+        let constant = match right {
+            Expression::IntegerLiteral(value) => Some(*value),
+            _ => None,
+        };
+        let (p, left_type) = self.expression(left)?;
+        let unsigned = unsigned || is_unsigned(promote(left_type));
+        let small = |value: i64| i16::try_from(value).is_ok() && i16::try_from(-value).is_ok();
+        // Forms against constants that need no second register.
+        match (operator, constant, unsigned) {
+            (Equal, Some(0), _) => {
+                let n = self.temporary();
+                self.emit_plain(Instruction::CountLeadingZeros { a: n, s: p });
+                return self.shift_out(n, 5, target);
+            }
+            (Equal, Some(value), _) if small(value) => {
+                let d = self.temporary();
+                self.emit_plain(Instruction::SubtractFromImmediate { d, a: p, immediate: value as i16 });
+                let n = self.temporary();
+                self.emit_plain(Instruction::CountLeadingZeros { a: n, s: d });
+                return self.shift_out(n, 5, target);
+            }
+            (NotEqual, Some(0), _) => {
+                let n = self.temporary();
+                self.emit_plain(Instruction::Negate { d: n, a: p });
+                let o = self.temporary();
+                self.emit_plain(Instruction::Or { a: o, s: n, b: p });
+                return self.shift_out(o, 31, target);
+            }
+            (NotEqual, Some(value), _) if small(value) => {
+                let a = self.temporary();
+                self.emit_plain(Instruction::SubtractFromImmediate { d: a, a: p, immediate: value as i16 });
+                let b = self.temporary();
+                self.emit_based(Instruction::AddImmediate { d: b, a: p, immediate: -value as i16 }, p);
+                let o = self.temporary();
+                self.emit_plain(Instruction::Or { a: o, s: a, b });
+                return self.shift_out(o, 31, target);
+            }
+            (Less, Some(0), false) => return self.shift_out(p, 31, target),
+            (GreaterEqual, Some(0), false) => {
+                let s = self.temporary();
+                self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: s, s: p, shift: 31 });
+                let d = self.result(target);
+                self.emit_plain(Instruction::XorImmediate { a: d, s, immediate: 1 });
+                return Ok((d, Type::Int));
+            }
+            (Greater, Some(0), false) => {
+                let n = self.temporary();
+                self.emit_plain(Instruction::Negate { d: n, a: p });
+                let a = self.temporary();
+                self.emit_plain(Instruction::AndComplement { a, s: n, b: p });
+                return self.shift_out(a, 31, target);
+            }
+            (LessEqual, Some(0), false) => {
+                let n = self.temporary();
+                self.emit_plain(Instruction::CountLeadingZeros { a: n, s: p });
+                // `1 rotl clz(p)` keeps bit 31 only when p <= 0, computed in place.
+                let d = self.result(target);
+                self.load_constant(d, 1)?;
+                self.emit_plain(Instruction::RotateAndMaskVariable { a: d, s: d, b: n, begin: 31, end: 31 });
+                return Ok((d, Type::Int));
+            }
+            // Unsigned relations against zero fold in IRO (unmodeled).
+            (_, Some(0), true) => return Err(unsupported("unsigned comparison with zero")),
+            _ => {}
+        }
+        let (q, _) = self.expression(right)?;
+        match (operator, unsigned) {
+            (Equal, _) => {
+                let d = self.temporary();
+                self.emit_plain(Instruction::SubtractFrom { d, a: p, b: q });
+                let n = self.temporary();
+                self.emit_plain(Instruction::CountLeadingZeros { a: n, s: d });
+                self.shift_out(n, 5, target)
+            }
+            (NotEqual, _) => {
+                let a = self.temporary();
+                self.emit_plain(Instruction::SubtractFrom { d: a, a: p, b: q });
+                let b = self.temporary();
+                self.emit_plain(Instruction::SubtractFrom { d: b, a: q, b: p });
+                let o = self.temporary();
+                self.emit_plain(Instruction::Or { a: o, s: a, b });
+                self.shift_out(o, 31, target)
+            }
+            (Less, false) => self.signed_less(p, q, target),
+            (Greater, false) => self.signed_less(q, p, target),
+            (LessEqual, false) => self.signed_less_equal(p, q, target),
+            (GreaterEqual, false) => self.signed_less_equal(q, p, target),
+            (Less, true) => self.unsigned_less(p, q, target),
+            (Greater, true) => self.unsigned_less(q, p, target),
+            (LessEqual, true) => self.unsigned_less_equal(p, q, target),
+            (GreaterEqual, true) => self.unsigned_less_equal(q, p, target),
+            _ => unreachable!("comparison operators only"),
+        }
+    }
+
+    /// `value >> shift` (logical) into the result register.
+    fn shift_out(&mut self, value: u32, shift: u8, target: Option<u32>) -> Compilation<(u32, Type)> {
+        let d = self.result(target);
+        self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: d, s: value, shift });
+        Ok((d, Type::Int))
+    }
+
+    fn signed_less(&mut self, p: u32, q: u32, target: Option<u32>) -> Compilation<(u32, Type)> {
+        let x = self.temporary();
+        self.emit_plain(Instruction::Xor { a: x, s: q, b: p });
+        let s = self.temporary();
+        self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: s, s: x, shift: 1 });
+        let a = self.temporary();
+        self.emit_plain(Instruction::And { a, s: x, b: q });
+        let d = self.temporary();
+        self.emit_plain(Instruction::SubtractFrom { d, a, b: s });
+        self.shift_out(d, 31, target)
+    }
+
+    fn signed_less_equal(&mut self, p: u32, q: u32, target: Option<u32>) -> Compilation<(u32, Type)> {
+        let high = self.temporary();
+        self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: high, s: q, shift: 31 });
+        let low = self.temporary();
+        self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: low, s: p, shift: 31 });
+        let c = self.temporary();
+        self.emit_plain(Instruction::SubtractFromCarrying { d: c, a: p, b: q });
+        let d = self.result(target);
+        self.emit_plain(Instruction::AddExtended { d, a: high, b: low });
+        Ok((d, Type::Int))
+    }
+
+    fn unsigned_less(&mut self, p: u32, q: u32, target: Option<u32>) -> Compilation<(u32, Type)> {
+        let x = self.temporary();
+        self.emit_plain(Instruction::Xor { a: x, s: q, b: p });
+        let n = self.temporary();
+        self.emit_plain(Instruction::CountLeadingZeros { a: n, s: x });
+        let w = self.temporary();
+        self.emit_plain(Instruction::ShiftLeftWord { a: w, s: q, b: n });
+        self.shift_out(w, 31, target)
+    }
+
+    fn unsigned_less_equal(&mut self, p: u32, q: u32, target: Option<u32>) -> Compilation<(u32, Type)> {
+        let d = self.temporary();
+        self.emit_plain(Instruction::SubtractFrom { d, a: p, b: q });
+        let o = self.temporary();
+        self.emit_plain(Instruction::OrComplement { a: o, s: q, b: p });
+        let s = self.temporary();
+        self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: s, s: d, shift: 1 });
+        let r = self.temporary();
+        self.emit_plain(Instruction::SubtractFrom { d: r, a: s, b: o });
+        self.shift_out(r, 31, target)
     }
 
     /// The type an expression evaluates to, where it is known without
@@ -766,6 +958,19 @@ impl Lowerer<'_> {
                     _ => self.binary(*operator, left, right, target),
                 }
             }
+            Expression::Unary { operator: UnaryOperator::LogicalNot, operand } => {
+                let inverted = match operand.as_ref() {
+                    Expression::Binary { operator, left, right } if comparison(*operator).is_some() => {
+                        Expression::Binary { operator: invert(*operator), left: left.clone(), right: right.clone() }
+                    }
+                    other => Expression::Binary {
+                        operator: BinaryOperator::Equal,
+                        left: Box::new(other.clone()),
+                        right: Box::new(Expression::IntegerLiteral(0)),
+                    },
+                };
+                self.expression_with_target(&inverted, target)
+            }
             Expression::Unary { operator, operand } => {
                 let (source, ty) = self.expression(operand)?;
                 let destination = self.result(target);
@@ -945,6 +1150,9 @@ impl Lowerer<'_> {
         right: &Expression,
         target: Option<u32>,
     ) -> Compilation<(u32, Type)> {
+        if comparison(operator).is_some() {
+            return self.comparison_value(operator, left, right, target);
+        }
         if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) {
             let left_pointer = self.static_type(left).and_then(element_size);
             let right_pointer = self.static_type(right).and_then(element_size);
@@ -1541,5 +1749,18 @@ fn speculable(expression: &Expression) -> bool {
         }
         Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => speculable(operand),
         _ => false,
+    }
+}
+
+/// `!(a op b)` == `a invert(op) b`.
+fn invert(operator: BinaryOperator) -> BinaryOperator {
+    match operator {
+        BinaryOperator::Less => BinaryOperator::GreaterEqual,
+        BinaryOperator::GreaterEqual => BinaryOperator::Less,
+        BinaryOperator::Greater => BinaryOperator::LessEqual,
+        BinaryOperator::LessEqual => BinaryOperator::Greater,
+        BinaryOperator::Equal => BinaryOperator::NotEqual,
+        BinaryOperator::NotEqual => BinaryOperator::Equal,
+        other => other,
     }
 }

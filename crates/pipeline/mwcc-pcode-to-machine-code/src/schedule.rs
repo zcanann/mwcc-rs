@@ -32,6 +32,8 @@ enum Key {
     Condition,
     Link,
     Count,
+    /// XER[CA].
+    Carry,
 }
 
 impl Key {
@@ -102,6 +104,22 @@ fn operand_keys(instruction: &PInstr) -> (Vec<Key>, Vec<Key>) {
     match &instruction.instruction {
         Instruction::BranchConditionalForward { .. } | Instruction::BranchConditionalToLinkRegister { .. } => {
             uses.push(Key::Condition)
+        }
+        Instruction::SubtractFromCarrying { .. }
+        | Instruction::AddCarrying { .. }
+        | Instruction::AddImmediateCarrying { .. }
+        | Instruction::AddImmediateCarryingRecord { .. }
+        | Instruction::SubtractFromImmediate { .. }
+        | Instruction::ShiftRightAlgebraicImmediate { .. }
+        | Instruction::ShiftRightAlgebraicImmediateRecord { .. }
+        | Instruction::ShiftRightAlgebraicWord { .. } => defs.push(Key::Carry),
+        Instruction::AddExtended { .. }
+        | Instruction::SubtractFromExtended { .. }
+        | Instruction::SubtractFromExtendedRecord { .. }
+        | Instruction::AddToZeroExtended { .. }
+        | Instruction::SubtractFromZeroExtended { .. } => {
+            uses.push(Key::Carry);
+            defs.push(Key::Carry);
         }
         Instruction::MoveFromLinkRegister { .. } => uses.push(Key::Link),
         Instruction::MoveToLinkRegister { .. } => defs.push(Key::Link),
