@@ -305,7 +305,12 @@ impl Lowerer<'_> {
         let constant = |value: &Expression| matches!(value, Expression::IntegerLiteral(_));
         let then_first = constant(&then_value) && !constant(&else_value);
         let (first, second) = if then_first { (then_arm, else_arm) } else { (else_arm, then_arm) };
-        self.hoisted = Some(first);
+        if std::env::var_os("MWCC_PCODE_HOIST_LATE").is_some() {
+            self.hoisted = Some(first);
+        } else {
+            // IRO makes the first arm a statement ahead of the `if`.
+            self.emit_hoisted(first)?;
+        }
         self.branch_on(condition, then_first, join)?;
         self.hoisted = None;
         self.emit_hoisted(second)?;
@@ -436,7 +441,8 @@ impl Lowerer<'_> {
         };
         let (a, left_type) = self.expression(left)?;
         let unsigned = is_unsigned(promote(left_type))
-            || self.static_type(right).is_some_and(|ty| is_unsigned(promote(ty)));
+            || self.static_type(right).is_some_and(|ty| is_unsigned(promote(ty)))
+            || (is_unsigned_narrow(left_type) && self.non_negative(right));
         match (right, unsigned) {
             (Expression::IntegerLiteral(value), false) if i16::try_from(*value).is_ok() => {
                 self.emit_plain(Instruction::CompareWordImmediate { a, immediate: *value as i16 });
@@ -619,6 +625,14 @@ impl Lowerer<'_> {
         let r = self.temporary();
         self.emit_plain(Instruction::SubtractFrom { d: r, a: s, b: o });
         self.shift_out(r, 31, target)
+    }
+
+    /// Whether `expression` is known to be non-negative after promotion.
+    fn non_negative(&self, expression: &Expression) -> bool {
+        match expression {
+            Expression::IntegerLiteral(value) => *value >= 0,
+            other => self.static_type(other).is_some_and(is_unsigned_narrow),
+        }
     }
 
     /// The type an expression evaluates to, where it is known without
@@ -1186,6 +1200,28 @@ impl Lowerer<'_> {
         right: &Expression,
         target: Option<u32>,
     ) -> Compilation<(u32, Type)> {
+        // A constant operand goes on the right of a commutative operation so
+        // it can be an immediate; `k - x` is `subfic`.
+        if let (Expression::IntegerLiteral(value), false) =
+            (left, matches!(right, Expression::IntegerLiteral(_)))
+        {
+            match operator {
+                BinaryOperator::Add
+                | BinaryOperator::Multiply
+                | BinaryOperator::BitAnd
+                | BinaryOperator::BitOr
+                | BinaryOperator::BitXor => {
+                    return self.binary_scaled(operator, right, left, target);
+                }
+                BinaryOperator::Subtract if i16::try_from(*value).is_ok() => {
+                    let (a, ty) = self.expression(right)?;
+                    let d = self.result(target);
+                    self.emit_plain(Instruction::SubtractFromImmediate { d, a, immediate: *value as i16 });
+                    return Ok((d, promote(ty)));
+                }
+                _ => {}
+            }
+        }
         let immediate = match right {
             Expression::IntegerLiteral(value) => i16::try_from(*value).ok(),
             _ => None,
@@ -1229,9 +1265,32 @@ impl Lowerer<'_> {
                 return Ok((d, promote(operand_type)));
             }
         }
+        // `x * 0` folds to 0 (IRO) when `x` has no effects.
+        if operator == BinaryOperator::Multiply && immediate == Some(0) && speculable(left) {
+            let d = self.result(target);
+            self.load_constant(d, 0)?;
+            let ty = self.static_type(left).map_or(Type::Int, promote);
+            return Ok((d, ty));
+        }
         let (a, left_type) = self.expression(left)?;
         let result_type = promote(left_type);
         match (operator, immediate) {
+            // `x * -2^k` is a shift and a negation (`neg` alone for -1).
+            (BinaryOperator::Multiply, Some(value))
+                if value < 0 && value != i16::MIN && (-value as u16).is_power_of_two() =>
+            {
+                let shift = (-value as u16).trailing_zeros() as u8;
+                let shifted = if shift == 0 {
+                    a
+                } else {
+                    let shifted = self.temporary();
+                    self.emit_plain(Instruction::ShiftLeftImmediate { a: shifted, s: a, shift });
+                    shifted
+                };
+                let d = self.result(target);
+                self.emit_plain(Instruction::Negate { d, a: shifted });
+                return Ok((d, result_type));
+            }
             (BinaryOperator::Add, Some(value)) => {
                 let d = self.result(target);
                 self.emit_based(Instruction::AddImmediate { d, a, immediate: value }, a);
@@ -1763,4 +1822,8 @@ fn invert(operator: BinaryOperator) -> BinaryOperator {
         BinaryOperator::NotEqual => BinaryOperator::Equal,
         other => other,
     }
+}
+
+fn is_unsigned_narrow(ty: Type) -> bool {
+    matches!(ty, Type::UnsignedChar | Type::UnsignedShort)
 }

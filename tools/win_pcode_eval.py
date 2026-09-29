@@ -117,6 +117,9 @@ def compile_one(source: Path, build: str, mwcc: Path, compiler: Path, legacy_too
                 "exact": claimed and produced[name] == code,
                 "legacy_exact": old.get(name) == code,
                 "reason": skipped.get(name, "" if claimed else run.stderr.strip()[-160:]),
+                # Instruction words, for offline mismatch analysis.
+                "reference_words": code.hex() if kind else "",
+                "produced_words": produced[name].hex() if kind else "",
             })
         return {"source": source.name, "functions": functions}
 
