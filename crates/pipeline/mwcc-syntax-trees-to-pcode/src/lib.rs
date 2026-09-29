@@ -83,6 +83,7 @@ pub fn lower(function: &Function, context: &LoweringContext<'_>) -> Compilation<
         exit_label: Label(0),
         return_register: None,
         hoisted: None,
+        extended: HashMap::new(),
     };
     lowerer.lower_function(function)?;
     Ok(Lowered { pcode: lowerer.pcode, makes_calls: lowerer.makes_calls })
@@ -137,6 +138,9 @@ fn pointee_type(pointee: Pointee) -> Option<Type> {
 struct Variable {
     register: u32,
     ty: Type,
+    /// A narrow parameter held as it arrived: each block re-extends it at
+    /// its first use (MWCC does not extend once on entry).
+    raw_narrow: bool,
 }
 
 struct Lowerer<'a> {
@@ -163,6 +167,8 @@ struct Lowerer<'a> {
     return_register: Option<u32>,
     /// An arm assignment hoisted above the next conditional branch (a select).
     hoisted: Option<Hoisted>,
+    /// Extensions of raw narrow parameters made in the current block.
+    extended: HashMap<String, u32>,
 }
 
 /// One arm of a two-way select, evaluated unconditionally ahead of the
@@ -192,6 +198,7 @@ impl Lowerer<'_> {
     fn start_block(&mut self, falls_through: bool) -> usize {
         let previous = self.current_block();
         self.pcode.blocks.push(Block { weight: 1, ..Block::default() });
+        self.extended.clear();
         let block = self.current_block();
         if falls_through {
             self.pcode.blocks[previous].successors.push(block);
@@ -686,9 +693,11 @@ impl Lowerer<'_> {
                 return Err(unsupported("stack-passed parameters"));
             }
             let virtual_register = self.temporary();
+            let raw_narrow = is_narrow(parameter.parameter_type)
+                && !may_assign(&function.statements, &parameter.name);
             self.variables.insert(
                 parameter.name.clone(),
-                Variable { register: virtual_register, ty: parameter.parameter_type },
+                Variable { register: virtual_register, ty: parameter.parameter_type, raw_narrow },
             );
             incoming.push((virtual_register, register));
         }
@@ -701,7 +710,7 @@ impl Lowerer<'_> {
             }
             let register = self.temporary();
             self.variables
-                .insert(local.name.clone(), Variable { register, ty: local.declared_type });
+                .insert(local.name.clone(), Variable { register, ty: local.declared_type, raw_narrow: false });
         }
         if function.return_type != Type::Void && returns_from_several_places(function) {
             self.return_register = Some(self.temporary());
@@ -710,12 +719,13 @@ impl Lowerer<'_> {
 
         for (virtual_register, register) in incoming {
             // Narrow parameters are re-extended by the callee on entry.
-            let ty = self
+            let (ty, raw_narrow) = self
                 .variables
                 .values()
                 .find(|variable| variable.register == virtual_register)
-                .map(|variable| variable.ty)
-                .unwrap_or(Type::Int);
+                .map(|variable| (variable.ty, variable.raw_narrow))
+                .unwrap_or((Type::Int, false));
+            let ty = if raw_narrow { Type::Int } else { ty };
             let instruction = match ty {
                 Type::Char => Instruction::ExtendSignByte { a: virtual_register, s: register },
                 Type::Short => Instruction::ExtendSignHalfword { a: virtual_register, s: register },
@@ -945,7 +955,17 @@ impl Lowerer<'_> {
             }
             Expression::Variable(name) => {
                 if let Some(variable) = self.variables.get(name) {
-                    return Ok((variable.register, variable.ty));
+                    let (register, ty) = (variable.register, variable.ty);
+                    if variable.raw_narrow {
+                        if let Some(&extended) = self.extended.get(name) {
+                            return Ok((extended, ty));
+                        }
+                        let extended = self.temporary();
+                        self.emit_plain(extension(ty, extended, register));
+                        self.extended.insert(name.clone(), extended);
+                        return Ok((extended, ty));
+                    }
+                    return Ok((register, ty));
                 }
                 if let Some(global) = self.context.globals.get(name).copied() {
                     if global.is_array {
@@ -1272,7 +1292,27 @@ impl Lowerer<'_> {
             let ty = self.static_type(left).map_or(Type::Int, promote);
             return Ok((d, ty));
         }
-        let (a, left_type) = self.expression(left)?;
+        // A raw unsigned narrow parameter shifted right folds its extension.
+        let raw_unsigned = match left {
+            Expression::Variable(name) if operator == BinaryOperator::ShiftRight => {
+                self.variables.get(name).filter(|variable| variable.raw_narrow).and_then(|variable| {
+                    let width = match variable.ty {
+                        Type::UnsignedChar => 8u8,
+                        Type::UnsignedShort => 16u8,
+                        _ => return None,
+                    };
+                    immediate
+                        .filter(|&shift| (0..i16::from(width)).contains(&shift))
+                        .map(|_| (variable.register, width))
+                })
+            }
+            _ => None,
+        };
+        let (a, left_type) = if raw_unsigned.is_some() {
+            (0, self.static_type(left).expect("a variable"))
+        } else {
+            self.expression(left)?
+        };
         let result_type = promote(left_type);
         match (operator, immediate) {
             // `x * -2^k` is a shift and a negation (`neg` alone for -1).
@@ -1342,6 +1382,19 @@ impl Lowerer<'_> {
             (BinaryOperator::ShiftLeft, Some(shift)) if (0..32).contains(&shift) => {
                 let d = self.result(target);
                 self.emit_plain(Instruction::ShiftLeftImmediate { a: d, s: a, shift: shift as u8 });
+                return Ok((d, result_type));
+            }
+            (BinaryOperator::ShiftRight, Some(shift)) if (0..32).contains(&shift) && raw_unsigned.is_some() => {
+                let (raw, width) = raw_unsigned.expect("checked");
+                let d = self.result(target);
+                let shift = shift as u8;
+                self.emit_plain(Instruction::RotateAndMask {
+                    a: d,
+                    s: raw,
+                    shift: (32 - shift) % 32,
+                    begin: 32 - width + shift,
+                    end: 31,
+                });
                 return Ok((d, result_type));
             }
             (BinaryOperator::ShiftRight, Some(shift)) if (0..32).contains(&shift) => {
@@ -1826,4 +1879,32 @@ fn invert(operator: BinaryOperator) -> BinaryOperator {
 
 fn is_unsigned_narrow(ty: Type) -> bool {
     matches!(ty, Type::UnsignedChar | Type::UnsignedShort)
+}
+
+fn is_narrow(ty: Type) -> bool {
+    matches!(ty, Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort)
+}
+
+/// Sign or zero extension of a narrow value.
+fn extension(ty: Type, d: u32, s: u32) -> Instruction {
+    match ty {
+        Type::Char => Instruction::ExtendSignByte { a: d, s },
+        Type::Short => Instruction::ExtendSignHalfword { a: d, s },
+        Type::UnsignedChar => Instruction::ClearLeftImmediate { a: d, s, clear: 24 },
+        Type::UnsignedShort => Instruction::ClearLeftImmediate { a: d, s, clear: 16 },
+        _ => Instruction::Or { a: d, s, b: s },
+    }
+}
+
+/// Whether `statements` may assign `name` (conservatively true for forms
+/// the scan does not walk).
+fn may_assign(statements: &[Statement], name: &str) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Assign { name: assigned, .. } => assigned == name,
+        Statement::If { then_body, else_body, .. } => {
+            may_assign(then_body, name) || may_assign(else_body, name)
+        }
+        Statement::Store { .. } | Statement::Expression(_) | Statement::Return(_) => false,
+        _ => true,
+    })
 }
