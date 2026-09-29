@@ -40,6 +40,27 @@ hand-scheduled instruction stream. That generalizes poorly:
 - **Compile time.** Large C++ units still take 10–90 s (parser probes; see
   `tools/win_sample.py`).
 
+## MWCC's own stage order
+
+The CC0 decompilation of GC/1.2.5 (github.com/JackPriceBurns/mwcc,
+`docs/PASS_PIPELINE.md`) recovers the real sequence from trace strings:
+
+- Frontend `IRO_Optimizer` on expression trees: build flow graph, evaluate
+  conditionals, remove unreachable/redundant jumps, copy/constant propagation,
+  range propagation, expression propagation, use-def, constant folding,
+  `IRO_LoopUnroller` (innermost loops; rejects induction-used-in-loop and
+  multiple exits), `IRO_FindLoops`, a second propagation/folding round,
+  common subexpressions, jump chaining.
+- `CodeGen_Generator` stages: `INITIAL CODE` (lowering to PCode over virtual
+  registers) → backend PCode optimizer → `AFTER INSTRUCTION SCHEDULING` →
+  `AFTER PEEPHOLE FORWARD` → `AFTER REGISTER COLORING` (interference-graph
+  coloring with spill-and-retry) → `AFTER GENERATING EPILOGUE, PROLOGUE` →
+  epilogue/prologue merge → table-driven backward peephole with liveness DCE →
+  `FINAL CODE AFTER INSTRUCTION SCHEDULING`.
+
+Scheduling therefore runs on virtual registers *before* coloring, and again on
+physical code at the end. The new stages below mirror these boundaries.
+
 ## Target shape
 
 MWCC itself is a conventional compiler: front end → per-function IR →
@@ -52,22 +73,21 @@ crates are `x-to-y` transforms) and the numbered-stage layout used by Omega:
 
 ```
 representations/
-  mwcc-mid-ir            basic blocks, virtual registers, typed ops,
-                         per-op source provenance (file, line, statement id)
-  mwcc-selected          PowerPC ops over virtual registers
+  mwcc-syntax-trees      (existing) ~ MWCC's ENode trees
+  mwcc-pcode             basic blocks of mwcc-machine-code instructions over
+                         virtual registers, per-instruction source provenance
   mwcc-machine-code      (existing) physical instructions
 pipeline/
-  03_syntax-trees-to-mid-ir
-  04_mid-ir-to-mid-ir            MWCC optimizer passes, each profile-gated:
-                                 const folding, CSE, strength reduction,
-                                 loop unrolling, tail calls, …
-  05_mid-ir-to-selected-instructions
-  06_selected-to-register-homes  (promote mwcc-vreg's coloring allocator)
-  07_register-homes-to-scheduled-machine   (mwcc-vreg list scheduler,
-                                 prologue/epilogue latency slots)
-  08_machine-to-machine          peephole (rlwinm folds, record forms, …)
+  mwcc-syntax-trees-to-syntax-trees   IRO passes (propagation, folding,
+                                      unrolling, CSE), each profile-gated
+  mwcc-syntax-trees-to-pcode          INITIAL CODE
+  mwcc-pcode-to-pcode                 backend optimizer, virtual scheduling,
+                                      forward peephole
+  mwcc-pcode-to-machine-code          coloring (+spill retry), frame layout,
+                                      prologue/epilogue, backward peephole,
+                                      final scheduling
   (existing) machine-code-to-object, syntax-trees-to-debug-info
-             — the latter reads provenance from 03 instead of guessing
+             — the latter reads provenance from PCode instead of guessing
 ```
 
 Every stage rejects unsupported input with a diagnostic at its own boundary
