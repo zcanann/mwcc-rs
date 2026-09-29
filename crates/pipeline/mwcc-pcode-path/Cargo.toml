@@ -10,7 +10,9 @@ mwcc-core.workspace = true
 mwcc-machine-code.workspace = true
 mwcc-syntax-trees.workspace = true
 mwcc-versions.workspace = true
-mwcc-syntax-trees-to-pcode.workspace = true
+mwcc-iro.workspace = true
+mwcc-syntax-trees-to-iro.workspace = true
+mwcc-iro-to-pcode.workspace = true
 mwcc-pcode-to-machine-code.workspace = true
 mwcc-syntax-trees-to-machine-code.workspace = true
 

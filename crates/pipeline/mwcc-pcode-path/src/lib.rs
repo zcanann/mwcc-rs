@@ -1,7 +1,10 @@
 //! Drive one function through the staged PCode pipeline
-//! (`docs/backend-pipeline-proposal.md`): INITIAL CODE
-//! (`mwcc-syntax-trees-to-pcode`), then scheduling, coloring, frame and final
-//! code (`mwcc-pcode-to-machine-code`).
+//! (`docs/backend-pipeline-proposal.md`):
+//!
+//! 1. `mwcc-syntax-trees-to-iro`: build the typed IRO representation and run
+//!    the IRO passes (folding, algebra, idioms, selects, stores);
+//! 2. `mwcc-iro-to-pcode`: INITIAL CODE (instruction selection);
+//! 3. `mwcc-pcode-to-machine-code`: scheduling, coloring, frame, final code.
 //!
 //! The legacy backend calls this through the hook it exposes
 //! ([`mwcc_syntax_trees_to_machine_code::install_pcode_lowering`]); the driver
@@ -11,6 +14,7 @@
 use std::collections::HashMap;
 
 use mwcc_core::Compilation;
+use mwcc_iro::GlobalInfo;
 use mwcc_machine_code::MachineFunction;
 use mwcc_syntax_trees_to_machine_code::PcodeRequest;
 use mwcc_versions::{Behavior, GlobalAddressing};
@@ -37,13 +41,13 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         ));
     }
     let small_data = behavior.global_addressing == GlobalAddressing::SmallData;
-    let global_info: HashMap<String, mwcc_syntax_trees_to_pcode::GlobalInfo> = request
+    let globals: HashMap<String, GlobalInfo> = request
         .globals
         .iter()
         .map(|global| {
             (
                 global.name.clone(),
-                mwcc_syntax_trees_to_pcode::GlobalInfo {
+                GlobalInfo {
                     ty: global.declared_type,
                     small_data,
                     is_array: global.array_length.is_some(),
@@ -52,23 +56,26 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             )
         })
         .collect();
-    let context = mwcc_syntax_trees_to_pcode::LoweringContext {
-        globals: &global_info,
+    let unit = mwcc_iro::Unit {
+        globals: &globals,
         call_return_types: request.call_return_types,
         is_intrinsic: request.is_intrinsic,
         variadic_callees: request.variadic_callees,
         prototyped: request.prototyped,
         call_parameter_types: request.call_parameter_types,
     };
-    let lowered = mwcc_syntax_trees_to_pcode::lower(request.function, &context)?;
+    let built = mwcc_syntax_trees_to_iro::build(request.function, &unit)?;
+    if std::env::var("MWCC_IRO_DUMP").is_ok_and(|name| name == built.function.name || name == "1") {
+        eprint!("{}", built.function.listing());
+    }
+    let lowered = mwcc_iro_to_pcode::lower(&built.function, built.returns_through_variable, &unit)?;
     let mut output = mwcc_pcode_to_machine_code::finish(
         lowered.pcode,
         lowered.makes_calls,
         mwcc_pcode_to_machine_code::FinishOptions {
             schedule: behavior.schedule_latency_slots,
             delete_dead: behavior.optimization != mwcc_versions::Optimization::O0,
-            two_integer_units: behavior.integer_select_style
-                == mwcc_versions::IntegerSelectStyle::Branchless,
+            two_integer_units: behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::Branchless,
         },
     )?;
     output.section = request.function.section.clone();

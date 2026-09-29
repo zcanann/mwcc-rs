@@ -1,14 +1,13 @@
 [package]
-name = "mwcc-syntax-trees-to-pcode"
+name = "mwcc-syntax-trees-to-iro"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "MWCC INITIAL CODE: lowering syntax trees to PCode over virtual registers"
+description = "Build the typed IRO representation from syntax trees and run the IRO passes"
 
 [dependencies]
 mwcc-core.workspace = true
-mwcc-machine-code.workspace = true
-mwcc-pcode.workspace = true
+mwcc-iro.workspace = true
 mwcc-syntax-trees.workspace = true
 
 [lints.rust]

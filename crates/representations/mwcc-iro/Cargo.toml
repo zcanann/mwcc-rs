@@ -1,0 +1,12 @@
+[package]
+name = "mwcc-iro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Typed IRO-level intermediate representation between syntax trees and PCode"
+
+[dependencies]
+mwcc-syntax-trees.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -73,19 +73,25 @@ crates are `x-to-y` transforms) and the numbered-stage layout used by Omega:
 
 ```
 representations/
-  mwcc-syntax-trees      (existing) ~ MWCC's ENode trees
+  mwcc-syntax-trees      (existing) source-shaped syntax trees
+  mwcc-iro               typed IRO-level IR ~ MWCC's ENode trees: every node
+                         typed, memory as base + index + offset loads/stores,
+                         pointer arithmetic scaled, one return value
   mwcc-pcode             basic blocks of mwcc-machine-code instructions over
                          virtual registers, per-instruction source provenance
   mwcc-machine-code      (existing) physical instructions
 pipeline/
-  mwcc-syntax-trees-to-syntax-trees   IRO passes (propagation, folding,
-                                      unrolling, CSE), each profile-gated
-  mwcc-syntax-trees-to-pcode          INITIAL CODE
-  mwcc-pcode-to-pcode                 backend optimizer, virtual scheduling,
-                                      forward peephole
-  mwcc-pcode-to-machine-code          coloring (+spill retry), frame layout,
-                                      prologue/epilogue, backward peephole,
-                                      final scheduling
+  mwcc-syntax-trees-to-iro            build the typed IR; IRO passes (folding,
+                                      algebra, sign idioms, select rewriting,
+                                      store narrowing), each switchable
+                                      (MWCC_IRO_NO_<PASS>)
+  mwcc-iro-to-pcode                   INITIAL CODE: instruction selection only
+  mwcc-pcode-to-machine-code          copy propagation, webs, virtual
+                                      scheduling, coloring, frame layout,
+                                      prologue/epilogue, final scheduling
+  mwcc-pcode-path                     drives the stages; installed into the
+                                      legacy backend's hook by the mwcc driver
+                                      (so PCode edits never rebuild legacy)
   (existing) machine-code-to-object, syntax-trees-to-debug-info
              — the latter reads provenance from PCode instead of guessing
 ```

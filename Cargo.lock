@@ -52,6 +52,24 @@ name = "mwcc-dwarf1"
 version = "0.0.1"
 
 [[package]]
+name = "mwcc-iro"
+version = "0.0.1"
+dependencies = [
+ "mwcc-syntax-trees",
+]
+
+[[package]]
+name = "mwcc-iro-to-pcode"
+version = "0.0.1"
+dependencies = [
+ "mwcc-core",
+ "mwcc-iro",
+ "mwcc-machine-code",
+ "mwcc-pcode",
+ "mwcc-syntax-trees-to-iro",
+]
+
+[[package]]
 name = "mwcc-machine-code"
 version = "0.0.1"
 dependencies = [
@@ -89,11 +107,13 @@ name = "mwcc-pcode-path"
 version = "0.0.1"
 dependencies = [
  "mwcc-core",
+ "mwcc-iro",
+ "mwcc-iro-to-pcode",
  "mwcc-machine-code",
  "mwcc-pcode-to-machine-code",
  "mwcc-syntax-trees",
+ "mwcc-syntax-trees-to-iro",
  "mwcc-syntax-trees-to-machine-code",
- "mwcc-syntax-trees-to-pcode",
  "mwcc-versions",
 ]
 
@@ -142,6 +162,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mwcc-syntax-trees-to-iro"
+version = "0.0.1"
+dependencies = [
+ "mwcc-core",
+ "mwcc-iro",
+ "mwcc-syntax-trees",
+]
+
+[[package]]
 name = "mwcc-syntax-trees-to-machine-code"
 version = "0.0.1"
 dependencies = [
@@ -151,16 +180,6 @@ dependencies = [
  "mwcc-target",
  "mwcc-versions",
  "mwcc-vreg",
-]
-
-[[package]]
-name = "mwcc-syntax-trees-to-pcode"
-version = "0.0.1"
-dependencies = [
- "mwcc-core",
- "mwcc-machine-code",
- "mwcc-pcode",
- "mwcc-syntax-trees",
 ]
 
 [[package]]

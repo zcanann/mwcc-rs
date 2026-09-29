@@ -1,0 +1,16 @@
+[package]
+name = "mwcc-iro-to-pcode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "INITIAL CODE: instruction selection from the typed IRO representation to PCode"
+
+[dependencies]
+mwcc-core.workspace = true
+mwcc-iro.workspace = true
+mwcc-machine-code.workspace = true
+mwcc-pcode.workspace = true
+mwcc-syntax-trees-to-iro.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
