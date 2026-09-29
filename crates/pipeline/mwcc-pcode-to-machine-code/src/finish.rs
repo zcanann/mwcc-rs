@@ -30,6 +30,13 @@ pub fn finish(
 ) -> Compilation<MachineFunction> {
     prune_unreachable(&mut pcode);
     dump(&pcode, "INITIAL CODE");
+    if !toggle("MWCC_PCODE_NO_WEBS") {
+        split_webs(&mut pcode);
+    }
+    if !toggle("MWCC_PCODE_NO_COPYPROP") {
+        // Eliminating one copy can expose another (`x = a` of a parameter).
+        while propagate_physical_copies(&mut pcode) {}
+    }
     if options.schedule && !toggle("MWCC_PCODE_NO_PRESCHEDULE") {
         for block in &mut pcode.blocks {
             schedule::schedule_block(&mut block.instructions, true);
@@ -150,6 +157,296 @@ pub fn finish(
     output.instructions = instructions;
     output.relocations = relocations;
     Ok(output)
+}
+
+/// A copy `mr v,rN` from a physical register (an incoming argument or a
+/// call result) disappears before scheduling when every use of `v` can read
+/// rN directly: all uses sit in the copy's block before rN or `v` is
+/// redefined. Otherwise the copy and its uses stay as they are.
+fn propagate_physical_copies(pcode: &mut PCodeFunction) -> bool {
+    use mwcc_pcode::Class;
+    use mwcc_vreg::RegisterRole;
+    let mut changed = false;
+    for class in [Class::General, Class::Float] {
+        // `mr rN,v` right after `mr v,rN` (neither redefined) is redundant.
+        for block in &mut pcode.blocks {
+            let mut equal: Vec<(u32, u32)> = Vec::new();
+            let mut redundant = vec![false; block.instructions.len()];
+            for (index, instruction) in block.instructions.iter().enumerate() {
+                if let Some((destination, source)) = instruction.copy(class) {
+                    if destination < 32 && equal.contains(&(source, destination)) {
+                        redundant[index] = true;
+                        continue;
+                    }
+                }
+                for defined in instruction.defs(class) {
+                    equal.retain(|&(v, p)| v != defined && p != defined);
+                }
+                if instruction.instruction.is_call() {
+                    equal.clear();
+                }
+                if let Some((v, p)) = instruction.copy(class) {
+                    if v >= 32 && p < 32 && p != 0 {
+                        equal.push((v, p));
+                    }
+                }
+            }
+            let mut index = 0;
+            block.instructions.retain(|_| {
+                index += 1;
+                !redundant[index - 1]
+            });
+        }
+        let mut total_uses: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for instruction in pcode.blocks.iter().flat_map(|block| block.instructions.iter()) {
+            for used in instruction.uses(class) {
+                *total_uses.entry(used).or_default() += 1;
+            }
+        }
+        // Pass 1: which copies would lose every use.
+        let mut reachable_uses: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        let mut candidates: Vec<(u32, u32)> = Vec::new();
+        for block in &pcode.blocks {
+            let mut active: Vec<(u32, u32)> = Vec::new();
+            for instruction in &block.instructions {
+                for used in instruction.uses(class) {
+                    if active.iter().any(|&(v, _)| v == used) {
+                        *reachable_uses.entry(used).or_default() += 1;
+                    }
+                }
+                for defined in instruction.defs(class) {
+                    active.retain(|&(v, p)| v != defined && p != defined);
+                }
+                if instruction.instruction.is_call() {
+                    active.clear();
+                }
+                if let Some((v, p)) = instruction.copy(class) {
+                    if v >= 32 && p < 32 && p != 0 {
+                        active.push((v, p));
+                        candidates.push((v, p));
+                    }
+                }
+            }
+        }
+        let eliminated: Vec<(u32, u32)> = candidates
+            .into_iter()
+            .filter(|(v, _)| {
+                // One definition only, and every use reachable from it.
+                let definitions = pcode
+                    .blocks
+                    .iter()
+                    .flat_map(|block| block.instructions.iter())
+                    .filter(|instruction| instruction.defs(class).contains(v))
+                    .count();
+                definitions == 1
+                    && reachable_uses.get(v).copied().unwrap_or(0) == total_uses.get(v).copied().unwrap_or(0)
+            })
+            .collect();
+        if eliminated.is_empty() {
+            continue;
+        }
+        changed = true;
+        // Pass 2: rewrite the uses and drop the copies.
+        for block in &mut pcode.blocks {
+            let mut active: Vec<(u32, u32)> = Vec::new();
+            for instruction in &mut block.instructions {
+                if !active.is_empty() {
+                    mwcc_vreg::for_each_register(&mut instruction.instruction, |role, operand_class, field| {
+                        if role == RegisterRole::Use && operand_class == class {
+                            if let Some(&(_, physical)) = active.iter().find(|&&(v, _)| v == *field) {
+                                *field = physical;
+                            }
+                        }
+                    });
+                    for register in &mut instruction.implicit_uses {
+                        if register.class == class {
+                            if let Some(&(_, physical)) = active.iter().find(|&&(v, _)| v == register.number) {
+                                register.number = physical;
+                            }
+                        }
+                    }
+                }
+                for defined in instruction.defs(class) {
+                    active.retain(|&(v, p)| v != defined && p != defined);
+                }
+                if instruction.instruction.is_call() {
+                    active.clear();
+                }
+                if let Some(copy) = instruction.copy(class) {
+                    if eliminated.contains(&copy) {
+                        active.push(copy);
+                    }
+                }
+            }
+            block.instructions.retain(|instruction| {
+                !instruction.copy(class).is_some_and(|copy| eliminated.contains(&copy))
+            });
+        }
+    }
+    changed
+}
+
+/// Rename each live-range web (definitions joined by a common use) of a
+/// multiply-defined virtual register to its own register, as MWCC's
+/// allocator builds webs: a reassigned parameter's new value is a new web.
+fn split_webs(pcode: &mut PCodeFunction) {
+    use mwcc_pcode::Class;
+    use mwcc_vreg::RegisterRole;
+    for class in [Class::General, Class::Float] {
+        // Definition sites (register, block, index) of registers defined more than once.
+        let mut sites: Vec<(u32, usize, usize)> = Vec::new();
+        for (b, block) in pcode.blocks.iter().enumerate() {
+            for (i, instruction) in block.instructions.iter().enumerate() {
+                for defined in instruction.defs(class) {
+                    if defined >= 32 {
+                        sites.push((defined, b, i));
+                    }
+                }
+            }
+        }
+        let mut counts: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for &(register, _, _) in &sites {
+            *counts.entry(register).or_default() += 1;
+        }
+        sites.retain(|(register, _, _)| counts[register] > 1);
+        if sites.is_empty() {
+            continue;
+        }
+        let count = sites.len();
+        let blocks = pcode.blocks.len();
+        let site_at = |register: u32, block: usize, index: usize| {
+            sites.iter().position(|&(r, b, i)| r == register && b == block && i == index)
+        };
+        // Apply one instruction's definitions to a reaching-definitions state.
+        let define = |state: &mut Vec<bool>, register: u32, site: usize| {
+            for (other, &(r, _, _)) in sites.iter().enumerate() {
+                if r == register {
+                    state[other] = false;
+                }
+            }
+            state[site] = true;
+        };
+        let mut entry: Vec<Vec<bool>> = vec![vec![false; count]; blocks];
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for block in 0..blocks {
+                let mut state = entry[block].clone();
+                for (i, instruction) in pcode.blocks[block].instructions.iter().enumerate() {
+                    for defined in instruction.defs(class) {
+                        if let Some(site) = site_at(defined, block, i) {
+                            define(&mut state, defined, site);
+                        }
+                    }
+                }
+                for &successor in &pcode.blocks[block].successors {
+                    for site in 0..count {
+                        if state[site] && !entry[successor][site] {
+                            entry[successor][site] = true;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        // Union the definitions that reach a common use.
+        let mut parent: Vec<usize> = (0..count).collect();
+        fn find(parent: &mut [usize], x: usize) -> usize {
+            let mut root = x;
+            while parent[root] != root {
+                root = parent[root];
+            }
+            parent[x] = root;
+            root
+        }
+        let mut uses: Vec<(usize, usize, u32, usize)> = Vec::new();
+        for block in 0..blocks {
+            let mut state = entry[block].clone();
+            for (i, instruction) in pcode.blocks[block].instructions.iter().enumerate() {
+                for used in instruction.uses(class) {
+                    let reaching: Vec<usize> =
+                        (0..count).filter(|&site| state[site] && sites[site].0 == used).collect();
+                    if let Some(&first) = reaching.first() {
+                        for &other in &reaching[1..] {
+                            let (a, b) = (find(&mut parent, first), find(&mut parent, other));
+                            parent[b] = a;
+                        }
+                        uses.push((block, i, used, first));
+                    }
+                }
+                for defined in instruction.defs(class) {
+                    if let Some(site) = site_at(defined, block, i) {
+                        // Study switch: keep an in-place update (`add t,t,c`)
+                        // in its web. MWCC splits `x = a + 1; x <<= 1` and
+                        // `lis; addi`, but not every accumulator.
+                        if toggle("MWCC_PCODE_WEBS_TIE_INPLACE")
+                            && instruction.uses(class).contains(&defined)
+                        {
+                            for other in 0..count {
+                                let (_, other_block, other_index) = sites[other];
+                                // A parameter's incoming value is its own web.
+                                let incoming = pcode.blocks[other_block].instructions[other_index]
+                                    .copy(class)
+                                    .is_some_and(|(_, source)| source < 32);
+                                if state[other] && sites[other].0 == defined && !incoming {
+                                    let (a, b) = (find(&mut parent, site), find(&mut parent, other));
+                                    parent[b] = a;
+                                }
+                            }
+                        }
+                        define(&mut state, defined, site);
+                    }
+                }
+            }
+        }
+        // The web holding a register's first definition keeps its number.
+        let mut web_register: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+        for site in 0..count {
+            let root = find(&mut parent, site);
+            if web_register.contains_key(&root) {
+                continue;
+            }
+            let register = sites[site].0;
+            let first = (0..count).find(|&s| sites[s].0 == register).expect("a site");
+            let first_root = find(&mut parent, first);
+            let assigned = if first_root == root { register } else { pcode.fresh(class) };
+            web_register.insert(root, assigned);
+        }
+        let renamed: Vec<u32> = (0..count).map(|site| web_register[&find(&mut parent, site)]).collect();
+        for (site, &(register, b, i)) in sites.iter().enumerate() {
+            if renamed[site] != register {
+                let instruction = &mut pcode.blocks[b].instructions[i];
+                mwcc_vreg::for_each_register(&mut instruction.instruction, |role, operand_class, field| {
+                    if role == RegisterRole::Define && operand_class == class && *field == register {
+                        *field = renamed[site];
+                    }
+                });
+            }
+        }
+        for (b, i, register, site) in uses {
+            let target = renamed[site];
+            if target != register {
+                let instruction = &mut pcode.blocks[b].instructions[i];
+                mwcc_vreg::for_each_register(&mut instruction.instruction, |role, operand_class, field| {
+                    if role == RegisterRole::Use && operand_class == class && *field == register {
+                        *field = target;
+                    }
+                });
+                for used in &mut instruction.implicit_uses {
+                    if used.class == class && used.number == register {
+                        used.number = target;
+                    }
+                }
+                if class == Class::General {
+                    for base in &mut instruction.not_r0 {
+                        if *base == register {
+                            *base = target;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn ends_in_branch(block: &Block) -> bool {
