@@ -825,6 +825,24 @@ impl Lowerer<'_> {
         }
     }
 
+    /// The register holding a stored value: a raw narrow parameter at least
+    /// as wide as the store needs no extension.
+    fn store_source(&mut self, value: &Expression, stored: Type) -> Compilation<u32> {
+        if let Expression::Variable(name) = value {
+            if let Some(variable) = self.variables.get(name) {
+                let width = |ty: Type| match ty {
+                    Type::Char | Type::UnsignedChar => 1,
+                    Type::Short | Type::UnsignedShort => 2,
+                    _ => 4,
+                };
+                if variable.raw_narrow && width(stored) <= width(variable.ty) {
+                    return Ok(variable.register);
+                }
+            }
+        }
+        Ok(self.expression(value)?.0)
+    }
+
     /// The type a store target holds.
     fn store_type(&self, target: &Expression) -> Option<Type> {
         match target {
@@ -1093,14 +1111,22 @@ impl Lowerer<'_> {
             let evaluated = self.expression(value);
             self.target = None;
             let (register, ty) = evaluated?;
-            let (register, _) = self.convert(register, ty, self.return_type, Some(destination))?;
+            let (register, _) = if fits_unconverted(value, self.return_type) {
+                (register, ty)
+            } else {
+                self.convert(register, ty, self.return_type, Some(destination))?
+            };
             if register != destination {
                 self.emit_plain(Instruction::Or { a: destination, s: register, b: register });
             }
             return Ok(());
         }
         let (register, ty) = self.expression(value)?;
-        let (register, _) = self.convert(register, ty, self.return_type, None)?;
+        let (register, _) = if fits_unconverted(value, self.return_type) {
+            (register, ty)
+        } else {
+            self.convert(register, ty, self.return_type, None)?
+        };
         self.emit_plain(Instruction::Or { a: 3, s: register, b: register });
         Ok(())
     }
@@ -1134,7 +1160,7 @@ impl Lowerer<'_> {
         let narrow = matches!(
             variable_type,
             Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort
-        );
+        ) && !fits_unconverted(value, variable_type);
         self.target = if narrow { None } else { Some(destination) };
         let evaluated = self.expression(value);
         self.target = None;
@@ -1826,7 +1852,7 @@ impl Lowerer<'_> {
                 (self.static_type(base), self.static_type(index).and_then(element_size))
             {
                 if let (Some(ty), Some(size)) = (pointee_type(pointee), element_size(pointer_type)) {
-                    let (source, _) = self.expression(value)?;
+                    let source = self.store_source(value, ty)?;
                     let (a, _) = self.expression(base)?;
                     let store = if let Expression::IntegerLiteral(index) = index {
                         let offset = i16::try_from(index * i64::from(size))
@@ -1856,7 +1882,10 @@ impl Lowerer<'_> {
                 return Err(unsupported("store to an index of a non-pointer"));
             }
         }
-        let (source, _) = self.expression(value)?;
+        let source = match self.store_type(target) {
+            Some(ty) => self.store_source(value, ty)?,
+            None => self.expression(value)?.0,
+        };
         let (base, offset, ty, relocation) = match target {
             Expression::Member { base, offset, member_type, index_stride: None } => {
                 let (base, _) = self.expression(base)?;
@@ -2457,4 +2486,26 @@ fn negation_fold(operator: BinaryOperator, left: &Expression, right: &Expression
 /// The bits `begin..=end` (IBM numbering, non-wrapping).
 fn field_bits(begin: u8, end: u8) -> u32 {
     (u32::MAX >> begin) & (u32::MAX << (31 - end))
+}
+
+/// Whether `value` already fits the narrow type `ty` (a 0/1 truth value or
+/// an in-range literal), so no narrowing conversion is emitted.
+fn fits_unconverted(value: &Expression, ty: Type) -> bool {
+    if !is_narrow(ty) {
+        return false;
+    }
+    // Signed narrow types still sign-extend a truth value.
+    let unsigned = is_unsigned_narrow(ty);
+    match value {
+        Expression::Binary { operator, .. } => unsigned && comparison(*operator).is_some(),
+        Expression::Unary { operator: UnaryOperator::LogicalNot, .. } => unsigned,
+        Expression::IntegerLiteral(value) => match ty {
+            Type::Char => (-128..=127).contains(value),
+            Type::UnsignedChar => (0..=255).contains(value),
+            Type::Short => (-32768..=32767).contains(value),
+            Type::UnsignedShort => (0..=65535).contains(value),
+            _ => false,
+        },
+        _ => false,
+    }
 }
