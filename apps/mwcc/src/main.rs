@@ -3202,6 +3202,9 @@ mod tests {
     #[path = "swapped_call_arguments.rs"]
     mod swapped_call_arguments;
 
+    #[path = "cyclic_call_argument_moves.rs"]
+    mod cyclic_call_argument_moves;
+
     #[path = "guarded_member_receiver_reuse.rs"]
     mod guarded_member_receiver_reuse;
 
