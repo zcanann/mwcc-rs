@@ -2514,9 +2514,29 @@ impl Parser {
                 let definition_start = self.position;
                 self.expect(Token::KeywordStruct)?;
                 let tag = self.parse_identifier()?;
-                let mut layout = self.parse_struct_body().map_err(|error| {
-                    Diagnostic::error(format!("struct layout '{tag}' was not recovered: {error}"))
-                })?;
+                let body_start = self.position;
+                let recovered_class = self.cplusplus
+                    && self.cxx_classes.contains_key(&self.qualify_cxx_class_name(&tag));
+                let mut layout = match self.parse_struct_body() {
+                    Ok(layout) => layout,
+                    // A C++ `struct` with access specifiers or other class
+                    // syntax is outside the C aggregate grammar. The class
+                    // declaration pass already owns its layout; just consume
+                    // the body.
+                    Err(_) if recovered_class => {
+                        self.position = body_start;
+                        self.skip_balanced(Token::BraceOpen, Token::BraceClose)?;
+                        self.structs
+                            .get(&self.qualify_cxx_class_name(&tag))
+                            .cloned()
+                            .unwrap_or_default()
+                    }
+                    Err(error) => {
+                        return Err(Diagnostic::error(format!(
+                            "struct layout '{tag}' was not recovered: {error}"
+                        )))
+                    }
+                };
                 layout.source_tag = Some(tag.clone());
                 let qualified = self.qualify_cxx_class_name(&tag);
                 let object_tag = if self.cplusplus {

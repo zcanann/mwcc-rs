@@ -6349,7 +6349,7 @@ impl Parser {
         Err(Diagnostic::error("unterminated C++ member declaration"))
     }
 
-    fn skip_balanced(&mut self, open: Token, close: Token) -> Compilation<()> {
+    pub(crate) fn skip_balanced(&mut self, open: Token, close: Token) -> Compilation<()> {
         self.expect(open.clone())?;
         let mut depth = 1usize;
         while depth > 0 {

@@ -53,7 +53,15 @@ impl Parser {
                 }
                 self.expect(Token::ParenClose)?;
             }
-            let constructor = self.resolve_placement_constructor(&class_name, &arguments)?;
+            // A class without declared constructors uses its implicitly
+            // defined default constructor, exactly as placement new does.
+            let constructor = if arguments.is_empty() {
+                self.ensure_implicit_default_constructor(&class_name)?
+                    .map(Ok)
+                    .unwrap_or_else(|| self.resolve_placement_constructor(&class_name, &arguments))?
+            } else {
+                self.resolve_placement_constructor(&class_name, &arguments)?
+            };
             self.expression_struct_tag = Some(class_name);
             return Ok(Expression::ConstructedNew {
                 allocation: Box::new(Expression::Call {
