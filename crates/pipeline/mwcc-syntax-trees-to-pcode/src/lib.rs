@@ -434,7 +434,9 @@ impl Lowerer<'_> {
             other => {
                 // Truth of a value: compare against zero.
                 let (register, _) = self.expression(other)?;
-                self.emit_plain(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+                if !self.record_form(register) {
+                    self.emit_plain(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+                }
                 let options = if when { 4 } else { 12 };
                 self.branch(
                     Instruction::BranchConditionalForward { options, condition_bit: 2, target: 0 },
@@ -464,6 +466,11 @@ impl Lowerer<'_> {
         let unsigned = is_unsigned(promote(left_type))
             || self.static_type(right).is_some_and(|ty| is_unsigned(promote(ty)))
             || (is_unsigned_narrow(left_type) && self.non_negative(right));
+        // A compare of a just-computed value with 0 is its record form.
+        let equality = matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual);
+        if matches!(right, Expression::IntegerLiteral(0)) && (!unsigned || equality) && self.record_form(a) {
+            return Ok(comparison(operator).expect("checked by the caller"));
+        }
         match (right, unsigned) {
             (Expression::IntegerLiteral(value), false) if i16::try_from(*value).is_ok() => {
                 self.emit_plain(Instruction::CompareWordImmediate { a, immediate: *value as i16 });
@@ -718,6 +725,38 @@ impl Lowerer<'_> {
             Expression::IntegerLiteral(value) => *value >= 0,
             other => self.static_type(other).is_some_and(is_unsigned_narrow),
         }
+    }
+
+    /// Turn the current block's last instruction into its record form when it
+    /// defines `register` (so cr0 compares that result with 0).
+    fn record_form(&mut self, register: u32) -> bool {
+        if std::env::var_os("MWCC_PCODE_NO_RECORD").is_some() {
+            return false;
+        }
+        let block = self.current_block();
+        let Some(last) = self.pcode.blocks[block].instructions.last_mut() else { return false };
+        use Instruction::*;
+        let record = match last.instruction.clone() {
+            Add { d, a, b } if d == register => AddRecord { d, a, b },
+            SubtractFrom { d, a, b } if d == register => SubtractFromRecord { d, a, b },
+            Negate { d, a } if d == register => NegateRecord { d, a },
+            Xor { a, s, b } if a == register => XorRecord { a, s, b },
+            Or { a, s, b } if a == register && s != b => OrRecord { a, s, b },
+            And { a, s, b } if a == register => AndRecord { a, s, b },
+            ExtendSignByte { a, s } if a == register => ExtendSignByteRecord { a, s },
+            ExtendSignHalfword { a, s } if a == register => ExtendSignHalfwordRecord { a, s },
+            ClearLeftImmediate { a, s, clear } if a == register => ClearLeftImmediateRecord { a, s, clear },
+            RotateAndMask { a, s, shift, begin, end } if a == register => {
+                RotateAndMaskRecord { a, s, shift, begin, end }
+            }
+            ShiftRightAlgebraicImmediate { a, s, shift } if a == register => {
+                ShiftRightAlgebraicImmediateRecord { a, s, shift }
+            }
+            AndImmediateRecord { a, .. } if a == register => return true,
+            _ => return false,
+        };
+        last.instruction = record;
+        true
     }
 
     /// The type an expression evaluates to, where it is known without
