@@ -379,8 +379,11 @@ fn split_webs(pcode: &mut PCodeFunction) {
                         // Study switch: keep an in-place update (`add t,t,c`)
                         // in its web. MWCC splits `x = a + 1; x <<= 1` and
                         // `lis; addi`, but not every accumulator.
-                        if toggle("MWCC_PCODE_WEBS_TIE_INPLACE")
-                            && instruction.uses(class).contains(&defined)
+                        // `rlwimi` reads and writes one field: always one web.
+                        let tied = matches!(instruction.instruction, Instruction::RotateAndMaskInsert { .. });
+                        if tied
+                            || toggle("MWCC_PCODE_WEBS_TIE_INPLACE")
+                                && instruction.uses(class).contains(&defined)
                         {
                             for other in 0..count {
                                 let (_, other_block, other_index) = sites[other];
@@ -388,7 +391,7 @@ fn split_webs(pcode: &mut PCodeFunction) {
                                 let incoming = pcode.blocks[other_block].instructions[other_index]
                                     .copy(class)
                                     .is_some_and(|(_, source)| source < 32);
-                                if state[other] && sites[other].0 == defined && !incoming {
+                                if state[other] && sites[other].0 == defined && (tied || !incoming) {
                                     let (a, b) = (find(&mut parent, site), find(&mut parent, other));
                                     parent[b] = a;
                                 }

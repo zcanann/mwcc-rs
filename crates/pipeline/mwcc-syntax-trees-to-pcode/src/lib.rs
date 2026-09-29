@@ -759,6 +759,49 @@ impl Lowerer<'_> {
         true
     }
 
+    /// `x` rotated and masked, as `rlwimi`'s inserted field: `x << n`,
+    /// unsigned `x >> n`, `x & mask`, `(x >> n) & mask`.
+    fn insert_field<'e>(&self, expression: &'e Expression) -> Option<(&'e Expression, u8, u8, u8)> {
+        let Expression::Binary { operator, left, right } = expression else { return None };
+        let amount = match right.as_ref() {
+            Expression::IntegerLiteral(value) => Some(*value),
+            _ => None,
+        };
+        match (operator, amount) {
+            (BinaryOperator::ShiftLeft, Some(n)) if (1..32).contains(&n) => {
+                Some((left, n as u8, 0, 31 - n as u8))
+            }
+            (BinaryOperator::ShiftRight, Some(n))
+                if (1..32).contains(&n) && self.static_type(left).is_some_and(|ty| is_unsigned(promote(ty))) =>
+            {
+                Some((left, (32 - n) as u8, n as u8, 31))
+            }
+            (BinaryOperator::BitAnd, _) => {
+                if let Some(field) = shift_mask(left, right) {
+                    return Some(field);
+                }
+                let (begin, end) = mask_bounds(right)?;
+                Some((left, 0, begin, end))
+            }
+            _ => None,
+        }
+    }
+
+    /// Bits of `expression`'s value known to be zero.
+    fn known_zero(&self, expression: &Expression) -> u32 {
+        let Expression::Binary { operator, left, right } = expression else { return 0 };
+        match (operator, right.as_ref()) {
+            (BinaryOperator::ShiftLeft, Expression::IntegerLiteral(n)) if (1..32).contains(n) => (1u32 << n) - 1,
+            (BinaryOperator::ShiftRight, Expression::IntegerLiteral(n))
+                if (1..32).contains(n) && self.static_type(left).is_some_and(|ty| is_unsigned(promote(ty))) =>
+            {
+                !(u32::MAX >> n)
+            }
+            (BinaryOperator::BitAnd, Expression::IntegerLiteral(mask)) => !(*mask as u32),
+            _ => 0,
+        }
+    }
+
     /// The type an expression evaluates to, where it is known without
     /// lowering it (enough to recognize pointer operands).
     fn static_type(&self, expression: &Expression) -> Option<Type> {
@@ -1449,6 +1492,22 @@ impl Lowerer<'_> {
         // IRO algebra: `(x + y) - y` and `(x - y) + y` are `x`.
         if let Some(simplified) = cancel(operator, left, right) {
             return self.expression_with_target(simplified, target);
+        }
+        // `field | base` where the base is known zero under the field's
+        // mask inserts the field: `rlwimi base,x,shift,mb,me`.
+        if operator == BinaryOperator::BitOr {
+            if let Some((source, shift, begin, end)) = self.insert_field(left) {
+                if field_bits(begin, end) & !self.known_zero(right) == 0 {
+                    let (x, ty) = self.expression(source)?;
+                    let (base, _) = self.expression(right)?;
+                    let d = self.result(target);
+                    if base != d {
+                        self.emit_plain(Instruction::Or { a: d, s: base, b: base });
+                    }
+                    self.emit_plain(Instruction::RotateAndMaskInsert { a: d, s: x, shift, begin, end });
+                    return Ok((d, promote(ty)));
+                }
+            }
         }
         // `a & ~b` / `a | ~b` are single instructions.
         if let (BinaryOperator::BitAnd | BinaryOperator::BitOr, Expression::Unary { operator: UnaryOperator::BitNot, operand }) =
@@ -2231,4 +2290,9 @@ fn negation_fold(operator: BinaryOperator, left: &Expression, right: &Expression
         }
         _ => None,
     }
+}
+
+/// The bits `begin..=end` (IBM numbering, non-wrapping).
+fn field_bits(begin: u8, end: u8) -> u32 {
+    (u32::MAX >> begin) & (u32::MAX << (31 - end))
 }
