@@ -17,6 +17,8 @@
 //! remap anything keyed by instruction position. [`schedule_branch_bounded`]
 //! additionally permits control flow when its caller owns branch-target remapping.
 
+use std::collections::HashSet;
+
 use mwcc_machine_code::Instruction;
 
 use crate::description::{register_operands, RegisterRole};
@@ -574,6 +576,11 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
         // loads regardless, so require only that a call (`bl`, or an indirect `bctrl`
         // through a global function pointer's `lwz r12`) follows the run, not that it is
         // the very next instruction. (Only the run is moved; the trailing work stays.)
+        if run < 2 {
+            if let Some(permutation) = fill_link_save_gap_past_blocked_work(instructions, save, run) {
+                return permutation;
+            }
+        }
         if run == 0
             || !instructions[next..].iter().any(|instruction| {
                 instruction.is_call()
@@ -607,6 +614,140 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
             }
         })
         .collect()
+}
+
+/// Register-only moves and arithmetic that never touch r1 or memory.
+fn pure_register_computation(instruction: &Instruction) -> bool {
+    matches!(
+        instruction,
+        Instruction::Or { .. }
+            | Instruction::ExtendSignByte { .. }
+            | Instruction::ExtendSignHalfword { .. }
+            | Instruction::ClearLeftImmediate { .. }
+            | Instruction::AddImmediate { .. }
+            | Instruction::AddImmediateShifted { .. }
+            | Instruction::Add { .. }
+            | Instruction::SubtractFrom { .. }
+            | Instruction::ShiftLeftImmediate { .. }
+    ) && !register_operands(instruction)
+        .iter()
+        .any(|operand| operand.class == Class::General && operand.register == 1)
+}
+
+/// A pure register computation mwcc may issue in the `mflr`->save gap.
+fn fills_link_save_gap(instruction: &Instruction) -> bool {
+    match *instruction {
+        Instruction::Or { a, s, b } => a > 1 && s > 1 && b > 1,
+        Instruction::ExtendSignByte { a, s }
+        | Instruction::ExtendSignHalfword { a, s }
+        | Instruction::ClearLeftImmediate { a, s, .. } => a > 1 && a == s,
+        Instruction::AddImmediate { d, a, .. } | Instruction::AddImmediateShifted { d, a, .. } => {
+            d > 1 && a != 1
+        }
+        Instruction::Add { d, a, b } | Instruction::SubtractFrom { d, a, b } => {
+            d > 1 && a > 1 && b > 1
+        }
+        Instruction::ShiftLeftImmediate { a, s, .. } => a > 1 && s > 1,
+        _ => false,
+    }
+}
+
+/// Fill the `mflr`->save gap with up to two ready pure computations, looking
+/// past r0-bound work. mwcc's list scheduler issues independent register
+/// arithmetic there (`mr r5,r3; addi r3,r4,-1; stw r0,20(r1)`), and an
+/// r0-bound parallel-move copy (`mr r0,r3`, which must wait for the save)
+/// does not stop a later ready value:
+/// `mflr r0; addi r5,r5,-1; stw r0,20(r1); mr r0,r3; ...`.
+///
+/// Returns `None` when the leading-run rule already covers every pick.
+fn fill_link_save_gap_past_blocked_work(
+    instructions: &mut Vec<Instruction>,
+    save: usize,
+    leading_run: usize,
+) -> Option<Vec<usize>> {
+    let call = save
+        + 1
+        + instructions[save + 1..]
+            .iter()
+            .position(Instruction::is_call)?;
+    let mut picked = Vec::new();
+    let mut blocked_defs = HashSet::new();
+    let mut blocked_uses = HashSet::new();
+    let mut picked_defs = HashSet::new();
+    for index in save + 1..call {
+        let instruction = &instructions[index];
+        if matches!(
+            instruction,
+            Instruction::BranchConditionalForward { .. }
+                | Instruction::Branch { .. }
+                | Instruction::BranchConditionalToLinkRegister { .. }
+                | Instruction::BranchToLinkRegister
+                | Instruction::BranchToCountRegister
+                | Instruction::BranchExternal { .. }
+        ) {
+            break;
+        }
+        let (defs, uses) = defs_and_uses(instruction);
+        // A value produced in the gap is not ready within it (`lis r3; addi
+        // r3,r3,k` issues the `addi` after the save, and nothing behind that
+        // `addi` is pulled past it); nothing may pass an unhoisted
+        // instruction it depends on.
+        let reads_pick = uses.iter().any(|key| picked_defs.contains(key));
+        let behind_blocked = uses.iter().any(|key| blocked_defs.contains(key))
+            || defs
+                .iter()
+                .any(|key| blocked_defs.contains(key) || blocked_uses.contains(key));
+        if reads_pick {
+            break;
+        }
+        if !behind_blocked
+            && fills_link_save_gap(instruction)
+            && !touches_register_zero(instruction)
+        {
+            picked_defs.extend(defs);
+            picked.push(index);
+            if picked.len() == 2 {
+                break;
+            }
+        } else if pure_register_computation(instruction)
+            && (touches_register_zero(instruction) || behind_blocked)
+        {
+            // Only register moves/arithmetic that must wait (r0-bound work, or
+            // work behind it) are passed over; memory accesses, frame
+            // addresses, and anything else unhoisted end the window.
+            blocked_defs.extend(defs);
+            blocked_uses.extend(uses);
+        } else {
+            break;
+        }
+    }
+    let last = *picked.last()?;
+    if picked.len() <= leading_run
+        && picked.iter().enumerate().all(|(offset, &index)| index == save + 1 + offset)
+    {
+        return None;
+    }
+    // Branch targets are instruction indices; never reorder a region that a
+    // branch enters.
+    if instructions.iter().any(|instruction| match instruction {
+        Instruction::BranchConditionalForward { target, .. } | Instruction::Branch { target } => {
+            (save..=last).contains(target)
+        }
+        _ => false,
+    }) {
+        return None;
+    }
+    // New order over [save, last]: the picks, the save, then the rest.
+    let mut order: Vec<usize> = picked.clone();
+    order.push(save);
+    order.extend((save + 1..=last).filter(|index| !picked.contains(index)));
+    let mut permutation: Vec<usize> = (0..instructions.len()).collect();
+    for (offset, &old) in order.iter().enumerate() {
+        permutation[old] = save + offset;
+    }
+    let region: Vec<Instruction> = order.iter().map(|&old| instructions[old].clone()).collect();
+    instructions.splice(save..=last, region);
+    Some(permutation)
 }
 
 /// Whether an instruction reads or writes general register r0 (the scratch).
@@ -1670,5 +1811,48 @@ mod tests {
             }
         ));
         assert_eq!(permutation, [0, 1, 3, 2, 4]);
+    }
+
+    #[test]
+    fn a_ready_value_behind_an_r0_parallel_move_fills_the_saved_link_window() {
+        // `k3(b, a, c - 1)`: the swap through r0 must wait for the save, but
+        // the independent `addi r5,r5,-1` issues in the latency gap.
+        let mut stream = vec![
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 },
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord { s: 0, a: 1, offset: 20 },
+            Instruction::Or { a: 0, s: 3, b: 3 },
+            Instruction::Or { a: 3, s: 4, b: 4 },
+            Instruction::Or { a: 4, s: 0, b: 0 },
+            Instruction::AddImmediate { d: 5, a: 5, immediate: -1 },
+            Instruction::BranchAndLink { target: "callee".into() },
+        ];
+
+        let permutation = schedule_link_register_save(&mut stream);
+
+        assert_eq!(stream[2], Instruction::AddImmediate { d: 5, a: 5, immediate: -1 });
+        assert_eq!(stream[3], Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        assert_eq!(stream[4], Instruction::Or { a: 0, s: 3, b: 3 });
+        assert_eq!(permutation, [0, 1, 3, 4, 5, 6, 2, 7]);
+    }
+
+    #[test]
+    fn a_computed_argument_after_a_saved_copy_fills_the_saved_link_window() {
+        // `k2(b - 1, a + 1)`: `mr r5,r3; addi r3,r4,-1` both issue before the save.
+        let mut stream = vec![
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 },
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord { s: 0, a: 1, offset: 20 },
+            Instruction::Or { a: 5, s: 3, b: 3 },
+            Instruction::AddImmediate { d: 3, a: 4, immediate: -1 },
+            Instruction::AddImmediate { d: 4, a: 5, immediate: 1 },
+            Instruction::BranchAndLink { target: "callee".into() },
+        ];
+
+        schedule_link_register_save(&mut stream);
+
+        assert_eq!(stream[2], Instruction::Or { a: 5, s: 3, b: 3 });
+        assert_eq!(stream[3], Instruction::AddImmediate { d: 3, a: 4, immediate: -1 });
+        assert_eq!(stream[4], Instruction::StoreWord { s: 0, a: 1, offset: 20 });
     }
 }

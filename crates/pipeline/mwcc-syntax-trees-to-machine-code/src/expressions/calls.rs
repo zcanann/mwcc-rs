@@ -1388,6 +1388,9 @@ impl Generator {
         )? {
             return Ok(());
         }
+        if direct_call && self.try_emit_snapshotted_word_permutation(arguments, name)? {
+            return Ok(());
+        }
         if self.try_emit_two_leaf_general_argument_swap(arguments, name, direct_call)? {
             return Ok(());
         }
@@ -1770,7 +1773,13 @@ impl Generator {
         let prematerialized_general = (1..arguments.len()).find_map(|later| {
             let source = self.leaf_info(&arguments[later]).ok()?.0;
             let target: u32 = (Eabi::FIRST_GENERAL_ARGUMENT.checked_add(later as u8)?) as u32;
+            // The copy coalesces the leaf into its own ABI home, so that home
+            // must hold no input another argument still reads (`k2(b - 1, a)`
+            // reads b from r4 after `mr r4,r3` would have replaced it).
             if source == target.into()
+                || arguments.iter().enumerate().any(|(other, argument)| {
+                    other != later && self.registers_used_by(argument).contains(&target)
+                })
                 || !(0..later).any(|earlier| {
                     u32::from(Eabi::FIRST_GENERAL_ARGUMENT) + earlier as u32 == source
                         && !expression_has_call(&arguments[earlier])

@@ -19,7 +19,7 @@ use crate::register::Class;
 
 /// A computed base that cannot be colored into r0: these encodings either
 /// interpret zero as a literal base or forbid it for an updating address.
-pub(crate) fn nonzero_base(instruction: &Instruction) -> Option<RegisterField> {
+pub fn nonzero_base(instruction: &Instruction) -> Option<RegisterField> {
     use Instruction::*;
     let base = match instruction {
         AddImmediate { a, .. } | AddImmediateShifted { a, .. }
