@@ -40,6 +40,8 @@ pub struct LoweringContext<'a> {
     pub variadic_callees: &'a std::collections::HashSet<String>,
     /// Callees with a prototype in scope.
     pub prototyped: &'a std::collections::HashSet<String>,
+    /// Declared parameter types of callees.
+    pub call_parameter_types: &'a HashMap<String, Vec<Type>>,
 }
 
 /// A lowered function.
@@ -170,6 +172,35 @@ impl Lowerer<'_> {
         self.emit(instruction);
     }
 
+    /// The type an expression evaluates to, where it is known without
+    /// lowering it (enough to recognize pointer operands).
+    fn static_type(&self, expression: &Expression) -> Option<Type> {
+        match expression {
+            Expression::Variable(name) => self
+                .variables
+                .get(name)
+                .map(|variable| variable.ty)
+                .or_else(|| {
+                    self.context
+                        .globals
+                        .get(name)
+                        .filter(|global| !global.is_array)
+                        .map(|global| global.ty)
+                }),
+            Expression::Member { member_type, .. } => Some(*member_type),
+            Expression::Cast { target_type, .. } => Some(*target_type),
+            Expression::Call { name, .. } => self.context.call_return_types.get(name).copied(),
+            Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right } => {
+                let left = self.static_type(left);
+                if left.is_some_and(|ty| element_size(ty).is_some()) {
+                    return left;
+                }
+                self.static_type(right).filter(|ty| element_size(*ty).is_some())
+            }
+            _ => None,
+        }
+    }
+
     /// A parameter or local reference: already in a register.
     fn is_register_leaf(&self, expression: &Expression) -> bool {
         matches!(expression, Expression::Variable(name) if self.variables.contains_key(name))
@@ -262,8 +293,8 @@ impl Lowerer<'_> {
     }
 
     fn return_value(&mut self, value: &Expression) -> Compilation<()> {
-        let (register, _) = self.expression(value)?;
-        let _ = self.return_type;
+        let (register, ty) = self.expression(value)?;
+        let (register, _) = self.convert(register, ty, self.return_type, None)?;
         self.emit_plain(Instruction::Or { a: 3, s: register, b: register });
         Ok(())
     }
@@ -273,10 +304,23 @@ impl Lowerer<'_> {
             return Err(unsupported(format!("assignment to non-local '{name}'")));
         };
         let destination = variable.register;
-        self.target = Some(destination);
+        let variable_type = variable.ty;
+        let narrow = matches!(
+            variable_type,
+            Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort
+        );
+        self.target = if narrow { None } else { Some(destination) };
         let evaluated = self.expression(value);
         self.target = None;
-        let (source, _) = evaluated?;
+        let (source, source_type) = evaluated?;
+        if narrow && source_type != variable_type {
+            let (converted, _) = self.convert(source, source_type, variable_type, Some(destination))?;
+            if converted == destination {
+                return Ok(());
+            }
+            self.emit_plain(Instruction::Or { a: destination, s: converted, b: converted });
+            return Ok(());
+        }
         if source != destination {
             self.emit_plain(Instruction::Or { a: destination, s: source, b: source });
         }
@@ -500,6 +544,28 @@ impl Lowerer<'_> {
         right: &Expression,
         target: Option<u32>,
     ) -> Compilation<(u32, Type)> {
+        if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) {
+            let left_pointer = self.static_type(left).and_then(element_size);
+            let right_pointer = self.static_type(right).and_then(element_size);
+            match (left_pointer, right_pointer) {
+                (Some(_), Some(_)) => return Err(unsupported("pointer difference")),
+                (Some(0), None) | (None, Some(0)) => {
+                    return Err(unsupported("arithmetic on an unsized pointee"))
+                }
+                (Some(size), None) if size != 1 => {
+                    let scaled = scale_index(right, size);
+                    return self.binary(operator, left, &scaled, target);
+                }
+                (None, Some(size)) if size != 1 && operator == BinaryOperator::Add => {
+                    let scaled = scale_index(left, size);
+                    return self.binary(operator, &scaled, right, target);
+                }
+                (None, Some(_)) if operator == BinaryOperator::Subtract => {
+                    return Err(unsupported("integer minus pointer"))
+                }
+                _ => {}
+            }
+        }
         let immediate = match right {
             Expression::IntegerLiteral(value) => i16::try_from(*value).ok(),
             _ => None,
@@ -684,6 +750,13 @@ impl Lowerer<'_> {
         if !self.context.prototyped.contains(name) {
             return Err(unsupported("call without a prototype"));
         }
+        if self.context.call_parameter_types.get(name).is_some_and(|types| {
+            types.iter().any(|ty| {
+                matches!(ty, Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort)
+            })
+        }) {
+            return Err(unsupported("call with narrow parameters"));
+        }
         if arguments.len() > (LAST_GENERAL_ARGUMENT - FIRST_GENERAL_ARGUMENT + 1) as usize {
             return Err(unsupported("stack-passed arguments"));
         }
@@ -844,4 +917,35 @@ fn strip_narrowing_for_store(value: &Expression, width: Option<u32>) -> &Express
         value = operand;
     }
     value
+}
+
+/// The byte size of a pointer operand's element, `Some(0)` when unknown
+/// (opaque struct or function pointer), `None` for a non-pointer.
+fn element_size(ty: Type) -> Option<u32> {
+    match ty {
+        Type::Pointer(pointee) => Some(match pointee {
+            Pointee::Char | Pointee::UnsignedChar => 1,
+            Pointee::Short | Pointee::UnsignedShort => 2,
+            Pointee::Int
+            | Pointee::UnsignedInt
+            | Pointee::Float
+            | Pointee::Pointer
+            | Pointee::WordPointer => 4,
+            Pointee::Double | Pointee::LongLong | Pointee::UnsignedLongLong => 8,
+        }),
+        Type::StructPointer { element_size } => Some(element_size),
+        _ => None,
+    }
+}
+
+/// `index * size` for pointer arithmetic, folded when the index is constant.
+fn scale_index(index: &Expression, size: u32) -> Expression {
+    match index {
+        Expression::IntegerLiteral(value) => Expression::IntegerLiteral(value * i64::from(size)),
+        other => Expression::Binary {
+            operator: BinaryOperator::Multiply,
+            left: Box::new(other.clone()),
+            right: Box::new(Expression::IntegerLiteral(i64::from(size))),
+        },
+    }
 }

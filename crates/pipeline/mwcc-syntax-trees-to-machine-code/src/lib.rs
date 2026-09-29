@@ -322,6 +322,7 @@ fn lower_function_body(
             call_return_types,
             variadic_definitions,
             prototyped_names,
+            call_parameter_types,
             &config,
         ) {
             Ok(output) => return Ok(output),

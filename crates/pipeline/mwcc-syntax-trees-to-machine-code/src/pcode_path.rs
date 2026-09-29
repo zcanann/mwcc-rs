@@ -29,6 +29,7 @@ pub(crate) fn lower(
     call_return_types: &HashMap<String, Type>,
     variadic_callees: &std::collections::HashSet<String>,
     prototyped: &std::collections::HashSet<String>,
+    call_parameter_types: &HashMap<String, Vec<Type>>,
     config: &CompilerConfig,
 ) -> Compilation<MachineFunction> {
     let behavior = Behavior::resolve(config);
@@ -60,6 +61,7 @@ pub(crate) fn lower(
         is_intrinsic: &crate::intrinsics::is_intrinsic_call,
         variadic_callees,
         prototyped,
+        call_parameter_types,
     };
     let lowered = mwcc_syntax_trees_to_pcode::lower(function, &context)?;
     let mut output = mwcc_pcode_to_machine_code::finish(
