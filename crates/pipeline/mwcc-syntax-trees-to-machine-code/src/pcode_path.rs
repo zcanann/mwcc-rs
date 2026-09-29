@@ -40,6 +40,12 @@ pub(crate) fn lower(
             "PCode lowering: only -O4 is modeled (not yet supported)",
         ));
     }
+    if behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving {
+        // Selects and comparison values are modeled on the branchless builds.
+        return Err(mwcc_core::Diagnostic::error(
+            "PCode lowering: branch-preserving select builds (not yet supported)",
+        ));
+    }
     let small_data = behavior.global_addressing == GlobalAddressing::SmallData;
     let global_info: HashMap<String, mwcc_syntax_trees_to_pcode::GlobalInfo> = globals
         .iter()

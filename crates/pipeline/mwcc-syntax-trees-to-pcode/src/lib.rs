@@ -279,6 +279,20 @@ impl Lowerer<'_> {
             Hoisted::Return(value) | Hoisted::Assign(_, value) => value.clone(),
         };
         let (then_value, else_value) = (value(&then_arm), value(&else_arm));
+        if self.signed_idiom(condition, &then_value, &else_value).is_some() {
+            let selected = Expression::Conditional {
+                condition: Box::new(condition.clone()),
+                when_true: Box::new(then_value),
+                when_false: Box::new(else_value),
+                origin: mwcc_syntax_trees::ConditionalOrigin::Ternary,
+            };
+            let arm = match then_arm {
+                Hoisted::Return(_) => Hoisted::Return(selected),
+                Hoisted::Assign(name, _) => Hoisted::Assign(name, selected),
+            };
+            self.emit_hoisted(arm)?;
+            return Ok(true);
+        }
         if simple_condition(condition) {
             if let (Expression::IntegerLiteral(1), Expression::IntegerLiteral(0)) = (&then_value, &else_value) {
                 let truth = match condition {
@@ -467,6 +481,70 @@ impl Lowerer<'_> {
             }
         }
         Ok(comparison(operator).expect("checked by the caller"))
+    }
+
+    /// [`sign_idiom`] when the tested value is a signed word.
+    fn signed_idiom<'e>(
+        &self,
+        condition: &'e Expression,
+        when_true: &'e Expression,
+        when_false: &'e Expression,
+    ) -> Option<SignIdiom<'e>> {
+        let idiom = sign_idiom(condition, when_true, when_false)?;
+        let tested = match &idiom {
+            SignIdiom::Absolute(tested) | SignIdiom::Masked { tested, .. } => *tested,
+        };
+        (self.static_type(tested) == Some(Type::Int)).then_some(idiom)
+    }
+
+    /// A sign-mask select (see [`sign_idiom`]).
+    fn sign_select(&mut self, idiom: SignIdiom<'_>, target: Option<u32>) -> Compilation<(u32, Type)> {
+        match idiom {
+            SignIdiom::Absolute(value) => {
+                let (a, _) = self.expression(value)?;
+                let sign = self.temporary();
+                self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: sign, s: a, shift: 31 });
+                let flipped = self.temporary();
+                self.emit_plain(Instruction::Xor { a: flipped, s: sign, b: a });
+                let d = self.result(target);
+                self.emit_plain(Instruction::SubtractFrom { d, a: sign, b: flipped });
+                Ok((d, Type::Int))
+            }
+            SignIdiom::Masked { relation, tested, value, keep_when_true } => {
+                let (a, _) = self.expression(tested)?;
+                let mask = self.temporary();
+                match relation {
+                    BinaryOperator::Less => {
+                        self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: mask, s: a, shift: 31 });
+                    }
+                    BinaryOperator::Greater | BinaryOperator::LessEqual => {
+                        let negated = self.temporary();
+                        self.emit_plain(Instruction::Negate { d: negated, a });
+                        let combined = self.temporary();
+                        self.emit_plain(if relation == BinaryOperator::Greater {
+                            Instruction::AndComplement { a: combined, s: negated, b: a }
+                        } else {
+                            Instruction::OrComplement { a: combined, s: a, b: negated }
+                        });
+                        self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: mask, s: combined, shift: 31 });
+                    }
+                    BinaryOperator::GreaterEqual => {
+                        let sign = self.temporary();
+                        self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: sign, s: a, shift: 31 });
+                        self.emit_based(Instruction::AddImmediate { d: mask, a: sign, immediate: -1 }, sign);
+                    }
+                    _ => unreachable!("sign_idiom relations"),
+                }
+                let (b, ty) = self.expression(value)?;
+                let d = self.result(target);
+                self.emit_plain(if keep_when_true {
+                    Instruction::And { a: d, s: b, b: mask }
+                } else {
+                    Instruction::AndComplement { a: d, s: b, b: mask }
+                });
+                Ok((d, promote(ty)))
+            }
+        }
     }
 
     /// A comparison's 0/1 value, branch-free as MWCC generates it.
@@ -991,6 +1069,12 @@ impl Lowerer<'_> {
                     }
                     _ => self.binary(*operator, left, right, target),
                 }
+            }
+            Expression::Conditional { condition, when_true, when_false, .. } => {
+                let Some(idiom) = self.signed_idiom(condition, when_true, when_false) else {
+                    return Err(unsupported("conditional expression"));
+                };
+                self.sign_select(idiom, target)
             }
             Expression::Unary { operator: UnaryOperator::LogicalNot, operand } => {
                 let inverted = match operand.as_ref() {
@@ -1907,4 +1991,67 @@ fn may_assign(statements: &[Statement], name: &str) -> bool {
         Statement::Store { .. } | Statement::Expression(_) | Statement::Return(_) => false,
         _ => true,
     })
+}
+
+/// Branch-free selects on the sign of a value (MWCC's 2.4.x idioms).
+enum SignIdiom<'a> {
+    /// `x < 0 ? -x : x` and its spellings: `srawi; xor; subf`.
+    Absolute(&'a Expression),
+    /// `(a REL 0) ? b : 0` (`and` with the relation's mask) or
+    /// `(a REL 0) ? 0 : b` (`andc`).
+    Masked {
+        relation: BinaryOperator,
+        tested: &'a Expression,
+        value: &'a Expression,
+        keep_when_true: bool,
+    },
+}
+
+fn sign_idiom<'a>(
+    condition: &'a Expression,
+    when_true: &'a Expression,
+    when_false: &'a Expression,
+) -> Option<SignIdiom<'a>> {
+    let Expression::Binary { operator, left, right } = condition else { return None };
+    let (relation, tested) = match (left.as_ref(), right.as_ref()) {
+        (tested @ Expression::Variable(_), Expression::IntegerLiteral(0)) => (*operator, tested),
+        (Expression::IntegerLiteral(0), tested @ Expression::Variable(_)) => (mirror(*operator), tested),
+        _ => return None,
+    };
+    if !matches!(
+        relation,
+        BinaryOperator::Less | BinaryOperator::LessEqual | BinaryOperator::Greater | BinaryOperator::GreaterEqual
+    ) {
+        return None;
+    }
+    let negation_of = |expression: &Expression| {
+        matches!(expression, Expression::Unary { operator: UnaryOperator::Negate, operand }
+            if same_variable(operand, tested))
+    };
+    let negative_side = matches!(relation, BinaryOperator::Less | BinaryOperator::LessEqual);
+    if negative_side && negation_of(when_true) && same_variable(when_false, tested)
+        || !negative_side && same_variable(when_true, tested) && negation_of(when_false)
+    {
+        return Some(SignIdiom::Absolute(tested));
+    }
+    let leaf = |expression: &Expression| {
+        matches!(expression, Expression::Variable(_) | Expression::IntegerLiteral(_))
+    };
+    match (when_true, when_false) {
+        (value, Expression::IntegerLiteral(0)) if leaf(value) && !matches!(value, Expression::IntegerLiteral(_)) => {
+            Some(SignIdiom::Masked { relation, tested, value, keep_when_true: true })
+        }
+        (Expression::IntegerLiteral(0), value)
+            if leaf(value)
+                && !matches!(value, Expression::IntegerLiteral(_))
+                && matches!(relation, BinaryOperator::Less | BinaryOperator::Greater) =>
+        {
+            Some(SignIdiom::Masked { relation, tested, value, keep_when_true: false })
+        }
+        _ => None,
+    }
+}
+
+fn same_variable(left: &Expression, right: &Expression) -> bool {
+    matches!((left, right), (Expression::Variable(a), Expression::Variable(b)) if a == b)
 }
