@@ -216,6 +216,10 @@ pub struct PCodeFunction {
     /// physical registers.
     pub coalesce_first_general: u32,
     pub coalesce_first_float: u32,
+    /// Registers numbered past the window that still stand for a
+    /// pre-window web (split from a parameter or declared local): they, too,
+    /// only coalesce with physical registers.
+    pub outside_window: Vec<(Class, u32)>,
     pub returns: ReturnRegisters,
 }
 
@@ -228,6 +232,7 @@ impl PCodeFunction {
             next_float: FIRST_VIRTUAL,
             coalesce_first_general: FIRST_VIRTUAL,
             coalesce_first_float: FIRST_VIRTUAL,
+            outside_window: Vec::new(),
             returns,
         }
     }
@@ -247,6 +252,11 @@ impl PCodeFunction {
     pub fn begin_coalesce_window(&mut self) {
         self.coalesce_first_general = self.next_general;
         self.coalesce_first_float = self.next_float;
+    }
+
+    /// Whether virtual `register` may coalesce with another virtual register.
+    pub fn in_coalesce_window(&self, class: Class, register: u32) -> bool {
+        register >= self.coalesce_first(class) && !self.outside_window.contains(&(class, register))
     }
 
     pub fn coalesce_first(&self, class: Class) -> u32 {

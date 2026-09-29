@@ -1047,14 +1047,30 @@ impl Lowerer<'_> {
                         [Statement::Assign { name, value }],
                         [Statement::Assign { name: other, value: other_value }],
                     ) if name == other && self.variables.contains_key(name) => {
+                        // When the condition or an arm reads the variable,
+                        // select into a temporary and copy it back after the
+                        // join (the first arm would clobber it otherwise).
+                        let reads = mentions(condition, name) || mentions(value, name) || mentions(other_value, name);
+                        let destination = if reads {
+                            let register = self.temporary();
+                            let ty = self.variables[name].ty;
+                            let temporary = format!("@select{register}");
+                            self.variables.insert(temporary.clone(), Variable { register, ty, raw_narrow: false });
+                            temporary
+                        } else {
+                            name.clone()
+                        };
                         let join = self.new_label();
                         if self.select(
                             condition,
-                            Hoisted::Assign(name.clone(), value.clone()),
-                            Hoisted::Assign(name.clone(), other_value.clone()),
+                            Hoisted::Assign(destination.clone(), value.clone()),
+                            Hoisted::Assign(destination.clone(), other_value.clone()),
                             join,
                         )? {
                             self.place_label(join);
+                            if reads {
+                                self.assign(name, &Expression::Variable(destination))?;
+                            }
                             return Ok(());
                         }
                     }
@@ -2507,5 +2523,23 @@ fn fits_unconverted(value: &Expression, ty: Type) -> bool {
             _ => false,
         },
         _ => false,
+    }
+}
+
+/// Whether `expression` may read variable `name` (true for forms not walked).
+fn mentions(expression: &Expression, name: &str) -> bool {
+    match expression {
+        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
+        Expression::Variable(variable) => variable == name,
+        Expression::Binary { left, right, .. } => mentions(left, name) || mentions(right, name),
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => mentions(operand, name),
+        Expression::Dereference { pointer } => mentions(pointer, name),
+        Expression::Index { base, index } => mentions(base, name) || mentions(index, name),
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => mentions(base, name),
+        Expression::Conditional { condition, when_true, when_false, .. } => {
+            mentions(condition, name) || mentions(when_true, name) || mentions(when_false, name)
+        }
+        Expression::Call { arguments, .. } => arguments.iter().any(|argument| mentions(argument, name)),
+        _ => true,
     }
 }

@@ -497,7 +497,15 @@ fn split_webs(pcode: &mut PCodeFunction) {
             let register = sites[site].0;
             let first = (0..count).find(|&s| sites[s].0 == register).expect("a site");
             let first_root = find(&mut parent, first);
-            let assigned = if first_root == root { register } else { pcode.fresh(class) };
+            let assigned = if first_root == root {
+                register
+            } else {
+                let fresh = pcode.fresh(class);
+                if register < pcode.coalesce_first(class) && !toggle("MWCC_PCODE_WEBS_JOIN_WINDOW") {
+                    pcode.outside_window.push((class, fresh));
+                }
+                fresh
+            };
             web_register.insert(root, assigned);
         }
         let renamed: Vec<u32> = (0..count).map(|site| web_register[&find(&mut parent, site)]).collect();

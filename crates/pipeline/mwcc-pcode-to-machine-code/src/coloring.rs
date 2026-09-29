@@ -336,7 +336,10 @@ fn coalesce_copies(
             } else if !matrix.interferes(first, second)
                 && (first < FIRST_VIRTUAL as usize
                     || second < FIRST_VIRTUAL as usize
-                    || (first >= window && second >= window))
+                    || (first >= window
+                        && second >= window
+                        && !function.outside_window.contains(&(class, first as u32))
+                        && !function.outside_window.contains(&(class, second as u32))))
             {
                 let (root, child) = if first < second { (first, second) } else { (second, first) };
                 roots[child] = root;
