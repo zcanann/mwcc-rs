@@ -1551,6 +1551,28 @@ impl Lowerer<'_> {
         if let Some(simplified) = cancel(operator, left, right) {
             return self.expression_with_target(simplified, target);
         }
+        // `(x & mask) << n` (or `* 2^n`) is one rotate-and-mask.
+        let left_shift = match (operator, right) {
+            (BinaryOperator::ShiftLeft, Expression::IntegerLiteral(n)) if (1..32).contains(n) => Some(*n as u8),
+            (BinaryOperator::Multiply, Expression::IntegerLiteral(n))
+                if *n > 1 && *n < (1 << 31) && (*n as u32).is_power_of_two() =>
+            {
+                Some((*n as u32).trailing_zeros() as u8)
+            }
+            _ => None,
+        };
+        if let (Some(n), Expression::Binary { operator: BinaryOperator::BitAnd, left: inner, right: mask }) =
+            (left_shift, left)
+        {
+            if let Some((begin, end)) = mask_bounds(mask) {
+                if begin >= n && std::env::var_os("MWCC_PCODE_NO_SHIFTED_MASK").is_none() {
+                    let (x, ty) = self.expression(inner)?;
+                    let d = self.result(target);
+                    self.emit_plain(Instruction::RotateAndMask { a: d, s: x, shift: n, begin: begin - n, end: end - n });
+                    return Ok((d, promote(ty)));
+                }
+            }
+        }
         // `field | base` where the base is known zero under the field's
         // mask inserts the field: `rlwimi base,x,shift,mb,me`.
         if operator == BinaryOperator::BitOr {
