@@ -1244,6 +1244,13 @@ impl Lowerer<'_> {
                 }
                 Err(unsupported(format!("unknown variable '{name}'")))
             }
+            Expression::Binary { .. } if typed_constant(expression).is_some() => {
+                // Constant arithmetic, pointer operands scaled by their size.
+                let (value, ty) = typed_constant(expression).expect("checked");
+                let register = self.result(target);
+                self.load_constant(register, i64::from(value as i32))?;
+                Ok((register, ty.unwrap_or(Type::Int)))
+            }
             Expression::Binary { operator, left, right }
                 if literal_value(left).is_some() && literal_value(right).is_some() =>
             {
@@ -2442,9 +2449,8 @@ fn same_variable(left: &Expression, right: &Expression) -> bool {
 fn literal_value(expression: &Expression) -> Option<i64> {
     match expression {
         Expression::IntegerLiteral(value) => Some(*value),
-        Expression::Cast { target_type, operand } if is_general_word(*target_type) && !is_narrow(*target_type) => {
-            literal_value(operand)
-        }
+        // Integer casts only: a pointer-typed literal scales its arithmetic.
+        Expression::Cast { target_type: Type::Int | Type::UnsignedInt, operand } => literal_value(operand),
         _ => None,
     }
 }
@@ -2541,5 +2547,36 @@ fn mentions(expression: &Expression, name: &str) -> bool {
         }
         Expression::Call { arguments, .. } => arguments.iter().any(|argument| mentions(argument, name)),
         _ => true,
+    }
+}
+
+/// A constant built from literals and pointer casts, with its pointer type
+/// when it is one: `(int *)0x80000000 + 3` is `0x8000000c` of type `int *`.
+fn typed_constant(expression: &Expression) -> Option<(i64, Option<Type>)> {
+    match expression {
+        Expression::IntegerLiteral(value) => Some((*value, None)),
+        Expression::Cast { target_type, operand } => {
+            let (value, _) = typed_constant(operand)?;
+            match target_type {
+                Type::Int | Type::UnsignedInt => Some((value, None)),
+                Type::Pointer(_) | Type::StructPointer { .. } if element_size(*target_type).is_some_and(|size| size > 0) => {
+                    Some((value, Some(*target_type)))
+                }
+                _ => None,
+            }
+        }
+        Expression::Binary { operator, left, right } => {
+            let (a, a_type) = typed_constant(left)?;
+            let (b, b_type) = typed_constant(right)?;
+            let size = |ty: Option<Type>| ty.and_then(element_size).map(i64::from);
+            match (operator, a_type, b_type) {
+                (BinaryOperator::Add, Some(_), None) => Some((a.wrapping_add(b.wrapping_mul(size(a_type)?)), a_type)),
+                (BinaryOperator::Add, None, Some(_)) => Some((b.wrapping_add(a.wrapping_mul(size(b_type)?)), b_type)),
+                (BinaryOperator::Subtract, Some(_), None) => Some((a.wrapping_sub(b.wrapping_mul(size(a_type)?)), a_type)),
+                (_, None, None) => Some((fold_literals(*operator, a, b)?, None)),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
