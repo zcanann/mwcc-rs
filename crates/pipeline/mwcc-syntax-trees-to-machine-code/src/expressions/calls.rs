@@ -1596,6 +1596,14 @@ impl Generator {
                         return Ok(());
                     }
                     _ => {
+                        if self.try_emit_leaf_constant_global_arguments(
+                            arguments,
+                            name,
+                            direct_call,
+                        )? {
+                            crate::body::trace_owner("try_emit_leaf_constant_global_arguments");
+                            return Ok(());
+                        }
                         return Err(Diagnostic::error(
                             "a constant argument after a global load needs the LR-store-latency schedule (roadmap)",
                         ));

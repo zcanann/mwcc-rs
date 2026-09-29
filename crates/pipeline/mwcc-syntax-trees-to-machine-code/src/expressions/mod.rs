@@ -3,6 +3,7 @@
 //! Split by family (fire 528); behavior-identical to the former single expressions.rs.
 
 mod arithmetic;
+mod leaf_constant_global_arguments;
 mod adjacent_fixed_bank_stores;
 mod affine_member_pointer_store;
 mod aggregate_member_arithmetic;

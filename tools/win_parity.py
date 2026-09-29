@@ -222,8 +222,13 @@ def evaluate(tu: dict, mwcc: Path, root: Path, timeout: int, keep: Path | None,
                 ref_p, our_p = scratch / "ref.p.o", scratch / "our.p.o"
                 prc, _ = run([*ref_prefix, *flags, "-sym", "off", "-c", tu["source"], "-o", str(ref_p)],
                              project, timeout)
-                orc, _ = run([str(mwcc), "--build", tu["mw_version"], "--parity-keep-going", *flags,
-                              "-sym", "off", "-c", tu["source"], "-o", str(our_p)], project, timeout)
+                orc, olog = run([str(mwcc), "--build", tu["mw_version"], "--parity-keep-going", *flags,
+                                 "-sym", "off", "-c", tu["source"], "-o", str(our_p)], project, timeout)
+                result["skipped"] = [
+                    re.sub(r"^mwcc: parity skipped function '[^']*': ", "", line.strip())[:160]
+                    for line in olog.splitlines() if "parity skipped function" in line][:200]
+                if orc != 0:
+                    result["projection_failure"] = last_diag(olog)
                 if prc == 0 and ref_p.is_file():
                     rf = elf_functions(ref_p.read_bytes())
                     of = elf_functions(our_p.read_bytes()) if orc == 0 and our_p.is_file() else {}
@@ -398,6 +403,15 @@ def summarize(rows: list[dict], prev: dict[str, dict]) -> None:
     for v in sorted(by_version):
         c = by_version[v]
         print(f"  {v:12} {c['BYTE']:5} {c['DIFF']:5} {c['DEFER']:5}")
+    skipped = collections.Counter()
+    for r in rows:
+        for reason in r.get("skipped", []):
+            reason = re.sub(r" \(in (structured|function|guard)[^)]*\)", "", reason)
+            skipped[re.sub(r"\d+", "N", reason)[:120]] += 1
+    if skipped:
+        print("== top per-function skip reasons (keep-going projection) ==")
+        for reason, n in skipped.most_common(40):
+            print(f"  {n:5}  {reason}")
     defer = collections.Counter(
         re.sub(r"\d+", "N", r.get("detail", ""))[:110] for r in rows if r["verdict"] == "DEFER")
     print("== top DEFER reasons ==")
