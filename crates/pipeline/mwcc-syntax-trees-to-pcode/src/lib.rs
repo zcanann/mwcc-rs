@@ -148,6 +148,11 @@ impl Lowerer<'_> {
         self.emit(instruction);
     }
 
+    /// A parameter or local reference: already in a register.
+    fn is_register_leaf(&self, expression: &Expression) -> bool {
+        matches!(expression, Expression::Variable(name) if self.variables.contains_key(name))
+    }
+
     fn temporary(&mut self) -> u32 {
         self.pcode.fresh(Class::General)
     }
@@ -185,7 +190,25 @@ impl Lowerer<'_> {
         self.pcode.begin_coalesce_window();
 
         for (virtual_register, register) in incoming {
-            self.emit_plain(Instruction::Or { a: virtual_register, s: register, b: register });
+            // Narrow parameters are re-extended by the callee on entry.
+            let ty = self
+                .variables
+                .values()
+                .find(|variable| variable.register == virtual_register)
+                .map(|variable| variable.ty)
+                .unwrap_or(Type::Int);
+            let instruction = match ty {
+                Type::Char => Instruction::ExtendSignByte { a: virtual_register, s: register },
+                Type::Short => Instruction::ExtendSignHalfword { a: virtual_register, s: register },
+                Type::UnsignedChar => {
+                    Instruction::ClearLeftImmediate { a: virtual_register, s: register, clear: 24 }
+                }
+                Type::UnsignedShort => {
+                    Instruction::ClearLeftImmediate { a: virtual_register, s: register, clear: 16 }
+                }
+                _ => Instruction::Or { a: virtual_register, s: register, b: register },
+            };
+            self.emit_plain(instruction);
         }
         for local in &function.locals {
             if let Some(initializer) = &local.initializer {
@@ -430,6 +453,12 @@ impl Lowerer<'_> {
                 self.emit_based(Instruction::AddImmediate { d, a, immediate: -value }, a);
                 return Ok((d, result_type));
             }
+            (BinaryOperator::Multiply, Some(value)) if value > 0 && (value as u16).is_power_of_two() => {
+                let d = self.temporary();
+                let shift = (value as u16).trailing_zeros() as u8;
+                self.emit_plain(Instruction::ShiftLeftImmediate { a: d, s: a, shift });
+                return Ok((d, result_type));
+            }
             (BinaryOperator::Multiply, Some(value)) => {
                 let d = self.temporary();
                 self.emit_plain(Instruction::MultiplyImmediate { d, a, immediate: value });
@@ -461,6 +490,21 @@ impl Lowerer<'_> {
             }
         } else {
             result_type
+        };
+        // MWCC places a leaf operand first in a commutative operation whose
+        // other operand is computed (`a*b + c` -> `add r3,c,t`).
+        let commutative = matches!(
+            operator,
+            BinaryOperator::Add
+                | BinaryOperator::Multiply
+                | BinaryOperator::BitAnd
+                | BinaryOperator::BitOr
+                | BinaryOperator::BitXor
+        );
+        let (a, b) = if commutative && !self.is_register_leaf(left) && self.is_register_leaf(right) {
+            (b, a)
+        } else {
+            (a, b)
         };
         let d = self.temporary();
         let instruction = match operator {

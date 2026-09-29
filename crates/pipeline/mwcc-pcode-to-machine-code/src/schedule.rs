@@ -1,0 +1,374 @@
+//! MWCC's basic-block list scheduler, following the model recovered from
+//! GC/1.2.5 (github.com/JackPriceBurns/mwcc `docs/SCHEDULER.md`).
+//!
+//! Dependences are built walking the block backwards. Registers keep lists of
+//! later uses and later definitions: a use gets write-after-read edges to later
+//! definitions, a definition gets read-after-write edges (its latency) to later
+//! uses and write-after-write edges to later definitions. GPR/FPR WAR/WAW edges
+//! have latency 0; condition and special registers keep producer latency.
+//! Memory accesses to one named object are ordered; pointer-based accesses are
+//! wildcards ordered against every later memory access. Serializing opcodes
+//! (branches) order against everything.
+//!
+//! Heights are critical-path lengths to the block end; deadline = max height -
+//! height. Each cycle issues up to two instructions, at most one per
+//! functional unit. The pick scans candidates in textual order; a later
+//! candidate replaces the current best only by a strict win — urgency (due
+//! while best is not), then more newly-released successors, then greater
+//! height, then (while registers are still virtual) the smaller opcode rank.
+
+use std::collections::HashMap;
+
+use mwcc_machine_code::{Instruction, RelocationKind, RelocationTarget};
+use mwcc_pcode::mnemonic::opcode_info;
+use mwcc_pcode::opcodes::ISSUE_WIDTH;
+use mwcc_pcode::{Class, PInstr};
+
+/// Register keys: class tag + number. Special registers use distinct tags.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Key {
+    General(u32),
+    Float(u32),
+    Condition,
+    Link,
+    Count,
+}
+
+impl Key {
+    /// WAR/WAW edges on GPR/FPR are free; condition/special keep latency.
+    fn ordering_latency(self, producer: u8) -> u8 {
+        match self {
+            // The stack pointer keeps producer latency (`mtlr` issues before
+            // the frame is popped).
+            Key::General(1) if !std::env::var_os("MWCC_SCHED_R1_FREE").is_some() => producer,
+            Key::General(_) | Key::Float(_) => 0,
+            _ => producer,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum Memory {
+    None,
+    Load(Option<ObjectKey>),
+    Store(Option<ObjectKey>),
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+enum ObjectKey {
+    Symbol(String),
+    Frame(i16),
+}
+
+type ObjectKeyRef = ObjectKey;
+
+struct Node {
+    latency: u8,
+    unit: u8,
+    occupancy: u8,
+    rank: u8,
+    serialize: bool,
+    is_store: bool,
+    height: u32,
+    successors: Vec<(usize, u8)>,
+    predecessors: usize,
+}
+
+fn operand_keys(instruction: &PInstr) -> (Vec<Key>, Vec<Key>) {
+    let mut uses = Vec::new();
+    let mut defs = Vec::new();
+    for class in [Class::General, Class::Float] {
+        let wrap = |number: u32| match class {
+            Class::General => Key::General(number),
+            Class::Float => Key::Float(number),
+        };
+        for register in instruction.uses(class) {
+            // r2/r13 are fixed bases; r0 as a base reads literal zero.
+            if class == Class::General && matches!(register, 2 | 13) {
+                continue;
+            }
+            uses.push(wrap(register));
+        }
+        for register in instruction.defs(class) {
+            defs.push(wrap(register));
+        }
+    }
+    let name = format!("{:?}", instruction.instruction);
+    let head = name.split([' ', '{', '(']).next().unwrap_or("");
+    if head.starts_with("Compare") || head.starts_with("FloatCompare") || head.ends_with("Record")
+    {
+        defs.push(Key::Condition);
+    }
+    match &instruction.instruction {
+        Instruction::BranchConditionalForward { .. } | Instruction::BranchConditionalToLinkRegister { .. } => {
+            uses.push(Key::Condition)
+        }
+        Instruction::MoveFromLinkRegister { .. } => uses.push(Key::Link),
+        Instruction::MoveToLinkRegister { .. } => defs.push(Key::Link),
+        Instruction::BranchToLinkRegister => uses.push(Key::Link),
+        Instruction::BranchAndLink { .. } => defs.push(Key::Link),
+        Instruction::MoveToCountRegister { .. } => defs.push(Key::Count),
+        Instruction::BranchToCountRegister | Instruction::BranchToCountRegisterAndLink => {
+            uses.push(Key::Count)
+        }
+        _ => {}
+    }
+    (uses, defs)
+}
+
+fn memory_of(instruction: &PInstr) -> Memory {
+    let name = format!("{:?}", instruction.instruction);
+    let head = name.split([' ', '{', '(']).next().unwrap_or("");
+    let is_load = head.starts_with("Load") || head.starts_with("PairedSingleQuantizedLoad");
+    let is_store = head.starts_with("Store") || head.starts_with("PairedSingleQuantizedStore");
+    if !is_load && !is_store {
+        return Memory::None;
+    }
+    let object = match (&instruction.relocation, &instruction.instruction) {
+        (Some(relocation), _)
+            if matches!(
+                relocation.kind,
+                RelocationKind::EmbSda21 | RelocationKind::Addr16Lo
+            ) =>
+        {
+            match &relocation.target {
+                RelocationTarget::External(symbol) | RelocationTarget::ExternalWithAddend(symbol, _) => {
+                    Some(ObjectKey::Symbol(symbol.clone()))
+                }
+                _ => None,
+            }
+        }
+        (None, Instruction::LoadWord { a: 1, offset, .. })
+        | (None, Instruction::StoreWord { a: 1, offset, .. }) => Some(ObjectKey::Frame(*offset)),
+        _ => None,
+    };
+    if is_load {
+        Memory::Load(object)
+    } else {
+        Memory::Store(object)
+    }
+}
+
+/// Reorder `instructions` (one basic block) as MWCC's scheduler would.
+/// `virtual_registers` enables the final opcode-rank tie-break.
+pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
+    let count = instructions.len();
+    if count <= 2 {
+        return;
+    }
+    let mut nodes: Vec<Node> = instructions
+        .iter()
+        .map(|instruction| {
+            let info = opcode_info(&instruction.instruction);
+            Node {
+                latency: info.latency,
+                unit: info.unit,
+                occupancy: info.occupancy.max(1),
+                rank: info.pick_rank,
+                serialize: info.serialize || instruction.instruction.is_call(),
+                is_store: matches!(memory_of(instruction), Memory::Store(_)),
+                height: u32::from(info.latency),
+                successors: Vec::new(),
+                predecessors: 0,
+            }
+        })
+        .collect();
+
+    let mut later_uses: HashMap<Key, Vec<usize>> = HashMap::new();
+    let mut later_defs: HashMap<Key, Vec<usize>> = HashMap::new();
+    let mut later_memory: Vec<(usize, Memory)> = Vec::new();
+    let mut later_all: Vec<usize> = Vec::new();
+    let mut edges: Vec<(usize, usize, u8)> = Vec::new();
+
+    for index in (0..count).rev() {
+        let instruction = &instructions[index];
+        let latency = nodes[index].latency;
+        let (uses, defs) = operand_keys(instruction);
+        for key in &uses {
+            for &later in later_defs.get(key).into_iter().flatten() {
+                edges.push((index, later, key.ordering_latency(latency)));
+            }
+        }
+        for key in &defs {
+            for &later in later_uses.get(key).into_iter().flatten() {
+                edges.push((index, later, latency));
+            }
+            for &later in later_defs.get(key).into_iter().flatten() {
+                edges.push((index, later, key.ordering_latency(latency)));
+            }
+        }
+        for key in uses {
+            later_uses.entry(key).or_default().insert(0, index);
+        }
+        for key in defs {
+            later_defs.entry(key).or_default().insert(0, index);
+        }
+        let memory = memory_of(instruction);
+        match &memory {
+            Memory::None => {}
+            Memory::Load(object) => {
+                for (later, later_memory_kind) in &later_memory {
+                    if let Memory::Store(other) = later_memory_kind {
+                        if alias_all() || object.is_none() || other.is_none() || object == other {
+                            edges.push((index, *later, latency));
+                        }
+                    }
+                }
+            }
+            Memory::Store(object) => {
+                for (later, later_memory_kind) in &later_memory {
+                    let other = match later_memory_kind {
+                        Memory::Load(other) | Memory::Store(other) => other,
+                        Memory::None => continue,
+                    };
+                    if alias_all() || object.is_none() || other.is_none() || object == other {
+                        edges.push((index, *later, latency));
+                    }
+                }
+            }
+        }
+        if memory != Memory::None {
+            later_memory.insert(0, (index, memory));
+        }
+        if nodes[index].serialize {
+            for &later in &later_all {
+                edges.push((index, later, latency));
+            }
+        }
+        for &later in &later_all {
+            if nodes[later].serialize {
+                edges.push((index, later, latency));
+            }
+        }
+        later_all.insert(0, index);
+    }
+
+    let _ = std::marker::PhantomData::<ObjectKeyRef>;
+    // Deduplicate edges keeping the largest latency, then compute heights in
+    // reverse textual order (every edge points forward).
+    let mut best: HashMap<(usize, usize), u8> = HashMap::new();
+    for (from, to, latency) in edges {
+        let entry = best.entry((from, to)).or_insert(latency);
+        *entry = (*entry).max(latency);
+    }
+    let mut ordered: Vec<((usize, usize), u8)> = best.into_iter().collect();
+    ordered.sort();
+    for &((from, to), latency) in &ordered {
+        nodes[from].successors.push((to, latency));
+        nodes[to].predecessors += 1;
+    }
+    for index in (0..count).rev() {
+        let height = nodes[index]
+            .successors
+            .iter()
+            .map(|&(to, latency)| u32::from(latency) + nodes[to].height)
+            .max()
+            .unwrap_or(0)
+            .max(u32::from(nodes[index].latency));
+        nodes[index].height = height;
+    }
+    let maximum = nodes.iter().map(|node| node.height).max().unwrap_or(0);
+    let deadline: Vec<i64> = nodes.iter().map(|node| i64::from(maximum) - i64::from(node.height)).collect();
+
+    let mut remaining_predecessors: Vec<usize> = nodes.iter().map(|node| node.predecessors).collect();
+    let mut ready_at: Vec<i64> = vec![0; count];
+    let mut issued = vec![false; count];
+    let mut unit_busy_until = [0i64; 8];
+    let mut store_stage_until: i64 = -1;
+    let mut order = Vec::with_capacity(count);
+    let mut cycle: i64 = 0;
+    while order.len() < count {
+        let mut issued_this_cycle = 0;
+        while issued_this_cycle < ISSUE_WIDTH {
+            let issuable = |index: usize| {
+                !issued[index]
+                    && remaining_predecessors[index] == 0
+                    && ready_at[index] <= cycle
+                    && unit_busy_until[nodes[index].unit as usize] <= cycle
+                    && !(nodes[index].is_store && store_stage_until >= cycle)
+            };
+            let release_count = |index: usize, remaining: &[usize]| {
+                nodes[index]
+                    .successors
+                    .iter()
+                    .filter(|&&(to, _)| remaining[to] == 1)
+                    .count()
+            };
+            let mut chosen: Option<usize> = None;
+            for candidate in 0..count {
+                if !issuable(candidate) {
+                    continue;
+                }
+                let Some(best) = chosen else {
+                    chosen = Some(candidate);
+                    continue;
+                };
+                if !(cycle < deadline[best] || deadline[candidate] <= cycle) {
+                    continue;
+                }
+                let candidate_due = deadline[candidate] <= cycle;
+                let best_due = deadline[best] <= cycle;
+                let wins = if candidate_due != best_due {
+                    candidate_due
+                } else {
+                    let (c_release, b_release) = (
+                        release_count(candidate, &remaining_predecessors),
+                        release_count(best, &remaining_predecessors),
+                    );
+                    if c_release != b_release {
+                        c_release > b_release
+                    } else if nodes[candidate].height != nodes[best].height {
+                        nodes[candidate].height > nodes[best].height
+                    } else {
+                        virtual_registers && nodes[candidate].rank < nodes[best].rank
+                    }
+                };
+                if wins {
+                    chosen = Some(candidate);
+                }
+            }
+            let Some(index) = chosen else { break };
+            issued[index] = true;
+            order.push(index);
+            issued_this_cycle += 1;
+            let node = &nodes[index];
+            unit_busy_until[node.unit as usize] = cycle + i64::from(node.occupancy);
+            if node.is_store {
+                store_stage_until = cycle + 1;
+            }
+            for &(to, latency) in &node.successors {
+                remaining_predecessors[to] -= 1;
+                // A successor released this cycle issues next cycle at the
+                // earliest (MWCC_SCHED_SAME_CYCLE=1 disables this for study).
+                let earliest = if same_cycle_release() { latency } else { latency.max(1) };
+                ready_at[to] = ready_at[to].max(cycle + i64::from(earliest));
+            }
+            if node.serialize {
+                break;
+            }
+        }
+        cycle += 1;
+        if cycle > 100_000 {
+            // Safety valve: keep textual order for anything left.
+            for index in 0..count {
+                if !issued[index] {
+                    issued[index] = true;
+                    order.push(index);
+                }
+            }
+        }
+    }
+    let original = std::mem::take(instructions);
+    let mut slots: Vec<Option<PInstr>> = original.into_iter().map(Some).collect();
+    for index in order {
+        instructions.push(slots[index].take().expect("each index issues once"));
+    }
+}
+
+fn same_cycle_release() -> bool {
+    std::env::var_os("MWCC_SCHED_SAME_CYCLE").is_some()
+}
+
+fn alias_all() -> bool {
+    std::env::var_os("MWCC_SCHED_ALIAS_ALL").is_some()
+}

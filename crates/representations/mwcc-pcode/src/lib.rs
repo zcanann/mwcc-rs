@@ -19,6 +19,9 @@ use mwcc_machine_code::Instruction;
 
 pub use mwcc_vreg::Class;
 
+pub mod mnemonic;
+pub mod opcodes;
+
 /// First virtual register number of every class.
 pub const FIRST_VIRTUAL: u32 = 32;
 

@@ -2,5 +2,6 @@
 
 pub mod coloring;
 pub mod finish;
+pub mod schedule;
 
 pub use finish::{finish, FinishOptions};
