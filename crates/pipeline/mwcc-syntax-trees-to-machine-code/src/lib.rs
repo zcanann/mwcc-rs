@@ -316,7 +316,14 @@ fn lower_function_body(
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
     if let Some(mode) = pcode_path::mode() {
-        match pcode_path::lower(function, globals, call_return_types, &config) {
+        match pcode_path::lower(
+            function,
+            globals,
+            call_return_types,
+            variadic_definitions,
+            prototyped_names,
+            &config,
+        ) {
             Ok(output) => return Ok(output),
             Err(diagnostic) if matches!(mode, pcode_path::Mode::Only) => return Err(diagnostic),
             Err(_) => {}

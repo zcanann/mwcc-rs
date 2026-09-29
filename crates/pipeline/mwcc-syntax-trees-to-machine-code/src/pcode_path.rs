@@ -27,9 +27,18 @@ pub(crate) fn lower(
     function: &Function,
     globals: &[GlobalDeclaration],
     call_return_types: &HashMap<String, Type>,
+    variadic_callees: &std::collections::HashSet<String>,
+    prototyped: &std::collections::HashSet<String>,
     config: &CompilerConfig,
 ) -> Compilation<MachineFunction> {
     let behavior = Behavior::resolve(config);
+    if behavior.optimization != mwcc_versions::Optimization::O4 {
+        // Lower levels skip IRO passes and keep stack-resident variables;
+        // only the -O4 pipeline is modeled so far.
+        return Err(mwcc_core::Diagnostic::error(
+            "PCode lowering: only -O4 is modeled (not yet supported)",
+        ));
+    }
     let small_data = behavior.global_addressing == GlobalAddressing::SmallData;
     let global_info: HashMap<String, mwcc_syntax_trees_to_pcode::GlobalInfo> = globals
         .iter()
@@ -39,6 +48,8 @@ pub(crate) fn lower(
                 mwcc_syntax_trees_to_pcode::GlobalInfo {
                     ty: global.declared_type,
                     small_data,
+                    is_array: global.array_length.is_some(),
+                    is_volatile: global.is_volatile,
                 },
             )
         })
@@ -46,6 +57,9 @@ pub(crate) fn lower(
     let context = mwcc_syntax_trees_to_pcode::LoweringContext {
         globals: &global_info,
         call_return_types,
+        is_intrinsic: &crate::intrinsics::is_intrinsic_call,
+        variadic_callees,
+        prototyped,
     };
     let lowered = mwcc_syntax_trees_to_pcode::lower(function, &context)?;
     let mut output = mwcc_pcode_to_machine_code::finish(
