@@ -65,9 +65,6 @@ pub fn lower(function: &Function, context: &LoweringContext<'_>) -> Compilation<
     if function.asm_body.is_some() || !function.inline_asm_blocks.is_empty() {
         return Err(unsupported("inline assembly"));
     }
-    if !function.guards.is_empty() {
-        return Err(unsupported("guarded returns"));
-    }
     let returns = match function.return_type {
         Type::Void => ReturnRegisters::None,
         ty if is_general_word(ty) => ReturnRegisters::General,
@@ -81,6 +78,10 @@ pub fn lower(function: &Function, context: &LoweringContext<'_>) -> Compilation<
         return_type: function.return_type,
         target: None,
         loaded_globals: HashMap::new(),
+        pending_branches: Vec::new(),
+        labels: Vec::new(),
+        exit_label: Label(0),
+        return_register: None,
     };
     lowerer.lower_function(function)?;
     Ok(Lowered { pcode: lowerer.pcode, makes_calls: lowerer.makes_calls })
@@ -149,9 +150,102 @@ struct Lowerer<'a> {
     /// Loaded values of non-volatile globals still valid in this statement
     /// (IRO common subexpressions); cleared by stores and calls.
     loaded_globals: HashMap<String, (u32, Type)>,
+    /// Branches awaiting their target block: (block, instruction, label).
+    pending_branches: Vec<(usize, usize, Label)>,
+    /// Label targets once placed: label -> block.
+    labels: Vec<Option<usize>>,
+    /// The exit (return) block's label.
+    exit_label: Label,
+    /// The return value's variable when the function returns from several
+    /// places: each `return` assigns it and jumps to the exit block, which
+    /// copies it to r3 (MWCC's single return point).
+    return_register: Option<u32>,
 }
 
+/// A branch target placed later in layout order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Label(usize);
+
 impl Lowerer<'_> {
+    fn new_label(&mut self) -> Label {
+        self.labels.push(None);
+        Label(self.labels.len() - 1)
+    }
+
+    fn current_block(&self) -> usize {
+        self.pcode.blocks.len() - 1
+    }
+
+    /// Start a new block in layout order. `falls_through` links the previous
+    /// block to it.
+    fn start_block(&mut self, falls_through: bool) -> usize {
+        let previous = self.current_block();
+        self.pcode.blocks.push(Block { weight: 1, ..Block::default() });
+        let block = self.current_block();
+        if falls_through {
+            self.pcode.blocks[previous].successors.push(block);
+        }
+        block
+    }
+
+    /// Place `label` at a fresh block (or the current one if it is empty).
+    fn place_label(&mut self, label: Label) {
+        let current = self.current_block();
+        let block = if self.pcode.blocks[current].instructions.is_empty()
+            && !self.block_is_target(current)
+        {
+            current
+        } else {
+            let falls_through = !self.block_ends_in_jump(current);
+            self.start_block(falls_through)
+        };
+        self.labels[label.0] = Some(block);
+    }
+
+    fn block_is_target(&self, block: usize) -> bool {
+        self.labels.iter().any(|placed| *placed == Some(block))
+    }
+
+    fn block_ends_in_jump(&self, block: usize) -> bool {
+        matches!(
+            self.pcode.blocks[block].instructions.last().map(|i| &i.instruction),
+            Some(Instruction::Branch { .. })
+        )
+    }
+
+    /// Emit a branch to `label`; conditional branches end their block.
+    fn branch(&mut self, instruction: Instruction, label: Label) {
+        let block = self.current_block();
+        let position = self.pcode.blocks[block].instructions.len();
+        let conditional = !matches!(instruction, Instruction::Branch { .. });
+        self.emit_plain(instruction);
+        self.pending_branches.push((block, position, label));
+        self.loaded_globals.clear();
+        if conditional {
+            self.start_block(true);
+        } else {
+            // An unconditional jump ends the block with no fall-through.
+            self.start_block(false);
+        }
+    }
+
+    /// Resolve pending branches: targets become block indices (flattening
+    /// converts them to instruction positions) and edges are recorded.
+    fn resolve_branches(&mut self) -> Compilation<()> {
+        for (block, position, label) in std::mem::take(&mut self.pending_branches) {
+            let target = self.labels[label.0].ok_or_else(|| unsupported("unplaced label"))?;
+            match &mut self.pcode.blocks[block].instructions[position].instruction {
+                Instruction::Branch { target: field }
+                | Instruction::BranchConditionalForward { target: field, .. } => *field = target,
+                _ => unreachable!("pending branches are branches"),
+            }
+            if !self.pcode.blocks[block].successors.contains(&target) {
+                self.pcode.blocks[block].successors.push(target);
+            }
+        }
+        Ok(())
+    }
+
     fn expression_with_target(
         &mut self,
         expression: &Expression,
@@ -181,6 +275,102 @@ impl Lowerer<'_> {
         let mut instruction = PInstr::new(instruction);
         instruction.not_r0.push(base);
         self.emit(instruction);
+    }
+
+    /// Branch to `label` when `condition` is false (fall through when true).
+    fn branch_unless(&mut self, condition: &Expression, label: Label) -> Compilation<()> {
+        self.branch_on(condition, false, label)
+    }
+
+    /// Branch to `label` when `condition` evaluates to `when`.
+    fn branch_on(&mut self, condition: &Expression, when: bool, label: Label) -> Compilation<()> {
+        match condition {
+            Expression::Binary { operator: BinaryOperator::LogicalAnd, left, right } => {
+                if when {
+                    let skip = self.new_label();
+                    self.branch_on(left, false, skip)?;
+                    self.branch_on(right, true, label)?;
+                    self.place_label(skip);
+                } else {
+                    self.branch_on(left, false, label)?;
+                    self.branch_on(right, false, label)?;
+                }
+                Ok(())
+            }
+            Expression::Binary { operator: BinaryOperator::LogicalOr, left, right } => {
+                if when {
+                    self.branch_on(left, true, label)?;
+                    self.branch_on(right, true, label)?;
+                } else {
+                    let taken = self.new_label();
+                    self.branch_on(left, true, taken)?;
+                    self.branch_on(right, false, label)?;
+                    self.place_label(taken);
+                }
+                Ok(())
+            }
+            Expression::Unary { operator: UnaryOperator::LogicalNot, operand } => {
+                self.branch_on(operand, !when, label)
+            }
+            Expression::Binary { operator, left, right } if comparison(*operator).is_some() => {
+                let (bit, true_when_set) = self.compare(*operator, left, right)?;
+                // BO 12: branch if the bit is set; BO 4: if it is clear.
+                let options = if when == true_when_set { 12 } else { 4 };
+                self.branch(
+                    Instruction::BranchConditionalForward { options, condition_bit: bit, target: 0 },
+                    label,
+                );
+                Ok(())
+            }
+            other => {
+                // Truth of a value: compare against zero.
+                let (register, _) = self.expression(other)?;
+                self.emit_plain(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+                let options = if when { 4 } else { 12 };
+                self.branch(
+                    Instruction::BranchConditionalForward { options, condition_bit: 2, target: 0 },
+                    label,
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// Emit a compare for `left op right`; returns the cr0 bit to test and
+    /// whether the relation holds when that bit is set.
+    fn compare(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+    ) -> Compilation<(u8, bool)> {
+        // A constant on the left compares mirrored so it can be an immediate.
+        let (operator, left, right) = match (left, right) {
+            (Expression::IntegerLiteral(_), other) if !matches!(other, Expression::IntegerLiteral(_)) => {
+                (mirror(operator), right, left)
+            }
+            _ => (operator, left, right),
+        };
+        let (a, left_type) = self.expression(left)?;
+        let unsigned = is_unsigned(promote(left_type))
+            || self.static_type(right).is_some_and(|ty| is_unsigned(promote(ty)));
+        match (right, unsigned) {
+            (Expression::IntegerLiteral(value), false) if i16::try_from(*value).is_ok() => {
+                self.emit_plain(Instruction::CompareWordImmediate { a, immediate: *value as i16 });
+            }
+            (Expression::IntegerLiteral(value), true) if u16::try_from(*value).is_ok() => {
+                self.emit_plain(Instruction::CompareLogicalWordImmediate { a, immediate: *value as u16 });
+            }
+            _ => {
+                let (b, _) = self.expression(right)?;
+                self.emit_plain(if unsigned {
+                    Instruction::CompareLogicalWord { a, b }
+                } else {
+                    Instruction::CompareWord { a, b }
+                });
+            }
+        }
+        Ok(comparison(operator).expect("checked by the caller"))
     }
 
     /// The type an expression evaluates to, where it is known without
@@ -251,6 +441,9 @@ impl Lowerer<'_> {
             self.variables
                 .insert(local.name.clone(), Variable { register, ty: local.declared_type });
         }
+        if function.return_type != Type::Void && returns_from_several_places(function) {
+            self.return_register = Some(self.temporary());
+        }
         self.pcode.begin_coalesce_window();
 
         for (virtual_register, register) in incoming {
@@ -279,15 +472,37 @@ impl Lowerer<'_> {
                 self.assign(&local.name, initializer)?;
             }
         }
+        self.exit_label = self.new_label();
         for statement in &function.statements {
             self.statement(statement)?;
+        }
+        for guard in &function.guards {
+            let skip = self.new_label();
+            self.branch_unless(&guard.condition, skip)?;
+            self.return_value(&guard.value)?;
+            self.branch(Instruction::Branch { target: 0 }, self.exit_label);
+            self.place_label(skip);
         }
         if let Some(value) = &function.return_expression {
             self.return_value(value)?;
         }
         // The exit block: the epilogue is generated here after coloring.
-        self.pcode.blocks.last_mut().expect("entry block").successors.push(1);
-        self.pcode.blocks.push(Block { weight: 1, ..Block::default() });
+        let last = self.current_block();
+        let falls_through = !self.block_ends_in_jump(last);
+        let exit = if self.pcode.blocks[last].instructions.is_empty() && !self.block_is_target(last) {
+            last
+        } else {
+            self.start_block(falls_through)
+        };
+        self.labels[self.exit_label.0] = Some(exit);
+        if let Some(register) = self.return_register {
+            // The copy to r3 joins all returns; the (empty) return block that
+            // receives the epilogue follows it. A copy inside the return block
+            // itself would be dead: the result is a use *of* that block.
+            self.emit_plain(Instruction::Or { a: 3, s: register, b: register });
+            self.start_block(true);
+        }
+        self.resolve_branches()?;
         Ok(())
     }
 
@@ -298,11 +513,51 @@ impl Lowerer<'_> {
                 self.call(name, arguments, None).map(|_| ())
             }
             Statement::Store { target, value } => self.store(target, value),
+            Statement::If { condition, then_body, else_body } => {
+                let otherwise = self.new_label();
+                self.branch_unless(condition, otherwise)?;
+                for statement in then_body {
+                    self.statement(statement)?;
+                }
+                if else_body.is_empty() {
+                    self.place_label(otherwise);
+                } else {
+                    let join = self.new_label();
+                    if !self.block_ends_in_jump(self.current_block()) {
+                        self.branch(Instruction::Branch { target: 0 }, join);
+                    }
+                    self.place_label(otherwise);
+                    for statement in else_body {
+                        self.statement(statement)?;
+                    }
+                    self.place_label(join);
+                }
+                Ok(())
+            }
+            Statement::Return(value) => {
+                if let Some(value) = value {
+                    self.return_value(value)?;
+                }
+                let exit = self.exit_label;
+                self.branch(Instruction::Branch { target: 0 }, exit);
+                Ok(())
+            }
             other => Err(unsupported(format!("statement {:?}", std::mem::discriminant(other)))),
         }
     }
 
     fn return_value(&mut self, value: &Expression) -> Compilation<()> {
+        if let Some(destination) = self.return_register {
+            self.target = Some(destination);
+            let evaluated = self.expression(value);
+            self.target = None;
+            let (register, ty) = evaluated?;
+            let (register, _) = self.convert(register, ty, self.return_type, Some(destination))?;
+            if register != destination {
+                self.emit_plain(Instruction::Or { a: destination, s: register, b: register });
+            }
+            return Ok(());
+        }
         let (register, ty) = self.expression(value)?;
         let (register, _) = self.convert(register, ty, self.return_type, None)?;
         self.emit_plain(Instruction::Or { a: 3, s: register, b: register });
@@ -584,11 +839,11 @@ impl Lowerer<'_> {
                 }
                 (Some(size), None) if size != 1 => {
                     let scaled = scale_index(right, size);
-                    return self.binary(operator, left, &scaled, target);
+                    return self.binary_scaled(operator, left, &scaled, target);
                 }
                 (None, Some(size)) if size != 1 && operator == BinaryOperator::Add => {
                     let scaled = scale_index(left, size);
-                    return self.binary(operator, &scaled, right, target);
+                    return self.binary_scaled(operator, &scaled, right, target);
                 }
                 (None, Some(_)) if operator == BinaryOperator::Subtract => {
                     return Err(unsupported("integer minus pointer"))
@@ -596,6 +851,17 @@ impl Lowerer<'_> {
                 _ => {}
             }
         }
+        self.binary_scaled(operator, left, right, target)
+    }
+
+    /// `binary` once pointer operands are already in byte units.
+    fn binary_scaled(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        target: Option<u32>,
+    ) -> Compilation<(u32, Type)> {
         let immediate = match right {
             Expression::IntegerLiteral(value) => i16::try_from(*value).ok(),
             _ => None,
@@ -1091,4 +1357,42 @@ fn zero_extended_load(expression: &Expression) -> Expression {
         },
         other => other.clone(),
     }
+}
+
+/// For a comparison operator: the cr0 bit it tests and whether the relation
+/// holds when the bit is set (`<`: LT set; `>=`: LT clear).
+fn comparison(operator: BinaryOperator) -> Option<(u8, bool)> {
+    Some(match operator {
+        BinaryOperator::Less => (0, true),
+        BinaryOperator::GreaterEqual => (0, false),
+        BinaryOperator::Greater => (1, true),
+        BinaryOperator::LessEqual => (1, false),
+        BinaryOperator::Equal => (2, true),
+        BinaryOperator::NotEqual => (2, false),
+        _ => return None,
+    })
+}
+
+/// `a op b` == `b mirror(op) a`.
+fn mirror(operator: BinaryOperator) -> BinaryOperator {
+    match operator {
+        BinaryOperator::Less => BinaryOperator::Greater,
+        BinaryOperator::Greater => BinaryOperator::Less,
+        BinaryOperator::LessEqual => BinaryOperator::GreaterEqual,
+        BinaryOperator::GreaterEqual => BinaryOperator::LessEqual,
+        other => other,
+    }
+}
+
+/// Whether the function returns from more than its final expression.
+fn returns_from_several_places(function: &Function) -> bool {
+    fn has_return(statements: &[Statement]) -> bool {
+        statements.iter().any(|statement| match statement {
+            Statement::Return(_) => true,
+            Statement::If { then_body, else_body, .. } => has_return(then_body) || has_return(else_body),
+            Statement::Loop { body, .. } => has_return(body),
+            _ => false,
+        })
+    }
+    !function.guards.is_empty() || has_return(&function.statements)
 }
