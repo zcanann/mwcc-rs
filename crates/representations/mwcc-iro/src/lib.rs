@@ -25,6 +25,8 @@ pub struct GlobalInfo {
     pub is_volatile: bool,
     /// A function (named as a value: its address).
     pub is_function: bool,
+    /// `const`: a loaded value stays valid across stores.
+    pub is_const: bool,
 }
 
 /// The callee name of an indirect call: the target address is the call's
@@ -47,6 +49,8 @@ pub struct Unit<'a> {
     pub has_body: &'a dyn Fn(&str) -> bool,
     /// Scalar-replaced struct locals still store their fields (GC/3.x, Wii).
     pub keeps_struct_stores: bool,
+    /// Loaded `const` globals stay valid across calls (GC/3.x, Wii).
+    pub const_globals_across_calls: bool,
     /// The build's switch lowering: 0 binary search (GC), 1 binary search
     /// with in-place table loads (GC/3.x), 2 not modeled (Wii).
     pub switch_style: u8,

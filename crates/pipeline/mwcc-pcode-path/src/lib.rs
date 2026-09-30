@@ -66,6 +66,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                     is_array: global.array_length.is_some() || global.array_length_inferred,
                     is_volatile: global.is_volatile,
                     is_function: false,
+                    is_const: global.is_const && !global.is_volatile,
                 },
             )
         })
@@ -81,6 +82,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                     is_array: true,
                     is_volatile: false,
                     is_function: true,
+                    is_const: false,
                 },
             );
         }
@@ -94,6 +96,8 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         call_parameter_types: request.call_parameter_types,
         has_body: request.has_body,
         keeps_struct_stores: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
+        const_globals_across_calls: request.config.build.label.starts_with("GC/3.")
+            || request.config.build.label.starts_with("Wii/"),
         strings_small_data: behavior.global_addressing == GlobalAddressing::SmallData,
         strings_packed: behavior.string_literals_packed,
         returns_bool: request.returns_bool,

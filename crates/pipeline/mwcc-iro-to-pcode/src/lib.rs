@@ -193,6 +193,14 @@ impl Lowerer<'_> {
 
     /// Values computed so far are available only where this block's code
     /// dominates: a fall-through successor with no other predecessor.
+    /// After a store or call: loaded globals may have changed, except
+    /// `const` ones (across calls only on some builds).
+    fn forget_loaded_globals(&mut self, call: bool) {
+        let globals = self.unit.globals;
+        let keep_const = (!call || self.unit.const_globals_across_calls) && !toggle("MWCC_PCODE_NO_CONST_GLOBALS");
+        self.loaded_globals.retain(|name, _| keep_const && globals.get(name).is_some_and(|global| global.is_const));
+    }
+
     fn clear_block_caches(&mut self) {
         // Loaded globals too: at a join a value loaded on one path only is
         // not available.
@@ -2661,7 +2669,7 @@ impl Lowerer<'_> {
         }
         instruction.relocation = relocation;
         self.emit(instruction);
-        self.loaded_globals.clear();
+        self.forget_loaded_globals(false);
         // A stored word-sized global's value is still in `source`.
         if let Place::Global(name) = place {
             let global = self.unit.globals[name];
@@ -2742,7 +2750,7 @@ impl Lowerer<'_> {
         call.implicit_defs.extend((0..14).map(Register::float));
         self.emit(call);
         self.makes_calls = true;
-        self.loaded_globals.clear();
+        self.forget_loaded_globals(true);
         // Constants are rematerialized rather than kept across a call.
         self.constants.clear();
         self.float_constants.clear();

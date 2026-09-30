@@ -683,7 +683,12 @@ fn lower_function_body(
         // de-name above, int ones fold differently).
         globals: globals
             .iter()
-            .filter(|global| !global.is_const || global.array_length.is_some())
+            // (A `T *const` struct pointer stays visible: an ordinary load.)
+            .filter(|global| {
+                !global.is_const
+                    || global.array_length.is_some()
+                    || matches!(global.declared_type, mwcc_syntax_trees::Type::StructPointer { .. })
+            })
             .map(|global| (global.name.clone(), global.declared_type))
             .chain(
                 // Static locals address like globals (const scalars stay

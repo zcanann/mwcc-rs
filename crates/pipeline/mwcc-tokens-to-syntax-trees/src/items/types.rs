@@ -147,6 +147,10 @@ impl Parser {
         debug_assert_eq!(*self.peek(), Token::Star);
         self.advance();
         self.last_cxx_pointer_depth = 1;
+        // `T *const p`: the pointer object itself is const.
+        if matches!(self.peek(), Token::Identifier(word) if word == "const") {
+            self.last_pointer_const = true;
+        }
         if *self.peek() == Token::Star {
             self.advance();
             self.last_cxx_pointer_depth = 2;
