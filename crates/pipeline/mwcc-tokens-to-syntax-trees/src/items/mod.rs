@@ -3074,6 +3074,15 @@ impl Parser {
                         let mut relocations = Vec::new();
                         data_bytes = Some(if dimensions.is_empty() {
                             self.parse_one_struct_relocated(&tag, 0, &mut relocations)?
+                        } else if dimensions.len() == 2
+                            && *self.peek() == Token::BraceOpen
+                            && *self.peek_at(1) == Token::BraceOpen
+                            && *self.peek_at(2) == Token::BraceOpen
+                        {
+                            // `T a[Z][X] = {{{..}, {..}}, ...}`: braced rows.
+                            let Type::Struct { size, .. } = return_type else { unreachable!() };
+                            let row_elements = usize::from(dimensions[1].unwrap_or(0));
+                            self.parse_struct_array_rows(&tag, row_elements, size as usize, &mut relocations)?
                         } else {
                             self.parse_struct_array_initializer(&tag, &mut relocations)?
                         });

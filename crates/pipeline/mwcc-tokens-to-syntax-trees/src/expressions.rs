@@ -1302,6 +1302,26 @@ impl Parser {
                     }
                 }
                 Token::ParenOpen => {
+                    // `(ArrayTypedef *)x`: a pointer to the typedef's array is an
+                    // element pointer (the row stride is not tracked).
+                    // (The `(` is already consumed.)
+                    if let (Token::Identifier(name), Token::Star, Token::ParenClose) =
+                        (self.peek().clone(), self.peek_at(1).clone(), self.peek_at(2).clone())
+                    {
+                        if let Some(&(element, _, _)) = self.array_typedefs.get(&name) {
+                            self.advance(); // name
+                            self.advance(); // `*`
+                            self.advance(); // `)`
+                            let target_type = match element {
+                                mwcc_syntax_trees::Type::Struct { size, .. } => {
+                                    mwcc_syntax_trees::Type::StructPointer { element_size: size }
+                                }
+                                scalar => mwcc_syntax_trees::Type::Pointer(crate::items::pointee_of(scalar)?),
+                            };
+                            let operand = self.factor()?;
+                            return Ok(Expression::Cast { target_type, operand: Box::new(operand) });
+                        }
+                    }
                     // `(type) expr` is a cast; otherwise a parenthesised expression.
                     if self.starts_parenthesized_cast() {
                         let mut target_type = self.parse_type()?;
