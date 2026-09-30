@@ -68,6 +68,7 @@ pub fn lower(
         loops: Vec::new(),
         known_constant: None,
         tail_calls,
+        common: HashMap::new(),
     };
     lowerer.lower_function(returns_through_variable)?;
     Ok(Lowered { pcode: lowerer.pcode, makes_calls: lowerer.makes_calls })
@@ -115,6 +116,9 @@ struct Lowerer<'a> {
     known_constant: Option<(VarId, i64)>,
     /// A body that is one terminal call becomes a sibling branch.
     tail_calls: bool,
+    /// Values of simple operations computed in this block (IRO common
+    /// subexpressions): key -> (register, type, variables read).
+    common: HashMap<String, (u32, Type, Vec<VarId>)>,
 }
 
 impl Lowerer<'_> {
@@ -136,6 +140,7 @@ impl Lowerer<'_> {
         self.pcode.blocks.push(Block { weight: 1, ..Block::default() });
         self.extended.clear();
         self.constants.clear();
+        self.common.clear();
         let block = self.current_block();
         if falls_through {
             self.pcode.blocks[previous].successors.push(block);
@@ -512,6 +517,7 @@ impl Lowerer<'_> {
             self.emit_plain(store_instruction(self.function.variables[variable].ty, source, 1, offset));
             return Ok(());
         }
+        self.common.retain(|_, (_, _, read)| !read.contains(&variable));
         let destination = self.register(variable);
         let stale: Vec<String> = self
             .loaded_globals
@@ -722,7 +728,20 @@ impl Lowerer<'_> {
             ExprKind::Binary(op, left, right) if op.is_comparison() => {
                 self.comparison_value(*op, left, right, target)
             }
-            ExprKind::Binary(op, left, right) => self.binary(*op, left, right, ty, target),
+            ExprKind::Binary(op, left, right) => {
+                // A repeated simple operation reuses its value in this block.
+                let key = (!self.unoptimized && target.is_none()).then(|| common_key(expression)).flatten();
+                if let Some((key, _)) = &key {
+                    if let Some(&(register, ty, _)) = self.common.get(key) {
+                        return Ok((register, ty));
+                    }
+                }
+                let result = self.binary(*op, left, right, ty, target)?;
+                if let Some((key, variables)) = key {
+                    self.common.insert(key, (result.0, result.1, variables));
+                }
+                Ok(result)
+            }
             ExprKind::Select { .. } => Err(unsupported("conditional expression")),
             ExprKind::Idiom(idiom) => self.idiom(idiom, target),
             ExprKind::Unary(UnaryOp::LogicalNot, operand) => {
@@ -1829,4 +1848,30 @@ fn max_value(expression: &Expr) -> Option<u64> {
         ExprKind::Binary(op, ..) if op.is_comparison() => Some(1),
         _ => None,
     }
+}
+
+/// A key for a simple pure operation on variables and constants (IRO common
+/// subexpressions), with the variables it reads.
+fn common_key(expression: &Expr) -> Option<(String, Vec<VarId>)> {
+    fn leaf(e: &Expr, variables: &mut Vec<VarId>) -> Option<String> {
+        match &e.kind {
+            ExprKind::Int(value) => Some(format!("{value}")),
+            ExprKind::Var(id) => {
+                variables.push(*id);
+                Some(format!("v{id}"))
+            }
+            ExprKind::Convert(operand) => {
+                let inner = leaf(operand, variables)?;
+                Some(format!("({:?}){inner}", e.ty))
+            }
+            _ => None,
+        }
+    }
+    let ExprKind::Binary(op, left, right) = &expression.kind else { return None };
+    if matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) || op.is_comparison() {
+        return None;
+    }
+    let mut variables = Vec::new();
+    let key = format!("{:?} {op:?} {} {}", expression.ty, leaf(left, &mut variables)?, leaf(right, &mut variables)?);
+    Some((key, variables))
 }
