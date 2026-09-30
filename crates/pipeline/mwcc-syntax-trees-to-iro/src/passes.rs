@@ -33,6 +33,61 @@ pub fn run(function: &mut Function) {
     if enabled("STORES") {
         stores(&mut function.body);
     }
+    if enabled("NARROWING") {
+        narrowing(&mut function.body);
+    }
+}
+
+/// Promotions a later narrowing discards: under a conversion to (or a store
+/// of) a narrow type, low-bit operations need no extended operands, so a
+/// promoted narrow value at least that wide is used as it is.
+pub fn narrowing(body: &mut [Stmt]) {
+    fn strip(expression: &mut Expr, bytes: u32) {
+        match &mut expression.kind {
+            ExprKind::Convert(operand)
+                if !is_narrow(expression.ty) && is_narrow(operand.ty) && width(operand.ty) >= bytes =>
+            {
+                *expression = (**operand).clone();
+            }
+            ExprKind::Binary(op, left, right)
+                if matches!(
+                    op,
+                    BinaryOp::Add
+                        | BinaryOp::Subtract
+                        | BinaryOp::Multiply
+                        | BinaryOp::BitAnd
+                        | BinaryOp::BitOr
+                        | BinaryOp::BitXor
+                        | BinaryOp::ShiftLeft
+                ) =>
+            {
+                strip(left, bytes);
+                // A shift amount is not a low-bit operand.
+                if *op != BinaryOp::ShiftLeft {
+                    strip(right, bytes);
+                }
+            }
+            ExprKind::Unary(UnaryOp::Negate | UnaryOp::BitNot, operand) => strip(operand, bytes),
+            _ => {}
+        }
+    }
+    fn visit(expression: &mut Expr) {
+        children(expression, &mut |child| visit(child));
+        if let ExprKind::Convert(operand) = &mut expression.kind {
+            if is_narrow(expression.ty) {
+                let bytes = width(expression.ty);
+                strip(operand, bytes);
+            }
+        }
+    }
+    for statement in body.iter_mut() {
+        if let Stmt::Store { ty, value, .. } = statement {
+            if is_narrow(*ty) {
+                strip(value, width(*ty));
+            }
+        }
+    }
+    for_each_expression(body, &mut |expression| visit(expression));
 }
 
 /// `-O0`: only the front end's constant folding of literal operations.
@@ -57,6 +112,7 @@ pub fn run_unoptimized(function: &mut Function) {
     }
     for_each_expression(&mut function.body, &mut |expression| literals(expression));
     stores(&mut function.body);
+    narrowing(&mut function.body);
 }
 
 /// Apply `rewrite` to every expression tree in `body` (statement roots).

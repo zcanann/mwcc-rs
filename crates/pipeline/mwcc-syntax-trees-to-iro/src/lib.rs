@@ -98,7 +98,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     }
     for guard in &function.guards {
         body.push(Stmt::If {
-            condition: builder.expression(&guard.condition)?,
+            condition: promoted(builder.expression(&guard.condition)?),
             then_body: vec![Stmt::Return(Some(builder.expression(&guard.value)?))],
             else_body: Vec::new(),
         });
@@ -155,14 +155,14 @@ impl Builder<'_> {
                 Stmt::Store { place, ty, value: self.expression(value)? }
             }
             Statement::If { condition, then_body, else_body } => Stmt::If {
-                condition: self.expression(condition)?,
+                condition: promoted(self.expression(condition)?),
                 then_body: then_body.iter().map(|s| self.statement(s)).collect::<Compilation<_>>()?,
                 else_body: else_body.iter().map(|s| self.statement(s)).collect::<Compilation<_>>()?,
             },
             Statement::Return(value) => {
                 Stmt::Return(value.as_ref().map(|value| self.expression(value)).transpose()?)
             }
-            other => return Err(unsupported(format!("statement {:?}", std::mem::discriminant(other)))),
+            other => return Err(unsupported(format!("statement {}", statement_name(other)))),
         })
     }
 
@@ -239,11 +239,11 @@ impl Builder<'_> {
             (Some(0), None) | (None, Some(0)) => Err(unsupported("arithmetic on an unsized pointee")),
             (Some(size), None) => {
                 let ty = left.ty;
-                Ok(Expr::binary(op, left, scale(right, size), ty))
+                Ok(Expr::binary(op, left, scale(promoted(right), size), ty))
             }
             (None, Some(size)) if op == BinaryOp::Add => {
                 let ty = right.ty;
-                Ok(Expr::binary(op, scale(left, size), right, ty))
+                Ok(Expr::binary(op, scale(promoted(left), size), right, ty))
             }
             (None, Some(_)) => Err(unsupported("integer minus pointer")),
             (None, None) => unreachable!("pointer arithmetic needs a pointer"),
@@ -281,10 +281,11 @@ impl Builder<'_> {
                 } else {
                     arithmetic_type(left.ty, right.ty)
                 };
-                Expr::binary(op, left, right, ty)
+                // The integer promotions are explicit conversions.
+                Expr::binary(op, promoted(left), promoted(right), ty)
             }
             Expression::Unary { operator, operand } => {
-                let operand = self.expression(operand)?;
+                let operand = promoted(self.expression(operand)?);
                 match operator {
                     UnaryOperator::Negate => {
                         let ty = promote(operand.ty);
@@ -298,9 +299,9 @@ impl Builder<'_> {
                 }
             }
             Expression::Conditional { condition, when_true, when_false, .. } => {
-                let condition = self.expression(condition)?;
-                let when_true = self.expression(when_true)?;
-                let when_false = self.expression(when_false)?;
+                let condition = promoted(self.expression(condition)?);
+                let when_true = promoted(self.expression(when_true)?);
+                let when_false = promoted(self.expression(when_false)?);
                 let ty = arithmetic_type(when_true.ty, when_false.ty);
                 Expr {
                     kind: ExprKind::Select {
@@ -334,7 +335,7 @@ impl Builder<'_> {
                 Expr { kind: ExprKind::Load { base, index, offset }, ty }
             }
             Expression::Call { name, arguments } => self.call(name, arguments, false)?,
-            _ => return Err(unsupported("expression form")),
+            other => return Err(unsupported(format!("expression {}", expression_name(other)))),
         })
     }
 
@@ -355,13 +356,25 @@ impl Builder<'_> {
                 if !self.unit.prototyped.contains(name) {
                     return Err(unsupported("call without a prototype"));
                 }
-                if self.unit.call_parameter_types.get(name).is_some_and(|types| types.iter().any(|ty| is_narrow(*ty))) {
-                    return Err(unsupported("call with narrow parameters"));
-                }
                 if arguments.len() > ARGUMENT_REGISTERS {
                     return Err(unsupported("stack-passed arguments"));
                 }
-                let arguments = arguments.iter().map(|a| self.expression(a)).collect::<Compilation<Vec<_>>>()?;
+                let mut arguments = arguments.iter().map(|a| self.expression(a)).collect::<Compilation<Vec<_>>>()?;
+                // The caller converts an argument to a narrow parameter's type.
+                if let Some(types) = self.unit.call_parameter_types.get(name) {
+                    for (argument, &parameter) in arguments.iter_mut().zip(types) {
+                        if is_narrow(parameter)
+                            && argument.ty != parameter
+                            && !passes::fits_unconverted(argument, parameter)
+                        {
+                            let value = std::mem::replace(argument, Expr::int(0));
+                            *argument = Expr { kind: ExprKind::Convert(Box::new(value)), ty: parameter };
+                        } else if !is_narrow(parameter) {
+                            let value = std::mem::replace(argument, Expr::int(0));
+                            *argument = promoted(value);
+                        }
+                    }
+                }
                 if arguments.iter().any(|argument| !is_general_word(argument.ty)) {
                     return Err(unsupported("non-integer argument"));
                 }
@@ -418,5 +431,45 @@ fn binary_op(operator: BinaryOperator) -> BinaryOp {
         BinaryOperator::NotEqual => BinaryOp::NotEqual,
         BinaryOperator::LogicalAnd => BinaryOp::LogicalAnd,
         BinaryOperator::LogicalOr => BinaryOp::LogicalOr,
+    }
+}
+
+fn statement_name(statement: &Statement) -> &'static str {
+    match statement {
+        Statement::Store { .. } => "store",
+        Statement::Assign { .. } => "assign",
+        Statement::Expression(_) => "expression",
+        Statement::InlineAsm(_) => "inline asm",
+        Statement::If { .. } => "if",
+        Statement::Return(_) => "return",
+        Statement::Switch { .. } => "switch",
+        Statement::Break => "break",
+        Statement::Continue => "continue",
+        Statement::Goto(_) => "goto",
+        Statement::Label(_) => "label",
+        Statement::Loop { .. } => "loop",
+    }
+}
+
+/// The variant name of an expression (for refusal diagnostics).
+fn expression_name(expression: &Expression) -> String {
+    let debug = format!("{expression:?}");
+    let end = debug.find([' ', '(', '{']).unwrap_or(debug.len());
+    let mut name = debug[..end].to_owned();
+    match expression {
+        Expression::Cast { target_type, .. } => name.push_str(&format!(" to {target_type:?}")),
+        Expression::Member { index_stride: Some(_), .. } => name.push_str(" of an indexed element"),
+        _ => {}
+    }
+    name
+}
+
+/// `e` after the integer promotions: a narrow value converts to `int`.
+pub fn promoted(e: Expr) -> Expr {
+    if is_narrow(e.ty) {
+        let ty = promote(e.ty);
+        Expr { kind: ExprKind::Convert(Box::new(e)), ty }
+    } else {
+        e
     }
 }

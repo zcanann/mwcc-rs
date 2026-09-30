@@ -298,7 +298,7 @@ impl Lowerer<'_> {
         for id in 0..function.parameter_count {
             if let Some(offset) = self.homes[id] {
                 let argument = FIRST_GENERAL_ARGUMENT + id as u32;
-                self.emit_plain(Instruction::StoreWord { s: argument, a: 1, offset });
+                self.emit_plain(store_instruction(function.variables[id].ty, argument, 1, offset));
             }
         }
         for (register, argument) in entry_copies {
@@ -377,9 +377,13 @@ impl Lowerer<'_> {
         let return_type = self.function.return_type;
         let fits = mwcc_syntax_trees_to_iro_fits(value, return_type);
         if let Some(destination) = self.return_register {
+            let raw = self.is_raw(value);
             let (register, ty) = self.expression_with_target(value, Some(destination))?;
-            let (register, _) =
-                if fits { (register, ty) } else { self.convert(register, ty, return_type, Some(destination))? };
+            let (register, _) = if fits {
+                (register, ty)
+            } else {
+                self.convert_value(register, ty, raw, return_type, Some(destination))?
+            };
             if register != destination {
                 self.emit_plain(Instruction::Or { a: destination, s: register, b: register });
             }
@@ -388,8 +392,10 @@ impl Lowerer<'_> {
         let direct = self.unoptimized.then_some(3);
         // The final instruction targets r3: the conversion when there is one.
         let converts = !fits && is_narrow(return_type) && value.ty != return_type;
+        let raw = self.is_raw(value);
         let (register, ty) = self.expression_with_target(value, if converts { None } else { direct })?;
-        let (register, _) = if fits { (register, ty) } else { self.convert(register, ty, return_type, direct)? };
+        let (register, _) =
+            if fits { (register, ty) } else { self.convert_value(register, ty, raw, return_type, direct)? };
         if register != 3 {
             self.emit_plain(Instruction::Or { a: 3, s: register, b: register });
         }
@@ -399,7 +405,7 @@ impl Lowerer<'_> {
     fn assign(&mut self, variable: VarId, value: &Expr) -> Compilation<()> {
         if let Some(offset) = self.homes[variable] {
             let (source, _) = self.expression(value)?;
-            self.emit_plain(Instruction::StoreWord { s: source, a: 1, offset });
+            self.emit_plain(store_instruction(self.function.variables[variable].ty, source, 1, offset));
             return Ok(());
         }
         let destination = self.register(variable);
@@ -414,9 +420,10 @@ impl Lowerer<'_> {
         }
         let variable_type = self.function.variables[variable].ty;
         let narrow = is_narrow(variable_type) && !mwcc_syntax_trees_to_iro_fits(value, variable_type);
+        let raw = self.is_raw(value);
         let (source, source_type) =
             self.expression_with_target(value, if narrow { None } else { Some(destination) })?;
-        if narrow && source_type != variable_type {
+        if narrow && (source_type != variable_type || raw) {
             let (converted, _) = self.convert(source, source_type, variable_type, Some(destination))?;
             if converted != destination {
                 self.emit_plain(Instruction::Or { a: destination, s: converted, b: converted });
@@ -489,10 +496,10 @@ impl Lowerer<'_> {
             (op, left, right)
         };
         let (a, left_type) = self.expression(left)?;
-        let non_negative = right.as_int().map_or(is_unsigned_narrow(right.ty), |value| value >= 0);
+        let non_negative = right.as_int().map_or(is_unsigned_narrow(unpromoted(right).ty), |value| value >= 0);
         let unsigned = is_unsigned(promote(left_type))
             || is_unsigned(promote(right.ty))
-            || is_unsigned_narrow(left_type) && non_negative;
+            || is_unsigned_narrow(unpromoted(left).ty) && non_negative;
         // A compare of a just-computed value with 0 is its record form.
         let equality = matches!(op, BinaryOp::Equal | BinaryOp::NotEqual);
         if right.as_int() == Some(0) && (!unsigned || equality) && self.record_form(a) {
@@ -577,23 +584,9 @@ impl Lowerer<'_> {
             }
             ExprKind::Var(id) if self.homes[*id].is_some() => {
                 let offset = self.homes[*id].expect("checked");
-                let d = self.result(target);
-                self.emit_plain(Instruction::LoadWord { d, a: 1, offset });
-                Ok((d, ty))
+                self.load(ty, 1, offset, None, target)
             }
-            ExprKind::Var(id) => {
-                let register = self.register(*id);
-                if self.raw_narrow[*id] {
-                    if let Some(&extended) = self.extended.get(id) {
-                        return Ok((extended, ty));
-                    }
-                    let extended = self.temporary();
-                    self.emit_plain(extension(ty, extended, register));
-                    self.extended.insert(*id, extended);
-                    return Ok((extended, ty));
-                }
-                Ok((register, ty))
-            }
+            ExprKind::Var(id) => Ok((self.register(*id), ty)),
             ExprKind::Global(name) => {
                 let global = self.unit.globals[name];
                 let reuse = !global.is_volatile && !self.unoptimized;
@@ -646,8 +639,22 @@ impl Lowerer<'_> {
                 }
             }
             ExprKind::Convert(operand) => {
+                // A promotion of a raw narrow parameter: extended once per block.
+                if let ExprKind::Var(id) = operand.kind {
+                    if self.raw_narrow[id] && !is_narrow(ty) {
+                        if let Some(&extended) = self.extended.get(&id) {
+                            return Ok((extended, ty));
+                        }
+                        let raw = self.register(id);
+                        let extended = self.temporary();
+                        self.emit_plain(extension(operand.ty, extended, raw));
+                        self.extended.insert(id, extended);
+                        return Ok((extended, ty));
+                    }
+                }
+                let raw = self.is_raw(operand);
                 let (source, source_type) = self.expression(operand)?;
-                self.convert(source, source_type, ty, target)
+                self.convert_value(source, source_type, raw, ty, target)
             }
             ExprKind::Call { name, arguments } => {
                 let register = self.call(name, arguments, target)?;
@@ -657,12 +664,44 @@ impl Lowerer<'_> {
     }
 
     fn convert(&mut self, source: u32, from: Type, to: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
-        if from == to || !is_narrow(to) {
-            return Ok((source, to));
-        }
+        self.convert_value(source, from, false, to, target)
+    }
+
+    /// Convert a value of `from` (a raw, unextended narrow value when `raw`)
+    /// to `to`: a narrowing extends unless the type already matches; a
+    /// widening extends only a raw value.
+    fn convert_value(
+        &mut self,
+        source: u32,
+        from: Type,
+        raw: bool,
+        to: Type,
+        target: Option<u32>,
+    ) -> Compilation<(u32, Type)> {
+        let zero_extended_load = raw && from == Type::Char && to == Type::UnsignedChar;
+        let extend_as = if is_narrow(to) {
+            (from != to && !zero_extended_load).then_some(to)
+        } else if is_general_word(to) && is_narrow(from) && raw {
+            Some(from)
+        } else {
+            None
+        };
+        let Some(extend_as) = extend_as else { return Ok((source, to)) };
         let destination = self.result(target);
-        self.emit_plain(extension(to, destination, source));
+        self.emit_plain(extension(extend_as, destination, source));
         Ok((destination, to))
+    }
+
+    /// Whether a narrow expression's register holds its value unextended: a
+    /// signed byte load (`lbz`) or a parameter used as it arrived.
+    fn is_raw(&self, expression: &Expr) -> bool {
+        match &expression.kind {
+            ExprKind::Load { .. } | ExprKind::Global(_) => expression.ty == Type::Char,
+            ExprKind::Var(id) => self.raw_narrow[*id] || self.homes[*id].is_some() && expression.ty == Type::Char,
+            // A same-type conversion is a no-op: still raw.
+            ExprKind::Convert(operand) if operand.ty == expression.ty => self.is_raw(operand),
+            _ => false,
+        }
     }
 
     fn load_constant(&mut self, register: u32, value: i64) -> Compilation<()> {
@@ -683,7 +722,8 @@ impl Lowerer<'_> {
     }
 
     fn indexed_load(&mut self, ty: Type, a: u32, b: u32, target: Option<u32>) -> Compilation<(u32, Type)> {
-        let extends = ty == Type::Char;
+        // A signed byte loads raw (`lbz`); promotion extends it.
+        let extends = false;
         let d = if extends { self.temporary() } else { self.result(target) };
         let instruction = match ty {
             Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. } => {
@@ -713,7 +753,7 @@ impl Lowerer<'_> {
         relocation: Option<AttachedRelocation>,
         target: Option<u32>,
     ) -> Compilation<(u32, Type)> {
-        let extends = ty == Type::Char;
+        let extends = false;
         let d = if extends { self.temporary() } else { self.result(target) };
         let load = match ty {
             Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. } => {
@@ -1043,8 +1083,9 @@ impl Lowerer<'_> {
         if op == BinaryOp::BitAnd {
             // A mask within a narrow load's width does not observe its sign
             // extension: load zero-extended and mask.
-            if let (Some((begin, end)), ExprKind::Load { base, index: None, offset }) = (mask_bounds(right), &left.kind) {
-                let bits = match left.ty {
+            let loaded = unpromoted(left);
+            if let (Some((begin, end)), ExprKind::Load { base, index: None, offset }) = (mask_bounds(right), &loaded.kind) {
+                let bits = match loaded.ty {
                     Type::Char => Some(8),
                     Type::Short => Some(16),
                     _ => None,
@@ -1069,9 +1110,10 @@ impl Lowerer<'_> {
             }
         }
         // A raw unsigned narrow parameter shifted right folds its extension.
-        let raw_unsigned = match (&left.kind, op, immediate) {
+        let shifted = unpromoted(left);
+        let raw_unsigned = match (&shifted.kind, op, immediate) {
             (ExprKind::Var(id), BinaryOp::ShiftRight, Some(shift)) if self.raw_narrow[*id] => {
-                let bits = match left.ty {
+                let bits = match shifted.ty {
                     Type::UnsignedChar => Some(8u8),
                     Type::UnsignedShort => Some(16u8),
                     _ => None,
@@ -1170,7 +1212,7 @@ impl Lowerer<'_> {
         let (b, _) = self.expression(right)?;
         // MWCC places a leaf operand first in a commutative operation whose
         // other operand is computed (`a*b + c` -> `add r3,c,t`).
-        let leaf = |e: &Expr| e.as_var().is_some();
+        let leaf = |e: &Expr| unpromoted(e).as_var().is_some();
         let (a, b) = if op.is_commutative() && !leaf(left) && leaf(right) { (b, a) } else { (a, b) };
         let d = self.result(target);
         let instruction = match op {
@@ -1193,12 +1235,7 @@ impl Lowerer<'_> {
 
     /// The register holding a stored value: a raw narrow parameter at least
     /// as wide as the store needs no extension.
-    fn store_source(&mut self, value: &Expr, stored: Type) -> Compilation<u32> {
-        if let ExprKind::Var(id) = value.kind {
-            if self.raw_narrow[id] && width(stored) <= width(value.ty) {
-                return Ok(self.register(id));
-            }
-        }
+    fn store_source(&mut self, value: &Expr, _stored: Type) -> Compilation<u32> {
         Ok(self.expression(value)?.0)
     }
 
@@ -1481,4 +1518,21 @@ fn references(body: &[Stmt], variable: VarId) -> usize {
             }
         })
         .sum()
+}
+
+/// A displacement store of `ty`'s width.
+fn store_instruction(ty: Type, s: u32, a: u32, offset: i16) -> Instruction {
+    match ty {
+        Type::Char | Type::UnsignedChar => Instruction::StoreByte { s, a, offset },
+        Type::Short | Type::UnsignedShort => Instruction::StoreHalfword { s, a, offset },
+        _ => Instruction::StoreWord { s, a, offset },
+    }
+}
+
+/// The operand of an integer promotion (or the expression itself).
+fn unpromoted(expression: &Expr) -> &Expr {
+    match &expression.kind {
+        ExprKind::Convert(operand) if is_narrow(operand.ty) && !is_narrow(expression.ty) => operand,
+        _ => expression,
+    }
 }
