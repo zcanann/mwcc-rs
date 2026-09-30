@@ -1559,6 +1559,25 @@ impl Lowerer<'_> {
                 Ok((source, to))
             }
             (Type::Double, Type::Float) => {
+                // A computed double rounds in place in its own register.
+                if operand.as_var().is_none() && std::env::var_os("MWCC_PCODE_NO_INPLACE_FRSP").is_none() {
+                    let (source, _) = self.expression_with_target(operand, target)?;
+                    // Only a fresh value may be overwritten: not one a cache
+                    // or a variable still holds.
+                    let shared = self.common.values().any(|&(register, _, _)| register == source)
+                        || self.float_constants.values().any(|&register| register == source)
+                        || self.loaded_globals.values().any(|&(register, _)| register == source)
+                        || self.registers.contains(&Some(source));
+                    if shared {
+                        let d = self.result_for(to, target);
+                        self.emit_plain(Instruction::RoundToSingle { d, b: source });
+                        return Ok((d, to));
+                    }
+                    let mut round = PInstr::new(Instruction::RoundToSingle { d: source, b: source });
+                    round.flags.in_place = true;
+                    self.emit(round);
+                    return Ok((source, to));
+                }
                 let (source, _) = self.expression(operand)?;
                 let d = self.result_for(to, target);
                 self.emit_plain(Instruction::RoundToSingle { d, b: source });
