@@ -238,6 +238,8 @@ pub struct PCodeFunction {
     /// General registers live at the exit besides the result (`-O0` keeps
     /// register variables live through the whole function).
     pub exit_uses: Vec<u32>,
+    /// FPRs live everywhere (`-O0` floating register variables).
+    pub exit_float_uses: Vec<u32>,
     /// The body ends in a sibling branch (`b callee`): no return of its own.
     pub ends_in_tail_call: bool,
     /// Pooled constants (bits, byte width) referenced as
@@ -262,6 +264,7 @@ impl PCodeFunction {
             jump_tables: Vec::new(),
             strings: Vec::new(),
             exit_uses: Vec::new(),
+            exit_float_uses: Vec::new(),
             ends_in_tail_call: false,
             pool: Vec::new(),
             returns,

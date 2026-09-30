@@ -64,8 +64,16 @@ pub fn finish(
         fold_absolute_displacements(&mut pcode, options.fold_absolute_into_own_base);
     }
     // Saved FPRs: the contiguous range from f31 down to the lowest used.
-    let saved_float: Vec<u32> = match colors.saved_float.iter().min() {
-        Some(&lowest) => (lowest..32).rev().collect(),
+    // (Also FPRs assigned directly: `-O0` register variables.)
+    let direct_float = pcode
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .flat_map(|instruction| instruction.defs(mwcc_pcode::Class::Float))
+        .filter(|register| (14..32).contains(register))
+        .min();
+    let saved_float: Vec<u32> = match colors.saved_float.iter().copied().chain(direct_float).min() {
+        Some(lowest) => (lowest..32).rev().collect(),
         None => Vec::new(),
     };
     // Gekko also saves the paired-single half of an FPR the code computes
@@ -139,7 +147,14 @@ pub fn finish(
                 let reload = epilogue.remove(position);
                 let after = epilogue
                     .iter()
-                    .rposition(|i| matches!(i, Instruction::LoadWord { a: 1, .. }))
+                    .rposition(|i| {
+                        matches!(
+                            i,
+                            Instruction::LoadWord { a: 1, .. }
+                                | Instruction::LoadFloatDouble { a: 1, .. }
+                                | Instruction::PairedSingleQuantizedLoad { a: 1, .. }
+                        )
+                    })
                     .map_or(position, |last| last + 1);
                 epilogue.insert(after, reload);
             }

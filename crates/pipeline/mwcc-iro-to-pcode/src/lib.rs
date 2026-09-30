@@ -385,22 +385,14 @@ impl Lowerer<'_> {
     /// (callee-saved, r31 down). Temporaries are colored around them.
     fn lower_unoptimized(&mut self, calls: bool) -> Compilation<()> {
         let function = self.function;
-        // Floating values: parameters of leaf functions (pinned to their
-        // argument registers) and temporaries; floating register variables
-        // need saved FPRs (not modeled).
+        // Floating register variables take saved FPRs from f31 down, like
+        // the GPR ones.
         let floating_variable = |id: usize| is_float(function.variables[id].ty);
-        if (0..function.variables.len()).any(|id| {
-            floating_variable(id)
-                && match function.variables[id].kind {
-                    VariableKind::Parameter => calls,
-                    VariableKind::Local => true,
-                    VariableKind::Temporary => false,
-                }
-        }) {
-            return Err(unsupported("floating point at -O0"));
-        }
+        let mut home_bytes: i16 = 0;
         let mut home_slots: i16 = 0;
         let mut next_saved: u32 = 31;
+        let mut next_saved_float: u32 = 31;
+        let mut float_copies = Vec::new();
         let mut entry_copies = Vec::new();
         let (mut next_general, mut next_float) = (FIRST_GENERAL_ARGUMENT, 1);
         for id in 0..function.parameter_count {
@@ -415,8 +407,16 @@ impl Lowerer<'_> {
                 self.registers[id] = Some(argument);
                 self.raw_narrow[id] = is_narrow(function.variables[id].ty);
             } else if references(&function.body, id) <= 1 {
-                self.homes[id] = Some(8 + 4 * home_slots);
+                // Homes are laid out in declaration order from r1+8.
+                let size: i16 = if function.variables[id].ty == Type::Double { 8 } else { 4 };
+                home_bytes = (home_bytes + size - 1) / size * size;
+                self.homes[id] = Some(8 + home_bytes);
+                home_bytes += size;
                 home_slots += 1;
+            } else if floating_variable(id) {
+                self.registers[id] = Some(next_saved_float);
+                float_copies.push((next_saved_float, argument));
+                next_saved_float -= 1;
             } else {
                 self.registers[id] = Some(next_saved);
                 entry_copies.push((next_saved, argument));
@@ -438,6 +438,14 @@ impl Lowerer<'_> {
             }
         }
         for id in function.parameter_count..function.variables.len() {
+            if function.variables[id].kind == VariableKind::Local && function.variables[id].frame.is_none() && floating_variable(id) {
+                if next_saved_float < 14 {
+                    return Err(unsupported("more floating register variables than saved FPRs"));
+                }
+                self.registers[id] = Some(next_saved_float);
+                next_saved_float -= 1;
+                continue;
+            }
             if function.variables[id].kind == VariableKind::Local && function.variables[id].frame.is_none() {
                 if next_saved < 14 {
                     return Err(unsupported("more register variables than callee-saved registers"));
@@ -447,25 +455,39 @@ impl Lowerer<'_> {
             }
         }
         if home_slots > 0 {
-            self.frame_cursor = 8 + 4 * home_slots as u32;
+            self.frame_cursor = 8 + home_bytes as u32;
         }
         self.pcode.frame_local_bytes = if frame_objects {
             (self.frame_cursor - 8) as i16
         } else {
-            ((4 * home_slots + 7) / 8) * 8
+            ((home_bytes + 7) / 8) * 8
         };
-        self.pcode.exit_uses = self.registers.iter().flatten().copied().collect();
+        let float_registers: Vec<u32> = (0..function.variables.len())
+            .filter(|&id| floating_variable(id))
+            .filter_map(|id| self.registers[id])
+            .collect();
+        self.pcode.exit_uses = (0..function.variables.len())
+            .filter(|&id| !floating_variable(id))
+            .filter_map(|id| self.registers[id])
+            .collect();
+        self.pcode.exit_float_uses = float_registers;
         self.pcode.begin_coalesce_window();
         for id in 0..function.parameter_count {
             if let Some(offset) = self.homes[id] {
-                // Floating parameters never reach here (leaf functions only).
-                let argument = FIRST_GENERAL_ARGUMENT
-                    + (0..id).filter(|&earlier| !floating_variable(earlier)).count() as u32;
+                // The parameter's argument register in its class.
+                let argument = if floating_variable(id) {
+                    1 + (0..id).filter(|&earlier| floating_variable(earlier)).count() as u32
+                } else {
+                    FIRST_GENERAL_ARGUMENT + (0..id).filter(|&earlier| !floating_variable(earlier)).count() as u32
+                };
                 self.emit_plain(store_instruction(function.variables[id].ty, argument, 1, offset));
             }
         }
         for (register, argument) in entry_copies {
             self.emit_plain(Instruction::Or { a: register, s: argument, b: argument });
+        }
+        for (register, argument) in float_copies {
+            self.emit_plain(Instruction::FloatMove { d: register, b: argument });
         }
         self.body_and_exit()
     }
@@ -2832,6 +2854,8 @@ fn counted(condition: Option<&Expr>, body: &[Stmt], step: &[Stmt]) -> bool {
 /// A displacement store of `ty`'s width.
 fn store_instruction(ty: Type, s: u32, a: u32, offset: i16) -> Instruction {
     match ty {
+        Type::Float => Instruction::StoreFloatSingle { s, a, offset },
+        Type::Double => Instruction::StoreFloatDouble { s, a, offset },
         Type::Char | Type::UnsignedChar => Instruction::StoreByte { s, a, offset },
         Type::Short | Type::UnsignedShort => Instruction::StoreHalfword { s, a, offset },
         _ => Instruction::StoreWord { s, a, offset },

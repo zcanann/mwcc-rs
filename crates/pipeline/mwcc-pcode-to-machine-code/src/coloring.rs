@@ -140,12 +140,11 @@ fn color_class(
     }
     let live_out = solve_liveness(function, class, count);
     let mut matrix = construct_interference(function, class, count, &live_out);
-    if class == Class::General {
-        // `-O0` register variables occupy their registers everywhere.
-        for &register in &function.exit_uses {
-            for virtual_register in FIRST_VIRTUAL as usize..count {
-                matrix.set(virtual_register, register as usize);
-            }
+    // `-O0` register variables occupy their registers everywhere.
+    let everywhere = if class == Class::General { &function.exit_uses } else { &function.exit_float_uses };
+    for &register in everywhere {
+        for virtual_register in FIRST_VIRTUAL as usize..count {
+            matrix.set(virtual_register, register as usize);
         }
     }
     let roots = coalesce_copies(function, class, count, &mut matrix);
@@ -195,10 +194,9 @@ fn solve_liveness(function: &PCodeFunction, class: Class, count: usize) -> Vec<B
             (Class::Float, ReturnRegisters::Float) => uses[exit].set(1),
             _ => {}
         }
-        if class == Class::General {
-            for &register in &function.exit_uses {
-                uses[exit].set(register as usize);
-            }
+        let everywhere = if class == Class::General { &function.exit_uses } else { &function.exit_float_uses };
+        for &register in everywhere {
+            uses[exit].set(register as usize);
         }
     }
 
