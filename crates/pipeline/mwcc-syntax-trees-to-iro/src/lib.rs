@@ -183,6 +183,37 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     })
 }
 
+/// A call evaluated for its effects (an expanded void call leaves nothing).
+fn evaluated(call: Expr) -> Vec<Stmt> {
+    if call.ty == Type::Void && matches!(call.kind, ExprKind::Int(_)) {
+        Vec::new()
+    } else {
+        vec![Stmt::Eval(call)]
+    }
+}
+
+/// Whether any statement assigns `variable`.
+fn body_assigns(body: &[Stmt], variable: VarId) -> bool {
+    body.iter().any(|statement| match statement {
+        Stmt::Assign { variable: assigned, .. } => *assigned == variable,
+        Stmt::If { then_body, else_body, .. } => body_assigns(then_body, variable) || body_assigns(else_body, variable),
+        Stmt::Loop { body, step, .. } => body_assigns(body, variable) || body_assigns(step, variable),
+        Stmt::Switch { arms, .. } => arms.iter().any(|arm| body_assigns(arm, variable)),
+        _ => false,
+    })
+}
+
+/// Whether any statement returns (or sets the return value).
+fn returns_anywhere(body: &[Stmt]) -> bool {
+    body.iter().any(|statement| match statement {
+        Stmt::Return(_) | Stmt::SetReturn(_) => true,
+        Stmt::If { then_body, else_body, .. } => returns_anywhere(then_body) || returns_anywhere(else_body),
+        Stmt::Loop { body, step, .. } => returns_anywhere(body) || returns_anywhere(step),
+        Stmt::Switch { arms, .. } => arms.iter().any(|arm| returns_anywhere(arm)),
+        _ => false,
+    })
+}
+
 fn has_return(statements: &[Statement]) -> bool {
     statements.iter().any(|statement| match statement {
         Statement::Return(_) => true,
@@ -200,11 +231,11 @@ fn has_return(statements: &[Statement]) -> bool {
     })
 }
 
-struct Builder<'a> {
+struct Builder<'a, 'u> {
     /// Frame variables that are arrays.
     arrays: Vec<VarId>,
     return_type: Type,
-    unit: &'a Unit<'a>,
+    unit: &'a Unit<'u>,
     names: HashMap<String, VarId>,
     variables: &'a [Variable],
     /// Assignments inside the expression being built, hoisted before the
@@ -222,7 +253,7 @@ struct Builder<'a> {
     strings: Vec<Vec<u8>>,
 }
 
-impl Builder<'_> {
+impl Builder<'_, '_> {
     fn statements(&mut self, statements: &[Statement]) -> Compilation<Vec<Stmt>> {
         let mut out = Vec::new();
         for statement in statements {
@@ -249,10 +280,10 @@ impl Builder<'_> {
 
     fn effects_inner(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
         Ok(match expression {
-            Expression::Call { name, arguments } => vec![Stmt::Eval(self.call(name, arguments, true)?)],
+            Expression::Call { name, arguments } => evaluated(self.call(name, arguments, true)?),
             Expression::CallThrough { target, arguments } => vec![Stmt::Eval(self.indirect_call(target, arguments, true)?)],
             Expression::Cast { target_type: Type::Void, operand } => match operand.as_ref() {
-                Expression::Call { name, arguments } => vec![Stmt::Eval(self.call(name, arguments, true)?)],
+                Expression::Call { name, arguments } => evaluated(self.call(name, arguments, true)?),
                 Expression::Variable(_) | Expression::IntegerLiteral(_) => Vec::new(),
                 other => return Err(unsupported(format!("statement expression void {}", expression_name(other)))),
             },
@@ -849,6 +880,89 @@ impl Builder<'_> {
         Ok(Expr { kind: ExprKind::Call { name: mwcc_iro::INDIRECT_CALL.to_owned(), arguments: values }, ty: Type::Void })
     }
 
+    /// A call MWCC expands inline: the arguments are assigned to the
+    /// callee's parameters, its body (renumbered into this function's
+    /// temporaries) runs before the calling statement, and the call's value
+    /// is the callee's final return value.
+    fn inline_call(&mut self, callee: &ast::Function, arguments: &[Expression]) -> Compilation<Expr> {
+        thread_local! {
+            static DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        }
+        if self.guarded > 0 {
+            return Err(unsupported("inline expansion in a conditional operand"));
+        }
+        if callee.parameters.len() != arguments.len() {
+            return Err(unsupported("inline expansion with mismatched arguments"));
+        }
+        if DEPTH.with(|depth| depth.get()) >= 4 {
+            return Err(unsupported("nested inline expansion"));
+        }
+        DEPTH.with(|depth| depth.set(depth.get() + 1));
+        let built = build_unoptimized(callee, self.unit);
+        DEPTH.with(|depth| depth.set(depth.get() - 1));
+        let built = built?;
+        let mut inlined = built.function;
+        if !inlined.strings.is_empty() {
+            return Err(unsupported("inline expansion with string literals"));
+        }
+        if inlined.variables.iter().any(|variable| variable.frame.is_some()) {
+            return Err(unsupported("inline expansion with frame objects"));
+        }
+        // Only a final return value: an early return would need a jump.
+        let result = match inlined.body.last() {
+            Some(Stmt::SetReturn(_)) => inlined.body.pop().map(|statement| match statement {
+                Stmt::SetReturn(value) => value,
+                _ => unreachable!("matched above"),
+            }),
+            _ => None,
+        };
+        if built.returns_through_variable || returns_anywhere(&inlined.body) {
+            return Err(unsupported("inline expansion with an early return"));
+        }
+        let base = self.variables.len() + self.temporaries.len();
+        for variable in &inlined.variables {
+            self.temporaries.push(Variable {
+                name: format!("{}${}", callee.name, variable.name),
+                ty: variable.ty,
+                kind: VariableKind::Temporary,
+                frame: None,
+            });
+        }
+        // Arguments are evaluated in order into the parameters; a constant
+        // argument of a parameter the body never assigns is propagated.
+        let map = |id: VarId| id + base;
+        passes::map_variables(&mut inlined.body, &map);
+        for (index, argument) in arguments.iter().enumerate() {
+            let value = self.expression(argument)?;
+            let ty = inlined.variables[index].ty;
+            let value = assigned(promoted(value), ty);
+            let constant = value.as_int().is_some() && !is_float(ty);
+            if constant && !body_assigns(&inlined.body, base + index) && std::env::var_os("MWCC_IRO_NO_INLINE_CONSTANTS").is_none() {
+                passes::substitute(&mut inlined.body, base + index, &Expr { kind: value.kind.clone(), ty });
+                continue;
+            }
+            self.pending.push(Stmt::Assign { variable: base + index, value });
+        }
+        self.pending.extend(inlined.body);
+        let Some(mut value) = result else {
+            return Ok(Expr { kind: ExprKind::Int(0), ty: Type::Void });
+        };
+        let mut wrapped = vec![Stmt::Eval(value)];
+        passes::map_variables(&mut wrapped, &map);
+        let Some(Stmt::Eval(mapped)) = wrapped.pop() else { unreachable!("one statement") };
+        value = mapped;
+        // The value is held in a temporary of the callee's return type.
+        let id = self.variables.len() + self.temporaries.len();
+        self.temporaries.push(Variable {
+            name: format!("{}$result", callee.name),
+            ty: callee.return_type,
+            kind: VariableKind::Temporary,
+            frame: None,
+        });
+        self.pending.push(Stmt::Assign { variable: id, value: assigned(value, callee.return_type) });
+        Ok(Expr { kind: ExprKind::Var(id), ty: callee.return_type })
+    }
+
     fn call(&mut self, name: &str, arguments: &[Expression], discarded: bool) -> Compilation<Expr> {
         // A call through a pointer variable (local, parameter or global).
         let pointer_variable = self.names.contains_key(name)
@@ -868,12 +982,34 @@ impl Builder<'_> {
                 let variadic = self.unit.variadic_callees.contains(name);
                 let prototyped = self.unit.prototyped.contains(name);
                 if (self.unit.has_body)(name) {
-                    return Err(unsupported("call to a function this unit defines (inlining not modeled)"));
+                    return match self.unit.inline_bodies.get(name).copied() {
+                        Some(callee) if std::env::var_os("MWCC_IRO_NO_INLINE").is_none() => self.inline_call(callee, arguments),
+                        _ => Err(unsupported("call to a function this unit defines (inlining not modeled)")),
+                    };
                 }
                 if arguments.len() > ARGUMENT_REGISTERS {
                     return Err(unsupported("stack-passed arguments"));
                 }
-                let mut arguments = arguments.iter().map(|a| self.guarded_expression(a)).collect::<Compilation<Vec<_>>>()?;
+                // An expanded call among arguments that are otherwise literals
+                // or register variables may run its body first.
+                let simple = |builder: &Self, argument: &Expression| match argument {
+                    Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => true,
+                    Expression::Variable(name) => {
+                        builder.names.get(name).is_some_and(|&id| builder.variables[id].frame.is_none())
+                    }
+                    _ => false,
+                };
+                let mut values = Vec::with_capacity(arguments.len());
+                for (index, argument) in arguments.iter().enumerate() {
+                    let expanded = matches!(argument, Expression::Call { name, .. } if self.unit.inline_bodies.contains_key(name));
+                    let others_simple = arguments.iter().enumerate().all(|(other, value)| other == index || simple(self, value));
+                    values.push(if expanded && others_simple && self.guarded == 0 {
+                        self.expression(argument)?
+                    } else {
+                        self.guarded_expression(argument)?
+                    });
+                }
+                let mut arguments = values;
                 if variadic {
                     // Arguments past the fixed parameters take the default
                     // promotions (floating ones widen to double).

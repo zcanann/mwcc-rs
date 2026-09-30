@@ -160,6 +160,7 @@ impl Instruction {
             Instruction::LoadByteZeroWithUpdate { d, a, offset } => d_form(35, d, a, offset as u16),
             Instruction::LoadHalfZeroWithUpdate { d, a, offset } => d_form(41, d, a, offset as u16),
             Instruction::StoreByteWithUpdate { s, a, offset } => d_form(39, s, a, offset as u16),
+            Instruction::StoreHalfwordWithUpdate { s, a, offset } => d_form(45, s, a, offset as u16),
             Instruction::LoadByteZero { d, a, offset } => d_form(34, d, a, offset as u16),
             Instruction::LoadHalfwordZero { d, a, offset } => d_form(40, d, a, offset as u16),
             Instruction::LoadHalfwordAlgebraic { d, a, offset } => d_form(42, d, a, offset as u16),

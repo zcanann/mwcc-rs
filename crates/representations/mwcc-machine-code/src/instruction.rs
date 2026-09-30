@@ -279,6 +279,8 @@ pub enum Instruction {
     LoadHalfZeroWithUpdate { d: RegisterField, a: RegisterField, offset: i16 },
     /// `stbu` — store byte AND update the base register (op 39).
     StoreByteWithUpdate { s: RegisterField, a: RegisterField, offset: i16 },
+    /// `sthu` — store half-word AND update the base register (op 45).
+    StoreHalfwordWithUpdate { s: RegisterField, a: RegisterField, offset: i16 },
     /// `lwzu` — load word AND update the base register with the effective
     /// address, folding a pre-decremented element access into one instruction.
     LoadWordWithUpdate { d: RegisterField, a: RegisterField, offset: i16 },

@@ -168,6 +168,10 @@ fn is_memory_write_or_control(instruction: &Instruction) -> bool {
             | StoreFloatSingle { .. }
             | StoreFloatDouble { .. }
             | StoreWordWithUpdate { .. }
+            | StoreByteWithUpdate { .. }
+            | StoreHalfwordWithUpdate { .. }
+            | StoreFloatSingleWithUpdate { .. }
+            | StoreFloatDoubleWithUpdate { .. }
             | StoreWordIndexed { .. }
             | StoreByteIndexed { .. }
             | StoreHalfwordIndexed { .. }

@@ -29,6 +29,8 @@ pub struct PcodeRequest<'a> {
     /// Whether this unit has a body for the named function (a call MWCC
     /// may inline).
     pub has_body: &'a dyn Fn(&str) -> bool,
+    /// The body MWCC expands for a call, when that expansion is modeled.
+    pub inline_bodies: &'a HashMap<String, &'a Function>,
     /// The function returns C++ `bool` (stored like `unsigned char`).
     pub returns_bool: bool,
     /// The unit is C++ (comparisons produce `bool`).
@@ -62,4 +64,63 @@ pub(crate) fn mode() -> Option<Mode> {
 pub(crate) fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
     let lowering = LOWERING.get().expect("mode() checked the installation");
     lowering(request)
+}
+
+/// MWCC's inliner size: the callee's statements after lowering to jumps
+/// (expressions, conditional and unconditional gotos, returns; not labels
+/// or the final return). Measured against `-inline auto` limits.
+pub(crate) fn inline_statement_count(function: &mwcc_syntax_trees::Function) -> usize {
+    use mwcc_syntax_trees::{ArmBody, BinaryOperator, Expression, LoopKind, Statement, UnaryOperator};
+    fn jumps(condition: &Expression) -> usize {
+        match condition {
+            Expression::Binary { operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr, left, right } => {
+                jumps(left) + jumps(right)
+            }
+            Expression::Unary { operator: UnaryOperator::LogicalNot, operand } => jumps(operand),
+            _ => 1,
+        }
+    }
+    fn statements(body: &[Statement]) -> usize {
+        body.iter().map(statement).sum()
+    }
+    fn statement(statement: &Statement) -> usize {
+        match statement {
+            Statement::Store { .. } | Statement::Assign { .. } | Statement::Expression(_) | Statement::InlineAsm(_) => 1,
+            Statement::Return(_) | Statement::Break | Statement::Continue | Statement::Goto(_) => 1,
+            Statement::Label(_) => 0,
+            Statement::If { condition, then_body, else_body } => {
+                jumps(condition)
+                    + statements(then_body)
+                    + if else_body.is_empty() { 0 } else { 1 + statements(else_body) }
+            }
+            Statement::Switch { arms, default, .. } => {
+                let arm = |body: &ArmBody| match body {
+                    ArmBody::Return(_) => 1,
+                    ArmBody::Statements(body) => statements(body),
+                };
+                1 + arms.iter().map(|a| arm(&a.body) + usize::from(!a.falls_through)).sum::<usize>()
+                    + default.as_ref().map_or(0, arm)
+            }
+            Statement::Loop { kind, initializer, condition, step, body } => {
+                let test = condition.as_ref().map_or(1, jumps);
+                let entry = usize::from(*kind != LoopKind::DoWhile);
+                usize::from(initializer.is_some()) + entry + statements(body) + usize::from(step.is_some()) + test
+            }
+        }
+    }
+    function.locals.iter().filter(|local| local.initializer.is_some()).count()
+        + function.guards.iter().map(|guard| jumps(&guard.condition) + 1).sum::<usize>()
+        + statements(&function.statements)
+}
+
+/// The largest callee `-inline auto` expands on this build (GC/3.x and Wii
+/// shrink it for `,s`).
+pub(crate) fn automatic_inline_limit(build_label: &str, size_goal: bool) -> usize {
+    if build_label.starts_with("GC/1.3") || build_label.starts_with("GC/2.") {
+        29
+    } else if size_goal && (build_label.starts_with("GC/3.") || build_label.starts_with("Wii/")) {
+        2
+    } else {
+        14
+    }
 }

@@ -47,6 +47,9 @@ pub struct Unit<'a> {
     pub call_parameter_types: &'a HashMap<String, Vec<Type>>,
     /// Whether the unit has a body for a callee (MWCC may inline the call).
     pub has_body: &'a dyn Fn(&str) -> bool,
+    /// The body MWCC expands for a call (a `has_body` callee whose
+    /// expansion is modeled).
+    pub inline_bodies: &'a HashMap<String, &'a mwcc_syntax_trees::Function>,
     /// Scalar-replaced struct locals still store their fields (GC/3.x, Wii).
     pub keeps_struct_stores: bool,
     /// Loaded `const` globals stay valid across calls (GC/3.x, Wii).

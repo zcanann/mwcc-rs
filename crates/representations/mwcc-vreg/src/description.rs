@@ -32,7 +32,7 @@ pub fn nonzero_base(instruction: &Instruction) -> Option<RegisterField> {
         | LoadFloatSingleIndexed { a, .. } | LoadFloatDoubleIndexed { a, .. }
         | LoadFloatSingleWithUpdate { a, .. } | LoadFloatDoubleWithUpdate { a, .. }
         | StoreWord { a, .. } | StoreByte { a, .. } | StoreHalfword { a, .. }
-        | StoreWordWithUpdate { a, .. } | StoreByteWithUpdate { a, .. }
+        | StoreWordWithUpdate { a, .. } | StoreByteWithUpdate { a, .. } | StoreHalfwordWithUpdate { a, .. }
         | StoreWordIndexed { a, .. } | StoreByteIndexed { a, .. }
         | StoreHalfwordIndexed { a, .. } | StoreFloatSingle { a, .. }
         | StoreFloatDouble { a, .. } | StoreFloatSingleIndexed { a, .. }
@@ -191,8 +191,8 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, G, s);
             if *a != 0 { visit(U, G, a); }
         }
-        // The byte store-with-update rewrites its base (a general register).
-        StoreByteWithUpdate { s, a, .. } => {
+        // The byte/half-word store-with-update rewrites its base (a general register).
+        StoreByteWithUpdate { s, a, .. } | StoreHalfwordWithUpdate { s, a, .. } => {
             visit(U, G, s);
             visit(U, G, a);
             visit(D, G, a);

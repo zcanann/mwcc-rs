@@ -41,6 +41,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             "PCode lowering: branch-preserving select builds (not yet supported)",
         ));
     }
+    let no_inline_bodies = HashMap::new();
     let mut globals: HashMap<String, GlobalInfo> = request
         .globals
         .iter()
@@ -95,6 +96,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         prototyped: request.prototyped,
         call_parameter_types: request.call_parameter_types,
         has_body: request.has_body,
+        inline_bodies: if unoptimized { &no_inline_bodies } else { request.inline_bodies },
         keeps_struct_stores: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
         const_globals_across_calls: request.config.build.label.starts_with("GC/3.")
             || request.config.build.label.starts_with("Wii/"),

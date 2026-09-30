@@ -317,6 +317,41 @@ fn lower_function_body(
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
     if let Some(mode) = pcode_path::mode() {
+        // Whether MWCC expands a call inline: None (an ordinary call), or
+        // the body it expands (None inside when not modeled). Under
+        // `-inline auto` a definition preceding the caller (any definition
+        // when deferred or with `-ipa file`) within the size limit; a
+        // source-declared inline within its larger limit.
+        let inline_decision = |name: &str| -> Option<Option<&mwcc_syntax_trees::Function>> {
+            let automatic = config.flags.inline_enabled && config.flags.automatic_inlining_enabled;
+            let size_goal = config.flags.optimization_goal == mwcc_versions::OptimizationGoal::Size;
+            let limit = pcode_path::automatic_inline_limit(config.build.label, size_goal);
+            let ordinary = if config.flags.inline_deferred
+                || config.flags.ipa_file
+                || std::env::var_os("MWCC_PCODE_ANY_BODY_INLINES").is_some()
+            {
+                inline_bodies.definition_body(name)
+            } else if automatic {
+                inline_bodies.source_visible_definition(name, &function.name)
+            } else {
+                None
+            };
+            if let Some(body) = ordinary {
+                if std::env::var_os("MWCC_PCODE_NO_INLINE_LIMIT").is_some() {
+                    return Some(None);
+                }
+                // Under `-ipa file` with `,s` a static callee with one call
+                // site inlines whatever its size.
+                if config.flags.ipa_file && size_goal && body.is_static && inline_bodies.definition_call_count(name) == 1 {
+                    return Some(Some(body));
+                }
+                if pcode_path::inline_statement_count(body) <= limit {
+                    return Some(Some(body));
+                }
+            }
+            let declared = inline_bodies.composable_body(name).or_else(|| inline_bodies.retained_body(name))?;
+            Some((pcode_path::inline_statement_count(declared) <= 64).then_some(declared))
+        };
         match pcode_path::lower(&pcode_path::PcodeRequest {
             function,
             globals,
@@ -326,23 +361,14 @@ fn lower_function_body(
             call_parameter_types,
             config: &config,
             is_intrinsic: &intrinsics::is_intrinsic_call,
-            // Whether MWCC may expand the call inline: a source-declared inline,
-            // or (under `-inline auto`) a definition preceding the caller —
-            // any definition when inlining is deferred.
             returns_bool: call_return_fundamentals.get(&function.name)
                 == Some(&mwcc_syntax_trees::SourceFundamentalType::Boolean),
             cxx: source_facts.is_cxx,
-            has_body: &|name| {
-                let automatic = config.flags.inline_enabled && config.flags.automatic_inlining_enabled;
-                let ordinary = if config.flags.inline_deferred || std::env::var_os("MWCC_PCODE_ANY_BODY_INLINES").is_some() {
-                    inline_bodies.definition_body(name).is_some()
-                } else {
-                    automatic && inline_bodies.source_visible_definition(name, &function.name).is_some()
-                };
-                ordinary
-                    || inline_bodies.composable_body(name).is_some()
-                    || inline_bodies.retained_body(name).is_some()
-            },
+            has_body: &|name| inline_decision(name).is_some(),
+            inline_bodies: &call_return_types
+                .keys()
+                .filter_map(|name| Some((name.clone(), inline_decision(name).flatten()?)))
+                .collect(),
         }) {
             Ok(output) => return Ok(output),
             Err(diagnostic) if matches!(mode, pcode_path::Mode::Only) => return Err(diagnostic),

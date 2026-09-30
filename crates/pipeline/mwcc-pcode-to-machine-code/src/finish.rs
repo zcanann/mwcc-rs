@@ -772,8 +772,35 @@ fn fold_absolute_displacements(pcode: &mut PCodeFunction, into_own_base: bool) {
                 }
                 _ => None,
             };
-            match folded {
-                Some(instruction) if !later_use => {
+            // With the address still needed (GC <= 2.7): a store at offset 0
+            // through the address register itself takes the update form,
+            // which leaves the full address behind (`lis r; stwu s,@l(r)`).
+            let updated = match access.instruction.clone() {
+                _ if into_own_base || address != base || toggle("MWCC_PCODE_NO_UPDATE_STORES") => None,
+                Instruction::StoreWord { s, a, offset: 0 } if a == address && s != address => {
+                    Some(Instruction::StoreWordWithUpdate { s, a, offset: 0 })
+                }
+                Instruction::StoreHalfword { s, a, offset: 0 } if a == address && s != address => {
+                    Some(Instruction::StoreHalfwordWithUpdate { s, a, offset: 0 })
+                }
+                Instruction::StoreByte { s, a, offset: 0 } if a == address && s != address => {
+                    Some(Instruction::StoreByteWithUpdate { s, a, offset: 0 })
+                }
+                Instruction::StoreFloatSingle { s, a, offset: 0 } if a == address => {
+                    Some(Instruction::StoreFloatSingleWithUpdate { s, a, offset: 0 })
+                }
+                Instruction::StoreFloatDouble { s, a, offset: 0 } if a == address => {
+                    Some(Instruction::StoreFloatDoubleWithUpdate { s, a, offset: 0 })
+                }
+                _ => None,
+            };
+            match (folded, updated) {
+                (_, Some(instruction)) if later_use => {
+                    block.instructions[index + 1].instruction = instruction;
+                    block.instructions[index + 1].relocation = Some(relocation);
+                    block.instructions.remove(index);
+                }
+                (Some(instruction), _) if !later_use => {
                     block.instructions[index + 1].instruction = instruction;
                     block.instructions[index + 1].relocation = Some(relocation);
                     block.instructions.remove(index);

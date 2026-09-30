@@ -411,6 +411,48 @@ pub fn for_each_expression(body: &mut [Stmt], rewrite: &mut dyn FnMut(&mut Expr)
     }
 }
 
+/// Replace every read of `variable` with `value` (a constant argument of
+/// an inlined call).
+pub fn substitute(body: &mut [Stmt], variable: VarId, value: &Expr) {
+    fn expression(e: &mut Expr, variable: VarId, value: &Expr) {
+        match &e.kind {
+            ExprKind::Var(id) if *id == variable => *e = value.clone(),
+            _ => children(e, &mut |child| expression(child, variable, value)),
+        }
+    }
+    for_each_expression(body, &mut |e| expression(e, variable, value));
+}
+
+/// Renumber every variable reference (an inlined body moving into its
+/// caller's numbering).
+pub fn map_variables(body: &mut [Stmt], map: &dyn Fn(VarId) -> VarId) {
+    fn expression(e: &mut Expr, map: &dyn Fn(VarId) -> VarId) {
+        match &mut e.kind {
+            ExprKind::Var(id) | ExprKind::LocalAddress(id) => *id = map(*id),
+            _ => children(e, &mut |child| expression(child, map)),
+        }
+    }
+    fn assigned(body: &mut [Stmt], map: &dyn Fn(VarId) -> VarId) {
+        for statement in body {
+            match statement {
+                Stmt::Assign { variable, .. } => *variable = map(*variable),
+                Stmt::If { then_body, else_body, .. } => {
+                    assigned(then_body, map);
+                    assigned(else_body, map);
+                }
+                Stmt::Loop { body, step, .. } => {
+                    assigned(body, map);
+                    assigned(step, map);
+                }
+                Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| assigned(arm, map)),
+                _ => {}
+            }
+        }
+    }
+    for_each_expression(body, &mut |e| expression(e, map));
+    assigned(body, map);
+}
+
 fn children(expression: &mut Expr, rewrite: &mut dyn FnMut(&mut Expr)) {
     match &mut expression.kind {
         ExprKind::Int(_)

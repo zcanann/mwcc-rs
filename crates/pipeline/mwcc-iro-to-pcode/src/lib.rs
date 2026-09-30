@@ -90,8 +90,8 @@ pub fn lower(
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Label(usize);
 
-struct Lowerer<'a> {
-    unit: &'a Unit<'a>,
+struct Lowerer<'a, 'u> {
+    unit: &'a Unit<'u>,
     function: &'a Function,
     pcode: PCodeFunction,
     /// Virtual register of each variable (temporaries on first assignment).
@@ -154,7 +154,7 @@ struct Lowerer<'a> {
     escaped_frame_objects: Vec<i16>,
 }
 
-impl Lowerer<'_> {
+impl Lowerer<'_, '_> {
     // ------------------------------------------------------------ blocks
 
     fn new_label(&mut self) -> Label {
