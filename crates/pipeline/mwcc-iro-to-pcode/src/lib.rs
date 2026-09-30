@@ -408,7 +408,8 @@ impl Lowerer<'_> {
             if !calls {
                 self.registers[id] = Some(argument);
                 self.raw_narrow[id] = is_narrow(function.variables[id].ty);
-            } else if references(&function.body, id) <= 1 {
+            } else if references_weighted(&function.body, id, 2) <= 1 {
+                // (A parameter used as an address takes a register.)
                 // Homes are laid out in declaration order from r1+8.
                 let size: i16 = if function.variables[id].ty == Type::Double { 8 } else { 4 };
                 home_bytes = (home_bytes + size - 1) / size * size;
@@ -445,7 +446,19 @@ impl Lowerer<'_> {
                     .filter(|&id| function.variables[id].kind == VariableKind::Local && function.variables[id].frame.is_none())
                     .map(|id| (id, None)),
             )
-            .chain(register_parameters.iter().filter(|p| !assigned(p)).map(|&(id, argument)| (id, Some(argument))))
+            .chain(
+                register_parameters
+                    .iter()
+                    .filter(|p| !assigned(p) && references(&function.body, p.0) > 1)
+                    .map(|&(id, argument)| (id, Some(argument))),
+            )
+            // Parameters in registers only because they are dereferenced.
+            .chain(
+                register_parameters
+                    .iter()
+                    .filter(|p| !assigned(p) && references(&function.body, p.0) <= 1)
+                    .map(|&(id, argument)| (id, Some(argument))),
+            )
             .collect();
         let (mut next_saved, mut next_saved_float) = (31u32, 31u32);
         for (id, argument) in order {
@@ -463,6 +476,9 @@ impl Lowerer<'_> {
                 next_saved + 1
             };
             self.registers[id] = Some(register);
+            // Narrow register variables hold their values unextended; each
+            // read extends.
+            self.raw_narrow[id] = is_narrow(function.variables[id].ty) && std::env::var_os("MWCC_PCODE_O0_EXTENDED_VARIABLES").is_none();
             match argument {
                 Some(argument) if floating_variable(id) => float_copies.push((register, argument)),
                 Some(argument) => entry_copies.push((register, argument)),
@@ -487,22 +503,25 @@ impl Lowerer<'_> {
             .collect();
         self.pcode.exit_float_uses = float_registers;
         self.pcode.begin_coalesce_window();
+        // Parameters arrive in declaration order: each stored to its home or
+        // copied to its register variable.
+        drop((entry_copies, float_copies));
         for id in 0..function.parameter_count {
+            // The parameter's argument register in its class.
+            let argument = if floating_variable(id) {
+                1 + (0..id).filter(|&earlier| floating_variable(earlier)).count() as u32
+            } else {
+                FIRST_GENERAL_ARGUMENT + (0..id).filter(|&earlier| !floating_variable(earlier)).count() as u32
+            };
             if let Some(offset) = self.homes[id] {
-                // The parameter's argument register in its class.
-                let argument = if floating_variable(id) {
-                    1 + (0..id).filter(|&earlier| floating_variable(earlier)).count() as u32
-                } else {
-                    FIRST_GENERAL_ARGUMENT + (0..id).filter(|&earlier| !floating_variable(earlier)).count() as u32
-                };
                 self.emit_plain(store_instruction(function.variables[id].ty, argument, 1, offset));
+            } else if let Some(register) = self.registers[id].filter(|&register| register != argument) {
+                self.emit_plain(if floating_variable(id) {
+                    Instruction::FloatMove { d: register, b: argument }
+                } else {
+                    Instruction::Or { a: register, s: argument, b: argument }
+                });
             }
-        }
-        for (register, argument) in entry_copies {
-            self.emit_plain(Instruction::Or { a: register, s: argument, b: argument });
-        }
-        for (register, argument) in float_copies {
-            self.emit_plain(Instruction::FloatMove { d: register, b: argument });
         }
         self.body_and_exit()
     }
@@ -992,7 +1011,18 @@ impl Lowerer<'_> {
             self.loaded_globals.remove(&global);
         }
         let variable_type = self.function.variables[variable].ty;
-        let narrow = is_narrow(variable_type) && !mwcc_syntax_trees_to_iro_fits(value, variable_type);
+        // -O0 raw variables take narrow values as they are, and updates of
+        // themselves (`i++`, `i += n`) unextended.
+        let kept_raw = self.unoptimized
+            && self.raw_narrow[variable]
+            && (match &value.kind {
+                ExprKind::Var(_) | ExprKind::Load { .. } | ExprKind::Global(_) => value.ty == variable_type,
+                ExprKind::Binary(_, left, right) => {
+                    matches!(unpromoted(left).kind, ExprKind::Var(id) if id == variable) && right.as_int().is_some()
+                }
+                _ => false,
+            });
+        let narrow = is_narrow(variable_type) && !mwcc_syntax_trees_to_iro_fits(value, variable_type) && !kept_raw;
         let raw = self.is_raw(value);
         let (source, source_type) =
             self.expression_with_target(value, if narrow { None } else { Some(destination) })?;
@@ -1343,6 +1373,19 @@ impl Lowerer<'_> {
                     if self.raw_narrow[id] && !is_narrow(ty) {
                         if let Some(&extended) = self.extended.get(&id).filter(|_| !self.unoptimized) {
                             return Ok((extended, ty));
+                        }
+                        // -O0: right after the extension that set it, the
+                        // variable is read as it is.
+                        if self.unoptimized {
+                            let variable_register = self.register(id);
+                            let block = self.current_block();
+                            if self.pcode.blocks[block].instructions.last().is_some_and(|last| {
+                                matches!(last.instruction,
+                                    Instruction::ExtendSignHalfword { a, .. } | Instruction::ExtendSignByte { a, .. }
+                                    | Instruction::ClearLeftImmediate { a, .. } if a == variable_register)
+                            }) {
+                                return Ok((variable_register, ty));
+                            }
                         }
                         let raw = self.register(id);
                         let extended = self.temporary();
@@ -2444,8 +2487,31 @@ impl Lowerer<'_> {
         matches!(&base.kind, ExprKind::GlobalAddress(name) if !self.unit.globals[name].small_data)
     }
 
-    fn store_source(&mut self, value: &Expr, _stored: Type) -> Compilation<u32> {
-        Ok(self.expression(value)?.0)
+    fn store_source(&mut self, value: &Expr, stored: Type) -> Compilation<u32> {
+        let (source, ty) = self.expression(value)?;
+        // -O0 narrows a full-width value before a narrow store.
+        // (Not a narrow value updated by a constant, `x--`, done in its own
+        // type; not an assignment's value or a bit-field insert.)
+        let narrow_update = matches!(&value.kind, ExprKind::Binary(_, left, right)
+            if right.as_int().is_some() && is_narrow(unpromoted(left).ty));
+        let already = match &value.kind {
+            ExprKind::Var(id) => self.function.variables[*id].kind == VariableKind::Temporary,
+            ExprKind::Idiom(Idiom::Insert { .. }) => true,
+            _ => false,
+        };
+        if self.unoptimized
+            && is_narrow(stored)
+            && !is_narrow(ty)
+            && value.as_int().is_none()
+            && !is_float(ty)
+            && !narrow_update
+            && !already
+        {
+            let extended = self.temporary();
+            self.emit_plain(extension(stored, extended, source));
+            return Ok(extended);
+        }
+        Ok(source)
     }
 
     fn store(&mut self, place: &Place, ty: Type, value: &Expr) -> Compilation<()> {
@@ -2802,11 +2868,23 @@ fn makes_calls(body: &[Stmt]) -> bool {
 
 /// How many times the body reads or assigns `variable`.
 fn references(body: &[Stmt], variable: VarId) -> usize {
-    fn expression(e: &Expr, variable: VarId) -> usize {
+    references_weighted(body, variable, 1)
+}
+
+/// References of `variable`, one used directly as an address counting `base`.
+fn references_weighted(body: &[Stmt], variable: VarId, base: usize) -> usize {
+    let as_base = |e: &Expr| if matches!(e.kind, ExprKind::Var(id) if id == variable) { base } else { 0 };
+    let expression = |e: &Expr, variable: VarId| count(e, variable, base);
+    fn count(e: &Expr, variable: VarId, base: usize) -> usize {
+        let as_base = |e: &Expr| if matches!(e.kind, ExprKind::Var(id) if id == variable) { base } else { 0 };
+        let expression = |e: &Expr, variable: VarId| count(e, variable, base);
         match &e.kind {
             ExprKind::Var(id) => usize::from(*id == variable),
             ExprKind::LocalAddress(id) => usize::from(*id == variable),
             ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) | ExprKind::StringAddress(_) => 0,
+            ExprKind::Load { base: address, index, .. } if as_base(address) > 0 => {
+                as_base(address) + index.as_deref().map_or(0, |index| expression(index, variable))
+            }
             ExprKind::Load { base, index, .. } => {
                 expression(base, variable) + index.as_deref().map_or(0, |index| expression(index, variable))
             }
@@ -2833,6 +2911,9 @@ fn references(body: &[Stmt], variable: VarId) -> usize {
             Stmt::Store { place, value, .. } => {
                 expression(value, variable)
                     + match place {
+                        Place::Memory { base: address, index, .. } if as_base(address) > 0 => {
+                            as_base(address) + index.as_deref().map_or(0, |index| expression(index, variable))
+                        }
                         Place::Memory { base, index, .. } => {
                             expression(base, variable)
                                 + index.as_deref().map_or(0, |index| expression(index, variable))
@@ -2841,15 +2922,15 @@ fn references(body: &[Stmt], variable: VarId) -> usize {
                     }
             }
             Stmt::If { condition, then_body, else_body } => {
-                expression(condition, variable) + references(then_body, variable) + references(else_body, variable)
+                expression(condition, variable) + references_weighted(then_body, variable, base) + references_weighted(else_body, variable, base)
             }
             Stmt::Loop { condition, body, step, .. } => {
                 condition.as_ref().map_or(0, |c| expression(c, variable))
-                    + references(body, variable)
-                    + references(step, variable)
+                    + references_weighted(body, variable, base)
+                    + references_weighted(step, variable, base)
             }
             Stmt::Switch { value, arms, .. } => {
-                expression(value, variable) + arms.iter().map(|arm| references(arm, variable)).sum::<usize>()
+                expression(value, variable) + arms.iter().map(|arm| references_weighted(arm, variable, base)).sum::<usize>()
             }
             Stmt::Break | Stmt::Continue => 0,
         })
