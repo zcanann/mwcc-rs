@@ -613,6 +613,10 @@ impl Lowerer<'_, '_> {
             let register = FIRST_GENERAL_ARGUMENT + index as u32;
             self.emit_plain(Instruction::Or { a: register, s: value, b: value });
         }
+        // A variadic callee still gets its CR1 marker (no floating arguments).
+        if self.unit.variadic_callees.contains(name) && !toggle("MWCC_PCODE_NO_TAIL_VARIADIC_MARKER") {
+            self.emit_plain(Instruction::ConditionRegisterClear { d: 6 });
+        }
         let mut branch = PInstr::new(Instruction::BranchExternal { target: name.clone() });
         branch.relocation = Some(AttachedRelocation {
             kind: RelocationKind::Rel24,
@@ -2251,7 +2255,7 @@ impl Lowerer<'_, '_> {
         {
             if let (Some((begin, end)), true) = (mask_bounds(mask), (1..32).contains(&n)) {
                 let n = n as u8;
-                if begin > 0 && end >= n {
+                if begin > 0 && begin + n <= 31 {
                     let (x, _) = self.expression(inner)?;
                     let d = self.result(target);
                     self.emit_plain(Instruction::RotateAndMask {
