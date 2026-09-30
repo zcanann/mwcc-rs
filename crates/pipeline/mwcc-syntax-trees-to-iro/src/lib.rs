@@ -284,7 +284,13 @@ impl Builder<'_, '_> {
             Expression::CallThrough { target, arguments } => vec![Stmt::Eval(self.indirect_call(target, arguments, true)?)],
             Expression::Cast { target_type: Type::Void, operand } => match operand.as_ref() {
                 Expression::Call { name, arguments } => evaluated(self.call(name, arguments, true)?),
-                Expression::Variable(_) | Expression::IntegerLiteral(_) => Vec::new(),
+                // A discarded variable still counts as a reference (-O0
+                // register-variable ranking).
+                Expression::Variable(name) => match self.names.get(name) {
+                    Some(&id) => vec![Stmt::Eval(Expr { kind: ExprKind::Var(id), ty: self.variables[id].ty })],
+                    None => Vec::new(),
+                },
+                Expression::IntegerLiteral(_) => Vec::new(),
                 other => return Err(unsupported(format!("statement expression void {}", expression_name(other)))),
             },
             Expression::Assign { target, value } => self.assignment(target, value)?,

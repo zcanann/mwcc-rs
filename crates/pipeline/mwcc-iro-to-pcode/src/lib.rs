@@ -500,29 +500,27 @@ impl Lowerer<'_, '_> {
                 self.pcode.frame_objects.push((start, start + size as i16));
             }
         }
-        let assigned = |&&(id, _): &&(usize, u32)| {
-            assigns(&function.body, id) || loads_through_into_local(&function.body, function, id)
-        };
-        let order: Vec<(usize, Option<u32>)> = register_parameters
+        // Most-referenced first (a use as an address counts twice); on a tie
+        // locals precede parameters, then declaration order. Parameters in
+        // registers only because they are dereferenced come last.
+        let weight = |id: usize| references_weighted(&function.body, id, 2);
+        let mut ranked: Vec<(usize, Option<u32>)> = register_parameters
             .iter()
-            .filter(assigned)
+            .filter(|p| references(&function.body, p.0) > 1)
             .map(|&(id, argument)| (id, Some(argument)))
             .chain(
                 (function.parameter_count..function.variables.len())
                     .filter(|&id| function.variables[id].kind == VariableKind::Local && function.variables[id].frame.is_none())
                     .map(|id| (id, None)),
             )
+            .collect();
+        ranked.sort_by_key(|&(id, argument)| (std::cmp::Reverse(weight(id)), argument.is_some(), id));
+        let order: Vec<(usize, Option<u32>)> = ranked
+            .into_iter()
             .chain(
                 register_parameters
                     .iter()
-                    .filter(|p| !assigned(p) && references(&function.body, p.0) > 1)
-                    .map(|&(id, argument)| (id, Some(argument))),
-            )
-            // Parameters in registers only because they are dereferenced.
-            .chain(
-                register_parameters
-                    .iter()
-                    .filter(|p| !assigned(p) && references(&function.body, p.0) <= 1)
+                    .filter(|p| references(&function.body, p.0) <= 1)
                     .map(|&(id, argument)| (id, Some(argument))),
             )
             .collect();
@@ -948,7 +946,7 @@ impl Lowerer<'_, '_> {
             Stmt::Eval(value) => match &value.kind {
                 ExprKind::Call { name, arguments } => self.call(name, arguments, Type::Void, None).map(|_| ()),
                 // A discarded value without effects (`(void)x;`).
-                ExprKind::Int(_) => Ok(()),
+                ExprKind::Int(_) | ExprKind::Var(_) => Ok(()),
                 _ => Err(unsupported("expression statement")),
             },
             Stmt::Store { place, ty, value } => self.store(place, *ty, value),
@@ -2762,24 +2760,6 @@ impl Lowerer<'_, '_> {
 }
 
 use mwcc_syntax_trees_to_iro::passes::fits_unconverted as mwcc_syntax_trees_to_iro_fits;
-
-/// Whether a local is assigned a value loaded through `variable`.
-fn loads_through_into_local(body: &[Stmt], function: &Function, variable: VarId) -> bool {
-    body.iter().any(|statement| match statement {
-        Stmt::Assign { variable: target, value } => {
-            function.variables[*target].kind == VariableKind::Local
-                && matches!(&value.kind, ExprKind::Load { base, .. } if base.mentions(variable))
-        }
-        Stmt::If { then_body, else_body, .. } => {
-            loads_through_into_local(then_body, function, variable) || loads_through_into_local(else_body, function, variable)
-        }
-        Stmt::Loop { body, step, .. } => {
-            loads_through_into_local(body, function, variable) || loads_through_into_local(step, function, variable)
-        }
-        Stmt::Switch { arms, .. } => arms.iter().any(|arm| loads_through_into_local(arm, function, variable)),
-        _ => false,
-    })
-}
 
 /// Values known in registers at a program point.
 #[derive(Clone)]
