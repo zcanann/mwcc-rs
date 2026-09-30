@@ -87,6 +87,13 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         call_parameter_types: request.call_parameter_types,
         has_body: request.has_body,
         keeps_struct_stores: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
+        switch_style: if request.config.build.label.starts_with("Wii/") {
+            2
+        } else if request.config.build.label.starts_with("GC/3.") {
+            1
+        } else {
+            0
+        },
     };
     let built = if unoptimized {
         mwcc_syntax_trees_to_iro::build_unoptimized_compile(request.function, &unit)?

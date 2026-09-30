@@ -61,6 +61,8 @@ pub struct InstructionFlags {
     pub coalesce_disabled: bool,
     /// Never delete as dead code (volatile access, call, store, …).
     pub side_effect: bool,
+    /// An in-place update that stays in the web of the value it reads.
+    pub in_place: bool,
 }
 
 /// One PCode instruction.

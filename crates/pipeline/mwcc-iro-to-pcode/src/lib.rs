@@ -479,6 +479,10 @@ impl Lowerer<'_> {
         if self.unoptimized {
             return Err(unsupported("switch at -O0"));
         }
+        if self.unit.switch_style == 2 {
+            return Err(unsupported("switch (linear compare chains)"));
+        }
+        let in_place = self.unit.switch_style == 1;
         let mut sorted: Vec<(i64, usize)> = cases.to_vec();
         sorted.sort_by_key(|&(value, _)| value);
         if sorted.iter().any(|&(value, _)| i16::try_from(value).is_err() || i16::try_from(value + 1).is_err()) {
@@ -520,13 +524,17 @@ impl Lowerer<'_> {
             self.emit(lis);
             let scaled = self.temporary();
             self.emit_plain(Instruction::ShiftLeftImmediate { a: scaled, s: index, shift: 2 });
-            let address = self.temporary();
+            let address = if in_place { high } else { self.temporary() };
             let mut addi = PInstr::new(Instruction::AddImmediate { d: address, a: high, immediate: 0 });
             addi.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Lo, target: RelocationTarget::JumpTableAt(table) });
             addi.not_r0.push(high);
+            addi.flags.in_place = in_place;
             self.emit(addi);
-            let entry = self.temporary();
-            self.emit_based(Instruction::LoadWordIndexed { d: entry, a: address, b: scaled }, address);
+            let entry = if in_place { address } else { self.temporary() };
+            let mut load = PInstr::new(Instruction::LoadWordIndexed { d: entry, a: address, b: scaled });
+            load.not_r0.push(address);
+            load.flags.in_place = in_place;
+            self.emit(load);
             self.emit_plain(Instruction::MoveToCountRegister { s: entry });
             self.emit_plain(Instruction::BranchToCountRegister);
             let entries: Vec<Label> = (base..=last)

@@ -545,7 +545,7 @@ fn split_webs(pcode: &mut PCodeFunction) {
                             Instruction::RotateAndMaskInsert { .. } => true,
                             // An in-place extension continues its value's web.
                             Instruction::ExtendSignByte { a, s } | Instruction::ExtendSignHalfword { a, s } => a == s,
-                            _ => false,
+                            _ => instruction.flags.in_place && instruction.uses(class).contains(&defined),
                         };
                         if tied
                             || toggle("MWCC_PCODE_WEBS_TIE_INPLACE")

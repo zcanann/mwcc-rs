@@ -41,6 +41,9 @@ pub struct Unit<'a> {
     pub has_body: &'a dyn Fn(&str) -> bool,
     /// Scalar-replaced struct locals still store their fields (GC/3.x, Wii).
     pub keeps_struct_stores: bool,
+    /// The build's switch lowering: 0 binary search (GC), 1 binary search
+    /// with in-place table loads (GC/3.x), 2 not modeled (Wii).
+    pub switch_style: u8,
 }
 
 /// Index into [`Function::variables`].
