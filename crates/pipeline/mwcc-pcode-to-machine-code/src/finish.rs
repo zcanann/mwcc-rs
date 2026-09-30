@@ -573,7 +573,21 @@ fn split_webs(pcode: &mut PCodeFunction) {
                             Instruction::ExtendSignByte { a, s } | Instruction::ExtendSignHalfword { a, s } => a == s,
                             _ => instruction.flags.in_place && instruction.uses(class).contains(&defined),
                         };
+                        // An in-place update with another register operand
+                        // (`add t,t,b`) keeps its accumulator; one with a
+                        // constant (`addi t,t,1`, `slwi t,t,1`) splits.
+                        // Only within a block: an update whose input comes
+                        // from an earlier block starts a new web.
+                        let uses = instruction.uses(class);
+                        let local_input = (0..count).all(|other| {
+                            !(state[other] && sites[other].0 == defined) || sites[other].1 == block
+                        });
+                        let register_update = uses.contains(&defined)
+                            && uses.iter().any(|&used| used != defined)
+                            && local_input
+                            && !toggle("MWCC_PCODE_WEBS_NO_REGISTER_TIE");
                         if tied
+                            || register_update
                             || toggle("MWCC_PCODE_WEBS_TIE_INPLACE")
                                 && instruction.uses(class).contains(&defined)
                         {
