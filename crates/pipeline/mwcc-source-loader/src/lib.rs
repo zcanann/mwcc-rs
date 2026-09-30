@@ -375,6 +375,14 @@ impl LoadContext<'_> {
                     return Some(candidate);
                 }
             }
+            // mwcceppc's default `-cwd proj`: a quoted include also resolves
+            // against the working directory (`#include "include/REL/x.h"`).
+            if let Ok(directory) = std::env::current_dir() {
+                let candidate = directory.join(requested);
+                if candidate.is_file() && !self.access_paths.iter().any(|root| root.join(requested).is_file()) {
+                    return Some(candidate);
+                }
+            }
         }
         self.access_paths
             .iter()
