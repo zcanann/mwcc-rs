@@ -925,17 +925,24 @@ impl Builder<'_, '_> {
         if built.returns_through_variable || returns_anywhere(&inlined.body) {
             return Err(unsupported("inline expansion with an early return"));
         }
+        // At -O0 the expansion's variables are register variables.
+        let kind = if self.unit.unoptimized { VariableKind::Local } else { VariableKind::Temporary };
         let base = self.variables.len() + self.temporaries.len();
         for variable in &inlined.variables {
             self.temporaries.push(Variable {
                 name: format!("{}${}", callee.name, variable.name),
                 ty: variable.ty,
-                kind: VariableKind::Temporary,
+                kind,
                 frame: None,
             });
         }
         // Arguments are evaluated in order into the parameters; a constant
         // argument of a parameter the body never assigns is propagated.
+        // The return value is renumbered and substituted with the body.
+        let returns_value = result.is_some();
+        if let Some(value) = result {
+            inlined.body.push(Stmt::SetReturn(value));
+        }
         let map = |id: VarId| id + base;
         passes::map_variables(&mut inlined.body, &map);
         for (index, argument) in arguments.iter().enumerate() {
@@ -943,26 +950,33 @@ impl Builder<'_, '_> {
             let ty = inlined.variables[index].ty;
             let value = assigned(promoted(value), ty);
             let constant = value.as_int().is_some() && !is_float(ty);
-            if constant && !body_assigns(&inlined.body, base + index) && std::env::var_os("MWCC_IRO_NO_INLINE_CONSTANTS").is_none() {
+            // (And a register variable of the same type.)
+            let variable = matches!(value.kind, ExprKind::Var(id)
+                if id < self.variables.len() && self.variables[id].frame.is_none() && self.variables[id].ty == ty)
+                && std::env::var_os("MWCC_IRO_NO_INLINE_VARIABLES").is_none();
+            if (constant || variable)
+                && !body_assigns(&inlined.body, base + index)
+                && std::env::var_os("MWCC_IRO_NO_INLINE_CONSTANTS").is_none()
+            {
                 passes::substitute(&mut inlined.body, base + index, &Expr { kind: value.kind.clone(), ty });
                 continue;
             }
             self.pending.push(Stmt::Assign { variable: base + index, value });
         }
+        let value = match returns_value.then(|| inlined.body.pop()).flatten() {
+            Some(Stmt::SetReturn(value)) => Some(value),
+            _ => None,
+        };
         self.pending.extend(inlined.body);
-        let Some(mut value) = result else {
+        let Some(value) = value else {
             return Ok(Expr { kind: ExprKind::Int(0), ty: Type::Void });
         };
-        let mut wrapped = vec![Stmt::Eval(value)];
-        passes::map_variables(&mut wrapped, &map);
-        let Some(Stmt::Eval(mapped)) = wrapped.pop() else { unreachable!("one statement") };
-        value = mapped;
         // The value is held in a temporary of the callee's return type.
         let id = self.variables.len() + self.temporaries.len();
         self.temporaries.push(Variable {
             name: format!("{}$result", callee.name),
             ty: callee.return_type,
-            kind: VariableKind::Temporary,
+            kind,
             frame: None,
         });
         self.pending.push(Stmt::Assign { variable: id, value: assigned(value, callee.return_type) });

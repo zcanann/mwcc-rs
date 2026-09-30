@@ -96,7 +96,12 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         prototyped: request.prototyped,
         call_parameter_types: request.call_parameter_types,
         has_body: request.has_body,
-        inline_bodies: if unoptimized { &no_inline_bodies } else { request.inline_bodies },
+        inline_bodies: if std::env::var_os("MWCC_PCODE_NO_O0_INLINE").is_some() && unoptimized {
+            &no_inline_bodies
+        } else {
+            request.inline_bodies
+        },
+        unoptimized,
         keeps_struct_stores: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
         const_globals_across_calls: request.config.build.label.starts_with("GC/3.")
             || request.config.build.label.starts_with("Wii/"),

@@ -50,6 +50,9 @@ pub struct Unit<'a> {
     /// The body MWCC expands for a call (a `has_body` callee whose
     /// expansion is modeled).
     pub inline_bodies: &'a HashMap<String, &'a mwcc_syntax_trees::Function>,
+    /// An `-O0` compile: an expansion's parameters and result are locals
+    /// (register variables).
+    pub unoptimized: bool,
     /// Scalar-replaced struct locals still store their fields (GC/3.x, Wii).
     pub keeps_struct_stores: bool,
     /// Loaded `const` globals stay valid across calls (GC/3.x, Wii).
