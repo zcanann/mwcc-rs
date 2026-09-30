@@ -1162,7 +1162,20 @@ pub fn fits_unconverted(value: &Expr, ty: Type) -> bool {
         return false;
     }
     let unsigned = is_unsigned_narrow(ty);
+    let maximum: i64 = match ty {
+        Type::Char => 127,
+        Type::UnsignedChar => 255,
+        Type::Short => 32767,
+        _ => 65535,
+    };
     match &value.kind {
+        // A mask within the type's range leaves nothing to convert.
+        ExprKind::Binary(BinaryOp::BitAnd, _, mask)
+            if mask.as_int().is_some_and(|mask| (0..=maximum).contains(&mask))
+                && std::env::var_os("MWCC_IRO_NO_MASK_FITS").is_none() =>
+        {
+            true
+        }
         ExprKind::Binary(op, ..) => unsigned && op.is_comparison(),
         ExprKind::Unary(UnaryOp::LogicalNot, _) => unsigned,
         ExprKind::Int(value) => match ty {
