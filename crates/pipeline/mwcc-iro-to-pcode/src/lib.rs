@@ -59,6 +59,10 @@ pub fn lower(
         makes_calls: false,
         target: None,
         loaded_globals: HashMap::new(),
+        restorable: Vec::new(),
+        restore_violation: false,
+        snapshots: HashMap::new(),
+        restored_labels: Vec::new(),
         pending_branches: Vec::new(),
         pending_tables: Vec::new(),
         labels: Vec::new(),
@@ -101,6 +105,15 @@ struct Lowerer<'a> {
     /// Loaded values of non-volatile globals still valid (IRO common
     /// subexpressions); cleared by stores, calls and branches.
     loaded_globals: HashMap<String, (u32, Type)>,
+    /// Labels whose block may take the known values of a sole incoming
+    /// branch (not loop heads or switch targets).
+    restorable: Vec<bool>,
+    /// Known values at each forward conditional branch, by label.
+    snapshots: HashMap<usize, Known>,
+    /// Labels placed with a branch's known values (no later branch may
+    /// target them).
+    restored_labels: Vec<usize>,
+    restore_violation: bool,
     /// Branches awaiting their target block: (block, instruction, label).
     pending_branches: Vec<(usize, usize, Label)>,
     /// Jump tables awaiting their labels' blocks: (dispatch block, entries).
@@ -146,7 +159,25 @@ impl Lowerer<'_> {
 
     fn new_label(&mut self) -> Label {
         self.labels.push(None);
+        self.restorable.push(true);
         Label(self.labels.len() - 1)
+    }
+
+    /// A label whose block never inherits a branch's known values.
+    fn new_join_label(&mut self) -> Label {
+        let label = self.new_label();
+        self.restorable[label.0] = false;
+        label
+    }
+
+    fn known(&self) -> Known {
+        Known {
+            loaded_globals: self.loaded_globals.clone(),
+            extended: self.extended.clone(),
+            constants: self.constants.clone(),
+            common: self.common.clone(),
+            float_constants: self.float_constants.clone(),
+        }
     }
 
     fn current_block(&self) -> usize {
@@ -184,9 +215,20 @@ impl Lowerer<'_> {
 
     /// Place `label` at a fresh block (or the current one if it is empty).
     fn place_label(&mut self, label: Label) {
-        // A label is a join: nothing computed before it is known here.
-        self.clear_block_caches();
+        // A label is a join: nothing computed before it is known here,
+        // unless its only way in is one conditional branch (the values
+        // known there dominate it).
         let current = self.current_block();
+        let incoming = self.pending_branches.iter().filter(|&&(_, _, pending)| pending == label).count();
+        let entered = if self.pcode.blocks[current].instructions.is_empty() {
+            (0..current).any(|block| self.pcode.blocks[block].successors.contains(&current))
+        } else {
+            !self.block_ends_in_jump(current)
+        };
+        let inherited = (incoming == 1 && !entered && self.restorable[label.0] && !toggle("MWCC_PCODE_NO_DOMINATOR_CSE"))
+            .then(|| self.snapshots.remove(&label.0))
+            .flatten();
+        self.clear_block_caches();
         let block = if self.pcode.blocks[current].instructions.is_empty() && !self.block_is_target(current) {
             current
         } else {
@@ -194,6 +236,14 @@ impl Lowerer<'_> {
             self.start_block(falls_through)
         };
         self.labels[label.0] = Some(block);
+        if let Some(known) = inherited {
+            self.loaded_globals = known.loaded_globals;
+            self.extended = known.extended;
+            self.constants = known.constants;
+            self.common = known.common;
+            self.float_constants = known.float_constants;
+            self.restored_labels.push(label.0);
+        }
     }
 
     /// Place `label` only when a branch already targets it; otherwise the
@@ -218,6 +268,14 @@ impl Lowerer<'_> {
     /// Emit a branch to `label`; every branch ends its block.
     fn branch(&mut self, instruction: Instruction, label: Label) {
         let conditional = !matches!(instruction, Instruction::Branch { .. });
+        if self.restored_labels.contains(&label.0) {
+            // A later branch into a block that assumed one way in.
+            self.restore_violation = true;
+        }
+        if conditional && !self.unoptimized && self.labels[label.0].is_none() {
+            let known = self.known();
+            self.snapshots.insert(label.0, known);
+        }
         let block = self.current_block();
         let position = self.pcode.blocks[block].instructions.len();
         self.emit_plain(instruction);
@@ -592,8 +650,8 @@ impl Lowerer<'_> {
         if sorted.iter().any(|&(value, _)| i16::try_from(value).is_err() || i16::try_from(value + 1).is_err()) {
             return Err(unsupported("switch case outside a 16-bit immediate"));
         }
-        let exit = self.new_label();
-        let arm_labels: Vec<Label> = arms.iter().map(|_| self.new_label()).collect();
+        let exit = self.new_join_label();
+        let arm_labels: Vec<Label> = arms.iter().map(|_| self.new_join_label()).collect();
         // Segments: maximal runs of consecutive values with the same arm.
         let mut segments: Vec<(i64, i64, usize)> = Vec::new();
         for &(value, arm) in &sorted {
@@ -777,6 +835,9 @@ impl Lowerer<'_> {
             self.copy(return_type, result_register(return_type), register);
             self.start_block(true);
         }
+        if self.restore_violation {
+            return Err(unsupported("a branch into a block that inherited known values"));
+        }
         self.resolve_branches()
     }
 
@@ -815,7 +876,7 @@ impl Lowerer<'_> {
                 if condition.as_ref().is_none_or(|c| c.as_int().is_some_and(|k| k != 0)) =>
             {
                 // No test: the body repeats until a break.
-                let top = self.new_label();
+                let top = self.new_join_label();
                 let next = self.new_label();
                 let exit = self.new_label();
                 self.place_label(top);
@@ -836,7 +897,7 @@ impl Lowerer<'_> {
                 if !self.unoptimized && counted(condition.as_ref(), body, step) && !makes_calls(body) {
                     return Err(unsupported("counted loop (unrolling not modeled)"));
                 }
-                let top = self.new_label();
+                let top = self.new_join_label();
                 let next = self.new_label();
                 let test = self.new_label();
                 let exit = self.new_label();
@@ -1284,17 +1345,29 @@ impl Lowerer<'_> {
                 Ok(loaded)
             }
             ExprKind::GlobalAddress(name) => {
+                // A repeated address reuses its register in this block.
+                let key = format!("&@{name}");
+                let shared = target.is_none() && !self.unoptimized && !toggle("MWCC_PCODE_NO_GLOBAL_ADDRESS_CSE");
+                if shared {
+                    if let Some(&(register, ty, _)) = self.common.get(&key) {
+                        return Ok((register, ty));
+                    }
+                }
                 let global = self.unit.globals[name];
                 let external = || RelocationTarget::External(name.clone());
-                if global.small_data {
+                let d = if global.small_data {
                     let d = self.result(target);
                     let mut li = PInstr::new(Instruction::AddImmediate { d, a: 0, immediate: 0 });
                     li.relocation = Some(AttachedRelocation { kind: RelocationKind::EmbSda21, target: external() });
                     self.emit(li);
-                    Ok((d, ty))
+                    d
                 } else {
-                    Ok((self.absolute_address_into(name, target), ty))
+                    self.absolute_address_into(name, target)
+                };
+                if shared {
+                    self.common.insert(key, (d, ty, Vec::new()));
                 }
+                Ok((d, ty))
             }
             ExprKind::Binary(op, left, right) if op.is_comparison() => {
                 self.comparison_value(*op, left, right, target)
@@ -2673,7 +2746,7 @@ impl Lowerer<'_> {
         // Constants are rematerialized rather than kept across a call.
         self.constants.clear();
         self.float_constants.clear();
-        self.common.retain(|key, _| !key.starts_with('&'));
+        self.common.retain(|key, _| !key.starts_with('&') && !key.contains('@'));
         let result = self.result_for(ty, target);
         self.copy(ty, result, result_register(ty));
         Ok(result)
@@ -2698,6 +2771,16 @@ fn loads_through_into_local(body: &[Stmt], function: &Function, variable: VarId)
         Stmt::Switch { arms, .. } => arms.iter().any(|arm| loads_through_into_local(arm, function, variable)),
         _ => false,
     })
+}
+
+/// Values known in registers at a program point.
+#[derive(Clone)]
+struct Known {
+    loaded_globals: HashMap<String, (u32, Type)>,
+    extended: HashMap<VarId, u32>,
+    constants: HashMap<i64, u32>,
+    common: HashMap<String, (u32, Type, Vec<VarId>)>,
+    float_constants: HashMap<(u64, u8), u32>,
 }
 
 /// Whether any statement assigns `variable`.
@@ -3042,6 +3125,7 @@ fn common_key(expression: &Expr) -> Option<(String, Vec<VarId>)> {
                 let inner = leaf(operand, variables)?;
                 Some(format!("({:?}){inner}", e.ty))
             }
+            ExprKind::GlobalAddress(name) if !toggle("MWCC_PCODE_NO_GLOBAL_ADDRESS_CSE") => Some(format!("@{name}")),
             _ => None,
         }
     }

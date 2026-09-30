@@ -724,7 +724,8 @@ fn split_webs(pcode: &mut PCodeFunction) {
 /// again — unless the access is a load into rX itself (before GC/3.0).
 fn fold_absolute_displacements(pcode: &mut PCodeFunction, into_own_base: bool) {
     use mwcc_pcode::Class;
-    for block in &mut pcode.blocks {
+    let live_out = general_live_out(pcode);
+    for (number, block) in pcode.blocks.iter_mut().enumerate() {
         let mut index = 0;
         while index + 1 < block.instructions.len() {
             let (address, base, relocation) = match (&block.instructions[index].instruction, &block.instructions[index].relocation) {
@@ -740,7 +741,7 @@ fn fold_absolute_displacements(pcode: &mut PCodeFunction, into_own_base: bool) {
             };
             let access = &block.instructions[index + 1];
             let later_use = block.instructions[index + 2..].iter().any(|i| i.uses(Class::General).contains(&address))
-                || pcode_live_out(block, address);
+                || live_out[number] & (1 << address) != 0;
             let folded = match access.instruction.clone() {
                 Instruction::LoadWord { d, a, offset: 0 } if a == address && (d != address || into_own_base) => {
                     Some(Instruction::LoadWord { d, a: base, offset: 0 })
@@ -783,11 +784,43 @@ fn fold_absolute_displacements(pcode: &mut PCodeFunction, into_own_base: bool) {
     }
 }
 
-/// Conservative: a register the block's successors might read.
-fn pcode_live_out(block: &Block, register: u32) -> bool {
-    // Absolute addresses are block-local temporaries; a physical register
-    // 3 may carry a result out (the exit's return value).
-    !block.successors.is_empty() && register == 3
+/// Physical GPRs live out of each block (bit per register).
+fn general_live_out(pcode: &PCodeFunction) -> Vec<u32> {
+    use mwcc_pcode::Class;
+    let bits = |registers: Vec<u32>| registers.into_iter().filter(|&r| r < 32).fold(0u32, |mask, r| mask | 1 << r);
+    // Per block: registers read before written, and registers written.
+    let summary: Vec<(u32, u32)> = pcode
+        .blocks
+        .iter()
+        .map(|block| {
+            let (mut used, mut defined) = (0u32, 0u32);
+            for instruction in &block.instructions {
+                used |= bits(instruction.uses(Class::General)) & !defined;
+                defined |= bits(instruction.defs(Class::General));
+            }
+            (used, defined)
+        })
+        .collect();
+    let mut live_in = vec![0u32; pcode.blocks.len()];
+    let mut live_out = vec![0u32; pcode.blocks.len()];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in (0..pcode.blocks.len()).rev() {
+            let successors = &pcode.blocks[block].successors;
+            // The function's exit reads its result (r3) and the
+            // registers live everywhere.
+            let exit = if successors.is_empty() { (1 << 3) | bits(pcode.exit_uses.clone()) } else { 0 };
+            let out = successors.iter().fold(exit, |mask, &s| mask | live_in[s]);
+            let inside = summary[block].0 | (out & !summary[block].1);
+            if out != live_out[block] || inside != live_in[block] {
+                live_out[block] = out;
+                live_in[block] = inside;
+                changed = true;
+            }
+        }
+    }
+    live_out
 }
 
 fn ends_in_branch(block: &Block) -> bool {
