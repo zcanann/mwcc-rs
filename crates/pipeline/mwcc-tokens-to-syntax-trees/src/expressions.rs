@@ -1295,6 +1295,33 @@ impl Parser {
                         // representation. Capture it before any operand type
                         // parse overwrites the side-channel.
                         let parsed_struct_tag = self.last_struct_tag.take();
+                        // A pointer-to-array cast `(T (*)[N])` targets an element
+                        // pointer (its row stride is not tracked through the cast).
+                        if *self.peek() == Token::ParenOpen
+                            && self.tokens.get(self.position + 1) == Some(&Token::Star)
+                            && self.tokens.get(self.position + 2) == Some(&Token::ParenClose)
+                            && self.tokens.get(self.position + 3) == Some(&Token::BracketOpen)
+                            && !matches!(target_type, mwcc_syntax_trees::Type::Pointer(_) | mwcc_syntax_trees::Type::StructPointer { .. })
+                        {
+                            self.advance(); // `(`
+                            self.advance(); // `*`
+                            self.advance(); // `)`
+                            while self.eat_keyword(Token::BracketOpen) {
+                                while *self.peek() != Token::BracketClose {
+                                    if *self.peek() == Token::EndOfFile {
+                                        return Err(Diagnostic::error("unterminated pointer-to-array cast"));
+                                    }
+                                    self.advance();
+                                }
+                                self.expect(Token::BracketClose)?;
+                            }
+                            target_type = match target_type {
+                                mwcc_syntax_trees::Type::Struct { size, .. } => {
+                                    mwcc_syntax_trees::Type::StructPointer { element_size: size }
+                                }
+                                scalar => mwcc_syntax_trees::Type::Pointer(crate::items::pointee_of(scalar)?),
+                            };
+                        }
                         // A function-pointer cast `(RET (*)(params))` targets a pointer.
                         if *self.peek() == Token::ParenOpen
                             && self.tokens.get(self.position + 1) == Some(&Token::Star)

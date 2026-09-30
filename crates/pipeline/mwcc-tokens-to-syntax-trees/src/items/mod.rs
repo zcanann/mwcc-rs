@@ -2804,6 +2804,7 @@ impl Parser {
                     value => Type::Pointer(pointee_of(value)?),
                 };
             }
+            let (leading_alignment, leading_section) = self.skip_attributes_with_section()?;
             let mut name = self.parse_identifier()?;
             // An out-of-class C++ member definition spells its declarator as
             // `Return Class::method(args)`. Keep qualification separate from
@@ -2848,6 +2849,12 @@ impl Parser {
             // the declaration is skipped — a missing-symbol DIFF). `None` when absent.
             let (attribute_alignment_name, attribute_section_name) =
                 self.skip_attributes_with_section()?;
+            // An attribute BEFORE the name (`T ATTRIBUTE_ALIGN(n) x`) applies too.
+            let attribute_alignment_name = match (attribute_alignment_name, leading_alignment) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
+            let attribute_section_name = attribute_section_name.or(leading_section);
             if let Some(scope) = &member_scope {
                 if *self.peek() != Token::ParenOpen {
                     name = self.mangle_data_member_in_current_namespace(scope, &name)?;
