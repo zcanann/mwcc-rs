@@ -356,12 +356,20 @@ def main():
                 rng = random.Random(trial * 7919 + len(reference))
                 gpr = [0] * 32
                 gpr[1] = 0x80100000
+                gpr[2] = 0x80200000
+                gpr[13] = 0x80300000
+                for register in range(14, 32):
+                    gpr[register] = 0x5A5A0000 + register
                 for register in range(3, 11):
                     choice = rng.randrange(6)
                     gpr[register] = [0, 1, MASK, 0x80000000, rng.randrange(1 << 32), rng.randrange(-40, 40) & MASK][choice]
                 # Pointer arguments: mostly valid-looking addresses.
                 ref_machine = run(reference, gpr, trial)
                 our_machine = run(produced, gpr, trial)
+                preserved = [1, 2, 13] + list(range(14, 32))
+                if any(ref_machine.gpr[r] != our_machine.gpr[r] for r in preserved):
+                    bad = (trial, [hex(g) for g in gpr[3:8]], "preserved-register", "clobbered", True)
+                    break
                 if ref_machine.gpr[3] != our_machine.gpr[3] or ref_machine.writes != our_machine.writes:
                     bad = (trial, [hex(g) for g in gpr[3:8]], hex(ref_machine.gpr[3]), hex(our_machine.gpr[3]),
                            ref_machine.writes != our_machine.writes)
@@ -374,6 +382,8 @@ def main():
     # A narrow return value's upper bits are the caller's to extend: differences
     # confined to them are not divergences.
     def narrow_only(bad):
+        if bad[2] == "preserved-register":
+            return False
         ref, ours = int(bad[2], 16), int(bad[3], 16)
         return not bad[4] and ((ref ^ ours) & 0xFF == 0 or (ref ^ ours) & 0xFFFF == 0)
     narrow = [d for d in divergent if narrow_only(d[2])]
