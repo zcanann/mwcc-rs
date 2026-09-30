@@ -95,7 +95,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         }
     }
     for statement in &function.statements {
-        body.push(builder.statement(statement)?);
+        body.extend(builder.statement(statement)?);
     }
     for guard in &function.guards {
         body.push(Stmt::If {
@@ -140,8 +140,55 @@ struct Builder<'a> {
 }
 
 impl Builder<'_> {
-    fn statement(&mut self, statement: &Statement) -> Compilation<Stmt> {
-        Ok(match statement {
+    fn statements(&mut self, statements: &[Statement]) -> Compilation<Vec<Stmt>> {
+        let mut out = Vec::new();
+        for statement in statements {
+            out.extend(self.statement(statement)?);
+        }
+        Ok(out)
+    }
+
+    /// An expression evaluated for its effects, as statements.
+    fn effects(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
+        Ok(match expression {
+            Expression::Call { name, arguments } => vec![Stmt::Eval(self.call(name, arguments, true)?)],
+            Expression::Cast { target_type: Type::Void, operand } => match operand.as_ref() {
+                Expression::Call { name, arguments } => vec![Stmt::Eval(self.call(name, arguments, true)?)],
+                Expression::Variable(_) | Expression::IntegerLiteral(_) => Vec::new(),
+                other => return Err(unsupported(format!("statement expression void {}", expression_name(other)))),
+            },
+            Expression::Assign { target, value } => self.assignment(target, value)?,
+            Expression::PostStep { target, operator, pointer_link: None } => {
+                let step = Expression::Binary {
+                    operator: *operator,
+                    left: target.clone(),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                };
+                self.assignment(target, &step)?
+            }
+            Expression::Comma { left, right } => {
+                let mut out = self.effects(left)?;
+                out.extend(self.effects(right)?);
+                out
+            }
+            other => return Err(unsupported(format!("statement expression {}", expression_name(other)))),
+        })
+    }
+
+    /// `target = value` as a statement.
+    fn assignment(&mut self, target: &Expression, value: &Expression) -> Compilation<Vec<Stmt>> {
+        if let Expression::Variable(name) = target {
+            if let Some(&variable) = self.names.get(name) {
+                let ty = self.variables[variable].ty;
+                return Ok(vec![Stmt::Assign { variable, value: assigned(self.expression(value)?, ty) }]);
+            }
+        }
+        let (place, ty) = self.place(target)?;
+        Ok(vec![Stmt::Store { place, ty, value: assigned(self.expression(value)?, ty) }])
+    }
+
+    fn statement(&mut self, statement: &Statement) -> Compilation<Vec<Stmt>> {
+        Ok(vec![match statement {
             Statement::Assign { name, value } => {
                 let Some(&variable) = self.names.get(name) else {
                     return Err(unsupported(format!("assignment to non-local '{name}'")));
@@ -149,32 +196,37 @@ impl Builder<'_> {
                 let ty = self.variables[variable].ty;
                 Stmt::Assign { variable, value: assigned(self.expression(value)?, ty) }
             }
-            Statement::Expression(Expression::Call { name, arguments }) => {
-                Stmt::Eval(self.call(name, arguments, true)?)
+            Statement::Expression(expression) => return self.effects(expression),
+            Statement::Loop { kind, initializer, condition, step, body } => {
+                let mut out = match initializer {
+                    Some(initializer) => self.effects(initializer)?,
+                    None => Vec::new(),
+                };
+                let condition = condition.as_ref().map(|c| self.expression(c)).transpose()?.map(promoted);
+                let body = self.statements(body)?;
+                let step = match step {
+                    Some(step) => self.effects(step)?,
+                    None => Vec::new(),
+                };
+                out.push(Stmt::Loop { test_first: *kind != ast::LoopKind::DoWhile, condition, body, step });
+                return Ok(out);
             }
-            // `(void)expression;`: a discarded call, or nothing.
-            Statement::Expression(Expression::Cast { target_type: Type::Void, operand }) => match operand.as_ref() {
-                Expression::Call { name, arguments } => Stmt::Eval(self.call(name, arguments, true)?),
-                Expression::Variable(_) | Expression::IntegerLiteral(_) => Stmt::Eval(Expr::int(0)),
-                other => return Err(unsupported(format!("statement expression void {}", expression_name(other)))),
-            },
+            Statement::Break => Stmt::Break,
+            Statement::Continue => Stmt::Continue,
             Statement::Store { target, value } => {
                 let (place, ty) = self.place(target)?;
                 Stmt::Store { place, ty, value: assigned(self.expression(value)?, ty) }
             }
             Statement::If { condition, then_body, else_body } => Stmt::If {
                 condition: promoted(self.expression(condition)?),
-                then_body: then_body.iter().map(|s| self.statement(s)).collect::<Compilation<_>>()?,
-                else_body: else_body.iter().map(|s| self.statement(s)).collect::<Compilation<_>>()?,
+                then_body: self.statements(then_body)?,
+                else_body: self.statements(else_body)?,
             },
             Statement::Return(value) => {
                 Stmt::Return(value.as_ref().map(|value| self.expression(value)).transpose()?)
             }
-            Statement::Expression(expression) => {
-                return Err(unsupported(format!("statement expression {}", expression_name(expression))))
-            }
             other => return Err(unsupported(format!("statement {}", statement_name(other)))),
-        })
+        }])
     }
 
     /// A store target and the type it holds.

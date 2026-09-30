@@ -99,6 +99,11 @@ pub enum Stmt {
     SetReturn(Expr),
     /// Assign the return value (if any) and leave.
     Return(Option<Expr>),
+    /// A loop: `condition` tested before each iteration (`test_first`) or
+    /// after it; `step` runs after the body (and on `continue`).
+    Loop { test_first: bool, condition: Option<Expr>, body: Vec<Stmt>, step: Vec<Stmt> },
+    Break,
+    Continue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -413,6 +418,17 @@ impl Function {
                     Stmt::SetReturn(value) => out.push_str(&format!("{pad}result = {value}\n")),
                     Stmt::Return(Some(value)) => out.push_str(&format!("{pad}return {value}\n")),
                     Stmt::Return(None) => out.push_str(&format!("{pad}return\n")),
+                    Stmt::Loop { test_first, condition, body, step } => {
+                        let condition = condition.as_ref().map_or("forever".to_owned(), |c| c.to_string());
+                        out.push_str(&format!("{pad}loop ({}) {condition}\n", if *test_first { "while" } else { "do" }));
+                        statements(out, body, depth + 1);
+                        if !step.is_empty() {
+                            out.push_str(&format!("{pad}step\n"));
+                            statements(out, step, depth + 1);
+                        }
+                    }
+                    Stmt::Break => out.push_str(&format!("{pad}break\n")),
+                    Stmt::Continue => out.push_str(&format!("{pad}continue\n")),
                 }
             }
         }

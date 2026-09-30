@@ -64,6 +64,8 @@ pub fn lower(
         constants: HashMap::new(),
         unoptimized,
         homes: vec![None; function.variables.len()],
+        loops: Vec::new(),
+        known_constant: None,
     };
     lowerer.lower_function(returns_through_variable)?;
     Ok(Lowered { pcode: lowerer.pcode, makes_calls: lowerer.makes_calls })
@@ -104,6 +106,11 @@ struct Lowerer<'a> {
     unoptimized: bool,
     /// Frame home (`offset(r1)`) of a parameter kept in memory.
     homes: Vec<Option<i16>>,
+    /// Enclosing loops' (break, continue) labels.
+    loops: Vec<(Label, Label)>,
+    /// The variable the previous statement set to a constant (IRO knows a
+    /// loop's first test from it).
+    known_constant: Option<(VarId, i64)>,
 }
 
 impl Lowerer<'_> {
@@ -142,6 +149,14 @@ impl Lowerer<'_> {
             self.start_block(falls_through)
         };
         self.labels[label.0] = Some(block);
+    }
+
+    /// Place `label` only when a branch already targets it; otherwise the
+    /// code simply continues in the current block.
+    fn place_if_targeted(&mut self, label: Label) {
+        if self.pending_branches.iter().any(|&(_, _, pending)| pending == label) {
+            self.place_label(label);
+        }
     }
 
     fn block_is_target(&self, block: usize) -> bool {
@@ -334,7 +349,55 @@ impl Lowerer<'_> {
     }
 
     fn statement(&mut self, statement: &Stmt) -> Compilation<()> {
+        let known = self.known_constant.take();
+        if let Stmt::Assign { variable, value } = statement {
+            if let Some(value) = value.as_int() {
+                self.known_constant = Some((*variable, value));
+            }
+        }
         match statement {
+            Stmt::Loop { test_first, condition, body, step } => {
+                if !self.unoptimized && counted(condition.as_ref(), body, step) && !makes_calls(body) {
+                    return Err(unsupported("counted loop (unrolling not modeled)"));
+                }
+                let top = self.new_label();
+                let next = self.new_label();
+                let test = self.new_label();
+                let exit = self.new_label();
+                // IRO drops the entry jump when the first test is known true.
+                let first_test_true = !self.unoptimized
+                    && condition.as_ref().is_some_and(|condition| initially_true(condition, known));
+                if *test_first && condition.is_some() && !first_test_true {
+                    self.jump(test);
+                }
+                self.place_label(top);
+                self.loops.push((exit, next));
+                for statement in body {
+                    self.statement(statement)?;
+                }
+                self.place_if_targeted(next);
+                for statement in step {
+                    self.statement(statement)?;
+                }
+                self.loops.pop();
+                self.place_if_targeted(test);
+                match condition {
+                    Some(condition) => self.branch_on(condition, true, top)?,
+                    None => self.jump(top),
+                }
+                self.place_label(exit);
+                Ok(())
+            }
+            Stmt::Break => {
+                let (exit, _) = *self.loops.last().ok_or_else(|| unsupported("break outside a loop"))?;
+                self.jump(exit);
+                Ok(())
+            }
+            Stmt::Continue => {
+                let (_, next) = *self.loops.last().ok_or_else(|| unsupported("continue outside a loop"))?;
+                self.jump(next);
+                Ok(())
+            }
             Stmt::Assign { variable, value } => self.assign(*variable, value),
             Stmt::Eval(value) => match &value.kind {
                 ExprKind::Call { name, arguments } => self.call(name, arguments, None).map(|_| ()),
@@ -530,7 +593,7 @@ impl Lowerer<'_> {
     /// Turn the current block's last instruction into its record form when it
     /// defines `register` (so cr0 compares that result with 0).
     fn record_form(&mut self, register: u32) -> bool {
-        if std::env::var_os("MWCC_PCODE_NO_RECORD").is_some() {
+        if std::env::var_os("MWCC_PCODE_NO_RECORD").is_some() || self.unoptimized {
             return false;
         }
         let block = self.current_block();
@@ -551,6 +614,7 @@ impl Lowerer<'_> {
                 ShiftRightAlgebraicImmediateRecord { a, s, shift }
             }
             AndImmediateRecord { a, .. } if a == register => return true,
+            AddImmediate { d, a, immediate } if d == register && a != 0 => AddImmediateCarryingRecord { d, a, immediate },
             _ => return false,
         };
         last.instruction = record;
@@ -1351,6 +1415,7 @@ fn assigns(body: &[Stmt], variable: VarId) -> bool {
     body.iter().any(|statement| match statement {
         Stmt::Assign { variable: assigned, .. } => *assigned == variable,
         Stmt::If { then_body, else_body, .. } => assigns(then_body, variable) || assigns(else_body, variable),
+        Stmt::Loop { body, step, .. } => assigns(body, variable) || assigns(step, variable),
         _ => false,
     })
 }
@@ -1495,6 +1560,10 @@ fn makes_calls(body: &[Stmt]) -> bool {
         Stmt::If { condition, then_body, else_body } => {
             expression(condition) || makes_calls(then_body) || makes_calls(else_body)
         }
+        Stmt::Loop { condition, body, step, .. } => {
+            condition.as_ref().is_some_and(expression) || makes_calls(body) || makes_calls(step)
+        }
+        Stmt::Break | Stmt::Continue => false,
     })
 }
 
@@ -1539,8 +1608,58 @@ fn references(body: &[Stmt], variable: VarId) -> usize {
             Stmt::If { condition, then_body, else_body } => {
                 expression(condition, variable) + references(then_body, variable) + references(else_body, variable)
             }
+            Stmt::Loop { condition, body, step, .. } => {
+                condition.as_ref().map_or(0, |c| expression(c, variable))
+                    + references(body, variable)
+                    + references(step, variable)
+            }
+            Stmt::Break | Stmt::Continue => 0,
         })
         .sum()
+}
+
+/// Whether `condition` holds on entry given the preceding constant assignment.
+fn initially_true(condition: &Expr, known: Option<(VarId, i64)>) -> bool {
+    let Some((variable, value)) = known else { return false };
+    let ExprKind::Binary(op, left, right) = &condition.kind else { return false };
+    let (Some(id), Some(bound)) = (unpromoted(left).as_var(), right.as_int()) else { return false };
+    if id != variable {
+        return false;
+    }
+    match op {
+        BinaryOp::Less => value < bound,
+        BinaryOp::LessEqual => value <= bound,
+        BinaryOp::Greater => value > bound,
+        BinaryOp::GreaterEqual => value >= bound,
+        BinaryOp::NotEqual => value != bound,
+        BinaryOp::Equal => value == bound,
+        _ => false,
+    }
+}
+
+/// A counted loop MWCC's unroller rewrites: the condition compares (or
+/// tests) a variable the loop steps by a constant, against a bound the loop
+/// does not change.
+fn counted(condition: Option<&Expr>, body: &[Stmt], step: &[Stmt]) -> bool {
+    let Some(condition) = condition else { return false };
+    let stepped = |variable: VarId| {
+        body.iter().chain(step).any(|statement| {
+            matches!(statement, Stmt::Assign { variable: v, value }
+                if *v == variable && matches!(&value.kind, ExprKind::Binary(BinaryOp::Add | BinaryOp::Subtract, left, right)
+                    if unpromoted(left).as_var() == Some(variable) && right.as_int().is_some()))
+        })
+    };
+    let invariant = |e: &Expr| {
+        e.as_int().is_some()
+            || unpromoted(e).as_var().is_some_and(|id| !assigns(body, id) && !assigns(step, id))
+    };
+    match &condition.kind {
+        ExprKind::Binary(op, left, right) if op.is_comparison() => {
+            unpromoted(left).as_var().is_some_and(stepped) && invariant(right)
+                || unpromoted(right).as_var().is_some_and(stepped) && invariant(left)
+        }
+        _ => unpromoted(condition).as_var().is_some_and(stepped),
+    }
 }
 
 /// A displacement store of `ty`'s width.

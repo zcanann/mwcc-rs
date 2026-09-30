@@ -97,6 +97,11 @@ fn narrowing_in(body: &mut [Stmt], return_type: Type, variables: &[Type]) {
                 narrowing_in(else_body, return_type, variables);
                 None
             }
+            Stmt::Loop { body, step, .. } => {
+                narrowing_in(body, return_type, variables);
+                narrowing_in(step, return_type, variables);
+                None
+            }
             _ => None,
         };
         if let Some((ty, value)) = narrowed {
@@ -157,6 +162,14 @@ pub fn for_each_expression(body: &mut [Stmt], rewrite: &mut dyn FnMut(&mut Expr)
                 for_each_expression(then_body, rewrite);
                 for_each_expression(else_body, rewrite);
             }
+            Stmt::Loop { condition, body, step, .. } => {
+                if let Some(condition) = condition {
+                    rewrite(condition);
+                }
+                for_each_expression(body, rewrite);
+                for_each_expression(step, rewrite);
+            }
+            Stmt::Break | Stmt::Continue => {}
         }
     }
 }
@@ -452,9 +465,16 @@ pub fn selects(function: &mut Function) {
 
 fn rewrite_selects(function: &mut Function, body: &mut Vec<Stmt>, top_level: bool) {
     for statement in body.iter_mut() {
-        if let Stmt::If { then_body, else_body, .. } = statement {
-            rewrite_selects(function, then_body, false);
-            rewrite_selects(function, else_body, false);
+        match statement {
+            Stmt::If { then_body, else_body, .. } => {
+                rewrite_selects(function, then_body, false);
+                rewrite_selects(function, else_body, false);
+            }
+            Stmt::Loop { body, step, .. } => {
+                rewrite_selects(function, body, false);
+                rewrite_selects(function, step, false);
+            }
+            _ => {}
         }
     }
     let mut output = Vec::with_capacity(body.len());
@@ -626,6 +646,10 @@ pub fn stores(body: &mut [Stmt]) {
             Stmt::If { then_body, else_body, .. } => {
                 stores(then_body);
                 stores(else_body);
+            }
+            Stmt::Loop { body, step, .. } => {
+                stores(body);
+                stores(step);
             }
             _ => {}
         }
