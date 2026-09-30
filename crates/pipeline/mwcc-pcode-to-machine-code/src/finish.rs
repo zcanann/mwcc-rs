@@ -661,6 +661,12 @@ fn fold_absolute_displacements(pcode: &mut PCodeFunction, into_own_base: bool) {
                 Instruction::LoadByteZero { d, a, offset: 0 } if a == address && (d != address || into_own_base) => {
                     Some(Instruction::LoadByteZero { d, a: base, offset: 0 })
                 }
+                Instruction::LoadFloatSingle { d, a, offset: 0 } if a == address => {
+                    Some(Instruction::LoadFloatSingle { d, a: base, offset: 0 })
+                }
+                Instruction::LoadFloatDouble { d, a, offset: 0 } if a == address => {
+                    Some(Instruction::LoadFloatDouble { d, a: base, offset: 0 })
+                }
                 Instruction::StoreWord { s, a, offset: 0 } if a == address && s != address => {
                     Some(Instruction::StoreWord { s, a: base, offset: 0 })
                 }

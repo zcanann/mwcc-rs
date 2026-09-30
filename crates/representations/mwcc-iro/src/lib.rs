@@ -47,6 +47,9 @@ pub struct Unit<'a> {
     /// The callee trusts narrow parameters other than `signed char` to
     /// arrive extended (GC/3.x, Wii).
     pub narrow_parameters_extended: bool,
+    /// Floating constants live in small data (`-sdata2` above 0): loaded
+    /// `lfs fD,@N@sda21(r0)`; otherwise through an absolute address.
+    pub pool_small_data: bool,
 }
 
 /// Index into [`Function::variables`].

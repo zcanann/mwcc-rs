@@ -1375,6 +1375,30 @@ impl Lowerer<'_> {
             }
         };
         let d = self.result_for(ty, target);
+        if !self.unit.pool_small_data {
+            // `lis r,@N@ha; lfs f,@N@l(r)`. Several constants in one function
+            // share a base at offsets (not modeled).
+            if self.pcode.pool.len() > 2 {
+                return Err(unsupported("several floating constants outside small data"));
+            }
+            let pool = || RelocationTarget::Constant(index);
+            let high = self.temporary();
+            let mut lis = PInstr::new(Instruction::AddImmediateShifted { d: high, a: 0, immediate: 0 });
+            lis.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Ha, target: pool() });
+            self.emit(lis);
+            let mut load = PInstr::new(if key.1 == 4 {
+                Instruction::LoadFloatSingle { d, a: high, offset: 0 }
+            } else {
+                Instruction::LoadFloatDouble { d, a: high, offset: 0 }
+            });
+            load.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Lo, target: pool() });
+            load.not_r0.push(high);
+            self.emit(load);
+            if target.is_none() {
+                self.float_constants.insert(key, d);
+            }
+            return Ok((d, ty));
+        }
         let mut load = PInstr::new(if key.1 == 4 {
             Instruction::LoadFloatSingle { d, a: 0, offset: 0 }
         } else {
