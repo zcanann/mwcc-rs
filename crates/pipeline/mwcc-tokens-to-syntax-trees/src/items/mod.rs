@@ -5261,6 +5261,52 @@ impl Parser {
             self.eat_keyword(Token::Ampersand);
             // One or more comma-separated declarators, each optionally initialized.
             loop {
+                // `T (*name)[N]` — a pointer to rows of N elements: an element
+                // pointer whose subscripts stride by rows (as `T name[][N]`).
+                if *self.peek() == Token::ParenOpen
+                    && self.tokens.get(self.position + 1) == Some(&Token::Star)
+                    && matches!(self.tokens.get(self.position + 2), Some(Token::Identifier(_)))
+                    && self.tokens.get(self.position + 3) == Some(&Token::ParenClose)
+                    && self.tokens.get(self.position + 4) == Some(&Token::BracketOpen)
+                    && !matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. })
+                {
+                    self.advance(); // `(`
+                    self.advance(); // `*`
+                    let name = self.parse_identifier()?;
+                    self.expect(Token::ParenClose)?;
+                    let (pointer_type, extents) = self.parse_array_parameter_suffix(&name, declared_type, None)?;
+                    if let [Some(columns)] = extents.as_slice() {
+                        let stride = columns * u64::from(declared_type.width()) / 8;
+                        let stride = u16::try_from(stride)
+                            .map_err(|_| Diagnostic::error("a row pointer stride is out of range"))?;
+                        self.decayed_row_pointers.insert(name.clone(), (declared_type, stride));
+                    } else {
+                        return Err(Diagnostic::error("a pointer to a multi-dimensional array local is not supported yet (roadmap)"));
+                    }
+                    let initializer = if self.eat_keyword(Token::Equals) {
+                        Some(self.expression()?)
+                    } else {
+                        None
+                    };
+                    locals.push(LocalDeclaration {
+                        declared_type: pointer_type,
+                        name,
+                        initializer,
+                        is_volatile,
+                        array_length: None,
+                        is_static: false,
+                        data_bytes: None,
+                        data_relocations: Vec::new(),
+                        is_const: false,
+                        attribute_alignment: None,
+                        row_bytes: None,
+                    });
+                    local_lines.push(Some(declaration_line));
+                    if self.eat_keyword(Token::Comma) {
+                        continue;
+                    }
+                    break;
+                }
                 // `RET (*name)(params)` / `RET (**name)(params)` — a function-
                 // pointer (or pointer to one) LOCAL: a 4-byte word; the signature
                 // is skipped (abort_exit's `void (**var_r31)(void);`).

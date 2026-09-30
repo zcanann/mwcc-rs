@@ -887,7 +887,11 @@ impl Parser {
             } else {
                 self.factor()?
             };
-            let bytes = self.sizeof_expression_bytes(&operand);
+            let bytes = match &operand {
+                // A string literal is its characters and the NUL.
+                Expression::StringLiteral(characters) => Some(characters.len() as u32 + 1),
+                _ => self.sizeof_expression_bytes(&operand),
+            };
             if let Some(bytes) = bytes {
                 return Ok(Expression::IntegerLiteral(bytes as i64));
             }
@@ -1606,8 +1610,25 @@ impl Parser {
                             self.advance(); // `[`
                             let row = self.expression()?;
                             self.expect(Token::BracketClose)?;
+                            let element_bytes = (element.width() / 8).max(1) as i64;
+                            let columns = i64::from(stride) / element_bytes;
+                            // `p[i]` is the row `p + i*N` (element pointer
+                            // arithmetic); `p[i][j]` indexes that row.
+                            let row_pointer = |base: Expression, row: Expression| Expression::Binary {
+                                operator: mwcc_syntax_trees::BinaryOperator::Add,
+                                left: Box::new(base),
+                                right: Box::new(Expression::Binary {
+                                    operator: mwcc_syntax_trees::BinaryOperator::Multiply,
+                                    left: Box::new(row),
+                                    right: Box::new(Expression::IntegerLiteral(columns)),
+                                }),
+                            };
                             if *self.peek() != Token::BracketOpen {
-                                return Err(Diagnostic::error("a single subscript on an array-typedef parameter is not supported yet (roadmap)"));
+                                if matches!(element, Type::Struct { .. }) || columns <= 0 {
+                                    return Err(Diagnostic::error("a single subscript on an array-typedef parameter is not supported yet (roadmap)"));
+                                }
+                                expression = row_pointer(expression, row);
+                                continue;
                             }
                             self.advance(); // `[`
                             let column = self.expression()?;
@@ -1617,7 +1638,14 @@ impl Parser {
                                 Expression::IntegerLiteral(column),
                             ) = (&row, &column)
                             else {
-                                return Err(Diagnostic::error("a variable subscript on an array-typedef parameter is not supported yet (roadmap)"));
+                                if matches!(element, Type::Struct { .. }) || columns <= 0 {
+                                    return Err(Diagnostic::error("a variable subscript on an array-typedef parameter is not supported yet (roadmap)"));
+                                }
+                                expression = Expression::Index {
+                                    base: Box::new(row_pointer(expression, row)),
+                                    index: Box::new(column),
+                                };
+                                continue;
                             };
                             let element_bytes = element.width() as i64 / 8;
                             let offset = row * stride as i64 + column * element_bytes;
@@ -1925,9 +1953,46 @@ impl Parser {
                     let offset = offset + base_offset;
                     let index_stride = base_stride.or(index_stride);
                     if array_element.is_none() && array_stride.is_some() {
-                        return Err(Diagnostic::error(format!(
-                            "accessing pointer-to-array member '{field}' is not supported yet (roadmap)"
-                        )));
+                        // `T (*f)[N]`: the member is an element pointer whose
+                        // subscripts stride by rows (`s->f[i]` is `s->f + i*N`).
+                        let (Some(stride), Type::Pointer(pointee)) = (array_stride, member_type) else {
+                            return Err(Diagnostic::error(format!(
+                                "accessing pointer-to-array member '{field}' is not supported yet (roadmap)"
+                            )));
+                        };
+                        let element_bytes = u32::from(pointee.element().width() / 8).max(1);
+                        let columns = i64::from(stride / element_bytes);
+                        let pointer = Expression::Member {
+                            base: Box::new(expression),
+                            offset,
+                            member_type,
+                            index_stride,
+                        };
+                        if *self.peek() != Token::BracketOpen {
+                            expression = pointer;
+                            continue;
+                        }
+                        self.advance(); // `[`
+                        let row = self.expression()?;
+                        self.expect(Token::BracketClose)?;
+                        let row_pointer = Expression::Binary {
+                            operator: mwcc_syntax_trees::BinaryOperator::Add,
+                            left: Box::new(pointer),
+                            right: Box::new(Expression::Binary {
+                                operator: mwcc_syntax_trees::BinaryOperator::Multiply,
+                                left: Box::new(row),
+                                right: Box::new(Expression::IntegerLiteral(columns)),
+                            }),
+                        };
+                        if *self.peek() != Token::BracketOpen {
+                            expression = row_pointer;
+                            continue;
+                        }
+                        self.advance(); // `[`
+                        let column = self.expression()?;
+                        self.expect(Token::BracketClose)?;
+                        expression = Expression::Index { base: Box::new(row_pointer), index: Box::new(column) };
+                        continue;
                     }
                     if let Some((bit_offset, width)) = bit_field {
                         // A bit-field read is the containing unit load shifted+masked to
