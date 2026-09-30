@@ -1998,6 +1998,42 @@ impl Parser {
                     if array_element.is_none() && array_stride.is_some() {
                         // `T (*f)[N]`: the member is an element pointer whose
                         // subscripts stride by rows (`s->f[i]` is `s->f + i*N`).
+                        // A two-dimensional struct array member: a flat struct array
+                        // indexed by `z*X + x` (`s.fg[z][x].field`).
+                        if let (Some(stride), Type::Struct { size, .. }) = (array_stride, member_type) {
+                            let columns = i64::from(stride / size.max(1));
+                            if columns > 0 && *self.peek() == Token::BracketOpen {
+                                let member = Expression::Member {
+                                    base: Box::new(expression),
+                                    offset,
+                                    member_type,
+                                    index_stride,
+                                };
+                                self.advance(); // `[`
+                                let row = self.expression()?;
+                                self.expect(Token::BracketClose)?;
+                                if *self.peek() != Token::BracketOpen {
+                                    return Err(Diagnostic::error(format!(
+                                        "a row of a two-dimensional struct-array member '{field}' is not supported yet (roadmap)"
+                                    )));
+                                }
+                                self.advance(); // `[`
+                                let column = self.expression()?;
+                                self.expect(Token::BracketClose)?;
+                                let index = Expression::Binary {
+                                    operator: mwcc_syntax_trees::BinaryOperator::Add,
+                                    left: Box::new(Expression::Binary {
+                                        operator: mwcc_syntax_trees::BinaryOperator::Multiply,
+                                        left: Box::new(row),
+                                        right: Box::new(Expression::IntegerLiteral(columns)),
+                                    }),
+                                    right: Box::new(column),
+                                };
+                                expression = Expression::Index { base: Box::new(member), index: Box::new(index) };
+                                struct_tag = next_tag;
+                                continue;
+                            }
+                        }
                         let (Some(stride), Type::Pointer(pointee)) = (array_stride, member_type) else {
                             return Err(Diagnostic::error(format!(
                                 "accessing pointer-to-array member '{field}' is not supported yet (roadmap)"
