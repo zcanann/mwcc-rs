@@ -93,6 +93,9 @@ pub enum Processor {
 pub struct Flags {
     pub optimization: Optimization,
     pub optimization_goal: OptimizationGoal,
+    /// `,p` was spelled out: a bare `-O4` optimizes for speed elsewhere but
+    /// saves registers like `,s` (`_savegpr_N` from three GPRs, not five).
+    pub explicit_speed_goal: bool,
     /// Writable globals controlled by `-sdata` and addressed through r13 when on.
     pub global_addressing: GlobalAddressing,
     /// Read-only globals controlled by `-sdata2` and addressed through r2 when on.
@@ -165,6 +168,7 @@ impl Default for Flags {
         Flags {
             optimization: Optimization::O4,
             optimization_goal: OptimizationGoal::Performance,
+            explicit_speed_goal: true,
             global_addressing: GlobalAddressing::SmallData,
             read_only_global_addressing: GlobalAddressing::SmallData,
             char_default: CharDefault::BuildDefault,

@@ -264,6 +264,7 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                 occupancy: info.occupancy.max(1),
                 rank: info.pick_rank,
                 serialize: info.serialize
+                    || instruction.flags.serialize
                     || instruction.instruction.is_call()
                     // Frame paired-single restores keep the epilogue's order.
                     || (matches!(instruction.instruction, Instruction::PairedSingleQuantizedLoad { a: 1, .. } | Instruction::PairedSingleQuantizedStore { a: 1, .. })

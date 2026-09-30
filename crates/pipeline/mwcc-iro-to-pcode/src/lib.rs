@@ -390,8 +390,10 @@ impl Lowerer<'_> {
         let floating_variable = |id: usize| is_float(function.variables[id].ty);
         let mut home_bytes: i16 = 0;
         let mut home_slots: i16 = 0;
-        let mut next_saved: u32 = 31;
-        let mut next_saved_float: u32 = 31;
+        // Register variables take r31 (f31) down: parameters the body
+        // assigns, then locals (declaration order), then the other
+        // parameters that need one.
+        let mut register_parameters = Vec::new();
         let mut float_copies = Vec::new();
         let mut entry_copies = Vec::new();
         let (mut next_general, mut next_float) = (FIRST_GENERAL_ARGUMENT, 1);
@@ -413,14 +415,8 @@ impl Lowerer<'_> {
                 self.homes[id] = Some(8 + home_bytes);
                 home_bytes += size;
                 home_slots += 1;
-            } else if floating_variable(id) {
-                self.registers[id] = Some(next_saved_float);
-                float_copies.push((next_saved_float, argument));
-                next_saved_float -= 1;
             } else {
-                self.registers[id] = Some(next_saved);
-                entry_copies.push((next_saved, argument));
-                next_saved -= 1;
+                register_parameters.push((id, argument));
             }
         }
         let frame_objects = function.variables.iter().any(|variable| variable.frame.is_some());
@@ -437,21 +433,40 @@ impl Lowerer<'_> {
                 self.pcode.frame_objects.push((start, start + size as i16));
             }
         }
-        for id in function.parameter_count..function.variables.len() {
-            if function.variables[id].kind == VariableKind::Local && function.variables[id].frame.is_none() && floating_variable(id) {
+        let assigned = |&&(id, _): &&(usize, u32)| {
+            assigns(&function.body, id) || loads_through_into_local(&function.body, function, id)
+        };
+        let order: Vec<(usize, Option<u32>)> = register_parameters
+            .iter()
+            .filter(assigned)
+            .map(|&(id, argument)| (id, Some(argument)))
+            .chain(
+                (function.parameter_count..function.variables.len())
+                    .filter(|&id| function.variables[id].kind == VariableKind::Local && function.variables[id].frame.is_none())
+                    .map(|id| (id, None)),
+            )
+            .chain(register_parameters.iter().filter(|p| !assigned(p)).map(|&(id, argument)| (id, Some(argument))))
+            .collect();
+        let (mut next_saved, mut next_saved_float) = (31u32, 31u32);
+        for (id, argument) in order {
+            let register = if floating_variable(id) {
                 if next_saved_float < 14 {
                     return Err(unsupported("more floating register variables than saved FPRs"));
                 }
-                self.registers[id] = Some(next_saved_float);
                 next_saved_float -= 1;
-                continue;
-            }
-            if function.variables[id].kind == VariableKind::Local && function.variables[id].frame.is_none() {
+                next_saved_float + 1
+            } else {
                 if next_saved < 14 {
                     return Err(unsupported("more register variables than callee-saved registers"));
                 }
-                self.registers[id] = Some(next_saved);
                 next_saved -= 1;
+                next_saved + 1
+            };
+            self.registers[id] = Some(register);
+            match argument {
+                Some(argument) if floating_variable(id) => float_copies.push((register, argument)),
+                Some(argument) => entry_copies.push((register, argument)),
+                None => {}
             }
         }
         if home_slots > 0 {
@@ -1524,7 +1539,7 @@ impl Lowerer<'_> {
         if !self.unit.pool_small_data {
             // `lis r,@N@ha; lfs f,@N@l(r)`. Several constants in one function
             // share a base at offsets (not modeled).
-            if self.pcode.pool.len() > 2 {
+            if self.pcode.pool.len() > 2 && !self.unoptimized {
                 return Err(unsupported("several floating constants outside small data"));
             }
             let pool = || RelocationTarget::Constant(index);
@@ -1532,6 +1547,22 @@ impl Lowerer<'_> {
             let mut lis = PInstr::new(Instruction::AddImmediateShifted { d: high, a: 0, immediate: 0 });
             lis.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Ha, target: pool() });
             self.emit(lis);
+            if self.unoptimized {
+                // Unfolded at -O0: `lis; addi; lfs 0`.
+                let mut addi = PInstr::new(Instruction::AddImmediate { d: high, a: high, immediate: 0 });
+                addi.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Lo, target: pool() });
+                addi.not_r0.push(high);
+                self.emit(addi);
+                self.emit_based(
+                    if key.1 == 4 {
+                        Instruction::LoadFloatSingle { d, a: high, offset: 0 }
+                    } else {
+                        Instruction::LoadFloatDouble { d, a: high, offset: 0 }
+                    },
+                    high,
+                );
+                return Ok((d, ty));
+            }
             let mut load = PInstr::new(if key.1 == 4 {
                 Instruction::LoadFloatSingle { d, a: high, offset: 0 }
             } else {
@@ -2584,6 +2615,24 @@ impl Lowerer<'_> {
 }
 
 use mwcc_syntax_trees_to_iro::passes::fits_unconverted as mwcc_syntax_trees_to_iro_fits;
+
+/// Whether a local is assigned a value loaded through `variable`.
+fn loads_through_into_local(body: &[Stmt], function: &Function, variable: VarId) -> bool {
+    body.iter().any(|statement| match statement {
+        Stmt::Assign { variable: target, value } => {
+            function.variables[*target].kind == VariableKind::Local
+                && matches!(&value.kind, ExprKind::Load { base, .. } if base.mentions(variable))
+        }
+        Stmt::If { then_body, else_body, .. } => {
+            loads_through_into_local(then_body, function, variable) || loads_through_into_local(else_body, function, variable)
+        }
+        Stmt::Loop { body, step, .. } => {
+            loads_through_into_local(body, function, variable) || loads_through_into_local(step, function, variable)
+        }
+        Stmt::Switch { arms, .. } => arms.iter().any(|arm| loads_through_into_local(arm, function, variable)),
+        _ => false,
+    })
+}
 
 /// Whether any statement assigns `variable`.
 fn assigns(body: &[Stmt], variable: VarId) -> bool {

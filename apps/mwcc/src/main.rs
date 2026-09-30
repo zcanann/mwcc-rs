@@ -406,6 +406,8 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     b'3' => Optimization::O3,
                     _ => Optimization::O4,
                 };
+                invocation.flags.explicit_speed_goal =
+                    matches!(argument.split_once(','), Some((_, "p" | "speed")));
                 invocation.flags.optimization_goal = match argument.split_once(',') {
                     Some((_, "s" | "space")) => mwcc_versions::OptimizationGoal::Size,
                     _ => mwcc_versions::OptimizationGoal::Performance,

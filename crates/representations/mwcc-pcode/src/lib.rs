@@ -63,6 +63,9 @@ pub struct InstructionFlags {
     pub side_effect: bool,
     /// An in-place update that stays in the web of the value it reads.
     pub in_place: bool,
+    /// Scheduled in emission order against everything (the epilogue's
+    /// restore-helper base).
+    pub serialize: bool,
 }
 
 /// One PCode instruction.
