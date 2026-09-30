@@ -184,6 +184,20 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     })
 }
 
+/// An lvalue whose address has no side effects (evaluating it twice is
+/// harmless).
+fn pure_lvalue(expression: &Expression) -> bool {
+    match expression {
+        Expression::Variable(_) | Expression::IntegerLiteral(_) => true,
+        Expression::Dereference { pointer } => pure_lvalue(pointer),
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => pure_lvalue(base),
+        Expression::Index { base, index } => pure_lvalue(base) && pure_lvalue(index),
+        Expression::Cast { operand, .. } => pure_lvalue(operand),
+        Expression::Binary { left, right, .. } => pure_lvalue(left) && pure_lvalue(right),
+        _ => false,
+    }
+}
+
 /// A call evaluated for its effects (an expanded void call leaves nothing).
 fn evaluated(call: Expr) -> Vec<Stmt> {
     if call.ty == Type::Void && matches!(call.kind, ExprKind::Int(_)) {
@@ -792,6 +806,29 @@ impl Builder<'_, '_> {
             }
             Expression::Assign { target, value } => self.assignment_value(target, value)?,
             // `x++` as a value: the old value; the step follows the statement.
+            // `(*p)++` / `s->n++` as a value: the old value is loaded into a
+            // temporary and `old + 1` stored back before the statement.
+            Expression::PostStep { target, operator, pointer_link: None }
+                if pure_lvalue(target) && !matches!(target.as_ref(), Expression::Variable(_)) =>
+            {
+                if self.guarded > 0 || std::env::var_os("MWCC_IRO_NO_MEMORY_POST_VALUE").is_some() {
+                    return Err(unsupported("expression PostStep"));
+                }
+                let old = self.expression(target)?;
+                let ty = old.ty;
+                let id = self.temporary(ty);
+                self.pending.push(Stmt::Assign { variable: id, value: old });
+                let (place, stored) = self.place(target)?;
+                let current = Expr { kind: ExprKind::Var(id), ty };
+                let op = if *operator == BinaryOperator::Subtract { BinaryOp::Subtract } else { BinaryOp::Add };
+                let stepped = if matches!(ty, Type::Pointer(_) | Type::StructPointer { .. }) {
+                    self.pointer_arithmetic(op, current.clone(), Expr::int(1))?
+                } else {
+                    Expr::binary(op, promoted(current.clone()), Expr::int(1), promote(ty))
+                };
+                self.pending.push(Stmt::Store { place, ty: stored, value: assigned(stepped, stored) });
+                current
+            }
             Expression::PostStep { target, operator, pointer_link: None }
                 if matches!(target.as_ref(), Expression::Variable(name)
                     if self.names.get(name).is_some_and(|&id| self.variables[id].frame.is_none())) =>

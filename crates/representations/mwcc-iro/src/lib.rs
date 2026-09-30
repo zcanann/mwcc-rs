@@ -392,7 +392,10 @@ pub fn pointee_type(pointee: Pointee) -> Option<Type> {
         Pointee::UnsignedChar => Type::UnsignedChar,
         Pointee::Short => Type::Short,
         Pointee::UnsignedShort => Type::UnsignedShort,
-        Pointee::Pointer | Pointee::WordPointer => Type::Pointer(Pointee::Int),
+        // A pointer whose own pointee is unknown: a word, but arithmetic
+        // and indexing through it are refused (unsized element).
+        Pointee::Pointer => Type::StructPointer { element_size: 0 },
+        Pointee::WordPointer => Type::Pointer(Pointee::Int),
         Pointee::Float => Type::Float,
         Pointee::Double => Type::Double,
         _ => return None,
