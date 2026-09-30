@@ -1419,6 +1419,13 @@ impl Lowerer<'_, '_> {
                 let (a, _) = self.expression(&Expr::int(i64::from(high) << 16))?;
                 self.load(ty, a, low, None, target)
             }
+            ExprKind::Load { base, index: None, offset } if self.unoptimized && self.unoptimized_indexed(base).is_some() => {
+                let (a, b) = self.unoptimized_address(base, *offset)?;
+                match b {
+                    Some(b) => self.indexed_load(ty, a, b, target),
+                    None => self.load(ty, a, i16::try_from(*offset).map_err(|_| unsupported("large member offset"))?, None, target),
+                }
+            }
             ExprKind::Load { base, index, offset } => {
                 if let (Some(index), true) = (index, self.unoptimized) {
                     // -O0: the index first; an absolute array's address is
@@ -2564,6 +2571,48 @@ impl Lowerer<'_, '_> {
     /// The register holding a stored value: a raw narrow parameter at least
     /// as wide as the store needs no extension.
     /// An absolute (`lis`/`addi`) global address.
+    /// -O0 `(b + x) + offset` with a variable index `x` and a displacement
+    /// (or an absolute array): the parts `(b, x)`.
+    fn unoptimized_indexed<'e>(&self, base: &'e Expr) -> Option<(&'e Expr, &'e Expr)> {
+        if toggle("MWCC_PCODE_O0_NO_INDEXED_MEMBERS") {
+            return None;
+        }
+        match &base.kind {
+            ExprKind::Binary(BinaryOp::Add, b, x)
+                if x.as_int().is_none()
+                    && matches!(b.ty, Type::Pointer(_) | Type::StructPointer { .. })
+                    && !matches!(x.ty, Type::Pointer(_) | Type::StructPointer { .. }) =>
+            {
+                Some((b, x))
+            }
+            _ => None,
+        }
+    }
+
+    /// -O0 address of `(b + x) + offset`: an absolute array computes the
+    /// index first, adds its address and keeps the displacement (`None`
+    /// index); otherwise the base, then the index with the displacement
+    /// added (`lwzx`).
+    fn unoptimized_address(&mut self, base: &Expr, offset: i32) -> Compilation<(u32, Option<u32>)> {
+        let (b, x) = self.unoptimized_indexed(base).expect("checked");
+        if self.absolute_base(b) {
+            let (index, _) = self.expression(x)?;
+            let (address, _) = self.expression(b)?;
+            let sum = self.temporary();
+            self.emit_plain(Instruction::Add { d: sum, a: address, b: index });
+            return Ok((sum, None));
+        }
+        let (address, _) = self.expression(b)?;
+        let (index, _) = self.expression(x)?;
+        if offset == 0 {
+            return Ok((address, Some(index)));
+        }
+        let immediate = i16::try_from(offset).map_err(|_| unsupported("large member offset"))?;
+        let displaced = self.temporary();
+        self.emit_based(Instruction::AddImmediate { d: displaced, a: index, immediate }, index);
+        Ok((address, Some(displaced)))
+    }
+
     fn absolute_base(&self, base: &Expr) -> bool {
         matches!(&base.kind, ExprKind::GlobalAddress(name) if !self.unit.globals[name].small_data)
     }
@@ -2611,6 +2660,13 @@ impl Lowerer<'_, '_> {
                 let (high, low) = split_address(base.as_int().expect("checked") + i64::from(*offset))?;
                 let (a, _) = self.expression(&Expr::int(i64::from(high) << 16))?;
                 (a, low, None, None)
+            }
+            Place::Memory { base, index: None, offset } if self.unoptimized && self.unoptimized_indexed(base).is_some() => {
+                let (a, b) = self.unoptimized_address(base, *offset)?;
+                match b {
+                    Some(b) => (a, 0, Some(b), None),
+                    None => (a, i16::try_from(*offset).map_err(|_| unsupported("large member offset"))?, None, None),
+                }
             }
             Place::Memory { base: base_expression, index: Some(index), .. } if self.unoptimized => {
                 let (b, _) = self.expression(index)?;
