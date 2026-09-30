@@ -73,6 +73,8 @@ pub fn lower(
         common: HashMap::new(),
         contract,
         float_constants: HashMap::new(),
+        frame_offsets: vec![None; function.variables.len()],
+        frame_cursor: 8,
     };
     lowerer.lower_function(returns_through_variable)?;
     Ok(Lowered { pcode: lowerer.pcode, makes_calls: lowerer.makes_calls })
@@ -127,6 +129,10 @@ struct Lowerer<'a> {
     contract: bool,
     /// Floating constants loaded in this block: (bits, width) -> register.
     float_constants: HashMap<(u64, u8), u32>,
+    /// r1 offset of each frame variable.
+    frame_offsets: Vec<Option<i16>>,
+    /// Next free byte of the local area (r1-relative).
+    frame_cursor: u32,
 }
 
 impl Lowerer<'_> {
@@ -317,7 +323,17 @@ impl Lowerer<'_> {
             .filter(|&id| function.variables[id].kind == VariableKind::Local)
             .collect();
         for &id in locals.iter().rev() {
-            self.registers[id] = Some(self.fresh(function.variables[id].ty));
+            match function.variables[id].frame {
+                // Frame objects take slots in reverse declaration order.
+                Some((size, align)) => {
+                    let offset = self.frame_cursor.div_ceil(align.max(1)) * align.max(1);
+                    self.frame_cursor = offset + size;
+                    let start = i16::try_from(offset).map_err(|_| unsupported("a large frame"))?;
+                    self.frame_offsets[id] = Some(start);
+                    self.pcode.frame_objects.push((start, start + size as i16));
+                }
+                None => self.registers[id] = Some(self.fresh(function.variables[id].ty)),
+            }
         }
         if function.return_type != Type::Void && returns_through_variable {
             self.return_register = Some(self.fresh(function.return_type));
@@ -344,6 +360,9 @@ impl Lowerer<'_> {
     /// (callee-saved, r31 down). Temporaries are colored around them.
     fn lower_unoptimized(&mut self, calls: bool) -> Compilation<()> {
         let function = self.function;
+        if function.variables.iter().any(|variable| variable.frame.is_some()) {
+            return Err(unsupported("frame locals at -O0"));
+        }
         if is_float(function.return_type) || function.variables.iter().any(|variable| is_float(variable.ty)) {
             return Err(unsupported("floating point at -O0"));
         }
@@ -423,6 +442,22 @@ impl Lowerer<'_> {
     }
 
     fn body_and_exit(&mut self) -> Compilation<()> {
+        let result = self.body_and_exit_inner();
+        if !self.unoptimized {
+            self.pcode.frame_local_bytes = (self.frame_cursor - 8) as i16;
+        }
+        result
+    }
+
+    /// A fresh 8-byte, 8-aligned slot for an integer/floating conversion.
+    fn conversion_slot(&mut self) -> i16 {
+        let offset = self.frame_cursor.div_ceil(8) * 8;
+        self.frame_cursor = offset + 8;
+        self.pcode.frame_objects.push((offset as i16, offset as i16 + 8));
+        offset as i16
+    }
+
+    fn body_and_exit_inner(&mut self) -> Compilation<()> {
         let function = self.function;
         if self.tail_calls && !self.unoptimized && self.sibling_call()? {
             return Ok(());
@@ -799,6 +834,27 @@ impl Lowerer<'_> {
         let ty = expression.ty;
         match &expression.kind {
             ExprKind::Float(value) => self.float_constant(*value, ty, target),
+            ExprKind::LocalAddress(id) => {
+                let offset = self.frame_offsets[*id].ok_or_else(|| unsupported("address of a register variable"))?;
+                let key = format!("&v{id}");
+                if target.is_none() && !toggle("MWCC_PCODE_NO_ADDRESS_CSE") {
+                    if let Some(&(register, ty, _)) = self.common.get(&key) {
+                        return Ok((register, ty));
+                    }
+                }
+                let d = self.result(target);
+                self.emit_plain(Instruction::AddImmediate { d, a: 1, immediate: offset });
+                if target.is_none() {
+                    self.common.insert(key, (d, ty, Vec::new()));
+                }
+                Ok((d, ty))
+            }
+            ExprKind::Load { base, index: None, offset } if matches!(base.kind, ExprKind::LocalAddress(_)) => {
+                let ExprKind::LocalAddress(id) = base.kind else { unreachable!() };
+                let slot = self.frame_offsets[id].ok_or_else(|| unsupported("frame slot"))?;
+                let offset = i16::try_from(i32::from(slot) + *offset).map_err(|_| unsupported("a large frame"))?;
+                self.load(ty, 1, offset, None, target)
+            }
             ExprKind::Binary(op, left, right) if op.is_comparison() && (is_float(left.ty) || is_float(right.ty)) => {
                 self.float_comparison_value(*op, left, right, target)
             }
@@ -1201,6 +1257,56 @@ impl Lowerer<'_> {
                 let (source, _) = self.expression(operand)?;
                 let d = self.result_for(to, target);
                 self.emit_plain(Instruction::RoundToSingle { d, b: source });
+                Ok((d, to))
+            }
+            (from, to) if is_float(to) && matches!(from, Type::Int | Type::UnsignedInt | Type::Char | Type::Short | Type::UnsignedChar | Type::UnsignedShort) => {
+                // (double)(x ^ 0x80000000 as the low word of 0x4330...) - 2^52 (+ 2^31).
+                let signed = matches!(from, Type::Int | Type::Char | Type::Short);
+                let narrow_unsigned = matches!(from, Type::UnsignedChar | Type::UnsignedShort);
+                let (source, _) = if from == Type::Int || from == Type::UnsignedInt {
+                    self.expression(operand)?
+                } else {
+                    // A narrow integer widens first.
+                    let wide = if signed { Type::Int } else { Type::UnsignedInt };
+                    self.expression(&Expr { kind: ExprKind::Convert(Box::new(operand.clone())), ty: wide })?
+                };
+                let slot = self.conversion_slot();
+                let low = if signed {
+                    let flipped = self.temporary();
+                    self.emit_plain(Instruction::XorImmediateShifted { a: flipped, s: source, immediate: 0x8000 });
+                    flipped
+                } else {
+                    source
+                };
+                let (high, _) = self.expression(&Expr::int(0x4330_0000))?;
+                let magic = if signed { 4503601774854144.0 } else { 4503599627370496.0 };
+                let (bias, _) = self.float_constant(magic, Type::Double, None)?;
+                if !narrow_unsigned {
+                    self.emit_plain(Instruction::StoreWord { s: low, a: 1, offset: slot + 4 });
+                    self.emit_plain(Instruction::StoreWord { s: high, a: 1, offset: slot });
+                } else {
+                    self.emit_plain(Instruction::StoreWord { s: high, a: 1, offset: slot });
+                    self.emit_plain(Instruction::StoreWord { s: low, a: 1, offset: slot + 4 });
+                }
+                let loaded = self.fresh(Type::Double);
+                self.emit_plain(Instruction::LoadFloatDouble { d: loaded, a: 1, offset: slot });
+                let d = self.result_for(to, target);
+                self.emit_plain(if to == Type::Float {
+                    Instruction::FloatSubtractSingle { d, a: loaded, b: bias }
+                } else {
+                    Instruction::FloatSubtractDouble { d, a: loaded, b: bias }
+                });
+                Ok((d, to))
+            }
+            (from, to) if is_float(from) && matches!(to, Type::Int) => {
+                // fctiwz; stfd; lwz the low word.
+                let (source, _) = self.expression(operand)?;
+                let slot = self.conversion_slot();
+                let rounded = self.fresh(Type::Double);
+                self.emit_plain(Instruction::ConvertToIntegerWordZero { d: rounded, b: source });
+                self.emit_plain(Instruction::StoreFloatDouble { s: rounded, a: 1, offset: slot });
+                let d = self.result(target);
+                self.emit_plain(Instruction::LoadWord { d, a: 1, offset: slot + 4 });
                 Ok((d, to))
             }
             _ => Err(unsupported("integer/floating conversion")),
@@ -1709,6 +1815,12 @@ impl Lowerer<'_> {
         }
         let source = self.store_source(value, ty)?;
         let (base, offset, index, relocation) = match place {
+            Place::Memory { base, index: None, offset } if matches!(base.kind, ExprKind::LocalAddress(_)) => {
+                let ExprKind::LocalAddress(id) = base.kind else { unreachable!() };
+                let slot = self.frame_offsets[id].ok_or_else(|| unsupported("frame slot"))?;
+                let offset = i16::try_from(i32::from(slot) + *offset).map_err(|_| unsupported("a large frame"))?;
+                (1, offset, None, None)
+            }
             Place::Memory { base, index: None, offset } if base.as_int().is_some() => {
                 let (high, low) = split_address(base.as_int().expect("checked") + i64::from(*offset))?;
                 let (a, _) = self.expression(&Expr::int(i64::from(high) << 16))?;
@@ -1822,6 +1934,7 @@ impl Lowerer<'_> {
         // Constants are rematerialized rather than kept across a call.
         self.constants.clear();
         self.float_constants.clear();
+        self.common.retain(|key, _| !key.starts_with('&'));
         let result = self.result_for(ty, target);
         self.copy(ty, result, result_register(ty));
         Ok(result)
@@ -1958,7 +2071,12 @@ fn makes_calls(body: &[Stmt]) -> bool {
     fn expression(e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Call { .. } => true,
-            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Var(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => false,
+            ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Var(_)
+            | ExprKind::Global(_)
+            | ExprKind::GlobalAddress(_)
+            | ExprKind::LocalAddress(_) => false,
             ExprKind::Load { base, index, .. } => expression(base) || index.as_deref().is_some_and(expression),
             ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => expression(operand),
             ExprKind::Binary(_, left, right) => expression(left) || expression(right),
@@ -1992,7 +2110,7 @@ fn references(body: &[Stmt], variable: VarId) -> usize {
     fn expression(e: &Expr, variable: VarId) -> usize {
         match &e.kind {
             ExprKind::Var(id) => usize::from(*id == variable),
-            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => 0,
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) | ExprKind::LocalAddress(_) => 0,
             ExprKind::Load { base, index, .. } => {
                 expression(base, variable) + index.as_deref().map_or(0, |index| expression(index, variable))
             }
@@ -2160,4 +2278,8 @@ fn result_register(ty: Type) -> u32 {
     } else {
         3
     }
+}
+
+fn toggle(name: &str) -> bool {
+    std::env::var_os(name).is_some()
 }

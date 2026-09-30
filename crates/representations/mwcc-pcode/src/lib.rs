@@ -222,6 +222,9 @@ pub struct PCodeFunction {
     pub outside_window: Vec<(Class, u32)>,
     /// Bytes of the frame's local area (stack homes at r1+8 upward).
     pub frame_local_bytes: i16,
+    /// r1-relative [start, end) ranges of frame objects (locals and
+    /// conversion slots): the scheduler orders accesses per object.
+    pub frame_objects: Vec<(i16, i16)>,
     /// General registers live at the exit besides the result (`-O0` keeps
     /// register variables live through the whole function).
     pub exit_uses: Vec<u32>,
@@ -244,6 +247,7 @@ impl PCodeFunction {
             coalesce_first_float: FIRST_VIRTUAL,
             outside_window: Vec::new(),
             frame_local_bytes: 0,
+            frame_objects: Vec::new(),
             exit_uses: Vec::new(),
             ends_in_tail_call: false,
             pool: Vec::new(),

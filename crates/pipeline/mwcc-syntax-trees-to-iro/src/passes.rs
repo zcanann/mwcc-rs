@@ -219,7 +219,12 @@ pub fn for_each_expression(body: &mut [Stmt], rewrite: &mut dyn FnMut(&mut Expr)
 
 fn children(expression: &mut Expr, rewrite: &mut dyn FnMut(&mut Expr)) {
     match &mut expression.kind {
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Var(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => {}
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Var(_)
+        | ExprKind::Global(_)
+        | ExprKind::GlobalAddress(_)
+        | ExprKind::LocalAddress(_) => {}
         ExprKind::Load { base, index, .. } => {
             rewrite(base);
             if let Some(index) = index {
@@ -336,13 +341,48 @@ fn fold_float(expression: &Expr) -> Option<Expr> {
             ExprKind::Int(value) => Some(float(value as f64, expression.ty)),
             _ => None,
         },
+        // A floating literal converted to an integer truncates toward zero.
+        ExprKind::Convert(operand) if expression.ty == Type::Int || expression.ty == Type::Short
+            || expression.ty == Type::Char || expression.ty == Type::UnsignedChar
+            || expression.ty == Type::UnsignedShort =>
+        {
+            let ExprKind::Float(value) = operand.kind else { return None };
+            if !(-2147483648.0..2147483648.0).contains(&value) {
+                return None;
+            }
+            let truncated = value.trunc() as i64;
+            let narrowed = match expression.ty {
+                Type::Short => i64::from(truncated as i16),
+                Type::UnsignedShort => i64::from(truncated as u16),
+                Type::Char => i64::from(truncated as i8),
+                Type::UnsignedChar => i64::from(truncated as u8),
+                _ => truncated,
+            };
+            Some(Expr { kind: ExprKind::Int(narrowed), ty: expression.ty })
+        }
+        // Division by a power of two multiplies by its exact reciprocal.
+        ExprKind::Binary(BinaryOp::Divide, left, right) if mwcc_iro::is_float(expression.ty) => {
+            let ExprKind::Float(b) = right.kind else { return None };
+            if !matches!(left.kind, ExprKind::Float(_)) {
+                let reciprocal = 1.0 / b;
+                let exact = b != 0.0 && b.is_finite() && reciprocal.is_finite()
+                    && (b.to_bits() & 0x000f_ffff_ffff_ffff) == 0
+                    && (expression.ty == Type::Double || f64::from(reciprocal as f32) == reciprocal)
+                    && reciprocal.is_normal();
+                return exact.then(|| {
+                    Expr::binary(BinaryOp::Multiply, (**left).clone(), float(reciprocal, expression.ty), expression.ty)
+                });
+            }
+            let ExprKind::Float(a) = left.kind else { unreachable!() };
+            (b != 0.0).then(|| float(a / b, expression.ty))
+        }
         ExprKind::Binary(op, left, right) if mwcc_iro::is_float(expression.ty) => {
             let (ExprKind::Float(a), ExprKind::Float(b)) = (&left.kind, &right.kind) else { return None };
             let value = match op {
                 BinaryOp::Add => a + b,
                 BinaryOp::Subtract => a - b,
                 BinaryOp::Multiply => a * b,
-                BinaryOp::Divide if *b != 0.0 => a / b,
+
                 _ => return None,
             };
             Some(float(value, expression.ty))
@@ -414,7 +454,12 @@ fn cancel<'a>(op: BinaryOp, left: &'a Expr, right: &Expr) -> Option<&'a Expr> {
 /// trap (pointer loads, division).
 pub fn speculable(expression: &Expr) -> bool {
     match &expression.kind {
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Var(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => true,
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Var(_)
+        | ExprKind::Global(_)
+        | ExprKind::GlobalAddress(_)
+        | ExprKind::LocalAddress(_) => true,
         ExprKind::Binary(op, left, right) => {
             !matches!(op, BinaryOp::Divide | BinaryOp::Modulo | BinaryOp::LogicalAnd | BinaryOp::LogicalOr)
                 && speculable(left)
@@ -816,7 +861,7 @@ mod tests {
             name: "f".into(),
             return_type: Type::Int,
             variables: (0..2)
-                .map(|i| Variable { name: format!("p{i}"), ty: Type::Int, kind: VariableKind::Parameter })
+                .map(|i| Variable { name: format!("p{i}"), ty: Type::Int, kind: VariableKind::Parameter, frame: None })
                 .collect(),
             parameter_count: 2,
             body,

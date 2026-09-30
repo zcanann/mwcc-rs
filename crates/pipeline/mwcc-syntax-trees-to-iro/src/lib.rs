@@ -68,22 +68,48 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             name: parameter.name.clone(),
             ty: parameter.parameter_type,
             kind: VariableKind::Parameter,
+            frame: None,
         });
     }
     let floats = function.parameters.iter().filter(|p| is_float(p.parameter_type)).count();
     if function.parameters.len() - floats > ARGUMENT_REGISTERS || floats > ARGUMENT_REGISTERS {
         return Err(unsupported("stack-passed parameters"));
     }
+    let taken = addresses_taken(function);
     for local in &function.locals {
-        if local.is_static || local.is_volatile || local.array_length.is_some() {
-            return Err(unsupported("static, volatile, or array locals"));
+        if local.is_static || local.is_volatile {
+            return Err(unsupported("static or volatile locals"));
         }
-        if !is_value_type(local.declared_type) {
-            return Err(unsupported(format!("local type {:?}", local.declared_type)));
+        // Arrays, structs and scalars whose address is taken live in the frame.
+        let element = match local.declared_type {
+            Type::Struct { size, align } => Some((size, u32::from(align).max(1))),
+            ty if is_value_type(ty) => Some((mwcc_iro::width(ty), mwcc_iro::width(ty))),
+            _ => None,
+        };
+        let frame = match (local.array_length, element) {
+            (Some(length), Some((size, align))) => Some((size * u32::from(length), align)),
+            (None, Some(object)) if matches!(local.declared_type, Type::Struct { .. }) || taken.contains(&local.name) => {
+                Some(object)
+            }
+            (None, Some(_)) => None,
+            _ => return Err(unsupported(format!("local type {:?}", local.declared_type))),
+        };
+        if frame.is_some() && local.data_bytes.is_some() {
+            return Err(unsupported("an initialized frame array"));
         }
-        variables.push(Variable { name: local.name.clone(), ty: local.declared_type, kind: VariableKind::Local });
+        variables.push(Variable { name: local.name.clone(), ty: local.declared_type, kind: VariableKind::Local, frame });
     }
+    if function.parameters.iter().any(|parameter| taken.contains(&parameter.name)) {
+        return Err(unsupported("address of a parameter"));
+    }
+    let arrays = function
+        .locals
+        .iter()
+        .filter(|local| local.array_length.is_some())
+        .filter_map(|local| variables.iter().position(|variable| variable.name == local.name && variable.kind == VariableKind::Local))
+        .collect();
     let mut builder = Builder {
+        arrays,
         return_type: function.return_type,
         unit,
         names: variables.iter().enumerate().map(|(id, variable)| (variable.name.clone(), id)).collect(),
@@ -94,7 +120,15 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         if let Some(initializer) = &local.initializer {
             let variable = builder.names[&local.name];
             let value = assigned(builder.expression(initializer)?, local.declared_type);
-            body.push(Stmt::Assign { variable, value });
+            body.push(match builder.variables[variable].frame {
+                Some(_) if local.array_length.is_none() && is_value_type(local.declared_type) => Stmt::Store {
+                    place: Place::Memory { base: Box::new(builder.local_address(variable)), index: None, offset: 0 },
+                    ty: local.declared_type,
+                    value,
+                },
+                Some(_) => return Err(unsupported("an initialized frame aggregate")),
+                None => Stmt::Assign { variable, value },
+            });
         }
     }
     for statement in &function.statements {
@@ -137,6 +171,8 @@ fn has_return(statements: &[Statement]) -> bool {
 }
 
 struct Builder<'a> {
+    /// Frame variables that are arrays.
+    arrays: Vec<VarId>,
     return_type: Type,
     unit: &'a Unit<'a>,
     names: HashMap<String, VarId>,
@@ -182,7 +218,7 @@ impl Builder<'_> {
     /// `target = value` as a statement.
     fn assignment(&mut self, target: &Expression, value: &Expression) -> Compilation<Vec<Stmt>> {
         if let Expression::Variable(name) = target {
-            if let Some(&variable) = self.names.get(name) {
+            if let Some(&variable) = self.names.get(name).filter(|&&id| self.variables[id].frame.is_none()) {
                 let ty = self.variables[variable].ty;
                 return Ok(vec![Stmt::Assign { variable, value: assigned(self.expression(value)?, ty) }]);
             }
@@ -193,6 +229,9 @@ impl Builder<'_> {
 
     fn statement(&mut self, statement: &Statement) -> Compilation<Vec<Stmt>> {
         Ok(vec![match statement {
+            Statement::Assign { name, value } if self.names.get(name).is_some_and(|&id| self.variables[id].frame.is_some()) => {
+                return self.assignment(&Expression::Variable(name.clone()), value);
+            }
             Statement::Assign { name, value } => {
                 let Some(&variable) = self.names.get(name) else {
                     return Err(unsupported(format!("assignment to non-local '{name}'")));
@@ -255,6 +294,11 @@ impl Builder<'_> {
                     None => Err(unsupported("store through a non-scalar pointer")),
                 }
             }
+            Expression::Variable(name) if self.names.get(name).is_some_and(|&id| self.variables[id].frame.is_some()) => {
+                let id = self.names[name];
+                let ty = self.variables[id].ty;
+                Ok((Place::Memory { base: Box::new(self.local_address(id)), index: None, offset: 0 }, ty))
+            }
             Expression::Variable(name) if self.unit.globals.contains_key(name) && !self.names.contains_key(name) => {
                 let global = self.unit.globals[name];
                 if global.is_array {
@@ -298,6 +342,17 @@ impl Builder<'_> {
         Ok(Some(displaced(pointer, 0, loaded)))
     }
 
+    /// Whether a frame variable is an array (its name is its address).
+    fn is_array(&self, id: VarId) -> bool {
+        self.arrays.contains(&id)
+    }
+
+    /// The address of a frame variable, typed as a pointer to its element.
+    fn local_address(&self, id: VarId) -> Expr {
+        let ty = pointer_to(self.variables[id].ty).unwrap_or(Type::StructPointer { element_size: 0 });
+        Expr { kind: ExprKind::LocalAddress(id), ty }
+    }
+
     /// A returned value: floating results convert to the return type.
     fn returned(&mut self, value: &Expression) -> Compilation<Expr> {
         let value = self.expression(value)?;
@@ -331,6 +386,18 @@ impl Builder<'_> {
             Expression::FloatLiteral(value) => Expr { kind: ExprKind::Float(*value), ty: Type::Float },
             Expression::Variable(name) => {
                 if let Some(&id) = self.names.get(name) {
+                    let variable = &self.variables[id];
+                    if variable.frame.is_some() {
+                        let address = self.local_address(id);
+                        // An array or struct names its address; a scalar loads.
+                        if !matches!(address.ty, Type::StructPointer { .. }) && is_value_type(variable.ty) && !self.is_array(id) {
+                            return Ok(Expr {
+                                kind: ExprKind::Load { base: Box::new(address), index: None, offset: 0 },
+                                ty: variable.ty,
+                            });
+                        }
+                        return Ok(address);
+                    }
                     return Ok(Expr { kind: ExprKind::Var(id), ty: self.variables[id].ty });
                 }
                 let Some(global) = self.unit.globals.get(name) else {
@@ -458,7 +525,10 @@ impl Builder<'_> {
                 let ty = pointer_to(global.ty).ok_or_else(|| unsupported("address of this global type"))?;
                 Ok(Expr { kind: ExprKind::GlobalAddress(name.clone()), ty })
             }
-            Expression::Variable(_) => Err(unsupported("address of a local")),
+            Expression::Variable(name) => match self.names.get(name) {
+                Some(&id) if self.variables[id].frame.is_some() => Ok(self.local_address(id)),
+                _ => Err(unsupported("address of a register variable")),
+            },
             Expression::Member { base, offset, member_type, index_stride: None } => {
                 let base = self.aggregate_address(base)?;
                 let ty = pointer_to(*member_type).ok_or_else(|| unsupported("address of this member type"))?;
@@ -663,4 +733,87 @@ fn displaced(pointer: Expr, offset: i32, ty: Type) -> (Box<Expr>, Option<Box<Exp
         }
     }
     (Box::new(pointer), None, offset, ty)
+}
+
+/// Names whose address the function takes (`&name`).
+fn addresses_taken(function: &ast::Function) -> std::collections::HashSet<String> {
+    fn expression(e: &Expression, out: &mut std::collections::HashSet<String>) {
+        if let Expression::AddressOf { operand } = e {
+            if let Expression::Variable(name) = operand.as_ref() {
+                out.insert(name.clone());
+            }
+        }
+        match e {
+            Expression::Binary { left, right, .. } => {
+                expression(left, out);
+                expression(right, out);
+            }
+            Expression::Unary { operand, .. }
+            | Expression::Cast { operand, .. }
+            | Expression::AddressOf { operand } => expression(operand, out),
+            Expression::Dereference { pointer } => expression(pointer, out),
+            Expression::Index { base, index } => {
+                expression(base, out);
+                expression(index, out);
+            }
+            Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => expression(base, out),
+            Expression::Conditional { condition, when_true, when_false, .. } => {
+                expression(condition, out);
+                expression(when_true, out);
+                expression(when_false, out);
+            }
+            Expression::Call { arguments, .. } => arguments.iter().for_each(|a| expression(a, out)),
+            Expression::Assign { target, value } => {
+                expression(target, out);
+                expression(value, out);
+            }
+            Expression::Comma { left, right } => {
+                expression(left, out);
+                expression(right, out);
+            }
+            Expression::IndexedUpdateValue { value } => expression(value, out),
+            Expression::PostStep { target, .. } => expression(target, out),
+            _ => {}
+        }
+    }
+    fn statements(body: &[Statement], out: &mut std::collections::HashSet<String>) {
+        for statement in body {
+            match statement {
+                Statement::Assign { value, .. } => expression(value, out),
+                Statement::Store { target, value } => {
+                    expression(target, out);
+                    expression(value, out);
+                }
+                Statement::Expression(e) => expression(e, out),
+                Statement::If { condition, then_body, else_body } => {
+                    expression(condition, out);
+                    statements(then_body, out);
+                    statements(else_body, out);
+                }
+                Statement::Return(Some(e)) => expression(e, out),
+                Statement::Loop { initializer, condition, step, body, .. } => {
+                    for e in [initializer, condition, step].into_iter().flatten() {
+                        expression(e, out);
+                    }
+                    statements(body, out);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    statements(&function.statements, &mut out);
+    for guard in &function.guards {
+        expression(&guard.condition, &mut out);
+        expression(&guard.value, &mut out);
+    }
+    if let Some(value) = &function.return_expression {
+        expression(value, &mut out);
+    }
+    for local in &function.locals {
+        if let Some(initializer) = &local.initializer {
+            expression(initializer, &mut out);
+        }
+    }
+    out
 }

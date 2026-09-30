@@ -123,6 +123,10 @@ fn operand_keys(instruction: &PInstr) -> (Vec<Key>, Vec<Key>) {
             uses.push(Key::Carry);
             defs.push(Key::Carry);
         }
+        // A store with update writes its base register.
+        Instruction::StoreWordWithUpdate { a, .. } if !defs.contains(&Key::General(u32::from(*a))) => {
+            defs.push(Key::General(u32::from(*a)))
+        }
         Instruction::MoveFromLinkRegister { .. } => uses.push(Key::Link),
         Instruction::MoveFromConditionRegister { .. } => uses.push(Key::Condition),
         Instruction::MoveToLinkRegister { .. } => defs.push(Key::Link),
@@ -142,10 +146,38 @@ fn memory_of(instruction: &PInstr) -> Memory {
     let head = name.split([' ', '{', '(']).next().unwrap_or("");
     let is_load = head.starts_with("Load") || head.starts_with("PairedSingleQuantizedLoad");
     let is_store = head.starts_with("Store") || head.starts_with("PairedSingleQuantizedStore");
+    // Allocating the frame orders only through r1.
+    if matches!(instruction.instruction, Instruction::StoreWordWithUpdate { a: 1, .. })
+        && std::env::var_os("MWCC_SCHED_STWU_MEMORY").is_none()
+    {
+        return Memory::None;
+    }
     if !is_load && !is_store {
+        // The address of a frame object reads that object (final pass).
+        if let Instruction::AddImmediate { a: 1, immediate, .. } = instruction.instruction {
+            if std::env::var_os("MWCC_SCHED_NO_ADDRESS_LOAD").is_none() && FINAL_PASS.with(|flag| flag.get()) {
+                let start = FRAME_OBJECTS.with(|objects| {
+                    objects.borrow().iter().find(|&&(start, end)| start <= immediate && immediate < end).map(|&(start, _)| start)
+                });
+                if let Some(start) = start {
+                    return Memory::Load(Some(ObjectKey::Frame(start)));
+                }
+            }
+        }
         return Memory::None;
     }
     let object = match (&instruction.relocation, &instruction.instruction) {
+        // Nothing stores to the constant pool: its loads are unordered.
+        (Some(relocation), _)
+            if matches!(relocation.target, RelocationTarget::Constant(_)) && is_load
+                && std::env::var_os("MWCC_SCHED_POOL_ORDERED").is_none() =>
+        {
+            return Memory::None;
+        }
+        (Some(relocation), _) if matches!(relocation.target, RelocationTarget::Constant(_)) => {
+            let RelocationTarget::Constant(index) = relocation.target else { unreachable!() };
+            Some(ObjectKey::Symbol(format!("@pool{index}")))
+        }
         (Some(relocation), _)
             if matches!(
                 relocation.kind,
@@ -159,8 +191,13 @@ fn memory_of(instruction: &PInstr) -> Memory {
                 _ => None,
             }
         }
-        (None, Instruction::LoadWord { a: 1, offset, .. })
-        | (None, Instruction::StoreWord { a: 1, offset, .. }) => Some(ObjectKey::Frame(*offset)),
+        (None, _) => frame_offset(&name).map(|offset| {
+            // An access inside a frame object belongs to that object.
+            let start = FRAME_OBJECTS.with(|objects| {
+                objects.borrow().iter().find(|&&(start, end)| start <= offset && offset < end).map(|&(start, _)| start)
+            });
+            ObjectKey::Frame(start.unwrap_or(offset))
+        }),
         _ => None,
     };
     if is_load {
@@ -168,6 +205,16 @@ fn memory_of(instruction: &PInstr) -> Memory {
     } else {
         Memory::Store(object)
     }
+}
+
+/// The displacement of an `r1`-based D-form access, from its debug form.
+fn frame_offset(debug: &str) -> Option<i16> {
+    if !debug.contains(" a: 1,") {
+        return None;
+    }
+    let rest = &debug[debug.find("offset: ")? + 8..];
+    let end = rest.find([',', ' ', '}']).unwrap_or(rest.len());
+    rest[..end].parse().ok()
 }
 
 /// Reorder `instructions` (one basic block) as MWCC's scheduler would.
@@ -192,7 +239,10 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                 alternate: (two_integer_units && info.unit == 1 && !multiply_or_divide).then_some(8),
                 occupancy: info.occupancy.max(1),
                 rank: info.pick_rank,
-                serialize: info.serialize || instruction.instruction.is_call(),
+                serialize: info.serialize
+                    || instruction.instruction.is_call()
+                    || (matches!(instruction.instruction, Instruction::AddImmediate { d: 1, a: 1, .. })
+                        && std::env::var_os("MWCC_SCHED_POP_FREE").is_none()),
                 is_store: matches!(memory_of(instruction), Memory::Store(_)),
                 height: u32::from(info.latency),
                 successors: Vec::new(),
@@ -406,6 +456,8 @@ thread_local! {
     static FINAL_PASS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The machine model has a second integer unit (post-1.2.5 builds).
     pub(crate) static TWO_INTEGER_UNITS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The function's frame objects, `[start, end)` from r1.
+    pub(crate) static FRAME_OBJECTS: std::cell::RefCell<Vec<(i16, i16)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// In the final (physical) pass every memory access is mutually ordered —

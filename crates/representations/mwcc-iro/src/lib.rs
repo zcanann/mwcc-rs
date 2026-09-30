@@ -56,8 +56,12 @@ pub enum VariableKind {
 #[derive(Debug, Clone)]
 pub struct Variable {
     pub name: String,
+    /// The value type; for an array, its element type.
     pub ty: Type,
     pub kind: VariableKind,
+    /// A variable that lives in the frame (an array, a struct, or a scalar
+    /// whose address is taken): (bytes, alignment).
+    pub frame: Option<(u32, u32)>,
 }
 
 /// A function at the IRO level.
@@ -75,7 +79,7 @@ pub struct Function {
 impl Function {
     pub fn add_temporary(&mut self, ty: Type) -> VarId {
         let id = self.variables.len();
-        self.variables.push(Variable { name: format!("@t{id}"), ty, kind: VariableKind::Temporary });
+        self.variables.push(Variable { name: format!("@t{id}"), ty, kind: VariableKind::Temporary, frame: None });
         id
     }
 }
@@ -200,6 +204,8 @@ pub enum ExprKind {
     Global(String),
     /// The address of a file-scope object (typed as a pointer).
     GlobalAddress(String),
+    /// The address of a frame-resident variable (typed as a pointer).
+    LocalAddress(VarId),
     /// A load of `ty` from `base + index + offset` (`index` scaled).
     Load { base: Box<Expr>, index: Option<Box<Expr>>, offset: i32 },
     Unary(UnaryOp, Box<Expr>),
@@ -253,7 +259,7 @@ impl Expr {
     pub fn mentions(&self, variable: VarId) -> bool {
         match &self.kind {
             ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => false,
-            ExprKind::Var(id) => *id == variable,
+            ExprKind::Var(id) | ExprKind::LocalAddress(id) => *id == variable,
             ExprKind::Load { base, index, .. } => {
                 base.mentions(variable) || index.as_ref().is_some_and(|index| index.mentions(variable))
             }
@@ -385,6 +391,7 @@ impl fmt::Display for Expr {
             ExprKind::Var(id) => write!(f, "v{id}"),
             ExprKind::Global(name) => write!(f, "{name}"),
             ExprKind::GlobalAddress(name) => write!(f, "&{name}"),
+            ExprKind::LocalAddress(id) => write!(f, "&v{id}"),
             ExprKind::Load { base, index, offset } => {
                 write!(f, "load.{:?}[{base}", self.ty)?;
                 if let Some(index) = index {
