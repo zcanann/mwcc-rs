@@ -5326,6 +5326,95 @@ impl Parser {
                     }
                     break;
                 }
+                // `static RET (*name[N])(params) = { f, g };` — an array of
+                // function pointers: a static word array with relocations.
+                if *self.peek() == Token::ParenOpen
+                    && self.tokens.get(self.position + 1) == Some(&Token::Star)
+                    && matches!(self.tokens.get(self.position + 2), Some(Token::Identifier(_)))
+                    && self.tokens.get(self.position + 3) == Some(&Token::BracketOpen)
+                {
+                    self.advance(); // `(`
+                    self.advance(); // `*`
+                    let name = self.parse_identifier()?;
+                    self.expect(Token::BracketOpen)?;
+                    let explicit = if *self.peek() == Token::BracketClose {
+                        None
+                    } else {
+                        Some(u16::try_from(self.parse_integer_constant()?).map_err(|_| {
+                            Diagnostic::error("a function-pointer array length is out of range")
+                        })?)
+                    };
+                    self.expect(Token::BracketClose)?;
+                    self.expect(Token::ParenClose)?;
+                    self.expect(Token::ParenOpen)?;
+                    let mut depth = 1;
+                    while depth > 0 {
+                        match self.advance() {
+                            Token::ParenOpen => depth += 1,
+                            Token::ParenClose => depth -= 1,
+                            Token::EndOfFile => {
+                                return Err(Diagnostic::error("unterminated function-pointer array local"))
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !is_static {
+                        return Err(Diagnostic::error(
+                            "an automatic function-pointer array is not supported yet (roadmap)",
+                        ));
+                    }
+                    let mut data_relocations = Vec::new();
+                    let (length, bytes) = if self.eat_keyword(Token::Equals) {
+                        let elements = self.parse_address_initializer()?;
+                        let count = u16::try_from(elements.len())
+                            .map_err(|_| Diagnostic::error("too many function-pointer initializers"))?;
+                        let length = explicit.unwrap_or(count);
+                        let mut bytes = vec![0u8; usize::from(length) * 4];
+                        for (index, element) in elements.into_iter().enumerate() {
+                            let offset = index as u32 * 4;
+                            match element {
+                                PointerElement::Null => {}
+                                PointerElement::Scalar(value) => bytes[index * 4..index * 4 + 4]
+                                    .copy_from_slice(&(value as u32).to_be_bytes()),
+                                PointerElement::Symbol(target) => {
+                                    data_relocations.push(local_data_relocation(offset, target, 0))
+                                }
+                                PointerElement::SymbolWithAddend { symbol, addend } => {
+                                    data_relocations.push(local_data_relocation(offset, symbol, addend))
+                                }
+                                PointerElement::Str(bytes) => data_relocations.push(LocalDataRelocation {
+                                    offset,
+                                    target: LocalDataRelocationTarget::StringLiteral(bytes),
+                                    addend: 0,
+                                }),
+                            }
+                        }
+                        (length, bytes)
+                    } else {
+                        let length = explicit.ok_or_else(|| {
+                            Diagnostic::error("an array with no length needs an initializer")
+                        })?;
+                        (length, vec![0u8; usize::from(length) * 4])
+                    };
+                    locals.push(LocalDeclaration {
+                        declared_type: Type::Pointer(Pointee::Pointer),
+                        name,
+                        initializer: None,
+                        is_volatile,
+                        array_length: Some(length),
+                        is_static: true,
+                        data_bytes: Some(bytes),
+                        data_relocations,
+                        is_const: false,
+                        attribute_alignment: None,
+                        row_bytes: None,
+                    });
+                    local_lines.push(Some(declaration_line));
+                    if self.eat_keyword(Token::Comma) {
+                        continue;
+                    }
+                    break;
+                }
                 // `RET (*name)(params)` / `RET (**name)(params)` — a function-
                 // pointer (or pointer to one) LOCAL: a 4-byte word; the signature
                 // is skipped (abort_exit's `void (**var_r31)(void);`).

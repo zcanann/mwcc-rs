@@ -250,6 +250,9 @@ impl LoadContext<'_> {
                 continue;
             };
             let Some(included_path) = self.resolve_include(&canonical, &include) else {
+                if std::env::var_os("MWCC_REPORT_MISSING_INCLUDES").is_some() {
+                    eprintln!("missing include: {} (from {})", include.path, canonical.display());
+                }
                 output.extend_from_slice(line);
                 continue;
             };
