@@ -1419,6 +1419,12 @@ impl Lowerer<'_, '_> {
                 let (a, _) = self.expression(&Expr::int(i64::from(high) << 16))?;
                 self.load(ty, a, low, None, target)
             }
+            // A small-data object's first member loads through `@sda21`.
+            ExprKind::Load { base, index: None, offset: 0 } if self.small_data_object(base).is_some() => {
+                let name = self.small_data_object(base).expect("checked").to_owned();
+                let relocation = AttachedRelocation { kind: RelocationKind::EmbSda21, target: RelocationTarget::External(name) };
+                self.load(ty, 0, 0, Some(relocation), target)
+            }
             ExprKind::Load { base, index: None, offset } if self.unoptimized && self.unoptimized_indexed(base).is_some() => {
                 let (a, b) = self.unoptimized_address(base, *offset)?;
                 match b {
@@ -2613,6 +2619,19 @@ impl Lowerer<'_, '_> {
         Ok((address, Some(displaced)))
     }
 
+    /// The small-data object a base addresses (`&g`).
+    fn small_data_object<'e>(&self, base: &'e Expr) -> Option<&'e str> {
+        match &base.kind {
+            ExprKind::GlobalAddress(name)
+                if self.unit.globals.get(name).is_some_and(|global| global.small_data && !global.is_function)
+                    && !toggle("MWCC_PCODE_NO_SMALL_DATA_MEMBER_FOLD") =>
+            {
+                Some(name)
+            }
+            _ => None,
+        }
+    }
+
     fn absolute_base(&self, base: &Expr) -> bool {
         matches!(&base.kind, ExprKind::GlobalAddress(name) if !self.unit.globals[name].small_data)
     }
@@ -2660,6 +2679,10 @@ impl Lowerer<'_, '_> {
                 let (high, low) = split_address(base.as_int().expect("checked") + i64::from(*offset))?;
                 let (a, _) = self.expression(&Expr::int(i64::from(high) << 16))?;
                 (a, low, None, None)
+            }
+            Place::Memory { base, index: None, offset: 0 } if self.small_data_object(base).is_some() => {
+                let name = self.small_data_object(base).expect("checked").to_owned();
+                (0, 0, None, Some(AttachedRelocation { kind: RelocationKind::EmbSda21, target: RelocationTarget::External(name) }))
             }
             Place::Memory { base, index: None, offset } if self.unoptimized && self.unoptimized_indexed(base).is_some() => {
                 let (a, b) = self.unoptimized_address(base, *offset)?;
