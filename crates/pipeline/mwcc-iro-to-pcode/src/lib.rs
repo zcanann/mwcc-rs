@@ -1571,6 +1571,20 @@ impl Lowerer<'_> {
 
     fn idiom(&mut self, idiom: &Idiom, target: Option<u32>) -> Compilation<(u32, Type)> {
         match idiom {
+            Idiom::Insert { base, value, shift, begin, end } => {
+                // The inserted value is computed before the old unit loads.
+                let (x, _) = self.expression(value)?;
+                let (b, _) = self.expression(base)?;
+                // rlwimi overwrites its destination before reading the
+                // source: the destination must not hold the source.
+                let target = target.filter(|&d| d != x);
+                let d = self.result(target);
+                if b != d {
+                    self.emit_plain(Instruction::Or { a: d, s: b, b });
+                }
+                self.emit_plain(Instruction::RotateAndMaskInsert { a: d, s: x, shift: *shift, begin: *begin, end: *end });
+                Ok((d, Type::Int))
+            }
             Idiom::Absolute(value) => {
                 let (a, _) = self.expression(value)?;
                 let sign = self.temporary();
@@ -2510,6 +2524,7 @@ fn makes_calls(body: &[Stmt]) -> bool {
             }
             ExprKind::Idiom(Idiom::Absolute(value)) => expression(value),
             ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => expression(tested) || expression(value),
+            ExprKind::Idiom(Idiom::Insert { base, value, .. }) => expression(base) || expression(value),
         }
     }
     body.iter().any(|statement| match statement {
@@ -2548,6 +2563,7 @@ fn references(body: &[Stmt], variable: VarId) -> usize {
             }
             ExprKind::Call { arguments, .. } => arguments.iter().map(|a| expression(a, variable)).sum(),
             ExprKind::Idiom(Idiom::Absolute(value)) => expression(value, variable),
+            ExprKind::Idiom(Idiom::Insert { base, value, .. }) => expression(base, variable) + expression(value, variable),
             ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => {
                 expression(tested, variable) + expression(value, variable)
             }

@@ -162,6 +162,9 @@ pub fn run(function: &mut Function) {
     if enabled("FOLD") {
         for_each_expression(&mut function.body, &mut |expression| fold(expression));
     }
+    if enabled("FORWARD") {
+        forward_offsets(function);
+    }
     if enabled("ALGEBRA") {
         for_each_expression(&mut function.body, &mut |expression| algebra(expression));
     }
@@ -435,6 +438,10 @@ fn children(expression: &mut Expr, rewrite: &mut dyn FnMut(&mut Expr)) {
         }
         ExprKind::Call { arguments, .. } => arguments.iter_mut().for_each(|argument| rewrite(argument)),
         ExprKind::Idiom(Idiom::Absolute(value)) => rewrite(value),
+        ExprKind::Idiom(Idiom::Insert { base, value, .. }) => {
+            rewrite(base);
+            rewrite(value);
+        }
         ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => {
             rewrite(tested);
             rewrite(value);
@@ -717,7 +724,7 @@ pub fn idioms(expression: &mut Expr, variables: &[Type]) {
     if let ExprKind::Select { condition, when_true, when_false } = &expression.kind {
         if let Some(idiom) = sign_idiom(condition, when_true, when_false, variables) {
             let ty = match &idiom {
-                Idiom::Absolute(_) => Type::Int,
+                Idiom::Absolute(_) | Idiom::Insert { .. } => Type::Int,
                 Idiom::Masked { value, .. } => mwcc_iro::promote(value.ty),
             };
             *expression = Expr { kind: ExprKind::Idiom(idiom), ty };
@@ -731,6 +738,7 @@ pub fn sign_idiom(condition: &Expr, when_true: &Expr, when_false: &Expr, variabl
     let idiom = recognize(condition, when_true, when_false)?;
     let tested = match &idiom {
         Idiom::Absolute(tested) | Idiom::Masked { tested, .. } => tested,
+        Idiom::Insert { .. } => return None,
     };
     let equality = matches!(idiom, Idiom::Masked { relation: BinaryOp::Equal | BinaryOp::NotEqual, .. });
     let ty = variables[tested.as_var()?];
@@ -939,7 +947,7 @@ fn select(
     let variables: Vec<Type> = function.variables.iter().map(|variable| variable.ty).collect();
     if let Some(idiom) = sign_idiom(condition, when_true, when_false, &variables) {
         let ty = match &idiom {
-            Idiom::Absolute(_) => Type::Int,
+            Idiom::Absolute(_) | Idiom::Insert { .. } => Type::Int,
             Idiom::Masked { value, .. } => mwcc_iro::promote(value.ty),
         };
         return Some(vec![destination.assign(Expr { kind: ExprKind::Idiom(idiom), ty })]);
@@ -1168,4 +1176,160 @@ fn constant_index_part(index: &Expr) -> Option<(Expr, i64)> {
         Expr::binary(BinaryOp::Multiply, (**variable).clone(), Expr::int(size), index.ty)
     };
     Some((variable, constant))
+}
+
+/// Forward substitution of offset addresses: a local assigned once as
+/// `v + k` (with `v` never assigned) is replaced by `v + k` at every use,
+/// so accesses through it fold `k` into their displacement.
+pub fn forward_offsets(function: &mut Function) {
+    fn count_assignments(body: &[Stmt], counts: &mut [usize]) {
+        for statement in body {
+            match statement {
+                Stmt::Assign { variable, .. } => counts[*variable] += 1,
+                Stmt::If { then_body, else_body, .. } => {
+                    count_assignments(then_body, counts);
+                    count_assignments(else_body, counts);
+                }
+                Stmt::Loop { body, step, .. } => {
+                    // A definition inside a loop runs repeatedly.
+                    let mut inner = vec![0; counts.len()];
+                    count_assignments(body, &mut inner);
+                    count_assignments(step, &mut inner);
+                    for (count, extra) in counts.iter_mut().zip(inner) {
+                        *count += extra * 2;
+                    }
+                }
+                Stmt::Switch { arms, .. } => {
+                    for arm in arms {
+                        count_assignments(arm, counts);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fn definitions(body: &[Stmt], out: &mut Vec<(VarId, Expr)>) {
+        for statement in body {
+            match statement {
+                Stmt::Assign { variable, value } => out.push((*variable, value.clone())),
+                Stmt::If { then_body, else_body, .. } => {
+                    definitions(then_body, out);
+                    definitions(else_body, out);
+                }
+                Stmt::Switch { arms, .. } => {
+                    for arm in arms {
+                        definitions(arm, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fn remove_definitions(body: &mut Vec<Stmt>, forwarded: &HashMap<VarId, Expr>) {
+        body.retain(|statement| !matches!(statement, Stmt::Assign { variable, .. } if forwarded.contains_key(variable)));
+        for statement in body.iter_mut() {
+            match statement {
+                Stmt::If { then_body, else_body, .. } => {
+                    remove_definitions(then_body, forwarded);
+                    remove_definitions(else_body, forwarded);
+                }
+                Stmt::Switch { arms, .. } => {
+                    for arm in arms {
+                        remove_definitions(arm, forwarded);
+                    }
+                }
+                Stmt::Loop { body, step, .. } => {
+                    remove_definitions(body, forwarded);
+                    remove_definitions(step, forwarded);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut counts = vec![0; function.variables.len()];
+    count_assignments(&function.body, &mut counts);
+    let mut defs = Vec::new();
+    definitions(&function.body, &mut defs);
+    let mut forwarded: HashMap<VarId, Expr> = HashMap::new();
+    for (variable, value) in defs {
+        if counts[variable] != 1 || function.variables[variable].kind != VariableKind::Local {
+            continue;
+        }
+        let ExprKind::Binary(BinaryOp::Add, base, offset) = &value.kind else { continue };
+        let (ExprKind::Var(source), Some(_)) = (&base.kind, offset.as_int()) else { continue };
+        if counts[*source] != 0 || !pointer_like(value.ty) || !pointer_like(base.ty) {
+            continue;
+        }
+        forwarded.insert(variable, value.clone());
+    }
+    // Only addresses: every use must sit inside a load or store address.
+    fn value_uses(expression: &Expr, in_address: bool, out: &mut Vec<VarId>) {
+        match &expression.kind {
+            ExprKind::Var(id) if !in_address => out.push(*id),
+            ExprKind::Load { base, index, .. } => {
+                value_uses(base, true, out);
+                if let Some(index) = index {
+                    value_uses(index, false, out);
+                }
+            }
+            ExprKind::Binary(BinaryOp::Add | BinaryOp::Subtract, left, right) if in_address => {
+                value_uses(left, pointer_like(left.ty), out);
+                value_uses(right, pointer_like(right.ty), out);
+            }
+            _ => {
+                let mut copy = expression.clone();
+                children(&mut copy, &mut |child| value_uses(child, false, out));
+            }
+        }
+    }
+    fn statement_value_uses(body: &mut [Stmt], out: &mut Vec<VarId>) {
+        for statement in body.iter_mut() {
+            match statement {
+                Stmt::Store { place: mwcc_iro::Place::Memory { base, index, .. }, value, .. } => {
+                    value_uses(base, true, out);
+                    if let Some(index) = index {
+                        value_uses(index, false, out);
+                    }
+                    value_uses(value, false, out);
+                }
+                Stmt::If { condition, then_body, else_body } => {
+                    value_uses(condition, false, out);
+                    statement_value_uses(then_body, out);
+                    statement_value_uses(else_body, out);
+                }
+                Stmt::Loop { condition, body, step, .. } => {
+                    if let Some(condition) = condition {
+                        value_uses(condition, false, out);
+                    }
+                    statement_value_uses(body, out);
+                    statement_value_uses(step, out);
+                }
+                Stmt::Switch { value, arms, .. } => {
+                    value_uses(value, false, out);
+                    for arm in arms {
+                        statement_value_uses(arm, out);
+                    }
+                }
+                other => for_each_expression(std::slice::from_mut(other), &mut |e| value_uses(e, false, out)),
+            }
+        }
+    }
+    let mut escaping = Vec::new();
+    statement_value_uses(&mut function.body, &mut escaping);
+    forwarded.retain(|variable, _| !escaping.contains(variable));
+    if forwarded.is_empty() {
+        return;
+    }
+    remove_definitions(&mut function.body, &forwarded);
+    fn substitute(expression: &mut Expr, forwarded: &HashMap<VarId, Expr>) {
+        if let ExprKind::Var(id) = expression.kind {
+            if let Some(value) = forwarded.get(&id) {
+                let ty = expression.ty;
+                *expression = Expr { ty, ..value.clone() };
+                return;
+            }
+        }
+        children(expression, &mut |child| substitute(child, forwarded));
+    }
+    for_each_expression(&mut function.body, &mut |expression| substitute(expression, &forwarded));
 }

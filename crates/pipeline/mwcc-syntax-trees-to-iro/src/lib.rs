@@ -261,8 +261,37 @@ impl Builder<'_> {
         })
     }
 
+    /// `field = value` for a bit-field: the containing unit is loaded, the
+    /// value inserted (`rlwimi`) and the unit stored; a field filling its
+    /// whole unit is a plain store.
+    fn bit_field_store(&mut self, storage: &Expression, shift: u8, width: u8, value: &Expression) -> Compilation<Vec<Stmt>> {
+        if self.unit.bit_field_declared_units {
+            return Err(unsupported("bit-field store (declared-type units)"));
+        }
+        let (place, ty) = self.place(storage)?;
+        let bits = 8 * mwcc_iro::width(ty) as u8;
+        let value = promoted(self.expression(value)?);
+        if is_float(value.ty) || shift + width > bits {
+            return Err(unsupported("bit-field store of this value"));
+        }
+        if shift == 0 && width == bits {
+            return Ok(vec![Stmt::Store { place, ty, value: assigned(value, ty) }]);
+        }
+        let old = self.expression(storage)?;
+        let begin = 31 - (shift + width - 1);
+        let end = 31 - shift;
+        let inserted = Expr {
+            kind: ExprKind::Idiom(mwcc_iro::Idiom::Insert { base: Box::new(old), value: Box::new(value), shift, begin, end }),
+            ty: Type::Int,
+        };
+        Ok(vec![Stmt::Store { place, ty, value: inserted }])
+    }
+
     /// `target = value` as a statement.
     fn assignment(&mut self, target: &Expression, value: &Expression) -> Compilation<Vec<Stmt>> {
+        if let Expression::BitFieldRead { storage, shift, width, .. } = target {
+            return self.bit_field_store(storage, *shift, *width, value);
+        }
         if let Expression::Variable(name) = target {
             if let Some(&variable) = self.names.get(name).filter(|&&id| self.variables[id].frame.is_none()) {
                 let ty = self.variables[variable].ty;
@@ -428,6 +457,9 @@ impl Builder<'_> {
             }
             Statement::Break => Stmt::Break,
             Statement::Continue => Stmt::Continue,
+            Statement::Store { target, value } if matches!(target, Expression::BitFieldRead { .. }) => {
+                return self.assignment(target, value);
+            }
             Statement::Store { target, value } => {
                 let (place, ty) = self.place(target)?;
                 Stmt::Store { place, ty, value: assigned(self.expression(value)?, ty) }

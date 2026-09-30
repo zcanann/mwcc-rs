@@ -96,6 +96,8 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         keeps_struct_stores: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
         strings_small_data: behavior.global_addressing == GlobalAddressing::SmallData,
         strings_packed: behavior.string_literals_packed,
+        bit_field_declared_units: request.config.build.label.starts_with("GC/3.")
+            || request.config.build.label.starts_with("Wii/"),
         pool_small_data: behavior.read_only_global_addressing == GlobalAddressing::SmallData,
         narrow_parameters_extended: request.config.build.label.starts_with("GC/3.")
             || request.config.build.label.starts_with("Wii/"),

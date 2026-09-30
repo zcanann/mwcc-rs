@@ -57,6 +57,9 @@ pub struct Unit<'a> {
     pub strings_small_data: bool,
     /// Literals are packed into one `@stringBase` object (not modeled).
     pub strings_packed: bool,
+    /// Bit-field stores use the declared type's unit (GC/3.x, Wii; the
+    /// front end records the smallest covering unit).
+    pub bit_field_declared_units: bool,
     /// Floating constants live in small data (`-sdata2` above 0): loaded
     /// `lfs fD,@N@sda21(r0)`; otherwise through an absolute address.
     pub pool_small_data: bool,
@@ -220,6 +223,9 @@ pub enum Idiom {
     /// `(tested REL 0) ? value : 0` (`and` with the relation's mask) or
     /// `(tested REL 0) ? 0 : value` (`andc`).
     Masked { relation: BinaryOp, tested: Box<Expr>, value: Box<Expr>, keep_when_true: bool },
+    /// `rlwimi`: `value` rotated left by `shift` replaces bits `begin..=end`
+    /// of `base` (a bit-field store's read-modify-write).
+    Insert { base: Box<Expr>, value: Box<Expr>, shift: u8, begin: u8, end: u8 },
 }
 
 #[derive(Debug, Clone)]
@@ -307,6 +313,7 @@ impl Expr {
             ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => {
                 tested.mentions(variable) || value.mentions(variable)
             }
+            ExprKind::Idiom(Idiom::Insert { base, value, .. }) => base.mentions(variable) || value.mentions(variable),
         }
     }
 }
