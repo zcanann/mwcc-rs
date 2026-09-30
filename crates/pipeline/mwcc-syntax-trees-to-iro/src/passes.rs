@@ -219,7 +219,7 @@ pub fn for_each_expression(body: &mut [Stmt], rewrite: &mut dyn FnMut(&mut Expr)
 
 fn children(expression: &mut Expr, rewrite: &mut dyn FnMut(&mut Expr)) {
     match &mut expression.kind {
-        ExprKind::Int(_) | ExprKind::Var(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => {}
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Var(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => {}
         ExprKind::Load { base, index, .. } => {
             rewrite(base);
             if let Some(index) = index {
@@ -257,6 +257,9 @@ pub fn fold(expression: &mut Expr) {
 }
 
 fn fold_once(expression: &Expr) -> Option<Expr> {
+    if let Some(folded) = fold_float(expression) {
+        return Some(folded);
+    }
     match &expression.kind {
         // Integer and pointer casts of a literal are the literal, typed.
         ExprKind::Convert(operand)
@@ -319,6 +322,33 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
 
 fn pointer_like(ty: Type) -> bool {
     matches!(ty, Type::Pointer(_) | Type::StructPointer { .. })
+}
+
+/// Floating constants: conversions of literals and arithmetic on two.
+fn fold_float(expression: &Expr) -> Option<Expr> {
+    let float = |value: f64, ty: Type| {
+        let value = if ty == Type::Float { f64::from(value as f32) } else { value };
+        Expr { kind: ExprKind::Float(value), ty }
+    };
+    match &expression.kind {
+        ExprKind::Convert(operand) if mwcc_iro::is_float(expression.ty) => match operand.kind {
+            ExprKind::Float(value) => Some(float(value, expression.ty)),
+            ExprKind::Int(value) => Some(float(value as f64, expression.ty)),
+            _ => None,
+        },
+        ExprKind::Binary(op, left, right) if mwcc_iro::is_float(expression.ty) => {
+            let (ExprKind::Float(a), ExprKind::Float(b)) = (&left.kind, &right.kind) else { return None };
+            let value = match op {
+                BinaryOp::Add => a + b,
+                BinaryOp::Subtract => a - b,
+                BinaryOp::Multiply => a * b,
+                BinaryOp::Divide if *b != 0.0 => a / b,
+                _ => return None,
+            };
+            Some(float(value, expression.ty))
+        }
+        _ => None,
+    }
 }
 
 /// 32-bit arithmetic on two literals.
@@ -384,7 +414,7 @@ fn cancel<'a>(op: BinaryOp, left: &'a Expr, right: &Expr) -> Option<&'a Expr> {
 /// trap (pointer loads, division).
 pub fn speculable(expression: &Expr) -> bool {
     match &expression.kind {
-        ExprKind::Int(_) | ExprKind::Var(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => true,
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Var(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => true,
         ExprKind::Binary(op, left, right) => {
             !matches!(op, BinaryOp::Divide | BinaryOp::Modulo | BinaryOp::LogicalAnd | BinaryOp::LogicalOr)
                 && speculable(left)
@@ -706,6 +736,8 @@ fn select(
 /// A branch condition MWCC turns into a single compare-and-branch.
 fn simple_condition(condition: &Expr) -> bool {
     match &condition.kind {
+        // MWCC keeps the branches of a floating comparison.
+        ExprKind::Binary(op, left, _) if op.is_comparison() && mwcc_iro::is_float(left.ty) => false,
         ExprKind::Unary(UnaryOp::LogicalNot, operand) => simple_condition(operand),
         ExprKind::Binary(BinaryOp::LogicalAnd | BinaryOp::LogicalOr, ..) => false,
         _ => true,
@@ -724,6 +756,8 @@ pub fn stores(body: &mut [Stmt]) {
                 while let ExprKind::Convert(operand) = &value.kind {
                     if !(mwcc_iro::is_general_word(value.ty) && !matches!(value.ty, Type::Pointer(_) | Type::StructPointer { .. }))
                         || width(value.ty) < stored
+                        // A conversion from floating point is never dead.
+                        || mwcc_iro::is_float(operand.ty)
                     {
                         break;
                     }

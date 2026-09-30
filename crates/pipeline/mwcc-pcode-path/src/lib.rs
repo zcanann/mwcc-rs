@@ -92,6 +92,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         &unit,
         unoptimized,
         behavior.tail_call_optimization,
+        behavior.contract_floating_point,
     )?;
     let mut output = mwcc_pcode_to_machine_code::finish(
         lowered.pcode,

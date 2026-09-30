@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_iro::{
-    is_general_word, is_narrow, is_unsigned, is_unsigned_narrow, promote, width, BinaryOp, Expr, ExprKind,
+    is_float, is_general_word, is_narrow, is_unsigned, is_unsigned_narrow, promote, width, BinaryOp, Expr, ExprKind,
     Function, GlobalInfo, Idiom, Place, Stmt, Type, UnaryOp, Unit, VarId, VariableKind,
 };
 use mwcc_machine_code::{Instruction, RelocationKind, RelocationTarget};
@@ -42,10 +42,12 @@ pub fn lower(
     unit: &Unit<'_>,
     unoptimized: bool,
     tail_calls: bool,
+    contract: bool,
 ) -> Compilation<Lowered> {
     let returns = match function.return_type {
         Type::Void => ReturnRegisters::None,
         ty if is_general_word(ty) => ReturnRegisters::General,
+        Type::Float | Type::Double => ReturnRegisters::Float,
         other => return Err(unsupported(format!("return type {other:?}"))),
     };
     let mut lowerer = Lowerer {
@@ -69,6 +71,8 @@ pub fn lower(
         known_constant: None,
         tail_calls,
         common: HashMap::new(),
+        contract,
+        float_constants: HashMap::new(),
     };
     lowerer.lower_function(returns_through_variable)?;
     Ok(Lowered { pcode: lowerer.pcode, makes_calls: lowerer.makes_calls })
@@ -119,6 +123,10 @@ struct Lowerer<'a> {
     /// Values of simple operations computed in this block (IRO common
     /// subexpressions): key -> (register, type, variables read).
     common: HashMap<String, (u32, Type, Vec<VarId>)>,
+    /// `-fp_contract on`: multiply-add fuses.
+    contract: bool,
+    /// Floating constants loaded in this block: (bits, width) -> register.
+    float_constants: HashMap<(u64, u8), u32>,
 }
 
 impl Lowerer<'_> {
@@ -146,6 +154,7 @@ impl Lowerer<'_> {
         self.extended.clear();
         self.constants.clear();
         self.common.clear();
+        self.float_constants.clear();
     }
 
     fn start_block_keeping(&mut self, falls_through: bool) -> usize {
@@ -259,9 +268,23 @@ impl Lowerer<'_> {
         if let Some(register) = self.registers[variable] {
             return register;
         }
-        let register = self.temporary();
+        let register = self.fresh(self.function.variables[variable].ty);
         self.registers[variable] = Some(register);
         register
+    }
+
+    /// A new virtual register of the class that holds `ty`.
+    fn fresh(&mut self, ty: Type) -> u32 {
+        self.pcode.fresh(if is_float(ty) { Class::Float } else { Class::General })
+    }
+
+    fn result_for(&mut self, ty: Type, target: Option<u32>) -> u32 {
+        target.unwrap_or_else(|| self.fresh(ty))
+    }
+
+    /// A register copy in `ty`'s class.
+    fn copy(&mut self, ty: Type, d: u32, s: u32) {
+        self.emit_plain(if is_float(ty) { Instruction::FloatMove { d, b: s } } else { Instruction::Or { a: d, s, b: s } });
     }
 
     // ------------------------------------------------------------ function
@@ -275,27 +298,40 @@ impl Lowerer<'_> {
         if self.unoptimized {
             return self.lower_unoptimized(calls);
         }
+        let (mut general_argument, mut float_argument) = (FIRST_GENERAL_ARGUMENT, 1);
         for id in 0..function.parameter_count {
-            let register = self.temporary();
-            self.registers[id] = Some(register);
             let ty = function.variables[id].ty;
+            let register = self.fresh(ty);
+            self.registers[id] = Some(register);
             self.raw_narrow[id] = is_narrow(ty) && !assigns(&function.body, id);
-            incoming.push((id, register, FIRST_GENERAL_ARGUMENT + id as u32));
+            let physical = if is_float(ty) {
+                float_argument += 1;
+                float_argument - 1
+            } else {
+                general_argument += 1;
+                general_argument - 1
+            };
+            incoming.push((id, register, physical));
         }
         let locals: Vec<VarId> = (function.parameter_count..function.variables.len())
             .filter(|&id| function.variables[id].kind == VariableKind::Local)
             .collect();
         for &id in locals.iter().rev() {
-            self.registers[id] = Some(self.temporary());
+            self.registers[id] = Some(self.fresh(function.variables[id].ty));
         }
         if function.return_type != Type::Void && returns_through_variable {
-            self.return_register = Some(self.temporary());
+            self.return_register = Some(self.fresh(function.return_type));
         }
         self.pcode.begin_coalesce_window();
 
         for (id, virtual_register, physical) in incoming {
+            let ty = function.variables[id].ty;
+            if is_float(ty) {
+                self.emit_plain(Instruction::FloatMove { d: virtual_register, b: physical });
+                continue;
+            }
             // A narrow parameter that is assigned is re-extended on entry.
-            let ty = if self.raw_narrow[id] { Type::Int } else { function.variables[id].ty };
+            let ty = if self.raw_narrow[id] { Type::Int } else { ty };
             self.emit_plain(extension(ty, virtual_register, physical));
         }
         self.body_and_exit()
@@ -308,6 +344,9 @@ impl Lowerer<'_> {
     /// (callee-saved, r31 down). Temporaries are colored around them.
     fn lower_unoptimized(&mut self, calls: bool) -> Compilation<()> {
         let function = self.function;
+        if is_float(function.return_type) || function.variables.iter().any(|variable| is_float(variable.ty)) {
+            return Err(unsupported("floating point at -O0"));
+        }
         let mut home_slots: i16 = 0;
         let mut next_saved: u32 = 31;
         let mut entry_copies = Vec::new();
@@ -363,6 +402,9 @@ impl Lowerer<'_> {
         for argument in arguments {
             values.push(self.expression(argument)?.0);
         }
+        if arguments.iter().any(|argument| is_float(argument.ty)) || is_float(call.ty) {
+            return Err(unsupported("floating sibling call"));
+        }
         for (index, value) in values.into_iter().enumerate() {
             let register = FIRST_GENERAL_ARGUMENT + index as u32;
             self.emit_plain(Instruction::Or { a: register, s: value, b: value });
@@ -400,9 +442,10 @@ impl Lowerer<'_> {
         };
         self.labels[self.exit_label.0] = Some(exit);
         if let Some(register) = self.return_register {
-            // The copy to r3 joins all returns; the (empty) return block that
-            // receives the epilogue follows it.
-            self.emit_plain(Instruction::Or { a: 3, s: register, b: register });
+            // The copy to the result register joins all returns; the (empty)
+            // return block that receives the epilogue follows it.
+            let return_type = self.function.return_type;
+            self.copy(return_type, result_register(return_type), register);
             self.start_block(true);
         }
         self.resolve_branches()
@@ -504,7 +547,7 @@ impl Lowerer<'_> {
             }
             Stmt::Assign { variable, value } => self.assign(*variable, value),
             Stmt::Eval(value) => match &value.kind {
-                ExprKind::Call { name, arguments } => self.call(name, arguments, None).map(|_| ()),
+                ExprKind::Call { name, arguments } => self.call(name, arguments, Type::Void, None).map(|_| ()),
                 // A discarded value without effects (`(void)x;`).
                 ExprKind::Int(_) => Ok(()),
                 _ => Err(unsupported("expression statement")),
@@ -555,8 +598,13 @@ impl Lowerer<'_> {
                 self.convert_value(register, ty, raw, return_type, Some(destination))?
             };
             if register != destination {
-                self.emit_plain(Instruction::Or { a: destination, s: register, b: register });
+                self.copy(return_type, destination, register);
             }
+            return Ok(());
+        }
+        if is_float(return_type) {
+            let (register, _) = self.expression(value)?;
+            self.copy(return_type, 1, register);
             return Ok(());
         }
         let direct = self.unoptimized.then_some(3);
@@ -602,7 +650,7 @@ impl Lowerer<'_> {
             return Ok(());
         }
         if source != destination {
-            self.emit_plain(Instruction::Or { a: destination, s: source, b: source });
+            self.copy(variable_type, destination, source);
         }
         Ok(())
     }
@@ -660,6 +708,16 @@ impl Lowerer<'_> {
     /// Emit a compare for `left op right`; returns the cr0 bit to test and
     /// whether the relation holds when that bit is set.
     fn compare(&mut self, op: BinaryOp, left: &Expr, right: &Expr) -> Compilation<(u8, bool)> {
+        if is_float(left.ty) || is_float(right.ty) {
+            let (a, _) = self.expression(left)?;
+            let (b, _) = self.expression(right)?;
+            self.emit_plain(match op {
+                BinaryOp::Less | BinaryOp::Greater => Instruction::FloatCompareOrdered { a, b },
+                BinaryOp::Equal | BinaryOp::NotEqual => Instruction::FloatCompareUnordered { a, b },
+                _ => return Err(unsupported("floating <= or >= (cror)")),
+            });
+            return Ok(comparison(op));
+        }
         // A constant on the left compares mirrored so it can be an immediate.
         let (op, left, right) = if left.as_int().is_some() && right.as_int().is_none() {
             (op.mirror(), right, left)
@@ -740,6 +798,18 @@ impl Lowerer<'_> {
         let target = self.target.take();
         let ty = expression.ty;
         match &expression.kind {
+            ExprKind::Float(value) => self.float_constant(*value, ty, target),
+            ExprKind::Binary(op, left, right) if op.is_comparison() && (is_float(left.ty) || is_float(right.ty)) => {
+                self.float_comparison_value(*op, left, right, target)
+            }
+            ExprKind::Binary(op, left, right) if is_float(ty) => self.float_binary(*op, left, right, ty, target),
+            ExprKind::Unary(UnaryOp::Negate, operand) if is_float(ty) => {
+                let (source, _) = self.expression(operand)?;
+                let d = self.result_for(ty, target);
+                self.emit_plain(Instruction::FloatNegate { d, b: source });
+                Ok((d, ty))
+            }
+            ExprKind::Convert(operand) if is_float(ty) || is_float(operand.ty) => self.float_convert(operand, ty, target),
             ExprKind::Int(value) => {
                 if target.is_none() && !self.unoptimized && std::env::var_os("MWCC_PCODE_NO_CONSTANT_CSE").is_none() {
                     if let Some(&register) = self.constants.get(value) {
@@ -888,7 +958,7 @@ impl Lowerer<'_> {
                 self.convert_value(source, source_type, raw, ty, target)
             }
             ExprKind::Call { name, arguments } => {
-                let register = self.call(name, arguments, target)?;
+                let register = self.call(name, arguments, ty, target)?;
                 Ok((register, ty))
             }
         }
@@ -955,8 +1025,10 @@ impl Lowerer<'_> {
     fn indexed_load(&mut self, ty: Type, a: u32, b: u32, target: Option<u32>) -> Compilation<(u32, Type)> {
         // A signed byte loads raw (`lbz`); promotion extends it.
         let extends = false;
-        let d = if extends { self.temporary() } else { self.result(target) };
+        let d = if extends { self.temporary() } else { self.result_for(ty, target) };
         let instruction = match ty {
+            Type::Float => Instruction::LoadFloatSingleIndexed { d, a, b },
+            Type::Double => Instruction::LoadFloatDoubleIndexed { d, a, b },
             Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. } => {
                 Instruction::LoadWordIndexed { d, a, b }
             }
@@ -984,9 +1056,10 @@ impl Lowerer<'_> {
         relocation: Option<AttachedRelocation>,
         target: Option<u32>,
     ) -> Compilation<(u32, Type)> {
-        let extends = false;
-        let d = if extends { self.temporary() } else { self.result(target) };
+        let d = self.result_for(ty, target);
         let load = match ty {
+            Type::Float => Instruction::LoadFloatSingle { d, a: base, offset },
+            Type::Double => Instruction::LoadFloatDouble { d, a: base, offset },
             Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. } => {
                 Instruction::LoadWord { d, a: base, offset }
             }
@@ -1001,11 +1074,6 @@ impl Lowerer<'_> {
         }
         instruction.relocation = relocation;
         self.emit(instruction);
-        if extends {
-            let extended = self.result(target);
-            self.emit_plain(Instruction::ExtendSignByte { a: extended, s: d });
-            return Ok((extended, ty));
-        }
         Ok((d, ty))
     }
 
@@ -1036,6 +1104,120 @@ impl Lowerer<'_> {
         addi.not_r0.push(high);
         self.emit(addi);
         d
+    }
+
+    // ------------------------------------------------------------ floating point
+
+    /// A floating constant: loaded from the pool (`lfs fD,@N@sda21(r0)`).
+    fn float_constant(&mut self, value: f64, ty: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
+        let key = if ty == Type::Float { (u64::from((value as f32).to_bits()), 4u8) } else { (value.to_bits(), 8u8) };
+        if target.is_none() {
+            if let Some(&register) = self.float_constants.get(&key) {
+                return Ok((register, ty));
+            }
+        }
+        let index = match self.pcode.pool.iter().position(|&entry| entry == key) {
+            Some(index) => index,
+            None => {
+                self.pcode.pool.push(key);
+                self.pcode.pool.len() - 1
+            }
+        };
+        let d = self.result_for(ty, target);
+        let mut load = PInstr::new(if key.1 == 4 {
+            Instruction::LoadFloatSingle { d, a: 0, offset: 0 }
+        } else {
+            Instruction::LoadFloatDouble { d, a: 0, offset: 0 }
+        });
+        load.relocation = Some(AttachedRelocation { kind: RelocationKind::EmbSda21, target: RelocationTarget::Constant(index) });
+        self.emit(load);
+        if target.is_none() {
+            self.float_constants.insert(key, d);
+        }
+        Ok((d, ty))
+    }
+
+    fn float_binary(&mut self, op: BinaryOp, left: &Expr, right: &Expr, ty: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
+        let single = ty == Type::Float;
+        fn product(e: &Expr, ty: Type) -> Option<(&Expr, &Expr)> {
+            match &e.kind {
+                ExprKind::Binary(BinaryOp::Multiply, x, y) if e.ty == ty => Some((x.as_ref(), y.as_ref())),
+                _ => None,
+            }
+        }
+        if self.contract {
+            // Multiply-add contraction: x*y + z, z + x*y, x*y - z, z - x*y.
+            let fused = match op {
+                BinaryOp::Add => product(left, ty).map(|p| (p, right, 0)).or_else(|| product(right, ty).map(|p| (p, left, 0))),
+                BinaryOp::Subtract => {
+                    product(left, ty).map(|p| (p, right, 1)).or_else(|| product(right, ty).map(|p| (p, left, 2)))
+                }
+                _ => None,
+            };
+            if let Some(((x, y), z, form)) = fused {
+                let (a, _) = self.expression(x)?;
+                let (c, _) = self.expression(y)?;
+                let (b, _) = self.expression(z)?;
+                let d = self.result_for(ty, target);
+                self.emit_plain(match (form, single) {
+                    (0, true) => Instruction::FloatMultiplyAddSingle { d, a, c, b },
+                    (0, false) => Instruction::FloatMultiplyAddDouble { d, a, c, b },
+                    (1, true) => Instruction::FloatMultiplySubtractSingle { d, a, c, b },
+                    (1, false) => Instruction::FloatMultiplySubtractDouble { d, a, c, b },
+                    (_, true) => Instruction::FloatNegativeMultiplySubtractSingle { d, a, c, b },
+                    (_, false) => Instruction::FloatNegativeMultiplySubtractDouble { d, a, c, b },
+                });
+                return Ok((d, ty));
+            }
+        }
+        let (a, _) = self.expression(left)?;
+        let (b, _) = self.expression(right)?;
+        // A computed right operand of a commutative operation goes first.
+        let commutative = matches!(op, BinaryOp::Add | BinaryOp::Multiply);
+        let (a, b) = if commutative && right.as_var().is_none() { (b, a) } else { (a, b) };
+        let d = self.result_for(ty, target);
+        self.emit_plain(match (op, single) {
+            (BinaryOp::Add, true) => Instruction::FloatAddSingle { d, a, b },
+            (BinaryOp::Add, false) => Instruction::FloatAddDouble { d, a, b },
+            (BinaryOp::Subtract, true) => Instruction::FloatSubtractSingle { d, a, b },
+            (BinaryOp::Subtract, false) => Instruction::FloatSubtractDouble { d, a, b },
+            (BinaryOp::Multiply, true) => Instruction::FloatMultiplySingle { d, a, c: b },
+            (BinaryOp::Multiply, false) => Instruction::FloatMultiplyDouble { d, a, c: b },
+            (BinaryOp::Divide, true) => Instruction::FloatDivideSingle { d, a, b },
+            (BinaryOp::Divide, false) => Instruction::FloatDivideDouble { d, a, b },
+            (other, _) => return Err(unsupported(format!("floating operator {other:?}"))),
+        });
+        Ok((d, ty))
+    }
+
+    fn float_convert(&mut self, operand: &Expr, to: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
+        match (operand.ty, to) {
+            (from, to) if from == to => self.expression_with_target(operand, target),
+            (Type::Float, Type::Double) => {
+                let (source, _) = self.expression_with_target(operand, target)?;
+                Ok((source, to))
+            }
+            (Type::Double, Type::Float) => {
+                let (source, _) = self.expression(operand)?;
+                let d = self.result_for(to, target);
+                self.emit_plain(Instruction::RoundToSingle { d, b: source });
+                Ok((d, to))
+            }
+            _ => Err(unsupported("integer/floating conversion")),
+        }
+    }
+
+    /// A floating comparison's 0/1 value: compare, `mfcr`, extract the bit.
+    fn float_comparison_value(&mut self, op: BinaryOp, left: &Expr, right: &Expr, target: Option<u32>) -> Compilation<(u32, Type)> {
+        let (bit, true_when_set) = self.compare(op, left, right)?;
+        if !true_when_set {
+            return Err(unsupported("floating != as a value"));
+        }
+        let condition = self.temporary();
+        self.emit_plain(Instruction::MoveFromConditionRegister { d: condition });
+        let d = self.result(target);
+        self.emit_plain(Instruction::RotateAndMask { a: d, s: condition, shift: bit + 1, begin: 31, end: 31 });
+        Ok((d, Type::Int))
     }
 
     // ------------------------------------------------------------ idioms
@@ -1522,6 +1704,9 @@ impl Lowerer<'_> {
     }
 
     fn store(&mut self, place: &Place, ty: Type, value: &Expr) -> Compilation<()> {
+        if is_float(ty) != is_float(value.ty) {
+            return Err(unsupported("store of a value in the other register class"));
+        }
         let source = self.store_source(value, ty)?;
         let (base, offset, index, relocation) = match place {
             Place::Memory { base, index: None, offset } if base.as_int().is_some() => {
@@ -1563,6 +1748,10 @@ impl Lowerer<'_> {
             }
         };
         let store = match (index, ty) {
+            (Some(b), Type::Float) => Instruction::StoreFloatSingleIndexed { s: source, a: base, b },
+            (Some(b), Type::Double) => Instruction::StoreFloatDoubleIndexed { s: source, a: base, b },
+            (None, Type::Float) => Instruction::StoreFloatSingle { s: source, a: base, offset },
+            (None, Type::Double) => Instruction::StoreFloatDouble { s: source, a: base, offset },
             (Some(b), Type::Short | Type::UnsignedShort) => Instruction::StoreHalfwordIndexed { s: source, a: base, b },
             (Some(b), Type::Char | Type::UnsignedChar) => Instruction::StoreByteIndexed { s: source, a: base, b },
             (Some(b), _) => Instruction::StoreWordIndexed { s: source, a: base, b },
@@ -1592,7 +1781,7 @@ impl Lowerer<'_> {
 
     // ------------------------------------------------------------ calls
 
-    fn call(&mut self, name: &str, arguments: &[Expr], target: Option<u32>) -> Compilation<u32> {
+    fn call(&mut self, name: &str, arguments: &[Expr], ty: Type, target: Option<u32>) -> Compilation<u32> {
         let mut values = Vec::new();
         for argument in arguments {
             // A constant argument is loaded straight into its register.
@@ -1602,8 +1791,17 @@ impl Lowerer<'_> {
             });
         }
         let mut argument_registers = Vec::new();
+        let (mut general, mut float) = (FIRST_GENERAL_ARGUMENT, 1);
         for (index, value) in values.into_iter().enumerate() {
-            let register = FIRST_GENERAL_ARGUMENT + index as u32;
+            if is_float(arguments[index].ty) {
+                let value = value.expect("floating arguments are evaluated");
+                self.emit_plain(Instruction::FloatMove { d: float, b: value });
+                argument_registers.push(Register::float(float));
+                float += 1;
+                continue;
+            }
+            let register = general;
+            general += 1;
             match value {
                 Some(value) => self.emit_plain(Instruction::Or { a: register, s: value, b: value }),
                 None => self.load_constant(register, arguments[index].as_int().expect("constant"))?,
@@ -1623,8 +1821,9 @@ impl Lowerer<'_> {
         self.loaded_globals.clear();
         // Constants are rematerialized rather than kept across a call.
         self.constants.clear();
-        let result = self.result(target);
-        self.emit_plain(Instruction::Or { a: result, s: 3, b: 3 });
+        self.float_constants.clear();
+        let result = self.result_for(ty, target);
+        self.copy(ty, result, result_register(ty));
         Ok(result)
     }
 }
@@ -1759,7 +1958,7 @@ fn makes_calls(body: &[Stmt]) -> bool {
     fn expression(e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Call { .. } => true,
-            ExprKind::Int(_) | ExprKind::Var(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => false,
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Var(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => false,
             ExprKind::Load { base, index, .. } => expression(base) || index.as_deref().is_some_and(expression),
             ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => expression(operand),
             ExprKind::Binary(_, left, right) => expression(left) || expression(right),
@@ -1793,7 +1992,7 @@ fn references(body: &[Stmt], variable: VarId) -> usize {
     fn expression(e: &Expr, variable: VarId) -> usize {
         match &e.kind {
             ExprKind::Var(id) => usize::from(*id == variable),
-            ExprKind::Int(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => 0,
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => 0,
             ExprKind::Load { base, index, .. } => {
                 expression(base, variable) + index.as_deref().map_or(0, |index| expression(index, variable))
             }
@@ -1952,4 +2151,13 @@ fn common_key(expression: &Expr) -> Option<(String, Vec<VarId>)> {
     let mut variables = Vec::new();
     let key = format!("{:?} {op:?} {} {}", expression.ty, leaf(left, &mut variables)?, leaf(right, &mut variables)?);
     Some((key, variables))
+}
+
+/// The register a function result of `ty` returns in.
+fn result_register(ty: Type) -> u32 {
+    if is_float(ty) {
+        1
+    } else {
+        3
+    }
 }

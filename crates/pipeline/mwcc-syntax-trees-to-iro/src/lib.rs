@@ -13,7 +13,8 @@ use std::collections::HashMap;
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_iro::{
-    element_size, is_general_word, is_narrow, is_unsigned, pointee_type, pointer_to, promote, BinaryOp, Expr, ExprKind,
+    element_size, is_float, is_general_word, is_narrow, is_unsigned, is_value_type, pointee_type, pointer_to, promote,
+    BinaryOp, Expr, ExprKind,
     Function, Place, Stmt, Type, UnaryOp, Unit, VarId, Variable, VariableKind,
 };
 use mwcc_syntax_trees as ast;
@@ -55,12 +56,12 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     if function.asm_body.is_some() || !function.inline_asm_blocks.is_empty() {
         return Err(unsupported("inline assembly"));
     }
-    if function.return_type != Type::Void && !is_general_word(function.return_type) {
+    if function.return_type != Type::Void && !is_value_type(function.return_type) {
         return Err(unsupported(format!("return type {:?}", function.return_type)));
     }
     let mut variables = Vec::new();
     for parameter in &function.parameters {
-        if !is_general_word(parameter.parameter_type) {
+        if !is_value_type(parameter.parameter_type) {
             return Err(unsupported(format!("parameter type {:?}", parameter.parameter_type)));
         }
         variables.push(Variable {
@@ -69,19 +70,21 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             kind: VariableKind::Parameter,
         });
     }
-    if function.parameters.len() > ARGUMENT_REGISTERS {
+    let floats = function.parameters.iter().filter(|p| is_float(p.parameter_type)).count();
+    if function.parameters.len() - floats > ARGUMENT_REGISTERS || floats > ARGUMENT_REGISTERS {
         return Err(unsupported("stack-passed parameters"));
     }
     for local in &function.locals {
         if local.is_static || local.is_volatile || local.array_length.is_some() {
             return Err(unsupported("static, volatile, or array locals"));
         }
-        if !is_general_word(local.declared_type) {
+        if !is_value_type(local.declared_type) {
             return Err(unsupported(format!("local type {:?}", local.declared_type)));
         }
         variables.push(Variable { name: local.name.clone(), ty: local.declared_type, kind: VariableKind::Local });
     }
     let mut builder = Builder {
+        return_type: function.return_type,
         unit,
         names: variables.iter().enumerate().map(|(id, variable)| (variable.name.clone(), id)).collect(),
         variables: &variables,
@@ -100,13 +103,13 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     for guard in &function.guards {
         body.push(Stmt::If {
             condition: promoted(builder.expression(&guard.condition)?),
-            then_body: vec![Stmt::Return(Some(builder.expression(&guard.value)?))],
+            then_body: vec![Stmt::Return(Some(builder.returned(&guard.value)?))],
             else_body: Vec::new(),
         });
     }
     if let Some(value) = &function.return_expression {
         // The final value falls through to the exit.
-        body.push(Stmt::SetReturn(builder.expression(value)?));
+        body.push(Stmt::SetReturn(builder.returned(value)?));
     }
     let returns_through_variable = function.return_type != Type::Void
         && (!function.guards.is_empty()
@@ -134,6 +137,7 @@ fn has_return(statements: &[Statement]) -> bool {
 }
 
 struct Builder<'a> {
+    return_type: Type,
     unit: &'a Unit<'a>,
     names: HashMap<String, VarId>,
     variables: &'a [Variable],
@@ -223,7 +227,7 @@ impl Builder<'_> {
                 else_body: self.statements(else_body)?,
             },
             Statement::Return(value) => {
-                Stmt::Return(value.as_ref().map(|value| self.expression(value)).transpose()?)
+                Stmt::Return(value.as_ref().map(|value| self.returned(value)).transpose()?)
             }
             other => return Err(unsupported(format!("statement {}", statement_name(other)))),
         }])
@@ -294,6 +298,12 @@ impl Builder<'_> {
         Ok(Some(displaced(pointer, 0, loaded)))
     }
 
+    /// A returned value: floating results convert to the return type.
+    fn returned(&mut self, value: &Expression) -> Compilation<Expr> {
+        let value = self.expression(value)?;
+        Ok(if is_float(self.return_type) || is_float(value.ty) { converted(value, self.return_type) } else { value })
+    }
+
     /// `pointer ± integer` with the integer scaled to bytes.
     fn pointer_arithmetic(&mut self, op: BinaryOp, left: Expr, right: Expr) -> Compilation<Expr> {
         let left_size = element_size(left.ty);
@@ -317,6 +327,8 @@ impl Builder<'_> {
     fn expression(&mut self, expression: &Expression) -> Compilation<Expr> {
         Ok(match expression {
             Expression::IntegerLiteral(value) => Expr::int(*value),
+            // A bare floating literal is `float`; a `double` one is cast.
+            Expression::FloatLiteral(value) => Expr { kind: ExprKind::Float(*value), ty: Type::Float },
             Expression::Variable(name) => {
                 if let Some(&id) = self.names.get(name) {
                     return Ok(Expr { kind: ExprKind::Var(id), ty: self.variables[id].ty });
@@ -339,6 +351,12 @@ impl Builder<'_> {
                     && (element_size(left.ty).is_some() || element_size(right.ty).is_some())
                 {
                     return self.pointer_arithmetic(op, left, right);
+                }
+                // Floating operands meet at the wider floating type.
+                if (is_float(left.ty) || is_float(right.ty)) && !matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) {
+                    let common = if left.ty == Type::Double || right.ty == Type::Double { Type::Double } else { Type::Float };
+                    let ty = if op.is_comparison() { Type::Int } else { common };
+                    return Ok(Expr::binary(op, converted(left, common), converted(right, common), ty));
                 }
                 let ty = if op.is_comparison() || matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) {
                     Type::Int
@@ -378,13 +396,13 @@ impl Builder<'_> {
                     ty,
                 }
             }
-            Expression::Cast { target_type, operand } if is_general_word(*target_type) => {
+            Expression::Cast { target_type, operand } if is_value_type(*target_type) => {
                 let operand = self.expression(operand)?;
                 Expr { kind: ExprKind::Convert(Box::new(operand)), ty: *target_type }
             }
             Expression::Member { base, offset, member_type, index_stride: None } => {
                 let base = self.aggregate_address(base)?;
-                if !is_general_word(*member_type) {
+                if !is_value_type(*member_type) {
                     return Err(unsupported(format!("load of {member_type:?}")));
                 }
                 let (base, index, offset, ty) = displaced(base, *offset as i32, *member_type);
@@ -451,7 +469,7 @@ impl Builder<'_> {
         {
             {
                 let ty = self.unit.call_return_types.get(name).copied().unwrap_or(Type::Int);
-                if !is_general_word(ty) && !(discarded && ty == Type::Void) {
+                if !is_value_type(ty) && !(discarded && ty == Type::Void) {
                     return Err(unsupported("non-integer call result"));
                 }
                 if (self.unit.is_intrinsic)(name, arguments.len()) {
@@ -479,14 +497,21 @@ impl Builder<'_> {
                         {
                             let value = std::mem::replace(argument, Expr::int(0));
                             *argument = Expr { kind: ExprKind::Convert(Box::new(value)), ty: parameter };
+                        } else if is_float(parameter) || is_float(argument.ty) {
+                            let value = std::mem::replace(argument, Expr::int(0));
+                            *argument = converted(value, parameter);
                         } else if !is_narrow(parameter) {
                             let value = std::mem::replace(argument, Expr::int(0));
                             *argument = promoted(value);
                         }
                     }
                 }
-                if arguments.iter().any(|argument| !is_general_word(argument.ty)) {
-                    return Err(unsupported("non-integer argument"));
+                if arguments.iter().any(|argument| !is_value_type(argument.ty)) {
+                    return Err(unsupported("argument type"));
+                }
+                let floats = arguments.iter().filter(|argument| is_float(argument.ty)).count();
+                if floats > ARGUMENT_REGISTERS || arguments.len() - floats > ARGUMENT_REGISTERS {
+                    return Err(unsupported("stack-passed arguments"));
                 }
                 Ok(Expr { kind: ExprKind::Call { name: name.to_owned(), arguments }, ty })
             }
@@ -584,12 +609,24 @@ pub fn promoted(e: Expr) -> Expr {
     }
 }
 
-/// A value assigned or stored as `ty`: a narrow value promotes to a word.
+/// A value assigned or stored as `ty`: a narrow value promotes to a word;
+/// a floating value (or destination) converts.
 fn assigned(value: Expr, ty: Type) -> Expr {
-    if is_narrow(ty) {
+    if is_float(ty) || is_float(value.ty) {
+        converted(value, ty)
+    } else if is_narrow(ty) {
         value
     } else {
         promoted(value)
+    }
+}
+
+/// `value` converted to `ty` (unchanged when it already has that type).
+fn converted(value: Expr, ty: Type) -> Expr {
+    if value.ty == ty {
+        value
+    } else {
+        Expr { kind: ExprKind::Convert(Box::new(value)), ty }
     }
 }
 

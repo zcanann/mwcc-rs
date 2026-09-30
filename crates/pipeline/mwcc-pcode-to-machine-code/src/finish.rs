@@ -209,7 +209,24 @@ pub fn finish(
             instructions.push(emitted);
         }
     }
+    // Anything still virtual is an internal error: refuse the function
+    // rather than emit (or crash encoding) a register field >= 32.
+    for block in &pcode.blocks {
+        for instruction in &block.instructions {
+            for class in [mwcc_pcode::Class::General, mwcc_pcode::Class::Float] {
+                if instruction.uses(class).iter().chain(instruction.defs(class).iter()).any(|&r| r >= 32) {
+                    return Err(mwcc_core::Diagnostic::error(format!(
+                        "PCode internal: uncolored register in {:?} (not yet supported)",
+                        instruction.instruction
+                    )));
+                }
+            }
+        }
+    }
     let mut output = MachineFunction::new(pcode.name.clone());
+    for &(bits, width) in &pcode.pool {
+        output.intern_constant(bits, width);
+    }
     output.instructions = instructions;
     output.relocations = relocations;
     Ok(output)

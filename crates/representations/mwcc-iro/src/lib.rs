@@ -193,6 +193,8 @@ pub enum Idiom {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Int(i64),
+    /// A floating-point constant (typed `Float` or `Double`).
+    Float(f64),
     Var(VarId),
     /// The value of a scalar file-scope object.
     Global(String),
@@ -250,7 +252,7 @@ impl Expr {
     /// Whether the expression may read `variable` (conservative).
     pub fn mentions(&self, variable: VarId) -> bool {
         match &self.kind {
-            ExprKind::Int(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => false,
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => false,
             ExprKind::Var(id) => *id == variable,
             ExprKind::Load { base, index, .. } => {
                 base.mentions(variable) || index.as_ref().is_some_and(|index| index.mentions(variable))
@@ -290,6 +292,16 @@ pub fn is_unsigned(ty: Type) -> bool {
     )
 }
 
+/// A floating-point scalar.
+pub fn is_float(ty: Type) -> bool {
+    matches!(ty, Type::Float | Type::Double)
+}
+
+/// A scalar held in one general or floating-point register.
+pub fn is_value_type(ty: Type) -> bool {
+    is_general_word(ty) || is_float(ty)
+}
+
 pub fn is_narrow(ty: Type) -> bool {
     matches!(ty, Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort)
 }
@@ -317,6 +329,8 @@ pub fn pointee_type(pointee: Pointee) -> Option<Type> {
         Pointee::Short => Type::Short,
         Pointee::UnsignedShort => Type::UnsignedShort,
         Pointee::Pointer | Pointee::WordPointer => Type::Pointer(Pointee::Int),
+        Pointee::Float => Type::Float,
+        Pointee::Double => Type::Double,
         _ => return None,
     })
 }
@@ -358,6 +372,7 @@ pub fn width(ty: Type) -> u32 {
     match ty {
         Type::Char | Type::UnsignedChar => 1,
         Type::Short | Type::UnsignedShort => 2,
+        Type::Double => 8,
         _ => 4,
     }
 }
@@ -366,6 +381,7 @@ impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             ExprKind::Int(value) => write!(f, "{value}"),
+            ExprKind::Float(value) => write!(f, "{value:?}f"),
             ExprKind::Var(id) => write!(f, "v{id}"),
             ExprKind::Global(name) => write!(f, "{name}"),
             ExprKind::GlobalAddress(name) => write!(f, "&{name}"),

@@ -124,6 +124,7 @@ fn operand_keys(instruction: &PInstr) -> (Vec<Key>, Vec<Key>) {
             defs.push(Key::Carry);
         }
         Instruction::MoveFromLinkRegister { .. } => uses.push(Key::Link),
+        Instruction::MoveFromConditionRegister { .. } => uses.push(Key::Condition),
         Instruction::MoveToLinkRegister { .. } => defs.push(Key::Link),
         Instruction::BranchToLinkRegister => uses.push(Key::Link),
         Instruction::BranchAndLink { .. } => defs.push(Key::Link),

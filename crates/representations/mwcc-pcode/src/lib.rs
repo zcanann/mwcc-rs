@@ -227,6 +227,9 @@ pub struct PCodeFunction {
     pub exit_uses: Vec<u32>,
     /// The body ends in a sibling branch (`b callee`): no return of its own.
     pub ends_in_tail_call: bool,
+    /// Pooled constants (bits, byte width) referenced as
+    /// `RelocationTarget::Constant(index)`.
+    pub pool: Vec<(u64, u8)>,
     pub returns: ReturnRegisters,
 }
 
@@ -243,6 +246,7 @@ impl PCodeFunction {
             frame_local_bytes: 0,
             exit_uses: Vec::new(),
             ends_in_tail_call: false,
+            pool: Vec::new(),
             returns,
         }
     }
