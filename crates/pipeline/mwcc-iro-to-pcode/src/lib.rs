@@ -474,6 +474,8 @@ impl Lowerer<'_, '_> {
             if !calls {
                 self.registers[id] = Some(argument);
                 self.raw_narrow[id] = is_narrow(function.variables[id].ty);
+            } else if references(&function.body, id) == 0 && std::env::var_os("MWCC_PCODE_O0_UNUSED_HOMES").is_none() {
+                // An unreferenced parameter is never stored.
             } else if references_weighted(&function.body, id, 2) <= 1 {
                 // (A parameter used as an address takes a register.)
                 // Homes are laid out in declaration order from r1+8.

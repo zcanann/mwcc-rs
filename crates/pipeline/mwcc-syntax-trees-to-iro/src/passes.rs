@@ -162,6 +162,10 @@ pub fn run(function: &mut Function) {
     if enabled("FOLD") {
         for_each_expression(&mut function.body, &mut |expression| fold(expression));
     }
+    if enabled("CONSTANT_BRANCHES") {
+        for_each_expression(&mut function.body, &mut |expression| logical_constants(expression));
+        constant_branches(&mut function.body);
+    }
     if enabled("FORWARD") {
         forward_offsets(function);
     }
@@ -288,9 +292,73 @@ pub fn run_unoptimized(function: &mut Function) {
         }
     }
     for_each_expression(&mut function.body, &mut |expression| literals(expression));
+    if std::env::var_os("MWCC_IRO_NO_CONSTANT_BRANCHES").is_none() {
+        for_each_expression(&mut function.body, &mut |expression| logical_constants(expression));
+        constant_branches(&mut function.body);
+    }
     stores(&mut function.body);
     displacements_with(&mut function.body, false);
     narrowing(function);
+}
+
+/// `x && 0`, `x || 1` (x without effects) and a constant left operand
+/// decide a logical operator.
+fn logical_constants(expression: &mut Expr) {
+    children(expression, &mut |child| logical_constants(child));
+    let ExprKind::Binary(op @ (BinaryOp::LogicalAnd | BinaryOp::LogicalOr), left, right) = &expression.kind else { return };
+    let and = *op == BinaryOp::LogicalAnd;
+    let decided = |value: i64| (value != 0) != and;
+    let folded = match (left.as_int(), right.as_int()) {
+        (Some(value), _) if decided(value) => Some(i64::from(!and)),
+        (_, Some(value)) if decided(value) && speculable(left) => Some(i64::from(!and)),
+        _ => None,
+    };
+    if let Some(value) = folded {
+        *expression = Expr::typed_int(value, expression.ty);
+    }
+}
+
+/// Branches on constants (even at -O0): the taken arm replaces an `if`, a
+/// loop never entered disappears, and a `do ... while (0)` without
+/// `break`/`continue` becomes its body.
+pub fn constant_branches(body: &mut Vec<Stmt>) {
+    fn loop_control(body: &[Stmt]) -> bool {
+        body.iter().any(|statement| match statement {
+            Stmt::Break | Stmt::Continue => true,
+            Stmt::If { then_body, else_body, .. } => loop_control(then_body) || loop_control(else_body),
+            Stmt::Switch { arms, .. } => arms.iter().any(|arm| arm.iter().any(|s| matches!(s, Stmt::Continue))),
+            _ => false,
+        })
+    }
+    let mut out = Vec::with_capacity(body.len());
+    for mut statement in std::mem::take(body) {
+        match &mut statement {
+            Stmt::If { then_body, else_body, .. } => {
+                constant_branches(then_body);
+                constant_branches(else_body);
+            }
+            Stmt::Loop { body, step, .. } => {
+                constant_branches(body);
+                constant_branches(step);
+            }
+            Stmt::Switch { arms, .. } => arms.iter_mut().for_each(constant_branches),
+            _ => {}
+        }
+        match statement {
+            Stmt::If { condition, then_body, else_body } if condition.as_int().is_some() => {
+                out.extend(if condition.as_int() != Some(0) { then_body } else { else_body });
+            }
+            Stmt::Loop { test_first: true, condition: Some(condition), .. } if condition.as_int() == Some(0) => {}
+            Stmt::Loop { test_first: false, condition: Some(condition), body, step }
+                if condition.as_int() == Some(0) && !loop_control(&body) =>
+            {
+                out.extend(body);
+                out.extend(step);
+            }
+            other => out.push(other),
+        }
+    }
+    *body = out;
 }
 
 /// A constant addend of an access's base pointer joins its displacement:

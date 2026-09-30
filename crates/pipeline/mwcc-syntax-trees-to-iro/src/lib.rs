@@ -122,6 +122,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         strings: Vec::new(),
         guarded: 0,
         temporaries: Vec::new(),
+        direct_return: false,
     };
     let mut body = Vec::new();
     for local in &function.locals {
@@ -251,6 +252,8 @@ struct Builder<'a, 'u> {
     temporaries: Vec<Variable>,
     /// String literals by bytes, in first-use order.
     strings: Vec<Vec<u8>>,
+    /// The call being built is the returned value itself.
+    direct_return: bool,
 }
 
 impl Builder<'_, '_> {
@@ -620,7 +623,10 @@ impl Builder<'_, '_> {
 
     /// A returned value: floating results convert to the return type.
     fn returned(&mut self, value: &Expression) -> Compilation<Expr> {
-        let value = self.expression(value)?;
+        self.direct_return = matches!(value, Expression::Call { .. });
+        let value = self.expression(value);
+        self.direct_return = false;
+        let value = value?;
         Ok(if is_float(self.return_type) || is_float(value.ty) { converted(value, self.return_type) } else { value })
     }
 
@@ -894,6 +900,9 @@ impl Builder<'_, '_> {
         thread_local! {
             static DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
         }
+        // An expansion that is the returned value leaves its result in a
+        // temporary (not a -O0 register variable).
+        let direct_return = std::mem::take(&mut self.direct_return);
         if self.guarded > 0 {
             return Err(unsupported("inline expansion in a conditional operand"));
         }
@@ -971,6 +980,10 @@ impl Builder<'_, '_> {
         let Some(value) = value else {
             return Ok(Expr { kind: ExprKind::Int(0), ty: Type::Void });
         };
+        if direct_return {
+            // (Still converted to the callee's return type.)
+            return Ok(converted(value, callee.return_type));
+        }
         // The value is held in a temporary of the callee's return type.
         let id = self.variables.len() + self.temporaries.len();
         self.temporaries.push(Variable {
@@ -984,6 +997,7 @@ impl Builder<'_, '_> {
     }
 
     fn call(&mut self, name: &str, arguments: &[Expression], discarded: bool) -> Compilation<Expr> {
+        let direct_return = std::mem::take(&mut self.direct_return);
         // A call through a pointer variable (local, parameter or global).
         let pointer_variable = self.names.contains_key(name)
             || self.unit.globals.get(name).is_some_and(|global| !global.is_function);
@@ -1003,7 +1017,10 @@ impl Builder<'_, '_> {
                 let prototyped = self.unit.prototyped.contains(name);
                 if (self.unit.has_body)(name) {
                     return match self.unit.inline_bodies.get(name).copied() {
-                        Some(callee) if std::env::var_os("MWCC_IRO_NO_INLINE").is_none() => self.inline_call(callee, arguments),
+                        Some(callee) if std::env::var_os("MWCC_IRO_NO_INLINE").is_none() => {
+                            self.direct_return = direct_return;
+                            self.inline_call(callee, arguments)
+                        }
                         _ => Err(unsupported("call to a function this unit defines (inlining not modeled)")),
                     };
                 }
