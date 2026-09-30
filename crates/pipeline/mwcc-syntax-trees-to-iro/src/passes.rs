@@ -10,9 +10,140 @@
 //!   conditional overwrite (or a truth value), as MWCC's IRO arranges them.
 //! * [`stores`]: conversions a narrow store makes dead, literal truncation.
 
-use mwcc_iro::{
+use std::collections::HashMap;
+
+use mwcc_iro::{Place, Variable, VariableKind,
     is_narrow, is_unsigned_narrow, width, BinaryOp, Expr, ExprKind, Function, Idiom, Stmt, Type, UnaryOp, VarId,
 };
+
+/// Scalar replacement: a frame object read and written only at constant
+/// offsets becomes one register variable per field. With
+/// `keeps_struct_stores` (GC/3.x, Wii) a struct still stores each field to
+/// its frame slot; reads use the register.
+pub fn scalarize(function: &mut Function, keeps_struct_stores: bool) {
+    let candidates: Vec<VarId> = (0..function.variables.len())
+        .filter(|&id| function.variables[id].frame.is_some() && function.variables[id].kind == VariableKind::Local)
+        .collect();
+    for id in candidates {
+        let mut fields: Vec<(i32, Type)> = Vec::new();
+        let mut escapes = false;
+        scan_fields(&mut function.body, id, &mut fields, &mut escapes);
+        if escapes || fields.is_empty() {
+            continue;
+        }
+        fields.sort_by_key(|&(offset, _)| offset);
+        fields.dedup();
+        let consistent = fields.windows(2).all(|pair| {
+            let ((a, ta), (b, _)) = (pair[0], pair[1]);
+            a != b && a + mwcc_iro::width(ta) as i32 <= b
+        });
+        if !consistent || fields.iter().any(|&(_, ty)| !mwcc_iro::is_value_type(ty)) {
+            continue;
+        }
+        let name = function.variables[id].name.clone();
+        let mut map = HashMap::new();
+        for &(offset, ty) in &fields {
+            map.insert(offset, function.variables.len());
+            function.variables.push(Variable {
+                name: format!("{name}.{offset}"),
+                ty,
+                kind: VariableKind::Local,
+                frame: None,
+            });
+        }
+        let keep = keeps_struct_stores && matches!(function.variables[id].ty, Type::Struct { .. });
+        let body = std::mem::take(&mut function.body);
+        function.body = replace_fields(body, id, &map, keep);
+    }
+}
+
+fn is_address_of(e: &Expr, id: VarId) -> bool {
+    matches!(e.kind, ExprKind::LocalAddress(x) if x == id)
+}
+
+fn scan_fields(body: &mut [Stmt], id: VarId, fields: &mut Vec<(i32, Type)>, escapes: &mut bool) {
+    fn expression(e: &mut Expr, id: VarId, fields: &mut Vec<(i32, Type)>, escapes: &mut bool) {
+        match &e.kind {
+            ExprKind::Load { base, index: None, offset } if is_address_of(base, id) => fields.push((*offset, e.ty)),
+            ExprKind::LocalAddress(x) if *x == id => *escapes = true,
+            _ => children(e, &mut |child| expression(child, id, fields, escapes)),
+        }
+    }
+    for statement in body {
+        match statement {
+            Stmt::Store { place: Place::Memory { base, index: None, offset }, ty, value } if is_address_of(base, id) => {
+                fields.push((*offset, *ty));
+                expression(value, id, fields, escapes);
+            }
+            Stmt::If { condition, then_body, else_body } => {
+                expression(condition, id, fields, escapes);
+                scan_fields(then_body, id, fields, escapes);
+                scan_fields(else_body, id, fields, escapes);
+            }
+            Stmt::Loop { condition, body, step, .. } => {
+                if let Some(condition) = condition {
+                    expression(condition, id, fields, escapes);
+                }
+                scan_fields(body, id, fields, escapes);
+                scan_fields(step, id, fields, escapes);
+            }
+            other => for_each_expression(std::slice::from_mut(other), &mut |e| expression(e, id, fields, escapes)),
+        }
+    }
+}
+
+fn replace_fields(body: Vec<Stmt>, id: VarId, map: &HashMap<i32, VarId>, keep: bool) -> Vec<Stmt> {
+    fn expression(e: &mut Expr, id: VarId, map: &HashMap<i32, VarId>) {
+        if let ExprKind::Load { base, index: None, offset } = &e.kind {
+            if is_address_of(base, id) {
+                e.kind = ExprKind::Var(map[offset]);
+                return;
+            }
+        }
+        children(e, &mut |child| expression(child, id, map));
+    }
+    let mut out = Vec::with_capacity(body.len());
+    for mut statement in body {
+        match statement {
+            Stmt::Store { place: Place::Memory { base, index: None, offset }, ty, mut value } if is_address_of(&base, id) => {
+                expression(&mut value, id, map);
+                let variable = map[&offset];
+                out.push(Stmt::Assign { variable, value });
+                if keep {
+                    out.push(Stmt::Store {
+                        place: Place::Memory { base, index: None, offset },
+                        ty,
+                        value: Expr { kind: ExprKind::Var(variable), ty },
+                    });
+                }
+            }
+            Stmt::If { mut condition, then_body, else_body } => {
+                expression(&mut condition, id, map);
+                out.push(Stmt::If {
+                    condition,
+                    then_body: replace_fields(then_body, id, map, keep),
+                    else_body: replace_fields(else_body, id, map, keep),
+                });
+            }
+            Stmt::Loop { test_first, mut condition, body, step } => {
+                if let Some(condition) = &mut condition {
+                    expression(condition, id, map);
+                }
+                out.push(Stmt::Loop {
+                    test_first,
+                    condition,
+                    body: replace_fields(body, id, map, keep),
+                    step: replace_fields(step, id, map, keep),
+                });
+            }
+            _ => {
+                for_each_expression(std::slice::from_mut(&mut statement), &mut |e| expression(e, id, map));
+                out.push(statement);
+            }
+        }
+    }
+    out
+}
 
 /// Run every pass in order.
 pub fn run(function: &mut Function) {

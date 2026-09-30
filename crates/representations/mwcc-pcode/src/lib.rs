@@ -225,6 +225,9 @@ pub struct PCodeFunction {
     /// r1-relative [start, end) ranges of frame objects (locals and
     /// conversion slots): the scheduler orders accesses per object.
     pub frame_objects: Vec<(i16, i16)>,
+    /// Starts of frame objects whose address never escapes: pointer-based
+    /// accesses cannot reach them.
+    pub private_frame_objects: Vec<i16>,
     /// General registers live at the exit besides the result (`-O0` keeps
     /// register variables live through the whole function).
     pub exit_uses: Vec<u32>,
@@ -248,6 +251,7 @@ impl PCodeFunction {
             outside_window: Vec::new(),
             frame_local_bytes: 0,
             frame_objects: Vec::new(),
+            private_frame_objects: Vec::new(),
             exit_uses: Vec::new(),
             ends_in_tail_call: false,
             pool: Vec::new(),

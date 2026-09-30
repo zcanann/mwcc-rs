@@ -38,6 +38,9 @@ pub struct Built {
 /// Build the IR for `function` and run the IRO passes.
 pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     let mut built = build_unoptimized(function, unit)?;
+    if std::env::var_os("MWCC_IRO_NO_SCALARIZE").is_none() {
+        passes::scalarize(&mut built.function, unit.keeps_struct_stores);
+    }
     passes::run(&mut built.function);
     Ok(built)
 }

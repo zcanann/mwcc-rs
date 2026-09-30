@@ -39,6 +39,8 @@ pub struct Unit<'a> {
     pub call_parameter_types: &'a HashMap<String, Vec<Type>>,
     /// Whether the unit has a body for a callee (MWCC may inline the call).
     pub has_body: &'a dyn Fn(&str) -> bool,
+    /// Scalar-replaced struct locals still store their fields (GC/3.x, Wii).
+    pub keeps_struct_stores: bool,
 }
 
 /// Index into [`Function::variables`].

@@ -75,6 +75,7 @@ pub fn lower(
         float_constants: HashMap::new(),
         frame_offsets: vec![None; function.variables.len()],
         frame_cursor: 8,
+        escaped_frame_objects: Vec::new(),
     };
     lowerer.lower_function(returns_through_variable)?;
     Ok(Lowered { pcode: lowerer.pcode, makes_calls: lowerer.makes_calls })
@@ -133,6 +134,8 @@ struct Lowerer<'a> {
     frame_offsets: Vec<Option<i16>>,
     /// Next free byte of the local area (r1-relative).
     frame_cursor: u32,
+    /// Frame objects whose address the code computes.
+    escaped_frame_objects: Vec<i16>,
 }
 
 impl Lowerer<'_> {
@@ -324,6 +327,8 @@ impl Lowerer<'_> {
             .collect();
         for &id in locals.iter().rev() {
             match function.variables[id].frame {
+                // An unreferenced frame object takes no slot.
+                Some(_) if references(&function.body, id) == 0 => {}
                 // Frame objects take slots in reverse declaration order.
                 Some((size, align)) => {
                     let offset = self.frame_cursor.div_ceil(align.max(1)) * align.max(1);
@@ -445,6 +450,11 @@ impl Lowerer<'_> {
         let result = self.body_and_exit_inner();
         if !self.unoptimized {
             self.pcode.frame_local_bytes = (self.frame_cursor - 8) as i16;
+            for &(start, _) in &self.pcode.frame_objects {
+                if !self.escaped_frame_objects.contains(&start) && !self.pcode.private_frame_objects.contains(&start) {
+                    self.pcode.private_frame_objects.push(start);
+                }
+            }
         }
         result
     }
@@ -454,6 +464,7 @@ impl Lowerer<'_> {
         let offset = self.frame_cursor.div_ceil(8) * 8;
         self.frame_cursor = offset + 8;
         self.pcode.frame_objects.push((offset as i16, offset as i16 + 8));
+        self.pcode.private_frame_objects.push(offset as i16);
         offset as i16
     }
 
@@ -844,6 +855,7 @@ impl Lowerer<'_> {
                 }
                 let d = self.result(target);
                 self.emit_plain(Instruction::AddImmediate { d, a: 1, immediate: offset });
+                self.escaped_frame_objects.push(offset);
                 if target.is_none() {
                     self.common.insert(key, (d, ty, Vec::new()));
                 }
@@ -2110,7 +2122,8 @@ fn references(body: &[Stmt], variable: VarId) -> usize {
     fn expression(e: &Expr, variable: VarId) -> usize {
         match &e.kind {
             ExprKind::Var(id) => usize::from(*id == variable),
-            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) | ExprKind::LocalAddress(_) => 0,
+            ExprKind::LocalAddress(id) => usize::from(*id == variable),
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => 0,
             ExprKind::Load { base, index, .. } => {
                 expression(base, variable) + index.as_deref().map_or(0, |index| expression(index, variable))
             }

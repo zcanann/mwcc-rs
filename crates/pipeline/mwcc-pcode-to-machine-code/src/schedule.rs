@@ -148,7 +148,7 @@ fn memory_of(instruction: &PInstr) -> Memory {
     let is_store = head.starts_with("Store") || head.starts_with("PairedSingleQuantizedStore");
     // Allocating the frame orders only through r1.
     if matches!(instruction.instruction, Instruction::StoreWordWithUpdate { a: 1, .. })
-        && std::env::var_os("MWCC_SCHED_STWU_MEMORY").is_none()
+        && std::env::var_os("MWCC_SCHED_STWU_FREE").is_some()
     {
         return Memory::None;
     }
@@ -205,6 +205,25 @@ fn memory_of(instruction: &PInstr) -> Memory {
     } else {
         Memory::Store(object)
     }
+}
+
+/// Whether two accesses may touch the same memory: a named object only
+/// itself; a pointer access anything but a private frame object.
+fn may_alias(object: &Option<ObjectKey>, other: &Option<ObjectKey>) -> bool {
+    if alias_all() || object == other {
+        return true;
+    }
+    let private = |key: &Option<ObjectKey>| match key {
+        Some(ObjectKey::Frame(start)) => {
+            std::env::var_os("MWCC_SCHED_FRAME_SHARED").is_none()
+                && PRIVATE_FRAME_OBJECTS.with(|objects| objects.borrow().contains(start))
+        }
+        _ => false,
+    };
+    if private(object) || private(other) {
+        return false;
+    }
+    object.is_none() || other.is_none()
 }
 
 /// The displacement of an `r1`-based D-form access, from its debug form.
@@ -286,7 +305,7 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
             Memory::Load(object) => {
                 for (later, later_memory_kind) in &later_memory {
                     if let Memory::Store(other) = later_memory_kind {
-                        if alias_all() || object.is_none() || other.is_none() || object == other {
+                        if may_alias(object, other) {
                             edges.push((index, *later, latency));
                         }
                     }
@@ -298,7 +317,7 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                         Memory::Load(other) | Memory::Store(other) => other,
                         Memory::None => continue,
                     };
-                    if alias_all() || object.is_none() || other.is_none() || object == other {
+                    if may_alias(object, other) {
                         edges.push((index, *later, latency));
                     }
                 }
@@ -456,6 +475,8 @@ thread_local! {
     static FINAL_PASS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The machine model has a second integer unit (post-1.2.5 builds).
     pub(crate) static TWO_INTEGER_UNITS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Frame objects no pointer can reach.
+    pub(crate) static PRIVATE_FRAME_OBJECTS: std::cell::RefCell<Vec<i16>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The function's frame objects, `[start, end)` from r1.
     pub(crate) static FRAME_OBJECTS: std::cell::RefCell<Vec<(i16, i16)>> = const { std::cell::RefCell::new(Vec::new()) };
 }

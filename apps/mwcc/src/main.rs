@@ -112,7 +112,8 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
         source_language: None,
         include_paths: Vec::new(),
         preprocessor_definitions: std::collections::HashMap::new(),
-        flags: mwcc_versions::Flags::default(),
+        // mwcceppc leaves multiply-add contraction off unless `-fp_contract on`.
+        flags: mwcc_versions::Flags { fp_contract: false, ..mwcc_versions::Flags::default() },
         parity_keep_going: false,
     };
     let mut index = 0;
