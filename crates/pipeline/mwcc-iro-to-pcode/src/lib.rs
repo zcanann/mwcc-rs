@@ -763,11 +763,18 @@ impl Lowerer<'_> {
             let (a, _) = self.expression(left)?;
             let (b, _) = self.expression(right)?;
             self.emit_plain(match op {
-                BinaryOp::Less | BinaryOp::Greater => Instruction::FloatCompareOrdered { a, b },
                 BinaryOp::Equal | BinaryOp::NotEqual => Instruction::FloatCompareUnordered { a, b },
-                _ => return Err(unsupported("floating <= or >= (cror)")),
+                _ => Instruction::FloatCompareOrdered { a, b },
             });
-            return Ok(comparison(op));
+            // `<=` / `>=` fold the equal bit in: `cror eq,lt|gt,eq`.
+            return Ok(match op {
+                BinaryOp::LessEqual | BinaryOp::GreaterEqual => {
+                    let a = if op == BinaryOp::LessEqual { 0 } else { 1 };
+                    self.emit_plain(Instruction::ConditionRegisterOr { d: 2, a, b: 2 });
+                    (2, true)
+                }
+                _ => comparison(op),
+            });
         }
         // A constant on the left compares mirrored so it can be an immediate.
         let (op, left, right) = if left.as_int().is_some() && right.as_int().is_none() {

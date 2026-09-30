@@ -910,7 +910,13 @@ fn select(
         return Some(vec![destination.assign(Expr { kind: ExprKind::Idiom(idiom), ty })]);
     }
     let simple = simple_condition(condition);
-    if simple {
+    // A floating comparison's truth value is still taken directly.
+    let float_truth = matches!(&condition.kind, ExprKind::Binary(op, left, _)
+        if op.is_comparison() && *op != BinaryOp::NotEqual && mwcc_iro::is_float(left.ty))
+        && when_true.as_int() == Some(1)
+        && when_false.as_int() == Some(0)
+        && std::env::var_os("MWCC_IRO_NO_FLOAT_TRUTH").is_none();
+    if simple || float_truth {
         match (when_true.as_int(), when_false.as_int()) {
             (Some(1), Some(0)) => {
                 let truth = match &condition.kind {
