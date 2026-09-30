@@ -1440,6 +1440,13 @@ impl Lowerer<'_, '_> {
                 if let (Some(index), true) = (index, self.unoptimized) {
                     // -O0: the index first; an absolute array's address is
                     // completed with add, then accessed at 0.
+                    if let Some((pointer, addend)) = self.member_array(base) {
+                        let (b, _) = self.expression(index)?;
+                        let displaced = self.temporary();
+                        self.emit_based(Instruction::AddImmediate { d: displaced, a: b, immediate: addend }, b);
+                        let (a, _) = self.expression(pointer)?;
+                        return self.indexed_load(ty, a, displaced, target);
+                    }
                     let (b, _) = self.expression(index)?;
                     let (a, _) = self.expression(base)?;
                     if self.absolute_base(base) {
@@ -2604,7 +2611,18 @@ impl Lowerer<'_, '_> {
     /// index); otherwise the base, then the index with the displacement
     /// added (`lwzx`).
     fn unoptimized_address(&mut self, base: &Expr, offset: i32) -> Compilation<(u32, Option<u32>)> {
-        let (b, x) = self.unoptimized_indexed(base).expect("checked");
+        let (mut b, x) = self.unoptimized_indexed(base).expect("checked");
+        // An embedded array's constant member offset joins the displacement
+        // (`p->array[i]`: `(p + 12) + i*4` as `p + (i*4 + 12)`).
+        let mut offset = offset;
+        if let ExprKind::Binary(BinaryOp::Add, pointer, addend) = &b.kind {
+            if let (Some(addend), false) = (addend.as_int(), toggle("MWCC_PCODE_O0_NO_MEMBER_ARRAY_OFFSET")) {
+                if !self.absolute_base(pointer) {
+                    b = pointer;
+                    offset += i32::try_from(addend).map_err(|_| unsupported("large member offset"))?;
+                }
+            }
+        }
         if self.absolute_base(b) {
             let (index, _) = self.expression(x)?;
             let (address, _) = self.expression(b)?;
@@ -2631,6 +2649,21 @@ impl Lowerer<'_, '_> {
                     && !toggle("MWCC_PCODE_NO_SMALL_DATA_MEMBER_FOLD") =>
             {
                 Some(name)
+            }
+            _ => None,
+        }
+    }
+
+    /// -O0 `p + k` (an embedded array member of a non-absolute pointer):
+    /// the member offset rides the index (`i*4 + k`, `lwzx p`).
+    fn member_array<'e>(&self, base: &'e Expr) -> Option<(&'e Expr, i16)> {
+        match &base.kind {
+            ExprKind::Binary(BinaryOp::Add, pointer, addend)
+                if !self.absolute_base(pointer)
+                    && matches!(pointer.ty, Type::Pointer(_) | Type::StructPointer { .. })
+                    && !toggle("MWCC_PCODE_O0_NO_MEMBER_ARRAY_OFFSET") =>
+            {
+                Some((pointer, i16::try_from(addend.as_int()?).ok()?))
             }
             _ => None,
         }
@@ -2694,6 +2727,16 @@ impl Lowerer<'_, '_> {
                     Some(b) => (a, 0, Some(b), None),
                     None => (a, i16::try_from(*offset).map_err(|_| unsupported("large member offset"))?, None, None),
                 }
+            }
+            Place::Memory { base: base_expression, index: Some(index), .. }
+                if self.unoptimized && self.member_array(base_expression).is_some() =>
+            {
+                let (pointer, addend) = self.member_array(base_expression).expect("checked");
+                let (b, _) = self.expression(index)?;
+                let displaced = self.temporary();
+                self.emit_based(Instruction::AddImmediate { d: displaced, a: b, immediate: addend }, b);
+                let (a, _) = self.expression(pointer)?;
+                (a, 0, Some(displaced), None)
             }
             Place::Memory { base: base_expression, index: Some(index), .. } if self.unoptimized => {
                 let (b, _) = self.expression(index)?;
