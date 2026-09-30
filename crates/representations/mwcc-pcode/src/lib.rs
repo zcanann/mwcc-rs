@@ -228,6 +228,9 @@ pub struct PCodeFunction {
     /// Starts of frame objects whose address never escapes: pointer-based
     /// accesses cannot reach them.
     pub private_frame_objects: Vec<i16>,
+    /// Switch jump tables: the target block of each index, and the table
+    /// symbol's offset past the function's anonymous-label counter.
+    pub jump_tables: Vec<(Vec<usize>, u32)>,
     /// General registers live at the exit besides the result (`-O0` keeps
     /// register variables live through the whole function).
     pub exit_uses: Vec<u32>,
@@ -252,6 +255,7 @@ impl PCodeFunction {
             frame_local_bytes: 0,
             frame_objects: Vec::new(),
             private_frame_objects: Vec::new(),
+            jump_tables: Vec::new(),
             exit_uses: Vec::new(),
             ends_in_tail_call: false,
             pool: Vec::new(),

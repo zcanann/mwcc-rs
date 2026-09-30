@@ -231,6 +231,12 @@ pub fn finish(
     }
     output.instructions = instructions;
     output.relocations = relocations;
+    for (targets, anonymous_offset) in &pcode.jump_tables {
+        output.jump_tables.push(mwcc_machine_code::JumpTable {
+            entries: targets.iter().map(|&block| (starts[block] * 4) as u32).collect(),
+            anonymous_offset: *anonymous_offset,
+        });
+    }
     Ok(output)
 }
 
@@ -715,6 +721,11 @@ fn prune_unreachable(pcode: &mut PCodeFunction) {
         if reachable[block] {
             renumber[block] = next;
             next += 1;
+        }
+    }
+    for (targets, _) in &mut pcode.jump_tables {
+        for target in targets.iter_mut() {
+            *target = renumber[*target];
         }
     }
     let blocks = std::mem::take(&mut pcode.blocks);

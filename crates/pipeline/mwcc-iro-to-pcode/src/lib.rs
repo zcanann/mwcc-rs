@@ -60,6 +60,7 @@ pub fn lower(
         target: None,
         loaded_globals: HashMap::new(),
         pending_branches: Vec::new(),
+        pending_tables: Vec::new(),
         labels: Vec::new(),
         exit_label: Label(0),
         return_register: None,
@@ -102,6 +103,8 @@ struct Lowerer<'a> {
     loaded_globals: HashMap<String, (u32, Type)>,
     /// Branches awaiting their target block: (block, instruction, label).
     pending_branches: Vec<(usize, usize, Label)>,
+    /// Jump tables awaiting their labels' blocks: (dispatch block, entries).
+    pending_tables: Vec<(usize, Vec<Label>, u32)>,
     /// Label targets once placed: label -> block.
     labels: Vec<Option<usize>>,
     exit_label: Label,
@@ -242,6 +245,17 @@ impl Lowerer<'_> {
             if !self.pcode.blocks[block].successors.contains(&target) {
                 self.pcode.blocks[block].successors.push(target);
             }
+        }
+        for (block, entries, offset) in std::mem::take(&mut self.pending_tables) {
+            let mut targets = Vec::new();
+            for label in entries {
+                let target = self.labels[label.0].ok_or_else(|| unsupported("unplaced label"))?;
+                if !self.pcode.blocks[block].successors.contains(&target) {
+                    self.pcode.blocks[block].successors.push(target);
+                }
+                targets.push(target);
+            }
+            self.pcode.jump_tables.push((targets, offset));
         }
         Ok(())
     }
@@ -481,13 +495,50 @@ impl Lowerer<'_> {
             }
         }
         let tree = SwitchTree { segments: &segments };
-        if tree.uses_table() {
-            return Err(unsupported("switch jump table"));
-        }
         let (x, _) = self.expression(value)?;
         let default_target = default.map_or(exit, |arm| arm_labels[arm]);
         let target = |arm: Option<usize>| arm.map_or(default_target, |arm| arm_labels[arm]);
-        self.switch_node(&tree, x, i64::MIN, i64::MAX, &target)?;
+        if tree.uses_table() && std::env::var_os("MWCC_PCODE_NO_JUMP_TABLES").is_none() {
+            // Dispatch through a table indexed from 0 (small minimums) or
+            // from the minimum.
+            let (first, last) = (sorted[0].0, sorted[sorted.len() - 1].0);
+            let base = if (0..=2).contains(&first) { 0 } else { first };
+            let index = if base == 0 {
+                x
+            } else {
+                let index = self.temporary();
+                self.emit_based(Instruction::AddImmediate { d: index, a: x, immediate: i16::try_from(-base).map_err(|_| unsupported("table base"))? }, x);
+                index
+            };
+            let limit = u16::try_from(last - base).map_err(|_| unsupported("table size"))?;
+            self.emit_plain(Instruction::CompareLogicalWordImmediate { a: index, immediate: limit });
+            self.branch(Instruction::BranchConditionalForward { options: 12, condition_bit: 1, target: 0 }, default_target);
+            let table = self.pcode.jump_tables.len() + self.pending_tables.len();
+            let high = self.temporary();
+            let mut lis = PInstr::new(Instruction::AddImmediateShifted { d: high, a: 0, immediate: 0 });
+            lis.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Ha, target: RelocationTarget::JumpTableAt(table) });
+            self.emit(lis);
+            let scaled = self.temporary();
+            self.emit_plain(Instruction::ShiftLeftImmediate { a: scaled, s: index, shift: 2 });
+            let address = self.temporary();
+            let mut addi = PInstr::new(Instruction::AddImmediate { d: address, a: high, immediate: 0 });
+            addi.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Lo, target: RelocationTarget::JumpTableAt(table) });
+            addi.not_r0.push(high);
+            self.emit(addi);
+            let entry = self.temporary();
+            self.emit_based(Instruction::LoadWordIndexed { d: entry, a: address, b: scaled }, address);
+            self.emit_plain(Instruction::MoveToCountRegister { s: entry });
+            self.emit_plain(Instruction::BranchToCountRegister);
+            let entries: Vec<Label> = (base..=last)
+                .map(|value| target(sorted.iter().find(|&&(case, _)| case == value).map(|&(_, arm)| arm)))
+                .collect();
+            let block = self.current_block();
+            let offset = arms.len() as u32 + 1 + u32::from(default.is_some());
+            self.pending_tables.push((block, entries, offset));
+            self.start_block(false);
+        } else {
+            self.switch_node(&tree, x, i64::MIN, i64::MAX, &target)?;
+        }
         let enclosing_next = self.loops.last().map_or(exit, |&(_, next)| next);
         self.loops.push((exit, enclosing_next));
         for (index, arm) in arms.iter().enumerate() {
