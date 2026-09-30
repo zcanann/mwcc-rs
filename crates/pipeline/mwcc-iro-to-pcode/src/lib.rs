@@ -163,6 +163,9 @@ impl Lowerer<'_> {
     /// Values computed so far are available only where this block's code
     /// dominates: a fall-through successor with no other predecessor.
     fn clear_block_caches(&mut self) {
+        // Loaded globals too: at a join a value loaded on one path only is
+        // not available.
+        self.loaded_globals.clear();
         self.extended.clear();
         self.constants.clear();
         self.common.clear();
@@ -219,7 +222,6 @@ impl Lowerer<'_> {
         let position = self.pcode.blocks[block].instructions.len();
         self.emit_plain(instruction);
         self.pending_branches.push((block, position, label));
-        self.loaded_globals.clear();
         if conditional && !self.unoptimized {
             // The fall-through block continues the extended block.
             self.start_block_keeping(true);
