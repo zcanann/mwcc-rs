@@ -6281,7 +6281,7 @@ impl Parser {
             Token::Identifier(word) => {
                 matches!(
                     word.as_str(),
-                    "long" | "signed" | "double" | "const" | "volatile" | "register" | "enum"
+                    "long" | "signed" | "double" | "const" | "volatile" | "register" | "enum" | "union"
                 ) || self.typedefs.contains_key(word)
                     || self.struct_typedefs.contains_key(word)
                     || self.struct_pointer_typedefs.contains_key(word)

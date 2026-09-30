@@ -864,6 +864,22 @@ impl Parser {
             if parenthesized {
                 self.advance(); // `(`
             }
+            // `sizeof(ArrayTypedef)`: the whole array (`typedef u8 A[6]`).
+            if parenthesized && *self.peek_at(1) == Token::ParenClose {
+                if let Token::Identifier(name) = self.peek().clone() {
+                    if let Some(&(element, count, _)) = self.array_typedefs.get(&name) {
+                        let element_bytes = match element {
+                            mwcc_syntax_trees::Type::Struct { size, .. } => size as u32,
+                            mwcc_syntax_trees::Type::Pointer(_)
+                            | mwcc_syntax_trees::Type::StructPointer { .. } => 4,
+                            other => other.width() as u32 / 8,
+                        };
+                        self.advance();
+                        self.advance();
+                        return Ok(Expression::IntegerLiteral(i64::from(element_bytes) * i64::from(count)));
+                    }
+                }
+            }
             if parenthesized && self.peek_is_type() {
                 let target_type = self.parse_type()?;
                 self.expect(Token::ParenClose)?;

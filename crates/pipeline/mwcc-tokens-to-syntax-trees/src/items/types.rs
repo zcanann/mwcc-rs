@@ -524,8 +524,30 @@ impl Parser {
         // at offset 0 (overlapping storage), so it reuses the struct machinery once the layout
         // is registered. `union` is lexed as a plain identifier, not a keyword.
         if matches!(self.peek(), Token::Identifier(word) if word == "union") {
+            let definition_position = self.position;
             self.advance();
-            let tag = self.parse_identifier()?;
+            // An inline union body (`union { ... } x;` / `union Tag { ... } x;`)
+            // registers its layout (anonymous: a source-position identity).
+            let tag = if *self.peek() == Token::BraceOpen
+                || (matches!(self.peek(), Token::Identifier(_)) && *self.peek_at(1) == Token::BraceOpen)
+            {
+                let tag = if *self.peek() == Token::BraceOpen {
+                    format!("@anonymous:{definition_position}")
+                } else {
+                    self.parse_identifier()?
+                };
+                let mut layout = self.parse_union_body()?;
+                layout.source_tag = (!tag.starts_with('@')).then(|| tag.clone());
+                if let Some(align) = self.skip_attributes()? {
+                    layout.align = layout.align.max(align as u8);
+                    let align = u32::from(align);
+                    layout.size = layout.size.div_ceil(align) * align;
+                }
+                self.structs.insert(tag.clone(), layout);
+                tag
+            } else {
+                self.parse_identifier()?
+            };
             self.consume_trailing_qualifiers();
             if !matches!(self.peek(), Token::Star | Token::Ampersand) {
                 return match self.struct_value_type(&tag) {
