@@ -2108,7 +2108,24 @@ impl Lowerer<'_> {
         // MWCC places a leaf operand first in a commutative operation whose
         // other operand is computed (`a*b + c` -> `add r3,c,t`).
         let leaf = |e: &Expr| unpromoted(e).as_var().is_some();
-        let (a, b) = if op.is_commutative() && !leaf(left) && leaf(right) { (b, a) } else { (a, b) };
+        // A left operand computed from one register and constants (`a-1`,
+        // `2-a`, `-a`) keeps source order.
+        // (A same-variable leaf, `a*2 + a`, still goes first.)
+        let right_var = unpromoted(right).as_var();
+        let one_register = |e: &Expr| {
+            let e = unpromoted(e);
+            let other = |v: &Expr| unpromoted(v).as_var().is_some_and(|id| Some(id) != right_var);
+            match &e.kind {
+                ExprKind::Binary(_, x, y) => (other(x) && y.as_int().is_some()) || (x.as_int().is_some() && other(y)),
+                ExprKind::Unary(UnaryOp::Negate, x) => other(x),
+                _ => false,
+            }
+        };
+        let swap = op.is_commutative()
+            && !leaf(left)
+            && leaf(right)
+            && (!one_register(left) || std::env::var_os("MWCC_PCODE_LEAF_FIRST_ALWAYS").is_some());
+        let (a, b) = if swap { (b, a) } else { (a, b) };
         let d = self.result(target);
         let instruction = match op {
             BinaryOp::Add => Instruction::Add { d, a, b },
