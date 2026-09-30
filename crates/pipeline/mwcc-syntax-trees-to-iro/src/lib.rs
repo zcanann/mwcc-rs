@@ -118,6 +118,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         names: variables.iter().enumerate().map(|(id, variable)| (variable.name.clone(), id)).collect(),
         variables: &variables,
         pending: Vec::new(),
+        post: Vec::new(),
         strings: Vec::new(),
         guarded: 0,
         temporaries: Vec::new(),
@@ -137,6 +138,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
                 Some(_) => return Err(unsupported("an initialized frame aggregate")),
                 None => Stmt::Assign { variable, value },
             });
+            body.append(&mut builder.post);
         }
     }
     for statement in &function.statements {
@@ -144,6 +146,9 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     }
     for guard in &function.guards {
         let condition = promoted(builder.expression(&guard.condition)?);
+        if !builder.post.is_empty() {
+            return Err(unsupported("post-increment in a control condition"));
+        }
         body.append(&mut builder.pending);
         let value = builder.returned(&guard.value)?;
         let then_body: Vec<Stmt> = builder.pending.drain(..).chain([Stmt::Return(Some(value))]).collect();
@@ -154,6 +159,8 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         let value = builder.returned(value)?;
         body.append(&mut builder.pending);
         body.push(Stmt::SetReturn(value));
+        // A register variable's step after the final value is dead.
+        builder.post.clear();
     }
     let temporaries = std::mem::take(&mut builder.temporaries);
     let mut builder_strings = std::mem::take(&mut builder.strings);
@@ -203,6 +210,9 @@ struct Builder<'a> {
     /// Assignments inside the expression being built, hoisted before the
     /// statement that contains it.
     pending: Vec<Stmt>,
+    /// Post-increments inside the expression being built, applied after the
+    /// statement that contains it.
+    post: Vec<Stmt>,
     /// Inside a conditionally or repeatedly evaluated operand, where an
     /// assignment cannot be hoisted.
     guarded: usize,
@@ -225,12 +235,15 @@ impl Builder<'_> {
     /// the assignments hoisted out of it).
     fn effects(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
         let outer = std::mem::take(&mut self.pending);
+        let outer_post = std::mem::take(&mut self.post);
         let result = self.effects_inner(expression);
         let hoisted = std::mem::replace(&mut self.pending, outer);
+        let after = std::mem::replace(&mut self.post, outer_post);
         let mut out = result?;
         if !hoisted.is_empty() {
             out.splice(0..0, hoisted);
         }
+        out.extend(after);
         Ok(out)
     }
 
@@ -306,11 +319,22 @@ impl Builder<'_> {
     /// expressions.
     fn statement(&mut self, statement: &Statement) -> Compilation<Vec<Stmt>> {
         let outer = std::mem::take(&mut self.pending);
+        let outer_post = std::mem::take(&mut self.post);
         let result = self.statement_inner(statement);
         let hoisted = std::mem::replace(&mut self.pending, outer);
+        let after = std::mem::replace(&mut self.post, outer_post);
         let mut out = result?;
         if !hoisted.is_empty() {
             out.splice(0..0, hoisted);
+        }
+        if !after.is_empty() {
+            match statement {
+                // The step follows the statement that read the old value.
+                Statement::Assign { .. } | Statement::Store { .. } | Statement::Expression(_) => out.extend(after),
+                // A register variable's step after `return` is dead.
+                Statement::Return(_) => {}
+                _ => return Err(unsupported("post-increment in a control condition")),
+            }
         }
         Ok(out)
     }
@@ -724,6 +748,25 @@ impl Builder<'_> {
                 Expr { kind: ExprKind::StringAddress(index), ty: Type::Pointer(mwcc_iro::Pointee::Char) }
             }
             Expression::Assign { target, value } => self.assignment_value(target, value)?,
+            // `x++` as a value: the old value; the step follows the statement.
+            Expression::PostStep { target, operator, pointer_link: None }
+                if matches!(target.as_ref(), Expression::Variable(name)
+                    if self.names.get(name).is_some_and(|&id| self.variables[id].frame.is_none())) =>
+            {
+                if self.guarded > 0 || std::env::var_os("MWCC_IRO_NO_POST_VALUE").is_some() {
+                    return Err(unsupported("expression PostStep"));
+                }
+                let Expression::Variable(name) = target.as_ref() else { unreachable!() };
+                let id = self.names[name];
+                let step = Expression::Binary {
+                    operator: *operator,
+                    left: target.clone(),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                };
+                let statements = self.assignment(target, &step)?;
+                self.post.extend(statements);
+                Expr { kind: ExprKind::Var(id), ty: self.variables[id].ty }
+            }
             other => return Err(unsupported(format!("expression {}", expression_name(other)))),
         })
     }

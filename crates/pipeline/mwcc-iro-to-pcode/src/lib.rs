@@ -673,6 +673,19 @@ impl Lowerer<'_> {
         }
     }
 
+    /// A base and displacement for `base + offset`: a displacement beyond 16
+    /// bits adds its high half first (`addis t,base,hi; lwz d,lo(t)`).
+    fn displacement(&mut self, base: u32, offset: i32) -> Compilation<(u32, i16)> {
+        if let Ok(offset) = i16::try_from(offset) {
+            return Ok((base, offset));
+        }
+        let low = offset as i16;
+        let high = i16::try_from((offset - i32::from(low)) >> 16).map_err(|_| unsupported("large member offset"))?;
+        let adjusted = self.temporary();
+        self.emit_based(Instruction::AddImmediateShifted { d: adjusted, a: base, immediate: high }, base);
+        Ok((adjusted, low))
+    }
+
     /// A fresh 8-byte, 8-aligned slot for an integer/floating conversion.
     fn conversion_slot(&mut self) -> i16 {
         let offset = self.frame_cursor.div_ceil(8) * 8;
@@ -1278,7 +1291,7 @@ impl Lowerer<'_> {
                         self.indexed_load(ty, a, b, target)
                     }
                     None => {
-                        let offset = i16::try_from(*offset).map_err(|_| unsupported("large member offset"))?;
+                        let (a, offset) = self.displacement(a, *offset)?;
                         self.load(ty, a, offset, None, target)
                     }
                 }
@@ -2416,7 +2429,10 @@ impl Lowerer<'_> {
                     Some(index) => Some(self.expression(index)?.0),
                     None => None,
                 };
-                let offset = i16::try_from(*offset).map_err(|_| unsupported("large member offset"))?;
+                let (base, offset) = match index {
+                    None => self.displacement(base, *offset)?,
+                    Some(_) => (base, i16::try_from(*offset).map_err(|_| unsupported("large member offset"))?),
+                };
                 (base, offset, index, None)
             }
             Place::Global(name) => {
