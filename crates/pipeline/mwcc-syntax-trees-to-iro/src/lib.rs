@@ -118,6 +118,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         names: variables.iter().enumerate().map(|(id, variable)| (variable.name.clone(), id)).collect(),
         variables: &variables,
         pending: Vec::new(),
+        strings: Vec::new(),
         guarded: 0,
         temporaries: Vec::new(),
     };
@@ -155,6 +156,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         body.push(Stmt::SetReturn(value));
     }
     let temporaries = std::mem::take(&mut builder.temporaries);
+    let mut builder_strings = std::mem::take(&mut builder.strings);
     let mut variables = variables;
     variables.extend(temporaries);
     let returns_through_variable = function.return_type != Type::Void
@@ -163,6 +165,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             || matches!(function.return_expression, Some(Expression::Conditional { .. })));
     Ok(Built {
         function: Function {
+            strings: std::mem::take(&mut builder_strings),
             name: function.name.clone(),
             return_type: function.return_type,
             parameter_count: function.parameters.len(),
@@ -205,6 +208,8 @@ struct Builder<'a> {
     guarded: usize,
     /// Registers holding assigned values, numbered after `variables`.
     temporaries: Vec<Variable>,
+    /// String literals by bytes, in first-use order.
+    strings: Vec<Vec<u8>>,
 }
 
 impl Builder<'_> {
@@ -232,6 +237,7 @@ impl Builder<'_> {
     fn effects_inner(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
         Ok(match expression {
             Expression::Call { name, arguments } => vec![Stmt::Eval(self.call(name, arguments, true)?)],
+            Expression::CallThrough { target, arguments } => vec![Stmt::Eval(self.indirect_call(target, arguments, true)?)],
             Expression::Cast { target_type: Type::Void, operand } => match operand.as_ref() {
                 Expression::Call { name, arguments } => vec![Stmt::Eval(self.call(name, arguments, true)?)],
                 Expression::Variable(_) | Expression::IntegerLiteral(_) => Vec::new(),
@@ -672,6 +678,19 @@ impl Builder<'_> {
                 Expr { kind: ExprKind::Load { base, index, offset }, ty }
             }
             Expression::Call { name, arguments } => self.call(name, arguments, false)?,
+            Expression::StringLiteral(bytes) => {
+                if self.unit.strings_packed {
+                    return Err(unsupported("packed string literals"));
+                }
+                let index = match self.strings.iter().position(|known| known == bytes) {
+                    Some(index) => index,
+                    None => {
+                        self.strings.push(bytes.clone());
+                        self.strings.len() - 1
+                    }
+                };
+                Expr { kind: ExprKind::StringAddress(index), ty: Type::Pointer(mwcc_iro::Pointee::Char) }
+            }
             Expression::Assign { target, value } => self.assignment_value(target, value)?,
             other => return Err(unsupported(format!("expression {}", expression_name(other)))),
         })
@@ -731,7 +750,37 @@ impl Builder<'_> {
     }
 
     /// A call; `discarded` when its result is unused (a `void` callee is fine).
+    /// A call through a function pointer: `mtctr` + `bctrl`. The callee's
+    /// type is not tracked, so only a discarded result is modeled.
+    fn indirect_call(&mut self, target: &Expression, arguments: &[Expression], discarded: bool) -> Compilation<Expr> {
+        if !discarded {
+            return Err(unsupported("value of an indirect call"));
+        }
+        if arguments.len() > ARGUMENT_REGISTERS {
+            return Err(unsupported("stack-passed arguments"));
+        }
+        let target = self.guarded_expression(target)?;
+        if !is_general_word(target.ty) {
+            return Err(unsupported("call target of this type"));
+        }
+        let mut values = vec![target];
+        for argument in arguments {
+            let value = promoted(self.guarded_expression(argument)?);
+            if is_float(value.ty) || !is_value_type(value.ty) {
+                return Err(unsupported("indirect call argument of this type"));
+            }
+            values.push(value);
+        }
+        Ok(Expr { kind: ExprKind::Call { name: mwcc_iro::INDIRECT_CALL.to_owned(), arguments: values }, ty: Type::Void })
+    }
+
     fn call(&mut self, name: &str, arguments: &[Expression], discarded: bool) -> Compilation<Expr> {
+        // A call through a pointer variable (local, parameter or global).
+        let pointer_variable = self.names.contains_key(name)
+            || self.unit.globals.get(name).is_some_and(|global| !global.is_function);
+        if pointer_variable {
+            return self.indirect_call(&Expression::Variable(name.to_owned()), arguments, discarded);
+        }
         {
             {
                 let ty = self.unit.call_return_types.get(name).copied().unwrap_or(Type::Int);
@@ -741,9 +790,7 @@ impl Builder<'_> {
                 if (self.unit.is_intrinsic)(name, arguments.len()) {
                     return Err(unsupported(format!("intrinsic '{name}'")));
                 }
-                if self.unit.variadic_callees.contains(name) {
-                    return Err(unsupported("call to a variadic function"));
-                }
+                let variadic = self.unit.variadic_callees.contains(name);
                 let prototyped = self.unit.prototyped.contains(name);
                 if (self.unit.has_body)(name) {
                     return Err(unsupported("call to a function this unit defines (inlining not modeled)"));
@@ -752,6 +799,15 @@ impl Builder<'_> {
                     return Err(unsupported("stack-passed arguments"));
                 }
                 let mut arguments = arguments.iter().map(|a| self.guarded_expression(a)).collect::<Compilation<Vec<_>>>()?;
+                if variadic {
+                    // Arguments past the fixed parameters take the default
+                    // promotions (floating ones widen to double).
+                    let fixed = self.unit.call_parameter_types.get(name).map_or(0, |types| types.len());
+                    for argument in arguments.iter_mut().skip(fixed) {
+                        let value = std::mem::replace(argument, Expr::int(0));
+                        *argument = if is_float(value.ty) { converted(value, Type::Double) } else { promoted(value) };
+                    }
+                }
                 if !prototyped {
                     // Default argument promotions; floating arguments of an
                     // unprototyped call also set CR1 (not modeled).

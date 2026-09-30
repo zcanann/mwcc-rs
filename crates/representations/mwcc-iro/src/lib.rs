@@ -23,7 +23,13 @@ pub struct GlobalInfo {
     pub is_array: bool,
     /// Every read and write is an observable access (never reused).
     pub is_volatile: bool,
+    /// A function (named as a value: its address).
+    pub is_function: bool,
 }
+
+/// The callee name of an indirect call: the target address is the call's
+/// first argument.
+pub const INDIRECT_CALL: &str = "@indirect";
 
 /// Unit-level facts about names a function refers to.
 pub struct Unit<'a> {
@@ -47,6 +53,10 @@ pub struct Unit<'a> {
     /// The callee trusts narrow parameters other than `signed char` to
     /// arrive extended (GC/3.x, Wii).
     pub narrow_parameters_extended: bool,
+    /// Short string literals live in small data (`li rD,@N@sda21`).
+    pub strings_small_data: bool,
+    /// Literals are packed into one `@stringBase` object (not modeled).
+    pub strings_packed: bool,
     /// Floating constants live in small data (`-sdata2` above 0): loaded
     /// `lfs fD,@N@sda21(r0)`; otherwise through an absolute address.
     pub pool_small_data: bool,
@@ -85,6 +95,8 @@ pub struct Function {
     pub variables: Vec<Variable>,
     pub parameter_count: usize,
     pub body: Vec<Stmt>,
+    /// String literals by bytes (without the NUL), in first-use order.
+    pub strings: Vec<Vec<u8>>,
 }
 
 impl Function {
@@ -222,6 +234,8 @@ pub enum ExprKind {
     GlobalAddress(String),
     /// The address of a frame-resident variable (typed as a pointer).
     LocalAddress(VarId),
+    /// The address of the function's i-th string literal.
+    StringAddress(usize),
     /// A load of `ty` from `base + index + offset` (`index` scaled).
     Load { base: Box<Expr>, index: Option<Box<Expr>>, offset: i32 },
     Unary(UnaryOp, Box<Expr>),
@@ -274,7 +288,11 @@ impl Expr {
     /// Whether the expression may read `variable` (conservative).
     pub fn mentions(&self, variable: VarId) -> bool {
         match &self.kind {
-            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => false,
+            ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Global(_)
+            | ExprKind::GlobalAddress(_)
+            | ExprKind::StringAddress(_) => false,
             ExprKind::Var(id) | ExprKind::LocalAddress(id) => *id == variable,
             ExprKind::Load { base, index, .. } => {
                 base.mentions(variable) || index.as_ref().is_some_and(|index| index.mentions(variable))
@@ -407,6 +425,7 @@ impl fmt::Display for Expr {
             ExprKind::Var(id) => write!(f, "v{id}"),
             ExprKind::Global(name) => write!(f, "{name}"),
             ExprKind::GlobalAddress(name) => write!(f, "&{name}"),
+            ExprKind::StringAddress(index) => write!(f, "&@str{index}"),
             ExprKind::LocalAddress(id) => write!(f, "&v{id}"),
             ExprKind::Load { base, index, offset } => {
                 write!(f, "load.{:?}[{base}", self.ty)?;

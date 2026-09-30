@@ -231,6 +231,7 @@ pub fn finish(
     }
     output.instructions = instructions;
     output.relocations = relocations;
+    output.string_literals = pcode.strings.clone();
     for (targets, anonymous_offset) in &pcode.jump_tables {
         output.jump_tables.push(mwcc_machine_code::JumpTable {
             entries: targets.iter().map(|&block| (starts[block] * 4) as u32).collect(),

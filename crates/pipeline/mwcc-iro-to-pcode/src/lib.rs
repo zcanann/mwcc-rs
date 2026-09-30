@@ -53,7 +53,7 @@ pub fn lower(
     let mut lowerer = Lowerer {
         unit,
         function,
-        pcode: PCodeFunction::new(function.name.clone(), returns),
+        pcode: PCodeFunction { strings: function.strings.clone(), ..PCodeFunction::new(function.name.clone(), returns) },
         registers: vec![None; function.variables.len()],
         raw_narrow: vec![false; function.variables.len()],
         makes_calls: false,
@@ -1028,6 +1028,28 @@ impl Lowerer<'_> {
         let ty = expression.ty;
         match &expression.kind {
             ExprKind::Float(value) => self.float_constant(*value, ty, target),
+            ExprKind::StringAddress(index) => {
+                // `@@strN` is resolved to the pooled `@N` per unit.
+                let placeholder = || RelocationTarget::External(format!("@@str{index}"));
+                let bytes = self.function.strings[*index].len() + 1;
+                if self.unit.strings_small_data && bytes <= 8 {
+                    let d = self.result(target);
+                    let mut li = PInstr::new(Instruction::AddImmediate { d, a: 0, immediate: 0 });
+                    li.relocation = Some(AttachedRelocation { kind: RelocationKind::EmbSda21, target: placeholder() });
+                    self.emit(li);
+                    return Ok((d, ty));
+                }
+                let high = self.temporary();
+                let mut lis = PInstr::new(Instruction::AddImmediateShifted { d: high, a: 0, immediate: 0 });
+                lis.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Ha, target: placeholder() });
+                self.emit(lis);
+                let d = self.result(target);
+                let mut addi = PInstr::new(Instruction::AddImmediate { d, a: high, immediate: 0 });
+                addi.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Lo, target: placeholder() });
+                addi.not_r0.push(high);
+                self.emit(addi);
+                Ok((d, ty))
+            }
             ExprKind::LocalAddress(id) => {
                 let offset = self.frame_offsets[*id].ok_or_else(|| unsupported("address of a register variable"))?;
                 let key = format!("&v{id}");
@@ -2264,6 +2286,12 @@ impl Lowerer<'_> {
     // ------------------------------------------------------------ calls
 
     fn call(&mut self, name: &str, arguments: &[Expr], ty: Type, target: Option<u32>) -> Compilation<u32> {
+        // An indirect call's first argument is the target address.
+        let (callee, arguments) = if name == mwcc_iro::INDIRECT_CALL {
+            (Some(&arguments[0]), &arguments[1..])
+        } else {
+            (None, arguments)
+        };
         let mut values = Vec::new();
         for argument in arguments {
             // A constant argument is loaded straight into its register.
@@ -2290,11 +2318,36 @@ impl Lowerer<'_> {
             }
             argument_registers.push(Register::general(register));
         }
-        let mut call = PInstr::new(Instruction::BranchAndLink { target: name.to_owned() });
-        call.relocation = Some(AttachedRelocation {
-            kind: RelocationKind::Rel24,
-            target: RelocationTarget::External(name.to_owned()),
-        });
+        let mut call = match callee {
+            Some(callee) => {
+                // The target goes through r12 into CTR.
+                let (address, _) = self.expression_with_target(callee, Some(12))?;
+                if address != 12 {
+                    self.emit_plain(Instruction::Or { a: 12, s: address, b: address });
+                }
+                self.emit_plain(Instruction::MoveToCountRegister { s: 12 });
+                argument_registers.push(Register::general(12));
+                PInstr::new(Instruction::BranchToCountRegisterAndLink)
+            }
+            None => {
+                if self.unit.variadic_callees.contains(name) {
+                    // CR1[eq] tells a variadic callee whether floating
+                    // arguments are in registers.
+                    let floating = arguments.iter().any(|argument| is_float(argument.ty));
+                    self.emit_plain(if floating {
+                        Instruction::ConditionRegisterSet { d: 6 }
+                    } else {
+                        Instruction::ConditionRegisterClear { d: 6 }
+                    });
+                }
+                let mut call = PInstr::new(Instruction::BranchAndLink { target: name.to_owned() });
+                call.relocation = Some(AttachedRelocation {
+                    kind: RelocationKind::Rel24,
+                    target: RelocationTarget::External(name.to_owned()),
+                });
+                call
+            }
+        };
         call.implicit_uses = argument_registers;
         call.implicit_defs = VOLATILE_GENERAL.iter().map(|&r| Register::general(r)).collect();
         call.implicit_defs.extend((0..14).map(Register::float));
@@ -2447,7 +2500,8 @@ fn makes_calls(body: &[Stmt]) -> bool {
             | ExprKind::Var(_)
             | ExprKind::Global(_)
             | ExprKind::GlobalAddress(_)
-            | ExprKind::LocalAddress(_) => false,
+            | ExprKind::LocalAddress(_)
+            | ExprKind::StringAddress(_) => false,
             ExprKind::Load { base, index, .. } => expression(base) || index.as_deref().is_some_and(expression),
             ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => expression(operand),
             ExprKind::Binary(_, left, right) => expression(left) || expression(right),
@@ -2483,7 +2537,7 @@ fn references(body: &[Stmt], variable: VarId) -> usize {
         match &e.kind {
             ExprKind::Var(id) => usize::from(*id == variable),
             ExprKind::LocalAddress(id) => usize::from(*id == variable),
-            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => 0,
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) | ExprKind::StringAddress(_) => 0,
             ExprKind::Load { base, index, .. } => {
                 expression(base, variable) + index.as_deref().map_or(0, |index| expression(index, variable))
             }

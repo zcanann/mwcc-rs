@@ -65,6 +65,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                     small_data,
                     is_array: global.array_length.is_some() || global.array_length_inferred,
                     is_volatile: global.is_volatile,
+                    is_function: false,
                 },
             )
         })
@@ -74,7 +75,13 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         if !globals.contains_key(name) && std::env::var_os("MWCC_PCODE_NO_FUNCTION_ADDRESS").is_none() {
             globals.insert(
                 name.clone(),
-                GlobalInfo { ty: mwcc_syntax_trees::Type::Int, small_data: false, is_array: true, is_volatile: false },
+                GlobalInfo {
+                    ty: mwcc_syntax_trees::Type::Int,
+                    small_data: false,
+                    is_array: true,
+                    is_volatile: false,
+                    is_function: true,
+                },
             );
         }
     }
@@ -87,6 +94,8 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         call_parameter_types: request.call_parameter_types,
         has_body: request.has_body,
         keeps_struct_stores: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
+        strings_small_data: behavior.global_addressing == GlobalAddressing::SmallData,
+        strings_packed: behavior.string_literals_packed,
         pool_small_data: behavior.read_only_global_addressing == GlobalAddressing::SmallData,
         narrow_parameters_extended: request.config.build.label.starts_with("GC/3.")
             || request.config.build.label.starts_with("Wii/"),

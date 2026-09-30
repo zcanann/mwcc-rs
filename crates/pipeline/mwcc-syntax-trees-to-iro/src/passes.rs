@@ -415,7 +415,8 @@ fn children(expression: &mut Expr, rewrite: &mut dyn FnMut(&mut Expr)) {
         | ExprKind::Var(_)
         | ExprKind::Global(_)
         | ExprKind::GlobalAddress(_)
-        | ExprKind::LocalAddress(_) => {}
+        | ExprKind::LocalAddress(_)
+        | ExprKind::StringAddress(_) => {}
         ExprKind::Load { base, index, .. } => {
             rewrite(base);
             if let Some(index) = index {
@@ -650,7 +651,8 @@ pub fn speculable(expression: &Expr) -> bool {
         | ExprKind::Var(_)
         | ExprKind::Global(_)
         | ExprKind::GlobalAddress(_)
-        | ExprKind::LocalAddress(_) => true,
+        | ExprKind::LocalAddress(_)
+        | ExprKind::StringAddress(_) => true,
         ExprKind::Binary(op, left, right) => {
             !matches!(op, BinaryOp::Divide | BinaryOp::Modulo | BinaryOp::LogicalAnd | BinaryOp::LogicalOr)
                 && speculable(left)
@@ -1067,6 +1069,7 @@ mod tests {
 
     fn function(body: Vec<Stmt>) -> Function {
         Function {
+            strings: Vec::new(),
             name: "f".into(),
             return_type: Type::Int,
             variables: (0..2)

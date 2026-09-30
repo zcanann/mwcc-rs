@@ -133,6 +133,7 @@ fn operand_keys(instruction: &PInstr) -> (Vec<Key>, Vec<Key>) {
             uses.push(Key::Condition);
             defs.push(Key::Condition);
         }
+        Instruction::ConditionRegisterClear { .. } | Instruction::ConditionRegisterSet { .. } => defs.push(Key::Condition),
         Instruction::MoveToLinkRegister { .. } => defs.push(Key::Link),
         Instruction::BranchToLinkRegister => uses.push(Key::Link),
         Instruction::BranchAndLink { .. } => defs.push(Key::Link),
@@ -264,6 +265,8 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                 rank: info.pick_rank,
                 serialize: info.serialize
                     || instruction.instruction.is_call()
+                    // The variadic CR1 marker stays at the call.
+                    || matches!(instruction.instruction, Instruction::ConditionRegisterClear { .. } | Instruction::ConditionRegisterSet { .. })
                     || (matches!(instruction.instruction, Instruction::AddImmediate { d: 1, a: 1, .. })
                         && std::env::var_os("MWCC_SCHED_POP_FREE").is_none()),
                 is_store: matches!(memory_of(instruction), Memory::Store(_)),
