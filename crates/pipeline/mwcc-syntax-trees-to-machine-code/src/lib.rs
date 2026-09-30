@@ -364,6 +364,12 @@ fn lower_function_body(
             returns_bool: call_return_fundamentals.get(&function.name)
                 == Some(&mwcc_syntax_trees::SourceFundamentalType::Boolean),
             cxx: source_facts.is_cxx,
+            nonvolatile_pointers: &source_facts
+                .nonvolatile_pointer_bindings
+                .iter()
+                .filter(|(owner, _)| owner == &function.name)
+                .map(|(_, name)| name.clone())
+                .collect(),
             has_body: &|name| inline_decision(name).is_some(),
             inline_bodies: &call_return_types
                 .keys()

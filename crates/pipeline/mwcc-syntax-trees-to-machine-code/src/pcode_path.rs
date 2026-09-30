@@ -29,6 +29,8 @@ pub struct PcodeRequest<'a> {
     /// Whether this unit has a body for the named function (a call MWCC
     /// may inline).
     pub has_body: &'a dyn Fn(&str) -> bool,
+    /// Pointer parameters and locals whose pointee has no volatile storage.
+    pub nonvolatile_pointers: &'a HashSet<String>,
     /// The body MWCC expands for a call, when that expansion is modeled.
     pub inline_bodies: &'a HashMap<String, &'a Function>,
     /// The function returns C++ `bool` (stored like `unsigned char`).

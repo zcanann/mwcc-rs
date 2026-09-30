@@ -50,6 +50,9 @@ pub struct Unit<'a> {
     /// The body MWCC expands for a call (a `has_body` callee whose
     /// expansion is modeled).
     pub inline_bodies: &'a HashMap<String, &'a mwcc_syntax_trees::Function>,
+    /// Pointer variables (by name) whose pointee has no volatile storage:
+    /// loads through them may be reused until a store or call.
+    pub nonvolatile_pointers: &'a std::collections::HashSet<String>,
     /// An `-O0` compile: an expansion's parameters and result are locals
     /// (register variables).
     pub unoptimized: bool,

@@ -1427,6 +1427,20 @@ impl Lowerer<'_, '_> {
                 let (a, _) = self.expression(&Expr::int(i64::from(high) << 16))?;
                 self.load(ty, a, low, None, target)
             }
+            // A load through a pointer to non-volatile storage is reused
+            // until a store or call (or the pointer changes).
+            ExprKind::Load { base, index: None, offset } if target.is_none() && self.shareable_pointer(base).is_some() => {
+                let id = self.shareable_pointer(base).expect("checked");
+                let key = format!("*{id}:{offset}:{ty:?}");
+                if let Some(&(register, ty, _)) = self.common.get(&key) {
+                    return Ok((register, ty));
+                }
+                let (a, _) = self.expression(base)?;
+                let (a, displacement) = self.displacement(a, *offset)?;
+                let result = self.load(ty, a, displacement, None, None)?;
+                self.common.insert(key, (result.0, result.1, vec![id]));
+                Ok(result)
+            }
             // The value of `a[i] op= v` loads through the store's address.
             ExprKind::Load { base, index, offset }
                 if self.address_reuse.as_ref().is_some_and(|(key, _)| *key == place_key(base, index.as_deref(), *offset)) =>
@@ -2685,6 +2699,22 @@ impl Lowerer<'_, '_> {
         }
     }
 
+    /// A register pointer variable whose pointee has no volatile storage.
+    fn shareable_pointer(&self, base: &Expr) -> Option<VarId> {
+        if self.unoptimized || toggle("MWCC_PCODE_NO_POINTER_LOAD_CSE") {
+            return None;
+        }
+        match base.kind {
+            ExprKind::Var(id)
+                if self.homes[id].is_none()
+                    && self.unit.nonvolatile_pointers.contains(&self.function.variables[id].name) =>
+            {
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
     fn absolute_base(&self, base: &Expr) -> bool {
         matches!(&base.kind, ExprKind::GlobalAddress(name) if !self.unit.globals[name].small_data)
     }
@@ -2836,6 +2866,7 @@ impl Lowerer<'_, '_> {
         instruction.relocation = relocation;
         self.emit(instruction);
         self.forget_loaded_globals(false);
+        self.common.retain(|key, _| !key.starts_with('*'));
         // A stored word-sized global's value is still in `source`.
         if let Place::Global(name) = place {
             let global = self.unit.globals[name];
@@ -2920,7 +2951,7 @@ impl Lowerer<'_, '_> {
         // Constants are rematerialized rather than kept across a call.
         self.constants.clear();
         self.float_constants.clear();
-        self.common.retain(|key, _| !key.starts_with('&') && !key.contains('@'));
+        self.common.retain(|key, _| !key.starts_with('&') && !key.contains('@') && !key.starts_with('*'));
         let result = self.result_for(ty, target);
         self.copy(ty, result, result_register(ty));
         Ok(result)
