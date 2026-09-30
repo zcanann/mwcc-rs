@@ -740,9 +740,14 @@ impl Lowerer<'_> {
             }
             _ => {
                 // Truth of a value: compare against zero.
-                let (register, _) = self.expression(condition)?;
+                let (register, ty) = self.expression(condition)?;
                 if !self.record_form(register) {
-                    self.emit_plain(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+                    // An unsigned value compares logically.
+                    self.emit_plain(if is_unsigned(promote(ty)) && std::env::var_os("MWCC_PCODE_SIGNED_TRUTH").is_none() {
+                        Instruction::CompareLogicalWordImmediate { a: register, immediate: 0 }
+                    } else {
+                        Instruction::CompareWordImmediate { a: register, immediate: 0 }
+                    });
                 }
                 let options = if when { 4 } else { 12 };
                 self.branch(Instruction::BranchConditionalForward { options, condition_bit: 2, target: 0 }, label);
@@ -1567,6 +1572,9 @@ impl Lowerer<'_> {
     // ------------------------------------------------------------ arithmetic
 
     fn binary(&mut self, op: BinaryOp, left: &Expr, right: &Expr, ty: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
+        if matches!(op, BinaryOp::Divide | BinaryOp::Modulo) {
+            return self.division(op, left, right, ty, target);
+        }
         // `k - x` is `subfic`.
         if let (BinaryOp::Subtract, Some(value), None) = (op, left.as_int(), right.as_int()) {
             if let Ok(value) = i16::try_from(value) {
@@ -1805,6 +1813,154 @@ impl Lowerer<'_> {
             other => return Err(unsupported(format!("binary operator {other:?}"))),
         };
         self.emit_plain(instruction);
+        Ok((d, ty))
+    }
+
+    /// Integer `/` and `%`: `divw`/`divwu`, shifts for powers of two, and
+    /// multiply-high by a magic reciprocal for other constants.
+    fn division(&mut self, op: BinaryOp, left: &Expr, right: &Expr, ty: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
+        let unsigned = is_unsigned(ty);
+        let divisor = right.as_int().map(|value| value as i32).filter(|&value| value != 0);
+        let Some(divisor) = divisor else {
+            let (x, _) = self.expression(left)?;
+            let (y, _) = self.expression(right)?;
+            let quotient = if op == BinaryOp::Divide { self.result(target) } else { self.temporary() };
+            self.emit_plain(if unsigned {
+                Instruction::DivideWordUnsigned { d: quotient, a: x, b: y }
+            } else {
+                Instruction::DivideWord { d: quotient, a: x, b: y }
+            });
+            if op == BinaryOp::Divide {
+                return Ok((quotient, ty));
+            }
+            let product = self.temporary();
+            self.emit_plain(Instruction::MultiplyLow { d: product, a: quotient, b: y });
+            let d = self.result(target);
+            self.emit_plain(Instruction::SubtractFrom { d, a: product, b: x });
+            return Ok((d, ty));
+        };
+        let magnitude = divisor.unsigned_abs();
+        if unsigned && (divisor as u32).is_power_of_two() {
+            let k = (divisor as u32).trailing_zeros() as u8;
+            let (x, _) = self.expression(left)?;
+            if op == BinaryOp::Divide && k == 0 {
+                return Ok((x, ty));
+            }
+            let d = self.result(target);
+            self.emit_plain(if op == BinaryOp::Divide {
+                Instruction::ShiftRightLogicalImmediate { a: d, s: x, shift: k }
+            } else {
+                Instruction::RotateAndMask { a: d, s: x, shift: 0, begin: 32 - k, end: 31 }
+            });
+            return Ok((d, ty));
+        }
+        if !unsigned && magnitude.is_power_of_two() && magnitude < 0x8000_0000 {
+            let k = magnitude.trailing_zeros() as u8;
+            if op == BinaryOp::Modulo {
+                if divisor < 0 || k == 0 {
+                    return Err(unsupported("remainder by this power of two"));
+                }
+                // slwi t,x,32-k; srwi s,x,31; subf t,s,t; rotlwi t,t,k; add d,t,s
+                let (x, _) = self.expression(left)?;
+                let low = self.temporary();
+                self.emit_plain(Instruction::ShiftLeftImmediate { a: low, s: x, shift: 32 - k });
+                let sign = self.temporary();
+                self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: sign, s: x, shift: 31 });
+                let adjusted = self.temporary();
+                self.emit_plain(Instruction::SubtractFrom { d: adjusted, a: sign, b: low });
+                let rotated = self.temporary();
+                self.emit_plain(Instruction::RotateAndMask { a: rotated, s: adjusted, shift: k, begin: 0, end: 31 });
+                let d = self.result(target);
+                self.emit_plain(Instruction::Add { d, a: rotated, b: sign });
+                return Ok((d, ty));
+            }
+            let (x, _) = self.expression(left)?;
+            if k == 0 {
+                if divisor > 0 {
+                    return Ok((x, ty));
+                }
+                let d = self.result(target);
+                self.emit_plain(Instruction::Negate { d, a: x });
+                return Ok((d, ty));
+            }
+            if divisor < 0 && k == 1 {
+                return Err(unsupported("division by -2"));
+            }
+            let d = self.result(target);
+            let quotient = if divisor < 0 { self.temporary() } else { d };
+            if k == 1 {
+                // srwi t,x,31; add t,t,x; srawi q,t,1
+                let sign = self.temporary();
+                self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: sign, s: x, shift: 31 });
+                let sum = self.temporary();
+                self.emit_plain(Instruction::Add { d: sum, a: sign, b: x });
+                self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: quotient, s: sum, shift: 1 });
+            } else {
+                // srawi t,x,k; addze q,t
+                let shifted = self.temporary();
+                self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: shifted, s: x, shift: k });
+                self.emit_plain(Instruction::AddToZeroExtended { d: quotient, a: shifted });
+            }
+            if divisor < 0 {
+                self.emit_plain(Instruction::Negate { d, a: quotient });
+            }
+            return Ok((d, ty));
+        }
+        if !unsigned && divisor < 0 {
+            return Err(unsupported("division by a negative constant"));
+        }
+        let (x, _) = self.expression(left)?;
+        let quotient = if op == BinaryOp::Divide { self.result(target) } else { self.temporary() };
+        if unsigned {
+            let (magic, add, shift) = unsigned_magic(divisor as u32);
+            let (m, _) = self.expression(&Expr::int(i64::from(magic as i32)))?;
+            let high = self.temporary();
+            self.emit_plain(Instruction::MultiplyHighWordUnsigned { d: high, a: m, b: x });
+            if add {
+                // q = (((x - t) >> 1) + t) >> (s - 1)
+                let difference = self.temporary();
+                self.emit_plain(Instruction::SubtractFrom { d: difference, a: high, b: x });
+                let halved = self.temporary();
+                self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: halved, s: difference, shift: 1 });
+                let sum = self.temporary();
+                self.emit_plain(Instruction::Add { d: sum, a: halved, b: high });
+                self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: quotient, s: sum, shift: shift as u8 - 1 });
+            } else if shift == 0 {
+                self.emit_plain(Instruction::Or { a: quotient, s: high, b: high });
+            } else {
+                self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: quotient, s: high, shift: shift as u8 });
+            }
+        } else {
+            let (magic, shift) = signed_magic(divisor);
+            let (m, _) = self.expression(&Expr::int(i64::from(magic)))?;
+            let mut value = self.temporary();
+            self.emit_plain(Instruction::MultiplyHighWord { d: value, a: m, b: x });
+            // The product is adjusted in place.
+            let in_place = std::env::var_os("MWCC_PCODE_DIV_FRESH").is_none();
+            if magic < 0 {
+                let sum = if in_place { value } else { self.temporary() };
+                self.emit_plain(Instruction::Add { d: sum, a: value, b: x });
+                value = sum;
+            }
+            if shift > 0 {
+                let shifted = if in_place { value } else { self.temporary() };
+                self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: shifted, s: value, shift: shift as u8 });
+                value = shifted;
+            }
+            let sign = self.temporary();
+            self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: sign, s: value, shift: 31 });
+            self.emit_plain(Instruction::Add { d: quotient, a: value, b: sign });
+        }
+        if op == BinaryOp::Divide {
+            return Ok((quotient, ty));
+        }
+        let product = self.temporary();
+        match i16::try_from(divisor) {
+            Ok(immediate) => self.emit_plain(Instruction::MultiplyImmediate { d: product, a: quotient, immediate }),
+            Err(_) => return Err(unsupported("remainder by a wide constant")),
+        }
+        let d = self.result(target);
+        self.emit_plain(Instruction::SubtractFrom { d, a: product, b: x });
         Ok((d, ty))
     }
 
@@ -2295,4 +2451,91 @@ fn result_register(ty: Type) -> u32 {
 
 fn toggle(name: &str) -> bool {
     std::env::var_os(name).is_some()
+}
+
+/// Signed division magic (Hacker's Delight 10-1): multiplier and shift for
+/// a divisor >= 2 that is not a power of two.
+fn signed_magic(divisor: i32) -> (i32, u32) {
+    const TWO31: u32 = 0x8000_0000;
+    let ad = divisor.unsigned_abs();
+    let t = TWO31.wrapping_add((divisor as u32) >> 31);
+    let anc = t - 1 - t % ad;
+    let mut p = 31u32;
+    let mut q1 = TWO31 / anc;
+    let mut r1 = TWO31 - q1 * anc;
+    let mut q2 = TWO31 / ad;
+    let mut r2 = TWO31 - q2 * ad;
+    loop {
+        p += 1;
+        q1 = q1.wrapping_mul(2);
+        r1 = r1.wrapping_mul(2);
+        if r1 >= anc {
+            q1 = q1.wrapping_add(1);
+            r1 = r1.wrapping_sub(anc);
+        }
+        q2 = q2.wrapping_mul(2);
+        r2 = r2.wrapping_mul(2);
+        if r2 >= ad {
+            q2 = q2.wrapping_add(1);
+            r2 = r2.wrapping_sub(ad);
+        }
+        let delta = ad - r2;
+        if !(q1 < delta || (q1 == delta && r1 == 0)) {
+            break;
+        }
+    }
+    let magic = q2.wrapping_add(1) as i32;
+    (if divisor < 0 { magic.wrapping_neg() } else { magic }, p - 32)
+}
+
+/// Unsigned division magic (Hacker's Delight 10-2): multiplier, whether the
+/// add-back form is needed, and the shift.
+fn unsigned_magic(divisor: u32) -> (u32, bool, u32) {
+    let mut add = false;
+    let nc = u32::MAX - divisor.wrapping_neg() % divisor;
+    let mut p = 31u32;
+    let mut q1 = 0x8000_0000 / nc;
+    let mut r1 = 0x8000_0000 - q1 * nc;
+    let mut q2 = 0x7FFF_FFFF / divisor;
+    let mut r2 = 0x7FFF_FFFF - q2 * divisor;
+    loop {
+        p += 1;
+        if r1 >= nc - r1 {
+            q1 = q1.wrapping_mul(2).wrapping_add(1);
+            r1 = r1.wrapping_mul(2).wrapping_sub(nc);
+        } else {
+            q1 = q1.wrapping_mul(2);
+            r1 = r1.wrapping_mul(2);
+        }
+        if r2 + 1 >= divisor - r2 {
+            if q2 >= 0x7FFF_FFFF {
+                add = true;
+            }
+            q2 = q2.wrapping_mul(2).wrapping_add(1);
+            r2 = r2.wrapping_mul(2).wrapping_add(1).wrapping_sub(divisor);
+        } else {
+            if q2 >= 0x8000_0000 {
+                add = true;
+            }
+            q2 = q2.wrapping_mul(2);
+            r2 = r2.wrapping_mul(2).wrapping_add(1);
+        }
+        let delta = divisor - 1 - r2;
+        if !(p < 64 && (q1 < delta || (q1 == delta && r1 == 0))) {
+            break;
+        }
+    }
+    (q2.wrapping_add(1), add, p - 32)
+}
+
+#[cfg(test)]
+mod magic_tests {
+    #[test]
+    fn magic_numbers_match_mwcc() {
+        assert_eq!(super::signed_magic(10), (0x6666_6667, 2));
+        assert_eq!(super::signed_magic(3), (0x5555_5556, 0));
+        assert_eq!(super::signed_magic(7), (0x9249_2493u32 as i32, 2));
+        assert_eq!(super::unsigned_magic(10), (0xCCCC_CCCD, false, 3));
+        assert_eq!(super::unsigned_magic(7), (0x2492_4925, true, 3));
+    }
 }
