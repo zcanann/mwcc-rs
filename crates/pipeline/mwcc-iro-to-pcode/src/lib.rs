@@ -654,7 +654,7 @@ impl Lowerer<'_, '_> {
     /// `switch`: MWCC's binary search over the case ranges, then the arms in
     /// order.
     fn switch(&mut self, value: &Expr, cases: &[(i64, usize)], arms: &[Vec<Stmt>], default: Option<usize>) -> Compilation<()> {
-        if self.unoptimized {
+        if self.unoptimized && toggle("MWCC_PCODE_O0_NO_SWITCH") {
             return Err(unsupported("switch at -O0"));
         }
         if self.unit.switch_style == 2 {
@@ -700,14 +700,22 @@ impl Lowerer<'_, '_> {
             let mut lis = PInstr::new(Instruction::AddImmediateShifted { d: high, a: 0, immediate: 0 });
             lis.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Ha, target: RelocationTarget::JumpTableAt(table) });
             self.emit(lis);
+            // -O0 (unscheduled): the table's address, then the scaled
+            // index; the entry loads in place.
+            let in_place = in_place || self.unoptimized;
             let scaled = self.temporary();
-            self.emit_plain(Instruction::ShiftLeftImmediate { a: scaled, s: index, shift: 2 });
+            if !self.unoptimized {
+                self.emit_plain(Instruction::ShiftLeftImmediate { a: scaled, s: index, shift: 2 });
+            }
             let address = if in_place { high } else { self.temporary() };
             let mut addi = PInstr::new(Instruction::AddImmediate { d: address, a: high, immediate: 0 });
             addi.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Lo, target: RelocationTarget::JumpTableAt(table) });
             addi.not_r0.push(high);
             addi.flags.in_place = in_place;
             self.emit(addi);
+            if self.unoptimized {
+                self.emit_plain(Instruction::ShiftLeftImmediate { a: scaled, s: index, shift: 2 });
+            }
             let entry = if in_place { address } else { self.temporary() };
             let mut load = PInstr::new(Instruction::LoadWordIndexed { d: entry, a: address, b: scaled });
             load.not_r0.push(address);
