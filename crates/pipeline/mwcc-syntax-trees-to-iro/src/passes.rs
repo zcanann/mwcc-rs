@@ -87,6 +87,12 @@ fn scan_fields(body: &mut [Stmt], id: VarId, fields: &mut Vec<(i32, Type)>, esca
                 scan_fields(body, id, fields, escapes);
                 scan_fields(step, id, fields, escapes);
             }
+            Stmt::Switch { value, arms, .. } => {
+                expression(value, id, fields, escapes);
+                for arm in arms {
+                    scan_fields(arm, id, fields, escapes);
+                }
+            }
             other => for_each_expression(std::slice::from_mut(other), &mut |e| expression(e, id, fields, escapes)),
         }
     }
@@ -135,6 +141,11 @@ fn replace_fields(body: Vec<Stmt>, id: VarId, map: &HashMap<i32, VarId>, keep: b
                     body: replace_fields(body, id, map, keep),
                     step: replace_fields(step, id, map, keep),
                 });
+            }
+            Stmt::Switch { mut value, cases, arms, default } => {
+                expression(&mut value, id, map);
+                let arms = arms.into_iter().map(|arm| replace_fields(arm, id, map, keep)).collect();
+                out.push(Stmt::Switch { value, cases, arms, default });
             }
             _ => {
                 for_each_expression(std::slice::from_mut(&mut statement), &mut |e| expression(e, id, map));
@@ -234,6 +245,12 @@ fn narrowing_in(body: &mut [Stmt], return_type: Type, variables: &[Type]) {
             Stmt::Loop { body, step, .. } => {
                 narrowing_in(body, return_type, variables);
                 narrowing_in(step, return_type, variables);
+                None
+            }
+            Stmt::Switch { arms, .. } => {
+                for arm in arms {
+                    narrowing_in(arm, return_type, variables);
+                }
                 None
             }
             _ => None,
@@ -338,6 +355,11 @@ pub fn displacements_with(body: &mut [Stmt], distribute: bool) {
                 displacements_with(body, distribute);
                 displacements_with(step, distribute);
             }
+            Stmt::Switch { arms, .. } => {
+                for arm in arms {
+                    displacements_with(arm, distribute);
+                }
+            }
             _ => {}
         }
     }
@@ -374,6 +396,12 @@ pub fn for_each_expression(body: &mut [Stmt], rewrite: &mut dyn FnMut(&mut Expr)
                 }
                 for_each_expression(body, rewrite);
                 for_each_expression(step, rewrite);
+            }
+            Stmt::Switch { value, arms, .. } => {
+                rewrite(value);
+                for arm in arms {
+                    for_each_expression(arm, rewrite);
+                }
             }
             Stmt::Break | Stmt::Continue => {}
         }
@@ -803,6 +831,11 @@ fn rewrite_selects(function: &mut Function, body: &mut Vec<Stmt>, top_level: boo
                 rewrite_selects(function, body, false);
                 rewrite_selects(function, step, false);
             }
+            Stmt::Switch { arms, .. } => {
+                for arm in arms {
+                    rewrite_selects(function, arm, false);
+                }
+            }
             _ => {}
         }
     }
@@ -989,6 +1022,11 @@ pub fn stores(body: &mut [Stmt]) {
             Stmt::Loop { body, step, .. } => {
                 stores(body);
                 stores(step);
+            }
+            Stmt::Switch { arms, .. } => {
+                for arm in arms {
+                    stores(arm);
+                }
             }
             _ => {}
         }

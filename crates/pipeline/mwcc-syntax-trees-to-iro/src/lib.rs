@@ -176,6 +176,14 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
 fn has_return(statements: &[Statement]) -> bool {
     statements.iter().any(|statement| match statement {
         Statement::Return(_) => true,
+        Statement::Switch { arms, default, .. } => arms
+            .iter()
+            .map(|arm| &arm.body)
+            .chain(default.iter())
+            .any(|body| match body {
+                ast::ArmBody::Return(_) => true,
+                ast::ArmBody::Statements(statements) => has_return(statements),
+            }),
         Statement::If { then_body, else_body, .. } => has_return(then_body) || has_return(else_body),
         Statement::Loop { body, .. } => has_return(body),
         _ => false,
@@ -320,8 +328,73 @@ impl Builder<'_> {
         result
     }
 
+    /// `switch`: arms in source order (the default last), empty labels
+    /// sharing the next arm's body.
+    fn switch(&mut self, scrutinee: &Expression, arms: &[ast::SwitchArm], default: Option<&ast::ArmBody>) -> Compilation<Stmt> {
+        let value = promoted(self.expression(scrutinee)?);
+        if !matches!(value.ty, Type::Int) {
+            return Err(unsupported(format!("switch on {:?}", value.ty)));
+        }
+        let body = |builder: &mut Self, body: &ast::ArmBody, falls_through: bool| -> Compilation<Vec<Stmt>> {
+            Ok(match body {
+                ast::ArmBody::Return(value) => vec![Stmt::Return(Some(builder.returned(value)?))],
+                ast::ArmBody::Statements(statements) => {
+                    let mut out = builder.statements(statements)?;
+                    let ends = matches!(out.last(), Some(Stmt::Return(_) | Stmt::Break | Stmt::Continue));
+                    if !falls_through && !ends {
+                        out.push(Stmt::Break);
+                    }
+                    out
+                }
+            })
+        };
+        let mut cases = Vec::new();
+        let mut bodies: Vec<Vec<Stmt>> = Vec::new();
+        let mut pending_labels: Vec<i64> = Vec::new();
+        for arm in arms {
+            if cases.iter().any(|&(value, _)| value == arm.value) || pending_labels.contains(&arm.value) {
+                return Err(unsupported("duplicate case value"));
+            }
+            let empty = matches!(&arm.body, ast::ArmBody::Statements(statements) if statements.is_empty());
+            if empty && arm.falls_through {
+                pending_labels.push(arm.value);
+                continue;
+            }
+            let index = bodies.len();
+            for label in pending_labels.drain(..) {
+                cases.push((label, index));
+            }
+            cases.push((arm.value, index));
+            bodies.push(body(self, &arm.body, arm.falls_through)?);
+        }
+        if !pending_labels.is_empty() {
+            // Trailing empty labels fall out of the switch.
+            let index = bodies.len();
+            for label in pending_labels.drain(..) {
+                cases.push((label, index));
+            }
+            bodies.push(vec![Stmt::Break]);
+        }
+        let default = match default {
+            Some(default) => {
+                // The default is laid out last: a final case arm that falls
+                // through leaves the switch instead of entering it.
+                if let Some(last) = bodies.last_mut() {
+                    if !matches!(last.last(), Some(Stmt::Return(_) | Stmt::Break | Stmt::Continue)) {
+                        last.push(Stmt::Break);
+                    }
+                }
+                bodies.push(body(self, default, true)?);
+                Some(bodies.len() - 1)
+            }
+            None => None,
+        };
+        Ok(Stmt::Switch { value, cases, arms: bodies, default })
+    }
+
     fn statement_inner(&mut self, statement: &Statement) -> Compilation<Vec<Stmt>> {
         Ok(vec![match statement {
+            Statement::Switch { scrutinee, arms, default } => self.switch(scrutinee, arms, default.as_ref())?,
             Statement::Assign { name, value } if self.names.get(name).is_some_and(|&id| self.variables[id].frame.is_some()) => {
                 return self.assignment(&Expression::Variable(name.clone()), value);
             }
@@ -923,6 +996,15 @@ fn addresses_taken(function: &ast::Function) -> std::collections::HashSet<String
                         expression(e, out);
                     }
                     statements(body, out);
+                }
+                Statement::Switch { scrutinee, arms, default } => {
+                    expression(scrutinee, out);
+                    for body in arms.iter().map(|arm| &arm.body).chain(default.iter()) {
+                        match body {
+                            ast::ArmBody::Return(value) => expression(value, out),
+                            ast::ArmBody::Statements(body) => statements(body, out),
+                        }
+                    }
                 }
                 _ => {}
             }

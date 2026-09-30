@@ -499,9 +499,29 @@ impl Parser {
                 });
             } else if self.eat_word("default") {
                 self.expect(Token::Colon)?;
-                let (body, _falls_through) =
+                // Control entering `default:` from the arm above it, or
+                // leaving it into later arms, is not representable (the
+                // default body is stored apart from the arms): mark the body
+                // so lowerings that need exact control flow refuse it.
+                // `case X: default:` — an empty label directly above the
+                // default is the default itself.
+                while arms.last().is_some_and(|arm: &SwitchArm| {
+                    arm.falls_through
+                        && matches!(&arm.body, mwcc_syntax_trees::ArmBody::Statements(body) if body.is_empty())
+                }) {
+                    arms.pop();
+                }
+                let entered = arms.last().is_some_and(|arm: &SwitchArm| arm.falls_through);
+                let (body, falls_through) =
                     self.parse_switch_arm_body(local_names, block_locals)?;
-                default = Some(body);
+                let leaves = falls_through && !matches!(self.peek(), Token::BraceClose);
+                default = Some(if entered || leaves {
+                    mwcc_syntax_trees::ArmBody::Statements(vec![Statement::Goto(
+                        "@unrepresented_default".to_string(),
+                    )])
+                } else {
+                    body
+                });
             } else if matches!(self.peek(), Token::Identifier(_))
                 && *self.peek_at(1) == Token::Colon
             {

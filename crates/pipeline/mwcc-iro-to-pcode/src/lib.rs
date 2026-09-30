@@ -459,6 +459,113 @@ impl Lowerer<'_> {
         result
     }
 
+    /// `switch`: MWCC's binary search over the case ranges, then the arms in
+    /// order.
+    fn switch(&mut self, value: &Expr, cases: &[(i64, usize)], arms: &[Vec<Stmt>], default: Option<usize>) -> Compilation<()> {
+        if self.unoptimized {
+            return Err(unsupported("switch at -O0"));
+        }
+        let mut sorted: Vec<(i64, usize)> = cases.to_vec();
+        sorted.sort_by_key(|&(value, _)| value);
+        if sorted.iter().any(|&(value, _)| i16::try_from(value).is_err() || i16::try_from(value + 1).is_err()) {
+            return Err(unsupported("switch case outside a 16-bit immediate"));
+        }
+        let exit = self.new_label();
+        let arm_labels: Vec<Label> = arms.iter().map(|_| self.new_label()).collect();
+        // Segments: maximal runs of consecutive values with the same arm.
+        let mut segments: Vec<(i64, i64, usize)> = Vec::new();
+        for &(value, arm) in &sorted {
+            match segments.last_mut() {
+                Some(last) if last.1 == value - 1 && last.2 == arm => last.1 = value,
+                _ => segments.push((value, value, arm)),
+            }
+        }
+        let tree = SwitchTree { segments: &segments };
+        if tree.uses_table() {
+            return Err(unsupported("switch jump table"));
+        }
+        let (x, _) = self.expression(value)?;
+        let default_target = default.map_or(exit, |arm| arm_labels[arm]);
+        let target = |arm: Option<usize>| arm.map_or(default_target, |arm| arm_labels[arm]);
+        self.switch_node(&tree, x, i64::MIN, i64::MAX, &target)?;
+        let enclosing_next = self.loops.last().map_or(exit, |&(_, next)| next);
+        self.loops.push((exit, enclosing_next));
+        for (index, arm) in arms.iter().enumerate() {
+            self.place_label(arm_labels[index]);
+            for statement in arm {
+                self.statement(statement)?;
+            }
+        }
+        self.loops.pop();
+        self.place_if_targeted(exit);
+        Ok(())
+    }
+
+    /// One node of the decision tree for values in `[low, high]`.
+    fn switch_node(
+        &mut self,
+        tree: &SwitchTree<'_>,
+        x: u32,
+        low: i64,
+        high: i64,
+        target: &dyn Fn(Option<usize>) -> Label,
+    ) -> Compilation<()> {
+        if let Some(only) = tree.single(low, high) {
+            self.jump(target(only));
+            return Ok(());
+        }
+        // BO 12: branch if the bit is set; BO 4: if clear. cr0: lt 0, eq 2.
+        let compare = |selection: &mut Self, k: i64| {
+            selection.emit_plain(Instruction::CompareWordImmediate { a: x, immediate: k as i16 });
+        };
+        match tree.pivot(low, high) {
+            SwitchPivot::Split(at) => {
+                // `cmpwi x,at; bge right` — values at or above `at` go right.
+                compare(self, at);
+                match tree.single(at, high) {
+                    Some(right) => {
+                        self.branch(Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: 0 }, target(right));
+                        self.switch_node(tree, x, low, at - 1, target)
+                    }
+                    None => {
+                        let right = self.new_label();
+                        self.branch(Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: 0 }, right);
+                        self.switch_node(tree, x, low, at - 1, target)?;
+                        self.place_label(right);
+                        self.switch_node(tree, x, at, high, target)
+                    }
+                }
+            }
+            SwitchPivot::Equal(v, arm) => {
+                compare(self, v);
+                self.branch(Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 }, target(Some(arm)));
+                let right = tree.single(v + 1, high);
+                let left = tree.single(low, v - 1);
+                match (left, right) {
+                    (Some(l), Some(r)) if l == r => {
+                        self.jump(target(r));
+                        Ok(())
+                    }
+                    (_, Some(r)) => {
+                        self.branch(Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: 0 }, target(r));
+                        self.switch_node(tree, x, low, v - 1, target)
+                    }
+                    (Some(l), None) => {
+                        self.branch(Instruction::BranchConditionalForward { options: 12, condition_bit: 0, target: 0 }, target(l));
+                        self.switch_node(tree, x, v + 1, high, target)
+                    }
+                    (None, None) => {
+                        let right = self.new_label();
+                        self.branch(Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: 0 }, right);
+                        self.switch_node(tree, x, low, v - 1, target)?;
+                        self.place_label(right);
+                        self.switch_node(tree, x, v + 1, high, target)
+                    }
+                }
+            }
+        }
+    }
+
     /// A fresh 8-byte, 8-aligned slot for an integer/floating conversion.
     fn conversion_slot(&mut self) -> i16 {
         let offset = self.frame_cursor.div_ceil(8) * 8;
@@ -581,6 +688,7 @@ impl Lowerer<'_> {
                 self.place_label(exit);
                 Ok(())
             }
+            Stmt::Switch { value, cases, arms, default } => self.switch(value, cases, arms, *default),
             Stmt::Break => {
                 let (exit, _) = *self.loops.last().ok_or_else(|| unsupported("break outside a loop"))?;
                 self.jump(exit);
@@ -2124,6 +2232,7 @@ fn assigns(body: &[Stmt], variable: VarId) -> bool {
         Stmt::Assign { variable: assigned, .. } => *assigned == variable,
         Stmt::If { then_body, else_body, .. } => assigns(then_body, variable) || assigns(else_body, variable),
         Stmt::Loop { body, step, .. } => assigns(body, variable) || assigns(step, variable),
+        Stmt::Switch { arms, .. } => arms.iter().any(|arm| assigns(arm, variable)),
         _ => false,
     })
 }
@@ -2276,6 +2385,7 @@ fn makes_calls(body: &[Stmt]) -> bool {
         Stmt::Loop { condition, body, step, .. } => {
             condition.as_ref().is_some_and(expression) || makes_calls(body) || makes_calls(step)
         }
+        Stmt::Switch { value, arms, .. } => expression(value) || arms.iter().any(|arm| makes_calls(arm)),
         Stmt::Break | Stmt::Continue => false,
     })
 }
@@ -2326,6 +2436,9 @@ fn references(body: &[Stmt], variable: VarId) -> usize {
                 condition.as_ref().map_or(0, |c| expression(c, variable))
                     + references(body, variable)
                     + references(step, variable)
+            }
+            Stmt::Switch { value, arms, .. } => {
+                expression(value, variable) + arms.iter().map(|arm| references(arm, variable)).sum::<usize>()
             }
             Stmt::Break | Stmt::Continue => 0,
         })
@@ -2544,5 +2657,102 @@ mod magic_tests {
         assert_eq!(super::signed_magic(7), (0x9249_2493u32 as i32, 2));
         assert_eq!(super::unsigned_magic(10), (0xCCCC_CCCD, false, 3));
         assert_eq!(super::unsigned_magic(7), (0x2492_4925, true, 3));
+    }
+}
+
+/// MWCC's switch decision tree over case segments `(low, high, arm)`
+/// (recovered by fitting mwcceppc's output; see `switch_node`).
+struct SwitchTree<'a> {
+    segments: &'a [(i64, i64, usize)],
+}
+
+enum SwitchPivot {
+    /// `cmpwi x,v; beq arm; ...` for a one-value segment inside the range.
+    Equal(i64, usize),
+    /// `cmpwi x,at; bge ...` at a segment boundary.
+    Split(i64),
+}
+
+impl SwitchTree<'_> {
+    /// Segments clipped to `[low, high]`.
+    fn within(&self, low: i64, high: i64) -> Vec<(i64, i64, usize)> {
+        self.segments
+            .iter()
+            .filter(|&&(a, b, _)| b >= low && a <= high)
+            .map(|&(a, b, arm)| (a.max(low), b.min(high), arm))
+            .collect()
+    }
+
+    /// The one target of every value in `[low, high]` (`None` inside the
+    /// option: the default), if there is only one.
+    fn single(&self, low: i64, high: i64) -> Option<Option<usize>> {
+        let inside = self.within(low, high);
+        match inside.as_slice() {
+            [] => Some(None),
+            [(a, b, arm)] if *a == low && *b == high => Some(Some(*arm)),
+            _ => None,
+        }
+    }
+
+    /// Values where the target changes, within `(low, high]`.
+    fn thresholds(&self, low: i64, high: i64) -> Vec<i64> {
+        let mut thresholds = Vec::new();
+        for (a, b, _) in self.within(low, high) {
+            if a > low {
+                thresholds.push(a);
+            }
+            if b < high {
+                thresholds.push(b + 1);
+            }
+        }
+        thresholds.sort_unstable();
+        thresholds.dedup();
+        thresholds
+    }
+
+    /// The pivot: a one-value segment strictly inside the range tests
+    /// equality (consuming thresholds v and v+1); other segments offer a
+    /// split at either boundary not already an equality's. The candidate
+    /// leaving the fewest thresholds on its larger side wins, then the one
+    /// with more on the left, then an equality.
+    fn pivot(&self, low: i64, high: i64) -> SwitchPivot {
+        let inside = self.within(low, high);
+        let thresholds = self.thresholds(low, high);
+        let mut candidates: Vec<(SwitchPivot, i64, i64)> = Vec::new();
+        let mut equal_owned = Vec::new();
+        for &(a, b, arm) in &inside {
+            if a == b && a > low && b < high {
+                candidates.push((SwitchPivot::Equal(a, arm), a, a + 1));
+                equal_owned.extend([a, a + 1]);
+            }
+        }
+        for &(a, b, _) in &inside {
+            if !(a == b && a > low && b < high) {
+                if a > low && !equal_owned.contains(&a) {
+                    candidates.push((SwitchPivot::Split(a), a, a));
+                }
+                if b < high && !equal_owned.contains(&(b + 1)) {
+                    candidates.push((SwitchPivot::Split(b + 1), b + 1, b + 1));
+                }
+            }
+        }
+        candidates
+            .into_iter()
+            .min_by_key(|(pivot, first, last)| {
+                let left = thresholds.iter().filter(|&&t| t < *first).count();
+                let right = thresholds.iter().filter(|&&t| t > *last).count();
+                (left.max(right), std::cmp::Reverse(left), !matches!(pivot, SwitchPivot::Equal(..)))
+            })
+            .map(|(pivot, _, _)| pivot)
+            .expect("a multi-target range has a candidate")
+    }
+
+    /// MWCC dispatches through a table when there are at least 8 target
+    /// changes and the case span is at most 4 per change, less 6.
+    fn uses_table(&self) -> bool {
+        let (Some(first), Some(last)) = (self.segments.first(), self.segments.last()) else { return false };
+        let changes = self.thresholds(i64::MIN, i64::MAX).len() as i64;
+        let span = last.1 - first.0 + 1;
+        changes >= 8 && span <= 4 * changes - 6
     }
 }

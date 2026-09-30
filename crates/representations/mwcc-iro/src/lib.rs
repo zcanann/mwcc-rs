@@ -110,6 +110,11 @@ pub enum Stmt {
     /// A loop: `condition` tested before each iteration (`test_first`) or
     /// after it; `step` runs after the body (and on `continue`).
     Loop { test_first: bool, condition: Option<Expr>, body: Vec<Stmt>, step: Vec<Stmt> },
+    /// A multi-way branch on an integer: each case value selects an arm;
+    /// arms are laid out in order and fall through into the next; `default`
+    /// is the arm taken by other values (none: leave the switch). `break`
+    /// inside an arm leaves the switch.
+    Switch { value: Expr, cases: Vec<(i64, usize)>, arms: Vec<Vec<Stmt>>, default: Option<usize> },
     Break,
     Continue,
 }
@@ -452,6 +457,19 @@ impl Function {
                         if !step.is_empty() {
                             out.push_str(&format!("{pad}step\n"));
                             statements(out, step, depth + 1);
+                        }
+                    }
+                    Stmt::Switch { value, cases, arms, default } => {
+                        out.push_str(&format!("{pad}switch {value}\n"));
+                        for (index, arm) in arms.iter().enumerate() {
+                            let labels: Vec<String> = cases
+                                .iter()
+                                .filter(|(_, target)| *target == index)
+                                .map(|(value, _)| value.to_string())
+                                .chain((*default == Some(index)).then(|| "default".to_owned()))
+                                .collect();
+                            out.push_str(&format!("{pad}case {}\n", labels.join(", ")));
+                            statements(out, arm, depth + 1);
                         }
                     }
                     Stmt::Break => out.push_str(&format!("{pad}break\n")),
