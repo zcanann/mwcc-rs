@@ -41,7 +41,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             "PCode lowering: branch-preserving select builds (not yet supported)",
         ));
     }
-    let globals: HashMap<String, GlobalInfo> = request
+    let mut globals: HashMap<String, GlobalInfo> = request
         .globals
         .iter()
         .map(|global| {
@@ -69,6 +69,15 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             )
         })
         .collect();
+    // A function named as a value is its (absolute) address.
+    for name in request.call_return_types.keys() {
+        if !globals.contains_key(name) && std::env::var_os("MWCC_PCODE_NO_FUNCTION_ADDRESS").is_none() {
+            globals.insert(
+                name.clone(),
+                GlobalInfo { ty: mwcc_syntax_trees::Type::Int, small_data: false, is_array: true, is_volatile: false },
+            );
+        }
+    }
     let unit = mwcc_iro::Unit {
         globals: &globals,
         call_return_types: request.call_return_types,
