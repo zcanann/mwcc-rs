@@ -117,12 +117,16 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         unit,
         names: variables.iter().enumerate().map(|(id, variable)| (variable.name.clone(), id)).collect(),
         variables: &variables,
+        pending: Vec::new(),
+        guarded: 0,
+        temporaries: Vec::new(),
     };
     let mut body = Vec::new();
     for local in &function.locals {
         if let Some(initializer) = &local.initializer {
             let variable = builder.names[&local.name];
             let value = assigned(builder.expression(initializer)?, local.declared_type);
+            body.append(&mut builder.pending);
             body.push(match builder.variables[variable].frame {
                 Some(_) if local.array_length.is_none() && is_value_type(local.declared_type) => Stmt::Store {
                     place: Place::Memory { base: Box::new(builder.local_address(variable)), index: None, offset: 0 },
@@ -138,16 +142,21 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         body.extend(builder.statement(statement)?);
     }
     for guard in &function.guards {
-        body.push(Stmt::If {
-            condition: promoted(builder.expression(&guard.condition)?),
-            then_body: vec![Stmt::Return(Some(builder.returned(&guard.value)?))],
-            else_body: Vec::new(),
-        });
+        let condition = promoted(builder.expression(&guard.condition)?);
+        body.append(&mut builder.pending);
+        let value = builder.returned(&guard.value)?;
+        let then_body: Vec<Stmt> = builder.pending.drain(..).chain([Stmt::Return(Some(value))]).collect();
+        body.push(Stmt::If { condition, then_body, else_body: Vec::new() });
     }
     if let Some(value) = &function.return_expression {
         // The final value falls through to the exit.
-        body.push(Stmt::SetReturn(builder.returned(value)?));
+        let value = builder.returned(value)?;
+        body.append(&mut builder.pending);
+        body.push(Stmt::SetReturn(value));
     }
+    let temporaries = std::mem::take(&mut builder.temporaries);
+    let mut variables = variables;
+    variables.extend(temporaries);
     let returns_through_variable = function.return_type != Type::Void
         && (!function.guards.is_empty()
             || has_return(&function.statements)
@@ -180,6 +189,14 @@ struct Builder<'a> {
     unit: &'a Unit<'a>,
     names: HashMap<String, VarId>,
     variables: &'a [Variable],
+    /// Assignments inside the expression being built, hoisted before the
+    /// statement that contains it.
+    pending: Vec<Stmt>,
+    /// Inside a conditionally or repeatedly evaluated operand, where an
+    /// assignment cannot be hoisted.
+    guarded: usize,
+    /// Registers holding assigned values, numbered after `variables`.
+    temporaries: Vec<Variable>,
 }
 
 impl Builder<'_> {
@@ -191,8 +208,20 @@ impl Builder<'_> {
         Ok(out)
     }
 
-    /// An expression evaluated for its effects, as statements.
+    /// An expression evaluated for its effects, as statements (preceded by
+    /// the assignments hoisted out of it).
     fn effects(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
+        let outer = std::mem::take(&mut self.pending);
+        let result = self.effects_inner(expression);
+        let hoisted = std::mem::replace(&mut self.pending, outer);
+        let mut out = result?;
+        if !hoisted.is_empty() {
+            out.splice(0..0, hoisted);
+        }
+        Ok(out)
+    }
+
+    fn effects_inner(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
         Ok(match expression {
             Expression::Call { name, arguments } => vec![Stmt::Eval(self.call(name, arguments, true)?)],
             Expression::Cast { target_type: Type::Void, operand } => match operand.as_ref() {
@@ -230,7 +259,68 @@ impl Builder<'_> {
         Ok(vec![Stmt::Store { place, ty, value: assigned(self.expression(value)?, ty) }])
     }
 
+    /// A statement, preceded by the assignments hoisted out of its
+    /// expressions.
     fn statement(&mut self, statement: &Statement) -> Compilation<Vec<Stmt>> {
+        let outer = std::mem::take(&mut self.pending);
+        let result = self.statement_inner(statement);
+        let hoisted = std::mem::replace(&mut self.pending, outer);
+        let mut out = result?;
+        if !hoisted.is_empty() {
+            out.splice(0..0, hoisted);
+        }
+        Ok(out)
+    }
+
+    /// A register for an intermediate value.
+    fn temporary(&mut self, ty: Type) -> VarId {
+        let id = self.variables.len() + self.temporaries.len();
+        self.temporaries.push(Variable { name: format!("@a{id}"), ty, kind: VariableKind::Temporary, frame: None });
+        id
+    }
+
+    /// `target = value` used as a value: the assignment is hoisted and the
+    /// assigned value is read from a register.
+    fn assignment_value(&mut self, target: &Expression, value: &Expression) -> Compilation<Expr> {
+        if self.guarded > 0 || std::env::var_os("MWCC_IRO_NO_ASSIGN_VALUE").is_some() {
+            return Err(unsupported("expression Assign"));
+        }
+        if let Expression::Variable(name) = target {
+            if let Some(&variable) = self.names.get(name).filter(|&&id| self.variables[id].frame.is_none()) {
+                let ty = self.variables[variable].ty;
+                let value = assigned(self.expression(value)?, ty);
+                self.pending.push(Stmt::Assign { variable, value });
+                return Ok(Expr { kind: ExprKind::Var(variable), ty });
+            }
+        }
+        let (place, ty) = self.place(target)?;
+        let value = self.expression(value)?;
+        // A narrow integer target stores the raw value; reading the
+        // assignment's value converts it.
+        if is_narrow(ty) && !is_float(value.ty) && is_value_type(value.ty) && !is_narrow(value.ty) {
+            let raw = value.ty;
+            let temporary = self.temporary(raw);
+            self.pending.push(Stmt::Assign { variable: temporary, value });
+            let read = Expr { kind: ExprKind::Var(temporary), ty: raw };
+            self.pending.push(Stmt::Store { place, ty, value: read.clone() });
+            return Ok(Expr { kind: ExprKind::Convert(Box::new(read)), ty });
+        }
+        let value = assigned(value, ty);
+        let temporary = self.temporary(ty);
+        self.pending.push(Stmt::Assign { variable: temporary, value });
+        self.pending.push(Stmt::Store { place, ty, value: Expr { kind: ExprKind::Var(temporary), ty } });
+        Ok(Expr { kind: ExprKind::Var(temporary), ty })
+    }
+
+    /// An expression built where hoisting is not allowed.
+    fn guarded_expression(&mut self, expression: &Expression) -> Compilation<Expr> {
+        self.guarded += 1;
+        let result = self.expression(expression);
+        self.guarded -= 1;
+        result
+    }
+
+    fn statement_inner(&mut self, statement: &Statement) -> Compilation<Vec<Stmt>> {
         Ok(vec![match statement {
             Statement::Assign { name, value } if self.names.get(name).is_some_and(|&id| self.variables[id].frame.is_some()) => {
                 return self.assignment(&Expression::Variable(name.clone()), value);
@@ -248,7 +338,7 @@ impl Builder<'_> {
                     Some(initializer) => self.effects(initializer)?,
                     None => Vec::new(),
                 };
-                let condition = condition.as_ref().map(|c| self.expression(c)).transpose()?.map(promoted);
+                let condition = condition.as_ref().map(|c| self.guarded_expression(c)).transpose()?.map(promoted);
                 let body = self.statements(body)?;
                 let step = match step {
                     Some(step) => self.effects(step)?,
@@ -416,7 +506,11 @@ impl Builder<'_> {
             Expression::Binary { operator, left, right } => {
                 let op = binary_op(*operator);
                 let left = self.expression(left)?;
-                let right = self.expression(right)?;
+                let right = if matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) {
+                    self.guarded_expression(right)?
+                } else {
+                    self.expression(right)?
+                };
                 if matches!(op, BinaryOp::Add | BinaryOp::Subtract)
                     && (element_size(left.ty).is_some() || element_size(right.ty).is_some())
                 {
@@ -454,8 +548,8 @@ impl Builder<'_> {
             }
             Expression::Conditional { condition, when_true, when_false, .. } => {
                 let condition = promoted(self.expression(condition)?);
-                let when_true = promoted(self.expression(when_true)?);
-                let when_false = promoted(self.expression(when_false)?);
+                let when_true = promoted(self.guarded_expression(when_true)?);
+                let when_false = promoted(self.guarded_expression(when_false)?);
                 let ty = arithmetic_type(when_true.ty, when_false.ty);
                 Expr {
                     kind: ExprKind::Select {
@@ -505,6 +599,7 @@ impl Builder<'_> {
                 Expr { kind: ExprKind::Load { base, index, offset }, ty }
             }
             Expression::Call { name, arguments } => self.call(name, arguments, false)?,
+            Expression::Assign { target, value } => self.assignment_value(target, value)?,
             other => return Err(unsupported(format!("expression {}", expression_name(other)))),
         })
     }
@@ -583,7 +678,7 @@ impl Builder<'_> {
                 if arguments.len() > ARGUMENT_REGISTERS {
                     return Err(unsupported("stack-passed arguments"));
                 }
-                let mut arguments = arguments.iter().map(|a| self.expression(a)).collect::<Compilation<Vec<_>>>()?;
+                let mut arguments = arguments.iter().map(|a| self.guarded_expression(a)).collect::<Compilation<Vec<_>>>()?;
                 if !prototyped {
                     // Default argument promotions; floating arguments of an
                     // unprototyped call also set CR1 (not modeled).
