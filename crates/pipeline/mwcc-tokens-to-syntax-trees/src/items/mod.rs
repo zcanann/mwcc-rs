@@ -312,12 +312,8 @@ impl Parser {
             let extent = self.parse_integer_constant()? as u16;
             self.expect(Token::BracketClose)?;
             inner_elements = inner_elements.saturating_mul(extent);
-            let outer_elements = total.ok_or_else(|| {
-                Diagnostic::error(
-                    "a multi-dimensional local array needs an explicit outer dimension",
-                )
-            })?;
-            total = Some(outer_elements.saturating_mul(extent));
+            // `T a[][N] = {...}`: the initializer supplies the row count.
+            total = total.map(|outer_elements| outer_elements.saturating_mul(extent));
         }
 
         Ok((total, inner_elements))
@@ -3410,11 +3406,21 @@ impl Parser {
                     .with_source_fundamental(cxx_source_fundamental)
                     .with_pointer_shape(cxx_pointer_depth, cxx_pointer_base)
                     .with_function_type(cxx_function_type.clone());
+                    // `T (*name)[N]` is a pointer to rows of N: the same parameter
+                    // as `T name[][N]`.
+                    let pointer_to_rows = *self.peek() == Token::ParenOpen
+                        && *self.peek_at(1) == Token::Star
+                        && matches!(self.peek_at(2), Token::Identifier(_))
+                        && *self.peek_at(3) == Token::ParenClose
+                        && *self.peek_at(4) == Token::BracketOpen;
+                    let function_pointer = if pointer_to_rows {
+                        None
+                    } else {
+                        self.try_cxx_function_pointer_declarator(callback_return_type)?
+                    };
                     // A function-pointer parameter `RET (*name)(params)` is a 4-byte
                     // opaque pointer; consume its declarator and signature.
-                    if let Some((name, name_position, callback_type)) =
-                        self.try_cxx_function_pointer_declarator(callback_return_type)?
-                    {
+                    if let Some((name, name_position, callback_type)) = function_pointer {
                         if parameter_is_register && !name.is_empty() {
                             asm_register_parameters.insert(name.clone());
                         }
@@ -3433,6 +3439,10 @@ impl Parser {
                             .with_function_type(Some(callback_type)),
                         );
                     } else {
+                        if pointer_to_rows {
+                            self.advance();
+                            self.advance();
+                        }
                         // The name is optional (a prototype may write just the type).
                         let name = if matches!(self.peek(), Token::Identifier(_)) {
                             let name_position = self.position;
@@ -3441,6 +3451,9 @@ impl Parser {
                         } else {
                             String::new()
                         };
+                        if pointer_to_rows {
+                            self.expect(Token::ParenClose)?;
+                        }
                         // C adjusts an array parameter to a pointer. A trailing
                         // dimension remains observable as its row stride.
                         let (parameter_type, declarator_extents) = self
@@ -3449,6 +3462,19 @@ impl Parser {
                                 parameter_type,
                                 array_typedef_marker,
                             )?;
+                        // `(*name)[N]`: the one extent is the row length.
+                        let declarator_extents = if pointer_to_rows {
+                            let element = cxx_source_type;
+                            if let [Some(columns)] = declarator_extents.as_slice() {
+                                let stride = columns * u64::from(element.width()) / 8;
+                                if let (Ok(stride), false) = (u16::try_from(stride), name.is_empty()) {
+                                    self.decayed_row_pointers.insert(name.clone(), (element, stride));
+                                }
+                            }
+                            std::iter::once(None).chain(declarator_extents).collect()
+                        } else {
+                            declarator_extents
+                        };
                         if let Some(row) = Self::parameter_row_array(
                             parameter_start,
                             cxx_source_type,
@@ -5444,6 +5470,8 @@ impl Parser {
                                 let count = u16::try_from(values.len()).map_err(|_| {
                                     Diagnostic::error("too many array initializer elements")
                                 })?;
+                                // An inferred outer dimension counts whole rows.
+                                let count = count.div_ceil(inner_elements) * inner_elements;
                                 let mut bytes = Vec::new();
                                 for value in values {
                                     match declared_type {
