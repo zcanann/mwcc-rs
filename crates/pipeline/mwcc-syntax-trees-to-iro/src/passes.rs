@@ -1003,6 +1003,8 @@ pub fn stores(body: &mut [Stmt]) {
                 while let ExprKind::Convert(operand) = &value.kind {
                     if !(mwcc_iro::is_general_word(value.ty) && !matches!(value.ty, Type::Pointer(_) | Type::StructPointer { .. }))
                         || width(value.ty) < stored
+                        // Extending a narrower value fills stored bytes.
+                        || width(operand.ty) < stored
                         // A conversion from floating point is never dead.
                         || mwcc_iro::is_float(operand.ty)
                     {

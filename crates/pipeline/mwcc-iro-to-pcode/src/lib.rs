@@ -326,7 +326,9 @@ impl Lowerer<'_> {
             let ty = function.variables[id].ty;
             let register = self.fresh(ty);
             self.registers[id] = Some(register);
-            self.raw_narrow[id] = is_narrow(ty) && !assigns(&function.body, id);
+            self.raw_narrow[id] = is_narrow(ty)
+                && !assigns(&function.body, id)
+                && !(self.unit.narrow_parameters_extended && ty != Type::Char);
             let physical = if is_float(ty) {
                 float_argument += 1;
                 float_argument - 1
@@ -365,8 +367,10 @@ impl Lowerer<'_> {
                 self.emit_plain(Instruction::FloatMove { d: virtual_register, b: physical });
                 continue;
             }
-            // A narrow parameter that is assigned is re-extended on entry.
-            let ty = if self.raw_narrow[id] { Type::Int } else { ty };
+            // A narrow parameter that is assigned is re-extended on entry
+            // (unless the build trusts the caller's extension).
+            let trusted = self.unit.narrow_parameters_extended && ty != Type::Char;
+            let ty = if self.raw_narrow[id] || trusted { Type::Int } else { ty };
             self.emit_plain(extension(ty, virtual_register, physical));
         }
         self.body_and_exit()

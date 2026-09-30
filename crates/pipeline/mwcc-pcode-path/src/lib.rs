@@ -87,6 +87,8 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         call_parameter_types: request.call_parameter_types,
         has_body: request.has_body,
         keeps_struct_stores: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
+        narrow_parameters_extended: request.config.build.label.starts_with("GC/3.")
+            || request.config.build.label.starts_with("Wii/"),
         switch_style: if request.config.build.label.starts_with("Wii/") {
             2
         } else if request.config.build.label.starts_with("GC/3.") {

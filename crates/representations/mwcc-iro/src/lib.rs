@@ -44,6 +44,9 @@ pub struct Unit<'a> {
     /// The build's switch lowering: 0 binary search (GC), 1 binary search
     /// with in-place table loads (GC/3.x), 2 not modeled (Wii).
     pub switch_style: u8,
+    /// The callee trusts narrow parameters other than `signed char` to
+    /// arrive extended (GC/3.x, Wii).
+    pub narrow_parameters_extended: bool,
 }
 
 /// Index into [`Function::variables`].
