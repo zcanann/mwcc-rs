@@ -869,6 +869,20 @@ impl Lowerer<'_> {
             return Ok(());
         }
         let direct = self.unoptimized.then_some(3);
+        // A returned signed byte load extends in place (`lbz r3; extsb r3,r3`).
+        if !self.unoptimized
+            && !fits
+            && value.ty == Type::Char
+            && !is_narrow(return_type)
+            && matches!(value.kind, ExprKind::Load { .. } | ExprKind::Global(_))
+            && self.is_raw(value)
+            && std::env::var_os("MWCC_PCODE_NO_INPLACE_EXTSB").is_none()
+        {
+            let (register, _) = self.expression(value)?;
+            self.emit_plain(Instruction::ExtendSignByte { a: register, s: register });
+            self.emit_plain(Instruction::Or { a: 3, s: register, b: register });
+            return Ok(());
+        }
         // The final instruction targets r3: the conversion when there is one.
         let converts = !fits && is_narrow(return_type) && value.ty != return_type;
         let raw = self.is_raw(value);
@@ -1265,7 +1279,9 @@ impl Lowerer<'_> {
                     && operand.ty == Type::Char
                     && !is_narrow(ty)
                     && matches!(operand.kind, ExprKind::Load { .. } | ExprKind::Global(_))
-                    && std::env::var_os("MWCC_PCODE_INPLACE_EXTSB").is_some()
+                    // Into a destination register (a returned value).
+                    && (target.is_some() || std::env::var_os("MWCC_PCODE_INPLACE_EXTSB").is_some())
+                    && std::env::var_os("MWCC_PCODE_NO_INPLACE_EXTSB").is_none()
                 {
                     let (source, _) = self.expression_with_target(operand, target)?;
                     self.emit_plain(Instruction::ExtendSignByte { a: source, s: source });
