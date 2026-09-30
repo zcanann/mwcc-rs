@@ -806,7 +806,68 @@ impl Parser {
                                         data_bytes = Some(bytes);
                                         braced_count = Some(count);
                                     }
-                                    _ => return Err(Diagnostic::error("a block-scoped array initializer is not supported yet (roadmap)")),
+                                    // An array of structs: its complete image
+                                    // (automatic arrays without addresses).
+                                    Token::BraceOpen if matches!(declared_type, Type::Struct { .. }) && struct_tag.is_some() => {
+                                        let tag = struct_tag.clone().expect("checked");
+                                        let mut relocations = Vec::new();
+                                        let bytes = self.parse_struct_array_initializer(&tag, &mut relocations)?;
+                                        if !relocations.is_empty() {
+                                            return Err(Diagnostic::error("an automatic struct-array initializer with address elements is not supported yet (roadmap)"));
+                                        }
+                                        let Type::Struct { size, .. } = declared_type else { unreachable!() };
+                                        braced_count = Some(u16::try_from(bytes.len() / (size as usize).max(1)).map_err(|_| {
+                                            Diagnostic::error("too many struct initializer elements")
+                                        })?);
+                                        data_bytes = Some(bytes);
+                                    }
+                                    // `char rows[][N] = {"..", ".."}` — fixed-width
+                                    // character rows, as at function scope.
+                                    Token::BraceOpen
+                                        if inner_elements > 1
+                                            && matches!(declared_type, Type::Char | Type::UnsignedChar)
+                                            && (matches!(self.peek_at(1), Token::StringLiteral(_))
+                                                || (*self.peek_at(1) == Token::BraceOpen
+                                                    && matches!(self.peek_at(2), Token::StringLiteral(_)))) =>
+                                    {
+                                        let bytes = self.parse_fixed_width_char_rows(usize::from(inner_elements))?;
+                                        braced_count = Some(u16::try_from(bytes.len()).map_err(|_| {
+                                            Diagnostic::error("too many character-row initializer bytes")
+                                        })?);
+                                        data_bytes = Some(bytes);
+                                    }
+                                    // A multi-dimensional scalar image, flattened.
+                                    Token::BraceOpen if inner_elements > 1 && matches!(
+                                        declared_type,
+                                        Type::Float | Type::Int | Type::UnsignedInt | Type::Char
+                                            | Type::UnsignedChar | Type::Short | Type::UnsignedShort
+                                    ) => {
+                                        let values = self.parse_constant_initializer(declared_type)?;
+                                        let count = u16::try_from(values.len()).map_err(|_| {
+                                            Diagnostic::error("too many array initializer elements")
+                                        })?;
+                                        let count = count.div_ceil(inner_elements) * inner_elements;
+                                        let mut bytes = Vec::new();
+                                        for value in values {
+                                            match declared_type {
+                                                Type::Char | Type::UnsignedChar => bytes.push(value as u8),
+                                                Type::Short | Type::UnsignedShort => {
+                                                    bytes.extend_from_slice(&(value as u16).to_be_bytes())
+                                                }
+                                                _ => bytes.extend_from_slice(&(value as u32).to_be_bytes()),
+                                            }
+                                        }
+                                        let element_bytes = (declared_type.width() / 8).max(1) as usize;
+                                        bytes.resize(usize::from(count) * element_bytes, 0);
+                                        braced_count = Some(count);
+                                        data_bytes = Some(bytes);
+                                    }
+                                    _ => {
+                                        let line = self.current_location().line;
+                                        return Err(Diagnostic::error(format!(
+                                            "a block-scoped array initializer is not supported yet (roadmap) (line {line})"
+                                        )));
+                                    }
                                 }
                         }
                         let length =
