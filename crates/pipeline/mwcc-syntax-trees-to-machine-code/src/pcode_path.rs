@@ -29,6 +29,10 @@ pub struct PcodeRequest<'a> {
     /// Whether this unit has a body for the named function (a call MWCC
     /// may inline).
     pub has_body: &'a dyn Fn(&str) -> bool,
+    /// The function returns C++ `bool` (stored like `unsigned char`).
+    pub returns_bool: bool,
+    /// The unit is C++ (comparisons produce `bool`).
+    pub cxx: bool,
 }
 
 /// A PCode lowering entry point.

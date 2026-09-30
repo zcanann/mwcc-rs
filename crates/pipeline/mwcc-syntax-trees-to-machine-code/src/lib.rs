@@ -329,6 +329,9 @@ fn lower_function_body(
             // Whether MWCC may expand the call inline: a source-declared inline,
             // or (under `-inline auto`) a definition preceding the caller —
             // any definition when inlining is deferred.
+            returns_bool: call_return_fundamentals.get(&function.name)
+                == Some(&mwcc_syntax_trees::SourceFundamentalType::Boolean),
+            cxx: source_facts.is_cxx,
             has_body: &|name| {
                 let automatic = config.flags.inline_enabled && config.flags.automatic_inlining_enabled;
                 let ordinary = if config.flags.inline_deferred || std::env::var_os("MWCC_PCODE_ANY_BODY_INLINES").is_some() {

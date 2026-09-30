@@ -770,13 +770,41 @@ impl Parser {
                         // (with NUL) sizes the array; mwcc block-copies it
                         // into the frame slot (codegen defers un-captured).
                         let mut data_bytes = None;
+                        let mut braced_count = None;
                         if *self.peek() == Token::Equals {
                             self.advance();
-                            match self.advance().clone() {
+                            match self.peek().clone() {
                                     Token::StringLiteral(bytes) => {
+                                        self.advance();
                                         let mut image = bytes.clone();
                                         image.push(0);
                                         data_bytes = Some(image);
+                                    }
+                                    // `int t[3] = {1, 2, 3};` — a one-dimensional
+                                    // scalar array's constant image, as at
+                                    // function scope.
+                                    Token::BraceOpen
+                                        if inner_elements == 1
+                                            && !matches!(declared_type, Type::Struct { .. }) =>
+                                    {
+                                        self.advance();
+                                        let mut bytes = Vec::new();
+                                        let mut count = 0u16;
+                                        loop {
+                                            if *self.peek() == Token::BraceClose {
+                                                break;
+                                            }
+                                            bytes.extend_from_slice(
+                                                &self.parse_folded_scalar_initializer_bytes(declared_type)?,
+                                            );
+                                            count += 1;
+                                            if !self.eat_keyword(Token::Comma) {
+                                                break;
+                                            }
+                                        }
+                                        self.expect(Token::BraceClose)?;
+                                        data_bytes = Some(bytes);
+                                        braced_count = Some(count);
                                     }
                                     _ => return Err(Diagnostic::error("a block-scoped array initializer is not supported yet (roadmap)")),
                                 }
@@ -784,6 +812,7 @@ impl Parser {
                         let length =
                             match (explicit, &data_bytes) {
                                 (Some(length), _) => length,
+                                (None, Some(_)) if braced_count.is_some() => braced_count.unwrap_or(0),
                                 (None, Some(image)) => image.len() as u16,
                                 (None, None) => return Err(Diagnostic::error(
                                     "an unsized block-scoped array needs an initializer (roadmap)",

@@ -60,6 +60,10 @@ pub struct Unit<'a> {
     /// Bit-field stores use the declared type's unit (GC/3.x, Wii; the
     /// front end records the smallest covering unit).
     pub bit_field_declared_units: bool,
+    /// The function returns C++ `bool`.
+    pub returns_bool: bool,
+    /// C++: comparisons and `!` produce `bool`.
+    pub cxx: bool,
     /// Floating constants live in small data (`-sdata2` above 0): loaded
     /// `lfs fD,@N@sda21(r0)`; otherwise through an absolute address.
     pub pool_small_data: bool,

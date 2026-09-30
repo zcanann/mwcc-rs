@@ -849,7 +849,12 @@ impl Lowerer<'_> {
 
     fn return_value(&mut self, value: &Expr) -> Compilation<()> {
         let return_type = self.function.return_type;
-        let fits = mwcc_syntax_trees_to_iro_fits(value, return_type);
+        // A truth value returned narrow is still masked to the type.
+        let truth = matches!(&value.kind, ExprKind::Binary(op, ..) if op.is_comparison())
+            || matches!(&value.kind, ExprKind::Unary(UnaryOp::LogicalNot, _));
+        // A `bool` result is already 0/1; other narrow results mask it.
+        let fits = mwcc_syntax_trees_to_iro_fits(value, return_type)
+            && !(truth && is_narrow(return_type) && !self.unit.returns_bool && std::env::var_os("MWCC_PCODE_TRUTH_FITS").is_none());
         if let Some(destination) = self.return_register {
             let raw = self.is_raw(value);
             let (register, ty) = self.expression_with_target(value, Some(destination))?;
@@ -887,6 +892,30 @@ impl Lowerer<'_> {
         let converts = !fits && is_narrow(return_type) && value.ty != return_type;
         let raw = self.is_raw(value);
         let (register, ty) = self.expression_with_target(value, if converts { None } else { direct })?;
+        // A truth value (`srwi t,s,n`) masked to an unsigned narrow type is
+        // one rotate-and-mask.
+        // C masks to an unsigned narrow type; in C++ the `bool` truth value
+        // zero-extends from a byte into any narrow type.
+        let cxx = self.unit.cxx;
+        // (A `signed char` result sign-extends the byte instead.)
+        if !fits
+            && truth
+            && is_narrow(return_type)
+            && (is_unsigned_narrow(return_type) || (cxx && return_type != Type::Char))
+            && !self.unoptimized
+        {
+            let block = self.current_block();
+            if let Some(last) = self.pcode.blocks[block].instructions.last_mut() {
+                if let Instruction::ShiftRightLogicalImmediate { a, s, shift } = last.instruction {
+                    if a == register {
+                        let bits = if cxx { 8 } else { 8 * width(return_type) as u8 };
+                        let begin = (32 - bits).max(shift);
+                        last.instruction = Instruction::RotateAndMask { a: 3, s, shift: 32 - shift, begin, end: 31 };
+                        return Ok(());
+                    }
+                }
+            }
+        }
         let (register, _) =
             if fits { (register, ty) } else { self.convert_value(register, ty, raw, return_type, direct)? };
         if register != 3 {
