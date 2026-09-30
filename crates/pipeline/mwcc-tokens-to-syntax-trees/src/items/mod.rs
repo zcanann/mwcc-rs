@@ -3057,7 +3057,10 @@ impl Parser {
                         && *self.peek() == Token::Equals
                     {
                         self.advance();
-                        address_initializer = Some(self.parse_address_initializer()?);
+                        address_initializer = Some(match dimensions.as_slice() {
+                            [_, Some(width)] => self.parse_address_initializer_rows(usize::from(*width))?,
+                            _ => self.parse_address_initializer()?,
+                        });
                     } else if table_fields.is_some() && *self.peek() == Token::Equals {
                         self.advance();
                         address_initializer =

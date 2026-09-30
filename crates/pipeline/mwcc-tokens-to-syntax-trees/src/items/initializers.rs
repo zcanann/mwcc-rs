@@ -46,6 +46,32 @@ impl Parser {
     /// A pointer global's initializer: a single address (`int *p = &g;`) or a brace
     /// list of them (`int *t[] = {&a, &b};`), each element a target symbol, string,
     /// or null.
+    /// A two-dimensional pointer array `{ {a, b}, {c} }`: rows flatten, each
+    /// padded with nulls to `row_width` elements.
+    pub(crate) fn parse_address_initializer_rows(&mut self, row_width: usize) -> Compilation<Vec<PointerElement>> {
+        if !(*self.peek() == Token::BraceOpen && *self.peek_at(1) == Token::BraceOpen) {
+            return self.parse_address_initializer();
+        }
+        self.expect(Token::BraceOpen)?;
+        let mut elements = Vec::new();
+        while *self.peek() != Token::BraceClose {
+            let start = elements.len();
+            let row = self.parse_address_initializer()?;
+            if row.len() > row_width {
+                return Err(Diagnostic::error("too many elements in a pointer-array row"));
+            }
+            elements.extend(row);
+            while elements.len() < start + row_width {
+                elements.push(PointerElement::Null);
+            }
+            if !self.eat_keyword(Token::Comma) {
+                break;
+            }
+        }
+        self.expect(Token::BraceClose)?;
+        Ok(elements)
+    }
+
     pub(crate) fn parse_address_initializer(&mut self) -> Compilation<Vec<PointerElement>> {
         if self.eat_keyword(Token::BraceOpen) {
             let mut elements = Vec::new();
