@@ -857,6 +857,45 @@ impl Parser {
         Ok(bytes)
     }
 
+    /// A two-dimensional struct array `{ {e, e}, {e, e} }`: each braced row
+    /// is a struct-array image padded to `row_elements` structs.
+    pub(crate) fn parse_struct_array_rows(
+        &mut self,
+        tag: &str,
+        row_elements: usize,
+        element_size: usize,
+        relocations: &mut Vec<(u32, String, i32)>,
+    ) -> Compilation<Vec<u8>> {
+        self.expect(Token::BraceOpen)?;
+        let mut bytes = Vec::new();
+        let row_bytes = row_elements * element_size;
+        while *self.peek() != Token::BraceClose {
+            if !(*self.peek() == Token::BraceOpen && *self.peek_at(1) == Token::BraceOpen) {
+                return Err(Diagnostic::error(
+                    "a flat multi-dimensional struct-array initializer is not supported yet (roadmap)",
+                ));
+            }
+            let start = bytes.len();
+            let mut row_relocations = Vec::new();
+            let row = self.parse_struct_array_initializer(tag, &mut row_relocations)?;
+            if row.len() > row_bytes {
+                return Err(Diagnostic::error("too many elements in a struct-array row"));
+            }
+            relocations.extend(
+                row_relocations
+                    .into_iter()
+                    .map(|(offset, target, addend)| (offset + start as u32, target, addend)),
+            );
+            bytes.extend(row);
+            bytes.resize(start + row_bytes, 0);
+            if !self.eat_keyword(Token::Comma) {
+                break;
+            }
+        }
+        self.expect(Token::BraceClose)?;
+        Ok(bytes)
+    }
+
     /// The struct-value [`Type`] for a known struct layout (size + alignment), or
     /// `None` for an opaque/undeclared struct (whose value cannot be laid out).
     /// Drives `struct S v;` value support.

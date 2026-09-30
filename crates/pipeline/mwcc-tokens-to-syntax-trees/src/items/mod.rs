@@ -5480,8 +5480,12 @@ impl Parser {
                             // relocation support and therefore defer below.
                             let tag = struct_tag.as_ref().unwrap();
                             let mut relocations = Vec::new();
-                            let bytes =
-                                self.parse_struct_array_initializer(tag, &mut relocations)?;
+                            let bytes = if inner_elements > 1 {
+                                let Type::Struct { size, .. } = declared_type else { unreachable!() };
+                                self.parse_struct_array_rows(tag, usize::from(inner_elements), size as usize, &mut relocations)?
+                            } else {
+                                self.parse_struct_array_initializer(tag, &mut relocations)?
+                            };
                             if !is_static && !relocations.is_empty() {
                                 return Err(Diagnostic::error("an automatic struct-array initializer with address elements is not supported yet (roadmap)"));
                             }
