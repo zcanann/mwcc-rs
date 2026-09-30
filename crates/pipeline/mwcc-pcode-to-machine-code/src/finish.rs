@@ -23,6 +23,8 @@ pub struct FinishOptions {
     /// the machine model after GC/1.2.5, whose single-IU default model the
     /// decompilation documents.
     pub two_integer_units: bool,
+    /// `-O0`: no copy propagation or live-range splitting before coloring.
+    pub unoptimized: bool,
 }
 
 /// Schedule, color, frame, and flatten `pcode`. The last block is the exit
@@ -35,10 +37,10 @@ pub fn finish(
     prune_unreachable(&mut pcode);
     schedule::TWO_INTEGER_UNITS.with(|flag| flag.set(options.two_integer_units));
     dump(&pcode, "INITIAL CODE");
-    if !toggle("MWCC_PCODE_NO_WEBS") {
+    if !options.unoptimized && !toggle("MWCC_PCODE_NO_WEBS") {
         split_webs(&mut pcode);
     }
-    if !toggle("MWCC_PCODE_NO_COPYPROP") {
+    if !options.unoptimized && !toggle("MWCC_PCODE_NO_COPYPROP") {
         // Eliminating one copy can expose another (`x = a` of a parameter).
         while propagate_physical_copies(&mut pcode) {}
     }
@@ -55,8 +57,30 @@ pub fn finish(
             "PCode frame: saved float registers are not yet supported",
         ));
     }
-    let framed = makes_calls || !colors.saved_general.is_empty();
-    let plan = mwcc_vreg::FramePlan::sized_for(colors.saved_general.clone());
+    // Callee-saved registers the code writes: claimed by coloring, or
+    // assigned directly (`-O0` register variables).
+    let mut saved = colors.saved_general.clone();
+    for instruction in pcode.blocks.iter().flat_map(|block| block.instructions.iter()) {
+        for defined in instruction.defs(mwcc_pcode::Class::General) {
+            if (14..32).contains(&defined) && !saved.contains(&defined) {
+                saved.push(defined);
+            }
+        }
+    }
+    saved.sort_unstable_by(|a, b| b.cmp(a));
+    let framed = makes_calls || !saved.is_empty() || pcode.frame_local_bytes > 0;
+    let plan = mwcc_vreg::FramePlan::with_local_region(saved, pcode.frame_local_bytes);
+    // A leaf frame neither saves nor restores the link register.
+    let keep = |instruction: &Instruction| {
+        makes_calls
+            || !matches!(
+                instruction,
+                Instruction::MoveFromLinkRegister { .. }
+                    | Instruction::MoveToLinkRegister { .. }
+                    | Instruction::StoreWord { s: 0, a: 1, .. }
+                    | Instruction::LoadWord { d: 0, a: 1, .. }
+            )
+    };
 
     let wrap = |instructions: Vec<Instruction>| -> Vec<PInstr> {
         instructions.into_iter().map(PInstr::new).collect()
@@ -64,10 +88,22 @@ pub fn finish(
     let exit = pcode.blocks.len() - 1;
     let mut framed_blocks = vec![false; pcode.blocks.len()];
     if framed {
-        let mut entry = wrap(plan.prologue());
+        let mut entry = wrap(plan.prologue().into_iter().filter(|i| keep(i)).collect());
         entry.append(&mut pcode.blocks[0].instructions);
         pcode.blocks[0].instructions = entry;
-        pcode.blocks[exit].instructions.extend(wrap(plan.epilogue()));
+        let mut epilogue: Vec<Instruction> = plan.epilogue().into_iter().filter(|i| keep(i)).collect();
+        if options.unoptimized {
+            // Unscheduled, the saved registers come back before the LR reload.
+            if let Some(position) = epilogue.iter().position(|i| matches!(i, Instruction::LoadWord { d: 0, a: 1, .. })) {
+                let reload = epilogue.remove(position);
+                let after = epilogue
+                    .iter()
+                    .rposition(|i| matches!(i, Instruction::LoadWord { a: 1, .. }))
+                    .map_or(position, |last| last + 1);
+                epilogue.insert(after, reload);
+            }
+        }
+        pcode.blocks[exit].instructions.extend(wrap(epilogue));
         framed_blocks[0] = true;
         framed_blocks[exit] = true;
     } else {
@@ -102,6 +138,7 @@ pub fn finish(
     }
     let exit_block = pcode.blocks.len() - 1;
     let frameless_exit = !framed
+        && !options.unoptimized
         && matches!(
             pcode.blocks[exit_block].instructions.as_slice(),
             [only] if matches!(only.instruction, Instruction::BranchToLinkRegister)

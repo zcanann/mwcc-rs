@@ -35,6 +35,30 @@ pub fn run(function: &mut Function) {
     }
 }
 
+/// `-O0`: only the front end's constant folding of literal operations.
+pub fn run_unoptimized(function: &mut Function) {
+    fn literals(expression: &mut Expr) {
+        children(expression, &mut |child| literals(child));
+        let folded = match &expression.kind {
+            ExprKind::Convert(operand)
+                if matches!(expression.ty, Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. }) =>
+            {
+                operand.as_int().map(|value| Expr::typed_int(value, expression.ty))
+            }
+            ExprKind::Binary(op, left, right) => match (left.as_int(), right.as_int()) {
+                (Some(a), Some(b)) => fold_literals(*op, a, b).map(|value| Expr::typed_int(value, expression.ty)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(folded) = folded {
+            *expression = folded;
+        }
+    }
+    for_each_expression(&mut function.body, &mut |expression| literals(expression));
+    stores(&mut function.body);
+}
+
 /// Apply `rewrite` to every expression tree in `body` (statement roots).
 pub fn for_each_expression(body: &mut [Stmt], rewrite: &mut dyn FnMut(&mut Expr)) {
     for statement in body {

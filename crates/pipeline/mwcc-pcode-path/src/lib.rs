@@ -27,7 +27,8 @@ pub fn install() {
 /// Lower `request.function`, or explain what is not modeled yet.
 pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
     let behavior = Behavior::resolve(request.config);
-    if behavior.optimization != mwcc_versions::Optimization::O4 {
+    let unoptimized = behavior.optimization == mwcc_versions::Optimization::O0;
+    if behavior.optimization != mwcc_versions::Optimization::O4 && !unoptimized {
         // Lower levels skip IRO passes and keep stack-resident variables;
         // only the -O4 pipeline is modeled so far.
         return Err(mwcc_core::Diagnostic::error(
@@ -64,11 +65,15 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         prototyped: request.prototyped,
         call_parameter_types: request.call_parameter_types,
     };
-    let built = mwcc_syntax_trees_to_iro::build(request.function, &unit)?;
+    let built = if unoptimized {
+        mwcc_syntax_trees_to_iro::build_unoptimized_compile(request.function, &unit)?
+    } else {
+        mwcc_syntax_trees_to_iro::build(request.function, &unit)?
+    };
     if std::env::var("MWCC_IRO_DUMP").is_ok_and(|name| name == built.function.name || name == "1") {
         eprint!("{}", built.function.listing());
     }
-    let lowered = mwcc_iro_to_pcode::lower(&built.function, built.returns_through_variable, &unit)?;
+    let lowered = mwcc_iro_to_pcode::lower(&built.function, built.returns_through_variable, &unit, unoptimized)?;
     let mut output = mwcc_pcode_to_machine_code::finish(
         lowered.pcode,
         lowered.makes_calls,
@@ -76,6 +81,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             schedule: behavior.schedule_latency_slots,
             delete_dead: behavior.optimization != mwcc_versions::Optimization::O0,
             two_integer_units: behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::Branchless,
+            unoptimized,
         },
     )?;
     output.section = request.function.section.clone();

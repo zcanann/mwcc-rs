@@ -220,6 +220,11 @@ pub struct PCodeFunction {
     /// pre-window web (split from a parameter or declared local): they, too,
     /// only coalesce with physical registers.
     pub outside_window: Vec<(Class, u32)>,
+    /// Bytes of the frame's local area (stack homes at r1+8 upward).
+    pub frame_local_bytes: i16,
+    /// General registers live at the exit besides the result (`-O0` keeps
+    /// register variables live through the whole function).
+    pub exit_uses: Vec<u32>,
     pub returns: ReturnRegisters,
 }
 
@@ -233,6 +238,8 @@ impl PCodeFunction {
             coalesce_first_general: FIRST_VIRTUAL,
             coalesce_first_float: FIRST_VIRTUAL,
             outside_window: Vec::new(),
+            frame_local_bytes: 0,
+            exit_uses: Vec::new(),
             returns,
         }
     }

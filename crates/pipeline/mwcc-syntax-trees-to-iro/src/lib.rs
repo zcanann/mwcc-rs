@@ -41,6 +41,15 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     Ok(built)
 }
 
+/// Build the IR for an unoptimized (`-O0`) compile: no IRO passes beyond the
+/// front end's literal folding, and every `return` leaves directly.
+pub fn build_unoptimized_compile(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
+    let mut built = build_unoptimized(function, unit)?;
+    passes::run_unoptimized(&mut built.function);
+    built.returns_through_variable = false;
+    Ok(built)
+}
+
 /// Build the IR without running the IRO passes.
 pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     if function.asm_body.is_some() || !function.inline_asm_blocks.is_empty() {

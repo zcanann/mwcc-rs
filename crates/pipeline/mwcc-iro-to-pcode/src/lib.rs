@@ -36,7 +36,12 @@ fn unsupported(what: impl Into<String>) -> Diagnostic {
 /// Lower `function` to PCode. `returns_through_variable`: every return
 /// assigns one return variable copied to r3 at the exit (MWCC's single
 /// return point) — the source returns from more than its final value.
-pub fn lower(function: &Function, returns_through_variable: bool, unit: &Unit<'_>) -> Compilation<Lowered> {
+pub fn lower(
+    function: &Function,
+    returns_through_variable: bool,
+    unit: &Unit<'_>,
+    unoptimized: bool,
+) -> Compilation<Lowered> {
     let returns = match function.return_type {
         Type::Void => ReturnRegisters::None,
         ty if is_general_word(ty) => ReturnRegisters::General,
@@ -57,6 +62,8 @@ pub fn lower(function: &Function, returns_through_variable: bool, unit: &Unit<'_
         return_register: None,
         extended: HashMap::new(),
         constants: HashMap::new(),
+        unoptimized,
+        homes: vec![None; function.variables.len()],
     };
     lowerer.lower_function(returns_through_variable)?;
     Ok(Lowered { pcode: lowerer.pcode, makes_calls: lowerer.makes_calls })
@@ -92,6 +99,11 @@ struct Lowerer<'a> {
     extended: HashMap<VarId, u32>,
     /// Constants materialized in the current block (reused, as IRO's CSE).
     constants: HashMap<i64, u32>,
+    /// `-O0`: locals are register variables (r31 down), no CSE, and a
+    /// parameter used at most once in a calling function lives in the frame.
+    unoptimized: bool,
+    /// Frame home (`offset(r1)`) of a parameter kept in memory.
+    homes: Vec<Option<i16>>,
 }
 
 impl Lowerer<'_> {
@@ -218,6 +230,10 @@ impl Lowerer<'_> {
         // Object preallocation: parameters, then locals in reverse
         // declaration order, then the return variable; then the window opens.
         let mut incoming = Vec::new();
+        let calls = makes_calls(&function.body);
+        if self.unoptimized {
+            return self.lower_unoptimized(calls);
+        }
         for id in 0..function.parameter_count {
             let register = self.temporary();
             self.registers[id] = Some(register);
@@ -241,6 +257,58 @@ impl Lowerer<'_> {
             let ty = if self.raw_narrow[id] { Type::Int } else { function.variables[id].ty };
             self.emit_plain(extension(ty, virtual_register, physical));
         }
+        self.body_and_exit()
+    }
+
+    /// `-O0`: every variable lives in a fixed place for the whole function.
+    /// A parameter of a leaf function stays in its argument register; in a
+    /// function that calls, a parameter referenced at most once lives in the
+    /// frame and the others are register variables, like declared locals
+    /// (callee-saved, r31 down). Temporaries are colored around them.
+    fn lower_unoptimized(&mut self, calls: bool) -> Compilation<()> {
+        let function = self.function;
+        let mut home_slots: i16 = 0;
+        let mut next_saved: u32 = 31;
+        let mut entry_copies = Vec::new();
+        for id in 0..function.parameter_count {
+            let argument = FIRST_GENERAL_ARGUMENT + id as u32;
+            if !calls {
+                self.registers[id] = Some(argument);
+            } else if references(&function.body, id) <= 1 {
+                self.homes[id] = Some(8 + 4 * home_slots);
+                home_slots += 1;
+            } else {
+                self.registers[id] = Some(next_saved);
+                entry_copies.push((next_saved, argument));
+                next_saved -= 1;
+            }
+        }
+        for id in function.parameter_count..function.variables.len() {
+            if function.variables[id].kind == VariableKind::Local {
+                if next_saved < 14 {
+                    return Err(unsupported("more register variables than callee-saved registers"));
+                }
+                self.registers[id] = Some(next_saved);
+                next_saved -= 1;
+            }
+        }
+        self.pcode.frame_local_bytes = ((4 * home_slots + 7) / 8) * 8;
+        self.pcode.exit_uses = self.registers.iter().flatten().copied().collect();
+        self.pcode.begin_coalesce_window();
+        for id in 0..function.parameter_count {
+            if let Some(offset) = self.homes[id] {
+                let argument = FIRST_GENERAL_ARGUMENT + id as u32;
+                self.emit_plain(Instruction::StoreWord { s: argument, a: 1, offset });
+            }
+        }
+        for (register, argument) in entry_copies {
+            self.emit_plain(Instruction::Or { a: register, s: argument, b: argument });
+        }
+        self.body_and_exit()
+    }
+
+    fn body_and_exit(&mut self) -> Compilation<()> {
+        let function = self.function;
         self.exit_label = self.new_label();
         for statement in &function.body {
             self.statement(statement)?;
@@ -317,13 +385,23 @@ impl Lowerer<'_> {
             }
             return Ok(());
         }
-        let (register, ty) = self.expression(value)?;
-        let (register, _) = if fits { (register, ty) } else { self.convert(register, ty, return_type, None)? };
-        self.emit_plain(Instruction::Or { a: 3, s: register, b: register });
+        let direct = self.unoptimized.then_some(3);
+        // The final instruction targets r3: the conversion when there is one.
+        let converts = !fits && is_narrow(return_type) && value.ty != return_type;
+        let (register, ty) = self.expression_with_target(value, if converts { None } else { direct })?;
+        let (register, _) = if fits { (register, ty) } else { self.convert(register, ty, return_type, direct)? };
+        if register != 3 {
+            self.emit_plain(Instruction::Or { a: 3, s: register, b: register });
+        }
         Ok(())
     }
 
     fn assign(&mut self, variable: VarId, value: &Expr) -> Compilation<()> {
+        if let Some(offset) = self.homes[variable] {
+            let (source, _) = self.expression(value)?;
+            self.emit_plain(Instruction::StoreWord { s: source, a: 1, offset });
+            return Ok(());
+        }
         let destination = self.register(variable);
         let stale: Vec<String> = self
             .loaded_globals
@@ -484,7 +562,7 @@ impl Lowerer<'_> {
         let ty = expression.ty;
         match &expression.kind {
             ExprKind::Int(value) => {
-                if target.is_none() && std::env::var_os("MWCC_PCODE_NO_CONSTANT_CSE").is_none() {
+                if target.is_none() && !self.unoptimized && std::env::var_os("MWCC_PCODE_NO_CONSTANT_CSE").is_none() {
                     if let Some(&register) = self.constants.get(value) {
                         return Ok((register, ty));
                     }
@@ -496,6 +574,12 @@ impl Lowerer<'_> {
                 let register = self.result(target);
                 self.load_constant(register, *value)?;
                 Ok((register, ty))
+            }
+            ExprKind::Var(id) if self.homes[*id].is_some() => {
+                let offset = self.homes[*id].expect("checked");
+                let d = self.result(target);
+                self.emit_plain(Instruction::LoadWord { d, a: 1, offset });
+                Ok((d, ty))
             }
             ExprKind::Var(id) => {
                 let register = self.register(*id);
@@ -512,13 +596,14 @@ impl Lowerer<'_> {
             }
             ExprKind::Global(name) => {
                 let global = self.unit.globals[name];
-                if !global.is_volatile {
+                let reuse = !global.is_volatile && !self.unoptimized;
+                if reuse {
                     if let Some(&loaded) = self.loaded_globals.get(name) {
                         return Ok(loaded);
                     }
                 }
                 let loaded = self.load_global(name, global, target)?;
-                if !global.is_volatile {
+                if reuse {
                     self.loaded_globals.insert(name.clone(), loaded);
                 }
                 Ok(loaded)
@@ -926,11 +1011,14 @@ impl Lowerer<'_> {
         }
         // `field | base` where the base is known zero under the field's mask
         // inserts the field: `rlwimi base,x,shift,mb,me`.
-        if op == BinaryOp::BitOr {
+        if op == BinaryOp::BitOr && !self.unoptimized {
             if let Some((source, shift, begin, end)) = insert_field(left) {
                 if field_bits(begin, end) & !known_zero(right) == 0 {
                     let (x, _) = self.expression(source)?;
                     let (base, _) = self.expression(right)?;
+                    // rlwimi overwrites its destination before reading the
+                    // source: the destination must not hold the source.
+                    let target = target.filter(|&d| d != x);
                     let d = self.result(target);
                     if base != d {
                         self.emit_plain(Instruction::Or { a: d, s: base, b: base });
@@ -1159,7 +1247,7 @@ impl Lowerer<'_> {
         // A stored word-sized global's value is still in `source`.
         if let Place::Global(name) = place {
             let global = self.unit.globals[name];
-            if !global.is_volatile && !is_narrow(ty) {
+            if !global.is_volatile && !is_narrow(ty) && !self.unoptimized {
                 self.loaded_globals.insert(name.clone(), (source, ty));
             }
         }
@@ -1318,4 +1406,79 @@ fn wide_constant(expression: &Expr) -> Option<(i16, i16)> {
     let low = value as i16;
     let high = ((value - i32::from(low)) >> 16) as i16;
     Some((high, low))
+}
+
+/// Whether the body calls anything.
+fn makes_calls(body: &[Stmt]) -> bool {
+    fn expression(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Call { .. } => true,
+            ExprKind::Int(_) | ExprKind::Var(_) | ExprKind::Global(_) => false,
+            ExprKind::Load { base, index, .. } => expression(base) || index.as_deref().is_some_and(expression),
+            ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => expression(operand),
+            ExprKind::Binary(_, left, right) => expression(left) || expression(right),
+            ExprKind::Select { condition, when_true, when_false } => {
+                expression(condition) || expression(when_true) || expression(when_false)
+            }
+            ExprKind::Idiom(Idiom::Absolute(value)) => expression(value),
+            ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => expression(tested) || expression(value),
+        }
+    }
+    body.iter().any(|statement| match statement {
+        Stmt::Assign { value, .. } | Stmt::Eval(value) | Stmt::SetReturn(value) => expression(value),
+        Stmt::Return(value) => value.as_ref().is_some_and(expression),
+        Stmt::Store { place, value, .. } => {
+            expression(value)
+                || matches!(place, Place::Memory { base, index, .. }
+                    if expression(base) || index.as_deref().is_some_and(expression))
+        }
+        Stmt::If { condition, then_body, else_body } => {
+            expression(condition) || makes_calls(then_body) || makes_calls(else_body)
+        }
+    })
+}
+
+/// How many times the body reads or assigns `variable`.
+fn references(body: &[Stmt], variable: VarId) -> usize {
+    fn expression(e: &Expr, variable: VarId) -> usize {
+        match &e.kind {
+            ExprKind::Var(id) => usize::from(*id == variable),
+            ExprKind::Int(_) | ExprKind::Global(_) => 0,
+            ExprKind::Load { base, index, .. } => {
+                expression(base, variable) + index.as_deref().map_or(0, |index| expression(index, variable))
+            }
+            ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => expression(operand, variable),
+            ExprKind::Binary(_, left, right) => expression(left, variable) + expression(right, variable),
+            ExprKind::Select { condition, when_true, when_false } => {
+                expression(condition, variable) + expression(when_true, variable) + expression(when_false, variable)
+            }
+            ExprKind::Call { arguments, .. } => arguments.iter().map(|a| expression(a, variable)).sum(),
+            ExprKind::Idiom(Idiom::Absolute(value)) => expression(value, variable),
+            ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => {
+                expression(tested, variable) + expression(value, variable)
+            }
+        }
+    }
+    body.iter()
+        .map(|statement| match statement {
+            Stmt::Assign { variable: assigned, value } => {
+                usize::from(*assigned == variable) + expression(value, variable)
+            }
+            Stmt::Eval(value) | Stmt::SetReturn(value) => expression(value, variable),
+            Stmt::Return(value) => value.as_ref().map_or(0, |value| expression(value, variable)),
+            Stmt::Store { place, value, .. } => {
+                expression(value, variable)
+                    + match place {
+                        Place::Memory { base, index, .. } => {
+                            expression(base, variable)
+                                + index.as_deref().map_or(0, |index| expression(index, variable))
+                        }
+                        Place::Global(_) => 0,
+                    }
+            }
+            Stmt::If { condition, then_body, else_body } => {
+                expression(condition, variable) + references(then_body, variable) + references(else_body, variable)
+            }
+        })
+        .sum()
 }
