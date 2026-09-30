@@ -61,6 +61,7 @@ pub fn lower(
         loaded_globals: HashMap::new(),
         restorable: Vec::new(),
         restore_violation: false,
+        address_reuse: None,
         snapshots: HashMap::new(),
         restored_labels: Vec::new(),
         pending_branches: Vec::new(),
@@ -114,6 +115,9 @@ struct Lowerer<'a, 'u> {
     /// target them).
     restored_labels: Vec<usize>,
     restore_violation: bool,
+    /// -O0 compound assignment: the place's address, reused by the value's
+    /// load of the same place (keyed by the place).
+    address_reuse: Option<(String, (u32, i16, Option<u32>, Option<AttachedRelocation>))>,
     /// Branches awaiting their target block: (block, instruction, label).
     pending_branches: Vec<(usize, usize, Label)>,
     /// Jump tables awaiting their labels' blocks: (dispatch block, entries).
@@ -1423,6 +1427,16 @@ impl Lowerer<'_, '_> {
                 let (a, _) = self.expression(&Expr::int(i64::from(high) << 16))?;
                 self.load(ty, a, low, None, target)
             }
+            // The value of `a[i] op= v` loads through the store's address.
+            ExprKind::Load { base, index, offset }
+                if self.address_reuse.as_ref().is_some_and(|(key, _)| *key == place_key(base, index.as_deref(), *offset)) =>
+            {
+                let (_, (a, displacement, b, relocation)) = self.address_reuse.clone().expect("checked");
+                match b {
+                    Some(b) => self.indexed_load(ty, a, b, target),
+                    None => self.load(ty, a, displacement, relocation, target),
+                }
+            }
             // A small-data object's first member loads through `@sda21`.
             ExprKind::Load { base, index: None, offset: 0 } if self.small_data_object(base).is_some() => {
                 let name = self.small_data_object(base).expect("checked").to_owned();
@@ -2406,6 +2420,8 @@ impl Lowerer<'_, '_> {
         // A loaded left operand keeps source order (`*p + b`).
         let loaded = match &unpromoted(left).kind {
             ExprKind::Global(_) => true,
+            // (Any load at -O0.)
+            ExprKind::Load { .. } if self.unoptimized && !toggle("MWCC_PCODE_O0_LOAD_SWAP") => true,
             ExprKind::Load { base, index: None, .. } => {
                 matches!(base.kind, ExprKind::Var(_) | ExprKind::GlobalAddress(_) | ExprKind::LocalAddress(_))
             }
@@ -2700,12 +2716,10 @@ impl Lowerer<'_, '_> {
         Ok(source)
     }
 
-    fn store(&mut self, place: &Place, ty: Type, value: &Expr) -> Compilation<()> {
-        if is_float(ty) != is_float(value.ty) {
-            return Err(unsupported("store of a value in the other register class"));
-        }
-        let source = self.store_source(value, ty)?;
-        let (base, offset, index, relocation) = match place {
+    /// A store's address: base register, displacement, index register and
+    /// relocation.
+    fn store_address(&mut self, place: &Place) -> Compilation<(u32, i16, Option<u32>, Option<AttachedRelocation>)> {
+        Ok(match place {
             Place::Memory { base, index: None, offset } if matches!(base.kind, ExprKind::LocalAddress(_)) => {
                 let ExprKind::LocalAddress(id) = base.kind else { unreachable!() };
                 let slot = self.frame_offsets[id].ok_or_else(|| unsupported("frame slot"))?;
@@ -2772,6 +2786,32 @@ impl Lowerer<'_, '_> {
                 } else {
                     (self.absolute_address(name), 0, None, None)
                 }
+            }
+        })
+    }
+
+    fn store(&mut self, place: &Place, ty: Type, value: &Expr) -> Compilation<()> {
+        if is_float(ty) != is_float(value.ty) {
+            return Err(unsupported("store of a value in the other register class"));
+        }
+        // `a[i] op= v` (-O0): the address once, first; the value's load of
+        // the same place reuses it.
+        let compound = if self.unoptimized && !toggle("MWCC_PCODE_O0_NO_COMPOUND_ADDRESS") {
+            compound_place_key(place, value)
+        } else {
+            None
+        };
+        let (source, (base, offset, index, relocation)) = match compound {
+            Some(key) => {
+                let address = self.store_address(place)?;
+                self.address_reuse = Some((key, address.clone()));
+                let source = self.store_source(value, ty);
+                self.address_reuse = None;
+                (source?, address)
+            }
+            None => {
+                let source = self.store_source(value, ty)?;
+                (source, self.store_address(place)?)
             }
         };
         let store = match (index, ty) {
@@ -2888,6 +2928,30 @@ impl Lowerer<'_, '_> {
 }
 
 use mwcc_syntax_trees_to_iro::passes::fits_unconverted as mwcc_syntax_trees_to_iro_fits;
+
+/// A memory place's identity (base, index, offset).
+fn place_key(base: &Expr, index: Option<&Expr>, offset: i32) -> String {
+    format!("{base:?}|{index:?}|{offset}")
+}
+
+/// The key of a store place its value loads from (`a[i] = a[i] op v`):
+/// the left operand chain, through conversions and bit-field inserts.
+fn compound_place_key(place: &Place, value: &Expr) -> Option<String> {
+    let Place::Memory { base, index, offset } = place else { return None };
+    let key = place_key(base, index.as_deref(), *offset);
+    let mut current = value;
+    loop {
+        match &current.kind {
+            ExprKind::Load { base, index, offset } => {
+                return (place_key(base, index.as_deref(), *offset) == key).then_some(key);
+            }
+            ExprKind::Convert(inner) => current = inner,
+            ExprKind::Binary(_, left, _) => current = left,
+            ExprKind::Idiom(Idiom::Insert { base, .. }) => current = base,
+            _ => return None,
+        }
+    }
+}
 
 /// Values known in registers at a program point.
 #[derive(Clone)]
