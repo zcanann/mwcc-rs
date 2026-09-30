@@ -265,6 +265,9 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                 rank: info.pick_rank,
                 serialize: info.serialize
                     || instruction.instruction.is_call()
+                    // Frame paired-single restores keep the epilogue's order.
+                    || (matches!(instruction.instruction, Instruction::PairedSingleQuantizedLoad { a: 1, .. } | Instruction::PairedSingleQuantizedStore { a: 1, .. })
+                        && std::env::var_os("MWCC_SCHED_PSQ_FREE").is_none())
                     // The variadic CR1 marker stays at the call.
                     || matches!(instruction.instruction, Instruction::ConditionRegisterClear { .. } | Instruction::ConditionRegisterSet { .. })
                     || (matches!(instruction.instruction, Instruction::AddImmediate { d: 1, a: 1, .. })

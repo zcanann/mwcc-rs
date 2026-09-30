@@ -135,6 +135,8 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             unoptimized,
             fold_absolute_into_own_base: request.config.build.label.starts_with("GC/3.")
                 || request.config.build.label.starts_with("Wii/"),
+            link_reload_after_float_restores: behavior.saved_float_epilogue_style
+                == mwcc_versions::SavedFloatEpilogueStyle::LinkReloadAfterFloatRestores,
         },
     )?;
     output.section = request.function.section.clone();

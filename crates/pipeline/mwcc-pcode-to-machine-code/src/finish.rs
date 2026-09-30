@@ -28,6 +28,9 @@ pub struct FinishOptions {
     /// Fold `addi rX,rB,sym@l` into a following zero-displacement access
     /// even when the load's destination is rX (GC/3.0+).
     pub fold_absolute_into_own_base: bool,
+    /// The LR reload follows every saved-FPR restore (GC/3.x, Wii) instead
+    /// of preceding the final double reload.
+    pub link_reload_after_float_restores: bool,
 }
 
 /// Schedule, color, frame, and flatten `pcode`. The last block is the exit
@@ -60,11 +63,27 @@ pub fn finish(
     if !options.unoptimized {
         fold_absolute_displacements(&mut pcode, options.fold_absolute_into_own_base);
     }
-    if !colors.saved_float.is_empty() {
-        return Err(mwcc_core::Diagnostic::error(
-            "PCode frame: saved float registers are not yet supported",
-        ));
-    }
+    // Saved FPRs: the contiguous range from f31 down to the lowest used.
+    let saved_float: Vec<u32> = match colors.saved_float.iter().min() {
+        Some(&lowest) => (lowest..32).rev().collect(),
+        None => Vec::new(),
+    };
+    // Gekko also saves the paired-single half of an FPR the code computes
+    // with (not one it only moves or loads).
+    let paired = !saved_float.is_empty()
+        && std::env::var_os("MWCC_PCODE_NO_PAIRED_SAVES").is_none()
+        && pcode.blocks.iter().flat_map(|block| block.instructions.iter()).any(|instruction| {
+            !instruction.defs(mwcc_pcode::Class::Float).is_empty()
+                && !matches!(
+                    instruction.instruction,
+                    Instruction::FloatMove { .. }
+                        | Instruction::LoadFloatSingle { .. }
+                        | Instruction::LoadFloatDouble { .. }
+                        | Instruction::LoadFloatSingleIndexed { .. }
+                        | Instruction::LoadFloatDoubleIndexed { .. }
+                )
+                && !instruction.instruction.is_call()
+        });
     // Callee-saved registers the code writes: claimed by coloring, or
     // assigned directly (`-O0` register variables).
     let mut saved = colors.saved_general.clone();
@@ -76,8 +95,14 @@ pub fn finish(
         }
     }
     saved.sort_unstable_by(|a, b| b.cmp(a));
-    let framed = makes_calls || !saved.is_empty() || pcode.frame_local_bytes > 0;
+    let framed = makes_calls || !saved.is_empty() || !saved_float.is_empty() || pcode.frame_local_bytes > 0;
+    let float_frame = FloatFrame {
+        link_reload_last: options.link_reload_after_float_restores,
+        ..FloatFrame::new(&saved_float, paired, &saved, pcode.frame_local_bytes)
+    };
     let plan = mwcc_vreg::FramePlan::with_local_region(saved, pcode.frame_local_bytes);
+    let prologue = || if saved_float.is_empty() { plan.prologue() } else { float_frame.prologue() };
+    let epilogue = || if saved_float.is_empty() { plan.epilogue() } else { float_frame.epilogue() };
     // A leaf frame neither saves nor restores the link register.
     let keep = |instruction: &Instruction| {
         makes_calls
@@ -98,16 +123,16 @@ pub fn finish(
     // Code that never returns (an endless loop) has no epilogue.
     let exit_reached = exit == 0 || (0..exit).any(|block| pcode.blocks[block].successors.contains(&exit));
     if framed && !exit_reached {
-        let mut entry = wrap(plan.prologue().into_iter().filter(|i| keep(i)).collect());
+        let mut entry = wrap(prologue().into_iter().filter(|i| keep(i)).collect());
         entry.append(&mut pcode.blocks[0].instructions);
         pcode.blocks[0].instructions = entry;
         framed_blocks[0] = true;
     } else if !exit_reached {
     } else if framed {
-        let mut entry = wrap(plan.prologue().into_iter().filter(|i| keep(i)).collect());
+        let mut entry = wrap(prologue().into_iter().filter(|i| keep(i)).collect());
         entry.append(&mut pcode.blocks[0].instructions);
         pcode.blocks[0].instructions = entry;
-        let mut epilogue: Vec<Instruction> = plan.epilogue().into_iter().filter(|i| keep(i)).collect();
+        let mut epilogue: Vec<Instruction> = epilogue().into_iter().filter(|i| keep(i)).collect();
         if options.unoptimized {
             // Unscheduled, the saved registers come back before the LR reload.
             if let Some(position) = epilogue.iter().position(|i| matches!(i, Instruction::LoadWord { d: 0, a: 1, .. })) {
@@ -771,4 +796,84 @@ fn dump(pcode: &PCodeFunction, stage: &str) {
 /// Model-study switches (not part of the compiler's behavior).
 pub(crate) fn toggle(name: &str) -> bool {
     std::env::var_os(name).is_some()
+}
+
+/// A frame with saved FPRs: the linkage area, the local region, then from
+/// the top of the frame each saved FPR (16 bytes with its paired-single
+/// half: `psq_st` above `stfd`; 8 bytes otherwise), then the saved GPRs.
+struct FloatFrame {
+    link_reload_last: bool,
+    frame_size: i16,
+    floats: Vec<(u32, i16, Option<i16>)>,
+    generals: Vec<(u32, i16)>,
+}
+
+impl FloatFrame {
+    fn new(floats: &[u32], paired: bool, generals: &[u32], local_bytes: i16) -> FloatFrame {
+        let per_float: i16 = if paired { 16 } else { 8 };
+        let float_area = per_float * floats.len() as i16;
+        let frame_size = ((8 + local_bytes + float_area + 4 * generals.len() as i16 + 15) / 16) * 16;
+        let floats = floats
+            .iter()
+            .enumerate()
+            .map(|(k, &register)| {
+                let top = frame_size - per_float * k as i16;
+                if paired {
+                    (register, top - 16, Some(top - 8))
+                } else {
+                    (register, top - 8, None)
+                }
+            })
+            .collect();
+        let generals = generals
+            .iter()
+            .enumerate()
+            .map(|(k, &register)| (register, frame_size - float_area - 4 * (k as i16 + 1)))
+            .collect();
+        FloatFrame { link_reload_last: false, frame_size, floats, generals }
+    }
+
+    fn prologue(&self) -> Vec<Instruction> {
+        let mut instructions = vec![
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -self.frame_size },
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord { s: 0, a: 1, offset: self.frame_size + 4 },
+        ];
+        for &(register, double, paired) in &self.floats {
+            instructions.push(Instruction::StoreFloatDouble { s: register, a: 1, offset: double });
+            if let Some(offset) = paired {
+                instructions.push(Instruction::PairedSingleQuantizedStore { s: register, a: 1, offset, w: 0, i: 0 });
+            }
+        }
+        for &(register, offset) in &self.generals {
+            instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
+        }
+        instructions
+    }
+
+    /// Each FPR restores its paired half then its double, except that the
+    /// final double reload follows the LR reload.
+    fn epilogue(&self) -> Vec<Instruction> {
+        let mut instructions = Vec::new();
+        let last = self.floats.len() - 1;
+        for (k, &(register, double, paired)) in self.floats.iter().enumerate() {
+            if let Some(offset) = paired {
+                instructions.push(Instruction::PairedSingleQuantizedLoad { d: register, a: 1, offset, w: 0, i: 0 });
+            }
+            if k == last && !self.link_reload_last {
+                instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+            }
+            instructions.push(Instruction::LoadFloatDouble { d: register, a: 1, offset: double });
+        }
+        if self.link_reload_last {
+            instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+        }
+        for &(register, offset) in &self.generals {
+            instructions.push(Instruction::LoadWord { d: register, a: 1, offset });
+        }
+        instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+        instructions.push(Instruction::BranchToLinkRegister);
+        instructions
+    }
 }
