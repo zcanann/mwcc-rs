@@ -409,6 +409,12 @@ impl Builder<'_> {
                 Expr { kind: ExprKind::Load { base, index, offset }, ty }
             }
             Expression::AddressOf { operand } => self.address_of(operand)?,
+            // Provenance wrappers: the value is the wrapped expression.
+            Expression::IndexedUpdateValue { value } => self.expression(value)?,
+            Expression::BitFieldRead { extracted, promoted_type, .. } => {
+                let value = self.expression(extracted)?;
+                converted(promoted(value), *promoted_type)
+            }
             Expression::MemberAddress { base, offset, element, index_stride: None } => {
                 let base = self.aggregate_address(base)?;
                 let ty = pointee_type(*element).and_then(pointer_to).unwrap_or(Type::Pointer(*element));
@@ -478,9 +484,7 @@ impl Builder<'_> {
                 if self.unit.variadic_callees.contains(name) {
                     return Err(unsupported("call to a variadic function"));
                 }
-                if !self.unit.prototyped.contains(name) {
-                    return Err(unsupported("call without a prototype"));
-                }
+                let prototyped = self.unit.prototyped.contains(name);
                 if (self.unit.has_body)(name) {
                     return Err(unsupported("call to a function this unit defines (inlining not modeled)"));
                 }
@@ -488,6 +492,15 @@ impl Builder<'_> {
                     return Err(unsupported("stack-passed arguments"));
                 }
                 let mut arguments = arguments.iter().map(|a| self.expression(a)).collect::<Compilation<Vec<_>>>()?;
+                if !prototyped {
+                    // Default argument promotions; floating arguments of an
+                    // unprototyped call also set CR1 (not modeled).
+                    if arguments.iter().any(|argument| is_float(argument.ty)) {
+                        return Err(unsupported("floating argument to a call without a prototype"));
+                    }
+                    let arguments = arguments.into_iter().map(promoted).collect();
+                    return Ok(Expr { kind: ExprKind::Call { name: name.to_owned(), arguments }, ty });
+                }
                 // The caller converts an argument to a narrow parameter's type.
                 if let Some(types) = self.unit.call_parameter_types.get(name) {
                     for (argument, &parameter) in arguments.iter_mut().zip(types) {
