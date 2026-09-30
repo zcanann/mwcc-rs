@@ -278,8 +278,8 @@ impl Builder<'_> {
     /// A store target and the type it holds.
     fn place(&mut self, target: &Expression) -> Compilation<(Place, Type)> {
         match target {
-            Expression::Member { base, offset, member_type, index_stride: None } => {
-                let base = self.aggregate_address(base)?;
+            Expression::Member { base, offset, member_type, index_stride } => {
+                let base = self.member_base(base, *index_stride)?;
                 let (base, index, offset, ty) = displaced(base, *offset as i32, *member_type);
                 Ok((Place::Memory { base, index, offset }, ty))
             }
@@ -317,7 +317,7 @@ impl Builder<'_> {
     fn pointer_sum(&mut self, base: &Expression, index: &Expression) -> Compilation<Expr> {
         let base = self.expression(base)?;
         let index = self.expression(index)?;
-        if !matches!(base.ty, Type::Pointer(_)) {
+        if !matches!(base.ty, Type::Pointer(_) | Type::StructPointer { .. }) {
             return Err(unsupported("index of a non-pointer"));
         }
         self.pointer_arithmetic(BinaryOp::Add, base, index)
@@ -470,8 +470,8 @@ impl Builder<'_> {
                 let operand = self.expression(operand)?;
                 Expr { kind: ExprKind::Convert(Box::new(operand)), ty: *target_type }
             }
-            Expression::Member { base, offset, member_type, index_stride: None } => {
-                let base = self.aggregate_address(base)?;
+            Expression::Member { base, offset, member_type, index_stride } => {
+                let base = self.member_base(base, *index_stride)?;
                 if !is_value_type(*member_type) {
                     return Err(unsupported(format!("load of {member_type:?}")));
                 }
@@ -518,6 +518,25 @@ impl Builder<'_> {
         }
     }
 
+    /// The struct address a member access is based on; `a[i].m` (with the
+    /// struct size as `stride`) addresses `a + i*stride`.
+    fn member_base(&mut self, base: &Expression, stride: Option<u32>) -> Compilation<Expr> {
+        let Some(stride) = stride else { return self.aggregate_address(base) };
+        let Expression::Index { base: array, index } = base else {
+            return Err(unsupported("member of an indexed element"));
+        };
+        let pointer = self.expression(array)?;
+        // `a[i]->m` also records a stride: there the element is a pointer
+        // to load, and only an array of the structs themselves is indexed.
+        if !matches!(pointer.ty, Type::StructPointer { element_size } if element_size == stride) {
+            return self.aggregate_address(base);
+        }
+        let index = self.expression(index)?;
+        let ty = Type::StructPointer { element_size: stride };
+        let pointer = Expr { ty, ..pointer };
+        Ok(Expr::binary(BinaryOp::Add, pointer, scale(promoted(index), stride), ty))
+    }
+
     /// `&operand`.
     fn address_of(&mut self, operand: &Expression) -> Compilation<Expr> {
         match operand {
@@ -532,8 +551,8 @@ impl Builder<'_> {
                 Some(&id) if self.variables[id].frame.is_some() => Ok(self.local_address(id)),
                 _ => Err(unsupported("address of a register variable")),
             },
-            Expression::Member { base, offset, member_type, index_stride: None } => {
-                let base = self.aggregate_address(base)?;
+            Expression::Member { base, offset, member_type, index_stride } => {
+                let base = self.member_base(base, *index_stride)?;
                 let ty = pointer_to(*member_type).ok_or_else(|| unsupported("address of this member type"))?;
                 Ok(Expr::binary(BinaryOp::Add, base, Expr::int(i64::from(*offset)), ty))
             }
@@ -733,6 +752,16 @@ fn displaced(pointer: Expr, offset: i32, ty: Type) -> (Box<Expr>, Option<Box<Exp
                     return displaced((**base).clone(), i32::from(total), ty);
                 }
             }
+        }
+    }
+    // `p + i` at displacement 0 is an indexed access.
+    if let (ExprKind::Binary(BinaryOp::Add, base, index), 0) = (&pointer.kind, offset) {
+        if matches!(base.ty, Type::Pointer(_) | Type::StructPointer { .. })
+            && element_size(index.ty).is_none()
+            && index.as_int().is_none()
+            && std::env::var_os("MWCC_IRO_NO_MEMBER_INDEXED").is_none()
+        {
+            return (base.clone(), Some(index.clone()), 0, ty);
         }
     }
     (Box::new(pointer), None, offset, ty)

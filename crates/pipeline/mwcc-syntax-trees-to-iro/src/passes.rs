@@ -269,18 +269,48 @@ pub fn run_unoptimized(function: &mut Function) {
     }
     for_each_expression(&mut function.body, &mut |expression| literals(expression));
     stores(&mut function.body);
-    displacements(&mut function.body);
+    displacements_with(&mut function.body, false);
     narrowing(function);
 }
 
 /// A constant addend of an access's base pointer joins its displacement:
 /// `*(p - 8 + 2)` is `-24(p)`.
 pub fn displacements(body: &mut [Stmt]) {
-    fn absorb(base: &mut Box<Expr>, index: &Option<Box<Expr>>, offset: &mut i32) {
+    displacements_with(body, std::env::var_os("MWCC_IRO_NO_INDEX_CONSTANT").is_none());
+}
+
+/// Displacement folding; `distribute` also moves a scaled index's constant
+/// addend into the displacement (optimized builds only).
+pub fn displacements_with(body: &mut [Stmt], distribute: bool) {
+    fn absorb(base: &mut Box<Expr>, index: &mut Option<Box<Expr>>, offset: &mut i32, distribute: bool) {
+        // `p[i + k]`: the constant part of the index joins the displacement
+        // (`add` then `lwz k*size`).
+        if let (Some(ix), true) = (index.as_deref(), distribute) {
+            if let Some((variable, constant)) = constant_index_part(ix) {
+                if let Ok(total) = i16::try_from(i64::from(*offset) + constant) {
+                    let ty = base.ty;
+                    *base = Box::new(Expr::binary(BinaryOp::Add, (**base).clone(), variable, ty));
+                    *index = None;
+                    *offset = i32::from(total);
+                }
+            }
+        }
         if index.is_some() {
             return;
         }
         loop {
+            if let (ExprKind::Binary(BinaryOp::Add, pointer, ix), true) = (&base.kind, distribute) {
+                if pointer_like(pointer.ty) && !pointer_like(ix.ty) {
+                    if let Some((variable, constant)) = constant_index_part(ix) {
+                        if let Ok(total) = i16::try_from(i64::from(*offset) + constant) {
+                            let ty = base.ty;
+                            *base = Box::new(Expr::binary(BinaryOp::Add, (**pointer).clone(), variable, ty));
+                            *offset = i32::from(total);
+                            continue;
+                        }
+                    }
+                }
+            }
             let ExprKind::Binary(op @ (BinaryOp::Add | BinaryOp::Subtract), inner, addend) = &base.kind else { break };
             let (Some(value), true) = (addend.as_int(), pointer_like(inner.ty)) else { break };
             let value = if *op == BinaryOp::Subtract { -value } else { value };
@@ -289,27 +319,29 @@ pub fn displacements(body: &mut [Stmt]) {
             *base = inner.clone();
         }
     }
-    fn visit(expression: &mut Expr) {
-        children(expression, &mut |child| visit(child));
+    fn visit(expression: &mut Expr, distribute: bool) {
+        children(expression, &mut |child| visit(child, distribute));
         if let ExprKind::Load { base, index, offset } = &mut expression.kind {
-            absorb(base, index, offset);
+            absorb(base, index, offset, distribute);
         }
     }
     for statement in body.iter_mut() {
         match statement {
-            Stmt::Store { place: mwcc_iro::Place::Memory { base, index, offset }, .. } => absorb(base, index, offset),
+            Stmt::Store { place: mwcc_iro::Place::Memory { base, index, offset }, .. } => {
+                absorb(base, index, offset, distribute)
+            }
             Stmt::If { then_body, else_body, .. } => {
-                displacements(then_body);
-                displacements(else_body);
+                displacements_with(then_body, distribute);
+                displacements_with(else_body, distribute);
             }
             Stmt::Loop { body, step, .. } => {
-                displacements(body);
-                displacements(step);
+                displacements_with(body, distribute);
+                displacements_with(step, distribute);
             }
             _ => {}
         }
     }
-    for_each_expression(body, &mut |expression| visit(expression));
+    for_each_expression(body, &mut |expression| visit(expression, distribute));
 }
 
 /// Apply `rewrite` to every expression tree in `body` (statement roots).
@@ -1066,4 +1098,25 @@ mod tests {
         idioms(&mut e, &[Type::Int, Type::Int]);
         assert!(matches!(e.kind, ExprKind::Idiom(Idiom::Absolute(_))));
     }
+}
+
+/// A scaled index with a constant addend, `(i ± k) * s` (or `i ± k`):
+/// the variable part `i * s` and the constant `±k * s`.
+fn constant_index_part(index: &Expr) -> Option<(Expr, i64)> {
+    let (inner, size) = match &index.kind {
+        ExprKind::Binary(BinaryOp::Multiply, inner, size) => (inner.as_ref(), size.as_int()?),
+        _ => (index, 1),
+    };
+    let ExprKind::Binary(op @ (BinaryOp::Add | BinaryOp::Subtract), variable, addend) = &inner.kind else { return None };
+    let addend = addend.as_int()?;
+    if variable.as_int().is_some() {
+        return None;
+    }
+    let constant = if *op == BinaryOp::Subtract { -addend } else { addend } * size;
+    let variable = if size == 1 {
+        (**variable).clone()
+    } else {
+        Expr::binary(BinaryOp::Multiply, (**variable).clone(), Expr::int(size), index.ty)
+    };
+    Some((variable, constant))
 }
