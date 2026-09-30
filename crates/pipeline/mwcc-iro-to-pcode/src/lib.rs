@@ -274,6 +274,7 @@ impl Lowerer<'_> {
             let argument = FIRST_GENERAL_ARGUMENT + id as u32;
             if !calls {
                 self.registers[id] = Some(argument);
+                self.raw_narrow[id] = is_narrow(function.variables[id].ty);
             } else if references(&function.body, id) <= 1 {
                 self.homes[id] = Some(8 + 4 * home_slots);
                 home_slots += 1;
@@ -337,6 +338,8 @@ impl Lowerer<'_> {
             Stmt::Assign { variable, value } => self.assign(*variable, value),
             Stmt::Eval(value) => match &value.kind {
                 ExprKind::Call { name, arguments } => self.call(name, arguments, None).map(|_| ()),
+                // A discarded value without effects (`(void)x;`).
+                ExprKind::Int(_) => Ok(()),
                 _ => Err(unsupported("expression statement")),
             },
             Stmt::Store { place, ty, value } => self.store(place, *ty, value),
@@ -601,6 +604,26 @@ impl Lowerer<'_> {
                 }
                 Ok(loaded)
             }
+            ExprKind::GlobalAddress(name) => {
+                let global = self.unit.globals[name];
+                let external = || RelocationTarget::External(name.clone());
+                let d = self.result(target);
+                if global.small_data {
+                    let mut li = PInstr::new(Instruction::AddImmediate { d, a: 0, immediate: 0 });
+                    li.relocation = Some(AttachedRelocation { kind: RelocationKind::EmbSda21, target: external() });
+                    self.emit(li);
+                } else {
+                    let high = self.temporary();
+                    let mut lis = PInstr::new(Instruction::AddImmediateShifted { d: high, a: 0, immediate: 0 });
+                    lis.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Ha, target: external() });
+                    self.emit(lis);
+                    let mut addi = PInstr::new(Instruction::AddImmediate { d, a: high, immediate: 0 });
+                    addi.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Lo, target: external() });
+                    addi.not_r0.push(high);
+                    self.emit(addi);
+                }
+                Ok((d, ty))
+            }
             ExprKind::Binary(op, left, right) if op.is_comparison() => {
                 self.comparison_value(*op, left, right, target)
             }
@@ -642,7 +665,7 @@ impl Lowerer<'_> {
                 // A promotion of a raw narrow parameter: extended once per block.
                 if let ExprKind::Var(id) = operand.kind {
                     if self.raw_narrow[id] && !is_narrow(ty) {
-                        if let Some(&extended) = self.extended.get(&id) {
+                        if let Some(&extended) = self.extended.get(&id).filter(|_| !self.unoptimized) {
                             return Ok((extended, ty));
                         }
                         let raw = self.register(id);
@@ -1450,7 +1473,7 @@ fn makes_calls(body: &[Stmt]) -> bool {
     fn expression(e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Call { .. } => true,
-            ExprKind::Int(_) | ExprKind::Var(_) | ExprKind::Global(_) => false,
+            ExprKind::Int(_) | ExprKind::Var(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => false,
             ExprKind::Load { base, index, .. } => expression(base) || index.as_deref().is_some_and(expression),
             ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => expression(operand),
             ExprKind::Binary(_, left, right) => expression(left) || expression(right),
@@ -1480,7 +1503,7 @@ fn references(body: &[Stmt], variable: VarId) -> usize {
     fn expression(e: &Expr, variable: VarId) -> usize {
         match &e.kind {
             ExprKind::Var(id) => usize::from(*id == variable),
-            ExprKind::Int(_) | ExprKind::Global(_) => 0,
+            ExprKind::Int(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => 0,
             ExprKind::Load { base, index, .. } => {
                 expression(base, variable) + index.as_deref().map_or(0, |index| expression(index, variable))
             }

@@ -189,6 +189,8 @@ pub enum ExprKind {
     Var(VarId),
     /// The value of a scalar file-scope object.
     Global(String),
+    /// The address of a file-scope object (typed as a pointer).
+    GlobalAddress(String),
     /// A load of `ty` from `base + index + offset` (`index` scaled).
     Load { base: Box<Expr>, index: Option<Box<Expr>>, offset: i32 },
     Unary(UnaryOp, Box<Expr>),
@@ -241,7 +243,7 @@ impl Expr {
     /// Whether the expression may read `variable` (conservative).
     pub fn mentions(&self, variable: VarId) -> bool {
         match &self.kind {
-            ExprKind::Int(_) | ExprKind::Global(_) => false,
+            ExprKind::Int(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => false,
             ExprKind::Var(id) => *id == variable,
             ExprKind::Load { base, index, .. } => {
                 base.mentions(variable) || index.as_ref().is_some_and(|index| index.mentions(variable))
@@ -327,6 +329,23 @@ pub fn element_size(ty: Type) -> Option<u32> {
     }
 }
 
+/// A pointer to objects of type `ty`.
+pub fn pointer_to(ty: Type) -> Option<Type> {
+    Some(match ty {
+        Type::Int => Type::Pointer(Pointee::Int),
+        Type::UnsignedInt => Type::Pointer(Pointee::UnsignedInt),
+        Type::Char => Type::Pointer(Pointee::Char),
+        Type::UnsignedChar => Type::Pointer(Pointee::UnsignedChar),
+        Type::Short => Type::Pointer(Pointee::Short),
+        Type::UnsignedShort => Type::Pointer(Pointee::UnsignedShort),
+        Type::Float => Type::Pointer(Pointee::Float),
+        Type::Double => Type::Pointer(Pointee::Double),
+        Type::Pointer(_) | Type::StructPointer { .. } => Type::Pointer(Pointee::Pointer),
+        Type::Struct { size, .. } => Type::StructPointer { element_size: size },
+        _ => return None,
+    })
+}
+
 /// Byte width of a stored or loaded scalar.
 pub fn width(ty: Type) -> u32 {
     match ty {
@@ -342,6 +361,7 @@ impl fmt::Display for Expr {
             ExprKind::Int(value) => write!(f, "{value}"),
             ExprKind::Var(id) => write!(f, "v{id}"),
             ExprKind::Global(name) => write!(f, "{name}"),
+            ExprKind::GlobalAddress(name) => write!(f, "&{name}"),
             ExprKind::Load { base, index, offset } => {
                 write!(f, "load.{:?}[{base}", self.ty)?;
                 if let Some(index) = index {

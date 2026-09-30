@@ -34,14 +34,19 @@ pub fn run(function: &mut Function) {
         stores(&mut function.body);
     }
     if enabled("NARROWING") {
-        narrowing(&mut function.body);
+        narrowing(function);
     }
 }
 
 /// Promotions a later narrowing discards: under a conversion to (or a store
 /// of) a narrow type, low-bit operations need no extended operands, so a
 /// promoted narrow value at least that wide is used as it is.
-pub fn narrowing(body: &mut [Stmt]) {
+pub fn narrowing(function: &mut Function) {
+    let variables: Vec<Type> = function.variables.iter().map(|variable| variable.ty).collect();
+    narrowing_in(&mut function.body, function.return_type, &variables);
+}
+
+fn narrowing_in(body: &mut [Stmt], return_type: Type, variables: &[Type]) {
     fn strip(expression: &mut Expr, bytes: u32) {
         match &mut expression.kind {
             ExprKind::Convert(operand)
@@ -81,9 +86,22 @@ pub fn narrowing(body: &mut [Stmt]) {
         }
     }
     for statement in body.iter_mut() {
-        if let Stmt::Store { ty, value, .. } = statement {
-            if is_narrow(*ty) {
-                strip(value, width(*ty));
+        // Values narrowed on the way out: stores, narrow variables and
+        // results.
+        let narrowed = match statement {
+            Stmt::Store { ty, value, .. } => Some((*ty, value)),
+            Stmt::Assign { variable, value } => Some((variables[*variable], value)),
+            Stmt::SetReturn(value) | Stmt::Return(Some(value)) => Some((return_type, value)),
+            Stmt::If { then_body, else_body, .. } => {
+                narrowing_in(then_body, return_type, variables);
+                narrowing_in(else_body, return_type, variables);
+                None
+            }
+            _ => None,
+        };
+        if let Some((ty, value)) = narrowed {
+            if is_narrow(ty) {
+                strip(value, width(ty));
             }
         }
     }
@@ -112,7 +130,7 @@ pub fn run_unoptimized(function: &mut Function) {
     }
     for_each_expression(&mut function.body, &mut |expression| literals(expression));
     stores(&mut function.body);
-    narrowing(&mut function.body);
+    narrowing(function);
 }
 
 /// Apply `rewrite` to every expression tree in `body` (statement roots).
@@ -145,7 +163,7 @@ pub fn for_each_expression(body: &mut [Stmt], rewrite: &mut dyn FnMut(&mut Expr)
 
 fn children(expression: &mut Expr, rewrite: &mut dyn FnMut(&mut Expr)) {
     match &mut expression.kind {
-        ExprKind::Int(_) | ExprKind::Var(_) | ExprKind::Global(_) => {}
+        ExprKind::Int(_) | ExprKind::Var(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => {}
         ExprKind::Load { base, index, .. } => {
             rewrite(base);
             if let Some(index) = index {
@@ -262,7 +280,7 @@ fn cancel<'a>(op: BinaryOp, left: &'a Expr, right: &Expr) -> Option<&'a Expr> {
 /// trap (pointer loads, division).
 pub fn speculable(expression: &Expr) -> bool {
     match &expression.kind {
-        ExprKind::Int(_) | ExprKind::Var(_) | ExprKind::Global(_) => true,
+        ExprKind::Int(_) | ExprKind::Var(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) => true,
         ExprKind::Binary(op, left, right) => {
             !matches!(op, BinaryOp::Divide | BinaryOp::Modulo | BinaryOp::LogicalAnd | BinaryOp::LogicalOr)
                 && speculable(left)

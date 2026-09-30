@@ -41,17 +41,29 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             "PCode lowering: branch-preserving select builds (not yet supported)",
         ));
     }
-    let small_data = behavior.global_addressing == GlobalAddressing::SmallData;
     let globals: HashMap<String, GlobalInfo> = request
         .globals
         .iter()
         .map(|global| {
+            // Objects of at most 8 bytes live in small data (when enabled).
+            let addressing =
+                if global.is_const { behavior.read_only_global_addressing } else { behavior.global_addressing };
+            let element = match global.declared_type {
+                mwcc_syntax_trees::Type::Struct { size, .. } => Some(size),
+                other => Some(u32::from(other.width()) / 8).filter(|&size| size > 0),
+            };
+            let size = match (global.array_length, global.array_length_inferred) {
+                (Some(length), false) => element.map(|element| element * u32::from(length)),
+                (None, false) => element,
+                _ => None,
+            };
+            let small_data = addressing == GlobalAddressing::SmallData && size.is_some_and(|size| size <= 8);
             (
                 global.name.clone(),
                 GlobalInfo {
                     ty: global.declared_type,
                     small_data,
-                    is_array: global.array_length.is_some(),
+                    is_array: global.array_length.is_some() || global.array_length_inferred,
                     is_volatile: global.is_volatile,
                 },
             )

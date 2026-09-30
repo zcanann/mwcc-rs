@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_iro::{
-    element_size, is_general_word, is_narrow, is_unsigned, pointee_type, promote, BinaryOp, Expr, ExprKind,
+    element_size, is_general_word, is_narrow, is_unsigned, pointee_type, pointer_to, promote, BinaryOp, Expr, ExprKind,
     Function, Place, Stmt, Type, UnaryOp, Unit, VarId, Variable, VariableKind,
 };
 use mwcc_syntax_trees as ast;
@@ -90,7 +90,8 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     for local in &function.locals {
         if let Some(initializer) = &local.initializer {
             let variable = builder.names[&local.name];
-            body.push(Stmt::Assign { variable, value: builder.expression(initializer)? });
+            let value = assigned(builder.expression(initializer)?, local.declared_type);
+            body.push(Stmt::Assign { variable, value });
         }
     }
     for statement in &function.statements {
@@ -145,14 +146,21 @@ impl Builder<'_> {
                 let Some(&variable) = self.names.get(name) else {
                     return Err(unsupported(format!("assignment to non-local '{name}'")));
                 };
-                Stmt::Assign { variable, value: self.expression(value)? }
+                let ty = self.variables[variable].ty;
+                Stmt::Assign { variable, value: assigned(self.expression(value)?, ty) }
             }
             Statement::Expression(Expression::Call { name, arguments }) => {
                 Stmt::Eval(self.call(name, arguments, true)?)
             }
+            // `(void)expression;`: a discarded call, or nothing.
+            Statement::Expression(Expression::Cast { target_type: Type::Void, operand }) => match operand.as_ref() {
+                Expression::Call { name, arguments } => Stmt::Eval(self.call(name, arguments, true)?),
+                Expression::Variable(_) | Expression::IntegerLiteral(_) => Stmt::Eval(Expr::int(0)),
+                other => return Err(unsupported(format!("statement expression void {}", expression_name(other)))),
+            },
             Statement::Store { target, value } => {
                 let (place, ty) = self.place(target)?;
-                Stmt::Store { place, ty, value: self.expression(value)? }
+                Stmt::Store { place, ty, value: assigned(self.expression(value)?, ty) }
             }
             Statement::If { condition, then_body, else_body } => Stmt::If {
                 condition: promoted(self.expression(condition)?),
@@ -162,6 +170,9 @@ impl Builder<'_> {
             Statement::Return(value) => {
                 Stmt::Return(value.as_ref().map(|value| self.expression(value)).transpose()?)
             }
+            Statement::Expression(expression) => {
+                return Err(unsupported(format!("statement expression {}", expression_name(expression))))
+            }
             other => return Err(unsupported(format!("statement {}", statement_name(other)))),
         })
     }
@@ -170,8 +181,9 @@ impl Builder<'_> {
     fn place(&mut self, target: &Expression) -> Compilation<(Place, Type)> {
         match target {
             Expression::Member { base, offset, member_type, index_stride: None } => {
-                let base = self.expression(base)?;
-                Ok((Place::Memory { base: Box::new(base), index: None, offset: *offset as i32 }, *member_type))
+                let base = self.aggregate_address(base)?;
+                let (base, index, offset, ty) = displaced(base, *offset as i32, *member_type);
+                Ok((Place::Memory { base, index, offset }, ty))
             }
             Expression::Index { base, index } => {
                 let pointer = self.pointer_sum(base, index)?;
@@ -227,7 +239,7 @@ impl Builder<'_> {
                 }
             }
         }
-        Ok(Some((Box::new(pointer), None, 0, loaded)))
+        Ok(Some(displaced(pointer, 0, loaded)))
     }
 
     /// `pointer ± integer` with the integer scaled to bytes.
@@ -260,8 +272,10 @@ impl Builder<'_> {
                 let Some(global) = self.unit.globals.get(name) else {
                     return Err(unsupported(format!("unknown variable '{name}'")));
                 };
-                if global.is_array {
-                    return Err(unsupported("array global as a value"));
+                // An array (or aggregate) global denotes its address.
+                if global.is_array || matches!(global.ty, Type::Struct { .. }) {
+                    let ty = pointer_to(global.ty).ok_or_else(|| unsupported("array global of this element type"))?;
+                    return Ok(Expr { kind: ExprKind::GlobalAddress(name.clone()), ty });
                 }
                 Expr { kind: ExprKind::Global(name.clone()), ty: global.ty }
             }
@@ -317,8 +331,18 @@ impl Builder<'_> {
                 Expr { kind: ExprKind::Convert(Box::new(operand)), ty: *target_type }
             }
             Expression::Member { base, offset, member_type, index_stride: None } => {
-                let base = self.expression(base)?;
-                Expr { kind: ExprKind::Load { base: Box::new(base), index: None, offset: *offset as i32 }, ty: *member_type }
+                let base = self.aggregate_address(base)?;
+                if !is_general_word(*member_type) {
+                    return Err(unsupported(format!("load of {member_type:?}")));
+                }
+                let (base, index, offset, ty) = displaced(base, *offset as i32, *member_type);
+                Expr { kind: ExprKind::Load { base, index, offset }, ty }
+            }
+            Expression::AddressOf { operand } => self.address_of(operand)?,
+            Expression::MemberAddress { base, offset, element, index_stride: None } => {
+                let base = self.aggregate_address(base)?;
+                let ty = pointee_type(*element).and_then(pointer_to).unwrap_or(Type::Pointer(*element));
+                Expr::binary(BinaryOp::Add, base, Expr::int(i64::from(*offset)), ty)
             }
             Expression::Index { base, index } => {
                 let pointer = self.pointer_sum(base, index)?;
@@ -337,6 +361,37 @@ impl Builder<'_> {
             Expression::Call { name, arguments } => self.call(name, arguments, false)?,
             other => return Err(unsupported(format!("expression {}", expression_name(other)))),
         })
+    }
+
+    /// The address a member access is based on: a struct pointer value, or
+    /// a struct object named directly (`s.m`).
+    fn aggregate_address(&mut self, base: &Expression) -> Compilation<Expr> {
+        match base {
+            Expression::AddressOf { operand } => self.address_of(operand),
+            other => self.expression(other),
+        }
+    }
+
+    /// `&operand`.
+    fn address_of(&mut self, operand: &Expression) -> Compilation<Expr> {
+        match operand {
+            Expression::Variable(name) if !self.names.contains_key(name) => {
+                let Some(global) = self.unit.globals.get(name) else {
+                    return Err(unsupported(format!("unknown variable '{name}'")));
+                };
+                let ty = pointer_to(global.ty).ok_or_else(|| unsupported("address of this global type"))?;
+                Ok(Expr { kind: ExprKind::GlobalAddress(name.clone()), ty })
+            }
+            Expression::Variable(_) => Err(unsupported("address of a local")),
+            Expression::Member { base, offset, member_type, index_stride: None } => {
+                let base = self.aggregate_address(base)?;
+                let ty = pointer_to(*member_type).ok_or_else(|| unsupported("address of this member type"))?;
+                Ok(Expr::binary(BinaryOp::Add, base, Expr::int(i64::from(*offset)), ty))
+            }
+            Expression::Index { base, index } => self.pointer_sum(base, index),
+            Expression::Dereference { pointer } => self.expression(pointer),
+            other => Err(unsupported(format!("address of {}", expression_name(other)))),
+        }
     }
 
     /// A call; `discarded` when its result is unused (a `void` callee is fine).
@@ -472,4 +527,28 @@ pub fn promoted(e: Expr) -> Expr {
     } else {
         e
     }
+}
+
+/// A value assigned or stored as `ty`: a narrow value promotes to a word.
+fn assigned(value: Expr, ty: Type) -> Expr {
+    if is_narrow(ty) {
+        value
+    } else {
+        promoted(value)
+    }
+}
+
+/// `pointer + offset` as a memory operand, a constant addend of the pointer
+/// folded into the displacement.
+fn displaced(pointer: Expr, offset: i32, ty: Type) -> (Box<Expr>, Option<Box<Expr>>, i32, Type) {
+    if let ExprKind::Binary(BinaryOp::Add, base, addend) = &pointer.kind {
+        if let Some(value) = addend.as_int() {
+            if let Ok(total) = i16::try_from(i64::from(offset) + value) {
+                if matches!(base.ty, Type::Pointer(_) | Type::StructPointer { .. }) {
+                    return displaced((**base).clone(), i32::from(total), ty);
+                }
+            }
+        }
+    }
+    (Box::new(pointer), None, offset, ty)
 }
