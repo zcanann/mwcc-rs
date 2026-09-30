@@ -225,6 +225,22 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
             if let (Some(a), Some(b)) = (left.as_int(), right.as_int()) {
                 return Some(Expr::typed_int(fold_literals(*op, a, b)?, expression.ty));
             }
+            // `x << 0`, `x >> 0`, `x + 0`, `x - 0`, `x | 0`, `x ^ 0` are `x`.
+            if right.as_int() == Some(0)
+                && matches!(
+                    op,
+                    BinaryOp::ShiftLeft
+                        | BinaryOp::ShiftRight
+                        | BinaryOp::Add
+                        | BinaryOp::Subtract
+                        | BinaryOp::BitOr
+                        | BinaryOp::BitXor
+                )
+            {
+                let mut value = (**left).clone();
+                value.ty = expression.ty;
+                return Some(value);
+            }
             // `x * 0` is 0 when `x` has no effects.
             if *op == BinaryOp::Multiply && right.as_int() == Some(0) && speculable(left) {
                 return Some(Expr::typed_int(0, expression.ty));

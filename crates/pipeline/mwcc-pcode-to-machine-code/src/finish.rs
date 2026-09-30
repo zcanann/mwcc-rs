@@ -106,7 +106,7 @@ pub fn finish(
         pcode.blocks[exit].instructions.extend(wrap(epilogue));
         framed_blocks[0] = true;
         framed_blocks[exit] = true;
-    } else {
+    } else if !pcode.ends_in_tail_call {
         pcode.blocks[exit]
             .instructions
             .push(PInstr::new(Instruction::BranchToLinkRegister));

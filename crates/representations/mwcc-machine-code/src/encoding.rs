@@ -70,7 +70,8 @@ impl Instruction {
             }
             // srwi rA,rS,n == rlwinm rA,rS,32-n,n,31
             Instruction::ShiftRightLogicalImmediate { a, s, shift } => {
-                let rotate = 32 - shift as u32;
+                // `srwi rA,rS,0` is `rlwinm rA,rS,0,0,31` (the rotate field is 5 bits).
+                let rotate = (32 - shift as u32) & 31;
                 (21 << 26) | (register_bits(s) << 21) | (register_bits(a) << 16) | (rotate << 11) | ((shift as u32) << 6) | (31 << 1)
             }
             Instruction::XorImmediate { a, s, immediate } => d_form(26, s, a, immediate),

@@ -326,6 +326,11 @@ fn lower_function_body(
             call_parameter_types,
             config: &config,
             is_intrinsic: &intrinsics::is_intrinsic_call,
+            has_body: &|name| {
+                inline_bodies.definition_body(name).is_some()
+                    || inline_bodies.composable_body(name).is_some()
+                    || inline_bodies.retained_body(name).is_some()
+            },
         }) {
             Ok(output) => return Ok(output),
             Err(diagnostic) if matches!(mode, pcode_path::Mode::Only) => return Err(diagnostic),

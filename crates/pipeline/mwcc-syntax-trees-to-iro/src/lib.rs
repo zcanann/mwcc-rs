@@ -463,6 +463,9 @@ impl Builder<'_> {
                 if !self.unit.prototyped.contains(name) {
                     return Err(unsupported("call without a prototype"));
                 }
+                if (self.unit.has_body)(name) {
+                    return Err(unsupported("call to a function this unit defines (inlining not modeled)"));
+                }
                 if arguments.len() > ARGUMENT_REGISTERS {
                     return Err(unsupported("stack-passed arguments"));
                 }

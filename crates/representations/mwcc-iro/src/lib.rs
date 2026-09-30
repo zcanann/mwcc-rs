@@ -37,6 +37,8 @@ pub struct Unit<'a> {
     pub prototyped: &'a std::collections::HashSet<String>,
     /// Declared parameter types of callees.
     pub call_parameter_types: &'a HashMap<String, Vec<Type>>,
+    /// Whether the unit has a body for a callee (MWCC may inline the call).
+    pub has_body: &'a dyn Fn(&str) -> bool,
 }
 
 /// Index into [`Function::variables`].

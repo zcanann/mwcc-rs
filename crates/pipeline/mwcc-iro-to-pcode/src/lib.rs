@@ -41,6 +41,7 @@ pub fn lower(
     returns_through_variable: bool,
     unit: &Unit<'_>,
     unoptimized: bool,
+    tail_calls: bool,
 ) -> Compilation<Lowered> {
     let returns = match function.return_type {
         Type::Void => ReturnRegisters::None,
@@ -66,6 +67,7 @@ pub fn lower(
         homes: vec![None; function.variables.len()],
         loops: Vec::new(),
         known_constant: None,
+        tail_calls,
     };
     lowerer.lower_function(returns_through_variable)?;
     Ok(Lowered { pcode: lowerer.pcode, makes_calls: lowerer.makes_calls })
@@ -111,6 +113,8 @@ struct Lowerer<'a> {
     /// The variable the previous statement set to a constant (IRO knows a
     /// loop's first test from it).
     known_constant: Option<(VarId, i64)>,
+    /// A body that is one terminal call becomes a sibling branch.
+    tail_calls: bool,
 }
 
 impl Lowerer<'_> {
@@ -323,8 +327,42 @@ impl Lowerer<'_> {
         self.body_and_exit()
     }
 
+    /// A body that is just a call whose result (if any) is the function's
+    /// becomes `b callee` after marshaling the arguments.
+    fn sibling_call(&mut self) -> Compilation<bool> {
+        let function = self.function;
+        let call = match function.body.as_slice() {
+            [Stmt::Eval(call)] if function.return_type == Type::Void => call,
+            [Stmt::SetReturn(call)] if call.ty == function.return_type => call,
+            _ => return Ok(false),
+        };
+        let ExprKind::Call { name, arguments } = &call.kind else { return Ok(false) };
+        let mut values = Vec::new();
+        for argument in arguments {
+            values.push(self.expression(argument)?.0);
+        }
+        for (index, value) in values.into_iter().enumerate() {
+            let register = FIRST_GENERAL_ARGUMENT + index as u32;
+            self.emit_plain(Instruction::Or { a: register, s: value, b: value });
+        }
+        let mut branch = PInstr::new(Instruction::BranchExternal { target: name.clone() });
+        branch.relocation = Some(AttachedRelocation {
+            kind: RelocationKind::Rel24,
+            target: RelocationTarget::External(name.clone()),
+        });
+        branch.implicit_uses = (0..arguments.len()).map(|i| Register::general(FIRST_GENERAL_ARGUMENT + i as u32)).collect();
+        self.emit(branch);
+        self.pcode.ends_in_tail_call = true;
+        self.start_block(false);
+        self.resolve_branches()?;
+        Ok(true)
+    }
+
     fn body_and_exit(&mut self) -> Compilation<()> {
         let function = self.function;
+        if self.tail_calls && !self.unoptimized && self.sibling_call()? {
+            return Ok(());
+        }
         self.exit_label = self.new_label();
         for statement in &function.body {
             self.statement(statement)?;

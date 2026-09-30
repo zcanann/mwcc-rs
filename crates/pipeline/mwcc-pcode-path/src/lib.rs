@@ -76,6 +76,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         variadic_callees: request.variadic_callees,
         prototyped: request.prototyped,
         call_parameter_types: request.call_parameter_types,
+        has_body: request.has_body,
     };
     let built = if unoptimized {
         mwcc_syntax_trees_to_iro::build_unoptimized_compile(request.function, &unit)?
@@ -85,7 +86,13 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
     if std::env::var("MWCC_IRO_DUMP").is_ok_and(|name| name == built.function.name || name == "1") {
         eprint!("{}", built.function.listing());
     }
-    let lowered = mwcc_iro_to_pcode::lower(&built.function, built.returns_through_variable, &unit, unoptimized)?;
+    let lowered = mwcc_iro_to_pcode::lower(
+        &built.function,
+        built.returns_through_variable,
+        &unit,
+        unoptimized,
+        behavior.tail_call_optimization,
+    )?;
     let mut output = mwcc_pcode_to_machine_code::finish(
         lowered.pcode,
         lowered.makes_calls,

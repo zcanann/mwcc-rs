@@ -225,6 +225,8 @@ pub struct PCodeFunction {
     /// General registers live at the exit besides the result (`-O0` keeps
     /// register variables live through the whole function).
     pub exit_uses: Vec<u32>,
+    /// The body ends in a sibling branch (`b callee`): no return of its own.
+    pub ends_in_tail_call: bool,
     pub returns: ReturnRegisters,
 }
 
@@ -240,6 +242,7 @@ impl PCodeFunction {
             outside_window: Vec::new(),
             frame_local_bytes: 0,
             exit_uses: Vec::new(),
+            ends_in_tail_call: false,
             returns,
         }
     }

@@ -26,6 +26,9 @@ pub struct PcodeRequest<'a> {
     pub config: &'a CompilerConfig,
     /// Whether a call is to a compiler intrinsic (`name`, argument count).
     pub is_intrinsic: &'a dyn Fn(&str, usize) -> bool,
+    /// Whether this unit has a body for the named function (a call MWCC
+    /// may inline).
+    pub has_body: &'a dyn Fn(&str) -> bool,
 }
 
 /// A PCode lowering entry point.
