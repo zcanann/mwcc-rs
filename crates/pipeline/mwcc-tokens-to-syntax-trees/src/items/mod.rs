@@ -2478,8 +2478,15 @@ impl Parser {
                     self.typedef_source_fundamentals
                         .insert(name.clone(), source_fundamental);
                 }
-                if let Some(tag) = aliased_struct_tag {
-                    self.register_struct_typedef_alias(name.clone(), tag);
+                // `typedef Existing *Alias;` aliases a POINTER to the struct: a
+                // value alias would lay `Alias` members out as whole structs.
+                match (aliased_struct_tag, aliased) {
+                    (Some(tag), Type::StructPointer { .. }) => {
+                        self.struct_pointer_typedefs.insert(name.clone(), tag);
+                    }
+                    (Some(_), Type::Pointer(_)) => {}
+                    (Some(tag), _) => self.register_struct_typedef_alias(name.clone(), tag),
+                    (None, _) => {}
                 }
                 if let Some(identity) = aliased_enum_tag {
                     self.enum_typedefs.insert(name.clone(), identity.clone());

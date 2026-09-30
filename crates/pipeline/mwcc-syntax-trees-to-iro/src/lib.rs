@@ -867,6 +867,18 @@ impl Builder<'_, '_> {
         let Expression::Index { base: array, index } = base else {
             return Err(unsupported("member of an indexed element"));
         };
+        // An embedded array of structs (`o->pts[i].y`): the member's address,
+        // then the scaled index.
+        if let Expression::Member { base: outer, offset, member_type: Type::Struct { size, .. }, index_stride } = array.as_ref() {
+            if *size == stride && std::env::var_os("MWCC_IRO_NO_MEMBER_STRUCT_ARRAYS").is_none() {
+                // (The member offset last, so it joins the displacement.)
+                let outer = self.member_base(outer, *index_stride)?;
+                let ty = Type::StructPointer { element_size: stride };
+                let index = self.expression(index)?;
+                let element = Expr::binary(BinaryOp::Add, Expr { ty, ..outer }, scale(promoted(index), stride), ty);
+                return Ok(Expr::binary(BinaryOp::Add, element, Expr::int(i64::from(*offset)), ty));
+            }
+        }
         let pointer = self.expression(array)?;
         // `a[i]->m` also records a stride: there the element is a pointer
         // to load, and only an array of the structs themselves is indexed.
@@ -897,6 +909,13 @@ impl Builder<'_, '_> {
                 let base = self.member_base(base, *index_stride)?;
                 let ty = pointer_to(*member_type).ok_or_else(|| unsupported("address of this member type"))?;
                 Ok(Expr::binary(BinaryOp::Add, base, Expr::int(i64::from(*offset)), ty))
+            }
+            // `&o->pts[i]`: an element of an embedded array of structs.
+            Expression::Index { base, index }
+                if matches!(base.as_ref(), Expression::Member { member_type: Type::Struct { .. }, .. }) =>
+            {
+                let Expression::Member { member_type: Type::Struct { size, .. }, .. } = base.as_ref() else { unreachable!() };
+                self.member_base(operand, Some(*size))
             }
             Expression::Index { base, index } => self.pointer_sum(base, index),
             Expression::Dereference { pointer } => self.expression(pointer),
