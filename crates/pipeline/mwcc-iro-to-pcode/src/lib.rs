@@ -1513,9 +1513,13 @@ impl Lowerer<'_> {
         }
         let (a, _) = self.expression(left)?;
         let (b, _) = self.expression(right)?;
-        // A computed right operand of a commutative operation goes first.
+        // A computed right operand of a commutative operation goes first
+        // (a loaded one keeps source order).
         let commutative = matches!(op, BinaryOp::Add | BinaryOp::Multiply);
-        let (a, b) = if commutative && right.as_var().is_none() { (b, a) } else { (a, b) };
+        let loaded = matches!(&right.kind, ExprKind::Load { base, index: None, .. }
+                if matches!(base.kind, ExprKind::Var(_) | ExprKind::GlobalAddress(_) | ExprKind::LocalAddress(_)))
+            && std::env::var_os("MWCC_PCODE_FLOAT_LOAD_FIRST").is_none();
+        let (a, b) = if commutative && right.as_var().is_none() && !loaded { (b, a) } else { (a, b) };
         let d = self.result_for(ty, target);
         self.emit_plain(match (op, single) {
             (BinaryOp::Add, true) => Instruction::FloatAddSingle { d, a, b },
@@ -2121,8 +2125,18 @@ impl Lowerer<'_> {
                 _ => false,
             }
         };
+        // A loaded left operand keeps source order (`*p + b`).
+        let loaded = match &unpromoted(left).kind {
+            ExprKind::Global(_) => true,
+            ExprKind::Load { base, index: None, .. } => {
+                matches!(base.kind, ExprKind::Var(_) | ExprKind::GlobalAddress(_) | ExprKind::LocalAddress(_))
+            }
+            _ => false,
+        }
+            && std::env::var_os("MWCC_PCODE_LOAD_SWAP").is_none();
         let swap = op.is_commutative()
             && !leaf(left)
+            && !loaded
             && leaf(right)
             && (!one_register(left) || std::env::var_os("MWCC_PCODE_LEAF_FIRST_ALWAYS").is_some());
         let (a, b) = if swap { (b, a) } else { (a, b) };
