@@ -750,6 +750,18 @@ impl Lowerer<'_> {
                 self.load(ty, a, low, None, target)
             }
             ExprKind::Load { base, index, offset } => {
+                if let (Some(index), true) = (index, self.unoptimized) {
+                    // -O0: the index first; an absolute array's address is
+                    // completed with add, then accessed at 0.
+                    let (b, _) = self.expression(index)?;
+                    let (a, _) = self.expression(base)?;
+                    if self.absolute_base(base) {
+                        let address = self.temporary();
+                        self.emit_plain(Instruction::Add { d: address, a, b });
+                        return self.load(ty, address, 0, None, target);
+                    }
+                    return self.indexed_load(ty, a, b, target);
+                }
                 let (a, _) = self.expression(base)?;
                 match index {
                     Some(index) => {
@@ -1194,7 +1206,7 @@ impl Lowerer<'_> {
             }
             _ => None,
         };
-        if let (Some(n), ExprKind::Binary(BinaryOp::BitAnd, inner, mask)) = (left_shift, &left.kind) {
+        if let (Some(n), ExprKind::Binary(BinaryOp::BitAnd, inner, mask), false) = (left_shift, &left.kind, self.unoptimized) {
             if let Some((begin, end)) = mask_bounds(mask) {
                 if begin >= n {
                     let (x, _) = self.expression(inner)?;
@@ -1266,8 +1278,8 @@ impl Lowerer<'_> {
         }
         // `(x & mask) >> n`: one rotate-and-mask when the masked value is
         // non-negative.
-        if let (BinaryOp::ShiftRight, Some(n), ExprKind::Binary(BinaryOp::BitAnd, inner, mask)) =
-            (op, right.as_int(), &left.kind)
+        if let (BinaryOp::ShiftRight, Some(n), ExprKind::Binary(BinaryOp::BitAnd, inner, mask), false) =
+            (op, right.as_int(), &left.kind, self.unoptimized)
         {
             if let (Some((begin, end)), true) = (mask_bounds(mask), (1..32).contains(&n)) {
                 let n = n as u8;
@@ -1411,6 +1423,11 @@ impl Lowerer<'_> {
 
     /// The register holding a stored value: a raw narrow parameter at least
     /// as wide as the store needs no extension.
+    /// An absolute (`lis`/`addi`) global address.
+    fn absolute_base(&self, base: &Expr) -> bool {
+        matches!(&base.kind, ExprKind::GlobalAddress(name) if !self.unit.globals[name].small_data)
+    }
+
     fn store_source(&mut self, value: &Expr, _stored: Type) -> Compilation<u32> {
         Ok(self.expression(value)?.0)
     }
@@ -1423,6 +1440,17 @@ impl Lowerer<'_> {
                 let a = self.temporary();
                 self.emit_plain(Instruction::AddImmediateShifted { d: a, a: 0, immediate: high });
                 (a, low, None, None)
+            }
+            Place::Memory { base: base_expression, index: Some(index), .. } if self.unoptimized => {
+                let (b, _) = self.expression(index)?;
+                let (a, _) = self.expression(base_expression)?;
+                if self.absolute_base(base_expression) {
+                    let address = self.temporary();
+                    self.emit_plain(Instruction::Add { d: address, a, b });
+                    (address, 0, None, None)
+                } else {
+                    (a, 0, Some(b), None)
+                }
             }
             Place::Memory { base, index, offset } => {
                 let (base, _) = self.expression(base)?;
