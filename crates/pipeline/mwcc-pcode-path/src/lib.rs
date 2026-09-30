@@ -101,6 +101,8 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             delete_dead: behavior.optimization != mwcc_versions::Optimization::O0,
             two_integer_units: behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::Branchless,
             unoptimized,
+            fold_absolute_into_own_base: request.config.build.label.starts_with("GC/3.")
+                || request.config.build.label.starts_with("Wii/"),
         },
     )?;
     output.section = request.function.section.clone();

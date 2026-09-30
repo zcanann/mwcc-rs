@@ -6,7 +6,7 @@
 //! converts them to instruction positions.
 
 use mwcc_core::Compilation;
-use mwcc_machine_code::{Instruction, MachineFunction, Relocation};
+use mwcc_machine_code::{Instruction, MachineFunction, Relocation, RelocationKind};
 use mwcc_pcode::{Block, PCodeFunction, PInstr};
 
 use crate::{coloring, schedule};
@@ -25,6 +25,9 @@ pub struct FinishOptions {
     pub two_integer_units: bool,
     /// `-O0`: no copy propagation or live-range splitting before coloring.
     pub unoptimized: bool,
+    /// Fold `addi rX,rB,sym@l` into a following zero-displacement access
+    /// even when the load's destination is rX (GC/3.0+).
+    pub fold_absolute_into_own_base: bool,
 }
 
 /// Schedule, color, frame, and flatten `pcode`. The last block is the exit
@@ -52,6 +55,9 @@ pub fn finish(
     dump(&pcode, "AFTER INSTRUCTION SCHEDULING");
     let colors = coloring::color(&mut pcode, options.delete_dead)?;
     dump(&pcode, "AFTER REGISTER COLORING");
+    if !options.unoptimized {
+        fold_absolute_displacements(&mut pcode, options.fold_absolute_into_own_base);
+    }
     if !colors.saved_float.is_empty() {
         return Err(mwcc_core::Diagnostic::error(
             "PCode frame: saved float registers are not yet supported",
@@ -502,7 +508,12 @@ fn split_webs(pcode: &mut PCodeFunction) {
                         // in its web. MWCC splits `x = a + 1; x <<= 1` and
                         // `lis; addi`, but not every accumulator.
                         // `rlwimi` reads and writes one field: always one web.
-                        let tied = matches!(instruction.instruction, Instruction::RotateAndMaskInsert { .. });
+                        let tied = match &instruction.instruction {
+                            Instruction::RotateAndMaskInsert { .. } => true,
+                            // An in-place extension continues its value's web.
+                            Instruction::ExtendSignByte { a, s } | Instruction::ExtendSignHalfword { a, s } => a == s,
+                            _ => false,
+                        };
                         if tied
                             || toggle("MWCC_PCODE_WEBS_TIE_INPLACE")
                                 && instruction.uses(class).contains(&defined)
@@ -580,6 +591,71 @@ fn split_webs(pcode: &mut PCodeFunction) {
             }
         }
     }
+}
+
+/// MWCC's peephole: `addi rX,rB,sym@l` followed by a zero-displacement
+/// access through rX becomes the access with `sym@l(rB)` when rX is not used
+/// again — unless the access is a load into rX itself (before GC/3.0).
+fn fold_absolute_displacements(pcode: &mut PCodeFunction, into_own_base: bool) {
+    use mwcc_pcode::Class;
+    for block in &mut pcode.blocks {
+        let mut index = 0;
+        while index + 1 < block.instructions.len() {
+            let (address, base, relocation) = match (&block.instructions[index].instruction, &block.instructions[index].relocation) {
+                (Instruction::AddImmediate { d, a, immediate: 0 }, Some(relocation))
+                    if relocation.kind == RelocationKind::Addr16Lo && *a != 0 =>
+                {
+                    (*d, *a, relocation.clone())
+                }
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            };
+            let access = &block.instructions[index + 1];
+            let later_use = block.instructions[index + 2..].iter().any(|i| i.uses(Class::General).contains(&address))
+                || pcode_live_out(block, address);
+            let folded = match access.instruction.clone() {
+                Instruction::LoadWord { d, a, offset: 0 } if a == address && (d != address || into_own_base) => {
+                    Some(Instruction::LoadWord { d, a: base, offset: 0 })
+                }
+                Instruction::LoadHalfwordZero { d, a, offset: 0 } if a == address && (d != address || into_own_base) => {
+                    Some(Instruction::LoadHalfwordZero { d, a: base, offset: 0 })
+                }
+                Instruction::LoadHalfwordAlgebraic { d, a, offset: 0 } if a == address && (d != address || into_own_base) => {
+                    Some(Instruction::LoadHalfwordAlgebraic { d, a: base, offset: 0 })
+                }
+                Instruction::LoadByteZero { d, a, offset: 0 } if a == address && (d != address || into_own_base) => {
+                    Some(Instruction::LoadByteZero { d, a: base, offset: 0 })
+                }
+                Instruction::StoreWord { s, a, offset: 0 } if a == address && s != address => {
+                    Some(Instruction::StoreWord { s, a: base, offset: 0 })
+                }
+                Instruction::StoreHalfword { s, a, offset: 0 } if a == address && s != address => {
+                    Some(Instruction::StoreHalfword { s, a: base, offset: 0 })
+                }
+                Instruction::StoreByte { s, a, offset: 0 } if a == address && s != address => {
+                    Some(Instruction::StoreByte { s, a: base, offset: 0 })
+                }
+                _ => None,
+            };
+            match folded {
+                Some(instruction) if !later_use => {
+                    block.instructions[index + 1].instruction = instruction;
+                    block.instructions[index + 1].relocation = Some(relocation);
+                    block.instructions.remove(index);
+                }
+                _ => index += 1,
+            }
+        }
+    }
+}
+
+/// Conservative: a register the block's successors might read.
+fn pcode_live_out(block: &Block, register: u32) -> bool {
+    // Absolute addresses are block-local temporaries; a physical register
+    // 3 may carry a result out (the exit's return value).
+    !block.successors.is_empty() && register == 3
 }
 
 fn ends_in_branch(block: &Block) -> bool {

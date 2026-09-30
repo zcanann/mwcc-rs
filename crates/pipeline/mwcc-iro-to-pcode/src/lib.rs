@@ -709,22 +709,15 @@ impl Lowerer<'_> {
             ExprKind::GlobalAddress(name) => {
                 let global = self.unit.globals[name];
                 let external = || RelocationTarget::External(name.clone());
-                let d = self.result(target);
                 if global.small_data {
+                    let d = self.result(target);
                     let mut li = PInstr::new(Instruction::AddImmediate { d, a: 0, immediate: 0 });
                     li.relocation = Some(AttachedRelocation { kind: RelocationKind::EmbSda21, target: external() });
                     self.emit(li);
+                    Ok((d, ty))
                 } else {
-                    let high = self.temporary();
-                    let mut lis = PInstr::new(Instruction::AddImmediateShifted { d: high, a: 0, immediate: 0 });
-                    lis.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Ha, target: external() });
-                    self.emit(lis);
-                    let mut addi = PInstr::new(Instruction::AddImmediate { d, a: high, immediate: 0 });
-                    addi.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Lo, target: external() });
-                    addi.not_r0.push(high);
-                    self.emit(addi);
+                    Ok((self.absolute_address_into(name, target), ty))
                 }
-                Ok((d, ty))
             }
             ExprKind::Binary(op, left, right) if op.is_comparison() => {
                 self.comparison_value(*op, left, right, target)
@@ -750,6 +743,12 @@ impl Lowerer<'_> {
                 });
                 Ok((destination, ty))
             }
+            ExprKind::Load { base, index: None, offset } if base.as_int().is_some() => {
+                let (high, low) = split_address(base.as_int().expect("checked") + i64::from(*offset))?;
+                let a = self.temporary();
+                self.emit_plain(Instruction::AddImmediateShifted { d: a, a: 0, immediate: high });
+                self.load(ty, a, low, None, target)
+            }
             ExprKind::Load { base, index, offset } => {
                 let (a, _) = self.expression(base)?;
                 match index {
@@ -762,6 +761,10 @@ impl Lowerer<'_> {
                         self.load(ty, a, offset, None, target)
                     }
                 }
+            }
+            ExprKind::Convert(operand) if is_unsigned_narrow(ty) && max_value(operand).is_some_and(|max| max < 1u64 << (8 * width(ty))) => {
+                let (source, _) = self.expression_with_target(operand, target)?;
+                Ok((source, ty))
             }
             ExprKind::Convert(operand) => {
                 // A promotion of a raw narrow parameter: extended once per block.
@@ -778,6 +781,18 @@ impl Lowerer<'_> {
                     }
                 }
                 let raw = self.is_raw(operand);
+                // A signed byte load extends in place, one value in two
+                // instructions (`lbz rD; extsb rD,rD`).
+                if raw
+                    && operand.ty == Type::Char
+                    && !is_narrow(ty)
+                    && matches!(operand.kind, ExprKind::Load { .. } | ExprKind::Global(_))
+                    && std::env::var_os("MWCC_PCODE_INPLACE_EXTSB").is_some()
+                {
+                    let (source, _) = self.expression_with_target(operand, target)?;
+                    self.emit_plain(Instruction::ExtendSignByte { a: source, s: source });
+                    return Ok((source, ty));
+                }
                 let (source, source_type) = self.expression(operand)?;
                 self.convert_value(source, source_type, raw, ty, target)
             }
@@ -909,12 +924,27 @@ impl Lowerer<'_> {
             let relocation = AttachedRelocation { kind: RelocationKind::EmbSda21, target: external() };
             return self.load(global.ty, 0, 0, Some(relocation), target);
         }
+        let address = self.absolute_address(name);
+        self.load(global.ty, address, 0, None, target)
+    }
+
+    /// `lis; addi` forming an absolute symbol's address.
+    fn absolute_address(&mut self, name: &str) -> u32 {
+        self.absolute_address_into(name, None)
+    }
+
+    fn absolute_address_into(&mut self, name: &str, target: Option<u32>) -> u32 {
+        let external = || RelocationTarget::External(name.to_owned());
         let high = self.temporary();
         let mut lis = PInstr::new(Instruction::AddImmediateShifted { d: high, a: 0, immediate: 0 });
         lis.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Ha, target: external() });
         self.emit(lis);
-        let relocation = AttachedRelocation { kind: RelocationKind::Addr16Lo, target: external() };
-        self.load(global.ty, high, 0, Some(relocation), target)
+        let d = self.result(target);
+        let mut addi = PInstr::new(Instruction::AddImmediate { d, a: high, immediate: 0 });
+        addi.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Lo, target: external() });
+        addi.not_r0.push(high);
+        self.emit(addi);
+        d
     }
 
     // ------------------------------------------------------------ idioms
@@ -1234,6 +1264,27 @@ impl Lowerer<'_> {
                 return Ok((d, ty));
             }
         }
+        // `(x & mask) >> n`: one rotate-and-mask when the masked value is
+        // non-negative.
+        if let (BinaryOp::ShiftRight, Some(n), ExprKind::Binary(BinaryOp::BitAnd, inner, mask)) =
+            (op, right.as_int(), &left.kind)
+        {
+            if let (Some((begin, end)), true) = (mask_bounds(mask), (1..32).contains(&n)) {
+                let n = n as u8;
+                if begin > 0 && end >= n {
+                    let (x, _) = self.expression(inner)?;
+                    let d = self.result(target);
+                    self.emit_plain(Instruction::RotateAndMask {
+                        a: d,
+                        s: x,
+                        shift: 32 - n,
+                        begin: begin + n,
+                        end: 31.min(end + n),
+                    });
+                    return Ok((d, ty));
+                }
+            }
+        }
         // A raw unsigned narrow parameter shifted right folds its extension.
         let shifted = unpromoted(left);
         let raw_unsigned = match (&shifted.kind, op, immediate) {
@@ -1367,6 +1418,12 @@ impl Lowerer<'_> {
     fn store(&mut self, place: &Place, ty: Type, value: &Expr) -> Compilation<()> {
         let source = self.store_source(value, ty)?;
         let (base, offset, index, relocation) = match place {
+            Place::Memory { base, index: None, offset } if base.as_int().is_some() => {
+                let (high, low) = split_address(base.as_int().expect("checked") + i64::from(*offset))?;
+                let a = self.temporary();
+                self.emit_plain(Instruction::AddImmediateShifted { d: a, a: 0, immediate: high });
+                (a, low, None, None)
+            }
             Place::Memory { base, index, offset } => {
                 let (base, _) = self.expression(base)?;
                 let index = match index {
@@ -1378,14 +1435,15 @@ impl Lowerer<'_> {
             }
             Place::Global(name) => {
                 let global = self.unit.globals[name];
-                if !global.small_data {
-                    return Err(unsupported("absolute global store"));
+                if global.small_data {
+                    let relocation = AttachedRelocation {
+                        kind: RelocationKind::EmbSda21,
+                        target: RelocationTarget::External(name.clone()),
+                    };
+                    (0, 0, None, Some(relocation))
+                } else {
+                    (self.absolute_address(name), 0, None, None)
                 }
-                let relocation = AttachedRelocation {
-                    kind: RelocationKind::EmbSda21,
-                    target: RelocationTarget::External(name.clone()),
-                };
-                (0, 0, None, Some(relocation))
             }
         };
         let store = match (index, ty) {
@@ -1714,5 +1772,33 @@ fn unpromoted(expression: &Expr) -> &Expr {
     match &expression.kind {
         ExprKind::Convert(operand) if is_narrow(operand.ty) && !is_narrow(expression.ty) => operand,
         _ => expression,
+    }
+}
+
+/// `(high, low)` so that `(high << 16) + low` is `address` (low signed).
+fn split_address(address: i64) -> Compilation<(i16, i16)> {
+    let address = address as i32;
+    let low = address as i16;
+    let high = ((address - i32::from(low)) >> 16) as i16;
+    Ok((high, low))
+}
+
+/// An upper bound on an unsigned value, where masks make it evident.
+fn max_value(expression: &Expr) -> Option<u64> {
+    match &expression.kind {
+        ExprKind::Int(value) => u64::try_from(*value).ok(),
+        ExprKind::Binary(BinaryOp::BitAnd, left, right) => {
+            let bound = |e: &Expr| e.as_int().and_then(|v| u32::try_from(v).ok()).map(u64::from);
+            match (bound(right), bound(left)) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                _ => None,
+            }
+        }
+        ExprKind::Binary(BinaryOp::ShiftRight, left, right) if !matches!(left.ty, Type::Int) || max_value(left).is_some() => {
+            Some(max_value(left)? >> right.as_int()?)
+        }
+        ExprKind::Binary(op, ..) if op.is_comparison() => Some(1),
+        _ => None,
     }
 }

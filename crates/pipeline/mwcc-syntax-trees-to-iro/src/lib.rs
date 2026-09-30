@@ -596,8 +596,15 @@ fn assigned(value: Expr, ty: Type) -> Expr {
 /// `pointer + offset` as a memory operand, a constant addend of the pointer
 /// folded into the displacement.
 fn displaced(pointer: Expr, offset: i32, ty: Type) -> (Box<Expr>, Option<Box<Expr>>, i32, Type) {
-    if let ExprKind::Binary(BinaryOp::Add, base, addend) = &pointer.kind {
+    // Look through a conversion between pointer types.
+    if let ExprKind::Convert(operand) = &pointer.kind {
+        if matches!(operand.ty, Type::Pointer(_) | Type::StructPointer { .. }) {
+            return displaced((**operand).clone(), offset, ty);
+        }
+    }
+    if let ExprKind::Binary(op @ (BinaryOp::Add | BinaryOp::Subtract), base, addend) = &pointer.kind {
         if let Some(value) = addend.as_int() {
+            let value = if *op == BinaryOp::Subtract { -value } else { value };
             if let Ok(total) = i16::try_from(i64::from(offset) + value) {
                 if matches!(base.ty, Type::Pointer(_) | Type::StructPointer { .. }) {
                     return displaced((**base).clone(), i32::from(total), ty);

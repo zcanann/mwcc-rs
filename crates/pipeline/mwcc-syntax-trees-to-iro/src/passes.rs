@@ -23,6 +23,9 @@ pub fn run(function: &mut Function) {
     if enabled("ALGEBRA") {
         for_each_expression(&mut function.body, &mut |expression| algebra(expression));
     }
+    if enabled("DISPLACEMENTS") {
+        displacements(&mut function.body);
+    }
     if enabled("IDIOMS") {
         let variables: Vec<Type> = function.variables.iter().map(|variable| variable.ty).collect();
         for_each_expression(&mut function.body, &mut |expression| idioms(expression, &variables));
@@ -135,7 +138,47 @@ pub fn run_unoptimized(function: &mut Function) {
     }
     for_each_expression(&mut function.body, &mut |expression| literals(expression));
     stores(&mut function.body);
+    displacements(&mut function.body);
     narrowing(function);
+}
+
+/// A constant addend of an access's base pointer joins its displacement:
+/// `*(p - 8 + 2)` is `-24(p)`.
+pub fn displacements(body: &mut [Stmt]) {
+    fn absorb(base: &mut Box<Expr>, index: &Option<Box<Expr>>, offset: &mut i32) {
+        if index.is_some() {
+            return;
+        }
+        loop {
+            let ExprKind::Binary(op @ (BinaryOp::Add | BinaryOp::Subtract), inner, addend) = &base.kind else { break };
+            let (Some(value), true) = (addend.as_int(), pointer_like(inner.ty)) else { break };
+            let value = if *op == BinaryOp::Subtract { -value } else { value };
+            let Ok(total) = i16::try_from(i64::from(*offset) + value) else { break };
+            *offset = i32::from(total);
+            *base = inner.clone();
+        }
+    }
+    fn visit(expression: &mut Expr) {
+        children(expression, &mut |child| visit(child));
+        if let ExprKind::Load { base, index, offset } = &mut expression.kind {
+            absorb(base, index, offset);
+        }
+    }
+    for statement in body.iter_mut() {
+        match statement {
+            Stmt::Store { place: mwcc_iro::Place::Memory { base, index, offset }, .. } => absorb(base, index, offset),
+            Stmt::If { then_body, else_body, .. } => {
+                displacements(then_body);
+                displacements(else_body);
+            }
+            Stmt::Loop { body, step, .. } => {
+                displacements(body);
+                displacements(step);
+            }
+            _ => {}
+        }
+    }
+    for_each_expression(body, &mut |expression| visit(expression));
 }
 
 /// Apply `rewrite` to every expression tree in `body` (statement roots).
@@ -217,11 +260,31 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
     match &expression.kind {
         // Integer and pointer casts of a literal are the literal, typed.
         ExprKind::Convert(operand)
-            if matches!(expression.ty, Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. }) =>
+            if matches!(expression.ty, Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. })
+                && operand.as_int().is_some() =>
         {
             Some(Expr::typed_int(operand.as_int()?, expression.ty))
         }
+        // A pointer-to-pointer (or word-to-word) conversion changes no bits.
+        ExprKind::Convert(operand)
+            if pointer_like(expression.ty) && (pointer_like(operand.ty) || matches!(operand.ty, Type::Int | Type::UnsignedInt)) =>
+        {
+            let mut value = (**operand).clone();
+            value.ty = expression.ty;
+            Some(value)
+        }
         ExprKind::Binary(op, left, right) => {
+            // `(x & 1) == 1` and `(x & 1) != 0` are `x & 1`.
+            if let ExprKind::Binary(BinaryOp::BitAnd, _, mask) = &left.kind {
+                if mask.as_int() == Some(1)
+                    && (*op == BinaryOp::Equal && right.as_int() == Some(1)
+                        || *op == BinaryOp::NotEqual && right.as_int() == Some(0))
+                {
+                    let mut value = (**left).clone();
+                    value.ty = Type::Int;
+                    return Some(value);
+                }
+            }
             if let (Some(a), Some(b)) = (left.as_int(), right.as_int()) {
                 return Some(Expr::typed_int(fold_literals(*op, a, b)?, expression.ty));
             }
@@ -252,6 +315,10 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
         }
         _ => None,
     }
+}
+
+fn pointer_like(ty: Type) -> bool {
+    matches!(ty, Type::Pointer(_) | Type::StructPointer { .. })
 }
 
 /// 32-bit arithmetic on two literals.
