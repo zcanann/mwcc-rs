@@ -136,11 +136,21 @@ impl Lowerer<'_> {
     /// Start a new block in layout order; `falls_through` links the previous
     /// block to it.
     fn start_block(&mut self, falls_through: bool) -> usize {
-        let previous = self.current_block();
-        self.pcode.blocks.push(Block { weight: 1, ..Block::default() });
+        self.clear_block_caches();
+        self.start_block_keeping(falls_through)
+    }
+
+    /// Values computed so far are available only where this block's code
+    /// dominates: a fall-through successor with no other predecessor.
+    fn clear_block_caches(&mut self) {
         self.extended.clear();
         self.constants.clear();
         self.common.clear();
+    }
+
+    fn start_block_keeping(&mut self, falls_through: bool) -> usize {
+        let previous = self.current_block();
+        self.pcode.blocks.push(Block { weight: 1, ..Block::default() });
         let block = self.current_block();
         if falls_through {
             self.pcode.blocks[previous].successors.push(block);
@@ -150,6 +160,8 @@ impl Lowerer<'_> {
 
     /// Place `label` at a fresh block (or the current one if it is empty).
     fn place_label(&mut self, label: Label) {
+        // A label is a join: nothing computed before it is known here.
+        self.clear_block_caches();
         let current = self.current_block();
         let block = if self.pcode.blocks[current].instructions.is_empty() && !self.block_is_target(current) {
             current
@@ -187,7 +199,12 @@ impl Lowerer<'_> {
         self.emit_plain(instruction);
         self.pending_branches.push((block, position, label));
         self.loaded_globals.clear();
-        self.start_block(conditional);
+        if conditional && !self.unoptimized {
+            // The fall-through block continues the extended block.
+            self.start_block_keeping(true);
+        } else {
+            self.start_block(conditional);
+        }
     }
 
     fn jump(&mut self, label: Label) {
@@ -399,6 +416,50 @@ impl Lowerer<'_> {
             }
         }
         match statement {
+            Stmt::If { condition, then_body, else_body } if condition.as_int().is_some() && !self.unoptimized => {
+                // IRO evaluates a constant condition: only one arm remains.
+                let arm = if condition.as_int() != Some(0) { then_body } else { else_body };
+                for statement in arm {
+                    self.statement(statement)?;
+                }
+                Ok(())
+            }
+            Stmt::Loop { test_first, condition: Some(condition), body, step }
+                if condition.as_int() == Some(0) && !self.unoptimized =>
+            {
+                // A loop whose test is false: a do-while body runs once.
+                if !*test_first {
+                    let exit = self.new_label();
+                    self.loops.push((exit, exit));
+                    for statement in body.iter().chain(step) {
+                        self.statement(statement)?;
+                    }
+                    self.loops.pop();
+                    self.place_if_targeted(exit);
+                }
+                Ok(())
+            }
+            Stmt::Loop { condition, body, step, .. }
+                if condition.as_ref().is_none_or(|c| c.as_int().is_some_and(|k| k != 0)) =>
+            {
+                // No test: the body repeats until a break.
+                let top = self.new_label();
+                let next = self.new_label();
+                let exit = self.new_label();
+                self.place_label(top);
+                self.loops.push((exit, next));
+                for statement in body {
+                    self.statement(statement)?;
+                }
+                self.place_if_targeted(next);
+                for statement in step {
+                    self.statement(statement)?;
+                }
+                self.loops.pop();
+                self.jump(top);
+                self.place_if_targeted(exit);
+                Ok(())
+            }
             Stmt::Loop { test_first, condition, body, step } => {
                 if !self.unoptimized && counted(condition.as_ref(), body, step) && !makes_calls(body) {
                     return Err(unsupported("counted loop (unrolling not modeled)"));
@@ -764,8 +825,7 @@ impl Lowerer<'_> {
             }
             ExprKind::Load { base, index: None, offset } if base.as_int().is_some() => {
                 let (high, low) = split_address(base.as_int().expect("checked") + i64::from(*offset))?;
-                let a = self.temporary();
-                self.emit_plain(Instruction::AddImmediateShifted { d: a, a: 0, immediate: high });
+                let (a, _) = self.expression(&Expr::int(i64::from(high) << 16))?;
                 self.load(ty, a, low, None, target)
             }
             ExprKind::Load { base, index, offset } => {
@@ -1393,6 +1453,16 @@ impl Lowerer<'_> {
                 });
                 return Ok((d, ty));
             }
+            (BinaryOp::BitAnd, _) if mask_bounds(right).is_none() && unsigned_immediate(right).is_some() => {
+                let (value, shifted) = unsigned_immediate(right).expect("checked");
+                let d = self.result(target);
+                self.emit_plain(if shifted {
+                    Instruction::AndImmediateShiftedRecord { a: d, s: a, immediate: value }
+                } else {
+                    Instruction::AndImmediateRecord { a: d, s: a, immediate: value }
+                });
+                return Ok((d, ty));
+            }
             (BinaryOp::BitAnd, _) if mask_bounds(right).is_some() => {
                 let (begin, end) = mask_bounds(right).expect("checked");
                 let d = self.result(target);
@@ -1456,8 +1526,7 @@ impl Lowerer<'_> {
         let (base, offset, index, relocation) = match place {
             Place::Memory { base, index: None, offset } if base.as_int().is_some() => {
                 let (high, low) = split_address(base.as_int().expect("checked") + i64::from(*offset))?;
-                let a = self.temporary();
-                self.emit_plain(Instruction::AddImmediateShifted { d: a, a: 0, immediate: high });
+                let (a, _) = self.expression(&Expr::int(i64::from(high) << 16))?;
                 (a, low, None, None)
             }
             Place::Memory { base: base_expression, index: Some(index), .. } if self.unoptimized => {
@@ -1526,12 +1595,19 @@ impl Lowerer<'_> {
     fn call(&mut self, name: &str, arguments: &[Expr], target: Option<u32>) -> Compilation<u32> {
         let mut values = Vec::new();
         for argument in arguments {
-            values.push(self.expression(argument)?.0);
+            // A constant argument is loaded straight into its register.
+            values.push(match argument.as_int() {
+                Some(_) if !self.unoptimized => None,
+                _ => Some(self.expression(argument)?.0),
+            });
         }
         let mut argument_registers = Vec::new();
         for (index, value) in values.into_iter().enumerate() {
             let register = FIRST_GENERAL_ARGUMENT + index as u32;
-            self.emit_plain(Instruction::Or { a: register, s: value, b: value });
+            match value {
+                Some(value) => self.emit_plain(Instruction::Or { a: register, s: value, b: value }),
+                None => self.load_constant(register, arguments[index].as_int().expect("constant"))?,
+            }
             argument_registers.push(Register::general(register));
         }
         let mut call = PInstr::new(Instruction::BranchAndLink { target: name.to_owned() });
@@ -1545,6 +1621,8 @@ impl Lowerer<'_> {
         self.emit(call);
         self.makes_calls = true;
         self.loaded_globals.clear();
+        // Constants are rematerialized rather than kept across a call.
+        self.constants.clear();
         let result = self.result(target);
         self.emit_plain(Instruction::Or { a: result, s: 3, b: 3 });
         Ok(result)

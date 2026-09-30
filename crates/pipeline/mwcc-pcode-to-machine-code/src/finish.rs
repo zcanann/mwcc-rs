@@ -93,7 +93,15 @@ pub fn finish(
     };
     let exit = pcode.blocks.len() - 1;
     let mut framed_blocks = vec![false; pcode.blocks.len()];
-    if framed {
+    // Code that never returns (an endless loop) has no epilogue.
+    let exit_reached = exit == 0 || (0..exit).any(|block| pcode.blocks[block].successors.contains(&exit));
+    if framed && !exit_reached {
+        let mut entry = wrap(plan.prologue().into_iter().filter(|i| keep(i)).collect());
+        entry.append(&mut pcode.blocks[0].instructions);
+        pcode.blocks[0].instructions = entry;
+        framed_blocks[0] = true;
+    } else if !exit_reached {
+    } else if framed {
         let mut entry = wrap(plan.prologue().into_iter().filter(|i| keep(i)).collect());
         entry.append(&mut pcode.blocks[0].instructions);
         pcode.blocks[0].instructions = entry;

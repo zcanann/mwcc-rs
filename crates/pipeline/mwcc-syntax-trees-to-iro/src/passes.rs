@@ -332,6 +332,14 @@ pub fn fold_literals(op: BinaryOp, left: i64, right: i64) -> Option<i64> {
         BinaryOp::BitOr => a | b,
         BinaryOp::BitXor => a ^ b,
         BinaryOp::ShiftLeft if (0..32).contains(&b) => a.wrapping_shl(b as u32),
+        BinaryOp::Less => i32::from(a < b),
+        BinaryOp::Greater => i32::from(a > b),
+        BinaryOp::LessEqual => i32::from(a <= b),
+        BinaryOp::GreaterEqual => i32::from(a >= b),
+        BinaryOp::Equal => i32::from(a == b),
+        BinaryOp::NotEqual => i32::from(a != b),
+        BinaryOp::LogicalAnd => i32::from(a != 0 && b != 0),
+        BinaryOp::LogicalOr => i32::from(a != 0 || b != 0),
         _ => return None,
     };
     Some(i64::from(value))
