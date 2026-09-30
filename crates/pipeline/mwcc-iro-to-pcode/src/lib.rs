@@ -385,17 +385,32 @@ impl Lowerer<'_> {
     /// (callee-saved, r31 down). Temporaries are colored around them.
     fn lower_unoptimized(&mut self, calls: bool) -> Compilation<()> {
         let function = self.function;
-        if function.variables.iter().any(|variable| variable.frame.is_some()) {
-            return Err(unsupported("frame locals at -O0"));
-        }
-        if is_float(function.return_type) || function.variables.iter().any(|variable| is_float(variable.ty)) {
+        // Floating values: parameters of leaf functions (pinned to their
+        // argument registers) and temporaries; floating register variables
+        // need saved FPRs (not modeled).
+        let floating_variable = |id: usize| is_float(function.variables[id].ty);
+        if (0..function.variables.len()).any(|id| {
+            floating_variable(id)
+                && match function.variables[id].kind {
+                    VariableKind::Parameter => calls,
+                    VariableKind::Local => true,
+                    VariableKind::Temporary => false,
+                }
+        }) {
             return Err(unsupported("floating point at -O0"));
         }
         let mut home_slots: i16 = 0;
         let mut next_saved: u32 = 31;
         let mut entry_copies = Vec::new();
+        let (mut next_general, mut next_float) = (FIRST_GENERAL_ARGUMENT, 1);
         for id in 0..function.parameter_count {
-            let argument = FIRST_GENERAL_ARGUMENT + id as u32;
+            let argument = if floating_variable(id) {
+                next_float += 1;
+                next_float - 1
+            } else {
+                next_general += 1;
+                next_general - 1
+            };
             if !calls {
                 self.registers[id] = Some(argument);
                 self.raw_narrow[id] = is_narrow(function.variables[id].ty);
@@ -408,8 +423,22 @@ impl Lowerer<'_> {
                 next_saved -= 1;
             }
         }
+        let frame_objects = function.variables.iter().any(|variable| variable.frame.is_some());
+        if frame_objects && home_slots > 0 {
+            return Err(unsupported("frame locals with parameter homes at -O0"));
+        }
+        // Frame objects take slots in reverse declaration order from r1+8.
+        for id in (function.parameter_count..function.variables.len()).rev() {
+            if let (VariableKind::Local, Some((size, align))) = (function.variables[id].kind, function.variables[id].frame) {
+                let offset = self.frame_cursor.div_ceil(align.max(1)) * align.max(1);
+                self.frame_cursor = offset + size;
+                let start = i16::try_from(offset).map_err(|_| unsupported("a large frame"))?;
+                self.frame_offsets[id] = Some(start);
+                self.pcode.frame_objects.push((start, start + size as i16));
+            }
+        }
         for id in function.parameter_count..function.variables.len() {
-            if function.variables[id].kind == VariableKind::Local {
+            if function.variables[id].kind == VariableKind::Local && function.variables[id].frame.is_none() {
                 if next_saved < 14 {
                     return Err(unsupported("more register variables than callee-saved registers"));
                 }
@@ -417,12 +446,21 @@ impl Lowerer<'_> {
                 next_saved -= 1;
             }
         }
-        self.pcode.frame_local_bytes = ((4 * home_slots + 7) / 8) * 8;
+        if home_slots > 0 {
+            self.frame_cursor = 8 + 4 * home_slots as u32;
+        }
+        self.pcode.frame_local_bytes = if frame_objects {
+            (self.frame_cursor - 8) as i16
+        } else {
+            ((4 * home_slots + 7) / 8) * 8
+        };
         self.pcode.exit_uses = self.registers.iter().flatten().copied().collect();
         self.pcode.begin_coalesce_window();
         for id in 0..function.parameter_count {
             if let Some(offset) = self.homes[id] {
-                let argument = FIRST_GENERAL_ARGUMENT + id as u32;
+                // Floating parameters never reach here (leaf functions only).
+                let argument = FIRST_GENERAL_ARGUMENT
+                    + (0..id).filter(|&earlier| !floating_variable(earlier)).count() as u32;
                 self.emit_plain(store_instruction(function.variables[id].ty, argument, 1, offset));
             }
         }
@@ -468,7 +506,11 @@ impl Lowerer<'_> {
 
     fn body_and_exit(&mut self) -> Compilation<()> {
         let result = self.body_and_exit_inner();
-        if !self.unoptimized {
+        if self.unoptimized {
+            // Conversion slots follow the parameter homes and frame objects.
+            let used = (self.frame_cursor - 8) as i16;
+            self.pcode.frame_local_bytes = self.pcode.frame_local_bytes.max(used);
+        } else {
             self.pcode.frame_local_bytes = (self.frame_cursor - 8) as i16;
             for &(start, _) in &self.pcode.frame_objects {
                 if !self.escaped_frame_objects.contains(&start) && !self.pcode.private_frame_objects.contains(&start) {
@@ -1386,7 +1428,7 @@ impl Lowerer<'_> {
     /// A floating constant: loaded from the pool (`lfs fD,@N@sda21(r0)`).
     fn float_constant(&mut self, value: f64, ty: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
         let key = if ty == Type::Float { (u64::from((value as f32).to_bits()), 4u8) } else { (value.to_bits(), 8u8) };
-        if target.is_none() {
+        if target.is_none() && !self.unoptimized {
             if let Some(&register) = self.float_constants.get(&key) {
                 return Ok((register, ty));
             }
@@ -1514,6 +1556,34 @@ impl Lowerer<'_> {
                     self.expression(&Expr { kind: ExprKind::Convert(Box::new(operand.clone())), ty: wide })?
                 };
                 let slot = self.conversion_slot();
+                if self.unoptimized {
+                    if narrow_unsigned {
+                        return Err(unsupported("narrow unsigned conversion at -O0"));
+                    }
+                    // Unscheduled: the bias, then each word as it is formed.
+                    let magic = if signed { 4503601774854144.0 } else { 4503599627370496.0 };
+                    let (bias, _) = self.float_constant(magic, Type::Double, None)?;
+                    let low = if signed {
+                        let flipped = self.temporary();
+                        self.emit_plain(Instruction::XorImmediateShifted { a: flipped, s: source, immediate: 0x8000 });
+                        flipped
+                    } else {
+                        source
+                    };
+                    self.emit_plain(Instruction::StoreWord { s: low, a: 1, offset: slot + 4 });
+                    let high = self.temporary();
+                    self.load_constant(high, 0x4330_0000)?;
+                    self.emit_plain(Instruction::StoreWord { s: high, a: 1, offset: slot });
+                    let loaded = self.fresh(Type::Double);
+                    self.emit_plain(Instruction::LoadFloatDouble { d: loaded, a: 1, offset: slot });
+                    let d = self.result_for(to, target);
+                    self.emit_plain(if to == Type::Float {
+                        Instruction::FloatSubtractSingle { d, a: loaded, b: bias }
+                    } else {
+                        Instruction::FloatSubtractDouble { d, a: loaded, b: bias }
+                    });
+                    return Ok((d, to));
+                }
                 let low = if signed {
                     let flipped = self.temporary();
                     self.emit_plain(Instruction::XorImmediateShifted { a: flipped, s: source, immediate: 0x8000 });
