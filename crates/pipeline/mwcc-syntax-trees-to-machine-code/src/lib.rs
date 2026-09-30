@@ -352,8 +352,37 @@ fn lower_function_body(
             let declared = inline_bodies.composable_body(name).or_else(|| inline_bodies.retained_body(name))?;
             Some((pcode_path::inline_statement_count(declared) <= 64).then_some(declared))
         };
-        match pcode_path::lower(&pcode_path::PcodeRequest {
-            function,
+        // Function statics address like globals: the body sees them
+        // stripped from its locals, and their data rides the output. (Ones
+        // whose initializers point at string literals stay legacy.)
+        let statics = collect_static_locals(function, globals, config);
+        let (static_locals, static_local_data, static_strings_free) = match statics {
+            Ok((locals, data, strings, aggregate_strings)) => {
+                (locals, data, strings.is_empty() && aggregate_strings.is_empty())
+            }
+            Err(_) => (Vec::new(), Vec::new(), false),
+        };
+        let stripped_statics;
+        let pcode_function = if static_locals.is_empty() {
+            function
+        } else {
+            stripped_statics = mwcc_syntax_trees::Function {
+                locals: function.locals.iter().filter(|local| !local.is_static).cloned().collect(),
+                ..function.clone()
+            };
+            &stripped_statics
+        };
+        // (Statics carrying relocations — pointer tables — stay legacy.)
+        // (As do ones whose data would not fit their computed size.)
+        let statics_supported = (static_strings_free
+            && static_locals.iter().all(|local| local.data_relocations.is_empty())
+            && static_local_data
+                .iter()
+                .all(|datum| datum.initial_bytes.as_ref().is_none_or(|bytes| bytes.len() as u32 <= datum.size)))
+            || function.locals.iter().all(|local| !local.is_static);
+        match statics_supported.then(|| pcode_path::lower(&pcode_path::PcodeRequest {
+            function: pcode_function,
+            static_locals: &static_locals,
             globals,
             call_return_types,
             variadic_callees: variadic_definitions,
@@ -375,10 +404,16 @@ fn lower_function_body(
                 .keys()
                 .filter_map(|name| Some((name.clone(), inline_decision(name).flatten()?)))
                 .collect(),
-        }) {
-            Ok(output) => return Ok(output),
-            Err(diagnostic) if matches!(mode, pcode_path::Mode::Only) => return Err(diagnostic),
-            Err(_) => {}
+        })) {
+            Some(Ok(mut output)) => {
+                output.static_locals = static_local_data;
+                return Ok(output);
+            }
+            Some(Err(diagnostic)) if matches!(mode, pcode_path::Mode::Only) => return Err(diagnostic),
+            None if matches!(mode, pcode_path::Mode::Only) => {
+                return Err(Diagnostic::error("PCode lowering: static locals pointing at strings (not yet supported)"))
+            }
+            _ => {}
         }
     }
     if source_facts.is_cxx {
@@ -581,94 +616,8 @@ fn lower_function_body(
     // @N sequence). Register each in the operand maps and record its datum;
     // the automatic-local machinery never sees it.
     let ordinal_source_function = function;
-    let static_locals: Vec<mwcc_syntax_trees::LocalDeclaration> = function
-        .locals
-        .iter()
-        .filter(|local| local.is_static)
-        .cloned()
-        .collect();
-    let mut static_local_data: Vec<mwcc_machine_code::StaticLocal> = Vec::new();
-    let mut static_local_strings: Vec<Vec<u8>> = Vec::new();
-    let mut static_aggregate_strings: Vec<Vec<u8>> = Vec::new();
-    for local in &static_locals {
-        if globals.iter().any(|global| global.name == local.name) {
-            return Err(Diagnostic::error(
-                "a static local shadowing a global is not supported yet (roadmap)",
-            ));
-        }
-        // A struct-typed static (`static __mem_pool protopool;`) carries its
-        // own byte size; scalars derive from the type width.
-        let element = static_local_storage::element_size(local.declared_type);
-        let size = element * local.array_length.map_or(1, u32::from);
-        // The byte image: a brace-list array, or a scalar literal folded here.
-        let bytes = match (&local.data_bytes, &local.initializer) {
-            (Some(bytes), _) => Some(bytes.clone()),
-            (None, Some(mwcc_syntax_trees::Expression::IntegerLiteral(value))) => (*value != 0)
-                .then(|| match local.declared_type {
-                    mwcc_syntax_trees::Type::Double => (*value as f64).to_be_bytes().to_vec(),
-                    mwcc_syntax_trees::Type::Float => (*value as f32).to_be_bytes().to_vec(),
-                    _ => (*value as i32).to_be_bytes().to_vec(),
-                }),
-            (None, Some(mwcc_syntax_trees::Expression::FloatLiteral(value))) => {
-                Some(match local.declared_type {
-                    mwcc_syntax_trees::Type::Float => (*value as f32).to_be_bytes().to_vec(),
-                    _ => value.to_be_bytes().to_vec(),
-                })
-            }
-            (None, Some(_)) => {
-                return Err(Diagnostic::error(
-                    "a non-constant static local initializer is not supported yet (roadmap)",
-                ));
-            }
-            (None, None) => None,
-        };
-        let alignment = static_local_storage::alignment(
-            local.declared_type,
-            local.array_length,
-            local.attribute_alignment,
-            config,
-        );
-        let relocations = local
-            .data_relocations
-            .iter()
-            .map(|relocation| {
-                let target = match &relocation.target {
-                    LocalDataRelocationTarget::Symbol(target) => target.clone(),
-                    LocalDataRelocationTarget::StringLiteral(bytes) => {
-                        let source_positioned_aggregate = config.flags.string_literals_packed
-                            && local.array_length.is_none()
-                            && matches!(local.declared_type, mwcc_syntax_trees::Type::Struct { .. });
-                        let strings = if source_positioned_aggregate {
-                            &mut static_aggregate_strings
-                        } else {
-                            &mut static_local_strings
-                        };
-                        let index = strings
-                            .iter()
-                            .position(|existing| existing == bytes)
-                            .unwrap_or_else(|| {
-                                strings.push(bytes.clone());
-                                strings.len() - 1
-                            });
-                        if source_positioned_aggregate {
-                            format!("@@staticstr{index}")
-                        } else {
-                            format!("@@str{index}")
-                        }
-                    }
-                };
-                (relocation.offset, target, relocation.addend)
-            })
-            .collect();
-        static_local_data.push(mwcc_machine_code::StaticLocal {
-            name: local.name.clone(),
-            initial_bytes: bytes,
-            size,
-            alignment,
-            is_const: local.is_const,
-            relocations,
-        });
-    }
+    let (static_locals, static_local_data, static_local_strings, static_aggregate_strings) =
+        collect_static_locals(function, globals, config)?;
     // The body machinery never sees the statics as automatic locals.
     let stripped;
     let function = if static_locals.is_empty() {
@@ -1671,6 +1620,116 @@ fn lower_function_body(
 /// Reconcile their call-site metadata with declarations recovered by the
 /// frontend so the object writer does not treat a declared member destructor
 /// or class-specific delete as an implicit K&R-era call.
+/// Function statics (`name$K` LOCAL objects the writer numbers off the
+/// function's @N sequence): their declarations, data, and the string
+/// literals their initializers point at.
+#[allow(clippy::type_complexity)]
+fn collect_static_locals(
+    function: &mwcc_syntax_trees::Function,
+    globals: &[GlobalDeclaration],
+    config: CompilerConfig,
+) -> Compilation<(
+    Vec<mwcc_syntax_trees::LocalDeclaration>,
+    Vec<mwcc_machine_code::StaticLocal>,
+    Vec<Vec<u8>>,
+    Vec<Vec<u8>>,
+)> {
+    let static_locals: Vec<mwcc_syntax_trees::LocalDeclaration> = function
+        .locals
+        .iter()
+        .filter(|local| local.is_static)
+        .cloned()
+        .collect();
+    let mut static_local_data: Vec<mwcc_machine_code::StaticLocal> = Vec::new();
+    let mut static_local_strings: Vec<Vec<u8>> = Vec::new();
+    let mut static_aggregate_strings: Vec<Vec<u8>> = Vec::new();
+    for local in &static_locals {
+        if globals.iter().any(|global| global.name == local.name) {
+            return Err(Diagnostic::error(
+                "a static local shadowing a global is not supported yet (roadmap)",
+            ));
+        }
+        // A struct-typed static (`static __mem_pool protopool;`) carries its
+        // own byte size; scalars derive from the type width.
+        let element = static_local_storage::element_size(local.declared_type);
+        let size = element * local.array_length.map_or(1, u32::from);
+        // The byte image: a brace-list array, or a scalar literal folded here.
+        let bytes = match (&local.data_bytes, &local.initializer) {
+            // `char s[3] = "abc";`: an array exactly the string's length drops
+            // the terminating NUL.
+            (Some(bytes), _) if bytes.len() as u32 == size + 1 && bytes.last() == Some(&0) => {
+                Some(bytes[..size as usize].to_vec())
+            }
+            (Some(bytes), _) => Some(bytes.clone()),
+            (None, Some(mwcc_syntax_trees::Expression::IntegerLiteral(value))) => (*value != 0)
+                .then(|| match local.declared_type {
+                    mwcc_syntax_trees::Type::Double => (*value as f64).to_be_bytes().to_vec(),
+                    mwcc_syntax_trees::Type::Float => (*value as f32).to_be_bytes().to_vec(),
+                    _ => (*value as i32).to_be_bytes().to_vec(),
+                }),
+            (None, Some(mwcc_syntax_trees::Expression::FloatLiteral(value))) => {
+                Some(match local.declared_type {
+                    mwcc_syntax_trees::Type::Float => (*value as f32).to_be_bytes().to_vec(),
+                    _ => value.to_be_bytes().to_vec(),
+                })
+            }
+            (None, Some(_)) => {
+                return Err(Diagnostic::error(
+                    "a non-constant static local initializer is not supported yet (roadmap)",
+                ));
+            }
+            (None, None) => None,
+        };
+        let alignment = static_local_storage::alignment(
+            local.declared_type,
+            local.array_length,
+            local.attribute_alignment,
+            config,
+        );
+        let relocations = local
+            .data_relocations
+            .iter()
+            .map(|relocation| {
+                let target = match &relocation.target {
+                    LocalDataRelocationTarget::Symbol(target) => target.clone(),
+                    LocalDataRelocationTarget::StringLiteral(bytes) => {
+                        let source_positioned_aggregate = config.flags.string_literals_packed
+                            && local.array_length.is_none()
+                            && matches!(local.declared_type, mwcc_syntax_trees::Type::Struct { .. });
+                        let strings = if source_positioned_aggregate {
+                            &mut static_aggregate_strings
+                        } else {
+                            &mut static_local_strings
+                        };
+                        let index = strings
+                            .iter()
+                            .position(|existing| existing == bytes)
+                            .unwrap_or_else(|| {
+                                strings.push(bytes.clone());
+                                strings.len() - 1
+                            });
+                        if source_positioned_aggregate {
+                            format!("@@staticstr{index}")
+                        } else {
+                            format!("@@str{index}")
+                        }
+                    }
+                };
+                (relocation.offset, target, relocation.addend)
+            })
+            .collect();
+        static_local_data.push(mwcc_machine_code::StaticLocal {
+            name: local.name.clone(),
+            initial_bytes: bytes,
+            size,
+            alignment,
+            is_const: local.is_const,
+            relocations,
+        });
+    }
+    Ok((static_locals, static_local_data, static_local_strings, static_aggregate_strings))
+}
+
 fn classify_specialized_call_declarations(
     mut output: MachineFunction,
     prototyped_names: &HashSet<String>,

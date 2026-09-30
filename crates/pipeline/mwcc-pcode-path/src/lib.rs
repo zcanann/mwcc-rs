@@ -72,6 +72,26 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             )
         })
         .collect();
+    // Function statics address like globals of their size.
+    for local in request.static_locals {
+        let addressing = if local.is_const { behavior.read_only_global_addressing } else { behavior.global_addressing };
+        let element = match local.declared_type {
+            mwcc_syntax_trees::Type::Struct { size, .. } => size,
+            other => u32::from(other.width()) / 8,
+        };
+        let size = element * local.array_length.map_or(1, u32::from);
+        globals.insert(
+            local.name.clone(),
+            GlobalInfo {
+                ty: local.declared_type,
+                small_data: addressing == GlobalAddressing::SmallData && size > 0 && size <= 8,
+                is_array: local.array_length.is_some(),
+                is_volatile: local.is_volatile,
+                is_function: false,
+                is_const: local.is_const && !local.is_volatile,
+            },
+        );
+    }
     // A function named as a value is its (absolute) address.
     for name in request.call_return_types.keys() {
         if !globals.contains_key(name) && std::env::var_os("MWCC_PCODE_NO_FUNCTION_ADDRESS").is_none() {

@@ -19,6 +19,8 @@ use mwcc_versions::CompilerConfig;
 pub struct PcodeRequest<'a> {
     pub function: &'a Function,
     pub globals: &'a [GlobalDeclaration],
+    /// Function statics, addressed like globals by name.
+    pub static_locals: &'a [mwcc_syntax_trees::LocalDeclaration],
     pub call_return_types: &'a HashMap<String, Type>,
     pub variadic_callees: &'a HashSet<String>,
     pub prototyped: &'a HashSet<String>,

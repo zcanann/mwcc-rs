@@ -508,7 +508,12 @@ impl Builder<'_, '_> {
     fn statement_inner(&mut self, statement: &Statement) -> Compilation<Vec<Stmt>> {
         Ok(vec![match statement {
             Statement::Switch { scrutinee, arms, default } => self.switch(scrutinee, arms, default.as_ref())?,
-            Statement::Assign { name, value } if self.names.get(name).is_some_and(|&id| self.variables[id].frame.is_some()) => {
+            // A frame variable, or a file-scope object (a function static
+            // the parser saw as a local): a store.
+            Statement::Assign { name, value }
+                if self.names.get(name).is_some_and(|&id| self.variables[id].frame.is_some())
+                    || (!self.names.contains_key(name) && self.unit.globals.contains_key(name)) =>
+            {
                 return self.assignment(&Expression::Variable(name.clone()), value);
             }
             Statement::Assign { name, value } => {

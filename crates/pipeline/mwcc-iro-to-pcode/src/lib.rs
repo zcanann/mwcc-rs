@@ -1166,7 +1166,10 @@ impl Lowerer<'_, '_> {
                 let (register, ty) = self.expression(condition)?;
                 if !self.record_form(register) {
                     // An unsigned value compares logically.
-                    self.emit_plain(if is_unsigned(promote(ty)) && std::env::var_os("MWCC_PCODE_SIGNED_TRUTH").is_none() {
+                    // (An unsigned narrow value too.)
+                    let unsigned = is_unsigned(promote(ty))
+                        || (is_unsigned_narrow(ty) && !toggle("MWCC_PCODE_NARROW_SIGNED_TRUTH"));
+                    self.emit_plain(if unsigned && std::env::var_os("MWCC_PCODE_SIGNED_TRUTH").is_none() {
                         Instruction::CompareLogicalWordImmediate { a: register, immediate: 0 }
                     } else {
                         Instruction::CompareWordImmediate { a: register, immediate: 0 }
