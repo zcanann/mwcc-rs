@@ -516,10 +516,14 @@ impl Lowerer<'_, '_> {
             }
         }
         let frame_objects = function.variables.iter().any(|variable| variable.frame.is_some());
-        if frame_objects && home_slots > 0 {
+        if frame_objects && home_slots > 0 && toggle("MWCC_PCODE_O0_NO_HOMES_WITH_FRAME") {
             return Err(unsupported("frame locals with parameter homes at -O0"));
         }
-        // Frame objects take slots in reverse declaration order from r1+8.
+        // Frame objects take slots in reverse declaration order after the
+        // homes (from r1+8).
+        if home_slots > 0 {
+            self.frame_cursor = 8 + home_bytes as u32;
+        }
         for id in (function.parameter_count..function.variables.len()).rev() {
             if let (VariableKind::Local, Some((size, align))) = (function.variables[id].kind, function.variables[id].frame) {
                 let offset = self.frame_cursor.div_ceil(align.max(1)) * align.max(1);
@@ -579,10 +583,12 @@ impl Lowerer<'_, '_> {
             }
         }
         if home_slots > 0 {
-            self.frame_cursor = 8 + home_bytes as u32;
+            self.frame_cursor = self.frame_cursor.max(8 + home_bytes as u32);
         }
+        // (The local region rounds up to 8 bytes.)
         self.pcode.frame_local_bytes = if frame_objects {
-            (self.frame_cursor - 8) as i16
+            let bytes = (self.frame_cursor - 8) as i16;
+            if toggle("MWCC_PCODE_O0_UNROUNDED_LOCALS") { bytes } else { (bytes + 7) / 8 * 8 }
         } else {
             ((home_bytes + 7) / 8) * 8
         };

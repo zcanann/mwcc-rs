@@ -79,6 +79,26 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         return Err(unsupported("stack-passed parameters"));
     }
     let taken = addresses_taken(function);
+    // -O0: a local only initialized at its declaration (never mentioned
+    // again) is no register variable: it lives in the frame.
+    let mentioned = if unit.unoptimized && std::env::var_os("MWCC_IRO_O0_NO_INIT_ONLY_FRAME").is_none() {
+        format!(
+            "{:?}{:?}{:?}{:?}",
+            function.statements,
+            function.guards,
+            function.return_expression,
+            function.locals.iter().map(|local| &local.initializer).collect::<Vec<_>>()
+        )
+    } else {
+        String::new()
+    };
+    let initialized_only = |local: &ast::LocalDeclaration| {
+        unit.unoptimized
+            && local.initializer.is_some()
+            && local.array_length.is_none()
+            && !mentioned.is_empty()
+            && !mentioned.contains(&format!("Variable({:?})", local.name))
+    };
     for local in &function.locals {
         if local.is_static || local.is_volatile {
             return Err(unsupported("static or volatile locals"));
@@ -91,7 +111,9 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         };
         let frame = match (local.array_length, element) {
             (Some(length), Some((size, align))) => Some((size * u32::from(length), align)),
-            (None, Some(object)) if matches!(local.declared_type, Type::Struct { .. }) || taken.contains(&local.name) => {
+            (None, Some(object))
+                if matches!(local.declared_type, Type::Struct { .. }) || taken.contains(&local.name) || initialized_only(local) =>
+            {
                 Some(object)
             }
             (None, Some(_)) => None,
