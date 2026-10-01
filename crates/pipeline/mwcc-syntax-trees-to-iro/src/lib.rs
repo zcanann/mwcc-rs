@@ -1242,7 +1242,25 @@ impl Builder<'_, '_> {
             let variable = matches!(value.kind, ExprKind::Var(id)
                 if id < self.variables.len() && self.variables[id].frame.is_none() && self.variables[id].ty == ty)
                 && std::env::var_os("MWCC_IRO_NO_INLINE_VARIABLES").is_none();
-            if (constant || variable)
+            // (And arithmetic on those, re-evaluated at each use.)
+            fn pure(e: &Expr, variables: &[Variable]) -> bool {
+                match &e.kind {
+                    ExprKind::Int(_) => true,
+                    ExprKind::Var(id) => *id < variables.len() && variables[*id].frame.is_none(),
+                    ExprKind::Binary(op, a, b) => {
+                        !matches!(op, BinaryOp::Divide | BinaryOp::Modulo | BinaryOp::LogicalAnd | BinaryOp::LogicalOr)
+                            && pure(a, variables)
+                            && pure(b, variables)
+                    }
+                    ExprKind::Unary(_, a) | ExprKind::Convert(a) => pure(a, variables),
+                    _ => false,
+                }
+            }
+            let expression = !is_float(ty)
+                && value.ty == ty
+                && pure(&value, &self.variables)
+                && std::env::var_os("MWCC_IRO_NO_INLINE_EXPRESSIONS").is_none();
+            if (constant || variable || expression)
                 && !body_assigns(&inlined.body, base + index)
                 && std::env::var_os("MWCC_IRO_NO_INLINE_CONSTANTS").is_none()
             {

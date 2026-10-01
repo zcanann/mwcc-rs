@@ -552,6 +552,8 @@ impl Lowerer<'_, '_> {
             .chain(
                 (function.parameter_count..function.variables.len())
                     .filter(|&id| function.variables[id].kind == VariableKind::Local && function.variables[id].frame.is_none())
+                    // (An unreferenced local takes no register.)
+                    .filter(|&id| references(&function.body, id) > 0 || toggle("MWCC_PCODE_O0_UNUSED_LOCAL_REGISTERS"))
                     .map(|id| (id, None)),
             )
             .collect();
