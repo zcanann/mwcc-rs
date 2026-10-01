@@ -2599,6 +2599,19 @@ impl Parser {
                     Diagnostic::error(format!("struct '{tag}' value layout is not declared"))
                 })?;
                 loop {
+                    // `struct T { … } *p;` declares a pointer to the struct.
+                    let declared_type = if self.eat_keyword(Token::Star) {
+                        let Type::Struct { size, .. } = struct_type else {
+                            return Err(Diagnostic::error("a pointer to this struct definition is not supported yet (roadmap)"));
+                        };
+                        if self.eat_keyword(Token::Star) {
+                            Type::Pointer(Pointee::StructPointer(size))
+                        } else {
+                            Type::StructPointer { element_size: size }
+                        }
+                    } else {
+                        struct_type
+                    };
                     let source_name = self.parse_identifier()?;
                     let name = if self.cplusplus {
                         self.register_cxx_data_object(&source_name)?
@@ -2622,7 +2635,7 @@ impl Parser {
                             .filter(|function| !function.is_static)
                             .count(),
                         functions_before: functions.len(),
-                        declared_type: struct_type,
+                        declared_type,
                         source_fundamental: None,
                         name,
                         is_extern,
@@ -2909,13 +2922,21 @@ impl Parser {
                     self.expect(Token::BracketClose)?;
                 }
                 self.expect(Token::Colon)?;
-                let address = if *self.peek() == Token::ParenOpen {
-                    self.advance();
-                    let value = self.parse_integer_constant()?;
-                    self.expect(Token::ParenClose)?;
-                    value
-                } else {
-                    self.parse_integer_constant()?
+                // (The whole constant expression: `(0x8000 << 16) + 0xDC`.)
+                let start = self.position;
+                let address = match self.parse_integer_constant() {
+                    Ok(value) if *self.peek() == Token::Semicolon => value,
+                    _ => {
+                        self.position = start;
+                        if *self.peek() == Token::ParenOpen {
+                            self.advance();
+                            let value = self.parse_integer_constant()?;
+                            self.expect(Token::ParenClose)?;
+                            value
+                        } else {
+                            self.parse_integer_constant()?
+                        }
+                    }
                 };
                 self.expect(Token::Semicolon)?;
                 if is_array {
@@ -3068,7 +3089,11 @@ impl Parser {
                             [_, Some(width)] => self.parse_address_initializer_rows(usize::from(*width))?,
                             _ => self.parse_address_initializer()?,
                         });
-                    } else if table_fields.is_some() && *self.peek() == Token::Equals {
+                    } else if table_fields.is_some()
+                        && *self.peek() == Token::Equals
+                        // (Brace-elided elements take the general struct path.)
+                        && *self.peek_at(2) == Token::BraceOpen
+                    {
                         self.advance();
                         address_initializer =
                             Some(self.parse_struct_pointer_table(table_fields.as_ref().unwrap())?);

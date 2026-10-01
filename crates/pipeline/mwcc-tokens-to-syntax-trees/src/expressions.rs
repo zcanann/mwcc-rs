@@ -1450,6 +1450,9 @@ impl Parser {
                             "parse context at token {token_index}: {:?}",
                             &self.tokens[start..end]
                         );
+                        if std::env::var_os("MWCC_PARSE_BACKTRACE").is_some() {
+                            eprintln!("{}", std::backtrace::Backtrace::force_capture());
+                        }
                     }
                     return Err(Diagnostic::error(format!(
                         "expected an expression, found {other} at {}",

@@ -97,6 +97,10 @@ impl Parser {
         let layout = self.structs.get(tag)?;
         let mut fields: Vec<&crate::parser::StructField> = layout.fields.values().collect();
         fields.sort_by_key(|field| field.offset);
+        // (An array or bit-field member is no single word.)
+        if fields.iter().any(|field| field.array_bytes.is_some() || field.bit_field.is_some()) {
+            return None;
+        }
         let types: Vec<Type> = fields.iter().map(|field| field.member_type).collect();
         let all_word = types
             .iter()
@@ -709,8 +713,10 @@ impl Parser {
                     Some(Token::Comma) | Some(Token::BraceClose)
                 )
             {
+                // (The addend counts elements of the array.)
+                let element = self.global_sizes.get(name).and_then(|&(_, element)| element).unwrap_or(1);
                 let name = name.clone();
-                let addend = *addend as i32;
+                let addend = *addend as i32 * element as i32;
                 self.position += 3;
                 return Ok(Some((name, addend)));
             }

@@ -151,11 +151,16 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             ty if is_value_type(ty) || is_wide(ty) => Some((mwcc_iro::width(ty), mwcc_iro::width(ty))),
             _ => None,
         };
+        // (An array or struct slot is word-aligned at least.)
+        // (Early frames keep natural alignment.)
+        let aggregate_align = |align: u32| {
+            if unit.early_frame || std::env::var_os("MWCC_IRO_NATURAL_FRAME_ALIGN").is_some() { align } else { align.max(4) }
+        };
         let frame = match (local.array_length, element) {
-            (Some(length), Some((size, align))) => Some((size * u32::from(length), align)),
+            (Some(length), Some((size, align))) => Some((size * u32::from(length), aggregate_align(align))),
+            (None, Some((size, align))) if matches!(local.declared_type, Type::Struct { .. }) => Some((size, aggregate_align(align))),
             (None, Some(object))
-                if matches!(local.declared_type, Type::Struct { .. })
-                    || taken.contains(&local.name)
+                if taken.contains(&local.name)
                     || initialized_only(local)
                     || local.is_volatile =>
             {

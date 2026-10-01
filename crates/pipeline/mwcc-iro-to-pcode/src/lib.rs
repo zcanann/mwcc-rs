@@ -492,7 +492,14 @@ impl Lowerer<'_, '_> {
                 self.frame_cursor = self.frame_cursor.div_ceil(align.max(1)) * align.max(1) + size;
             }
         }
-        for &id in locals.iter().rev() {
+        // Frame objects take slots by size class (the size rounded up to a
+        // power of two), smallest first; within a class, in reverse
+        // declaration order. (Early frames: reverse declaration order.)
+        let mut ordered: Vec<VarId> = locals.iter().rev().copied().collect();
+        if !early && !toggle("MWCC_PCODE_FRAME_DECLARATION_ORDER") {
+            ordered.sort_by_key(|&id| function.variables[id].frame.map_or(0, |(size, _)| size.max(1).next_power_of_two()));
+        }
+        for id in ordered {
             match function.variables[id].frame {
                 // (Early frames: a local declared with an initializer, or
                 // one never read, keeps a slot.)
@@ -1030,7 +1037,8 @@ impl Lowerer<'_, '_> {
 
     fn body_and_exit_inner(&mut self) -> Compilation<()> {
         let function = self.function;
-        if self.tail_calls && !self.unoptimized && self.sibling_call()? {
+        // (A function with frame objects keeps its frame: no sibling call.)
+        if self.tail_calls && !self.unoptimized && self.pcode.frame_objects.is_empty() && self.sibling_call()? {
             return Ok(());
         }
         self.all_tail_calls = self.tail_calls
