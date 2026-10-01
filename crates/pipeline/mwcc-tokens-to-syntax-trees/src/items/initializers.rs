@@ -552,7 +552,10 @@ impl Parser {
                 if let Some(literal) =
                     self.parse_character_array_literal(element_type, total as usize)
                 {
-                    image[field_base..field_base + total as usize].copy_from_slice(&literal);
+                    let Some(slot) = image.get_mut(field_base..field_base + total as usize) else {
+                        return Err(Diagnostic::error("an initializer beyond the object (flexible array member) is not supported yet"));
+                    };
+                    slot.copy_from_slice(&literal);
                     if braced {
                         self.eat_keyword(Token::Comma);
                         self.expect(Token::BraceClose)?;
@@ -567,7 +570,11 @@ impl Parser {
                     let value = self.parse_scalar_constant(element_type)?;
                     let at = field_base + index * element_width;
                     let encoded = (value as u64).to_be_bytes();
-                    image[at..at + element_width].copy_from_slice(&encoded[8 - element_width..]);
+                    // (A flexible array member has no storage in the image.)
+                    let Some(slot) = image.get_mut(at..at + element_width) else {
+                        return Err(Diagnostic::error("an initializer beyond the object (flexible array member) is not supported yet"));
+                    };
+                    slot.copy_from_slice(&encoded[8 - element_width..]);
                     if !self.eat_keyword(Token::Comma) {
                         break;
                     }
