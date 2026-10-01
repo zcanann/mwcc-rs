@@ -2104,10 +2104,31 @@ impl Lowerer<'_, '_> {
         match idiom {
             Idiom::Insert { base, value, shift, begin, end } => {
                 // The inserted value is computed before the old unit loads.
-                let (x, _) = match self.inserted.take() {
-                    Some((at, x)) if at == value.as_ref() as *const Expr as usize => (x, value.ty),
-                    _ => self.expression(value)?,
+                // -O0 inserts a promoted narrow value as it is (no
+                // extension), and converts a wider value to the unit's
+                // type first.
+                let unit = unpromoted(base).ty;
+                let narrow_source = match &value.kind {
+                    ExprKind::Convert(inner) if self.unoptimized && is_narrow(inner.ty) && !toggle("MWCC_PCODE_O0_UNCONVERTED_INSERT") => {
+                        Some(inner.as_ref())
+                    }
+                    _ => None,
                 };
+                let (mut x, _) = match self.inserted.take() {
+                    Some((at, x)) if at == value.as_ref() as *const Expr as usize => (x, value.ty),
+                    _ => self.expression(narrow_source.unwrap_or(value))?,
+                };
+                if self.unoptimized
+                    && narrow_source.is_none()
+                    && is_narrow(unit)
+                    && !is_narrow(value.ty)
+                    && value.as_int().is_none()
+                    && !toggle("MWCC_PCODE_O0_UNCONVERTED_INSERT")
+                {
+                    let extended = self.temporary();
+                    self.emit_plain(extension(unit, extended, x));
+                    x = extended;
+                }
                 let (b, _) = self.expression(base)?;
                 // rlwimi overwrites its destination before reading the
                 // source: the destination must not hold the source.
@@ -3365,7 +3386,12 @@ impl Lowerer<'_, '_> {
             Some(key) => {
                 if let ExprKind::Idiom(Idiom::Insert { value: inserted, .. }) = &value.kind {
                     if !toggle("MWCC_PCODE_O0_INSERT_ADDRESS_FIRST") {
-                        let (x, _) = self.expression(inserted)?;
+                        // (A promoted narrow value is inserted as it is.)
+                        let source = match &inserted.kind {
+                            ExprKind::Convert(inner) if is_narrow(inner.ty) && !toggle("MWCC_PCODE_O0_UNCONVERTED_INSERT") => inner.as_ref(),
+                            _ => inserted.as_ref(),
+                        };
+                        let (x, _) = self.expression(source)?;
                         self.inserted = Some((inserted.as_ref() as *const Expr as usize, x));
                     }
                 }
