@@ -68,6 +68,9 @@ pub struct InstructionFlags {
     pub serialize: bool,
     /// A load of read-only memory (a constant image): nothing stores to it.
     pub read_only: bool,
+    /// Scheduled in emission order against the block's other `in_order`
+    /// instructions only (GC/3.x epilogue restores).
+    pub in_order: bool,
 }
 
 /// One PCode instruction.

@@ -294,11 +294,18 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
     let mut later_defs: HashMap<Key, Vec<usize>> = HashMap::new();
     let mut later_memory: Vec<(usize, Memory)> = Vec::new();
     let mut later_all: Vec<usize> = Vec::new();
+    let mut later_in_order: Option<usize> = None;
     let mut edges: Vec<(usize, usize, u8)> = Vec::new();
 
     for index in (0..count).rev() {
         let instruction = &instructions[index];
         let latency = nodes[index].latency;
+        if instruction.flags.in_order {
+            if let Some(later) = later_in_order {
+                edges.push((index, later, 0));
+            }
+            later_in_order = Some(index);
+        }
         let (uses, defs) = operand_keys(instruction);
         for key in &uses {
             for &later in later_defs.get(key).into_iter().flatten() {

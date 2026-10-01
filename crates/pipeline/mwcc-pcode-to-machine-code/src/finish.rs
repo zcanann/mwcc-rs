@@ -281,8 +281,10 @@ pub fn finish(
         };
         if led {
             for instruction in instructions[start..].iter_mut() {
-                if matches!(instruction.instruction, Instruction::LoadWord { d: 0, a: 1, .. }) {
-                    instruction.flags.serialize = true;
+                match instruction.instruction {
+                    Instruction::LoadWord { d: 0, a: 1, .. } => instruction.flags.serialize = true,
+                    Instruction::LoadWord { a: 1, .. } => instruction.flags.in_order = true,
+                    _ => {}
                 }
             }
         }
