@@ -1419,16 +1419,32 @@ pub fn forward_offsets(function: &mut Function) {
     let mut defs = Vec::new();
     definitions(&function.body, &mut defs);
     let mut forwarded: HashMap<VarId, Expr> = HashMap::new();
+    // `x = E + k` with E not an unassigned variable: x keeps E (assigned in
+    // place) and its uses read `x + k`.
+    let mut rebased: HashMap<VarId, Expr> = HashMap::new();
     for (variable, value) in defs {
         if counts[variable] != 1 || function.variables[variable].kind != VariableKind::Local {
             continue;
         }
         let ExprKind::Binary(BinaryOp::Add, base, offset) = &value.kind else { continue };
-        let (ExprKind::Var(source), Some(_)) = (&base.kind, offset.as_int()) else { continue };
-        if counts[*source] != 0 || !pointer_like(value.ty) || !pointer_like(base.ty) {
+        let Some(k) = offset.as_int() else { continue };
+        if !pointer_like(value.ty) || !pointer_like(base.ty) {
             continue;
         }
-        forwarded.insert(variable, value.clone());
+        match &base.kind {
+            ExprKind::Var(source) if counts[*source] == 0 => {
+                forwarded.insert(variable, value.clone());
+            }
+            ExprKind::Var(_) => {}
+            _ if std::env::var_os("MWCC_IRO_NO_REBASED_OFFSETS").is_none() => {
+                let ty = value.ty;
+                rebased.insert(
+                    variable,
+                    Expr::binary(BinaryOp::Add, Expr { kind: ExprKind::Var(variable), ty }, Expr::typed_int(k, offset.ty), ty),
+                );
+            }
+            _ => {}
+        }
     }
     // Only addresses: every use must sit inside a load or store address.
     fn value_uses(expression: &Expr, in_address: bool, out: &mut Vec<VarId>) {
@@ -1485,6 +1501,50 @@ pub fn forward_offsets(function: &mut Function) {
     let mut escaping = Vec::new();
     statement_value_uses(&mut function.body, &mut escaping);
     forwarded.retain(|variable, _| !escaping.contains(variable));
+    rebased.retain(|variable, _| !escaping.contains(variable));
+    if !rebased.is_empty() {
+        // The definition keeps the base; every (address) use adds k.
+        fn rebase_uses(expression: &mut Expr, rebased: &HashMap<VarId, Expr>) {
+            if let ExprKind::Var(id) = expression.kind {
+                if let Some(value) = rebased.get(&id) {
+                    *expression = value.clone();
+                    return;
+                }
+            }
+            children(expression, &mut |child| rebase_uses(child, rebased));
+        }
+        fn rebase(body: &mut [Stmt], rebased: &HashMap<VarId, Expr>) {
+            for statement in body.iter_mut() {
+                match statement {
+                    Stmt::Assign { variable, value } if rebased.contains_key(variable) => {
+                        let ExprKind::Binary(BinaryOp::Add, base, _) = &value.kind else { continue };
+                        *value = base.as_ref().clone();
+                        rebase_uses(value, rebased);
+                    }
+                    Stmt::If { condition, then_body, else_body } => {
+                        rebase_uses(condition, rebased);
+                        rebase(then_body, rebased);
+                        rebase(else_body, rebased);
+                    }
+                    Stmt::Loop { condition, body, step, .. } => {
+                        if let Some(condition) = condition {
+                            rebase_uses(condition, rebased);
+                        }
+                        rebase(body, rebased);
+                        rebase(step, rebased);
+                    }
+                    Stmt::Switch { value, arms, .. } => {
+                        rebase_uses(value, rebased);
+                        for arm in arms.iter_mut() {
+                            rebase(arm, rebased);
+                        }
+                    }
+                    other => for_each_expression(std::slice::from_mut(other), &mut |e| rebase_uses(e, rebased)),
+                }
+            }
+        }
+        rebase(&mut function.body, &rebased);
+    }
     if forwarded.is_empty() {
         return;
     }
