@@ -475,7 +475,7 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
             for &(to, latency) in &node.successors {
                 remaining_predecessors[to] -= 1;
                 // A successor released this cycle issues next cycle at the
-                // earliest (MWCC_SCHED_SAME_CYCLE=1 disables this for study).
+                // earliest, except through a zero-latency edge in the first pass.
                 let earliest = if same_cycle_release() { latency } else { latency.max(1) };
                 ready_at[to] = ready_at[to].max(cycle + i64::from(earliest));
             }
@@ -508,8 +508,18 @@ fn trace() -> bool {
     *TRACE.get_or_init(|| std::env::var_os("MWCC_SCHED_TRACE").is_some())
 }
 
+/// Whether a successor released by a zero-latency edge may issue in the same
+/// cycle: in the first (virtual-register) pass it may. `MWCC_SCHED_SAME_CYCLE`
+/// = `none` | `final` | `both` overrides this for study.
 fn same_cycle_release() -> bool {
-    std::env::var_os("MWCC_SCHED_SAME_CYCLE").is_some()
+    let final_pass = FINAL_PASS.with(|flag| flag.get());
+    static MODE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    match MODE.get_or_init(|| std::env::var("MWCC_SCHED_SAME_CYCLE").ok()).as_deref() {
+        Some("none") => false,
+        Some("final") => final_pass,
+        Some("both") => true,
+        _ => !final_pass,
+    }
 }
 
 thread_local! {
