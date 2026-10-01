@@ -619,7 +619,11 @@ impl Builder<'_, '_> {
     /// `switch`: arms in source order (the default last), empty labels
     /// sharing the next arm's body.
     fn switch(&mut self, scrutinee: &Expression, arms: &[ast::SwitchArm], default: Option<&ast::ArmBody>) -> Compilation<Stmt> {
-        let value = promoted(self.expression(scrutinee)?);
+        let mut value = promoted(self.expression(scrutinee)?);
+        // (MWCC dispatches an unsigned word like an int: `cmpwi`.)
+        if value.ty == Type::UnsignedInt {
+            value.ty = Type::Int;
+        }
         if !matches!(value.ty, Type::Int) {
             return Err(unsupported(format!("switch on {:?}", value.ty)));
         }
@@ -845,6 +849,12 @@ impl Builder<'_, '_> {
         let left_size = element_size(left.ty);
         let right_size = element_size(right.ty);
         match (left_size, right_size) {
+            // `p - q`: the byte difference divided (signed) by the element size.
+            (Some(size), Some(other)) if op == BinaryOp::Subtract && size == other && size > 0 => {
+                let as_int = |e: Expr| Expr { ty: Type::Int, ..e };
+                let bytes = Expr::binary(BinaryOp::Subtract, as_int(left), as_int(right), Type::Int);
+                Ok(if size == 1 { bytes } else { Expr::binary(BinaryOp::Divide, bytes, Expr::int(i64::from(size)), Type::Int) })
+            }
             (Some(_), Some(_)) => Err(unsupported("pointer difference")),
             (Some(0), None) | (None, Some(0)) => Err(unsupported("arithmetic on an unsized pointee")),
             // `p + 0` (`&a[0]`) is the pointer itself.
