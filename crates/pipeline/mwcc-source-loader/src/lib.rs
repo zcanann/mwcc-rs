@@ -256,6 +256,9 @@ impl LoadContext<'_> {
                 output.extend_from_slice(line);
                 continue;
             };
+            if std::env::var_os("MWCC_TRACE_INCLUDES").is_some() {
+                eprintln!("include: {} -> {} (from {})", include.path, included_path.display(), canonical.display());
+            }
             let included = self.load_file(&included_path)?;
             if !included.is_empty() {
                 append_line_directive(&mut output, 1);

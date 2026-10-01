@@ -2009,6 +2009,12 @@ impl Lowerer<'_, '_> {
     fn float_convert(&mut self, operand: &Expr, to: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
         match (operand.ty, to) {
             (from, to) if from == to => self.expression_with_target(operand, target),
+            // A double literal (the parser's `(double)` of a bare literal)
+            // keeps its full precision, as the -O4 fold gives it.
+            (Type::Float, Type::Double) if matches!(operand.kind, ExprKind::Float(_)) && !toggle("MWCC_PCODE_ROUNDED_DOUBLE_LITERALS") => {
+                let ExprKind::Float(value) = operand.kind else { unreachable!() };
+                self.float_constant(value, Type::Double, target)
+            }
             (Type::Float, Type::Double) => {
                 let (source, _) = self.expression_with_target(operand, target)?;
                 Ok((source, to))
