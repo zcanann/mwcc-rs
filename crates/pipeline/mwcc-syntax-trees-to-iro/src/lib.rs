@@ -1260,6 +1260,10 @@ impl Builder<'_, '_> {
             Expression::MemberAddress { base, offset, element, index_stride: None } => {
                 let base = self.aggregate_address(base)?;
                 let ty = pointee_type(*element).and_then(pointer_to).unwrap_or(Type::Pointer(*element));
+                // (A member at offset 0 is the base itself, retyped.)
+                if *offset == 0 && std::env::var_os("MWCC_IRO_MEMBER_ZERO_ADD").is_none() {
+                    return Ok(Expr { ty, ..base });
+                }
                 Expr::binary(BinaryOp::Add, base, Expr::int(i64::from(*offset)), ty)
             }
             // A row of a multi-dimensional local array is its address.
