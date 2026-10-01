@@ -857,6 +857,10 @@ fn negation(expression: &Expr) -> Option<Expr> {
             if let Some(b) = negated(right) {
                 return Some(Expr::binary(BinaryOp::Add, (**left).clone(), b, ty));
             }
+            // (Not for floating values: `-0 - -0` is +0, `-(0 + -0)` is -0.)
+            if mwcc_iro::is_float(ty) {
+                return None;
+            }
             let a = negated(left)?;
             Some(Expr::unary(UnaryOp::Negate, Expr::binary(BinaryOp::Add, a, (**right).clone(), ty), ty))
         }
