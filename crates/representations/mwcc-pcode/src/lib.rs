@@ -257,6 +257,8 @@ pub struct PCodeFunction {
     pub private_frame_objects: Vec<i16>,
     /// Frame objects that are variables (not conversion slots).
     pub variable_frame_objects: usize,
+    /// General-register parameters the body refers to.
+    pub referenced_general_parameters: usize,
     /// Switch jump tables: the target block of each index, and the table
     /// symbol's offset past the function's anonymous-label counter.
     pub jump_tables: Vec<(Vec<usize>, u32)>,
@@ -291,6 +293,7 @@ impl PCodeFunction {
             frame_objects: Vec::new(),
             private_frame_objects: Vec::new(),
             variable_frame_objects: 0,
+            referenced_general_parameters: 0,
             jump_tables: Vec::new(),
             strings: Vec::new(),
             exit_uses: Vec::new(),

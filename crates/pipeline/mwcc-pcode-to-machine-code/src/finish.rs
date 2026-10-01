@@ -76,14 +76,14 @@ pub fn finish(
         fold_absolute_displacements(&mut pcode, options.fold_absolute_into_own_base);
     }
     // GC/1.0-1.2.5n copy parameters into saved registers with `addi d,s,0`
-    // when there are two such copies or the frame holds objects.
+    // when two GPR parameters are used or the frame holds objects.
     if options.early_frame {
         let saved_copy = |instruction: &PInstr| {
             instruction.flags.entry_copy
                 && matches!(instruction.instruction, Instruction::Or { a, s, b } if s == b && a >= 14)
         };
         let copies = pcode.blocks.iter().flat_map(|block| &block.instructions).filter(|i| saved_copy(i)).count();
-        if copies >= 2 || (copies == 1 && pcode.variable_frame_objects > 0) {
+        if copies > 0 && (pcode.referenced_general_parameters >= 2 || pcode.variable_frame_objects > 0) {
             for instruction in pcode.blocks.iter_mut().flat_map(|block| block.instructions.iter_mut()) {
                 if saved_copy(instruction) {
                     if let Instruction::Or { a, s, .. } = instruction.instruction {
@@ -154,7 +154,16 @@ pub fn finish(
         helper,
         multiple: options.use_lmw_stmw || options.early_frame,
         ..if options.early_frame {
-            FloatFrame::early(&saved_float, &saved, pcode.frame_local_bytes.max(pcode.reserved_local_bytes))
+            // (The reservation counts once registers are saved.)
+            FloatFrame::early(
+                &saved_float,
+                &saved,
+                if saved.is_empty() && saved_float.is_empty() {
+                    pcode.frame_local_bytes
+                } else {
+                    pcode.frame_local_bytes.max(pcode.reserved_local_bytes)
+                },
+            )
         } else {
             FloatFrame::new(&saved_float, paired, &saved, pcode.frame_local_bytes)
         }

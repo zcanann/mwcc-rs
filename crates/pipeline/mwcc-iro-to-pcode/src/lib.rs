@@ -494,6 +494,9 @@ impl Lowerer<'_, '_> {
         }
         self.pcode.begin_coalesce_window();
 
+        self.pcode.referenced_general_parameters = (0..function.parameter_count)
+            .filter(|&id| !is_float(function.variables[id].ty) && references(&function.body, id) > 0)
+            .count();
         for (id, virtual_register, physical) in incoming {
             let ty = function.variables[id].ty;
             if is_float(ty) {
@@ -3105,9 +3108,11 @@ impl Lowerer<'_, '_> {
             _ => false,
         }
             && std::env::var_os("MWCC_PCODE_LOAD_SWAP").is_none();
+        // (GC/1.0-1.2.5n add an index to an absolute address in order.)
         let swap = op.is_commutative()
             && !leaf(left)
             && !loaded
+            && !(self.unit.branch_preserving && self.absolute_base(left))
             && leaf(right)
             && (!one_register(left) || std::env::var_os("MWCC_PCODE_LEAF_FIRST_ALWAYS").is_some());
         // (A call's result goes second in a commutative operation.)

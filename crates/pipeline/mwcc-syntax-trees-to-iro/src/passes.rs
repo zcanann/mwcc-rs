@@ -192,6 +192,7 @@ pub fn run(function: &mut Function, branch_preserving: bool) {
     if enabled("STORES") {
         stores(&mut function.body);
     }
+
     if enabled("NARROWING") {
         narrowing(function);
     }
@@ -565,6 +566,41 @@ pub fn for_each_expression(body: &mut [Stmt], rewrite: &mut dyn FnMut(&mut Expr)
             Stmt::Break | Stmt::Continue => {}
         }
     }
+}
+
+/// GC/1.0-1.2.5n index an absolute array by adding the index to its
+/// address and accessing at a displacement (`add; lwz 0(r)`), never `lwzx`.
+pub fn unindexed_absolute(body: &mut [Stmt], absolute: &dyn Fn(&str) -> bool) {
+    let sum = |base: &mut Box<Expr>, index: &mut Option<Box<Expr>>| {
+        if matches!(&base.kind, ExprKind::GlobalAddress(name) if absolute(name)) {
+            if let Some(index) = index.take() {
+                let ty = base.ty;
+                **base = Expr::binary(BinaryOp::Add, (**base).clone(), *index, ty);
+            }
+        }
+    };
+    fn expression(e: &mut Expr, sum: &dyn Fn(&mut Box<Expr>, &mut Option<Box<Expr>>)) {
+        children(e, &mut |child| expression(child, sum));
+        if let ExprKind::Load { base, index, .. } = &mut e.kind {
+            sum(base, index);
+        }
+    }
+    for statement in body.iter_mut() {
+        match statement {
+            Stmt::Store { place: Place::Memory { base, index, .. }, .. } => sum(base, index),
+            Stmt::If { then_body, else_body, .. } => {
+                unindexed_absolute(then_body, absolute);
+                unindexed_absolute(else_body, absolute);
+            }
+            Stmt::Loop { body, step, .. } => {
+                unindexed_absolute(body, absolute);
+                unindexed_absolute(step, absolute);
+            }
+            Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| unindexed_absolute(arm, absolute)),
+            _ => {}
+        }
+    }
+    for_each_expression(body, &mut |e| expression(e, &sum));
 }
 
 /// Replace every read of `variable` with `value` (a constant argument of

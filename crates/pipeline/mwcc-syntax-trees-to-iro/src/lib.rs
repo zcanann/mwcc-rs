@@ -42,6 +42,10 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
         passes::scalarize(&mut built.function, unit.keeps_struct_stores);
     }
     passes::run(&mut built.function, unit.branch_preserving);
+    if unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_UNINDEXED").is_none() {
+        let absolute = |name: &str| unit.globals.get(name).is_some_and(|global| !global.small_data);
+        passes::unindexed_absolute(&mut built.function.body, &absolute);
+    }
     Ok(built)
 }
 
