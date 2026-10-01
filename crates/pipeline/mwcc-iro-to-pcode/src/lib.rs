@@ -1512,6 +1512,13 @@ impl Lowerer<'_, '_> {
                 if let (Some(index), true) = (index, self.unoptimized) {
                     // -O0: the index first; an absolute array's address is
                     // completed with add, then accessed at 0.
+                    // (A loaded or variable base comes first; an absolute
+                    // array's index first.)
+                    if !self.absolute_base(base) && !matches!(base.kind, ExprKind::Binary(..)) && !toggle("MWCC_PCODE_O0_INDEX_FIRST") {
+                        let (a, _) = self.expression(base)?;
+                        let (b, _) = self.expression(index)?;
+                        return self.indexed_load(ty, a, b, target);
+                    }
                     if let Some((pointer, addend)) = self.member_array(base) {
                         let (b, _) = self.expression(index)?;
                         let displaced = self.temporary();
@@ -2367,6 +2374,13 @@ impl Lowerer<'_, '_> {
             self.emit_plain(Instruction::RotateAndMask { a: d, s: raw, shift: (32 - shift) % 32, begin: 32 - bits + shift, end: 31 });
             return Ok((d, ty));
         }
+        // An absolute array's index is computed before its address.
+        let index_first = op == BinaryOp::Add
+            && immediate.is_none()
+            && self.absolute_base(left)
+            && right.as_int().is_none()
+            && !toggle("MWCC_PCODE_ADDRESS_FIRST");
+        let early = if index_first { Some(self.expression(right)?.0) } else { None };
         let (a, _) = self.expression(left)?;
         match (op, immediate) {
             // `x * -2^k` is a shift and a negation (`neg` alone for -1).
@@ -2458,7 +2472,10 @@ impl Lowerer<'_, '_> {
             }
             _ => {}
         }
-        let (b, _) = self.expression(right)?;
+        let b = match early {
+            Some(b) => b,
+            None => self.expression(right)?.0,
+        };
         // MWCC places a leaf operand first in a commutative operation whose
         // other operand is computed (`a*b + c` -> `add r3,c,t`).
         let leaf = |e: &Expr| unpromoted(e).as_var().is_some();
@@ -2929,7 +2946,7 @@ impl Lowerer<'_, '_> {
         };
         // -O4 from a constant image: every unit loaded, then every unit
         // stored (nothing can alias the image).
-        if size <= limit && read_only && !self.unoptimized && !toggle("MWCC_PCODE_IMAGE_PAIRS") {
+        if size <= limit && (read_only || frame.is_some()) && !self.unoptimized && !toggle("MWCC_PCODE_IMAGE_PAIRS") {
             let mut units = Vec::new();
             let mut at = 0u32;
             while at < size {

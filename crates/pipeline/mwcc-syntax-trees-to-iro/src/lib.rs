@@ -150,6 +150,14 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             });
             continue;
         }
+        // A struct-typed local initialized from another object copies it.
+        if let (Some(initializer), Type::Struct { .. }) = (&local.initializer, local.declared_type) {
+            if local.array_length.is_none() && std::env::var_os("MWCC_IRO_NO_STRUCT_COPY").is_none() {
+                body.extend(builder.assignment(&Expression::Variable(local.name.clone()), initializer)?);
+                body.append(&mut builder.pending);
+                continue;
+            }
+        }
         if let Some(initializer) = &local.initializer {
             let variable = builder.names[&local.name];
             let value = assigned(builder.expression(initializer)?, local.declared_type);
@@ -932,6 +940,8 @@ impl Builder<'_, '_> {
     fn aggregate_address(&mut self, base: &Expression) -> Compilation<Expr> {
         match base {
             Expression::AddressOf { operand } => self.address_of(operand),
+            // An indexed struct element (`p[i].m`): the element's address.
+            Expression::Index { base, index } => self.pointer_sum(base, index),
             other => self.expression(other),
         }
     }

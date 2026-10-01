@@ -601,7 +601,6 @@ fn resolve_global_destructor_record_names(
 }
 
 fn main() -> ExitCode {
-    mwcc_pcode_path::install();
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let invocation = parse_invocation(&arguments);
 
@@ -757,6 +756,7 @@ fn compile(
     artifacts: Option<&str>,
     parity_keep_going: bool,
 ) -> Compilation<Vec<u8>> {
+    mwcc_pcode_path::install();
     let phase_timer = std::env::var_os("MWCC_PHASE_TIMES").map(|_| std::time::Instant::now());
     let phase_time = |label: &str| {
         if let Some(start) = phase_timer {

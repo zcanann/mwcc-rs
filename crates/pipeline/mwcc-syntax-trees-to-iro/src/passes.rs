@@ -178,6 +178,9 @@ pub fn run(function: &mut Function) {
     if enabled("ALGEBRA") {
         for_each_expression(&mut function.body, &mut |expression| algebra(expression));
     }
+    if enabled("REASSOCIATE_OFFSETS") {
+        for_each_expression(&mut function.body, &mut |expression| reassociate_offsets(expression));
+    }
     if enabled("DISPLACEMENTS") {
         displacements(&mut function.body);
     }
@@ -303,8 +306,32 @@ pub fn run_unoptimized(function: &mut Function) {
         constant_branches(&mut function.body);
     }
     stores(&mut function.body);
+    if std::env::var_os("MWCC_IRO_NO_REASSOCIATE_OFFSETS").is_none() {
+        for_each_expression(&mut function.body, &mut |expression| reassociate_offsets(expression));
+    }
     displacements_with(&mut function.body, false);
     narrowing(function);
+}
+
+/// `(p + x) + k` is `p + (x + k)`: a constant offset rides the index
+/// (`addi i,i,k; add p,i`; a load's displacement takes it back).
+fn reassociate_offsets(expression: &mut Expr) {
+    children(expression, &mut |child| reassociate_offsets(child));
+    let pointer = |ty: Type| matches!(ty, Type::Pointer(_) | Type::StructPointer { .. });
+    if !pointer(expression.ty) {
+        return;
+    }
+    let ExprKind::Binary(BinaryOp::Add, left, constant) = &expression.kind else { return };
+    if constant.as_int().is_none() {
+        return;
+    }
+    let ExprKind::Binary(BinaryOp::Add, base, index) = &left.kind else { return };
+    if !pointer(base.ty) || pointer(index.ty) || index.as_int().is_some() || base.as_int().is_some() {
+        return;
+    }
+    let index_ty = index.ty;
+    let shifted = Expr::binary(BinaryOp::Add, index.as_ref().clone(), constant.as_ref().clone(), index_ty);
+    *expression = Expr::binary(BinaryOp::Add, base.as_ref().clone(), shifted, expression.ty);
 }
 
 /// `x && 0`, `x || 1` (x without effects) and a constant left operand

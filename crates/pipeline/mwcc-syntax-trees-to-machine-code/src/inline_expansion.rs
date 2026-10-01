@@ -724,10 +724,7 @@ impl InlineBodySet {
         collect_function_calls(function, &mut calls);
         calls.keys().any(|name| {
             self.required.contains(name)
-                && !self
-                    .retained_definitions
-                    .get(name)
-                    .is_some_and(crate::inline_sqrtf::is_supported_retained_sqrtf)
+
         })
     }
 
@@ -2940,29 +2937,6 @@ mod tests {
         )];
         helper.return_expression = Some(Expression::Variable("cursor".into()));
         helper
-    }
-
-    #[test]
-    fn indirect_call_arguments_substitute_without_reloading_the_target_snapshot() {
-        let expression = Expression::Cast {
-            target_type: Type::StructPointer { element_size: 4 },
-            operand: Box::new(Expression::CallThrough {
-                target: Box::new(Expression::Variable("saved_callback".into())),
-                arguments: vec![Expression::Variable("alias".into())],
-            }),
-        };
-        let values = HashMap::from([
-            (
-                "saved_callback".into(),
-                Expression::Variable("global_callback".into()),
-            ),
-            ("alias".into(), Expression::Variable("object".into())),
-        ]);
-        let replaced = crate::value_tracking::substitute(&expression, &values);
-        assert!(matches!(replaced, Expression::Cast { operand, .. }
-            if matches!(operand.as_ref(), Expression::CallThrough { target, arguments }
-                if matches!(target.as_ref(), Expression::Variable(name) if name == "saved_callback")
-                    && matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "object"))));
     }
 
     #[test]

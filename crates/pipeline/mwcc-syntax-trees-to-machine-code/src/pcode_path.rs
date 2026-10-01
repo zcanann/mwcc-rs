@@ -1,11 +1,9 @@
-//! The hook that routes a function through the staged PCode pipeline
-//! (`docs/backend-pipeline-proposal.md`) when `MWCC_PCODE` is set:
-//! `MWCC_PCODE=1` tries it first and falls back to the legacy owners;
-//! `MWCC_PCODE=only` reports its diagnostic instead of falling back.
+//! The hook that routes every function body through the staged PCode
+//! pipeline (`docs/backend-pipeline-proposal.md`).
 //!
 //! The pipeline itself lives in `mwcc-pcode-path`, which the driver installs
-//! with [`install_pcode_lowering`]. Keeping it out of this crate's dependency
-//! graph means PCode changes never rebuild the legacy owners.
+//! with [`install_pcode_lowering`]; keeping it out of this crate's dependency
+//! graph keeps the two building independently.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -51,23 +49,11 @@ pub fn install_pcode_lowering(lowering: PcodeLowering) {
     let _ = LOWERING.set(lowering);
 }
 
-pub(crate) enum Mode {
-    TryFirst,
-    Only,
-}
-
-pub(crate) fn mode() -> Option<Mode> {
-    LOWERING.get()?;
-    match std::env::var("MWCC_PCODE").ok()?.as_str() {
-        "" | "0" => None,
-        "only" => Some(Mode::Only),
-        _ => Some(Mode::TryFirst),
-    }
-}
-
 pub(crate) fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
-    let lowering = LOWERING.get().expect("mode() checked the installation");
-    lowering(request)
+    match LOWERING.get() {
+        Some(lowering) => lowering(request),
+        None => Err(mwcc_core::Diagnostic::error("the PCode lowering is not installed")),
+    }
 }
 
 /// MWCC's inliner size: the callee's statements after lowering to jumps
