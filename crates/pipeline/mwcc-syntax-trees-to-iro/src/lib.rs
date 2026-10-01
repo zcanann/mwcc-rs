@@ -507,6 +507,23 @@ impl Builder<'_, '_> {
         }
     }
 
+    /// An operand evaluated on its own path: its value, and the statements
+    /// that must run before it is used (its effects, then its post-steps,
+    /// the value copied first where they change it).
+    fn operand_with_effects(&mut self, operand: &Expression) -> Compilation<(Expr, Vec<Stmt>)> {
+        let outer = std::mem::take(&mut self.pending);
+        let outer_post = std::mem::take(&mut self.post);
+        let value = self.expression(operand);
+        let effects = std::mem::replace(&mut self.pending, outer);
+        let after = std::mem::replace(&mut self.post, outer_post);
+        let value = value?;
+        // The value is read before the post-steps: copy what they change.
+        let mut before = effects;
+        let value = self.frozen(value, &after, &mut before);
+        before.extend(after);
+        Ok((value, before))
+    }
+
     /// A discarded operand's effects; one without effects (a value) is none.
     fn effects_or_nothing(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
         match expression {
@@ -1088,7 +1105,32 @@ impl Builder<'_, '_> {
                 let op = binary_op(*operator);
                 let left = self.expression(left)?;
                 let right = if matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) {
-                    self.guarded_expression(right)?
+                    let mark = (self.pending.len(), self.post.len());
+                    match self.guarded_expression(right) {
+                        Ok(right) => right,
+                        // (A right operand with effects: it runs only when
+                        // the left one decides nothing; a temporary holds
+                        // the truth value.)
+                        Err(_) if self.guarded == 0 && std::env::var_os("MWCC_IRO_NO_BRANCHY_OPERANDS").is_none() => {
+                            self.pending.truncate(mark.0);
+                            self.post.truncate(mark.1);
+                            let (right, mut body) = self.operand_with_effects(right)?;
+                            let id = self.temporary(Type::Int);
+                            let truth = match &right.kind {
+                                ExprKind::Binary(op, ..) if op.is_comparison() || matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) => right,
+                                ExprKind::Unary(UnaryOp::LogicalNot, _) => right,
+                                _ => Expr::binary(BinaryOp::NotEqual, promoted(right), Expr::int(0), Type::Int),
+                            };
+                            body.push(Stmt::Assign { variable: id, value: truth });
+                            let and = op == BinaryOp::LogicalAnd;
+                            self.pending.push(Stmt::Assign { variable: id, value: Expr::int(i64::from(!and)) });
+                            let condition = promoted(left);
+                            let condition = if and { condition } else { Expr::unary(UnaryOp::LogicalNot, condition, Type::Int) };
+                            self.pending.push(Stmt::If { condition, then_body: body, else_body: Vec::new() });
+                            return Ok(Expr { kind: ExprKind::Var(id), ty: Type::Int });
+                        }
+                        Err(error) => return Err(error),
+                    }
                 } else {
                     self.expression(right)?
                 };
@@ -1156,8 +1198,33 @@ impl Builder<'_, '_> {
             }
             Expression::Conditional { condition, when_true, when_false, .. } => {
                 let condition = promoted(self.expression(condition)?);
-                let when_true = promoted(self.guarded_expression(when_true)?);
-                let when_false = promoted(self.guarded_expression(when_false)?);
+                let mark = (self.pending.len(), self.post.len());
+                let arms = self
+                    .guarded_expression(when_true)
+                    .and_then(|when_true| Ok((when_true, self.guarded_expression(when_false)?)));
+                let (when_true, when_false) = match arms {
+                    Ok(arms) => arms,
+                    // (Operands with effects: branches assign a temporary.)
+                    Err(_) if self.guarded == 0 && std::env::var_os("MWCC_IRO_NO_BRANCHY_OPERANDS").is_none() => {
+                        self.pending.truncate(mark.0);
+                        self.post.truncate(mark.1);
+                        let (when_true, mut then_body) = self.operand_with_effects(when_true)?;
+                        let (when_false, mut else_body) = self.operand_with_effects(when_false)?;
+                        let ty = if is_float(when_true.ty) || is_float(when_false.ty) {
+                            if when_true.ty == Type::Double || when_false.ty == Type::Double { Type::Double } else { Type::Float }
+                        } else {
+                            arithmetic_type(when_true.ty, when_false.ty)
+                        };
+                        let id = self.temporary(ty);
+                        then_body.push(Stmt::Assign { variable: id, value: converted(when_true, ty) });
+                        else_body.push(Stmt::Assign { variable: id, value: converted(when_false, ty) });
+                        self.pending.push(Stmt::If { condition, then_body, else_body });
+                        return Ok(Expr { kind: ExprKind::Var(id), ty });
+                    }
+                    Err(error) => return Err(error),
+                };
+                let when_true = promoted(when_true);
+                let when_false = promoted(when_false);
                 let ty = arithmetic_type(when_true.ty, when_false.ty);
                 Expr {
                     kind: ExprKind::Select {
