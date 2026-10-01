@@ -943,6 +943,8 @@ impl Lowerer<'_, '_> {
                 self.loops.pop();
                 self.place_if_targeted(test);
                 match condition {
+                    // A loop never repeated (`do ... while (0)`) has no test.
+                    Some(condition) if condition.as_int() == Some(0) => {}
                     Some(condition) => self.branch_on(condition, true, top)?,
                     None => self.jump(top),
                 }
@@ -968,6 +970,17 @@ impl Lowerer<'_, '_> {
                 _ => Err(unsupported("expression statement")),
             },
             Stmt::Store { place, ty, value } => self.store(place, *ty, value),
+            // `if (c) break;` / `if (c) continue;`: one branch on `c`.
+            Stmt::If { condition, then_body, else_body }
+                if else_body.is_empty()
+                    && matches!(then_body.as_slice(), [Stmt::Break | Stmt::Continue])
+                    && !self.loops.is_empty()
+                    && !toggle("MWCC_PCODE_NO_DIRECT_BREAK") =>
+            {
+                let (exit, next) = *self.loops.last().expect("checked");
+                let label = if matches!(then_body[0], Stmt::Break) { exit } else { next };
+                self.branch_on(condition, true, label)
+            }
             Stmt::If { condition, then_body, else_body } => {
                 let otherwise = self.new_label();
                 self.branch_on(condition, false, otherwise)?;

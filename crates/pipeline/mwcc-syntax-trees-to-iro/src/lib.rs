@@ -218,6 +218,40 @@ fn body_assigns(body: &[Stmt], variable: VarId) -> bool {
     })
 }
 
+/// Whether a return sits inside a loop or switch (its `break` would not
+/// leave the expansion).
+fn returns_in_breakable(body: &[Stmt]) -> bool {
+    body.iter().any(|statement| match statement {
+        Stmt::If { then_body, else_body, .. } => returns_in_breakable(then_body) || returns_in_breakable(else_body),
+        Stmt::Loop { body, step, .. } => returns_anywhere(body) || returns_anywhere(step),
+        Stmt::Switch { arms, .. } => arms.iter().any(|arm| returns_anywhere(arm)),
+        _ => false,
+    })
+}
+
+/// An expansion's returns as result assignments and `break`s out of the
+/// enclosing `do ... while (0)`.
+fn early_returns(body: Vec<Stmt>, result: Option<VarId>, ty: Type) -> Vec<Stmt> {
+    let mut out = Vec::with_capacity(body.len());
+    for statement in body {
+        match statement {
+            Stmt::Return(value) => {
+                if let (Some(id), Some(value)) = (result, value) {
+                    out.push(Stmt::Assign { variable: id, value: assigned(value, ty) });
+                }
+                out.push(Stmt::Break);
+            }
+            Stmt::If { condition, then_body, else_body } => out.push(Stmt::If {
+                condition,
+                then_body: early_returns(then_body, result, ty),
+                else_body: early_returns(else_body, result, ty),
+            }),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// Whether any statement returns (or sets the return value).
 fn returns_anywhere(body: &[Stmt]) -> bool {
     body.iter().any(|statement| match statement {
@@ -992,7 +1026,11 @@ impl Builder<'_, '_> {
             }),
             _ => None,
         };
-        if built.returns_through_variable || returns_anywhere(&inlined.body) {
+        // Early returns: the body becomes `do { ... } while (0)`, each
+        // `return v` an assignment of the result and a `break` (not from
+        // inside a loop or switch, where `break` means something else).
+        let early = built.returns_through_variable || returns_anywhere(&inlined.body);
+        if early && (std::env::var_os("MWCC_IRO_NO_INLINE_EARLY_RETURN").is_some() || returns_in_breakable(&inlined.body)) {
             return Err(unsupported("inline expansion with an early return"));
         }
         // At -O0 the expansion's variables are register variables.
@@ -1037,6 +1075,21 @@ impl Builder<'_, '_> {
             Some(Stmt::SetReturn(value)) => Some(value),
             _ => None,
         };
+        if early {
+            let ty = callee.return_type;
+            let id = self.variables.len() + self.temporaries.len();
+            self.temporaries.push(Variable { name: format!("{}$result", callee.name), ty, kind, frame: None });
+            let result = (ty != Type::Void).then_some(id);
+            let mut body = early_returns(std::mem::take(&mut inlined.body), result, ty);
+            if let (Some(id), Some(value)) = (result, value) {
+                body.push(Stmt::Assign { variable: id, value: assigned(value, ty) });
+            }
+            self.pending.push(Stmt::Loop { test_first: false, condition: Some(Expr::int(0)), body, step: Vec::new() });
+            return Ok(match result {
+                Some(id) => Expr { kind: ExprKind::Var(id), ty },
+                None => Expr { kind: ExprKind::Int(0), ty: Type::Void },
+            });
+        }
         self.pending.extend(inlined.body);
         let Some(value) = value else {
             return Ok(Expr { kind: ExprKind::Int(0), ty: Type::Void });
