@@ -3077,7 +3077,11 @@ impl Lowerer<'_, '_> {
         // type; not an assignment's value or a bit-field insert.)
         let narrow_update = matches!(&value.kind, ExprKind::Binary(op, left, right)
             if right.as_int().is_some() && is_narrow(unpromoted(left).ty)
-                && (matches!(op, BinaryOp::Add | BinaryOp::Subtract) || toggle("MWCC_PCODE_O0_BITWISE_UPDATE_RAW")));
+                && (matches!(op, BinaryOp::Add | BinaryOp::Subtract) || toggle("MWCC_PCODE_O0_BITWISE_UPDATE_RAW")))
+            // (A bitwise combination of narrow operands stays narrow.)
+            || matches!(&value.kind, ExprKind::Binary(BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd, left, right)
+                if is_narrow(unpromoted(left).ty) && is_narrow(unpromoted(right).ty)
+                    && !toggle("MWCC_PCODE_O0_NARROW_BITWISE_EXTENDS"));
         let already = match &value.kind {
             ExprKind::Var(id) => self.function.variables[*id].kind == VariableKind::Temporary,
             ExprKind::Idiom(Idiom::Insert { .. }) => true,

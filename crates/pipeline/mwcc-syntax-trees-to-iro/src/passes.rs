@@ -282,8 +282,12 @@ pub fn run_unoptimized(function: &mut Function) {
     fn literals(expression: &mut Expr) {
         children(expression, &mut |child| literals(child));
         let folded = match &expression.kind {
+            // (A null pointer cast stays a value: `p != (void *)0`
+            // materializes the zero.)
             ExprKind::Convert(operand)
-                if matches!(expression.ty, Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. }) =>
+                if matches!(expression.ty, Type::Int | Type::UnsignedInt)
+                    || (matches!(expression.ty, Type::Pointer(_) | Type::StructPointer { .. })
+                        && (operand.as_int() != Some(0) || std::env::var_os("MWCC_IRO_O0_FOLD_POINTER_CASTS").is_some())) =>
             {
                 operand.as_int().map(|value| Expr::typed_int(value, expression.ty))
             }
@@ -384,6 +388,43 @@ pub fn constant_branches(body: &mut Vec<Stmt>) {
             {
                 out.extend(body);
                 out.extend(step);
+            }
+            // A switch on a constant runs the selected arm (falling through
+            // to the next) up to its `break`.
+            Stmt::Switch { value, cases, arms, default }
+                if value.as_int().is_some() && std::env::var_os("MWCC_IRO_NO_CONSTANT_SWITCH").is_none() =>
+            {
+                let selected = value.as_int().expect("checked");
+                let start = cases.iter().find(|&&(case, _)| case == selected).map(|&(_, arm)| arm).or(default);
+                let Some(start) = start else { continue };
+                let mut taken = Vec::new();
+                let mut ended = false;
+                for arm in &arms[start..] {
+                    for statement in arm {
+                        if matches!(statement, Stmt::Break) {
+                            ended = true;
+                            break;
+                        }
+                        taken.push(statement.clone());
+                    }
+                    if ended {
+                        break;
+                    }
+                }
+                // (A `break` nested in the taken code would leave the
+                // switch: keep the switch then.)
+                fn nested_break(body: &[Stmt]) -> bool {
+                    body.iter().any(|statement| match statement {
+                        Stmt::Break => true,
+                        Stmt::If { then_body, else_body, .. } => nested_break(then_body) || nested_break(else_body),
+                        _ => false,
+                    })
+                }
+                if nested_break(&taken) {
+                    out.push(Stmt::Switch { value, cases, arms, default });
+                } else {
+                    out.extend(taken);
+                }
             }
             other => out.push(other),
         }
