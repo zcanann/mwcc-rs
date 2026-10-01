@@ -1569,21 +1569,45 @@ impl Lowerer<'_, '_> {
                     && !toggle("MWCC_PCODE_NO_BRANCH_SELECT") =>
             {
                 let d = self.result_for(ty, target);
-                let otherwise = self.new_label();
-                let join = self.new_label();
-                self.branch_on(condition, false, otherwise)?;
-                let (value, _) = self.expression_with_target(when_true, Some(d))?;
-                if value != d {
-                    self.copy(ty, d, value);
+                // Optimized, one arm is computed before the branch: the
+                // else arm, unless only the then arm is constant.
+                // (Not floating selects, nor arms that call.)
+                if !self.unoptimized
+                    && !is_float(ty)
+                    && !contains_call(when_true)
+                    && !contains_call(when_false)
+                    && !toggle("MWCC_PCODE_SELECT_TWO_PATHS")
+                {
+                    let constant = |e: &Expr| e.as_int().is_some() || matches!(e.kind, ExprKind::Float(_));
+                    let then_first = constant(when_true) && !constant(when_false);
+                    let (first, second) = if then_first { (when_true, when_false) } else { (when_false, when_true) };
+                    // (Only a cheap arm is hoisted — a constant, a variable or
+                    // one operation on those — and not past an arm that loads.)
+                    let leaf = |e: &Expr| e.as_int().is_some() || unpromoted(e).as_var().is_some();
+                    let cheap = |e: &Expr| match &e.kind {
+                        ExprKind::Binary(_, a, b) => leaf(a) && leaf(b),
+                        _ => leaf(e),
+                    };
+                    let loads = |e: &Expr| format!("{:?}", e.kind).contains("Load {") || format!("{:?}", e.kind).contains("Global(");
+                    let both_variables = unpromoted(when_true).as_var().is_some() && unpromoted(when_false).as_var().is_some();
+                    if !(cheap(first) && !loads(second)) || both_variables {
+                        return self.two_path_select(condition, when_true, when_false, ty, d);
+                    }
+                    let join = self.new_label();
+                    let (value, _) = self.expression_with_target(first, Some(d))?;
+                    if value != d {
+                        self.copy(ty, d, value);
+                    }
+                    // (Skip the other arm when the hoisted one is the value.)
+                    self.branch_on(condition, then_first, join)?;
+                    let (value, _) = self.expression_with_target(second, Some(d))?;
+                    if value != d {
+                        self.copy(ty, d, value);
+                    }
+                    self.place_label(join);
+                    return Ok((d, ty));
                 }
-                self.jump(join);
-                self.place_label(otherwise);
-                let (value, _) = self.expression_with_target(when_false, Some(d))?;
-                if value != d {
-                    self.copy(ty, d, value);
-                }
-                self.place_label(join);
-                Ok((d, ty))
+                self.two_path_select(condition, when_true, when_false, ty, d)
             }
             ExprKind::Select { .. } => Err(unsupported("conditional expression")),
             ExprKind::Idiom(idiom) => self.idiom(idiom, target),
@@ -1756,6 +1780,25 @@ impl Lowerer<'_, '_> {
                 Ok((register, ty))
             }
         }
+    }
+
+    /// A select as two paths, each arm computed into `d`.
+    fn two_path_select(&mut self, condition: &Expr, when_true: &Expr, when_false: &Expr, ty: Type, d: u32) -> Compilation<(u32, Type)> {
+        let otherwise = self.new_label();
+        let join = self.new_label();
+        self.branch_on(condition, false, otherwise)?;
+        let (value, _) = self.expression_with_target(when_true, Some(d))?;
+        if value != d {
+            self.copy(ty, d, value);
+        }
+        self.jump(join);
+        self.place_label(otherwise);
+        let (value, _) = self.expression_with_target(when_false, Some(d))?;
+        if value != d {
+            self.copy(ty, d, value);
+        }
+        self.place_label(join);
+        Ok((d, ty))
     }
 
     fn convert(&mut self, source: u32, from: Type, to: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
