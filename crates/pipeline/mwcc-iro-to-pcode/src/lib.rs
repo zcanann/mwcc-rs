@@ -1621,7 +1621,7 @@ impl Lowerer<'_, '_> {
                 }
                 // A widening that emits nothing (of a word, or of a narrow
                 // load already extended) computes into the target.
-                if target.is_some() && !self.unoptimized
+                if target.is_some()
                     && is_general_word(ty)
                     && !is_narrow(ty)
                     && ((is_general_word(operand.ty) && !is_narrow(operand.ty))

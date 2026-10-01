@@ -787,6 +787,8 @@ impl Builder<'_, '_> {
         match (left_size, right_size) {
             (Some(_), Some(_)) => Err(unsupported("pointer difference")),
             (Some(0), None) | (None, Some(0)) => Err(unsupported("arithmetic on an unsized pointee")),
+            // `p + 0` (`&a[0]`) is the pointer itself.
+            (Some(_), None) if right.as_int() == Some(0) && std::env::var_os("MWCC_IRO_NO_ZERO_OFFSET_FOLD").is_none() => Ok(left),
             (Some(size), None) => {
                 let ty = left.ty;
                 Ok(Expr::binary(op, left, scale(promoted(right), size), ty))
