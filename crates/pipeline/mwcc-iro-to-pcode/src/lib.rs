@@ -1990,8 +1990,16 @@ impl Lowerer<'_, '_> {
                 return Ok((d, ty));
             }
         }
-        let (a, _) = self.expression(left)?;
-        let (b, _) = self.expression(right)?;
+        // (An operand that calls is evaluated first.)
+        let (a, b) = if contains_call(right) && !contains_call(left) && !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER") {
+            let (b, _) = self.expression(right)?;
+            let (a, _) = self.expression(left)?;
+            (a, b)
+        } else {
+            let (a, _) = self.expression(left)?;
+            let (b, _) = self.expression(right)?;
+            (a, b)
+        };
         // A computed right operand of a commutative operation goes first
         // (a loaded one keeps source order).
         let commutative = matches!(op, BinaryOp::Add | BinaryOp::Multiply);
@@ -2008,8 +2016,12 @@ impl Lowerer<'_, '_> {
             ExprKind::Convert(inner) => matches!(inner.kind, ExprKind::Float(_)),
             _ => false,
         };
+        let one_calls = contains_call(left) != contains_call(right) && !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER");
         let swap = commutative
-            && if refined && constant(left) {
+            && if one_calls {
+                // (A call's result goes second.)
+                contains_call(left)
+            } else if refined && constant(left) {
                 false
             } else if refined && constant(right) {
                 true
@@ -2629,7 +2641,13 @@ impl Lowerer<'_, '_> {
             && self.absolute_base(left)
             && right.as_int().is_none()
             && !toggle("MWCC_PCODE_ADDRESS_FIRST");
-        let early = if index_first { Some(self.expression(right)?.0) } else { None };
+        // An operand that calls is evaluated first.
+        let calls_first = immediate.is_none()
+            && right.as_int().is_none()
+            && contains_call(right)
+            && !contains_call(left)
+            && !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER");
+        let early = if index_first || calls_first { Some(self.expression(right)?.0) } else { None };
         let (a, _) = self.expression(left)?;
         match (op, immediate) {
             // `x * -2^k` is a shift and a negation (`neg` alone for -1).
@@ -2765,6 +2783,13 @@ impl Lowerer<'_, '_> {
             && !loaded
             && leaf(right)
             && (!one_register(left) || std::env::var_os("MWCC_PCODE_LEAF_FIRST_ALWAYS").is_some());
+        // (A call's result goes second in a commutative operation.)
+        let call_order = !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER");
+        let swap = if call_order && op.is_commutative() && contains_call(left) != contains_call(right) {
+            contains_call(left)
+        } else {
+            swap
+        };
         let (a, b) = if swap { (b, a) } else { (a, b) };
         let d = self.result(target);
         let instruction = match op {
@@ -4124,6 +4149,11 @@ fn narrow_mask(ty: Type) -> u32 {
         Type::Short | Type::UnsignedShort => 0xffff,
         _ => u32::MAX,
     }
+}
+
+/// Whether an expression contains a call.
+fn contains_call(expression: &Expr) -> bool {
+    format!("{:?}", expression.kind).contains("Call {")
 }
 
 fn peel_conversions(expression: &Expr) -> &Expr {
