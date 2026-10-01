@@ -47,7 +47,7 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
         strength::propagate_constants(&mut built.function);
     }
     if unit.strength_reduction && std::env::var_os("MWCC_IRO_NO_STRENGTH_REDUCTION").is_none() {
-        strength::strength_reduce(&mut built.function);
+        strength::strength_reduce(&mut built.function, !unit.branch_preserving);
     }
     if unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_UNINDEXED").is_none() {
         let absolute = |name: &str| unit.globals.get(name).is_some_and(|global| !global.small_data);

@@ -4,10 +4,12 @@
 
 use mwcc_iro::{BinaryOp, Expr, ExprKind, Function, Place, Stmt, Type, VarId, VariableKind};
 
-pub fn strength_reduce(function: &mut Function) {
+/// `fold_start`: a constant start of the induction variable folds into
+/// the cursors' starts (GC/1.0-1.2.5n compute `base + i*k` after it).
+pub fn strength_reduce(function: &mut Function, fold_start: bool) {
     let first_cursor = function.variables.len();
     let mut body = std::mem::take(&mut function.body);
-    statements(&mut body, function);
+    statements(&mut body, function, fold_start);
     if std::env::var_os("MWCC_IRO_NO_CURSOR_COPIES").is_none() {
         let whole = body.clone();
         propagate_cursor_copies(&mut body, &whole, first_cursor, function);
@@ -111,17 +113,17 @@ fn uses(body: &[Stmt], variable: VarId) -> usize {
         .sum()
 }
 
-fn statements(body: &mut Vec<Stmt>, function: &mut Function) {
+fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
     let mut index = 0;
     while index < body.len() {
         // Inner loops first.
         match &mut body[index] {
             Stmt::If { then_body, else_body, .. } => {
-                statements(then_body, function);
-                statements(else_body, function);
+                statements(then_body, function, fold_start);
+                statements(else_body, function, fold_start);
             }
-            Stmt::Loop { body: inner, .. } => statements(inner, function),
-            Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| statements(arm, function)),
+            Stmt::Loop { body: inner, .. } => statements(inner, function, fold_start),
+            Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| statements(arm, function, fold_start)),
             _ => {}
         }
         let initial = match index.checked_sub(1).map(|previous| &body[previous]) {
@@ -130,7 +132,7 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function) {
         };
         let (inits, folded) = match &mut body[index] {
             Stmt::Loop { condition, body: inner, step, effects, .. } => {
-                reduce_loop(condition.as_mut(), inner, step, effects, initial, function)
+                reduce_loop(condition.as_mut(), inner, step, effects, initial, fold_start, function)
             }
             _ => (Vec::new(), false),
         };
@@ -160,6 +162,7 @@ fn reduce_loop(
     step: &mut Vec<Stmt>,
     effects: &mut [Stmt],
     initial: Option<(VarId, i64)>,
+    fold_start: bool,
     function: &mut Function,
 ) -> (Vec<Stmt>, bool) {
     let mut inits = Vec::new();
@@ -204,8 +207,11 @@ fn reduce_loop(
         }
         for cursor in &cursors {
             let ty = cursor.base.ty;
+            // (GC/1.0-1.2.5n fold it only while the loop still reads the
+            // induction variable's value.)
+            let fold = fold_start || uses(body, induction) > 0;
             let start = match initial {
-                Some((variable, value)) if variable == induction => {
+                Some((variable, value)) if variable == induction && fold => {
                     let offset = value * cursor.stride;
                     if offset == 0 {
                         cursor.base.clone()

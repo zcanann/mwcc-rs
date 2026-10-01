@@ -573,10 +573,44 @@ fn propagate_physical_copies(pcode: &mut PCodeFunction) -> bool {
             continue;
         }
         changed |= !eliminated.is_empty();
+        // (A copy reading an eliminated entry copy is the entry copy now.)
+        let entry_copies: Vec<u32> = pcode
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instruction| instruction.flags.entry_copy)
+            .filter_map(|instruction| instruction.copy(class))
+            .filter(|copy| eliminated.contains(copy))
+            .map(|(v, _)| v)
+            .collect();
+        // (Into a physical register: only an argument a later call reads.)
+        let argument_copies: Vec<Vec<bool>> = pcode
+            .blocks
+            .iter()
+            .map(|block| {
+                block
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, instruction)| {
+                        instruction.copy(class).is_some_and(|(destination, _)| {
+                            destination < 32
+                                && block.instructions[index + 1..]
+                                    .iter()
+                                    .take_while(|later| !later.defs(class).contains(&destination) || later.instruction.is_call())
+                                    .any(|later| {
+                                        later.instruction.is_call()
+                                            && later.implicit_uses.iter().any(|r| r.class == class && r.number == destination)
+                                    })
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
         // Pass 2: rewrite the uses and drop the copies.
-        for block in &mut pcode.blocks {
+        for (block_index, block) in pcode.blocks.iter_mut().enumerate() {
             let mut active: Vec<(u32, u32)> = Vec::new();
-            for instruction in &mut block.instructions {
+            for (instruction_index, instruction) in block.instructions.iter_mut().enumerate() {
                 // Partially propagated copies leave other copies reading `v`.
                 let skip_partial = instruction.copy(class).is_some();
                 let written = instruction.defs(class);
@@ -588,6 +622,14 @@ fn propagate_physical_copies(pcode: &mut PCodeFunction) -> bool {
                     .collect();
                 let active = &mut active;
                 if !active_here.is_empty() {
+                    if let Some((destination, source)) = instruction.copy(class) {
+                        if (destination >= 32 || argument_copies[block_index][instruction_index])
+                            && entry_copies.contains(&source)
+                            && active_here.iter().any(|&(v, _)| v == source)
+                        {
+                            instruction.flags.entry_copy = true;
+                        }
+                    }
                     let active = &active_here;
                     mwcc_vreg::for_each_register(&mut instruction.instruction, |role, operand_class, field| {
                         if role == RegisterRole::Use && operand_class == class {

@@ -1014,6 +1014,12 @@ impl Lowerer<'_, '_> {
         if let Stmt::Assign { variable, value } = statement {
             if let Some(value) = value.as_int() {
                 self.known_constant = Some((*variable, value));
+            } else if known.is_some_and(|(known, _)| known != *variable)
+                && !contains_call(value)
+                && !toggle("MWCC_PCODE_KNOWN_ONLY_ADJACENT")
+            {
+                // (Another variable's assignment keeps it known.)
+                self.known_constant = known;
             }
         }
         match statement {
