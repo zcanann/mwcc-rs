@@ -117,6 +117,8 @@ pub struct Function {
     pub body: Vec<Stmt>,
     /// String literals by bytes (without the NUL), in first-use order.
     pub strings: Vec<Vec<u8>>,
+    /// Constant images (initialized local arrays), by index.
+    pub images: Vec<Vec<u8>>,
 }
 
 impl Function {
@@ -259,6 +261,9 @@ pub enum ExprKind {
     LocalAddress(VarId),
     /// The address of the function's i-th string literal.
     StringAddress(usize),
+    /// The address of the function's i-th constant image (an initialized
+    /// local array's bytes, copied into its frame slot).
+    Image(usize),
     /// A load of `ty` from `base + index + offset` (`index` scaled).
     Load { base: Box<Expr>, index: Option<Box<Expr>>, offset: i32 },
     Unary(UnaryOp, Box<Expr>),
@@ -315,7 +320,7 @@ impl Expr {
             | ExprKind::Float(_)
             | ExprKind::Global(_)
             | ExprKind::GlobalAddress(_)
-            | ExprKind::StringAddress(_) => false,
+            | ExprKind::StringAddress(_) | ExprKind::Image(_) => false,
             ExprKind::Var(id) | ExprKind::LocalAddress(id) => *id == variable,
             ExprKind::Load { base, index, .. } => {
                 base.mentions(variable) || index.as_ref().is_some_and(|index| index.mentions(variable))
@@ -453,6 +458,7 @@ impl fmt::Display for Expr {
             ExprKind::Global(name) => write!(f, "{name}"),
             ExprKind::GlobalAddress(name) => write!(f, "&{name}"),
             ExprKind::StringAddress(index) => write!(f, "&@str{index}"),
+            ExprKind::Image(index) => write!(f, "&@image{index}"),
             ExprKind::LocalAddress(id) => write!(f, "&v{id}"),
             ExprKind::Load { base, index, offset } => {
                 write!(f, "load.{:?}[{base}", self.ty)?;

@@ -97,7 +97,14 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             (None, Some(_)) => None,
             _ => return Err(unsupported(format!("local type {:?}", local.declared_type))),
         };
-        if frame.is_some() && local.data_bytes.is_some() {
+        // An initialized frame array copies a constant image (its pointer
+        // elements would need relocations).
+        if frame.is_some()
+            && local.data_bytes.is_some()
+            && (!local.data_relocations.is_empty()
+                || local.array_length.is_none()
+                || std::env::var_os("MWCC_IRO_NO_IMAGES").is_some())
+        {
             return Err(unsupported("an initialized frame array"));
         }
         variables.push(Variable { name: local.name.clone(), ty: local.declared_type, kind: VariableKind::Local, frame });
@@ -125,7 +132,24 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         direct_return: false,
     };
     let mut body = Vec::new();
+    let mut images: Vec<Vec<u8>> = Vec::new();
     for local in &function.locals {
+        if let (Some(bytes), Some((size, align))) = (&local.data_bytes, builder.names.get(&local.name).and_then(|&id| builder.variables[id].frame)) {
+            // The image is the array's bytes (zero-padded; a string exactly the
+            // array's length drops its NUL).
+            let variable = builder.names[&local.name];
+            let mut image = bytes.clone();
+            image.resize(size as usize, 0);
+            images.push(image);
+            let ty = Type::Struct { size, align: u8::try_from(align).unwrap_or(4) };
+            let source = Expr { kind: ExprKind::Image(images.len() - 1), ty: Type::StructPointer { element_size: size } };
+            body.push(Stmt::Store {
+                place: Place::Memory { base: Box::new(builder.local_address(variable)), index: None, offset: 0 },
+                ty,
+                value: Expr { kind: ExprKind::Load { base: Box::new(source), index: None, offset: 0 }, ty },
+            });
+            continue;
+        }
         if let Some(initializer) = &local.initializer {
             let variable = builder.names[&local.name];
             let value = assigned(builder.expression(initializer)?, local.declared_type);
@@ -174,6 +198,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     Ok(Built {
         function: Function {
             strings: std::mem::take(&mut builder_strings),
+            images,
             name: function.name.clone(),
             return_type: function.return_type,
             parameter_count: function.parameters.len(),

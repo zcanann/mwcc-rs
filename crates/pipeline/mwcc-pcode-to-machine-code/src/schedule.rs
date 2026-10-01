@@ -171,10 +171,14 @@ fn memory_of(instruction: &PInstr) -> Memory {
         }
         return Memory::None;
     }
+    // Nothing stores to read-only memory (constant images).
+    if is_load && instruction.flags.read_only {
+        return Memory::None;
+    }
     let object = match (&instruction.relocation, &instruction.instruction) {
         // Nothing stores to the constant pool: its loads are unordered.
         (Some(relocation), _)
-            if matches!(relocation.target, RelocationTarget::Constant(_)) && is_load
+            if matches!(relocation.target, RelocationTarget::Constant(_) | RelocationTarget::ConstantWithAddend(..)) && is_load
                 && std::env::var_os("MWCC_SCHED_POOL_ORDERED").is_none() =>
         {
             return Memory::None;

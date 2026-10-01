@@ -535,7 +535,7 @@ fn children(expression: &mut Expr, rewrite: &mut dyn FnMut(&mut Expr)) {
         | ExprKind::Global(_)
         | ExprKind::GlobalAddress(_)
         | ExprKind::LocalAddress(_)
-        | ExprKind::StringAddress(_) => {}
+        | ExprKind::StringAddress(_) | ExprKind::Image(_) => {}
         ExprKind::Load { base, index, .. } => {
             rewrite(base);
             if let Some(index) = index {
@@ -775,7 +775,7 @@ pub fn speculable(expression: &Expr) -> bool {
         | ExprKind::Global(_)
         | ExprKind::GlobalAddress(_)
         | ExprKind::LocalAddress(_)
-        | ExprKind::StringAddress(_) => true,
+        | ExprKind::StringAddress(_) | ExprKind::Image(_) => true,
         ExprKind::Binary(op, left, right) => {
             !matches!(op, BinaryOp::Divide | BinaryOp::Modulo | BinaryOp::LogicalAnd | BinaryOp::LogicalOr)
                 && speculable(left)

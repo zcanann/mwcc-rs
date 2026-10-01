@@ -66,6 +66,8 @@ pub struct InstructionFlags {
     /// Scheduled in emission order against everything (the epilogue's
     /// restore-helper base).
     pub serialize: bool,
+    /// A load of read-only memory (a constant image): nothing stores to it.
+    pub read_only: bool,
 }
 
 /// One PCode instruction.
@@ -252,6 +254,9 @@ pub struct PCodeFunction {
     /// Pooled constants (bits, byte width) referenced as
     /// `RelocationTarget::Constant(index)`.
     pub pool: Vec<(u64, u8)>,
+    /// Anonymous `.rodata` images (bytes, `.comment` alignment), addressed
+    /// through `AnonymousRodataAt(i)`.
+    pub rodata_images: Vec<(Vec<u8>, u32)>,
     pub returns: ReturnRegisters,
 }
 
@@ -274,6 +279,7 @@ impl PCodeFunction {
             exit_float_uses: Vec::new(),
             ends_in_tail_call: false,
             pool: Vec::new(),
+            rodata_images: Vec::new(),
             returns,
         }
     }

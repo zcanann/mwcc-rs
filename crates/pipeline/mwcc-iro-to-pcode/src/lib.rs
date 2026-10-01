@@ -1318,6 +1318,26 @@ impl Lowerer<'_, '_> {
                 self.emit(addi);
                 Ok((d, ty))
             }
+            // A large constant image's address (`lis; addi` of its `.rodata`
+            // blob); small ones are read through the pool by the block copy.
+            ExprKind::Image(index) => {
+                let image = &self.function.images[*index];
+                if self.small_image(image.len()) {
+                    return Err(unsupported("address of a small image"));
+                }
+                let blob = self.rodata_blob(*index);
+                let high = self.temporary();
+                let target_blob = || RelocationTarget::AnonymousRodataAt(blob);
+                let mut lis = PInstr::new(Instruction::AddImmediateShifted { d: high, a: 0, immediate: 0 });
+                lis.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Ha, target: target_blob() });
+                self.emit(lis);
+                let d = self.result(target);
+                let mut addi = PInstr::new(Instruction::AddImmediate { d, a: high, immediate: 0 });
+                addi.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Lo, target: target_blob() });
+                addi.not_r0.push(high);
+                self.emit(addi);
+                Ok((d, ty))
+            }
             ExprKind::LocalAddress(id) => {
                 let offset = self.frame_offsets[*id].ok_or_else(|| unsupported("address of a register variable"))?;
                 let key = format!("&v{id}");
@@ -2863,10 +2883,67 @@ impl Lowerer<'_, '_> {
         };
         let unit: u32 = if self.unoptimized { u32::from(align.clamp(1, 4)) } else { 4 };
         let limit = if self.unoptimized { 16 } else { 64 };
+        // A small constant image is read unit by unit through the pool
+        // (`lwz r,@N+k@sda21`).
+        if let ExprKind::Image(index) = source.kind {
+            let image = self.function.images[index].clone();
+            if self.small_image(image.len()) && *source_offset == 0 && size as usize <= image.len() {
+                return self.copy_small_image(place, &destination, &image, size, unit);
+            }
+        }
+        // A constant image (MWCC still orders its loads like any memory).
+        let read_only = matches!(source.kind, ExprKind::Image(_));
+        let unordered = read_only && toggle("MWCC_PCODE_IMAGE_LOADS_UNORDERED");
+        // A frame object is stored through r1 directly.
+        let frame = match destination.0.kind {
+            ExprKind::LocalAddress(id) => {
+                let slot = self.frame_offsets[id].ok_or_else(|| unsupported("frame slot"))?;
+                Some(i16::try_from(i32::from(slot) + destination.1).map_err(|_| unsupported("a large frame"))?)
+            }
+            _ => None,
+        };
+        let looping = size > limit;
+        // (-O0 sets a frame destination's loop pointer first.)
+        let early_destination = match frame {
+            Some(slot) if looping && self.unoptimized => {
+                let ds = self.temporary();
+                self.emit_based(Instruction::AddImmediate { d: ds, a: 1, immediate: slot - unit as i16 }, 1);
+                Some(ds)
+            }
+            _ => None,
+        };
         let (s, _) = self.expression(source)?;
         let (s, s_offset) = self.displacement(s, *source_offset)?;
-        let (d, _) = self.expression(&destination.0)?;
-        let (d, d_offset) = self.displacement(d, destination.1)?;
+        let (d, d_offset) = match frame {
+            Some(slot) => (1, slot),
+            None => {
+                let (d, _) = self.expression(&destination.0)?;
+                self.displacement(d, destination.1)?
+            }
+        };
+        let copy_load_at = |this: &mut Self, width: u32, value: u32, base: u32, offset: i16, update: bool| {
+            let mut load = PInstr::new(copy_load(width, value, base, offset, update));
+            load.not_r0.push(base);
+            load.flags.read_only = unordered;
+            this.emit(load);
+        };
+        // -O4 from a constant image: every unit loaded, then every unit
+        // stored (nothing can alias the image).
+        if size <= limit && read_only && !self.unoptimized && !toggle("MWCC_PCODE_IMAGE_PAIRS") {
+            let mut units = Vec::new();
+            let mut at = 0u32;
+            while at < size {
+                let width = if size - at >= 4 { 4 } else { tail_width(size - at) };
+                let value = self.temporary();
+                copy_load_at(self, width, value, s, at_offset(s_offset, at)?, false);
+                units.push((width, value, at));
+                at += width;
+            }
+            for (width, value, at) in units {
+                self.emit_based(copy_store(width, value, d, at_offset(d_offset, at)?, false), d);
+            }
+            return Ok(());
+        }
         if size <= limit {
             let mut at = 0u32;
             while size - at >= 8 {
@@ -2874,8 +2951,8 @@ impl Lowerer<'_, '_> {
                 let chunk_end = at + 8;
                 while at < chunk_end {
                     let (first, second) = (self.temporary(), self.temporary());
-                    self.emit_based(copy_load(unit, first, s, at_offset(s_offset, at)?, false), s);
-                    self.emit_based(copy_load(unit, second, s, at_offset(s_offset, at + unit)?, false), s);
+                    copy_load_at(self, unit, first, s, at_offset(s_offset, at)?, false);
+                    copy_load_at(self, unit, second, s, at_offset(s_offset, at + unit)?, false);
                     self.emit_based(copy_store(unit, first, d, at_offset(d_offset, at)?, false), d);
                     self.emit_based(copy_store(unit, second, d, at_offset(d_offset, at + unit)?, false), d);
                     at += 2 * unit;
@@ -2898,8 +2975,14 @@ impl Lowerer<'_, '_> {
             li.flags.serialize = !toggle("MWCC_PCODE_FREE_COPY_MTCTR");
             self.emit(li);
         }
-        let ds = self.temporary();
-        self.emit_based(Instruction::AddImmediate { d: ds, a: d, immediate: at_offset(d_offset, 0)? - unit as i16 }, d);
+        let ds = match early_destination {
+            Some(ds) => ds,
+            None => {
+                let ds = self.temporary();
+                self.emit_based(Instruction::AddImmediate { d: ds, a: d, immediate: at_offset(d_offset, 0)? - unit as i16 }, d);
+                ds
+            }
+        };
         let ss = self.temporary();
         self.emit_based(Instruction::AddImmediate { d: ss, a: s, immediate: at_offset(s_offset, 0)? - unit as i16 }, s);
         if self.unoptimized {
@@ -2912,10 +2995,8 @@ impl Lowerer<'_, '_> {
         let top = self.new_join_label();
         self.place_label(top);
         let (first, second) = (self.temporary(), self.temporary());
-        self.emit_based(copy_load(unit, first, ss, unit as i16, false), ss);
-        let mut loaded = PInstr::new(copy_load(unit, second, ss, 2 * unit as i16, true));
-        loaded.not_r0.push(ss);
-        self.emit(loaded);
+        copy_load_at(self, unit, first, ss, unit as i16, false);
+        copy_load_at(self, unit, second, ss, 2 * unit as i16, true);
         self.emit_based(copy_store(unit, first, ds, unit as i16, false), ds);
         let mut stored = PInstr::new(copy_store(unit, second, ds, 2 * unit as i16, true));
         stored.not_r0.push(ds);
@@ -2929,6 +3010,81 @@ impl Lowerer<'_, '_> {
             let width = if self.unoptimized { unit } else { tail_width(size - at) };
             let relative = (at - done + unit) as i16;
             self.copy_single(width, ss, relative, ds, relative);
+            at += width;
+        }
+        Ok(())
+    }
+
+    /// Images of at most 8 bytes live in the small-data pool.
+    fn small_image(&self, bytes: usize) -> bool {
+        self.unit.pool_small_data && bytes <= 8 && !toggle("MWCC_PCODE_NO_SMALL_IMAGES")
+    }
+
+    /// The `.rodata` blob holding image `index` (one per image).
+    fn rodata_blob(&mut self, index: usize) -> usize {
+        let bytes = self.function.images[index].clone();
+        if let Some(blob) = self.pcode.rodata_images.iter().position(|(existing, _)| *existing == bytes) {
+            return blob;
+        }
+        self.pcode.rodata_images.push((bytes, 4));
+        self.pcode.rodata_images.len() - 1
+    }
+
+    /// A block copy from a small pooled image: unit pairs per 8-byte chunk,
+    /// then single units, each load relocated into the pool entry.
+    fn copy_small_image(&mut self, place: &Place, destination: &(Expr, i32), image: &[u8], size: u32, unit: u32) -> Compilation<()> {
+        let _ = place;
+        let mut padded = image.to_vec();
+        let width: u8 = if padded.len() <= 4 { 4 } else { 8 };
+        padded.resize(usize::from(width), 0);
+        let bits = padded.iter().fold(0u64, |bits, &byte| (bits << 8) | u64::from(byte));
+        let index = match self.pcode.pool.iter().position(|&entry| entry == (bits, width)) {
+            Some(index) => index,
+            None => {
+                self.pcode.pool.push((bits, width));
+                self.pcode.pool.len() - 1
+            }
+        };
+        let (d, d_offset) = match destination.0.kind {
+            ExprKind::LocalAddress(id) => {
+                let slot = self.frame_offsets[id].ok_or_else(|| unsupported("frame slot"))?;
+                (1, i16::try_from(i32::from(slot) + destination.1).map_err(|_| unsupported("a large frame"))?)
+            }
+            _ => {
+                let (d, _) = self.expression(&destination.0)?;
+                self.displacement(d, destination.1)?
+            }
+        };
+        let pooled = |this: &mut Self, width: u32, value: u32, at: u32| {
+            let mut load = PInstr::new(copy_load(width, value, 0, 0, false));
+            load.flags.read_only = true;
+            load.relocation = Some(AttachedRelocation {
+                kind: RelocationKind::EmbSda21,
+                target: if at == 0 {
+                    RelocationTarget::Constant(index)
+                } else {
+                    RelocationTarget::ConstantWithAddend(index, at as i32)
+                },
+            });
+            this.emit(load);
+        };
+        let mut at = 0u32;
+        while size - at >= 8 {
+            let chunk_end = at + 8;
+            while at < chunk_end {
+                let (first, second) = (self.temporary(), self.temporary());
+                pooled(self, unit, first, at);
+                pooled(self, unit, second, at + unit);
+                self.emit_based(copy_store(unit, first, d, at_offset(d_offset, at)?, false), d);
+                self.emit_based(copy_store(unit, second, d, at_offset(d_offset, at + unit)?, false), d);
+                at += 2 * unit;
+            }
+        }
+        while at < size {
+            let width = if self.unoptimized { unit } else { tail_width(size - at) };
+            let value = self.temporary();
+            pooled(self, width, value, at);
+            self.emit_based(copy_store(width, value, d, at_offset(d_offset, at)?, false), d);
             at += width;
         }
         Ok(())
@@ -3297,7 +3453,7 @@ fn makes_calls(body: &[Stmt]) -> bool {
             | ExprKind::Global(_)
             | ExprKind::GlobalAddress(_)
             | ExprKind::LocalAddress(_)
-            | ExprKind::StringAddress(_) => false,
+            | ExprKind::StringAddress(_) | ExprKind::Image(_) => false,
             ExprKind::Load { base, index, .. } => expression(base) || index.as_deref().is_some_and(expression),
             ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => expression(operand),
             ExprKind::Binary(_, left, right) => expression(left) || expression(right),
@@ -3343,7 +3499,7 @@ fn references_weighted(body: &[Stmt], variable: VarId, base: usize) -> usize {
         match &e.kind {
             ExprKind::Var(id) => usize::from(*id == variable),
             ExprKind::LocalAddress(id) => usize::from(*id == variable),
-            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) | ExprKind::StringAddress(_) => 0,
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Global(_) | ExprKind::GlobalAddress(_) | ExprKind::StringAddress(_) | ExprKind::Image(_) => 0,
             ExprKind::Load { base: address, index, .. } if as_base(address) > 0 => {
                 as_base(address) + index.as_deref().map_or(0, |index| expression(index, variable))
             }
