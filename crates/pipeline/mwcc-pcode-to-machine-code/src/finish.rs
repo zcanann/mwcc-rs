@@ -78,17 +78,17 @@ pub fn finish(
     if !options.unoptimized || options.fold_absolute_into_own_base {
         fold_absolute_displacements(&mut pcode, options.fold_absolute_into_own_base);
     }
-    // GC/1.0-1.2.5n copy parameters into saved registers with `addi d,s,0`
+    // GC/1.0-1.2.5n copy parameters aside with `addi d,s,0`
     // when two GPR parameters are used or the frame holds objects.
     if options.early_frame {
-        let saved_copy = |instruction: &PInstr| {
+        let entry_copy = |instruction: &PInstr| {
             instruction.flags.entry_copy
-                && matches!(instruction.instruction, Instruction::Or { a, s, b } if s == b && a >= 14)
+                && matches!(instruction.instruction, Instruction::Or { a, s, b } if s == b)
         };
-        let copies = pcode.blocks.iter().flat_map(|block| &block.instructions).filter(|i| saved_copy(i)).count();
+        let copies = pcode.blocks.iter().flat_map(|block| &block.instructions).filter(|i| entry_copy(i)).count();
         if copies > 0 && (pcode.referenced_general_parameters >= 2 || pcode.variable_frame_objects > 0) {
             for instruction in pcode.blocks.iter_mut().flat_map(|block| block.instructions.iter_mut()) {
-                if saved_copy(instruction) {
+                if entry_copy(instruction) {
                     if let Instruction::Or { a, s, .. } = instruction.instruction {
                         instruction.instruction = Instruction::AddImmediate { d: a, a: s, immediate: 0 };
                     }
