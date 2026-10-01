@@ -532,7 +532,17 @@ fn select(nodes: &mut [Node], stack: &[usize], policy: &ClassPolicy) -> Compilat
         if available != 0 {
             nodes[register].physical = available.trailing_zeros() as i32;
         } else {
-            let claim = (policy.claim_floor..32).rev().find(|&candidate| !used[candidate as usize]);
+            // (Never a register an interfering node holds: a -O0 register
+            // variable occupies its register throughout.)
+            let taken: u32 = nodes[register]
+                .neighbors
+                .iter()
+                .map(|&neighbor| nodes[neighbor].physical)
+                .filter(|&color| (0..32).contains(&color))
+                .fold(0, |bits, color| bits | (1 << color));
+            let claim = (policy.claim_floor..32)
+                .rev()
+                .find(|&candidate| !used[candidate as usize] && taken & (1 << candidate) == 0);
             let Some(color) = claim else {
                 return Err(Diagnostic::error(
                     "PCode coloring needs spill code (not yet ported)",
