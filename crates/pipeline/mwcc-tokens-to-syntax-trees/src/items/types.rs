@@ -1375,9 +1375,16 @@ impl Parser {
                     };
                     // Preserve the first index's byte stride as well as total size:
                     // `field[R][C]` advances `C * sizeof(element)` for `field[row]`.
-                    let (total_bytes, first_index_stride) = self
-                        .parse_array_declarator_extent(element_size)?
-                        .expect("the array opener was checked above");
+                    // A flexible array member (`T name[];`, last) occupies no
+                    // storage of its own.
+                    let (total_bytes, first_index_stride) = if *self.peek_at(1) == Token::BracketClose {
+                        self.advance();
+                        self.advance();
+                        (0, None)
+                    } else {
+                        self.parse_array_declarator_extent(element_size)?
+                            .expect("the array opener was checked above")
+                    };
                     size = total_bytes;
                     array_stride = first_index_stride;
                 }
