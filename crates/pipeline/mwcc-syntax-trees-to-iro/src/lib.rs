@@ -1512,8 +1512,20 @@ impl Builder<'_, '_> {
         DEPTH.with(|depth| depth.set(depth.get() - 1));
         let built = built?;
         let mut inlined = built.function;
+        // The expansion's string literals join the caller's.
         if !inlined.strings.is_empty() {
-            return Err(unsupported("inline expansion with string literals"));
+            let indices: Vec<usize> = inlined
+                .strings
+                .iter()
+                .map(|bytes| match self.strings.iter().position(|known| known == bytes) {
+                    Some(index) => index,
+                    None => {
+                        self.strings.push(bytes.clone());
+                        self.strings.len() - 1
+                    }
+                })
+                .collect();
+            passes::map_strings(&mut inlined.body, &|index| indices[index]);
         }
         if inlined.variables.iter().any(|variable| variable.frame.is_some())
             && (!inlined.images.is_empty() || std::env::var_os("MWCC_IRO_NO_INLINE_FRAME_OBJECTS").is_some())

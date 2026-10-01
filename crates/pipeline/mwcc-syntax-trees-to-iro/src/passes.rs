@@ -847,6 +847,18 @@ pub fn map_variables(body: &mut [Stmt], map: &dyn Fn(VarId) -> VarId) {
     assigned(body, map);
 }
 
+/// Renumber string literal references (an inline expansion's literals join
+/// the caller's).
+pub fn map_strings(body: &mut [Stmt], map: &dyn Fn(usize) -> usize) {
+    fn expression(e: &mut Expr, map: &dyn Fn(usize) -> usize) {
+        match &mut e.kind {
+            ExprKind::StringAddress(index) => *index = map(*index),
+            _ => children(e, &mut |child| expression(child, map)),
+        }
+    }
+    for_each_expression(body, &mut |e| expression(e, map));
+}
+
 fn children(expression: &mut Expr, rewrite: &mut dyn FnMut(&mut Expr)) {
     match &mut expression.kind {
         ExprKind::Int(_)

@@ -1540,7 +1540,7 @@ impl Lowerer<'_, '_> {
                 // `@@strN` is resolved to the pooled `@N` per unit.
                 let placeholder = || RelocationTarget::External(format!("@@str{index}"));
                 let bytes = self.function.strings[*index].len() + 1;
-                if self.unit.strings_small_data && bytes <= 8 {
+                if self.small_string(expression) {
                     let d = self.result(target);
                     let mut li = PInstr::new(Instruction::AddImmediate { d, a: 0, immediate: 0 });
                     li.relocation = Some(AttachedRelocation { kind: RelocationKind::EmbSda21, target: placeholder() });
@@ -3991,6 +3991,12 @@ impl Lowerer<'_, '_> {
 
     // ------------------------------------------------------------ calls
 
+    /// A string literal addressed from small data (`li d,@sda21`).
+    fn small_string(&self, expression: &Expr) -> bool {
+        matches!(expression.kind, ExprKind::StringAddress(index)
+            if self.unit.strings_small_data && self.function.strings[index].len() + 1 <= 8)
+    }
+
     fn call(&mut self, name: &str, arguments: &[Expr], ty: Type, target: Option<u32>) -> Compilation<u32> {
         // An indirect call's first argument is the target address.
         let (callee, arguments) = if name == mwcc_iro::INDIRECT_CALL {
@@ -4022,10 +4028,18 @@ impl Lowerer<'_, '_> {
                 if calls[index] != pass {
                     continue;
                 }
-                let direct = self.unoptimized && !pass && !is_float(argument.ty) && !toggle("MWCC_PCODE_O0_ARGUMENT_TEMPORARIES");
+                // (Optimized, a string's address too: in order, or with the
+                // constants when it is in small data.)
+                let string = matches!(argument.kind, ExprKind::StringAddress(_))
+                    && !toggle("MWCC_PCODE_STRING_ARGUMENT_TEMPORARY");
+                let direct = (self.unoptimized || string)
+                    && !pass
+                    && !is_float(argument.ty)
+                    && !toggle("MWCC_PCODE_O0_ARGUMENT_TEMPORARIES");
                 // A constant argument is loaded straight into its register.
                 values[index] = match argument.as_int() {
                     Some(_) if !self.unoptimized => None,
+                    None if string && !self.unoptimized && self.small_string(argument) => None,
                     _ if direct => {
                         let (value, _) = self.expression_with_target(argument, Some(registers[index]))?;
                         if value != registers[index] {
@@ -4054,7 +4068,15 @@ impl Lowerer<'_, '_> {
             match value {
                 Some(value) if value == register => {}
                 Some(value) => self.emit_plain(Instruction::Or { a: register, s: value, b: value }),
-                None => self.load_constant(register, arguments[index].as_int().expect("constant"))?,
+                None => match arguments[index].as_int() {
+                    Some(constant) => self.load_constant(register, constant)?,
+                    None => {
+                        let (value, _) = self.expression_with_target(&arguments[index], Some(register))?;
+                        if value != register {
+                            self.emit_plain(Instruction::Or { a: register, s: value, b: value });
+                        }
+                    }
+                },
             }
             argument_registers.push(Register::general(register));
         }
