@@ -2558,6 +2558,28 @@ impl Lowerer<'_, '_> {
         if let (Some(n), ExprKind::Binary(BinaryOp::BitAnd, inner, mask), false) = (left_shift, &left.kind, self.unoptimized) {
             if let Some((begin, end)) = mask_bounds(mask) {
                 if begin >= n {
+                    // `((y >> s) & m) << n` (y unsigned, m within the shifted
+                    // value's bits) rotates y by n - s.
+                    let shifted = match &unpromoted(inner).kind {
+                        ExprKind::Binary(BinaryOp::ShiftRight, y, amount) => amount.as_int().map(|s| (y, s)),
+                        // (An unsigned division by 2^s is the same shift.)
+                        ExprKind::Binary(BinaryOp::Divide, y, divisor) => divisor
+                            .as_int()
+                            .filter(|&k| k > 1 && (k as u64).is_power_of_two())
+                            .map(|k| (y, i64::from((k as u64).trailing_zeros()))),
+                        _ => None,
+                    };
+                    if let Some((y, s)) = shifted {
+                        if (1..32).contains(&s) && i64::from(begin) >= s {
+                            if is_unsigned(promote(y.ty)) && !toggle("MWCC_PCODE_NO_SHIFT_MASK_SHIFT") {
+                                let (x, _) = self.expression(y)?;
+                                let d = self.result(target);
+                                let shift = ((32 + i64::from(n) - s) % 32) as u8;
+                                self.emit_plain(Instruction::RotateAndMask { a: d, s: x, shift, begin: begin - n, end: end - n });
+                                return Ok((d, ty));
+                            }
+                        }
+                    }
                     let (x, _) = self.expression(inner)?;
                     let d = self.result(target);
                     self.emit_plain(Instruction::RotateAndMask { a: d, s: x, shift: n, begin: begin - n, end: end - n });
