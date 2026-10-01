@@ -3146,8 +3146,18 @@ impl Lowerer<'_, '_> {
             }
             _ => {}
         }
+        // A returned sum of a variable and a computed sum builds the inner
+        // sum in r3 (the variable, if it is there, moves aside).
+        let returned_sum = returning
+            && op == BinaryOp::Add
+            && !self.unoptimized
+            && matches!(ty, Type::Int | Type::UnsignedInt)
+            && unpromoted(left).as_var().is_some()
+            && matches!(right.kind, ExprKind::Binary(BinaryOp::Add, ..))
+            && !toggle("MWCC_PCODE_NO_RETURNED_SUM");
         let b = match early {
             Some(b) => b,
+            None if returned_sum => self.expression_with_target(right, Some(3))?.0,
             None => self.expression(right)?.0,
         };
         // MWCC places a leaf operand first in a commutative operation whose
