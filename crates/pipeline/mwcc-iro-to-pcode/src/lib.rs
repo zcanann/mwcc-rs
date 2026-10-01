@@ -1180,14 +1180,40 @@ impl Lowerer<'_, '_> {
                 }
                 _ => false,
             });
-        let narrow = is_narrow(variable_type) && !mwcc_syntax_trees_to_iro_fits(value, variable_type) && !kept_raw;
         let raw = self.is_raw(value);
+        // (A raw value assigned to a narrow variable is extended when
+        // optimized; -O0 extends at each read instead.)
+        let narrow = is_narrow(variable_type)
+            && (!mwcc_syntax_trees_to_iro_fits(value, variable_type)
+                || (raw && !self.unoptimized && matches!(value.kind, ExprKind::Load { .. } | ExprKind::Global(_))))
+            && !kept_raw;
         // (A narrow value of the variable's own type needs no conversion.)
         let converts = narrow && (value.ty != variable_type || raw || toggle("MWCC_PCODE_NO_NARROW_ASSIGN_TARGET"));
+        // -O0: a raw loaded byte lands in the variable and extends in place.
+        if self.unoptimized
+            && narrow
+            && raw
+            && matches!(value.kind, ExprKind::Load { .. } | ExprKind::Global(_))
+            && mwcc_iro::width(value.ty) <= mwcc_iro::width(variable_type)
+            && !toggle("MWCC_PCODE_O0_RAW_LOAD_TEMPORARY")
+        {
+            let (loaded, loaded_type) = self.expression_with_target(value, Some(destination))?;
+            self.emit_plain(extension(loaded_type, destination, loaded));
+            return Ok(());
+        }
         let (source, source_type) =
             self.expression_with_target(value, if converts { None } else { Some(destination) })?;
         if narrow && (source_type != variable_type || raw) {
-            let (converted, _) = self.convert(source, source_type, variable_type, Some(destination))?;
+            let raw_load = raw && !self.unoptimized && matches!(value.kind, ExprKind::Load { .. } | ExprKind::Global(_));
+            let (converted, _) = if raw_load && source_type == variable_type && !toggle("MWCC_PCODE_RAW_ASSIGN_UNEXTENDED") {
+                // A raw value of the variable's own type is extended as it.
+                self.emit_plain(extension(variable_type, destination, source));
+                (destination, variable_type)
+            } else {
+                // (A raw narrower load widens as itself.)
+                let raw = raw && matches!(value.kind, ExprKind::Load { .. } | ExprKind::Global(_));
+                self.convert_value(source, source_type, raw, variable_type, Some(destination))?
+            };
             if converted != destination {
                 self.emit_plain(Instruction::Or { a: destination, s: converted, b: converted });
             }
@@ -1718,7 +1744,10 @@ impl Lowerer<'_, '_> {
         target: Option<u32>,
     ) -> Compilation<(u32, Type)> {
         let zero_extended_load = raw && from == Type::Char && to == Type::UnsignedChar;
-        let extend_as = if is_narrow(to) {
+        let extend_as = if is_narrow(to) && is_narrow(from) && raw && mwcc_iro::width(from) < mwcc_iro::width(to) {
+            // A raw narrower value extends as itself (`s8` to `s16`: extsb).
+            Some(from)
+        } else if is_narrow(to) {
             (from != to && !zero_extended_load).then_some(to)
         } else if is_general_word(to) && is_narrow(from) && raw {
             Some(from)
@@ -3032,6 +3061,18 @@ impl Lowerer<'_, '_> {
         {
             let extended = self.temporary();
             self.emit_plain(extension(stored, extended, source));
+            return Ok(extended);
+        }
+        // A raw narrow value stored as a wider narrow type is extended as
+        // itself first (`lbz; extsb; sth`).
+        if is_narrow(stored)
+            && is_narrow(ty)
+            && mwcc_iro::width(ty) < mwcc_iro::width(stored)
+            && self.is_raw(value)
+            && !(self.unoptimized && matches!(value.kind, ExprKind::Var(_)))
+        {
+            let extended = self.temporary();
+            self.emit_plain(extension(ty, extended, source));
             return Ok(extended);
         }
         // -O0: a raw narrow variable stored as another narrow type is read
