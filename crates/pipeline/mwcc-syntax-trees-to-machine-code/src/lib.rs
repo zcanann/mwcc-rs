@@ -100,6 +100,7 @@ pub fn lower_function_with_source_facts(
     let mut output = lower_function_body(
         function,
         globals,
+        fixed_address_arrays,
         call_return_types,
         call_parameter_types,
         prototyped_names,
@@ -152,6 +153,7 @@ pub fn lower_function_with_source_facts(
 fn lower_function_body(
     function: &Function,
     globals: &[GlobalDeclaration],
+    fixed_address_arrays: &HashMap<String, (i64, mwcc_syntax_trees::Type)>,
     call_return_types: &HashMap<String, mwcc_syntax_trees::Type>,
     call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>,
     prototyped_names: &std::collections::HashSet<String>,
@@ -239,6 +241,7 @@ fn lower_function_body(
         function: pcode_function,
         static_locals: &static_locals,
         globals,
+        fixed_address_arrays,
         call_return_types,
         variadic_callees: variadic_definitions,
         prototyped: prototyped_names,

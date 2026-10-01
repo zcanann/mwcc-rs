@@ -41,10 +41,11 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
     if behavior.optimization == mwcc_versions::Optimization::O1 {
         return Err(mwcc_core::Diagnostic::error("PCode lowering: -O1 is not modeled (not yet supported)"));
     }
-    if behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving {
-        // Selects and comparison values are modeled on the branchless builds.
+    let early_frame = matches!(request.config.build.label, "GC/1.0" | "GC/1.1" | "GC/1.2.5" | "GC/1.2.5n");
+    // (GC/1.1p1 keeps a frame of its own, not modeled.)
+    if behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving && !early_frame {
         return Err(mwcc_core::Diagnostic::error(
-            "PCode lowering: branch-preserving select builds (not yet supported)",
+            "PCode lowering: the GC/1.1p1 frame (not yet supported)",
         ));
     }
     let no_inline_bodies = HashMap::new();
@@ -83,6 +84,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                     is_const: global.is_const && !global.is_volatile,
                     anchor: (defined.contains(global.name.as_str()) && !small_data && !global.is_const)
                         .then(|| if initialized(global.data_bytes.as_deref(), global.initializer.as_deref(), !global.data_relocations.is_empty() || global.address_initializer.is_some()) { "...data.0" } else { "...bss.0" }),
+                    fixed_address: None,
                 },
             )
         })
@@ -135,8 +137,21 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                 is_function: false,
                 is_const: local.is_const && !local.is_volatile,
                 anchor: None,
+                fixed_address: None,
             },
         );
+    }
+    for (name, &(address, element)) in request.fixed_address_arrays {
+        globals.entry(name.clone()).or_insert(GlobalInfo {
+            ty: element,
+            small_data: false,
+            is_array: true,
+            is_volatile: true,
+            is_function: false,
+            is_const: false,
+            anchor: None,
+            fixed_address: Some(address),
+        });
     }
     // A function named as a value is its (absolute) address.
     for name in request.call_return_types.keys() {
@@ -151,6 +166,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                     is_function: true,
                     is_const: false,
                     anchor: None,
+                    fixed_address: None,
                 },
             );
         }
@@ -175,6 +191,8 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             || request.config.build.label.starts_with("Wii/"),
         tied_halves: request.config.build.label.starts_with("GC/3.")
             || request.config.build.label.starts_with("Wii/"),
+        early_frame,
+        branch_preserving: early_frame,
         // (GC/3.x divides by multiplication at every level.)
         magic_division: behavior.optimization == mwcc_versions::Optimization::O4
             || request.config.build.label.starts_with("GC/3.")
@@ -233,6 +251,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                 || request.config.build.label.starts_with("Wii/"),
             general_save_helper_minimum: behavior.general_save_helper_minimum,
             use_lmw_stmw: request.config.flags.use_lmw_stmw,
+            early_frame,
         },
     )?;
     output.section = request.function.section.clone();

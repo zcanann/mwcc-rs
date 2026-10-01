@@ -71,6 +71,12 @@ pub struct InstructionFlags {
     /// Scheduled in emission order against the block's other `in_order`
     /// instructions only (GC/3.x epilogue restores).
     pub in_order: bool,
+    /// A parameter's copy out of its argument register on entry.
+    pub entry_copy: bool,
+    /// The definition stays in the web of the register's reaching
+    /// definition without reading it (a carry-only `subfc` into the
+    /// register the result later takes).
+    pub continues_web: bool,
 }
 
 /// One PCode instruction.
@@ -240,12 +246,17 @@ pub struct PCodeFunction {
     pub outside_window: Vec<(Class, u32)>,
     /// Bytes of the frame's local area (stack homes at r1+8 upward).
     pub frame_local_bytes: i16,
+    /// GC/1.0-1.2.5n: bytes reserved past r1+8 for every parameter and
+    /// declared local; they size a frame only one that exists anyway.
+    pub reserved_local_bytes: i16,
     /// r1-relative [start, end) ranges of frame objects (locals and
     /// conversion slots): the scheduler orders accesses per object.
     pub frame_objects: Vec<(i16, i16)>,
     /// Starts of frame objects whose address never escapes: pointer-based
     /// accesses cannot reach them.
     pub private_frame_objects: Vec<i16>,
+    /// Frame objects that are variables (not conversion slots).
+    pub variable_frame_objects: usize,
     /// Switch jump tables: the target block of each index, and the table
     /// symbol's offset past the function's anonymous-label counter.
     pub jump_tables: Vec<(Vec<usize>, u32)>,
@@ -276,8 +287,10 @@ impl PCodeFunction {
             coalesce_first_float: FIRST_VIRTUAL,
             outside_window: Vec::new(),
             frame_local_bytes: 0,
+            reserved_local_bytes: 0,
             frame_objects: Vec::new(),
             private_frame_objects: Vec::new(),
+            variable_frame_objects: 0,
             jump_tables: Vec::new(),
             strings: Vec::new(),
             exit_uses: Vec::new(),

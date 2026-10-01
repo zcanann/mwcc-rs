@@ -35,6 +35,10 @@ pub struct FinishOptions {
     pub general_save_helper_minimum: usize,
     /// `-use_lmw_stmw on`: `stmw`/`lmw` where the helpers would be called.
     pub use_lmw_stmw: bool,
+    /// GC/1.0-1.2.5n frames: `mflr; stw r0,4(r1); stwu`, the save area
+    /// 8-aligned at the top of an 8-aligned frame, `stmw`/`lmw` instead of
+    /// the helpers, and `addi r1` before `mtlr`.
+    pub early_frame: bool,
 }
 
 /// Schedule, color, frame, and flatten `pcode`. The last block is the exit
@@ -70,6 +74,24 @@ pub fn finish(
     // (GC/3.x folds at -O0 too.)
     if !options.unoptimized || options.fold_absolute_into_own_base {
         fold_absolute_displacements(&mut pcode, options.fold_absolute_into_own_base);
+    }
+    // GC/1.0-1.2.5n copy parameters into saved registers with `addi d,s,0`
+    // when there are two such copies or the frame holds objects.
+    if options.early_frame {
+        let saved_copy = |instruction: &PInstr| {
+            instruction.flags.entry_copy
+                && matches!(instruction.instruction, Instruction::Or { a, s, b } if s == b && a >= 14)
+        };
+        let copies = pcode.blocks.iter().flat_map(|block| &block.instructions).filter(|i| saved_copy(i)).count();
+        if copies >= 2 || (copies == 1 && pcode.variable_frame_objects > 0) {
+            for instruction in pcode.blocks.iter_mut().flat_map(|block| block.instructions.iter_mut()) {
+                if saved_copy(instruction) {
+                    if let Instruction::Or { a, s, .. } = instruction.instruction {
+                        instruction.instruction = Instruction::AddImmediate { d: a, a: s, immediate: 0 };
+                    }
+                }
+            }
+        }
     }
     // Saved FPRs: the contiguous range from f31 down to the lowest used.
     // (Also FPRs assigned directly: `-O0` register variables.)
@@ -120,7 +142,7 @@ pub fn finish(
     // Enough saved GPRs go through the helpers, which save rN..r31.
     let helper = saved.len() >= options.general_save_helper_minimum && !toggle("MWCC_PCODE_NO_SAVE_HELPERS");
     if helper {
-        if !makes_calls && !options.use_lmw_stmw {
+        if !makes_calls && !options.use_lmw_stmw && !options.early_frame {
             return Err(mwcc_core::Diagnostic::error("PCode frame: save helpers in a leaf function"));
         }
         let lowest = *saved.last().expect("saved registers");
@@ -130,11 +152,15 @@ pub fn finish(
     let float_frame = FloatFrame {
         link_reload_last: options.link_reload_after_float_restores,
         helper,
-        multiple: options.use_lmw_stmw,
-        ..FloatFrame::new(&saved_float, paired, &saved, pcode.frame_local_bytes)
+        multiple: options.use_lmw_stmw || options.early_frame,
+        ..if options.early_frame {
+            FloatFrame::early(&saved_float, &saved, pcode.frame_local_bytes.max(pcode.reserved_local_bytes))
+        } else {
+            FloatFrame::new(&saved_float, paired, &saved, pcode.frame_local_bytes)
+        }
     };
     let plan = mwcc_vreg::FramePlan::with_local_region(saved, pcode.frame_local_bytes);
-    let custom = !saved_float.is_empty() || helper;
+    let custom = !saved_float.is_empty() || helper || options.early_frame;
     let prologue = || if custom { float_frame.prologue() } else { plan.prologue() };
     let epilogue = || if custom || float_frame.link_reload_last { float_frame.epilogue() } else { plan.epilogue() };
     // A leaf frame neither saves nor restores the link register.
@@ -789,7 +815,8 @@ fn split_webs(pcode: &mut PCodeFunction) {
                             Instruction::RotateAndMaskInsert { .. } => true,
                             // An in-place extension continues its value's web.
                             Instruction::ExtendSignByte { a, s } | Instruction::ExtendSignHalfword { a, s } => a == s,
-                            _ => instruction.flags.in_place && instruction.uses(class).contains(&defined),
+                            _ => instruction.flags.continues_web
+                                || instruction.flags.in_place && instruction.uses(class).contains(&defined),
                         };
                         // An in-place update with another register operand
                         // (`add t,t,b`) keeps its accumulator; one with a
@@ -1099,6 +1126,8 @@ pub(crate) fn toggle(name: &str) -> bool {
 /// the top of the frame each saved FPR (16 bytes with its paired-single
 /// half: `psq_st` above `stfd`; 8 bytes otherwise), then the saved GPRs.
 struct FloatFrame {
+    /// The GC/1.0-1.2.5n prologue and epilogue shapes.
+    early: bool,
     link_reload_last: bool,
     /// The GPRs go through `_savegpr_N`/`_restgpr_N` (r11 = top of their area).
     helper: bool,
@@ -1131,15 +1160,38 @@ impl FloatFrame {
             .enumerate()
             .map(|(k, &register)| (register, frame_size - float_area - 4 * (k as i16 + 1)))
             .collect();
-        FloatFrame { link_reload_last: false, helper: false, multiple: false, frame_size, floats, generals }
+        FloatFrame { early: false, link_reload_last: false, helper: false, multiple: false, frame_size, floats, generals }
+    }
+
+    /// GC/1.0-1.2.5n: the locals end 8-aligned, then the save area (FPRs
+    /// at the top, GPRs below) rounded to 8.
+    fn early(floats: &[u32], generals: &[u32], local_bytes: i16) -> FloatFrame {
+        let base = (8 + local_bytes + 7) / 8 * 8;
+        let float_area = 8 * floats.len() as i16;
+        let frame_size = base + (float_area + 4 * generals.len() as i16 + 7) / 8 * 8;
+        let floats = floats.iter().enumerate().map(|(k, &register)| (register, frame_size - 8 * (k as i16 + 1), None)).collect();
+        let generals = generals
+            .iter()
+            .enumerate()
+            .map(|(k, &register)| (register, frame_size - float_area - 4 * (k as i16 + 1)))
+            .collect();
+        FloatFrame { early: true, link_reload_last: false, helper: false, multiple: true, frame_size, floats, generals }
     }
 
     fn prologue(&self) -> Vec<Instruction> {
-        let mut instructions = vec![
-            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -self.frame_size },
-            Instruction::MoveFromLinkRegister { d: 0 },
-            Instruction::StoreWord { s: 0, a: 1, offset: self.frame_size + 4 },
-        ];
+        let mut instructions = if self.early {
+            vec![
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -self.frame_size },
+            ]
+        } else {
+            vec![
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -self.frame_size },
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord { s: 0, a: 1, offset: self.frame_size + 4 },
+            ]
+        };
         for &(register, double, paired) in &self.floats {
             instructions.push(Instruction::StoreFloatDouble { s: register, a: 1, offset: double });
             if let Some(offset) = paired {
@@ -1173,6 +1225,25 @@ impl FloatFrame {
     /// Each FPR restores its paired half then its double, except that the
     /// final double reload follows the LR reload.
     fn epilogue(&self) -> Vec<Instruction> {
+        if self.early {
+            // `lwz r0; lfd…; lwz…/lmw; addi r1; mtlr; blr`.
+            let mut instructions = vec![Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 }];
+            for &(register, double, _) in &self.floats {
+                instructions.push(Instruction::LoadFloatDouble { d: register, a: 1, offset: double });
+            }
+            if self.helper {
+                let (lowest, offset) = *self.generals.last().expect("saved registers");
+                instructions.push(Instruction::LoadMultipleWord { d: lowest, a: 1, offset });
+            } else {
+                for &(register, offset) in &self.generals {
+                    instructions.push(Instruction::LoadWord { d: register, a: 1, offset });
+                }
+            }
+            instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+            instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+            instructions.push(Instruction::BranchToLinkRegister);
+            return instructions;
+        }
         let mut instructions = Vec::new();
         let last = self.floats.len().wrapping_sub(1);
         for (k, &(register, double, paired)) in self.floats.iter().enumerate() {

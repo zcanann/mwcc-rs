@@ -39,7 +39,8 @@ from win_pcode_eval import classify, relocation_fields  # noqa: E402
 
 # Builds whose selects keep branches (refused by PCode) or that mwcc-rs does
 # not model are not worth sampling for a PCode comparison.
-PCODE_BUILDS = {"GC/1.3", "GC/1.3.2", "GC/2.0", "GC/2.0p1", "GC/2.6", "GC/2.7", "GC/3.0a3", "GC/3.0a3p1"}
+PCODE_BUILDS = {"GC/1.1", "GC/1.1p1", "GC/1.2.5", "GC/1.2.5n", "GC/1.3", "GC/1.3.2", "GC/2.0", "GC/2.0p1",
+                "GC/2.6", "GC/2.7", "GC/3.0a3", "GC/3.0a3p1", "Wii/1.0"}
 SKIPPED = re.compile(r"mwcc: parity skipped function '([^']*)': (.*)")
 
 
@@ -119,6 +120,7 @@ def evaluate(tu: dict, mwcc: Path, root: Path, timeout: int) -> dict:
             kind = classify(code, produced) if claimed and produced != code else ""
             result["functions"].append({
                 "source": f"{tu['project']}:{tu['source']}",
+                "version": tu["mw_version"],
                 "name": name,
                 "claimed": claimed,
                 "exact": claimed and produced == code,

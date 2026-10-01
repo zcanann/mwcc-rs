@@ -41,7 +41,7 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     if std::env::var_os("MWCC_IRO_NO_SCALARIZE").is_none() {
         passes::scalarize(&mut built.function, unit.keeps_struct_stores);
     }
-    passes::run(&mut built.function);
+    passes::run(&mut built.function, unit.branch_preserving);
     Ok(built)
 }
 
@@ -861,6 +861,11 @@ impl Builder<'_, '_> {
                 let Some(global) = self.unit.globals.get(name) else {
                     return Err(unsupported(format!("unknown variable '{name}'")));
                 };
+                // A fixed-address array is its constant address.
+                if let Some(address) = global.fixed_address {
+                    let ty = pointer_to(global.ty).ok_or_else(|| unsupported("fixed-address array of this element type"))?;
+                    return Ok(Expr { kind: ExprKind::Int(address), ty });
+                }
                 // An array (or aggregate) global denotes its address.
                 if global.is_array || matches!(global.ty, Type::Struct { .. }) {
                     let ty = pointer_to(global.ty).ok_or_else(|| unsupported("array global of this element type"))?;
@@ -1115,6 +1120,9 @@ impl Builder<'_, '_> {
                     return Err(unsupported(format!("unknown variable '{name}'")));
                 };
                 let ty = pointer_to(global.ty).ok_or_else(|| unsupported("address of this global type"))?;
+                if let Some(address) = global.fixed_address {
+                    return Ok(Expr { kind: ExprKind::Int(address), ty });
+                }
                 Ok(Expr { kind: ExprKind::GlobalAddress(name.clone()), ty })
             }
             Expression::Variable(name) => match self.names.get(name) {

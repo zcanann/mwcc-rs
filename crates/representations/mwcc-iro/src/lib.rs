@@ -31,6 +31,9 @@ pub struct GlobalInfo {
     /// (`...bss.0` / `...data.0`), through which a function referring to
     /// three or more such objects of one section addresses them.
     pub anchor: Option<&'static str>,
+    /// An array declared at a fixed address (`u32 __AIRegs[8] : 0xCC006C00;`):
+    /// its name is that constant address.
+    pub fixed_address: Option<i64>,
 }
 
 /// The callee name of an indirect call: the target address is the call's
@@ -72,6 +75,12 @@ pub struct Unit<'a> {
     /// GC/3.x keeps the `lis; addi` of an absolute address used as a memory
     /// base in one register.
     pub tied_halves: bool,
+    /// GC/1.0-1.2.5n frames: every parameter and declared local has a slot
+    /// from r1+8 (parameters in order, then locals in reverse declaration
+    /// order), used or not.
+    pub early_frame: bool,
+    /// GC/1.0-1.2.5n comparison values (carry forms; no zero shortcuts).
+    pub branch_preserving: bool,
     /// GC/3.x and Wii test a promoted unsigned narrow value signed (`cmpwi`)
     /// unless it needed extending; earlier builds test it logically.
     pub signed_promoted_truth: bool,

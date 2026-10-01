@@ -92,6 +92,7 @@ pub fn lower(
         conversion_block: None,
         conversion_count: 0,
         frame_cursor: 8,
+        reserved_end: 0,
         escaped_frame_objects: Vec::new(),
     };
     lowerer.lower_function(returns_through_variable)?;
@@ -188,6 +189,8 @@ struct Lowerer<'a, 'u> {
     conversion_count: u32,
     /// Next free byte of the local area (r1-relative).
     frame_cursor: u32,
+    /// The end of an early frame's reservation when it holds no objects.
+    reserved_end: u32,
     /// Frame objects whose address the code computes.
     escaped_frame_objects: Vec<i16>,
 }
@@ -447,8 +450,28 @@ impl Lowerer<'_, '_> {
         let locals: Vec<VarId> = (function.parameter_count..function.variables.len())
             .filter(|&id| function.variables[id].kind == VariableKind::Local)
             .collect();
+        let early = self.unit.early_frame;
+        // (Early frames: each parameter's slot, in order, from r1+8.)
+        if early {
+            for id in 0..function.parameter_count {
+                let (size, align) = function.variables[id].frame.unwrap_or_else(|| {
+                    let width = width(function.variables[id].ty);
+                    (width, width)
+                });
+                self.frame_cursor = self.frame_cursor.div_ceil(align.max(1)) * align.max(1) + size;
+            }
+        }
         for &id in locals.iter().rev() {
             match function.variables[id].frame {
+                // (Early frames: a register local keeps its slot too.)
+                None if early => {
+                    let width = width(function.variables[id].ty);
+                    self.frame_cursor = self.frame_cursor.div_ceil(width) * width + width;
+                    self.registers[id] = Some(self.fresh(function.variables[id].ty));
+                }
+                Some((size, align)) if early && references(&function.body, id) == 0 => {
+                    self.frame_cursor = self.frame_cursor.div_ceil(align.max(1)) * align.max(1) + size;
+                }
                 // An unreferenced frame object takes no slot.
                 Some(_) if references(&function.body, id) == 0 => {}
                 // Frame objects take slots in reverse declaration order.
@@ -458,9 +481,13 @@ impl Lowerer<'_, '_> {
                     let start = i16::try_from(offset).map_err(|_| unsupported("a large frame"))?;
                     self.frame_offsets[id] = Some(start);
                     self.pcode.frame_objects.push((start, start + size as i16));
+                    self.pcode.variable_frame_objects += 1;
                 }
                 None => self.registers[id] = Some(self.fresh(function.variables[id].ty)),
             }
+        }
+        if early && self.pcode.variable_frame_objects == 0 {
+            self.reserved_end = self.frame_cursor;
         }
         if function.return_type != Type::Void && returns_through_variable {
             self.return_register = Some(self.fresh(function.return_type));
@@ -477,7 +504,9 @@ impl Lowerer<'_, '_> {
             // (unless the build trusts the caller's extension).
             let trusted = self.unit.narrow_parameters_extended && ty != Type::Char;
             let ty = if self.raw_narrow[id] || trusted { Type::Int } else { ty };
-            self.emit_plain(extension(ty, virtual_register, physical));
+            let mut copy = PInstr::new(extension(ty, virtual_register, physical));
+            copy.flags.entry_copy = true;
+            self.emit(copy);
         }
         self.body_and_exit()
     }
@@ -489,6 +518,10 @@ impl Lowerer<'_, '_> {
     /// (callee-saved, r31 down). Temporaries are colored around them.
     fn lower_unoptimized(&mut self, calls: bool) -> Compilation<()> {
         let function = self.function;
+        // (Early -O0 frames are not modeled; frameless leaves are.)
+        if self.unit.early_frame && (calls || function.variables.iter().any(|variable| variable.frame.is_some())) {
+            return Err(unsupported("-O0 frames on GC/1.2.5 and earlier"));
+        }
         // Floating register variables take saved FPRs from f31 down, like
         // the GPR ones.
         let floating_variable = |id: usize| is_float(function.variables[id].ty);
@@ -699,6 +732,11 @@ impl Lowerer<'_, '_> {
             self.pcode.frame_local_bytes = self.pcode.frame_local_bytes.max(used);
         } else {
             self.pcode.frame_local_bytes = (self.frame_cursor - 8) as i16;
+            // (A reservation alone needs no frame.)
+            if self.unit.early_frame && self.frame_cursor == self.reserved_end {
+                self.pcode.reserved_local_bytes = self.pcode.frame_local_bytes;
+                self.pcode.frame_local_bytes = 0;
+            }
             for &(start, _) in &self.pcode.frame_objects {
                 if !self.escaped_frame_objects.contains(&start) && !self.pcode.private_frame_objects.contains(&start) {
                     self.pcode.private_frame_objects.push(start);
@@ -1661,6 +1699,15 @@ impl Lowerer<'_, '_> {
             }
             ExprKind::Select { .. } => Err(unsupported("conditional expression")),
             ExprKind::Idiom(idiom) => self.idiom(idiom, target),
+            // (GC/1.0-1.2.5n: `!x` counts x's zeros directly.)
+            ExprKind::Unary(UnaryOp::LogicalNot, operand)
+                if self.unit.branch_preserving && !matches!(&operand.kind, ExprKind::Binary(op, ..) if op.is_comparison()) =>
+            {
+                let (value, _) = self.expression(operand)?;
+                let n = self.temporary();
+                self.emit_plain(Instruction::CountLeadingZeros { a: n, s: value });
+                self.shift_out(n, 5, target)
+            }
             ExprKind::Unary(UnaryOp::LogicalNot, operand) => {
                 let inverted = match &operand.kind {
                     ExprKind::Binary(op, left, right) if op.is_comparison() => {
@@ -2445,6 +2492,9 @@ impl Lowerer<'_, '_> {
         let (p, left_type) = self.expression(left)?;
         let unsigned = is_unsigned(promote(left_type)) || is_unsigned(promote(right.ty));
         let small = |value: i64| i16::try_from(value).is_ok() && i16::try_from(-value).is_ok();
+        if self.unit.branch_preserving {
+            return self.early_comparison_value(op, p, right, unsigned, target);
+        }
         // Forms against constants that need no second register.
         match (op, constant, unsigned) {
             (Equal, Some(0), _) => {
@@ -2537,6 +2587,103 @@ impl Lowerer<'_, '_> {
             (Greater, true) => self.unsigned_less(q, p, target),
             (LessEqual, true) => self.unsigned_less_equal(p, q, target),
             (GreaterEqual, true) => self.unsigned_less_equal(q, p, target),
+            _ => unreachable!("comparison operators only"),
+        }
+    }
+
+    /// GC/1.0-1.2.5n comparison values: `x == y` from `y - x` (`neg` for
+    /// zero) and `cntlzw`, `x != y` by the carry of `y - x - 1`, signed `<`
+    /// by `eqv` and the carry, unsigned relations by the carry alone.
+    fn early_comparison_value(
+        &mut self,
+        op: BinaryOp,
+        p: u32,
+        right: &Expr,
+        unsigned: bool,
+        target: Option<u32>,
+    ) -> Compilation<(u32, Type)> {
+        use BinaryOp::*;
+        let small = |value: i64| i16::try_from(value).is_ok() && i16::try_from(-value).is_ok();
+        if matches!(op, Equal | NotEqual) {
+            let difference = self.temporary();
+            match right.as_int() {
+                Some(0) => self.emit_plain(Instruction::Negate { d: difference, a: p }),
+                Some(value) if small(value) => {
+                    self.emit_plain(Instruction::SubtractFromImmediate { d: difference, a: p, immediate: value as i16 })
+                }
+                _ => {
+                    let (q, _) = self.expression(right)?;
+                    self.emit_plain(Instruction::SubtractFrom { d: difference, a: p, b: q });
+                }
+            }
+            if op == Equal {
+                let n = self.temporary();
+                self.emit_plain(Instruction::CountLeadingZeros { a: n, s: difference });
+                return self.shift_out(n, 5, target);
+            }
+            let less = self.temporary();
+            self.emit_plain(Instruction::AddImmediateCarrying { d: less, a: difference, immediate: -1 });
+            let d = self.result(target);
+            self.emit_plain(Instruction::SubtractFromExtended { d, a: less, b: difference });
+            return Ok((d, Type::Int));
+        }
+        let (q, _) = self.expression(right)?;
+        let (low, high) = if matches!(op, Greater | GreaterEqual) { (q, p) } else { (p, q) };
+        match (op, unsigned) {
+            (Less | Greater, false) => {
+                // `low < high`: (signs equal) + carry(low - high), low bit.
+                // (The carry-only difference, the sum and the result share
+                // one register.)
+                let same = self.temporary();
+                self.emit_plain(Instruction::Eqv { a: same, s: high, b: low });
+                let d = self.result(target);
+                self.emit_plain(Instruction::SubtractFromCarrying { d, a: high, b: low });
+                let sign = self.temporary();
+                self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: sign, s: same, shift: 31 });
+                let mut sum = PInstr::new(Instruction::AddToZeroExtended { d, a: sign });
+                sum.flags.continues_web = true;
+                self.emit(sum);
+                let mut low_bit = PInstr::new(Instruction::ClearLeftImmediate { a: d, s: d, clear: 31 });
+                low_bit.flags.in_place = true;
+                self.emit(low_bit);
+                Ok((d, Type::Int))
+            }
+            (LessEqual | GreaterEqual, false) => {
+                // (The sign words number low first.)
+                let low_sign = self.temporary();
+                let high_sign = self.temporary();
+                self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: high_sign, s: high, shift: 31 });
+                self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: low_sign, s: low, shift: 31 });
+                let c = self.temporary();
+                self.emit_plain(Instruction::SubtractFromCarrying { d: c, a: low, b: high });
+                let d = self.result(target);
+                self.emit_plain(Instruction::AddExtended { d, a: high_sign, b: low_sign });
+                Ok((d, Type::Int))
+            }
+            (Less | Greater, true) => {
+                // `low < high`: borrow of low - high, as 0/-1, negated.
+                let d = self.result(target);
+                self.emit_plain(Instruction::SubtractFromCarrying { d, a: high, b: low });
+                // (`subfe m,m,m` reads its own undefined register: -1 + CA.)
+                let mask = self.temporary();
+                self.emit_plain(Instruction::SubtractFromExtended { d: mask, a: mask, b: mask });
+                let mut negated = PInstr::new(Instruction::Negate { d, a: mask });
+                negated.flags.continues_web = true;
+                self.emit(negated);
+                Ok((d, Type::Int))
+            }
+            (LessEqual | GreaterEqual, true) => {
+                // `low <= high`: the carry of high - low.
+                // (The carry-only difference shares the -1's register.)
+                let ones = self.temporary();
+                self.emit_plain(Instruction::SubtractFromCarrying { d: ones, a: low, b: high });
+                let mut minus_one = PInstr::new(Instruction::AddImmediate { d: ones, a: 0, immediate: -1 });
+                minus_one.flags.continues_web = true;
+                self.emit(minus_one);
+                let d = self.result(target);
+                self.emit_plain(Instruction::SubtractFromZeroExtended { d, a: ones });
+                Ok((d, Type::Int))
+            }
             _ => unreachable!("comparison operators only"),
         }
     }

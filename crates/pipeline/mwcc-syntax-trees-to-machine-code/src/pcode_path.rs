@@ -17,6 +17,8 @@ use mwcc_versions::CompilerConfig;
 pub struct PcodeRequest<'a> {
     pub function: &'a Function,
     pub globals: &'a [GlobalDeclaration],
+    /// Arrays declared at fixed addresses: name -> (address, element type).
+    pub fixed_address_arrays: &'a HashMap<String, (i64, Type)>,
     /// Function statics, addressed like globals by name.
     pub static_locals: &'a [mwcc_syntax_trees::LocalDeclaration],
     pub call_return_types: &'a HashMap<String, Type>,

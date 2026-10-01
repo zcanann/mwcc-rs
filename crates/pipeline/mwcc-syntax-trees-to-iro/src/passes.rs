@@ -162,8 +162,9 @@ fn replace_fields(body: Vec<Stmt>, id: VarId, map: &HashMap<i32, VarId>, keep: b
     out
 }
 
-/// Run every pass in order.
-pub fn run(function: &mut Function) {
+/// Run every pass in order. Branch-preserving builds (GC/1.0-1.2.5n) form
+/// no sign-mask idioms and keep two-way assignments as branches.
+pub fn run(function: &mut Function, branch_preserving: bool) {
     let enabled = |name: &str| std::env::var_os(format!("MWCC_IRO_NO_{name}")).is_none();
     if enabled("FOLD") {
         for_each_expression(&mut function.body, &mut |expression| fold(expression));
@@ -181,11 +182,11 @@ pub fn run(function: &mut Function) {
     if enabled("DISPLACEMENTS") {
         displacements(&mut function.body);
     }
-    if enabled("IDIOMS") {
+    if enabled("IDIOMS") && !branch_preserving {
         let variables: Vec<Type> = function.variables.iter().map(|variable| variable.ty).collect();
         for_each_expression(&mut function.body, &mut |expression| idioms(expression, &variables));
     }
-    if enabled("SELECTS") {
+    if enabled("SELECTS") && !branch_preserving {
         selects(function);
     }
     if enabled("STORES") {
