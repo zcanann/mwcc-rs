@@ -109,9 +109,21 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             && !mentioned.is_empty()
             && !mentioned.contains(&format!("Variable({:?})", local.name))
     };
+    // A `static const` scalar local with a literal initializer (an inlined
+    // `sqrtf`'s `_half`) is its constant.
+    let mut folded: HashMap<String, Expr> = HashMap::new();
     for local in &function.locals {
         if local.is_static {
-            return Err(unsupported("static or volatile locals"));
+            let value = (local.is_const && local.array_length.is_none())
+                .then(|| local.initializer.as_ref().and_then(|value| literal_value(value, local.declared_type)))
+                .flatten();
+            match value {
+                Some(value) => {
+                    folded.insert(local.name.clone(), value);
+                    continue;
+                }
+                None => return Err(unsupported("static or volatile locals")),
+            }
         }
         // Arrays, structs and scalars whose address is taken live in the frame.
         let element = match local.declared_type {
@@ -197,6 +209,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     let mut builder = Builder {
         arrays,
         rows,
+        folded,
         return_type: function.return_type,
         unit,
         names: variables.iter().enumerate().map(|(id, variable)| (variable.name.clone(), id)).collect(),
@@ -219,6 +232,10 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     }
     let mut images: Vec<Vec<u8>> = Vec::new();
     for local in &function.locals {
+        // (A folded static has no variable and no runtime initialization.)
+        if builder.folded.contains_key(&local.name) {
+            continue;
+        }
         if let (Some(bytes), Some((size, align))) = (&local.data_bytes, builder.names.get(&local.name).and_then(|&id| builder.variables[id].frame)) {
             // The image is the array's bytes (zero-padded; a string exactly the
             // array's length drops its NUL).
@@ -407,6 +424,8 @@ struct Builder<'a, 'u> {
     arrays: Vec<VarId>,
     /// Multi-dimensional frame arrays: variable -> row bytes.
     rows: HashMap<VarId, u32>,
+    /// Folded `static const` scalar locals: name -> value.
+    folded: HashMap<String, Expr>,
     return_type: Type,
     unit: &'a Unit<'u>,
     names: HashMap<String, VarId>,
@@ -1023,6 +1042,7 @@ impl Builder<'_, '_> {
             Expression::IntegerLiteral(value) => Expr::int(*value),
             // A bare floating literal is `float`; a `double` one is cast.
             Expression::FloatLiteral(value) => Expr { kind: ExprKind::Float(*value), ty: Type::Float },
+            Expression::Variable(name) if self.folded.contains_key(name) => self.folded[name].clone(),
             Expression::Variable(name) => {
                 if let Some(&id) = self.names.get(name) {
                     let variable = &self.variables[id];
@@ -1760,6 +1780,34 @@ fn statement_name(statement: &Statement) -> &'static str {
 }
 
 /// The variant name of an expression (for refusal diagnostics).
+/// A literal initializer's value as `ty` (a scalar), when it is one.
+fn literal_value(value: &Expression, ty: Type) -> Option<Expr> {
+    fn number(value: &Expression) -> Option<f64> {
+        match value {
+            Expression::IntegerLiteral(v) => Some(*v as f64),
+            Expression::FloatLiteral(v) => Some(*v),
+            Expression::Cast { operand, .. } => number(operand),
+            Expression::Unary { operator: ast::UnaryOperator::Negate, operand } => number(operand).map(|v| -v),
+            _ => None,
+        }
+    }
+    fn integer(value: &Expression) -> Option<i64> {
+        match value {
+            Expression::IntegerLiteral(v) => Some(*v),
+            Expression::Cast { operand, .. } => integer(operand),
+            Expression::Unary { operator: ast::UnaryOperator::Negate, operand } => integer(operand).map(|v| -v),
+            _ => None,
+        }
+    }
+    match ty {
+        Type::Double => Some(Expr { kind: ExprKind::Float(number(value)?), ty }),
+        Type::Float => Some(Expr { kind: ExprKind::Float(f64::from(number(value)? as f32)), ty }),
+        ty if is_narrow(ty) => Some(Expr::int(integer(value)?)),
+        ty if is_value_type(ty) && !is_float(ty) => Some(Expr::typed_int(integer(value)?, ty)),
+        _ => None,
+    }
+}
+
 fn expression_name(expression: &Expression) -> String {
     let debug = format!("{expression:?}");
     let end = debug.find([' ', '(', '{']).unwrap_or(debug.len());

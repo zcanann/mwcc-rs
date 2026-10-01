@@ -31,6 +31,22 @@ fn initialized(bytes: Option<&[u8]>, values: Option<&[i64]>, relocated: bool) ->
 
 /// Lower `request.function`, or explain what is not modeled yet.
 pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
+    // An internal error in one function is reported as that function's
+    // diagnostic instead of ending the whole unit.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lower_function(request))) {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("panic");
+            Err(mwcc_core::Diagnostic::error(format!("PCode lowering: internal error ({message})")))
+        }
+    }
+}
+
+fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
     if std::env::var_os("MWCC_PCODE_TRACE").is_some() {
         eprintln!("mwcc: lowering '{}'", request.function.name);
     }
