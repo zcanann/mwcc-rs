@@ -463,8 +463,12 @@ impl Lowerer<'_, '_> {
         }
         for &id in locals.iter().rev() {
             match function.variables[id].frame {
-                // (Early frames: a register local keeps its slot too.)
-                None if early => {
+                // (Early frames: a local declared with an initializer, or
+                // one never read, keeps a slot.)
+                None if early
+                    && (function.variables[id].initialized
+                        || references(&function.body, id) == assignments(&function.body, id)) =>
+                {
                     let width = width(function.variables[id].ty);
                     self.frame_cursor = self.frame_cursor.div_ceil(width) * width + width;
                     self.registers[id] = Some(self.fresh(function.variables[id].ty));
@@ -4106,6 +4110,19 @@ struct Known {
 }
 
 /// Whether any statement assigns `variable`.
+/// How many statements assign `variable`.
+fn assignments(body: &[Stmt], variable: VarId) -> usize {
+    body.iter()
+        .map(|statement| match statement {
+            Stmt::Assign { variable: assigned, .. } => usize::from(*assigned == variable),
+            Stmt::If { then_body, else_body, .. } => assignments(then_body, variable) + assignments(else_body, variable),
+            Stmt::Loop { body, step, .. } => assignments(body, variable) + assignments(step, variable),
+            Stmt::Switch { arms, .. } => arms.iter().map(|arm| assignments(arm, variable)).sum(),
+            _ => 0,
+        })
+        .sum()
+}
+
 fn assigns(body: &[Stmt], variable: VarId) -> bool {
     body.iter().any(|statement| match statement {
         Stmt::Assign { variable: assigned, .. } => *assigned == variable,

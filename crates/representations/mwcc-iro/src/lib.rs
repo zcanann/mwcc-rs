@@ -131,6 +131,8 @@ pub struct Variable {
     /// A variable that lives in the frame (an array, a struct, or a scalar
     /// whose address is taken): (bytes, alignment).
     pub frame: Option<(u32, u32)>,
+    /// A local declared with an initializer.
+    pub initialized: bool,
 }
 
 /// A function at the IRO level.
@@ -152,7 +154,7 @@ pub struct Function {
 impl Function {
     pub fn add_temporary(&mut self, ty: Type) -> VarId {
         let id = self.variables.len();
-        self.variables.push(Variable { name: format!("@t{id}"), ty, kind: VariableKind::Temporary, frame: None });
+        self.variables.push(Variable { name: format!("@t{id}"), ty, kind: VariableKind::Temporary, frame: None, initialized: false });
         id
     }
 }

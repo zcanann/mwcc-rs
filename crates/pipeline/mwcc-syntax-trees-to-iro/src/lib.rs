@@ -79,6 +79,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             ty: parameter.parameter_type,
             kind: VariableKind::Parameter,
             frame: None,
+            initialized: false,
         });
     }
     let floats = function.parameters.iter().filter(|p| is_float(p.parameter_type)).count();
@@ -136,7 +137,13 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         {
             return Err(unsupported("an initialized frame array"));
         }
-        variables.push(Variable { name: local.name.clone(), ty: local.declared_type, kind: VariableKind::Local, frame });
+        variables.push(Variable {
+            name: local.name.clone(),
+            ty: local.declared_type,
+            kind: VariableKind::Local,
+            frame,
+            initialized: local.initializer.is_some(),
+        });
     }
     if function.parameters.iter().any(|parameter| taken.contains(&parameter.name)) {
         return Err(unsupported("address of a parameter"));
@@ -498,7 +505,7 @@ impl Builder<'_, '_> {
     /// A register for an intermediate value.
     fn temporary(&mut self, ty: Type) -> VarId {
         let id = self.variables.len() + self.temporaries.len();
-        self.temporaries.push(Variable { name: format!("@a{id}"), ty, kind: VariableKind::Temporary, frame: None });
+        self.temporaries.push(Variable { name: format!("@a{id}"), ty, kind: VariableKind::Temporary, frame: None, initialized: false });
         id
     }
 
@@ -519,6 +526,7 @@ impl Builder<'_, '_> {
             ty,
             kind: VariableKind::Local,
             frame: Some((size, u32::from(align).max(1))),
+            initialized: false,
         });
         let pointer_type = Type::StructPointer { element_size: size };
         let copy = Expr { kind: ExprKind::LocalAddress(id), ty: pointer_type };
@@ -530,7 +538,7 @@ impl Builder<'_, '_> {
         }
         // -O0: the copy's address is a register variable, taken after it.
         let id = self.variables.len() + self.temporaries.len();
-        self.temporaries.push(Variable { name: format!("@p{id}"), ty: pointer_type, kind: VariableKind::Local, frame: None });
+        self.temporaries.push(Variable { name: format!("@p{id}"), ty: pointer_type, kind: VariableKind::Local, frame: None, initialized: false });
         self.pending.push(Stmt::Assign { variable: id, value: copy });
         Ok(Expr { kind: ExprKind::Var(id), ty: pointer_type })
     }
@@ -941,7 +949,7 @@ impl Builder<'_, '_> {
                     arithmetic_type(when_true.ty, when_false.ty)
                 };
                 let id = self.variables.len() + self.temporaries.len();
-                self.temporaries.push(Variable { name: format!("@c{id}"), ty, kind: VariableKind::Local, frame: None });
+                self.temporaries.push(Variable { name: format!("@c{id}"), ty, kind: VariableKind::Local, frame: None, initialized: false });
                 then_body.push(Stmt::Assign { variable: id, value: converted(when_true, ty) });
                 else_body.push(Stmt::Assign { variable: id, value: converted(when_false, ty) });
                 self.pending.push(Stmt::If { condition, then_body, else_body });
@@ -1234,6 +1242,7 @@ impl Builder<'_, '_> {
                 ty: variable.ty,
                 kind: if variable.frame.is_some() { VariableKind::Local } else { kind },
                 frame: variable.frame,
+                initialized: false,
             });
         }
         // Arguments are evaluated in order into the parameters; a constant
@@ -1294,7 +1303,7 @@ impl Builder<'_, '_> {
         if early {
             let ty = callee.return_type;
             let id = self.variables.len() + self.temporaries.len();
-            self.temporaries.push(Variable { name: format!("{}$result", callee.name), ty, kind, frame: None });
+            self.temporaries.push(Variable { name: format!("{}$result", callee.name), ty, kind, frame: None, initialized: false });
             let result = (ty != Type::Void).then_some(id);
             let mut body = early_returns(std::mem::take(&mut inlined.body), result, ty);
             if let (Some(id), Some(value)) = (result, value) {
@@ -1325,6 +1334,7 @@ impl Builder<'_, '_> {
             ty: callee.return_type,
             kind,
             frame: None,
+            initialized: false,
         });
         self.pending.push(Stmt::Assign { variable: id, value: assigned(value, callee.return_type) });
         Ok(Expr { kind: ExprKind::Var(id), ty: callee.return_type })

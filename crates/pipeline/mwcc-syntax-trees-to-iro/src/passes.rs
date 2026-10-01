@@ -49,6 +49,7 @@ pub fn scalarize(function: &mut Function, keeps_struct_stores: bool) {
                 ty,
                 kind: VariableKind::Local,
                 frame: None,
+                initialized: false,
             });
         }
         let keep = keeps_struct_stores && matches!(function.variables[id].ty, Type::Struct { .. });
