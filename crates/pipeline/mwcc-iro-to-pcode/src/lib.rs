@@ -3020,9 +3020,11 @@ impl Lowerer<'_, '_> {
             load.flags.read_only = unordered;
             this.emit(load);
         };
-        // -O4 from a constant image: every unit loaded, then every unit
-        // stored (nothing can alias the image).
-        if size <= limit && (read_only || frame.is_some()) && !self.unoptimized && !toggle("MWCC_PCODE_IMAGE_PAIRS") {
+        // -O4 from a constant image or a global: every unit loaded, then
+        // every unit stored.
+        let absolute_source = matches!(source.kind, ExprKind::GlobalAddress(_)) && !toggle("MWCC_PCODE_FRAME_LOAD_ALL");
+        let load_all = read_only || absolute_source || (frame.is_some() && toggle("MWCC_PCODE_FRAME_LOAD_ALL"));
+        if size <= limit && load_all && !self.unoptimized && !toggle("MWCC_PCODE_IMAGE_PAIRS") {
             let mut units = Vec::new();
             let mut at = 0u32;
             while at < size {

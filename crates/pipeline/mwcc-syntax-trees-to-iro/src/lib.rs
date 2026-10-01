@@ -473,6 +473,58 @@ impl Builder<'_, '_> {
         id
     }
 
+    /// A struct argument: copied into a caller frame object (before the
+    /// call), whose address is passed.
+    fn struct_argument(&mut self, argument: &Expression, size: u32, align: u8) -> Compilation<Expr> {
+        if std::env::var_os("MWCC_IRO_NO_STRUCT_ARGUMENTS").is_some() {
+            return Err(unsupported("struct argument"));
+        }
+        let ty = Type::Struct { size, align };
+        let source = self.address_of(argument)?;
+        if !matches!(source.ty, Type::StructPointer { element_size } if element_size == size) {
+            return Err(unsupported("struct argument expression"));
+        }
+        let id = self.variables.len() + self.temporaries.len();
+        self.temporaries.push(Variable {
+            name: format!("@s{id}"),
+            ty,
+            kind: VariableKind::Local,
+            frame: Some((size, u32::from(align).max(1))),
+        });
+        let pointer_type = Type::StructPointer { element_size: size };
+        let copy = Expr { kind: ExprKind::LocalAddress(id), ty: pointer_type };
+        let value = Expr { kind: ExprKind::Load { base: Box::new(source), index: None, offset: 0 }, ty };
+        let store = Stmt::Store { place: Place::Memory { base: Box::new(copy.clone()), index: None, offset: 0 }, ty, value };
+        self.pending.push(store);
+        if !self.unit.unoptimized {
+            return Ok(copy);
+        }
+        // -O0: the copy's address is a register variable, taken after it.
+        let id = self.variables.len() + self.temporaries.len();
+        self.temporaries.push(Variable { name: format!("@p{id}"), ty: pointer_type, kind: VariableKind::Local, frame: None });
+        self.pending.push(Stmt::Assign { variable: id, value: copy });
+        Ok(Expr { kind: ExprKind::Var(id), ty: pointer_type })
+    }
+
+    /// Whether a syntax expression denotes a whole struct object (its value
+    /// is evaluated as its address).
+    fn struct_valued(&self, expression: &Expression) -> bool {
+        match expression {
+            Expression::Variable(name) => match self.names.get(name) {
+                Some(&id) => matches!(self.variables[id].frame, Some(_))
+                    && !self.is_array(id)
+                    && matches!(self.variables[id].ty, Type::Struct { .. }),
+                None => self
+                    .unit
+                    .globals
+                    .get(name)
+                    .is_some_and(|global| !global.is_array && matches!(global.ty, Type::Struct { .. })),
+            },
+            Expression::Member { member_type: Type::Struct { .. }, .. } => true,
+            _ => false,
+        }
+    }
+
     /// `target = value` used as a value: the assignment is hoisted and the
     /// assigned value is read from a register.
     fn assignment_value(&mut self, target: &Expression, value: &Expression) -> Compilation<Expr> {
@@ -1205,8 +1257,18 @@ impl Builder<'_, '_> {
                     }
                     _ => false,
                 };
+                let parameter_types = self.unit.call_parameter_types.get(name).cloned();
                 let mut values = Vec::with_capacity(arguments.len());
                 for (index, argument) in arguments.iter().enumerate() {
+                    // A struct passed by value: a caller copy, by address.
+                    match parameter_types.as_ref().and_then(|types| types.get(index)).copied() {
+                        Some(Type::Struct { size, align }) if !variadic || index < parameter_types.as_ref().map_or(0, Vec::len) => {
+                            values.push(self.struct_argument(argument, size, align)?);
+                            continue;
+                        }
+                        _ if self.struct_valued(argument) => return Err(unsupported("struct argument without a struct parameter")),
+                        _ => {}
+                    }
                     let expanded = matches!(argument, Expression::Call { name, .. } if self.unit.inline_bodies.contains_key(name));
                     let others_simple = arguments.iter().enumerate().all(|(other, value)| other == index || simple(self, value));
                     values.push(if expanded && others_simple && self.guarded == 0 {
