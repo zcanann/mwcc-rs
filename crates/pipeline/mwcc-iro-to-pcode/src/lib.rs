@@ -3971,6 +3971,14 @@ fn common_key(expression: &Expr) -> Option<(String, Vec<VarId>)> {
                 Some(format!("({:?}){inner}", e.ty))
             }
             ExprKind::GlobalAddress(name) if !toggle("MWCC_PCODE_NO_GLOBAL_ADDRESS_CSE") => Some(format!("@{name}")),
+            // (A nested arithmetic operand, itself reused.)
+            ExprKind::Binary(op, left, right)
+                if !matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr | BinaryOp::Divide | BinaryOp::Modulo)
+                    && !op.is_comparison()
+                    && !toggle("MWCC_PCODE_NO_NESTED_CSE") =>
+            {
+                Some(format!("({:?} {op:?} {} {})", e.ty, leaf(left, variables)?, leaf(right, variables)?))
+            }
             _ => None,
         }
     }
