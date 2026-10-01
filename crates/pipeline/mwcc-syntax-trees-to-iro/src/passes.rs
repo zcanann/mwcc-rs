@@ -826,6 +826,21 @@ pub fn algebra(expression: &mut Expr) {
             std::mem::swap(left, right);
         }
     }
+    // A mask keeping every bit of a zero-extended unsigned narrow value
+    // (`u8 & 0xFF`, `u16 & 0xFFFF`) is the value.
+    if let ExprKind::Binary(BinaryOp::BitAnd, value, mask) = &expression.kind {
+        let Some(mask) = mask.as_int() else { return };
+        let width = match &value.kind {
+            ExprKind::Convert(inner) if inner.ty == Type::UnsignedChar => 0xff,
+            ExprKind::Convert(inner) if inner.ty == Type::UnsignedShort => 0xffff,
+            _ => return,
+        };
+        if mask & width == width && std::env::var_os("MWCC_IRO_NO_NARROW_MASK_FOLD").is_none() {
+            let ty = expression.ty;
+            let value = value.as_ref().clone();
+            *expression = if value.ty == ty { value } else { Expr { kind: ExprKind::Convert(Box::new(value)), ty } };
+        }
+    }
 }
 
 /// `a - -b` = `a + b`, `a + -b` = `a - b`, `-a + b` = `b - a`,
