@@ -3944,10 +3944,13 @@ fn references_weighted(body: &[Stmt], variable: VarId, base: usize) -> usize {
             Stmt::Eval(value) | Stmt::SetReturn(value) => expression(value, variable),
             Stmt::Return(value) => value.as_ref().map_or(0, |value| expression(value, variable)),
             Stmt::Store { place, value, .. } => {
+                // (A compound update's address is computed once: its load
+                // already counted the base.)
+                let compound = compound_place_key(place, value).is_some() && !toggle("MWCC_PCODE_O0_COMPOUND_BASE_TWICE");
                 expression(value, variable)
                     + match place {
                         Place::Memory { base: address, index, .. } if as_base(address) > 0 => {
-                            as_base(address) + index.as_deref().map_or(0, |index| expression(index, variable))
+                            (if compound { 0 } else { as_base(address) }) + index.as_deref().map_or(0, |index| expression(index, variable))
                         }
                         Place::Memory { base, index, .. } => {
                             expression(base, variable)
