@@ -86,6 +86,7 @@ pub fn lower(
         frame_offsets: vec![None; function.variables.len()],
         anchored: anchored_objects(function, unit),
         store_displacement: None,
+        inserted: None,
         frame_cursor: 8,
         escaped_frame_objects: Vec::new(),
     };
@@ -171,6 +172,9 @@ struct Lowerer<'a, 'u> {
     anchored: HashMap<String, &'static str>,
     /// The anchored object a store's displacement completes with.
     store_displacement: Option<String>,
+    /// An insert's value already computed (by address): -O0 evaluates a
+    /// bit-field store's value before the unit's address.
+    inserted: Option<(usize, u32)>,
     /// Next free byte of the local area (r1-relative).
     frame_cursor: u32,
     /// Frame objects whose address the code computes.
@@ -2068,7 +2072,10 @@ impl Lowerer<'_, '_> {
         match idiom {
             Idiom::Insert { base, value, shift, begin, end } => {
                 // The inserted value is computed before the old unit loads.
-                let (x, _) = self.expression(value)?;
+                let (x, _) = match self.inserted.take() {
+                    Some((at, x)) if at == value.as_ref() as *const Expr as usize => (x, value.ty),
+                    _ => self.expression(value)?,
+                };
                 let (b, _) = self.expression(base)?;
                 // rlwimi overwrites its destination before reading the
                 // source: the destination must not hold the source.
@@ -3300,6 +3307,12 @@ impl Lowerer<'_, '_> {
         };
         let (source, (base, offset, index, relocation)) = match compound {
             Some(key) => {
+                if let ExprKind::Idiom(Idiom::Insert { value: inserted, .. }) = &value.kind {
+                    if !toggle("MWCC_PCODE_O0_INSERT_ADDRESS_FIRST") {
+                        let (x, _) = self.expression(inserted)?;
+                        self.inserted = Some((inserted.as_ref() as *const Expr as usize, x));
+                    }
+                }
                 let address = self.store_address(place)?;
                 self.address_reuse = Some((key, address.clone()));
                 let source = self.store_source(value, ty);
