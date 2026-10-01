@@ -217,6 +217,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             link_reload_after_float_restores: behavior.saved_float_epilogue_style
                 == mwcc_versions::SavedFloatEpilogueStyle::LinkReloadAfterFloatRestores,
             general_save_helper_minimum: behavior.general_save_helper_minimum,
+            use_lmw_stmw: request.config.flags.use_lmw_stmw,
         },
     )?;
     output.section = request.function.section.clone();

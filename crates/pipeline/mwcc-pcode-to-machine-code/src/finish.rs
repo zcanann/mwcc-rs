@@ -33,6 +33,8 @@ pub struct FinishOptions {
     pub link_reload_after_float_restores: bool,
     /// The fewest saved GPRs handled by `_savegpr_N`/`_restgpr_N`.
     pub general_save_helper_minimum: usize,
+    /// `-use_lmw_stmw on`: `stmw`/`lmw` where the helpers would be called.
+    pub use_lmw_stmw: bool,
 }
 
 /// Schedule, color, frame, and flatten `pcode`. The last block is the exit
@@ -113,7 +115,7 @@ pub fn finish(
     // Enough saved GPRs go through the helpers, which save rN..r31.
     let helper = saved.len() >= options.general_save_helper_minimum && !toggle("MWCC_PCODE_NO_SAVE_HELPERS");
     if helper {
-        if !makes_calls {
+        if !makes_calls && !options.use_lmw_stmw {
             return Err(mwcc_core::Diagnostic::error("PCode frame: save helpers in a leaf function"));
         }
         let lowest = *saved.last().expect("saved registers");
@@ -123,6 +125,7 @@ pub fn finish(
     let float_frame = FloatFrame {
         link_reload_last: options.link_reload_after_float_restores,
         helper,
+        multiple: options.use_lmw_stmw,
         ..FloatFrame::new(&saved_float, paired, &saved, pcode.frame_local_bytes)
     };
     let plan = mwcc_vreg::FramePlan::with_local_region(saved, pcode.frame_local_bytes);
@@ -149,7 +152,23 @@ pub fn finish(
                     Instruction::BranchAndLink { target } => Some(target.clone()),
                     _ => None,
                 };
+                // `stmw`/`lmw` read or write every register from rN up.
+                let multiple = match instruction {
+                    Instruction::StoreMultipleWord { s, .. } => Some((s, true)),
+                    Instruction::LoadMultipleWord { d, .. } => Some((d, false)),
+                    _ => None,
+                };
                 let mut wrapped = PInstr::new(instruction);
+                if let Some((lowest, store)) = multiple {
+                    // (They also issue serially: scheduled in place.)
+                    wrapped.flags.serialize = true;
+                    let registers = (lowest..32).map(mwcc_pcode::Register::general);
+                    if store {
+                        wrapped.implicit_uses.extend(registers);
+                    } else {
+                        wrapped.implicit_defs.extend(registers);
+                    }
+                }
                 if let Some(target) = target {
                     wrapped.relocation = Some(mwcc_pcode::AttachedRelocation {
                         kind: mwcc_machine_code::RelocationKind::Rel24,
@@ -1012,6 +1031,8 @@ struct FloatFrame {
     link_reload_last: bool,
     /// The GPRs go through `_savegpr_N`/`_restgpr_N` (r11 = top of their area).
     helper: bool,
+    /// ... or through `stmw`/`lmw` (`-use_lmw_stmw on`).
+    multiple: bool,
     frame_size: i16,
     floats: Vec<(u32, i16, Option<i16>)>,
     generals: Vec<(u32, i16)>,
@@ -1039,7 +1060,7 @@ impl FloatFrame {
             .enumerate()
             .map(|(k, &register)| (register, frame_size - float_area - 4 * (k as i16 + 1)))
             .collect();
-        FloatFrame { link_reload_last: false, helper: false, frame_size, floats, generals }
+        FloatFrame { link_reload_last: false, helper: false, multiple: false, frame_size, floats, generals }
     }
 
     fn prologue(&self) -> Vec<Instruction> {
@@ -1053,6 +1074,11 @@ impl FloatFrame {
             if let Some(offset) = paired {
                 instructions.push(Instruction::PairedSingleQuantizedStore { s: register, a: 1, offset, w: 0, i: 0 });
             }
+        }
+        if self.helper && self.multiple {
+            let (lowest, offset) = *self.generals.last().expect("saved registers");
+            instructions.push(Instruction::StoreMultipleWord { s: lowest, a: 1, offset });
+            return instructions;
         }
         if self.helper {
             instructions.extend(self.helper_call("_savegpr"));
@@ -1087,7 +1113,11 @@ impl FloatFrame {
             }
             instructions.push(Instruction::LoadFloatDouble { d: register, a: 1, offset: double });
         }
-        if self.helper {
+        if self.helper && self.multiple {
+            let (lowest, offset) = *self.generals.last().expect("saved registers");
+            instructions.push(Instruction::LoadMultipleWord { d: lowest, a: 1, offset });
+            instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+        } else if self.helper {
             // The helper call clobbers LR: the reload follows it.
             instructions.extend(self.helper_call("_restgpr"));
             instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
